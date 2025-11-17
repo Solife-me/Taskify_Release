@@ -1,0 +1,52 @@
+# wrangler.toml (wrangler v3.88.0^)
+name = "taskify"
+main = "worker/src/index.ts"
+compatibility_date = "2024-03-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = true
+
+[build]
+command = "bash -lc 'if [ -f ../scripts/install-worker-deps.mjs ]; then node ../scripts/install-worker-deps.mjs; else node ./scripts/install-worker-deps.mjs; fi'"
+
+[assets]
+directory = "taskify-pwa/dist"
+binding = "ASSETS"
+
+[triggers]
+crons = ["*/1 * * * *"]
+
+[observability.logs]
+enabled = true
+
+[vars]
+VAPID_PUBLIC_KEY = "<REPLACE_WITH_VAPID_PUBLIC_KEY>"
+VAPID_SUBJECT = "mailto:<REPLACE_WITH_CONTACT_EMAIL>"
+
+[[kv_namespaces]]
+binding = "TASKIFY_DEVICES"
+id = "<REPLACE_WITH_TASKIFY_DEVICES_KV_ID>"
+
+[[kv_namespaces]]
+binding = "TASKIFY_REMINDERS"
+id = "<REPLACE_WITH_TASKIFY_REMINDERS_KV_ID>"
+
+[[kv_namespaces]]
+binding = "TASKIFY_PENDING"
+id = "<REPLACE_WITH_TASKIFY_PENDING_KV_ID>"
+
+[[kv_namespaces]]
+binding = "VAPID_PRIVATE_KEY"
+id = "<REPLACE_WITH_VAPID_PRIVATE_KEY_KV_ID>"
+
+[[r2_buckets]]
+binding = "TASKIFY_BACKUPS"
+bucket_name = "<REPLACE_WITH_TASKIFY_BACKUPS_BUCKET>"
+preview_bucket_name = "<REPLACE_WITH_TASKIFY_BACKUPS_PREVIEW_BUCKET>"
+
+[[d1_databases]]
+binding = "TASKIFY_DB"
+database_name = "taskify-notifications"
+# TODO: replace with your D1 database ID after running `wrangler d1 create`
+database_id = "<REPLACE_WITH_TASKIFY_DB_ID>"
+migrations_dir = "worker/migrations"

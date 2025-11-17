@@ -1,0 +1,10 @@
+{
+  "name": "taskify-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "link-preview-js": "^3.1.0"
+  }
+}
