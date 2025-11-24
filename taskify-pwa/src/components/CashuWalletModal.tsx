@@ -22,13 +22,14 @@ import { useCashu } from "../context/CashuContext";
 import { useNwc } from "../context/NwcContext";
 import { useToast } from "../context/ToastContext";
 import { useP2PK, type P2PKKey } from "../context/P2PKContext";
+import { EcashGlyph } from "./EcashGlyph";
 import {
   addMintToList,
   getMintList,
   loadStore,
   listPendingTokens,
   removeMintFromList,
-  DEFAULT_CASHU_MINT_URL,
+  replaceMintList,
   type PendingTokenEntry,
 } from "../wallet/storage";
 import {
@@ -38,12 +39,15 @@ import {
   Nut16Collector,
   parseNut16FrameString,
 } from "../wallet/nut16";
+import { encodePeanut, extractPeanutToken } from "../wallet/peanut";
 import { decodeBolt11Amount, estimateInvoiceAmountSat, formatMsatAsSat } from "../wallet/lightning";
 import {
   LS_LIGHTNING_CONTACTS,
   LS_ECASH_OPEN_REQUESTS,
   LS_SPENT_NOSTR_PAYMENTS,
   LS_BTC_USD_PRICE_CACHE,
+  LS_MINT_BACKUP_ENABLED,
+  LS_MINT_BACKUP_CACHE,
 } from "../localStorageKeys";
 import { LS_NOSTR_SK } from "../nostrKeys";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
@@ -56,6 +60,21 @@ import {
   deriveNpubCashIdentity,
 } from "../wallet/npubCash";
 import { ActionSheet } from "./ActionSheet";
+import type { Contact } from "../lib/contacts";
+import { loadContactsFromStorage, makeContactId, saveContactsToStorage } from "../lib/contacts";
+import { COINBASE_SPOT_PRICE_URL } from "../lib/pricing";
+import { getWalletSeedMnemonic } from "../wallet/seed";
+import {
+  createMintBackupTemplate,
+  decryptMintBackupPayload,
+  deriveMintBackupKeys,
+  loadMintBackupCache,
+  MINT_BACKUP_D_TAG,
+  MINT_BACKUP_CLIENT_TAG,
+  MINT_BACKUP_KIND,
+  persistMintBackupCache as persistMintBackupCacheToStorage,
+  type MintBackupPayload,
+} from "../wallet/mintBackup";
 
 QrScannerLib.WORKER_PATH = qrScannerWorkerPath;
 type ScanResult = QrScannerLib.ScanResult;
@@ -82,20 +101,6 @@ const LNURL_DECODE_LIMIT = 2048;
 const SMALL_ICON_BUTTON_STYLE = { "--icon-size": "2rem" } as React.CSSProperties;
 const CONTACT_PANEL_HEIGHT = "min(calc(100dvh - 6.5rem), calc(100vh - 6.5rem))";
 
-type LightningContact = {
-  id: string;
-  name: string;
-  address: string;
-  paymentRequest: string;
-};
-
-function makeContactId() {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
 function normalizeProofAmount(value: unknown): number {
   if (typeof value === "number") {
     return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
@@ -111,6 +116,14 @@ function normalizeProofAmount(value: unknown): number {
 function sumProofAmounts(proofs: any[]): number {
   if (!Array.isArray(proofs)) return 0;
   return proofs.reduce((sum: number, proof: any) => sum + normalizeProofAmount(proof?.amount), 0);
+}
+
+function mintListsEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 type SubsetPathEntry = { prevSum: number; noteIndex: number };
@@ -544,7 +557,6 @@ function isMintTokenAlreadySpentError(err: unknown): boolean {
 }
 
 const SATS_PER_BTC = 100_000_000;
-const COINBASE_SPOT_PRICE_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot";
 const BACKGROUND_REFRESH_INTERVAL_MS = 300_000;
 const PRICE_REFRESH_MS = BACKGROUND_REFRESH_INTERVAL_MS;
 const PRICE_REFRESH_STAGGER_MS = 0;
@@ -904,21 +916,6 @@ function LightningGlyph({ className }: { className?: string }) {
   );
 }
 
-function EcashGlyph({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 20 20"
-      stroke="currentColor"
-      fill="none"
-      strokeWidth="1.5"
-    >
-      <circle cx="8.5" cy="10" r="4.25" />
-      <circle cx="12.5" cy="10" r="4.25" opacity="0.65" />
-    </svg>
-  );
-}
-
 export default function CashuWalletModal({
   open,
   onClose,
@@ -931,6 +928,7 @@ export default function CashuWalletModal({
   paymentRequestsEnabled,
   paymentRequestsBackgroundChecksEnabled,
   tokenStateResetNonce,
+  mintBackupEnabled: mintBackupEnabledProp,
 }: {
   open: boolean;
   onClose: () => void;
@@ -943,8 +941,12 @@ export default function CashuWalletModal({
   paymentRequestsEnabled: boolean;
   paymentRequestsBackgroundChecksEnabled: boolean;
   tokenStateResetNonce: number;
+  mintBackupEnabled: boolean;
 }) {
-  console.debug("[wallet] CashuWalletModal render start");
+  useEffect(() => {
+    if (!open) return;
+    console.debug("[wallet] CashuWalletModal render start");
+  }, [open]);
   const {
     mintUrl,
     setMintUrl,
@@ -1080,6 +1082,9 @@ export default function CashuWalletModal({
     return parsed * 1000;
   };
 
+  const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
+  const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+
   type ManualSendNoteGroup = {
     amount: number;
     secrets: string[];
@@ -1198,6 +1203,7 @@ export default function CashuWalletModal({
 
   const [sendAmt, setSendAmt] = useState("");
   const [sendTokenStr, setSendTokenStr] = useState("");
+  const [nutTokenCopied, setNutTokenCopied] = useState(false);
   const [ecashSendView, setEcashSendView] = useState<"amount" | "token">("amount");
   const [lastSendTokenAmount, setLastSendTokenAmount] = useState<number | null>(null);
   const [lastSendTokenMint, setLastSendTokenMint] = useState<string | null>(null);
@@ -1221,12 +1227,34 @@ export default function CashuWalletModal({
   const [claimingEventIds, setClaimingEventIds] = useState<string[]>([]);
   const defaultNostrRelays = useMemo(() => Array.from(new Set(DEFAULT_NOSTR_RELAYS)), []);
   const nostrPoolRef = useRef<SimplePool | null>(null);
+  const nostrSubscriptionActiveRef = useRef(false);
   const nostrIdentityRef = useRef<{ secret: string; pubkey: string } | null>(null);
+
+  const peanutSendToken = useMemo(() => {
+    if (!sendTokenStr.trim()) return null;
+    try {
+      return encodePeanut(sendTokenStr.trim());
+    } catch (error) {
+      console.warn("Failed to encode nut token", error);
+      return null;
+    }
+  }, [sendTokenStr]);
+
+  useEffect(() => {
+    setNutTokenCopied(false);
+  }, [peanutSendToken]);
+
+  useEffect(() => {
+    if (!nutTokenCopied) return;
+    const timer = window.setTimeout(() => setNutTokenCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [nutTokenCopied]);
 
   const ensureNostrPool = useCallback(() => {
     if (!nostrPoolRef.current) {
       console.debug("[wallet] Initialising nostr pool", defaultNostrRelays);
-      nostrPoolRef.current = new SimplePool({ enablePing: true });
+      // Disable periodic pings to avoid rapid reconnect loops when relays are slow.
+      nostrPoolRef.current = new SimplePool({ enablePing: false });
     }
     return nostrPoolRef.current;
   }, [defaultNostrRelays]);
@@ -1458,31 +1486,24 @@ export default function CashuWalletModal({
   const [lnError, setLnError] = useState("");
   const [lnurlPayData, setLnurlPayData] = useState<LnurlPayData | null>(null);
   const [lightningSendView, setLightningSendView] = useState<"input" | "invoice" | "address">("input");
-  const [contacts, setContacts] = useState<LightningContact[]>(() => {
-    try {
-      const saved = localStorage.getItem(LS_LIGHTNING_CONTACTS);
-      if (!saved) return [];
-      const parsed = JSON.parse(saved);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((item: any) => {
-          if (!item) return null;
-          const name = typeof item.name === "string" ? item.name : "";
-          const address = typeof item.address === "string" ? item.address : "";
-          const paymentRequest = typeof item.paymentRequest === "string" ? item.paymentRequest : "";
-          if (!address.trim() && !paymentRequest.trim()) return null;
-          return {
-            id: typeof item.id === "string" && item.id ? item.id : makeContactId(),
-            name,
-            address,
-            paymentRequest,
-          } satisfies LightningContact;
-        })
-        .filter(Boolean) as LightningContact[];
-    } catch {
-      return [];
-    }
-  });
+  const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleContactsUpdated = () => {
+      setContacts(loadContactsFromStorage());
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === LS_LIGHTNING_CONTACTS) {
+        handleContactsUpdated();
+      }
+    };
+    window.addEventListener("taskify:contacts-updated", handleContactsUpdated);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("taskify:contacts-updated", handleContactsUpdated);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
   const [contactsOpen, setContactsOpen] = useState(false);
   const [contactsManagerOpen, setContactsManagerOpen] = useState(false);
   const [contactFormVisible, setContactFormVisible] = useState(false);
@@ -1491,34 +1512,37 @@ export default function CashuWalletModal({
     name: string;
     address: string;
     paymentRequest: string;
+    npub: string;
   }>({
     id: null,
     name: "",
     address: "",
     paymentRequest: "",
+    npub: "",
   });
   const [contactFormError, setContactFormError] = useState("");
   const [contactsContext, setContactsContext] = useState<"lightning" | "ecash" | null>(null);
   const contactsContextRef = useRef<"lightning" | "ecash" | null>(null);
 
   const resetContactForm = useCallback(() => {
-    setContactForm({ id: null, name: "", address: "", paymentRequest: "" });
+    setContactForm({ id: null, name: "", address: "", paymentRequest: "", npub: "" });
     setContactFormError("");
     setContactFormVisible(false);
   }, []);
 
   const handleStartNewContact = useCallback(() => {
-    setContactForm({ id: null, name: "", address: "", paymentRequest: "" });
+    setContactForm({ id: null, name: "", address: "", paymentRequest: "", npub: "" });
     setContactFormError("");
     setContactFormVisible(true);
   }, []);
 
-  const handleStartEditContact = useCallback((contact: LightningContact) => {
+  const handleStartEditContact = useCallback((contact: Contact) => {
     setContactForm({
       id: contact.id,
       name: contact.name,
       address: contact.address,
       paymentRequest: contact.paymentRequest,
+      npub: contact.npub,
     });
     setContactFormError("");
     setContactFormVisible(true);
@@ -2538,12 +2562,22 @@ export default function CashuWalletModal({
   }, [tokenizedHistoryItems]);
   const pendingMintQuoteHistoryItems = useMemo(() => {
     const normalizedActive = mintUrl ? normalizeMintUrl(mintUrl) : null;
+    const now = Date.now();
+    const earliestAllowed = now - MINT_QUOTE_SUBSCRIPTION_WINDOW_MS;
     return history.filter((entry) => {
       const mintQuote = entry.mintQuote;
       if (!mintQuote) return false;
       const quoteId = mintQuote.quote?.trim();
       if (!quoteId) return false;
       if (mintQuote.suppressChecks) return false;
+      const createdAt =
+        typeof mintQuote.createdAt === "number"
+          ? mintQuote.createdAt
+          : typeof entry.createdAt === "number"
+            ? entry.createdAt
+            : deriveTimestampFromId(entry.id);
+      if (createdAt && Number.isFinite(createdAt) && createdAt < earliestAllowed) return false;
+      if (mintQuote.expiresAt && mintQuote.expiresAt <= now) return false;
       const targetMint = mintQuote.mintUrl ? normalizeMintUrl(mintQuote.mintUrl) : normalizedActive;
       if (!targetMint) return false;
       return true;
@@ -2597,12 +2631,56 @@ export default function CashuWalletModal({
       return changed ? next : prev;
     });
   }, [setHistory, setHistoryMintQuoteStates]);
+  const pruneStaleUnpaidMintQuotes = useCallback(() => {
+    setHistory((prev) => {
+      const now = Date.now();
+      let changed = false;
+      const removedIds: string[] = [];
+      const next = prev.filter((entry) => {
+        const mintQuote = entry.mintQuote;
+        if (!mintQuote) return true;
+        const normalizedState =
+          typeof mintQuote.state === "string" && mintQuote.state
+            ? mintQuote.state.toUpperCase()
+            : "";
+        if (normalizedState === "PAID" || normalizedState === "ISSUED") return true;
+        const createdAt =
+          typeof mintQuote.createdAt === "number"
+            ? mintQuote.createdAt
+            : typeof entry.createdAt === "number"
+              ? entry.createdAt
+              : deriveTimestampFromId(entry.id);
+        if (!Number.isFinite(createdAt) || createdAt <= 0) return true;
+        if (now - createdAt < UNPAID_MINT_QUOTE_RETENTION_MS) return true;
+        changed = true;
+        removedIds.push(entry.id);
+        return false;
+      });
+      if (!changed) return prev;
+      setHistoryMintQuoteStates((prevStates) => {
+        if (!removedIds.some((id) => id in prevStates)) return prevStates;
+        const updated = { ...prevStates };
+        removedIds.forEach((id) => {
+          if (id in updated) {
+            delete updated[id];
+          }
+        });
+        return updated;
+      });
+      return next;
+    });
+  }, [setHistory, setHistoryMintQuoteStates]);
   useEffect(() => {
     if (!hasExpiringMintQuotes) return;
     expireStaleMintQuotes();
     const timer = window.setInterval(expireStaleMintQuotes, 30000);
     return () => window.clearInterval(timer);
   }, [expireStaleMintQuotes, hasExpiringMintQuotes]);
+  useEffect(() => {
+    pruneStaleUnpaidMintQuotes();
+    const timer = window.setInterval(pruneStaleUnpaidMintQuotes, 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [pruneStaleUnpaidMintQuotes]);
   const historyFilterControls = useMemo(() => {
     if (!history.length) return null;
     return (
@@ -2734,13 +2812,16 @@ export default function CashuWalletModal({
                   className="ghost-button button-sm pressable w-full text-left truncate"
                   onClick={() => handleSelectContact(contact)}
                 >
-                  {contact.name?.trim() || contact.address || contact.paymentRequest}
+                  {contact.name?.trim() || contact.address || contact.paymentRequest || contact.npub}
                 </button>
                 {contact.address.trim() && (
                   <div className="contact-entry__value text-[11px] text-secondary">⚡ {contact.address}</div>
                 )}
                 {contact.paymentRequest.trim() && (
-                  <div className="contact-entry__value text-[11px] text-secondary">ⓔ {contact.paymentRequest}</div>
+                  <div className="contact-entry__value text-[11px] text-secondary">🥜 {contact.paymentRequest}</div>
+                )}
+                {contact.npub.trim() && (
+                  <div className="contact-entry__value text-[11px] text-secondary">🔐 {contact.npub}</div>
                 )}
               </div>
             ))}
@@ -2812,11 +2893,7 @@ export default function CashuWalletModal({
   }, [lnurlWithdrawState]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(LS_LIGHTNING_CONTACTS, JSON.stringify(contacts));
-    } catch (err) {
-      console.warn("Unable to save contacts", err);
-    }
+    saveContactsToStorage(contacts);
   }, [contacts]);
 
   useEffect(() => {
@@ -2884,7 +2961,7 @@ export default function CashuWalletModal({
   }, []);
 
   const handleSelectContact = useCallback(
-    (contact: LightningContact) => {
+    (contact: Contact) => {
       const context = contactsContextRef.current;
       if (context === "lightning") {
         if (!contact.address.trim()) {
@@ -2922,16 +2999,18 @@ export default function CashuWalletModal({
       const name = contactForm.name.trim();
       const address = contactForm.address.trim();
       const paymentRequest = contactForm.paymentRequest.trim();
-      if (!address && !paymentRequest) {
-        setContactFormError("Add a lightning address or eCash payment request");
+      const npub = contactForm.npub.trim();
+      if (!address && !paymentRequest && !npub) {
+        setContactFormError("Add a lightning address, eCash payment request, or npub");
         return;
       }
       const isEditing = !!contactForm.id;
-      const contact: LightningContact = {
+      const contact: Contact = {
         id: contactForm.id || makeContactId(),
         name,
         address,
         paymentRequest,
+        npub,
       };
       setContacts((prev) => {
         const exists = prev.some((c) => c.id === contact.id);
@@ -2984,6 +3063,37 @@ export default function CashuWalletModal({
   const [showNwcSheet, setShowNwcSheet] = useState(false);
   const [mintInputSheet, setMintInputSheet] = useState("");
   const [mintEntries, setMintEntries] = useState<{ url: string; balance: number; count: number }[]>([]);
+  const [mintBackupEnabled, setMintBackupEnabled] = useState<boolean>(() => mintBackupEnabledProp);
+  const [mintBackupState, setMintBackupState] = useState<
+    "idle" | "syncing" | "success" | "error" | "restoring"
+  >("idle");
+  const [mintBackupMessage, setMintBackupMessage] = useState("");
+  const [mintBackupCache, setMintBackupCache] = useState<MintBackupPayload | null>(() => loadMintBackupCache());
+  const [mintBackupCandidate, setMintBackupCandidate] = useState<string[]>(() => getMintList());
+
+  useEffect(() => {
+    setMintBackupEnabled(mintBackupEnabledProp);
+  }, [mintBackupEnabledProp]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_MINT_BACKUP_ENABLED, mintBackupEnabled ? "1" : "0");
+    } catch {
+      // ignore persistence errors
+    }
+  }, [mintBackupEnabled]);
+
+  useEffect(() => {
+    if (!mintBackupEnabled) {
+      setMintBackupState("idle");
+      setMintBackupMessage("");
+    }
+  }, [mintBackupEnabled]);
+
+  const persistMintBackupCache = useCallback((payload: MintBackupPayload) => {
+    setMintBackupCache(payload);
+    persistMintBackupCacheToStorage(payload);
+  }, []);
 
   const refreshMintEntries = useCallback(() => {
     try {
@@ -3039,12 +3149,116 @@ export default function CashuWalletModal({
       }
 
       entries.sort((a, b) => b.balance - a.balance || a.url.localeCompare(b.url));
+      setMintBackupCandidate(trackedMints);
       setMintEntries(entries);
     } catch (error) {
       console.warn("Failed to refresh mint entries", error);
       setMintEntries([]);
     }
   }, [mintUrl]);
+
+  const syncMintBackup = useCallback(
+    async (overrideMints?: string[]) => {
+      if (!mintBackupEnabled) return;
+      setMintBackupState("syncing");
+      setMintBackupMessage("");
+      try {
+        const relays = defaultNostrRelays
+          .map((url) => (typeof url === "string" ? url.trim() : ""))
+          .filter((url): url is string => !!url);
+        if (!relays.length) {
+          throw new Error("No Nostr relays configured.");
+        }
+        const mnemonic = getWalletSeedMnemonic();
+        const keys = deriveMintBackupKeys(mnemonic);
+        const mintList = (overrideMints ?? getMintList()).map((mint) => mint);
+        if (mintBackupCache && mintListsEqual(mintBackupCache.mints, mintList)) {
+          setMintBackupState("success");
+          setMintBackupMessage("Mint backup already up to date.");
+          return;
+        }
+        const template = await createMintBackupTemplate(mintList, keys, {
+          clientTag: MINT_BACKUP_CLIENT_TAG,
+        });
+        const signedEvent = finalizeEvent(template, hexToBytes(keys.privateKeyHex));
+        const pool = ensureNostrPool();
+        await pool.publish(relays, signedEvent as any);
+        const payload: MintBackupPayload = {
+          mints: mintList,
+          timestamp: template.created_at || Math.floor(Date.now() / 1000),
+        };
+        persistMintBackupCache(payload);
+        setMintBackupState("success");
+        setMintBackupMessage(
+          `Backed up ${mintList.length} mint${mintList.length === 1 ? "" : "s"}.`,
+        );
+      } catch (error: any) {
+        setMintBackupState("error");
+        setMintBackupMessage(error?.message || "Unable to back up mints.");
+      }
+    },
+    [
+      defaultNostrRelays,
+      ensureNostrPool,
+      mintBackupCache,
+      mintBackupEnabled,
+      persistMintBackupCache,
+    ],
+  );
+
+  const handleRestoreMintBackup = useCallback(async () => {
+    setMintBackupState("restoring");
+    setMintBackupMessage("");
+    try {
+      const relays = defaultNostrRelays
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter((url): url is string => !!url);
+      if (!relays.length) {
+        throw new Error("No Nostr relays configured.");
+      }
+      const mnemonic = getWalletSeedMnemonic();
+      const keys = deriveMintBackupKeys(mnemonic);
+      const pool = ensureNostrPool();
+      const events = await pool.list(relays, [
+        { kinds: [MINT_BACKUP_KIND], authors: [keys.publicKeyHex], "#d": [MINT_BACKUP_D_TAG] },
+      ]);
+      const latest = events.reduce<null | { created_at?: number; content: string }>((current, ev) => {
+        if (!ev) return current;
+        if (!current || (ev.created_at || 0) > (current.created_at || 0)) return ev;
+        return current;
+      }, null);
+      if (!latest) {
+        throw new Error("No mint backups found.");
+      }
+      const payload = await decryptMintBackupPayload(latest.content, keys);
+      const restoredMints = payload.mints;
+      replaceMintList(restoredMints);
+      persistMintBackupCache({
+        mints: restoredMints,
+        timestamp: payload.timestamp || latest.created_at || Math.floor(Date.now() / 1000),
+      });
+      setMintBackupCandidate(restoredMints);
+      refreshMintEntries();
+      setMintBackupState("success");
+      setMintBackupMessage(
+        `Restored ${restoredMints.length} mint${restoredMints.length === 1 ? "" : "s"} from backup.`,
+      );
+    } catch (error: any) {
+      setMintBackupState("error");
+      setMintBackupMessage(error?.message || "Unable to restore mint backup.");
+    }
+  }, [
+    defaultNostrRelays,
+    ensureNostrPool,
+    persistMintBackupCache,
+    refreshMintEntries,
+    replaceMintList,
+  ]);
+
+  useEffect(() => {
+    if (!mintBackupEnabled) return;
+    void syncMintBackup(mintBackupCandidate);
+  }, [mintBackupCandidate, mintBackupEnabled, syncMintBackup]);
 
   const resetNwcFundState = useCallback(() => {
     setNwcFundState("idle");
@@ -6180,6 +6394,9 @@ useEffect(() => {
 
   const startNostrSubscription = useCallback(async () => {
     console.debug("[wallet] startNostrSubscription");
+    if (nostrSubscriptionActiveRef.current) {
+      return;
+    }
     if (!paymentRequestsEnabled) return;
     const identity = ensureNostrIdentity();
     if (!identity) return;
@@ -6235,10 +6452,12 @@ useEffect(() => {
         },
       },
     );
+    nostrSubscriptionActiveRef.current = true;
     nostrSubscriptionCloserRef.current = () => {
       try {
         subscription.close("taskify-stop");
       } catch {}
+      nostrSubscriptionActiveRef.current = false;
     };
   }, [paymentRequestsEnabled, ensureNostrIdentity, defaultNostrRelays, ensureNostrPool, PAYMENT_REQUEST_LOOKBACK_SECONDS]);
 
@@ -6281,6 +6500,7 @@ useEffect(() => {
         try { nostrSubscriptionCloserRef.current(); } catch {}
         nostrSubscriptionCloserRef.current = null;
       }
+      nostrSubscriptionActiveRef.current = false;
       if (nostrPoolRef.current) {
         try {
           nostrPoolRef.current.destroy();
@@ -6511,6 +6731,11 @@ useEffect(() => {
 
     if (/^cashu:/i.test(candidate)) {
       candidate = extractCashuUriPayload(candidate);
+    }
+
+    const peanutDecoded = extractPeanutToken(candidate);
+    if (peanutDecoded) {
+      candidate = peanutDecoded;
     }
 
     const lowerCandidate = candidate.toLowerCase();
@@ -7240,6 +7465,17 @@ useEffect(() => {
     }
   }
 
+  const handleCopyNutToken = useCallback(async () => {
+    if (!peanutSendToken) return;
+    try {
+      await navigator.clipboard?.writeText(peanutSendToken);
+      setNutTokenCopied(true);
+    } catch (err) {
+      console.warn("Copy nut token failed", err);
+      setNutTokenCopied(false);
+    }
+  }, [peanutSendToken]);
+
   const handlePasteEcashRequest = useCallback(async () => {
     try {
       const text = (await navigator.clipboard?.readText())?.trim() ?? "";
@@ -7324,6 +7560,10 @@ useEffect(() => {
         return { kind: "amount", value: trimmed };
       }
       let normalizedToken = trimmed;
+      const peanutDecoded = extractPeanutToken(normalizedToken);
+      if (peanutDecoded) {
+        normalizedToken = peanutDecoded;
+      }
       if (/^cashu:/i.test(normalizedToken)) {
         normalizedToken = extractCashuUriPayload(normalizedToken);
       }
@@ -7355,6 +7595,10 @@ useEffect(() => {
     async (tokenInput: string) => {
       let tokenCandidate = tokenInput.trim();
       if (!tokenCandidate) throw new Error("Paste a Cashu token");
+      const peanutDecoded = extractPeanutToken(tokenCandidate);
+      if (peanutDecoded) {
+        tokenCandidate = peanutDecoded;
+      }
       if (/^cashu:/i.test(tokenCandidate)) {
         tokenCandidate = extractCashuUriPayload(tokenCandidate);
       }
@@ -9327,6 +9571,19 @@ useEffect(() => {
                   value={sendTokenStr}
                   label="Token"
                   copyLabel="Copy token"
+                  extraActions={
+                    peanutSendToken ? (
+                      <button
+                        type="button"
+                        className="ghost-button button-sm pressable"
+                        onClick={handleCopyNutToken}
+                        aria-label="Copy nut-encoded token"
+                        title="Copy nut-encoded token"
+                      >
+                        {nutTokenCopied ? "Copied" : "Nut"}
+                      </button>
+                    ) : undefined
+                  }
                   size={240}
                   enableNut16Animation
                 />
@@ -9409,6 +9666,13 @@ useEffect(() => {
                   onChange={(e) => setContactForm((prev) => ({ ...prev, address: e.target.value }))}
                   autoComplete="off"
                 />
+                <input
+                  className="pill-input"
+                  placeholder="Nostr npub or hex (optional)"
+                  value={contactForm.npub}
+                  onChange={(e) => setContactForm((prev) => ({ ...prev, npub: e.target.value }))}
+                  autoComplete="off"
+                />
                 <textarea
                   className="pill-textarea"
                   rows={2}
@@ -9420,7 +9684,7 @@ useEffect(() => {
               <div className="text-[11px] text-secondary">
                 {contactForm.id
                   ? `Editing ${contactForm.name?.trim() || "saved contact"}`
-                  : "Store at least one lightning address or eCash payment request."}
+                  : "Store at least one lightning address, eCash payment request, or npub."}
               </div>
               {contactFormError && <div className="text-[11px] text-rose-500">{contactFormError}</div>}
               <div className="flex flex-wrap gap-2 text-xs">
@@ -9439,7 +9703,7 @@ useEffect(() => {
                 <div key={contact.id} className="flex flex-col gap-1 rounded-xl border border-transparent bg-surface px-3 py-2">
                   <div className="flex items-center gap-2">
                     <div className="font-medium text-sm truncate">
-                      {contact.name?.trim() || contact.address || contact.paymentRequest}
+                      {contact.name?.trim() || contact.address || contact.paymentRequest || contact.npub}
                     </div>
                     <div className="flex items-center gap-1 ml-auto">
                       <button
@@ -9472,7 +9736,10 @@ useEffect(() => {
                     <div className="contact-entry__value text-[11px] text-secondary">⚡ {contact.address}</div>
                   )}
                   {contact.paymentRequest.trim() && (
-                    <div className="contact-entry__value text-[11px] text-secondary">ⓔ {contact.paymentRequest}</div>
+                    <div className="contact-entry__value text-[11px] text-secondary">🥜 {contact.paymentRequest}</div>
+                  )}
+                  {contact.npub.trim() && (
+                    <div className="contact-entry__value text-[11px] text-secondary">🔐 {contact.npub}</div>
                   )}
                 </div>
               ))}
@@ -9659,10 +9926,14 @@ useEffect(() => {
                 type="button"
                 className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
                 onClick={() => {
-                  void handlePasteLightningInput();
+                  if (lnInput.trim()) {
+                    handleLightningInputReview();
+                  } else {
+                    void handlePasteLightningInput();
+                  }
                 }}
               >
-                Paste
+                {lnInput.trim() ? "Pay" : "Paste"}
               </button>
             </div>
           )}
@@ -10366,7 +10637,7 @@ useEffect(() => {
                 className="pill-input flex-1"
                 value={mintInputSheet}
                 onChange={(e)=>setMintInputSheet(e.target.value)}
-                placeholder={DEFAULT_CASHU_MINT_URL}
+                placeholder="https://mint.solife.me"
               />
               <button
                 className="accent-button button-sm pressable"
@@ -10422,6 +10693,7 @@ useEffect(() => {
               </div>
             )}
           </div>
+
         </div>
       </ActionSheet>
 

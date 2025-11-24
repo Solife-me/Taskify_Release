@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Proof } from "@cashu/cashu-ts";
 import { createPortal } from "react-dom";
-import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip19, nip04 } from "nostr-tools";
+import { finalizeEvent, getPublicKey, generateSecretKey, SimplePool, type EventTemplate, nip19, nip04 } from "nostr-tools";
 const CashuWalletModal = lazy(() => import("./components/CashuWalletModal"));
 import {
   BibleTracker,
@@ -19,16 +19,45 @@ import {
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { useCashu } from "./context/CashuContext";
-import { LS_LIGHTNING_CONTACTS, LS_BTC_USD_PRICE_CACHE } from "./localStorageKeys";
+import {
+  LS_LIGHTNING_CONTACTS,
+  LS_BTC_USD_PRICE_CACHE,
+  LS_MINT_BACKUP_ENABLED,
+} from "./localStorageKeys";
 import { LS_NOSTR_RELAYS, LS_NOSTR_SK } from "./nostrKeys";
-import { loadStore as loadProofStore, saveStore as saveProofStore, getActiveMint, setActiveMint } from "./wallet/storage";
+import {
+  loadStore as loadProofStore,
+  saveStore as saveProofStore,
+  getActiveMint,
+  setActiveMint,
+  getMintList,
+  addMintToList,
+  replaceMintList,
+  listPendingTokens,
+  replacePendingTokens,
+  type PendingTokenEntry,
+} from "./wallet/storage";
 import {
   getWalletSeedMnemonic,
   getWalletSeedBackupJson,
+  getWalletSeedBackup,
   getWalletCountersByMint,
   incrementWalletCounter,
   regenerateWalletSeed,
+  type WalletSeedBackupPayload,
+  restoreWalletSeedBackup,
 } from "./wallet/seed";
+import {
+  createMintBackupTemplate,
+  decryptMintBackupPayload,
+  deriveMintBackupKeys,
+  loadMintBackupCache,
+  MINT_BACKUP_CLIENT_TAG,
+  MINT_BACKUP_D_TAG,
+  MINT_BACKUP_KIND,
+  persistMintBackupCache,
+  type MintBackupPayload,
+} from "./wallet/mintBackup";
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
 import { useP2PK, type P2PKKey } from "./context/P2PKContext";
@@ -45,11 +74,20 @@ import {
 } from "./lib/documents";
 import { normalizeNostrPubkey } from "./lib/nostr";
 import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
+import { ActionSheet } from "./components/ActionSheet";
+import type { Contact } from "./lib/contacts";
+import { loadContactsFromStorage, makeContactId, saveContactsToStorage } from "./lib/contacts";
+import { COINBASE_SPOT_PRICE_URL } from "./lib/pricing";
+import { EcashGlyph } from "./components/EcashGlyph";
+
+const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
+const LS_PENDING_NOSTR_QUEUE = "taskify.pendingNostrQueue";
 
 /* ================= Types ================= */
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
 type DayChoice = Weekday | "bounties" | string; // string = custom list columnId
 const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
 const WD_FULL = [
   "Sunday",
   "Monday",
@@ -59,18 +97,51 @@ const WD_FULL = [
   "Friday",
   "Saturday",
 ] as const;
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+const MONTH_PICKER_YEAR_WINDOW = 1000;
+const HOURS_12 = Array.from({ length: 12 }, (_, i) => i + 1);
+const MINUTES = Array.from({ length: 60 }, (_, i) => i);
+const MERIDIEMS = ["AM", "PM"] as const;
+type Meridiem = (typeof MERIDIEMS)[number];
 
 type Recurrence =
   | { type: "none"; untilISO?: string }
   | { type: "daily"; untilISO?: string }
   | { type: "weekly"; days: Weekday[]; untilISO?: string }
-  | { type: "every"; n: number; unit: "day" | "week"; untilISO?: string }
-  | { type: "monthlyDay"; day: number; untilISO?: string };
+  | { type: "every"; n: number; unit: "hour" | "day" | "week"; untilISO?: string }
+  | { type: "monthlyDay"; day: number; interval?: number; untilISO?: string };
 
 type Subtask = {
   id: string;
   title: string;
   completed?: boolean;
+};
+
+type LockRecipientSelection = {
+  value: string;
+  label: string;
+  contactId?: string;
+};
+
+type QuickLockOption = {
+  id: string;
+  title: string;
+  value: string;
+  label: string;
+  contactId?: string;
 };
 
 type Task = {
@@ -125,7 +196,51 @@ type Task = {
   scriptureMemoryStage?: number;  // stage at time of scheduling (for undo)
   scriptureMemoryPrevReviewISO?: string | null; // previous review timestamp snapshot
   scriptureMemoryScheduledAt?: string; // when this memory task was generated
+  bountyLists?: string[];         // local-only set of bounty list keys the task belongs to
 };
+
+type BountyListRef = {
+  boardId: string;
+  columnId?: string | null;
+};
+
+const DEFAULT_BOUNTY_BOARD_ID = "week-default";
+const DEFAULT_BOUNTY_COLUMN_ID = "bounties";
+const DEFAULT_BOUNTY_LIST: BountyListRef = {
+  boardId: DEFAULT_BOUNTY_BOARD_ID,
+  columnId: DEFAULT_BOUNTY_COLUMN_ID,
+};
+
+function bountyListKey(ref?: BountyListRef | null): string | null {
+  if (!ref || typeof ref.boardId !== "string" || !ref.boardId.trim()) return null;
+  const col = typeof ref.columnId === "string" && ref.columnId.trim() ? ref.columnId.trim() : "";
+  return `${ref.boardId}::${col}`;
+}
+
+function taskHasBountyList(task: Task, key: string | null | undefined): boolean {
+  if (!key) return false;
+  if (!Array.isArray(task.bountyLists)) return false;
+  return task.bountyLists.includes(key);
+}
+
+function withTaskAddedToBountyList(task: Task, key: string | null): Task {
+  if (!key) return task;
+  if (taskHasBountyList(task, key)) return task;
+  const nextLists = Array.isArray(task.bountyLists) ? [...task.bountyLists, key] : [key];
+  return { ...task, bountyLists: nextLists };
+}
+
+function withTaskRemovedFromBountyList(task: Task, key: string | null): Task {
+  if (!key || !Array.isArray(task.bountyLists)) return task;
+  if (!task.bountyLists.includes(key)) return task;
+  const filtered = task.bountyLists.filter((value) => value !== key);
+  if (filtered.length === 0) {
+    const clone = { ...task };
+    delete clone.bountyLists;
+    return clone;
+  }
+  return { ...task, bountyLists: filtered };
+}
 
 function normalizeBounty(bounty?: Task["bounty"] | null): Task["bounty"] | undefined {
   if (!bounty) return undefined;
@@ -662,16 +777,6 @@ const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
 const RAW_WORKER_BASE = (import.meta as any)?.env?.VITE_WORKER_BASE_URL || "";
 const FALLBACK_WORKER_BASE_URL = RAW_WORKER_BASE ? String(RAW_WORKER_BASE).replace(/\/$/, "") : "";
 const FALLBACK_VAPID_PUBLIC_KEY = (import.meta as any)?.env?.VITE_VAPID_PUBLIC_KEY || "";
-const RAW_SUPPORT_EMAIL = (((import.meta as any)?.env?.VITE_SUPPORT_EMAIL as string | undefined) || "").trim();
-const SUPPORT_CONTACT_EMAIL = RAW_SUPPORT_EMAIL || "<SUPPORT_EMAIL>";
-const RAW_DONATION_LIGHTNING_ADDRESS =
-  (((import.meta as any)?.env?.VITE_DONATION_LIGHTNING_ADDRESS as string | undefined) || "").trim();
-const DONATION_LIGHTNING_ADDRESS =
-  RAW_DONATION_LIGHTNING_ADDRESS ||
-  (SUPPORT_CONTACT_EMAIL.includes("@") ? SUPPORT_CONTACT_EMAIL : "<LIGHTNING_ADDRESS>");
-const RAW_FEEDBACK_BOARD_ID =
-  (((import.meta as any)?.env?.VITE_FEEDBACK_BOARD_ID as string | undefined) || "").trim();
-const FEEDBACK_BOARD_ID = RAW_FEEDBACK_BOARD_ID || "<FEEDBACK_BOARD_ID>";
 
 function taskHasReminders(task: Task): boolean {
   if (task.completed) return false;
@@ -704,10 +809,6 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
     }
     throw new Error('Invalid VAPID public key.');
   }
-}
-
-function isPlaceholderValue(value: string): boolean {
-  return !value || value.includes("<") || value.includes(">");
 }
 
 type ListColumn = { id: string; name: string };
@@ -823,8 +924,6 @@ type Settings = {
   scriptureMemoryFrequency: ScriptureMemoryFrequency;
   scriptureMemorySort: ScriptureMemorySort;
   showFullWeekRecurring: boolean;
-  // Add tasks via per-column boxes instead of global add bar
-  inlineAdd: boolean;
   // Allow adding new lists from within the board view
   listAddButtonEnabled: boolean;
   // Base UI font size in pixels; null uses the OS preferred size
@@ -843,8 +942,11 @@ type Settings = {
   walletSentStateChecksEnabled: boolean;
   walletPaymentRequestsEnabled: boolean;
   walletPaymentRequestsBackgroundChecksEnabled: boolean;
+  walletMintBackupEnabled: boolean;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
+  walletBountiesEnabled: boolean;
+  walletBountyList?: BountyListRef | null;
   cloudBackupsEnabled: boolean;
   pushNotifications: PushPreferences;
 };
@@ -952,6 +1054,9 @@ type TaskifyBackupPayload = {
     proofs: unknown;
     activeMint: string | null;
     history: unknown;
+    trackedMints: string[];
+    pendingTokens: PendingTokenEntry[];
+    walletSeed: WalletSeedBackupPayload;
   };
 };
 
@@ -1043,6 +1148,34 @@ type NostrUnsignedEvent = Omit<NostrEvent, "id" | "sig" | "pubkey"> & {
   pubkey?: string;
 };
 
+type PendingNostrJob =
+  | {
+      id: string;
+      type: "task";
+      boardId: string;
+      boardTag: string;
+      task: Task;
+      nostrTimestamp: number; // seconds since epoch (when queued)
+      options?: { skipBoardMetadata?: boolean };
+    }
+  | {
+      id: string;
+      type: "delete";
+      boardId: string;
+      boardTag: string;
+      taskId: string;
+      taskSnapshot?: Task;
+      nostrTimestamp: number;
+    }
+  | {
+      id: string;
+      type: "delete-batch";
+      boardId: string;
+      boardTag: string;
+      taskIds: string[];
+      nostrTimestamp: number;
+    };
+
 declare global {
   interface Window {
     nostr?: {
@@ -1053,6 +1186,10 @@ declare global {
 }
 
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
+const NOSTR_PUBLISH_WINDOW_MS = 8000;
+const NOSTR_PUBLISH_BURST_LIMIT = 8;
+const NOSTR_BOARD_META_COOLDOWN_MS = 10000;
+const NOSTR_MIGRATION_BUFFER_MS = 15000;
 
 function loadDefaultRelays(): string[] {
   try {
@@ -1067,6 +1204,23 @@ function loadDefaultRelays(): string[] {
 
 function saveDefaultRelays(relays: string[]) {
   localStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(relays));
+}
+
+function loadPendingNostrQueue(): PendingNostrJob[] {
+  try {
+    const raw = localStorage.getItem(LS_PENDING_NOSTR_QUEUE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && typeof item.id === "string" && typeof item.type === "string");
+  } catch {
+    return [];
+  }
+}
+function persistPendingNostrQueue(queue: PendingNostrJob[]) {
+  try {
+    localStorage.setItem(LS_PENDING_NOSTR_QUEUE, JSON.stringify(queue));
+  } catch {}
 }
 
 type NostrPool = {
@@ -1213,6 +1367,9 @@ function hexToBytes(hex: string): Uint8Array {
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
   return out;
 }
+function bytesToHex(b: Uint8Array): string {
+  return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
 function concatBytes(a: Uint8Array, b: Uint8Array) {
   const out = new Uint8Array(a.length + b.length);
   out.set(a); out.set(b, a.length);
@@ -1324,6 +1481,34 @@ function normalizeSecretKeyInput(raw: string): string | null {
   return value.toLowerCase();
 }
 
+type BoardNostrKeyPair = {
+  sk: Uint8Array;
+  skHex: string;
+  pk: string;
+  npub: string;
+  nsec: string;
+};
+const BOARD_KEY_LABEL = new TextEncoder().encode("taskify-board-nostr-key-v1");
+const boardNostrKeyCache = new Map<string, Promise<BoardNostrKeyPair>>();
+async function deriveBoardNostrKeys(boardId: string): Promise<BoardNostrKeyPair> {
+  if (!boardId || typeof boardId !== "string") throw new Error("Board ID missing");
+  const existing = boardNostrKeyCache.get(boardId);
+  if (existing) return existing;
+  const promise = (async () => {
+    const material = concatBytes(BOARD_KEY_LABEL, new TextEncoder().encode(boardId));
+    const sk = await sha256(material);
+    const skHex = bytesToHex(sk);
+    const pk = getPublicKey(sk);
+    let npub = pk;
+    let nsec = skHex;
+    try { npub = typeof (nip19 as any)?.npubEncode === "function" ? (nip19 as any).npubEncode(pk) : pk; } catch {}
+    try { nsec = typeof (nip19 as any)?.nsecEncode === "function" ? (nip19 as any).nsecEncode(skHex) : skHex; } catch {}
+    return { sk, skHex, pk, npub, nsec };
+  })();
+  boardNostrKeyCache.set(boardId, promise);
+  return promise;
+}
+
 async function fileToDataURL(file: File): Promise<string> {
   const dataUrl: string = await new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -1387,6 +1572,64 @@ function isoTimePart(iso: string): string {
   return `${hours}:${minutes}`;
 }
 
+function calendarAnchorFrom(dateStr?: string | null) {
+  const base = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
+  if (Number.isNaN(base.getTime())) {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1);
+  }
+  return new Date(base.getFullYear(), base.getMonth(), 1);
+}
+
+function getWheelMetrics(column: HTMLDivElement | null) {
+  if (!column) return null;
+  const first = column.querySelector<HTMLElement>("[data-picker-index]");
+  if (!first) return null;
+  const optionHeight = first.getBoundingClientRect().height;
+  const optionOffset = first.offsetTop;
+  return { optionHeight, optionOffset };
+}
+
+function scrollWheelColumnToIndex(column: HTMLDivElement | null, index: number) {
+  if (!column) return;
+  const metrics = getWheelMetrics(column);
+  if (!metrics) return;
+  const { optionHeight, optionOffset } = metrics;
+  const optionCenter = optionOffset + index * optionHeight + optionHeight / 2;
+  const targetTop = optionCenter - column.clientHeight / 2;
+  const maxScroll = Math.max(0, column.scrollHeight - column.clientHeight);
+  const clampedTop = Math.max(0, Math.min(targetTop, maxScroll));
+  if (Math.abs(column.scrollTop - clampedTop) < 0.5) return;
+  column.scrollTo({ top: clampedTop });
+}
+
+function getWheelNearestIndex(column: HTMLDivElement | null, totalOptions: number) {
+  if (!column || totalOptions <= 0) return null;
+  const metrics = getWheelMetrics(column);
+  if (!metrics) return null;
+  const { optionHeight, optionOffset } = metrics;
+  if (!optionHeight) return null;
+  const viewCenter = column.scrollTop + column.clientHeight / 2;
+  const relative = (viewCenter - optionOffset - optionHeight / 2) / optionHeight;
+  const rawIndex = Math.round(relative);
+  return Math.min(totalOptions - 1, Math.max(0, rawIndex));
+}
+
+function scheduleWheelSnap(
+  columnRef: React.RefObject<HTMLDivElement>,
+  snapRef: React.MutableRefObject<number | null>,
+  targetIndex: number,
+) {
+  if (snapRef.current != null) {
+    window.clearTimeout(snapRef.current);
+    snapRef.current = null;
+  }
+  snapRef.current = window.setTimeout(() => {
+    snapRef.current = null;
+    scrollWheelColumnToIndex(columnRef.current, targetIndex);
+  }, 120);
+}
+
 function isoFromDateTime(dateStr: string, timeStr?: string): string {
   if (dateStr) {
     if (timeStr) {
@@ -1405,6 +1648,328 @@ function formatTimeLabel(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function parseTimePickerValue(value?: string | null, fallback = "09:00") {
+  const source = typeof value === "string" && value.includes(":") ? value : fallback;
+  const [hourRaw, minuteRaw] = (source || "09:00").split(":");
+  const hour24 = Number.parseInt(hourRaw ?? "0", 10);
+  const minute = Number.parseInt(minuteRaw ?? "0", 10);
+  const safeHour24 = Number.isFinite(hour24) ? Math.min(23, Math.max(0, hour24)) : 9;
+  const safeMinute = Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0;
+  const meridiem: Meridiem = safeHour24 >= 12 ? "PM" : "AM";
+  const hour12 = safeHour24 % 12 === 0 ? 12 : safeHour24 % 12;
+  return {
+    hour: hour12,
+    minute: safeMinute,
+    meridiem,
+  };
+}
+
+function useCalendarPicker(baseDate?: string) {
+  const [calendarAnchor, setCalendarAnchor] = useState(() => calendarAnchorFrom(baseDate));
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
+  const [monthPickerMonth, setMonthPickerMonth] = useState(calendarAnchor.getMonth());
+  const [monthPickerYear, setMonthPickerYear] = useState(() => calendarAnchor.getFullYear());
+  const monthPickerMonthColumnRef = useRef<HTMLDivElement | null>(null);
+  const monthPickerYearColumnRef = useRef<HTMLDivElement | null>(null);
+  const monthPickerMonthScrollFrame = useRef<number | null>(null);
+  const monthPickerYearScrollFrame = useRef<number | null>(null);
+  const monthPickerMonthSnapTimeout = useRef<number | null>(null);
+  const monthPickerYearSnapTimeout = useRef<number | null>(null);
+  const monthPickerMonthValueRef = useRef(monthPickerMonth);
+  const monthPickerYearValueRef = useRef(monthPickerYear);
+
+  const monthPickerYears = useMemo(() => {
+    const anchorYear = calendarAnchor.getFullYear();
+    const start = anchorYear - MONTH_PICKER_YEAR_WINDOW;
+    const end = anchorYear + MONTH_PICKER_YEAR_WINDOW;
+    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  }, [calendarAnchor]);
+
+  const calendarMonthLabel = useMemo(
+    () => calendarAnchor.toLocaleDateString([], { month: "long", year: "numeric" }),
+    [calendarAnchor],
+  );
+
+  const calendarCells = useMemo(() => {
+    const year = calendarAnchor.getFullYear();
+    const month = calendarAnchor.getMonth();
+    const firstWeekday = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const totalCells = Math.ceil((firstWeekday + totalDays) / 7) * 7;
+    const cells: (number | null)[] = [];
+    for (let i = 0; i < totalCells; i += 1) {
+      const day = i - firstWeekday + 1;
+      cells.push(day > 0 && day <= totalDays ? day : null);
+    }
+    return { cells, year, month };
+  }, [calendarAnchor]);
+
+  const todayDate = useMemo(() => {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  }, []);
+
+  useEffect(() => {
+    setCalendarAnchor(calendarAnchorFrom(baseDate));
+  }, [baseDate]);
+
+  useEffect(() => {
+    setMonthPickerMonth(calendarAnchor.getMonth());
+    setMonthPickerYear(calendarAnchor.getFullYear());
+  }, [calendarAnchor]);
+
+  useEffect(() => {
+    monthPickerMonthValueRef.current = monthPickerMonth;
+  }, [monthPickerMonth]);
+
+  useEffect(() => {
+    monthPickerYearValueRef.current = monthPickerYear;
+  }, [monthPickerYear]);
+
+  useEffect(() => {
+    if (!showMonthPicker) return;
+    scrollWheelColumnToIndex(monthPickerMonthColumnRef.current, monthPickerMonth);
+    const yearIndex = monthPickerYears.indexOf(monthPickerYear);
+    if (yearIndex >= 0) {
+      scrollWheelColumnToIndex(monthPickerYearColumnRef.current, yearIndex);
+    }
+  }, [monthPickerMonth, monthPickerYear, monthPickerYears, showMonthPicker]);
+
+  const moveCalendarMonth = useCallback((delta: number) => {
+    setCalendarAnchor((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+  }, []);
+
+  const applyMonthPickerSelection = useCallback(() => {
+    const safeYear = Number.isFinite(monthPickerYear) ? monthPickerYear : calendarAnchor.getFullYear();
+    const safeMonth = Math.min(11, Math.max(0, monthPickerMonth));
+    setCalendarAnchor(new Date(safeYear, safeMonth, 1));
+    setShowMonthPicker(false);
+  }, [calendarAnchor, monthPickerMonth, monthPickerYear]);
+
+  const handleMonthLabelClick = useCallback(() => {
+    if (!showMonthPicker) {
+      setMonthPickerMonth(calendarAnchor.getMonth());
+      setMonthPickerYear(calendarAnchor.getFullYear());
+      setShowMonthPicker(true);
+    } else {
+      applyMonthPickerSelection();
+    }
+  }, [applyMonthPickerSelection, calendarAnchor, showMonthPicker]);
+
+  const handleMonthPickerMonthScroll = useCallback(() => {
+    const column = monthPickerMonthColumnRef.current;
+    if (!column) return;
+    if (monthPickerMonthScrollFrame.current != null) {
+      cancelAnimationFrame(monthPickerMonthScrollFrame.current);
+    }
+    monthPickerMonthScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, MONTH_NAMES.length);
+      if (clampedIndex == null) return;
+      if (monthPickerMonthValueRef.current !== clampedIndex) {
+        setMonthPickerMonth(clampedIndex);
+      }
+      scheduleWheelSnap(monthPickerMonthColumnRef, monthPickerMonthSnapTimeout, clampedIndex);
+    });
+  }, []);
+
+  const handleMonthPickerYearScroll = useCallback(() => {
+    const column = monthPickerYearColumnRef.current;
+    if (!column) return;
+    if (monthPickerYearScrollFrame.current != null) {
+      cancelAnimationFrame(monthPickerYearScrollFrame.current);
+    }
+    monthPickerYearScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, monthPickerYears.length);
+      if (clampedIndex == null) return;
+      const nextYear = monthPickerYears[clampedIndex];
+      if (nextYear != null && monthPickerYearValueRef.current !== nextYear) {
+        setMonthPickerYear(nextYear);
+      }
+      if (nextYear != null) {
+        scheduleWheelSnap(monthPickerYearColumnRef, monthPickerYearSnapTimeout, clampedIndex);
+      }
+    });
+  }, [monthPickerYears]);
+
+  return {
+    calendarAnchor,
+    calendarMonthLabel,
+    calendarCells,
+    todayDate,
+    showMonthPicker,
+    moveCalendarMonth,
+    handleMonthLabelClick,
+    monthPickerYears,
+    monthPickerMonth,
+    monthPickerYear,
+    monthPickerMonthColumnRef,
+    monthPickerYearColumnRef,
+    handleMonthPickerMonthScroll,
+    handleMonthPickerYearScroll,
+  };
+}
+
+function DatePickerCalendar({
+  baseDate,
+  selectedDate,
+  onSelectDate,
+}: {
+  baseDate?: string;
+  selectedDate?: string;
+  onSelectDate: (iso: string) => void;
+}) {
+  const {
+    calendarMonthLabel,
+    calendarCells,
+    todayDate,
+    showMonthPicker,
+    moveCalendarMonth,
+    handleMonthLabelClick,
+    monthPickerYears,
+    monthPickerMonth,
+    monthPickerYear,
+    monthPickerMonthColumnRef,
+    monthPickerYearColumnRef,
+    handleMonthPickerMonthScroll,
+    handleMonthPickerYearScroll,
+  } = useCalendarPicker(baseDate);
+
+  const selectedDateObj = useMemo(() => {
+    if (!selectedDate) return null;
+    const parsed = new Date(`${selectedDate}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }, [selectedDate]);
+
+  function handleSelectCalendarDay(day: number | null) {
+    if (!day) return;
+    const next = new Date(calendarCells.year, calendarCells.month, day);
+    if (Number.isNaN(next.getTime())) return;
+    const iso = next.toISOString().slice(0, 10);
+    onSelectDate(iso);
+  }
+
+  return (
+    <div className="edit-calendar">
+      <div className="edit-calendar__header">
+        <button
+          type="button"
+          className="ghost-button button-sm pressable"
+          onClick={() => moveCalendarMonth(-1)}
+          aria-label="Previous month"
+        >
+          ‹
+        </button>
+        <button type="button" className="edit-calendar__month" onClick={handleMonthLabelClick}>
+          {calendarMonthLabel}
+        </button>
+        <button
+          type="button"
+          className="ghost-button button-sm pressable"
+          onClick={() => moveCalendarMonth(1)}
+          aria-label="Next month"
+        >
+          ›
+        </button>
+      </div>
+      {showMonthPicker && (
+        <div className="edit-month-picker">
+          <div
+            className="edit-month-picker__column"
+            ref={monthPickerMonthColumnRef}
+            onScroll={handleMonthPickerMonthScroll}
+            role="listbox"
+            aria-label="Select month"
+          >
+            {MONTH_NAMES.map((name, idx) => (
+              <div
+                key={name}
+                className={`edit-month-picker__option ${monthPickerMonth === idx ? "is-active" : ""}`}
+                data-picker-index={idx}
+                role="option"
+                aria-selected={monthPickerMonth === idx}
+              >
+                {name.slice(0, 3)}
+              </div>
+            ))}
+          </div>
+          <div
+            className="edit-month-picker__column"
+            ref={monthPickerYearColumnRef}
+            onScroll={handleMonthPickerYearScroll}
+            role="listbox"
+            aria-label="Select year"
+          >
+            {monthPickerYears.map((year, idx) => (
+              <div
+                key={year}
+                className={`edit-month-picker__option ${monthPickerYear === year ? "is-active" : ""}`}
+                data-picker-index={idx}
+                role="option"
+                aria-selected={monthPickerYear === year}
+              >
+                {year}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="edit-calendar__weekdays">
+        {WD_SHORT.map((label) => (
+          <span key={label}>{label}</span>
+        ))}
+      </div>
+      <div className="edit-calendar__grid">
+        {calendarCells.cells.map((cell, idx) => {
+          if (!cell) {
+            return <span key={`empty-${idx}`} className="edit-calendar__day edit-calendar__day--muted" />;
+          }
+          const isSelected =
+            !!selectedDateObj &&
+            selectedDateObj.getFullYear() === calendarCells.year &&
+            selectedDateObj.getMonth() === calendarCells.month &&
+            selectedDateObj.getDate() === cell;
+          const currentViewDate = new Date(calendarCells.year, calendarCells.month, cell);
+          const isToday =
+            todayDate.getFullYear() === currentViewDate.getFullYear() &&
+            todayDate.getMonth() === currentViewDate.getMonth() &&
+            todayDate.getDate() === currentViewDate.getDate();
+          const dayCls = [
+            "edit-calendar__day",
+            isSelected ? "edit-calendar__day--selected" : "",
+            !isSelected && isToday ? "edit-calendar__day--today" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          return (
+            <button
+              key={`day-${idx}-${cell}`}
+              type="button"
+              className={dayCls}
+              onClick={() => handleSelectCalendarDay(cell)}
+            >
+              {cell}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatTimePickerValue(hour12: number, minute: number, meridiem: Meridiem) {
+  const normalizedHour = Math.min(12, Math.max(1, hour12 || 12));
+  const normalizedMinute = Math.min(59, Math.max(0, minute));
+  let hour24 = normalizedHour % 12;
+  if (meridiem === "PM") {
+    hour24 += 12;
+  } else if (normalizedHour === 12) {
+    hour24 = 0;
+  }
+  const hh = String(hour24).padStart(2, "0");
+  const mm = String(normalizedMinute).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 function isoForWeekday(
@@ -1457,11 +2022,21 @@ function nextOccurrence(
       }
       break;
     }
-    case "every":
-      next = addDays(rule.unit === "day" ? rule.n : rule.n * 7); break;
+    case "every": {
+      if (rule.unit === "hour") {
+        const current = new Date(currentISO);
+        const n = new Date(current.getTime() + rule.n * 3600000);
+        next = n.toISOString();
+      } else {
+        const daysToAdd = rule.unit === "day" ? rule.n : rule.n * 7;
+        next = addDays(daysToAdd);
+      }
+      break;
+    }
     case "monthlyDay": {
       const y = curDay.getFullYear(), m = curDay.getMonth();
-      const n = startOfDay(new Date(y, m + 1, Math.min(rule.day, 28)));
+      const interval = Math.max(1, rule.interval ?? 1);
+      const n = startOfDay(new Date(y, m + interval, Math.min(rule.day, 28)));
       next = applyTime(n);
       break;
     }
@@ -1476,6 +2051,12 @@ function nextOccurrence(
 
 /* ============= Visibility helpers (hide until X) ============= */
 function revealsOnDueDate(rule: Recurrence): boolean {
+  if (isFrequentRecurrence(rule)) return true;
+  return false;
+}
+
+function isFrequentRecurrence(rule?: Recurrence | null): boolean {
+  if (!rule) return false;
   if (rule.type === "daily" || rule.type === "weekly") return true;
   if (rule.type === "every") {
     return rule.unit === "day" || rule.unit === "week";
@@ -1578,8 +2159,31 @@ function useSettings() {
       const walletPaymentRequestsEnabled = parsed?.walletPaymentRequestsEnabled !== false;
       const walletPaymentRequestsBackgroundChecksEnabled =
         parsed?.walletPaymentRequestsBackgroundChecksEnabled !== false;
+      let walletMintBackupEnabled = parsed?.walletMintBackupEnabled !== false;
+      if (parsed?.walletMintBackupEnabled == null) {
+        try {
+          walletMintBackupEnabled = localStorage.getItem(LS_MINT_BACKUP_ENABLED) !== "0";
+        } catch {
+          walletMintBackupEnabled = true;
+        }
+      }
       const npubCashLightningAddressEnabled = parsed?.npubCashLightningAddressEnabled !== false;
       const npubCashAutoClaim = npubCashLightningAddressEnabled && parsed?.npubCashAutoClaim !== false;
+      const walletBountiesEnabled = parsed?.walletBountiesEnabled !== false;
+      let walletBountyList: BountyListRef | null = null;
+      if (parsed && typeof parsed.walletBountyList === "object" && parsed.walletBountyList) {
+        const listBoardId = typeof parsed.walletBountyList.boardId === "string" ? parsed.walletBountyList.boardId : "";
+        const rawColumn = parsed.walletBountyList.columnId;
+        const listColumnId =
+          typeof rawColumn === "string"
+            ? rawColumn
+            : rawColumn === null
+              ? null
+              : undefined;
+        if (listBoardId.trim()) {
+          walletBountyList = { boardId: listBoardId.trim(), columnId: listColumnId };
+        }
+      }
       const pushRaw = parsed?.pushNotifications;
       const inferredPlatform = detectPushPlatformFromNavigator();
       const storedPlatform = pushRaw?.platform === "android"
@@ -1625,8 +2229,6 @@ function useSettings() {
         streaksEnabled: true,
         completedTab: true,
         showFullWeekRecurring: false,
-        inlineAdd: true,
-        listAddButtonEnabled: false,
         ...parsed,
         bibleTrackerEnabled: parsed?.bibleTrackerEnabled === true,
         scriptureMemoryEnabled,
@@ -1651,8 +2253,11 @@ function useSettings() {
         walletPaymentRequestsBackgroundChecksEnabled: walletPaymentRequestsEnabled
           ? walletPaymentRequestsBackgroundChecksEnabled
           : false,
+        walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
+        walletBountiesEnabled,
+        walletBountyList: walletBountyList ? { ...walletBountyList } : { ...DEFAULT_BOUNTY_LIST },
         cloudBackupsEnabled: parsed?.cloudBackupsEnabled === true,
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
       };
@@ -1664,7 +2269,6 @@ function useSettings() {
         completedTab: true,
         bibleTrackerEnabled: false,
         showFullWeekRecurring: false,
-        inlineAdd: true,
         listAddButtonEnabled: false,
         baseFontSize: null,
         startBoardByDay: {},
@@ -1678,6 +2282,9 @@ function useSettings() {
         startupView: "main",
         walletConversionEnabled: true,
         walletPrimaryCurrency: "sat",
+        walletMintBackupEnabled: true,
+        walletBountiesEnabled: true,
+        walletBountyList: { ...DEFAULT_BOUNTY_LIST },
         walletSentStateChecksEnabled: true,
         walletPaymentRequestsEnabled: true,
         walletPaymentRequestsBackgroundChecksEnabled: true,
@@ -1744,6 +2351,31 @@ function useSettings() {
         next.npubCashAutoClaim = false;
       } else if (next.npubCashAutoClaim !== true && next.npubCashAutoClaim !== false) {
         next.npubCashAutoClaim = true;
+      }
+      if (!next.walletBountiesEnabled) {
+        next.walletBountiesEnabled = false;
+      } else {
+        next.walletBountiesEnabled = true;
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "walletBountyList")) {
+        const raw = s.walletBountyList;
+        if (raw && typeof raw === "object") {
+          const listBoardId = typeof raw.boardId === "string" ? raw.boardId.trim() : "";
+          const rawColumn = raw.columnId;
+          const listColumnId =
+            typeof rawColumn === "string"
+              ? rawColumn
+              : rawColumn === null
+                ? null
+                : undefined;
+          next.walletBountyList = listBoardId
+            ? { boardId: listBoardId, columnId: listColumnId }
+            : { ...DEFAULT_BOUNTY_LIST };
+        } else {
+          next.walletBountyList = { ...DEFAULT_BOUNTY_LIST };
+        }
+      } else if (!next.walletBountyList) {
+        next.walletBountyList = { ...DEFAULT_BOUNTY_LIST };
       }
       if (next.cloudBackupsEnabled !== true) {
         next.cloudBackupsEnabled = false;
@@ -1989,6 +2621,28 @@ function useTasks() {
         } else if (Object.prototype.hasOwnProperty.call(entry as any, "documents")) {
           task.documents = undefined;
         }
+
+        const rawBountyLists = (entry as any).bountyLists;
+        if (Array.isArray(rawBountyLists)) {
+          const normalizedLists = rawBountyLists
+            .map((value) => (typeof value === "string" ? value.trim() : ""))
+            .filter((value): value is string => value.length > 0);
+          const unique = Array.from(new Set(normalizedLists));
+          if (unique.length > 0) {
+            task.bountyLists = unique;
+          }
+        }
+        const inferredBountyKey = task.column === "bounties"
+          ? bountyListKey({ boardId: task.boardId, columnId: "bounties" })
+          : null;
+        if (inferredBountyKey && task.column === "bounties") {
+          const existing = new Set(task.bountyLists || []);
+          if (!existing.has(inferredBountyKey)) {
+            existing.add(inferredBountyKey);
+            task.bountyLists = Array.from(existing);
+          }
+        }
+
         return normalizeTaskBounty(normalizeHiddenForRecurring(task));
       })
       .filter((t): t is Task => !!t);
@@ -2078,6 +2732,22 @@ export default function App() {
     loadRuntimeConfig();
     return () => { cancelled = true; };
   }, []);
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    if (!workerBaseUrl) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        if (cancelled) return;
+        registration.active?.postMessage({ type: "TASKIFY_CONFIG", workerBaseUrl });
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: "TASKIFY_CONFIG", workerBaseUrl });
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [workerBaseUrl]);
   // Show toast on any successful clipboard write across the app
   useEffect(() => {
     const clip: any = (navigator as any).clipboard;
@@ -2102,6 +2772,13 @@ export default function App() {
   }, [showToast]);
   const [boards, setBoards] = useBoards();
   const [settings, setSettings] = useSettings();
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
+    } catch {
+      // ignore persistence issues
+    }
+  }, [settings.walletMintBackupEnabled]);
   useEffect(() => {
     setBoards(prev => {
       const hasBible = prev.some(b => b.id === BIBLE_BOARD_ID);
@@ -2197,6 +2874,69 @@ export default function App() {
   }, [boards, currentBoardId, settings.startBoardByDay]);
 
   const [tasks, setTasks] = useTasks();
+  const boardMap = useMemo(() => {
+    const map = new Map<string, Board>();
+    boards.forEach((board) => map.set(board.id, board));
+    return map;
+  }, [boards]);
+  const resolvedBountyList = useMemo<BountyListRef>(() => {
+    const candidate = settings.walletBountyList || DEFAULT_BOUNTY_LIST;
+    const board = boardMap.get(candidate.boardId);
+    if (!board) {
+      return { ...DEFAULT_BOUNTY_LIST };
+    }
+    if (board.kind === "week") {
+      return { boardId: board.id, columnId: DEFAULT_BOUNTY_COLUMN_ID };
+    }
+    if (isListLikeBoard(board)) {
+      const columns = board.kind === "lists" ? board.columns : [];
+      const columnMatch = columns.find((col) => col.id === candidate.columnId);
+      const fallbackColumnId = columns[0]?.id;
+      const columnId = columnMatch?.id || fallbackColumnId;
+      if (columnId) {
+        return { boardId: board.id, columnId };
+      }
+    }
+    return { ...DEFAULT_BOUNTY_LIST };
+  }, [boardMap, settings.walletBountyList]);
+  const activeBountyListKey = useMemo(() => bountyListKey(resolvedBountyList), [resolvedBountyList]);
+  const activeBountyListLabel = useMemo(() => {
+    const board = boardMap.get(resolvedBountyList.boardId);
+    if (!board) return "Bounties";
+    if (board.kind === "week") {
+      return `${board.name} • Bounties`;
+    }
+    if (board.kind === "lists") {
+      const column = board.columns.find((col) => col.id === resolvedBountyList.columnId);
+      if (column) {
+        return `${board.name} • ${column.name}`;
+      }
+    }
+    return "Bounties";
+  }, [boardMap, resolvedBountyList]);
+  const bountyListEnabled = settings.walletBountiesEnabled && !!activeBountyListKey;
+  const bountyListOptions = useMemo(() => {
+    const options: { key: string; label: string; ref: BountyListRef }[] = [];
+    const seen = new Set<string>();
+    const pushOption = (ref: BountyListRef, label: string) => {
+      const key = bountyListKey(ref);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      options.push({ key, label, ref });
+    };
+    const defaultBoard = boardMap.get(DEFAULT_BOUNTY_BOARD_ID);
+    pushOption(DEFAULT_BOUNTY_LIST, `${defaultBoard?.name || "Week"} • Bounties`);
+    boards.forEach((board) => {
+      if (board.kind === "week") {
+        pushOption({ boardId: board.id, columnId: "bounties" }, `${board.name} • Bounties`);
+      } else if (board.kind === "lists") {
+        board.columns.forEach((col) => {
+          pushOption({ boardId: board.id, columnId: col.id }, `${board.name} • ${col.name}`);
+        });
+      }
+    });
+    return options;
+  }, [boardMap, boards]);
   const [bibleTracker, setBibleTracker] = useBibleTracker();
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   const [defaultRelays, setDefaultRelays] = useState<string[]>(() => loadDefaultRelays());
@@ -2581,9 +3321,6 @@ export default function App() {
   // Nostr pool + merge indexes
   const pool = useMemo(() => createNostrPool(), []);
   // In-app Nostr key (secp256k1/Schnorr) for signing
-  function bytesToHex(b: Uint8Array): string {
-    return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
-  }
   const [nostrSK, setNostrSK] = useState<Uint8Array>(() => {
     try {
       const existing = localStorage.getItem(LS_NOSTR_SK);
@@ -2625,25 +3362,41 @@ export default function App() {
     }
   };
 
-  const lastNostrCreated = useRef(0);
+  const lastNostrCreated = useRef<Map<string, number>>(new Map());
   const nostrPublishQueue = useRef<Promise<void>>(Promise.resolve());
   const lastNostrSentMs = useRef(0);
-  async function nostrPublish(relays: string[], template: EventTemplate) {
+  const nostrPublishHistory = useRef<number[]>([]);
+  const lastBoardMetadataPublishMs = useRef<Map<string, number>>(new Map());
+  async function nostrPublish(relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string }) {
     const run = async () => {
+      // Apply a leaky-bucket style limit so bursty actions (clear all, rapid add/delete) do not trip relay rate limits.
       const nowMs = Date.now();
-      const elapsed = nowMs - lastNostrSentMs.current;
+      const cutoff = nowMs - NOSTR_PUBLISH_WINDOW_MS;
+      const history = nostrPublishHistory.current;
+      while (history.length && history[0] < cutoff) history.shift();
+      if (history.length >= NOSTR_PUBLISH_BURST_LIMIT) {
+        const waitMs = history[0] + NOSTR_PUBLISH_WINDOW_MS - nowMs;
+        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+      const afterWindowMs = Date.now();
+      const elapsed = afterWindowMs - lastNostrSentMs.current;
       if (elapsed < NOSTR_MIN_EVENT_INTERVAL_MS) {
         await new Promise((resolve) => setTimeout(resolve, NOSTR_MIN_EVENT_INTERVAL_MS - elapsed));
       }
       const now = Math.floor(Date.now() / 1000);
       let createdAt = typeof template.created_at === "number" ? template.created_at : now;
-      if (createdAt <= lastNostrCreated.current) {
-        createdAt = lastNostrCreated.current + 1;
+      const signer = options?.sk || nostrSK;
+      const signerKey = typeof signer === "string" ? signer : bytesToHex(signer);
+      const lastForSigner = lastNostrCreated.current.get(signerKey) || 0;
+      if (createdAt <= lastForSigner) {
+        createdAt = lastForSigner + 1;
       }
-      lastNostrCreated.current = createdAt;
-      const ev = finalizeEvent({ ...template, created_at: createdAt }, nostrSK);
+      lastNostrCreated.current.set(signerKey, createdAt);
+      const ev = finalizeEvent({ ...template, created_at: createdAt }, signer);
       pool.publishEvent(relays, ev as unknown as NostrEvent);
-      lastNostrSentMs.current = Date.now();
+      const sentAt = Date.now();
+      lastNostrSentMs.current = sentAt;
+      history.push(sentAt);
       return createdAt;
     };
     const next = nostrPublishQueue.current.catch(() => {}).then(run);
@@ -2654,10 +3407,173 @@ export default function App() {
     boardMeta: Map<string, number>; // nostrBoardId -> created_at
     taskClock: Map<string, Map<string, number>>; // nostrBoardId -> (taskId -> created_at)
   };
+  type BoardMigrationState = {
+    dedicatedSeen: boolean;
+    legacySeen: boolean;
+    migrationAttempted: boolean;
+  };
   const nostrIdxRef = useRef<NostrIndex>({ boardMeta: new Map(), taskClock: new Map() });
+  const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
+  const [pendingNostrVersion, setPendingNostrVersion] = useState(0);
+  const pendingNostrQueueRef = useRef<PendingNostrJob[]>(loadPendingNostrQueue());
+  const pendingNostrProcessingRef = useRef(false);
+  const pendingNostrRetryRef = useRef<number | null>(null);
   const boardsRef = useRef<Board[]>(boards);
   useEffect(() => { boardsRef.current = boards; }, [boards]);
+  const tasksRef = useRef<Task[]>(tasks);
+  useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+  const bumpPendingNostrVersion = useCallback(() => {
+    setPendingNostrVersion((v) => (v === Number.MAX_SAFE_INTEGER ? 0 : v + 1));
+  }, []);
+  const setPendingTaskClock = useCallback((bTag: string, taskId: string) => {
+    if (!nostrIdxRef.current.taskClock.has(bTag)) {
+      nostrIdxRef.current.taskClock.set(bTag, new Map());
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const m = nostrIdxRef.current.taskClock.get(bTag)!;
+    const last = m.get(taskId) || 0;
+    m.set(taskId, Math.max(last, now));
+  }, []);
+  const updatePendingTasksForJob = useCallback((job: PendingNostrJob, action: "add" | "remove") => {
+    if (!job.boardTag) return;
+    const touch = (taskId: string) => {
+      const key = `${job.boardTag}::${taskId}`;
+      if (action === "add") pendingNostrTasksRef.current.add(key);
+      else pendingNostrTasksRef.current.delete(key);
+    };
+    if (job.type === "task") touch(job.task.id);
+    else if (job.type === "delete") touch(job.taskId);
+    else if (job.type === "delete-batch") job.taskIds.forEach(touch);
+    bumpPendingNostrVersion();
+  }, [bumpPendingNostrVersion]);
+  const rebuildPendingTasksFromQueue = useCallback(() => {
+    const next = new Set<string>();
+    for (const job of pendingNostrQueueRef.current) {
+      if (!job.boardTag) continue;
+      if (job.type === "task") next.add(`${job.boardTag}::${job.task.id}`);
+      else if (job.type === "delete") next.add(`${job.boardTag}::${job.taskId}`);
+      else if (job.type === "delete-batch") job.taskIds.forEach((id) => next.add(`${job.boardTag}::${id}`));
+    }
+    pendingNostrTasksRef.current = next;
+    bumpPendingNostrVersion();
+  }, [bumpPendingNostrVersion]);
+  const findBoardTag = useCallback((boardId: string): string | null => {
+    const board = boardsRef.current.find((b) => b.id === boardId || b.nostr?.boardId === boardId);
+    if (board?.nostr?.boardId) return boardTag(board.nostr.boardId);
+    return null;
+  }, []);
+  const isTaskPendingPublish = useCallback((task: Task): boolean => {
+    const board = boardsRef.current.find((b) => b.id === task.boardId && b.nostr?.boardId);
+    if (!board?.nostr?.boardId) return false;
+    const key = `${boardTag(board.nostr.boardId)}::${task.id}`;
+    return pendingNostrTasksRef.current.has(key);
+  }, [pendingNostrVersion]);
+  const persistPendingQueue = useCallback(() => {
+    persistPendingNostrQueue(pendingNostrQueueRef.current);
+  }, []);
+  const schedulePendingProcessing = useCallback((delayMs = 0) => {
+    if (pendingNostrRetryRef.current) {
+      clearTimeout(pendingNostrRetryRef.current);
+      pendingNostrRetryRef.current = null;
+    }
+    pendingNostrRetryRef.current = window.setTimeout(() => {
+      pendingNostrRetryRef.current = null;
+      processPendingNostrQueue();
+    }, delayMs);
+  }, []);
+  const enqueuePendingJob = useCallback((job: PendingNostrJob) => {
+    const tag = job.boardTag || findBoardTag(job.boardId);
+    if (!tag) return;
+    const nextJob = { ...job, boardTag: tag };
+    pendingNostrQueueRef.current.push(nextJob);
+    updatePendingTasksForJob(nextJob, "add");
+    persistPendingQueue();
+    schedulePendingProcessing();
+  }, [findBoardTag, persistPendingQueue, schedulePendingProcessing, updatePendingTasksForJob]);
+  const removePendingJobById = useCallback((id: string) => {
+    const idx = pendingNostrQueueRef.current.findIndex((j) => j.id === id);
+    if (idx === -1) return;
+    const [job] = pendingNostrQueueRef.current.splice(idx, 1);
+    updatePendingTasksForJob(job, "remove");
+    persistPendingQueue();
+  }, [persistPendingQueue, updatePendingTasksForJob]);
+  const dropStalePendingForTask = useCallback((bTag: string, taskId: string, newerCreatedAt: number) => {
+    const remaining: PendingNostrJob[] = [];
+    let didChange = false;
+    for (const job of pendingNostrQueueRef.current) {
+      const matches =
+        job.boardTag === bTag &&
+        ((job.type === "task" && job.task.id === taskId) ||
+          (job.type === "delete" && job.taskId === taskId) ||
+          (job.type === "delete-batch" && job.taskIds.includes(taskId)));
+      if (matches && job.nostrTimestamp < newerCreatedAt) {
+        if (job.type === "delete-batch") {
+          const nextIds = job.taskIds.filter((id) => id !== taskId);
+          updatePendingTasksForJob({ ...job, taskIds: [taskId] } as PendingNostrJob, "remove");
+          if (nextIds.length) {
+            remaining.push({ ...job, taskIds: nextIds });
+          }
+        } else {
+          updatePendingTasksForJob(job, "remove");
+        }
+        didChange = true;
+      } else {
+        remaining.push(job);
+      }
+    }
+    if (didChange) {
+      pendingNostrQueueRef.current = remaining;
+      persistPendingQueue();
+      if (pendingNostrQueueRef.current.length) schedulePendingProcessing();
+    }
+  }, [persistPendingQueue, schedulePendingProcessing, updatePendingTasksForJob]);
+  const pendingTimestampForTask = useCallback((bTag: string, taskId: string): number => {
+    let ts = 0;
+    for (const job of pendingNostrQueueRef.current) {
+      if (job.boardTag !== bTag) continue;
+      if (job.type === "task" && job.task.id === taskId) ts = Math.max(ts, job.nostrTimestamp);
+      else if (job.type === "delete" && job.taskId === taskId) ts = Math.max(ts, job.nostrTimestamp);
+      else if (job.type === "delete-batch" && job.taskIds.includes(taskId)) ts = Math.max(ts, job.nostrTimestamp);
+    }
+    return ts;
+  }, []);
+  useEffect(() => {
+    let changed = false;
+    for (const job of pendingNostrQueueRef.current) {
+      if (!job.boardTag) {
+        const tag = findBoardTag(job.boardId);
+        if (tag) {
+          job.boardTag = tag;
+          changed = true;
+        }
+      }
+      if (job.boardTag) {
+        if (!nostrIdxRef.current.taskClock.has(job.boardTag)) {
+          nostrIdxRef.current.taskClock.set(job.boardTag, new Map());
+        }
+        const clock = nostrIdxRef.current.taskClock.get(job.boardTag)!;
+        const ts = job.nostrTimestamp;
+        if (job.type === "task") clock.set(job.task.id, Math.max(clock.get(job.task.id) || 0, ts));
+        else if (job.type === "delete") clock.set(job.taskId, Math.max(clock.get(job.taskId) || 0, ts));
+        else if (job.type === "delete-batch") job.taskIds.forEach((id) => clock.set(id, Math.max(clock.get(id) || 0, ts)));
+      }
+    }
+    if (changed) persistPendingQueue();
+    rebuildPendingTasksFromQueue();
+    schedulePendingProcessing();
+  }, [findBoardTag, persistPendingQueue, rebuildPendingTasksFromQueue, schedulePendingProcessing]);
+  useEffect(() => {
+    const onOnline = () => schedulePendingProcessing();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [schedulePendingProcessing]);
+  const nostrApplyQueue = useRef<Promise<void>>(Promise.resolve());
+  const enqueueNostrApply = useCallback((fn: () => Promise<void>) => {
+    const next = nostrApplyQueue.current.catch(() => {}).then(() => fn());
+    nostrApplyQueue.current = next.then(() => {}, () => {});
+    return next;
+  }, []);
   const [nostrRefresh, setNostrRefresh] = useState(0);
 
   // header view
@@ -3246,12 +4162,6 @@ export default function App() {
     });
   }, [setBibleTracker]);
 
-  // add bar
-  const newTitleRef = useRef<HTMLInputElement>(null);
-  const newDocumentInputRef = useRef<HTMLInputElement>(null);
-  const [newTitle, setNewTitle] = useState("");
-  const [newImages, setNewImages] = useState<string[]>([]);
-  const [newDocuments, setNewDocuments] = useState<TaskDocument[]>([]);
   const [dayChoice, setDayChoiceRaw] = useState<DayChoice>(() => {
     const firstBoard = boards.find(b => !b.archived) ?? boards[0];
     if (firstBoard?.kind === "lists") {
@@ -3269,8 +4179,6 @@ export default function App() {
   const autoCenteredIndexRef = useRef<Set<string>>(new Set());
   const autoCenteredWeekRef = useRef<Set<string>>(new Set());
   const activeWeekBoardRef = useRef<string | null>(null);
-  const [scheduleDate, setScheduleDate] = useState<string>("");
-  const [scheduleTime, setScheduleTime] = useState<string>("");
   const [pushWorkState, setPushWorkState] = useState<"idle" | "enabling" | "disabling">("idle");
   const [pushError, setPushError] = useState<string | null>(null);
   const [inlineTitles, setInlineTitles] = useState<Record<string, string>>({});
@@ -3337,7 +4245,7 @@ export default function App() {
   function handleBoardChanged(boardId: string, options?: { board?: Board; republishTasks?: boolean }) {
     const board = options?.board ?? boards.find((x) => x.id === boardId);
     if (!board) return;
-    publishBoardMetadata(board).catch(() => {});
+    publishBoardMetadata(board, { force: true }).catch(() => {});
     if (options?.republishTasks) {
       tasks
         .filter((t) => t.boardId === boardId)
@@ -3440,18 +4348,49 @@ export default function App() {
     }
   }, [addListColumn, currentBoard, showToast]);
 
-  // recurrence select (with Custom… option)
-  const [quickRule, setQuickRule] = useState<
-    "none" | "daily" | "weeklyMonFri" | "weeklyWeekends" | "every2d" | "custom"
-  >("none");
-  const [addCustomRule, setAddCustomRule] = useState<Recurrence>(R_NONE);
-  const [showAddAdvanced, setShowAddAdvanced] = useState(false);
-
   // edit modal
   const [editing, setEditing] = useState<Task | null>(null);
 
   // undo snackbar
   const [undoTask, setUndoTask] = useState<Task | null>(null);
+
+  const addTaskToBountyList = useCallback((taskId: string) => {
+    if (!bountyListEnabled || !activeBountyListKey) return;
+    setTasks((prev) => {
+      let changed = false;
+      const next = prev.map((task) => {
+        if (task.id !== taskId) return task;
+        const updated = withTaskAddedToBountyList(task, activeBountyListKey);
+        if (updated !== task) changed = true;
+        return updated;
+      });
+      return changed ? next : prev;
+    });
+    setEditing((prev) => {
+      if (!prev || prev.id !== taskId || !activeBountyListKey) return prev;
+      const updated = withTaskAddedToBountyList(prev, activeBountyListKey);
+      return updated === prev ? prev : updated;
+    });
+  }, [activeBountyListKey, bountyListEnabled, setTasks]);
+
+  const removeTaskFromBountyList = useCallback((taskId: string) => {
+    if (!activeBountyListKey) return;
+    setTasks((prev) => {
+      let changed = false;
+      const next = prev.map((task) => {
+        if (task.id !== taskId) return task;
+        const updated = withTaskRemovedFromBountyList(task, activeBountyListKey);
+        if (updated !== task) changed = true;
+        return updated;
+      });
+      return changed ? next : prev;
+    });
+    setEditing((prev) => {
+      if (!prev || prev.id !== taskId) return prev;
+      const updated = withTaskRemovedFromBountyList(prev, activeBountyListKey);
+      return updated === prev ? prev : updated;
+    });
+  }, [activeBountyListKey, setTasks]);
 
   // drag-to-delete
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
@@ -3504,7 +4443,6 @@ export default function App() {
   const walletButtonRef = useRef<HTMLButtonElement>(null);
   const boardDropContainerRef = useRef<HTMLDivElement>(null);
   const boardDropListRef = useRef<HTMLDivElement>(null);
-  const addButtonRef = useRef<HTMLButtonElement>(null);
   const upcomingButtonRef = useRef<HTMLButtonElement>(null);
   const columnRefs = useRef(new Map<string, HTMLDivElement>());
   const inlineInputRefs = useRef(new Map<string, HTMLInputElement>());
@@ -3715,6 +4653,7 @@ export default function App() {
     })();
     const coinSize = 1.25 * rem; // 20px @ 16px base
     const coinFont = 0.875 * rem; // 14px @ 16px base
+    const coinCount = 5;
 
     const makeCoin = () => {
       const coin = document.createElement('div');
@@ -3723,27 +4662,26 @@ export default function App() {
       coin.style.top = `${startY - coinSize / 2}px`;
       coin.style.width = `${coinSize}px`;
       coin.style.height = `${coinSize}px`;
-      coin.style.borderRadius = '9999px';
       coin.style.display = 'grid';
       coin.style.placeItems = 'center';
       coin.style.fontSize = `${coinFont}px`;
       coin.style.lineHeight = `${coinSize}px`;
-      coin.style.background = 'radial-gradient(circle at 30% 30%, #fde68a, #f59e0b)';
-      coin.style.boxShadow = '0 0 0 1px rgba(245,158,11,0.5), 0 6px 16px rgba(0,0,0,0.35)';
+      coin.style.background = 'transparent';
+      coin.style.boxShadow = 'none';
       coin.style.zIndex = '1000';
       coin.style.transform = 'translate(0, 0) scale(1)';
       coin.style.transition = 'transform 700ms cubic-bezier(.2,.7,.3,1), opacity 450ms ease 450ms';
-      coin.textContent = '🪙';
+      coin.textContent = '🥜';
       return coin;
     };
 
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < coinCount; i++) {
       const coin = makeCoin();
       layer.appendChild(coin);
       const dx = endX - startX;
       const dy = endY - startY;
       // slight horizontal variance per coin
-      const wobble = (i - 1) * (0.5 * rem); // -0.5rem, 0, +0.5rem
+      const wobble = (i - (coinCount - 1) / 2) * (0.4 * rem);
       setTimeout(() => {
         coin.style.transform = `translate(${dx + wobble}px, ${dy}px) scale(0.6)`;
         coin.style.opacity = '0.35';
@@ -3906,17 +4844,20 @@ export default function App() {
     return m;
   }, [tasksForBoard, currentBoard, settings.completedTab]);
 
-  const bounties = useMemo(
-    () => currentBoard?.kind === "week"
-      ? tasksForBoard
-          .filter(t => {
-            const pendingBounty = t.completed && t.bounty && t.bounty.state !== "claimed";
-            return ((!t.completed || pendingBounty || !settings.completedTab) && t.column === "bounties" && isVisibleNow(t));
-          })
-          .sort((a, b) => (a.completed === b.completed ? (a.order ?? 0) - (b.order ?? 0) : a.completed ? 1 : -1))
-      : [],
-    [tasksForBoard, currentBoard?.kind, settings.completedTab]
-  );
+  const bounties = useMemo(() => {
+    if (!currentBoard || currentBoard.kind !== "week" || !bountyListEnabled || !activeBountyListKey) {
+      return [] as Task[];
+    }
+    return tasks
+      .filter((t) => {
+        if (!taskHasBountyList(t, activeBountyListKey)) return false;
+        if (!isVisibleNow(t)) return false;
+        const pendingBounty = t.completed && t.bounty && t.bounty.state !== "claimed";
+        if (t.completed && !pendingBounty && settings.completedTab) return false;
+        return true;
+      })
+      .sort((a, b) => (a.completed === b.completed ? (a.order ?? 0) - (b.order ?? 0) : a.completed ? 1 : -1));
+  }, [activeBountyListKey, bountyListEnabled, currentBoard, settings.completedTab, tasks]);
 
   const itemsByColumn = useMemo(() => {
     if (!currentBoard || !isListLikeBoard(currentBoard)) return new Map<string, Task[]>();
@@ -4134,18 +5075,6 @@ export default function App() {
     };
   }, [setSettings, settings.pushNotifications]);
 
-  /* ---------- Helpers ---------- */
-  function resolveQuickRule(): Recurrence {
-    switch (quickRule) {
-      case "none": return R_NONE;
-      case "daily": return { type: "daily" };
-      case "weeklyMonFri": return { type: "weekly", days: [1,2,3,4,5] };
-      case "weeklyWeekends": return { type: "weekly", days: [0,6] };
-      case "every2d": return { type: "every", n: 2, unit: "day" };
-      case "custom": return addCustomRule;
-    }
-  }
-
   // --------- Nostr helpers
   const tagValue = useCallback((ev: NostrEvent, name: string): string | undefined => {
     const t = ev.tags.find((x) => x[0] === name);
@@ -4155,91 +5084,135 @@ export default function App() {
   const getBoardRelays = useCallback((board: Board): string[] => {
     return (board.nostr?.relays?.length ? board.nostr!.relays : defaultRelays).filter(Boolean);
   }, [defaultRelays]);
-  async function publishBoardMetadata(board: Board) {
-    if (!board.nostr?.boardId) return;
-    const relays = getBoardRelays(board);
-    const idTag = boardTag(board.nostr.boardId);
-    const tags: string[][] = [["d", idTag],["b", idTag],["k", board.kind],["name", board.name]];
-    const payload: any = { clearCompletedDisabled: !!board.clearCompletedDisabled };
-    if (board.kind === "lists") {
-      payload.columns = board.columns;
-      payload.listIndex = !!board.indexCardEnabled;
-    } else if (board.kind === "compound") {
-      const childBoardIds = board.children
-        .map((childId) => {
-          const child = findBoardByCompoundChildId(boardsRef.current, childId);
-          const canonicalId = child?.nostr?.boardId || child?.id || childId;
-          return typeof canonicalId === "string" ? canonicalId : "";
-        })
-        .filter((childId) => !!childId);
-      payload.children = childBoardIds;
-      payload.listIndex = !!board.indexCardEnabled;
-      payload.hideBoardNames = !!board.hideChildBoardNames;
+  const ensureMigrationState = useCallback((bTag: string): BoardMigrationState => {
+    let state = boardMigrationRef.current.get(bTag);
+    if (!state) {
+      state = { dedicatedSeen: false, legacySeen: false, migrationAttempted: false };
+      boardMigrationRef.current.set(bTag, state);
     }
-    const raw = JSON.stringify(payload);
-    const content = await encryptToBoard(board.nostr.boardId, raw);
-    const createdAt = await nostrPublish(relays, {
-      kind: 30300,
-      tags,
-      content,
-      created_at: Math.floor(Date.now() / 1000),
-    });
-    nostrIdxRef.current.boardMeta.set(idTag, createdAt);
-  }
-  async function publishTaskDeleted(t: Task) {
-    const b = boards.find((x) => x.id === t.boardId);
-    if (!b || !isShared(b) || !b.nostr) return;
-    const relays = getBoardRelays(b);
-    const boardId = b.nostr.boardId;
-    const bTag = boardTag(boardId);
-    const pendingKey = `${bTag}::${t.id}`;
-    pendingNostrTasksRef.current.add(pendingKey);
+    return state;
+  }, []);
+  async function publishBoardMetadata(board: Board, options?: { force?: boolean }) {
+    if (!board.nostr?.boardId) return;
+    const idTag = boardTag(board.nostr.boardId);
+    if (!options?.force) {
+      const last = lastBoardMetadataPublishMs.current.get(idTag) || 0;
+      if (Date.now() - last < NOSTR_BOARD_META_COOLDOWN_MS) return;
+    }
+    lastBoardMetadataPublishMs.current.set(idTag, Date.now());
     try {
-      await publishBoardMetadata(b);
-      const colTag = (b.kind === "week") ? (t.column === "bounties" ? "bounties" : "day") : (t.columnId || "");
-      const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status","deleted"]];
-      const raw = JSON.stringify({
-        title: t.title,
-        note: t.note || "",
-        dueISO: t.dueISO,
-        completedAt: t.completedAt,
-        recurrence: t.recurrence,
-        hiddenUntilISO: t.hiddenUntilISO,
-        streak: t.streak,
-        longestStreak: t.longestStreak,
-        subtasks: t.subtasks,
-        seriesId: t.seriesId,
-        documents: t.documents,
-      });
-      const content = await encryptToBoard(boardId, raw);
+      const relays = getBoardRelays(board);
+      const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
+      const tags: string[][] = [["d", idTag],["b", idTag],["k", board.kind],["name", board.name]];
+      const payload: any = { clearCompletedDisabled: !!board.clearCompletedDisabled };
+      if (board.kind === "lists") {
+        payload.columns = board.columns;
+        payload.listIndex = !!board.indexCardEnabled;
+      } else if (board.kind === "compound") {
+        const childBoardIds = board.children
+          .map((childId) => {
+            const child = findBoardByCompoundChildId(boardsRef.current, childId);
+            const canonicalId = child?.nostr?.boardId || child?.id || childId;
+            return typeof canonicalId === "string" ? canonicalId : "";
+          })
+          .filter((childId) => !!childId);
+        payload.children = childBoardIds;
+        payload.listIndex = !!board.indexCardEnabled;
+        payload.hideBoardNames = !!board.hideChildBoardNames;
+      }
+      const raw = JSON.stringify(payload);
+      const content = await encryptToBoard(board.nostr.boardId, raw);
       const createdAt = await nostrPublish(relays, {
-        kind: 30301,
+        kind: 30300,
         tags,
         content,
         created_at: Math.floor(Date.now() / 1000),
-      });
-      if (!nostrIdxRef.current.taskClock.has(bTag)) {
-        nostrIdxRef.current.taskClock.set(bTag, new Map());
-      }
-      nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
-    } finally {
-      pendingNostrTasksRef.current.delete(pendingKey);
+      }, { sk: boardKeys.sk });
+      nostrIdxRef.current.boardMeta.set(idTag, createdAt);
+    } catch (err) {
+      lastBoardMetadataPublishMs.current.delete(idTag);
+      throw err;
     }
   }
-  async function maybePublishTask(
-    t: Task,
-    boardOverride?: Board,
-    options?: { skipBoardMetadata?: boolean }
-  ) {
-    const b = boardOverride || boards.find((x) => x.id === t.boardId);
-    if (!b || !isShared(b) || !b.nostr) return;
-    const relays = getBoardRelays(b);
-    const boardId = b.nostr.boardId;
+  async function publishTaskDeletionRequest(boardKeys: BoardNostrKeyPair, relays: string[], taskId: string) {
+    const aTag = `30301:${boardKeys.pk}:${taskId}`;
+    try {
+      await nostrPublish(relays, {
+        kind: 5,
+        tags: [["a", aTag]],
+        content: "Task deleted",
+        created_at: Math.floor(Date.now() / 1000),
+      }, { sk: boardKeys.sk });
+    } catch (err) {
+      console.warn("Failed to publish nostr deletion", err);
+    }
+  }
+  async function sendBatchDeletion(board: Board, taskIds: string[], nostrTimestamp?: number) {
+    if (!taskIds.length || !board.nostr?.boardId) return;
+    const relays = getBoardRelays(board);
+    const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
+    const tags = taskIds.map((id) => ["a", `30301:${boardKeys.pk}:${id}`]);
+    const created_at = typeof nostrTimestamp === "number" ? nostrTimestamp : Math.floor(Date.now() / 1000);
+    await nostrPublish(relays, {
+      kind: 5,
+      tags,
+      content: "Tasks deleted",
+      created_at,
+    }, { sk: boardKeys.sk });
+    const bTag = boardTag(board.nostr.boardId);
+    if (!nostrIdxRef.current.taskClock.has(bTag)) {
+      nostrIdxRef.current.taskClock.set(bTag, new Map());
+    }
+    const clock = nostrIdxRef.current.taskClock.get(bTag)!;
+    taskIds.forEach((id) => clock.set(id, created_at));
+  }
+  async function sendTaskDeletion(t: Task, board: Board, nostrTimestamp?: number) {
+    if (!isShared(board) || !board.nostr) return;
+    await publishBoardMetadata(board);
+    const relays = getBoardRelays(board);
+    const boardId = board.nostr.boardId;
+    const boardKeys = await deriveBoardNostrKeys(boardId);
     const bTag = boardTag(boardId);
-    const pendingKey = `${bTag}::${t.id}`;
-    pendingNostrTasksRef.current.add(pendingKey);
+    const colTag = (board.kind === "week") ? (t.column === "bounties" ? "bounties" : "day") : (t.columnId || "");
+    const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status","deleted"]];
+    const raw = JSON.stringify({
+      title: t.title,
+      note: t.note || "",
+      dueISO: t.dueISO,
+      completedAt: t.completedAt,
+      recurrence: t.recurrence,
+      hiddenUntilISO: t.hiddenUntilISO,
+      streak: t.streak,
+      longestStreak: t.longestStreak,
+      subtasks: t.subtasks,
+      seriesId: t.seriesId,
+      documents: t.documents,
+    });
+    const content = await encryptToBoard(boardId, raw);
+    const createdAt = await nostrPublish(relays, {
+      kind: 30301,
+      tags,
+      content,
+      created_at: typeof nostrTimestamp === "number" ? nostrTimestamp : Math.floor(Date.now() / 1000),
+    }, { sk: boardKeys.sk });
+    await publishTaskDeletionRequest(boardKeys, relays, t.id);
+    if (!nostrIdxRef.current.taskClock.has(bTag)) {
+      nostrIdxRef.current.taskClock.set(bTag, new Map());
+    }
+    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+  }
+  async function sendTaskUpsert(
+    t: Task,
+    board: Board,
+    options?: { skipBoardMetadata?: boolean; nostrTimestamp?: number }
+  ) {
+    if (!isShared(board) || !board.nostr) return;
+    const relays = getBoardRelays(board);
+    const boardId = board.nostr.boardId;
+    const boardKeys = await deriveBoardNostrKeys(boardId);
+    const bTag = boardTag(boardId);
     const status = t.completed ? "done" : "open";
-    const colTag = (b.kind === "week") ? (t.column === "bounties" ? "bounties" : "day") : (t.columnId || "");
+    const colTag = (board.kind === "week") ? (t.column === "bounties" ? "bounties" : "day") : (t.columnId || "");
     const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status", status]];
     const normalizedBounty = normalizeBounty(t.bounty);
     const body: any = { title: t.title, note: t.note || "", dueISO: t.dueISO, completedAt: t.completedAt, completedBy: t.completedBy, recurrence: t.recurrence, hiddenUntilISO: t.hiddenUntilISO, createdBy: t.createdBy, order: t.order, streak: t.streak, longestStreak: t.longestStreak, seriesId: t.seriesId };
@@ -4250,26 +5223,107 @@ export default function App() {
     body.documents = (typeof t.documents === 'undefined') ? null : t.documents;
     body.bounty = (typeof t.bounty === 'undefined') ? null : (normalizedBounty ?? null);
     body.subtasks = (typeof t.subtasks === 'undefined') ? null : t.subtasks;
-    try {
-      if (!options?.skipBoardMetadata) {
-        await publishBoardMetadata(b);
-      }
-      const raw = JSON.stringify(body);
-      const content = await encryptToBoard(boardId, raw);
-      const createdAt = await nostrPublish(relays, {
-        kind: 30301,
-        tags,
-        content,
-        created_at: Math.floor(Date.now() / 1000),
-      });
-      // Update local task clock so immediate refreshes don't revert state
-      if (!nostrIdxRef.current.taskClock.has(bTag)) {
-        nostrIdxRef.current.taskClock.set(bTag, new Map());
-      }
-      nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
-    } finally {
-      pendingNostrTasksRef.current.delete(pendingKey);
+    if (!options?.skipBoardMetadata) {
+      await publishBoardMetadata(board);
     }
+    const raw = JSON.stringify(body);
+    const content = await encryptToBoard(boardId, raw);
+    const createdAt = await nostrPublish(relays, {
+      kind: 30301,
+      tags,
+      content,
+      created_at: typeof options?.nostrTimestamp === "number" ? options.nostrTimestamp : Math.floor(Date.now() / 1000),
+    }, { sk: boardKeys.sk });
+    if (!nostrIdxRef.current.taskClock.has(bTag)) {
+      nostrIdxRef.current.taskClock.set(bTag, new Map());
+    }
+    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+  }
+  const processPendingNostrQueue = useCallback(async () => {
+    if (pendingNostrProcessingRef.current) return;
+    pendingNostrProcessingRef.current = true;
+    try {
+      while (pendingNostrQueueRef.current.length) {
+        const job = pendingNostrQueueRef.current[0];
+        const board = boardsRef.current.find((b) => b.id === job.boardId || b.nostr?.boardId === job.boardId);
+        if (!board || !board.nostr) {
+          removePendingJobById(job.id);
+          continue;
+        }
+        const bTag = job.boardTag || boardTag(board.nostr.boardId);
+        const isStale = (() => {
+          if (!nostrIdxRef.current.taskClock.has(bTag)) return false;
+          const clock = nostrIdxRef.current.taskClock.get(bTag)!;
+          if (job.type === "task") return (clock.get(job.task.id) || 0) > job.nostrTimestamp;
+          if (job.type === "delete") return (clock.get(job.taskId) || 0) > job.nostrTimestamp;
+          if (job.type === "delete-batch") return job.taskIds.some((id) => (clock.get(id) || 0) > job.nostrTimestamp);
+          return false;
+        })();
+        if (isStale) {
+          removePendingJobById(job.id);
+          continue;
+        }
+        try {
+          if (job.type === "task") {
+            await sendTaskUpsert(job.task, board, { ...job.options, nostrTimestamp: job.nostrTimestamp });
+          } else if (job.type === "delete") {
+            const snapshot =
+              job.taskSnapshot ||
+              tasksRef.current.find((t) => t.id === job.taskId && t.boardId === board.id) ||
+              {
+                id: job.taskId,
+                boardId: board.id,
+                title: "Deleted task",
+                dueISO: new Date().toISOString(),
+              } as Task;
+            await sendTaskDeletion(snapshot, board, job.nostrTimestamp);
+          } else if (job.type === "delete-batch") {
+            await sendBatchDeletion(board, job.taskIds, job.nostrTimestamp);
+          }
+          removePendingJobById(job.id);
+        } catch (err) {
+          console.warn("Pending nostr publish failed, will retry", err);
+          schedulePendingProcessing(2500);
+          break;
+        }
+      }
+    } finally {
+      pendingNostrProcessingRef.current = false;
+    }
+  }, [boardsRef, removePendingJobById, schedulePendingProcessing, sendBatchDeletion, sendTaskDeletion, sendTaskUpsert]);
+  async function publishTaskDeleted(t: Task) {
+    const b = boards.find((x) => x.id === t.boardId);
+    if (!b || !isShared(b) || !b.nostr) return;
+    const bTag = boardTag(b.nostr.boardId);
+    setPendingTaskClock(bTag, t.id);
+    enqueuePendingJob({
+      id: crypto.randomUUID(),
+      type: "delete",
+      boardId: b.id,
+      boardTag: bTag,
+      taskId: t.id,
+      taskSnapshot: t,
+      nostrTimestamp: Math.floor(Date.now() / 1000),
+    });
+  }
+  async function maybePublishTask(
+    t: Task,
+    boardOverride?: Board,
+    options?: { skipBoardMetadata?: boolean }
+  ) {
+    const b = boardOverride || boards.find((x) => x.id === t.boardId);
+    if (!b || !isShared(b) || !b.nostr) return;
+    const bTag = boardTag(b.nostr.boardId);
+    setPendingTaskClock(bTag, t.id);
+    enqueuePendingJob({
+      id: crypto.randomUUID(),
+      type: "task",
+      boardId: b.id,
+      boardTag: bTag,
+      task: t,
+      options,
+      nostrTimestamp: Math.floor(Date.now() / 1000),
+    });
   }
 
   maybePublishTaskRef.current = maybePublishTask;
@@ -4294,13 +5348,26 @@ export default function App() {
   const applyBoardEvent = useCallback(async (ev: NostrEvent) => {
     const d = tagValue(ev, "d");
     if (!d) return;
+    const board = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === d);
+    if (!board || !board.nostr) return;
+    const boardId = board.nostr.boardId;
+    const migrationState = ensureMigrationState(d);
+    let isDedicated = true;
+    try {
+      const boardKeys = await deriveBoardNostrKeys(boardId);
+      isDedicated = ev.pubkey === boardKeys.pk;
+    } catch {
+      isDedicated = true; // fall back to accepting events if derivation fails
+    }
+    if (isDedicated) migrationState.dedicatedSeen = true;
+    else {
+      migrationState.legacySeen = true;
+      if (migrationState.dedicatedSeen) return;
+    }
     const last = nostrIdxRef.current.boardMeta.get(d) || 0;
     if (ev.created_at < last) return;
     // Accept events with the same timestamp to avoid missing updates
     nostrIdxRef.current.boardMeta.set(d, ev.created_at);
-    const board = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === d);
-    if (!board || !board.nostr) return;
-    const boardId = board.nostr.boardId;
     const kindTag = tagValue(ev, "k");
     const name = tagValue(ev, "name");
     let payload: any = {};
@@ -4457,19 +5524,34 @@ export default function App() {
     const bTag = tagValue(ev, "b");
     const taskId = tagValue(ev, "d");
     if (!bTag || !taskId) return;
-    if (!nostrIdxRef.current.taskClock.has(bTag)) nostrIdxRef.current.taskClock.set(bTag, new Map());
-    const m = nostrIdxRef.current.taskClock.get(bTag)!;
-    const last = m.get(taskId) || 0;
-    const pendingKey = `${bTag}::${taskId}`;
-    const isPending = pendingNostrTasksRef.current.has(pendingKey);
-    if (ev.created_at < last) return;
-    if (ev.created_at === last && isPending) return;
-    // Accept equal timestamps so rapid consecutive updates still apply
-    m.set(taskId, ev.created_at);
-
     const lb = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag);
     if (!lb || !lb.nostr) return;
     const boardId = lb.nostr.boardId;
+    const migrationState = ensureMigrationState(bTag);
+    let isDedicated = true;
+    try {
+      const boardKeys = await deriveBoardNostrKeys(boardId);
+      isDedicated = ev.pubkey === boardKeys.pk;
+    } catch {
+      isDedicated = true;
+    }
+    if (isDedicated) migrationState.dedicatedSeen = true;
+    else {
+      migrationState.legacySeen = true;
+      if (migrationState.dedicatedSeen) return;
+    }
+    if (!nostrIdxRef.current.taskClock.has(bTag)) nostrIdxRef.current.taskClock.set(bTag, new Map());
+    const m = nostrIdxRef.current.taskClock.get(bTag)!;
+    const last = m.get(taskId) || 0;
+    const pendingTs = pendingTimestampForTask(bTag, taskId);
+    if (pendingTs && ev.created_at <= pendingTs) return;
+    if (ev.created_at < last) return;
+    if (pendingTs && ev.created_at > pendingTs) {
+      dropStalePendingForTask(bTag, taskId, ev.created_at);
+    }
+    // Accept equal timestamps so rapid consecutive updates still apply
+    m.set(taskId, ev.created_at);
+
     let payload: any = {};
     try {
       const dec = await decryptFromBoard(boardId, ev.content);
@@ -4610,7 +5692,28 @@ export default function App() {
         return [...prev, { ...base, order: newOrder, images: imgs, documents: docs, bounty: normalizedIncoming, streak: st, longestStreak: longest, subtasks: subs }];
       }
     });
-  }, [setTasks, tagValue]);
+  }, [dropStalePendingForTask, ensureMigrationState, pendingTimestampForTask, setTasks, tagValue]);
+
+  const maybeMigrateBoardToDedicatedKey = useCallback(async (bTag: string) => {
+    const state = ensureMigrationState(bTag);
+    if (state.dedicatedSeen || state.migrationAttempted || !state.legacySeen) return;
+    const board = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag);
+    if (!board || !board.nostr) return;
+    state.migrationAttempted = true;
+    try {
+      await publishBoardMetadata(board, { force: true });
+      const boardTasks = tasksRef.current.filter((t) => t.boardId === board.id);
+      for (const task of boardTasks) {
+        await maybePublishTask(task, board, { skipBoardMetadata: true });
+      }
+      state.dedicatedSeen = true;
+    } catch (err) {
+      state.migrationAttempted = false;
+      console.warn("Failed to migrate board to dedicated nostr key", err);
+    }
+  }, [ensureMigrationState, publishBoardMetadata, maybePublishTask]);
+  const migrateBoardRef = useRef(maybeMigrateBoardToDedicatedKey);
+  useEffect(() => { migrateBoardRef.current = maybeMigrateBoardToDedicatedKey; }, [maybeMigrateBoardToDedicatedKey]);
 
   function normalizePushError(err: unknown): string {
     if (!(err instanceof Error)) return 'Failed to enable push notifications.';
@@ -4833,39 +5936,6 @@ export default function App() {
     }
   }
 
-  async function handleAddPaste(e: React.ClipboardEvent<HTMLInputElement>) {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const imgs = Array.from(items).filter(it => it.type.startsWith("image/"));
-    if (imgs.length) {
-      e.preventDefault();
-      const datas: string[] = [];
-      for (const it of imgs) {
-        const file = it.getAsFile();
-        if (file) datas.push(await fileToDataURL(file));
-      }
-      setNewImages(prev => [...prev, ...datas]);
-    }
-  }
-
-  async function handleNewDocumentSelection(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files;
-    if (!files || !files.length) return;
-    try {
-      const docs = await readDocumentsFromFiles(files);
-      setNewDocuments((prev) => [...prev, ...docs]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "";
-      if (message.toLowerCase().includes("unsupported")) {
-        showToast("Unsupported file. Attach PDF, DOC/DOCX, or XLS/XLSX files.");
-      } else {
-        showToast("Failed to attach document. Please try a different file.");
-      }
-    } finally {
-      e.target.value = "";
-    }
-  }
-
   function sameSeries(a: Task, b: Task): boolean {
     if (a.seriesId && b.seriesId) return a.seriesId === b.seriesId;
     return (
@@ -4958,108 +6028,6 @@ export default function App() {
       return null;
     }
   }
-  function addTask(keepKeyboard = false) {
-    if (!currentBoard) return;
-
-    const originRect = newTitleRef.current?.getBoundingClientRect() || null;
-
-    const raw = newTitle.trim();
-    const listPlacement = isListLikeBoard(currentBoard)
-      ? resolveListPlacement(typeof dayChoice === "string" ? dayChoice : undefined)
-      : null;
-    if (isListLikeBoard(currentBoard) && !listPlacement) {
-      showToast("Add a list to this board first.");
-      return;
-    }
-    if (raw) {
-      const imported = buildImportedTask(raw, listPlacement ? { boardId: listPlacement.boardId, columnId: listPlacement.columnId } : {});
-      if (imported) {
-        applyHiddenForFuture(imported, settings.weekStart, currentBoard.kind);
-        animateTaskArrival(originRect, imported, currentBoard);
-        setTasks(prev => {
-          const out = [...prev, imported];
-          return settings.showFullWeekRecurring && imported.recurrence ? ensureWeekRecurrences(out, [imported]) : out;
-        });
-        maybePublishTask(imported).catch(() => {});
-        setNewTitle("");
-        setNewImages([]);
-        setNewDocuments([]);
-        setQuickRule("none");
-        setAddCustomRule(R_NONE);
-        setScheduleDate("");
-        setScheduleTime("");
-        if (keepKeyboard) newTitleRef.current?.focus();
-        else newTitleRef.current?.blur();
-        return;
-      }
-    }
-
-    const firstDocName = newDocuments[0]?.name || "";
-    const attachmentFallback = newDocuments.length
-      ? (firstDocName.replace(/\.[^/.]+$/, "") || "Attachment")
-      : "";
-    const title = raw || attachmentFallback || (newImages.length ? "Image" : "");
-    if ((!title && !newImages.length && !newDocuments.length)) return;
-
-    const candidate = resolveQuickRule();
-    const recurrence = candidate.type === "none" ? undefined : candidate;
-    const currentDayChoice = dayChoiceRef.current;
-    let dueISO = isoForToday();
-    let dueTimeFlag = false;
-    if (scheduleDate) {
-      const hasTime = !!scheduleTime;
-      dueTimeFlag = hasTime;
-      dueISO = isoFromDateTime(scheduleDate, hasTime ? scheduleTime : undefined);
-    } else if (currentBoard?.kind === "week" && currentDayChoice !== "bounties") {
-      dueISO = isoForWeekday(currentDayChoice as Weekday, {
-        weekStart: settings.weekStart,
-      });
-    }
-
-    const targetBoardId = listPlacement ? listPlacement.boardId : currentBoard.id;
-    const nextOrder = nextOrderForBoard(targetBoardId, tasks, settings.newTaskPosition);
-    const id = crypto.randomUUID();
-    const t: Task = {
-      id,
-      seriesId: recurrence ? id : undefined,
-      boardId: targetBoardId,
-      createdBy: nostrPK || undefined,
-      title,
-      dueISO,
-      completed: false,
-      recurrence,
-      order: nextOrder,
-      streak: recurrence && (recurrence.type === "daily" || recurrence.type === "weekly") ? 0 : undefined,
-      longestStreak: recurrence && (recurrence.type === "daily" || recurrence.type === "weekly") ? 0 : undefined,
-    };
-    if (dueTimeFlag) t.dueTimeEnabled = true;
-    if (newImages.length) t.images = newImages;
-    if (newDocuments.length) t.documents = newDocuments;
-    if (currentBoard?.kind === "week") {
-      t.column = currentDayChoice === "bounties" ? "bounties" : "day";
-    } else {
-      t.column = undefined;
-      t.columnId = listPlacement?.columnId;
-    }
-    applyHiddenForFuture(t, settings.weekStart, currentBoard.kind);
-    animateTaskArrival(originRect, t, currentBoard);
-    setTasks(prev => {
-      const out = [...prev, t];
-      return settings.showFullWeekRecurring && recurrence ? ensureWeekRecurrences(out, [t]) : out;
-    });
-    // Publish to Nostr if board is shared
-    maybePublishTask(t).catch(() => {});
-    setNewTitle("");
-    setNewImages([]);
-    setNewDocuments([]);
-    setQuickRule("none");
-    setAddCustomRule(R_NONE);
-    setScheduleDate("");
-    setScheduleTime("");
-    if (keepKeyboard) newTitleRef.current?.focus();
-    else newTitleRef.current?.blur();
-  }
-
   function addInlineTask(key: string) {
     if (!currentBoard) return;
     const raw = (inlineTitles[key] || "").trim();
@@ -5092,13 +6060,17 @@ export default function App() {
 
     const imported = buildImportedTask(raw, inlineOverrides);
     if (imported) {
-      applyHiddenForFuture(imported, settings.weekStart, currentBoard.kind);
-      animateTaskArrival(originRect, imported, currentBoard);
+      let prepared = imported;
+      if (currentBoard?.kind === "week" && key === "bounties" && bountyListEnabled && activeBountyListKey) {
+        prepared = withTaskAddedToBountyList(prepared, activeBountyListKey);
+      }
+      applyHiddenForFuture(prepared, settings.weekStart, currentBoard.kind);
+      animateTaskArrival(originRect, prepared, currentBoard);
       setTasks(prev => {
-        const out = [...prev, imported];
-        return settings.showFullWeekRecurring && imported.recurrence ? ensureWeekRecurrences(out, [imported]) : out;
+        const out = [...prev, prepared];
+        return settings.showFullWeekRecurring && prepared.recurrence ? ensureWeekRecurrences(out, [prepared]) : out;
       });
-      maybePublishTask(imported).catch(() => {});
+      maybePublishTask(prepared).catch(() => {});
       setInlineTitles(prev => ({ ...prev, [key]: "" }));
       return;
     }
@@ -5107,7 +6079,7 @@ export default function App() {
     const targetBoardId = inlineOverrides.boardId || currentBoard.id;
     const nextOrder = nextOrderForBoard(targetBoardId, tasks, settings.newTaskPosition);
     const id = crypto.randomUUID();
-    const t: Task = {
+    let t: Task = {
       id,
       boardId: targetBoardId,
       createdBy: nostrPK || undefined,
@@ -5117,8 +6089,12 @@ export default function App() {
       order: nextOrder,
     };
     if (currentBoard?.kind === "week") {
-      if (key === "bounties") t.column = "bounties";
-      else {
+      if (key === "bounties") {
+        t.column = "bounties";
+        if (bountyListEnabled && activeBountyListKey) {
+          t = withTaskAddedToBountyList(t, activeBountyListKey);
+        }
+      } else {
         t.column = "day";
         dueISO = isoForWeekday(Number(key) as Weekday, {
           weekStart: settings.weekStart,
@@ -5152,7 +6128,7 @@ export default function App() {
       if (
         settings.streaksEnabled &&
         cur.recurrence &&
-        (cur.recurrence.type === "daily" || cur.recurrence.type === "weekly")
+        isFrequentRecurrence(cur.recurrence)
       ) {
         // Previously the streak only incremented when completing a task on the
         // same day it was due. This prevented users from keeping their streak
@@ -5168,7 +6144,7 @@ export default function App() {
         settings.showFullWeekRecurring &&
         settings.streaksEnabled &&
         cur.recurrence &&
-        (cur.recurrence.type === "daily" || cur.recurrence.type === "weekly")
+        isFrequentRecurrence(cur.recurrence)
       ) {
         nextId =
           prev
@@ -5343,10 +6319,9 @@ export default function App() {
   function deleteTask(id: string) {
     const t = tasks.find(x => x.id === id);
     if (!t) return;
-    // Require confirmation if the task has a bounty that is not claimed yet
-    if (t.bounty && t.bounty.state !== 'claimed') {
-      const ok = confirm('This task has an ecash bounty that is not marked as claimed. Delete anyway?');
-      if (!ok) return;
+    if (t.bounty) {
+      alert('Tasks with an ecash bounty cannot be deleted. Remove the bounty first.');
+      return;
     }
     setUndoTask(t);
     setTasks(prev => {
@@ -5356,7 +6331,7 @@ export default function App() {
         settings.showFullWeekRecurring &&
         settings.streaksEnabled &&
         t.recurrence &&
-        (t.recurrence.type === "daily" || t.recurrence.type === "weekly")
+        isFrequentRecurrence(t.recurrence)
       ) {
         const next = arr
           .filter(x => !x.completed && x.recurrence && sameSeries(x, t) && new Date(x.dueISO) > new Date(t.dueISO))
@@ -5402,7 +6377,7 @@ export default function App() {
     const recurringStreak =
       settings.streaksEnabled &&
       t.recurrence &&
-      (t.recurrence.type === "daily" || t.recurrence.type === "weekly") &&
+      isFrequentRecurrence(t.recurrence) &&
       typeof t.streak === "number";
     const newStreak = recurringStreak ? Math.max(0, t.streak! - 1) : t.streak;
     setTasks(prev => {
@@ -5477,9 +6452,23 @@ export default function App() {
       return;
     }
     const scope = currentBoard ? new Set(boardScopeIds(currentBoard, boards)) : null;
-    for (const t of tasksForBoard)
-      if (t.completed && (!t.bounty || t.bounty.state === 'claimed'))
-        publishTaskDeleted(t).catch(() => {});
+    const deletable = tasksForBoard.filter(
+      (t) => t.completed && (!t.bounty || t.bounty.state === "claimed")
+    );
+    if (currentBoard?.nostr && deletable.length) {
+      const bTag = boardTag(currentBoard.nostr.boardId);
+      deletable.forEach((t) => setPendingTaskClock(bTag, t.id));
+      enqueuePendingJob({
+        id: crypto.randomUUID(),
+        type: "delete-batch",
+        boardId: currentBoard.id,
+        boardTag: bTag,
+        taskIds: deletable.map((t) => t.id),
+        nostrTimestamp: Math.floor(Date.now() / 1000),
+      });
+    } else {
+      deletable.forEach((t) => publishTaskDeleted(t).catch(() => {}));
+    }
     setTasks(prev =>
       prev.filter(t =>
         !(
@@ -5652,7 +6641,7 @@ export default function App() {
         if (
           settings.streaksEnabled &&
           t.recurrence &&
-          (t.recurrence.type === "daily" || t.recurrence.type === "weekly") &&
+          isFrequentRecurrence(t.recurrence) &&
           !t.completed
         ) {
           const prevDue = startOfDay(new Date(t.dueISO));
@@ -5697,6 +6686,7 @@ export default function App() {
       const baseWeekday = Number.isNaN(prevDue.getTime()) ? undefined : prevDue;
       const sourceBoardId = task.boardId;
       let targetBoardId = sourceBoardId;
+      const wasPinned = taskHasBountyList(task, activeBountyListKey);
       if (target.type === "day") {
         updated.column = "day";
         updated.columnId = undefined;
@@ -5711,6 +6701,12 @@ export default function App() {
           base: baseWeekday,
           weekStart: settings.weekStart,
         });
+        if (bountyListEnabled && activeBountyListKey) {
+          const lists = Array.isArray(updated.bountyLists) ? updated.bountyLists : [];
+          if (!lists.includes(activeBountyListKey)) {
+            updated.bountyLists = [...lists, activeBountyListKey];
+          }
+        }
       } else {
         if (!isListLikeBoard(currentBoard)) return prev;
         const source = listColumnSources.get(target.columnId);
@@ -5730,7 +6726,7 @@ export default function App() {
       if (
         settings.streaksEnabled &&
         task.recurrence &&
-        (task.recurrence.type === "daily" || task.recurrence.type === "weekly") &&
+        isFrequentRecurrence(task.recurrence) &&
         !task.completed &&
         newDue.getTime() > prevDue.getTime()
       ) {
@@ -5745,47 +6741,68 @@ export default function App() {
         updated.completedAt = undefined;
         updated.completedBy = undefined;
       }
+      if (target.type !== "bounties" && wasPinned && activeBountyListKey && updated.bountyLists) {
+        const filtered = updated.bountyLists.filter((value) => value !== activeBountyListKey);
+        updated.bountyLists = filtered.length ? filtered : undefined;
+      }
 
       // remove original
       arr.splice(fromIdx, 1);
 
-      const sourceTasks: Task[] = [];
+      const sortByOrder = (list: Task[]) =>
+        [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+      const publishSet = new Set<Task>();
+
+      // rebalance source board (if moving across boards) using visible order
       if (sourceBoardId !== targetBoardId) {
-        let order = 0;
-        for (let i = 0; i < arr.length; i++) {
-          const t = arr[i];
-          if (t.boardId === sourceBoardId) {
-            if ((t.order ?? 0) !== order) {
-              arr[i] = { ...t, order };
+        const sourceOrdered = sortByOrder(arr.filter((t) => t.boardId === sourceBoardId));
+        sourceOrdered.forEach((t, index) => {
+          if ((t.order ?? 0) !== index) {
+            const idx = arr.findIndex((x) => x.id === t.id);
+            if (idx >= 0) {
+              arr[idx] = { ...t, order: index };
+              publishSet.add(arr[idx]);
             }
-            sourceTasks.push(arr[i]);
-            order++;
           }
-        }
+        });
       }
 
-      // compute insert index relative to new array
-      let insertIdx = typeof beforeId === "string" ? arr.findIndex(t => t.id === beforeId) : -1;
-      if (insertIdx < 0) insertIdx = arr.length;
-      arr.splice(insertIdx, 0, updated);
+      // compute insertion relative to the board's sorted order
+      const targetOrdered = sortByOrder(
+        arr.filter((t) => t.boardId === targetBoardId && t.id !== updated.id)
+      );
+      const beforeIdx = typeof beforeId === "string"
+        ? targetOrdered.findIndex((t) => t.id === beforeId)
+        : -1;
+      const insertIdx = beforeIdx >= 0 ? beforeIdx : targetOrdered.length;
+      targetOrdered.splice(insertIdx, 0, updated);
 
-      // recompute order for all tasks on the target board
-      const boardTasks: Task[] = [];
-      let order = 0;
-      for (let i = 0; i < arr.length; i++) {
-        const t = arr[i];
-        if (t.boardId === targetBoardId) {
-          if (t === updated) {
-            updated.order = order;
-          } else {
-            arr[i] = { ...t, order };
-          }
-          boardTasks.push(arr[i]);
-          order++;
+      // recompute order for the target board in the sorted sequence
+      targetOrdered.forEach((t, index) => {
+        const nextOrder = index;
+        if (t.id === updated.id) {
+          updated.order = nextOrder;
+          return;
         }
+        if ((t.order ?? 0) !== nextOrder) {
+          const idx = arr.findIndex((x) => x.id === t.id);
+          if (idx >= 0) {
+            arr[idx] = { ...t, order: nextOrder };
+            publishSet.add(arr[idx]);
+          }
+        }
+      });
+
+      // ensure the moved task is present in the array
+      const existingIdx = arr.findIndex((t) => t.id === updated.id);
+      if (existingIdx >= 0) {
+        arr[existingIdx] = updated;
+      } else {
+        arr.push(updated);
       }
-      const publishSet = new Set<Task>(boardTasks);
-      sourceTasks.forEach((t) => publishSet.add(t));
+      publishSet.add(updated);
+
       try {
         publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
       } catch {}
@@ -5806,17 +6823,21 @@ export default function App() {
       // remove from source
       arr.splice(fromIdx, 1);
 
-      // recompute order for source board
-      const sourceTasks: Task[] = [];
-      let order = 0;
-      for (let i = 0; i < arr.length; i++) {
-        const t = arr[i];
-        if (t.boardId === task.boardId) {
-          arr[i] = { ...t, order };
-          sourceTasks.push(arr[i]);
-          order++;
+      const sortByOrder = (list: Task[]) =>
+        [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const publishSet = new Set<Task>();
+
+      // recompute order for source board using the visible ordering
+      const sourceOrdered = sortByOrder(arr.filter((t) => t.boardId === task.boardId));
+      sourceOrdered.forEach((t, index) => {
+        if ((t.order ?? 0) !== index) {
+          const idx = arr.findIndex((x) => x.id === t.id);
+          if (idx >= 0) {
+            arr[idx] = { ...t, order: index };
+            publishSet.add(arr[idx]);
+          }
         }
-      }
+      });
 
       let destinationBoardId = boardId;
       const updated: Task = { ...task, boardId };
@@ -5841,23 +6862,29 @@ export default function App() {
 
       arr.push(updated);
 
-      const targetTasks: Task[] = [];
-      order = 0;
-      for (let i = 0; i < arr.length; i++) {
-        const t = arr[i];
-        if (t.boardId === (targetBoard.kind === "compound" ? destinationBoardId : boardId)) {
-          if (t === updated) {
-            updated.order = order;
-          } else {
-            arr[i] = { ...t, order };
-          }
-          targetTasks.push(arr[i]);
-          order++;
+      const targetBoardId = targetBoard.kind === "compound" ? destinationBoardId : boardId;
+      const targetOrdered = sortByOrder(arr.filter((t) => t.boardId === targetBoardId));
+      targetOrdered.forEach((t, index) => {
+        const nextOrder = index;
+        if (t.id === updated.id) {
+          updated.order = nextOrder;
+          return;
         }
-      }
+        if ((t.order ?? 0) !== nextOrder) {
+          const idx = arr.findIndex((x) => x.id === t.id);
+          if (idx >= 0) {
+            arr[idx] = { ...t, order: nextOrder };
+            publishSet.add(arr[idx]);
+          }
+        }
+      });
+
+      const updatedIdx = arr.findIndex((t) => t.id === updated.id);
+      if (updatedIdx >= 0) arr[updatedIdx] = updated;
+      publishSet.add(updated);
 
       try {
-        for (const t of [...sourceTasks, ...targetTasks]) maybePublishTask(t).catch(() => {});
+        publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
       } catch {}
 
       return arr;
@@ -5886,18 +6913,24 @@ export default function App() {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
       pool.setRelays(rls);
+      ensureMigrationState(it.id);
       const filters = [
         { kinds: [30300, 30301], "#b": [it.id], limit: 500 },
         { kinds: [30300], "#d": [it.id], limit: 1 },
       ];
       const unsub = pool.subscribe(rls, filters, (ev) => {
-        if (ev.kind === 30300) applyBoardEvent(ev).catch(() => {});
-        else if (ev.kind === 30301) applyTaskEvent(ev).catch(() => {});
+        if (ev.kind === 30300) enqueueNostrApply(() => applyBoardEvent(ev)).catch(() => {});
+        else if (ev.kind === 30301) enqueueNostrApply(() => applyTaskEvent(ev)).catch(() => {});
+      }, () => {
+        // After initial sync, migrate legacy authors to the per-board key if needed.
+        nostrApplyQueue.current.catch(() => {}).then(() => {
+          setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+        });
       });
       unsubs.push(unsub);
     }
     return () => { unsubs.forEach(u => u()); };
-  }, [nostrBoardsKey, pool, applyBoardEvent, applyTaskEvent, nostrRefresh]);
+  }, [nostrBoardsKey, pool, applyBoardEvent, applyTaskEvent, nostrRefresh, ensureMigrationState, migrateBoardRef, enqueueNostrApply]);
 
   // horizontal scroller ref to enable iOS momentum scrolling
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -6360,128 +7393,6 @@ export default function App() {
         {/* Animation overlay for fly effects (coins, etc.) */}
         <div ref={flyLayerRef} className="pointer-events-none fixed inset-0 z-[9999]" />
 
-        {/* Add bar */}
-        {activeView === "board" && currentBoard && !settings.inlineAdd && (
-          <div className="glass-panel flex flex-wrap gap-2 items-center w-full p-3 mb-4">
-            <input
-              ref={newTitleRef}
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              onPaste={handleAddPaste}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addTask(true);
-                }
-              }}
-              placeholder="New task…"
-              className="pill-input pill-input--compact flex-1 min-w-0"
-            />
-            <input
-              ref={newDocumentInputRef}
-              type="file"
-              accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              multiple
-              className="hidden"
-              onChange={handleNewDocumentSelection}
-            />
-            <button
-              type="button"
-              className="ghost-button button-sm pressable shrink-0"
-              onClick={() => newDocumentInputRef.current?.click()}
-              aria-label="Attach document"
-            >
-              📎
-            </button>
-            <button
-              ref={addButtonRef}
-              onClick={() => addTask()}
-              className="accent-button accent-button--circle pressable shrink-0"
-              type="button"
-              aria-label="Add task"
-            >
-              <span aria-hidden="true">+</span>
-              <span className="sr-only">Add task</span>
-            </button>
-            {newImages.length > 0 && (
-              <div className="w-full flex gap-2 mt-2">
-                {newImages.map((img, i) => (
-                  <img key={i} src={img} className="h-16 rounded-lg" />
-                ))}
-              </div>
-            )}
-            {newDocuments.length > 0 && (
-              <div className="w-full flex flex-wrap gap-1">
-                {newDocuments.map((doc, index) => (
-                  <span key={doc.id} className="doc-chip">
-                    <span className="doc-chip__label">{doc.name}</span>
-                    <button
-                      type="button"
-                      className="doc-chip__remove"
-                      onClick={() =>
-                        setNewDocuments((prev) => prev.filter((_, idx) => idx !== index))
-                      }
-                      aria-label={`Remove ${doc.name}`}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Column picker and recurrence */}
-            <div className="w-full flex gap-2 items-center">
-              {currentBoard?.kind === "week" ? (
-                <select
-                  value={dayChoice === "bounties" ? "bounties" : String(dayChoice)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setDayChoice(v === "bounties" ? "bounties" : (Number(v) as Weekday));
-                    setScheduleDate("");
-                    setScheduleTime("");
-                  }}
-                  className="pill-select flex-1 min-w-0 truncate"
-                >
-                  {WD_SHORT.map((d,i)=>(<option key={i} value={i}>{d}</option>))}
-                  <option value="bounties">Bounties</option>
-                </select>
-              ) : (
-                <select
-                  value={String(dayChoice)}
-                  onChange={(e)=>focusListColumn(e.target.value)}
-                  className="pill-select flex-1 min-w-0 truncate"
-                >
-                  {listColumns.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
-                </select>
-              )}
-
-              {/* Recurrence select with Custom… */}
-              <select
-                value={quickRule}
-                onChange={(e) => {
-                  const v = e.target.value as typeof quickRule;
-                  setQuickRule(v);
-                  if (v === "custom") setShowAddAdvanced(true);
-                }}
-                className="pill-select shrink-0 w-fit"
-                title="Recurrence"
-              >
-                <option value="none">No recurrence</option>
-                <option value="daily">Daily</option>
-                <option value="weeklyMonFri">Mon–Fri</option>
-                <option value="weeklyWeekends">Weekends</option>
-                <option value="every2d">Every 2 days</option>
-                <option value="custom">Custom…</option>
-              </select>
-
-              {quickRule === "custom" && addCustomRule.type !== "none" && (
-                <span className="flex-shrink-0 text-xs text-secondary">({labelOf(addCustomRule)})</span>
-              )}
-            </div>
-          </div>
-        )}
-
         {/* Board/Completed */}
         <div className="relative">
           {activeView === "bible" ? (
@@ -6545,34 +7456,34 @@ export default function App() {
                       ref={el => setColumnRef(`week-day-${day}`, el)}
                       key={day}
                       title={WD_SHORT[day]}
-                      onTitleClick={() => { setDayChoice(day); setScheduleDate(""); setScheduleTime(""); }}
-                      onDropCard={(payload) => moveTask(payload.id, { type: "day", day }, payload.beforeId)}
-                      onDropEnd={handleDragEnd}
-                      data-day={day}
-                      scrollable={settings.inlineAdd}
-                      footer={settings.inlineAdd ? (
-                        <form
-                          className="mt-2 flex gap-1"
-                          onSubmit={(e) => { e.preventDefault(); addInlineTask(String(day)); }}
+                    onTitleClick={() => setDayChoice(day)}
+                    onDropCard={(payload) => moveTask(payload.id, { type: "day", day }, payload.beforeId)}
+                    onDropEnd={handleDragEnd}
+                    data-day={day}
+                    scrollable
+                    footer={(
+                      <form
+                        className="mt-2 flex gap-1"
+                        onSubmit={(e) => { e.preventDefault(); addInlineTask(String(day)); }}
+                      >
+                        <input
+                          ref={el => setInlineInputRef(String(day), el)}
+                          value={inlineTitles[String(day)] || ""}
+                          onChange={(e) => setInlineTitles(prev => ({ ...prev, [String(day)]: e.target.value }))}
+                          className="pill-input pill-input--compact flex-1 min-w-0"
+                          placeholder="Add task"
+                        />
+                        <button
+                          type="submit"
+                          className="accent-button accent-button--circle pressable shrink-0"
+                          aria-label="Add task"
                         >
-                          <input
-                            ref={el => setInlineInputRef(String(day), el)}
-                            value={inlineTitles[String(day)] || ""}
-                            onChange={(e) => setInlineTitles(prev => ({ ...prev, [String(day)]: e.target.value }))}
-                            className="pill-input pill-input--compact flex-1 min-w-0"
-                            placeholder="Add task"
-                          />
-                          <button
-                            type="submit"
-                            className="accent-button accent-button--circle pressable shrink-0"
-                            aria-label="Add task"
-                          >
-                            <span aria-hidden="true">+</span>
-                            <span className="sr-only">Add task</span>
-                          </button>
-                        </form>
-                      ) : undefined}
-                    >
+                          <span aria-hidden="true">+</span>
+                          <span className="sr-only">Add task</span>
+                        </button>
+                      </form>
+                    )}
+                  >
                         {(byDay.get(day) || []).map((t) => (
                         <Card
                           key={t.id}
@@ -6598,18 +7509,19 @@ export default function App() {
                   ))}
 
                   {/* Bounties */}
-                  <DroppableColumn
-                    ref={el => setColumnRef("week-bounties", el)}
-                    title="Bounties"
-                    onTitleClick={() => { setDayChoice("bounties"); setScheduleDate(""); setScheduleTime(""); }}
-                    onDropCard={(payload) => moveTask(payload.id, { type: "bounties" }, payload.beforeId)}
-                    onDropEnd={handleDragEnd}
-                    scrollable={settings.inlineAdd}
-                    footer={settings.inlineAdd ? (
-                      <form
-                        className="mt-2 flex gap-1"
-                        onSubmit={(e) => { e.preventDefault(); addInlineTask("bounties"); }}
-                      >
+                  {bountyListEnabled && (
+                    <DroppableColumn
+                      ref={el => setColumnRef("week-bounties", el)}
+                      title="Bounties"
+                      onTitleClick={() => setDayChoice("bounties")}
+                      onDropCard={(payload) => moveTask(payload.id, { type: "bounties" }, payload.beforeId)}
+                      onDropEnd={handleDragEnd}
+                      scrollable
+                      footer={(
+                        <form
+                          className="mt-2 flex gap-1"
+                          onSubmit={(e) => { e.preventDefault(); addInlineTask("bounties"); }}
+                        >
                           <input
                             ref={el => setInlineInputRef("bounties", el)}
                             value={inlineTitles["bounties"] || ""}
@@ -6625,31 +7537,32 @@ export default function App() {
                             <span aria-hidden="true">+</span>
                             <span className="sr-only">Add task</span>
                           </button>
-                      </form>
-                    ) : undefined}
-                  >
-                      {bounties.map((t) => (
-                        <Card
-                          key={t.id}
-                          task={t}
-                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
-                          onComplete={(from) => {
-                            if (!t.completed) completeTask(t.id);
-                            else if (t.bounty && t.bounty.state === 'locked') revealBounty(t.id);
-                            else if (t.bounty && t.bounty.state === 'unlocked' && t.bounty.token) claimBounty(t.id, from);
-                            else restoreTask(t.id);
-                          }}
-                          onEdit={() => setEditing(t)}
-                          onDropBefore={(dragId) => moveTask(dragId, { type: "bounties" }, t.id)}
-                          showStreaks={settings.streaksEnabled}
-                          onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
-                          onDragStart={(id) => setDraggingTaskId(id)}
-                          onDragEnd={handleDragEnd}
-                          hideCompletedSubtasks={settings.hideCompletedSubtasks}
-                          onOpenDocument={handleOpenDocument}
-                        />
-                    ))}
-                  </DroppableColumn>
+                        </form>
+                      )}
+                    >
+                        {bounties.map((t) => (
+                          <Card
+                            key={t.id}
+                            task={t}
+                            onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
+                            onComplete={(from) => {
+                              if (!t.completed) completeTask(t.id);
+                              else if (t.bounty && t.bounty.state === 'locked') revealBounty(t.id);
+                              else if (t.bounty && t.bounty.state === 'unlocked' && t.bounty.token) claimBounty(t.id, from);
+                              else restoreTask(t.id);
+                            }}
+                            onEdit={() => setEditing(t)}
+                            onDropBefore={(dragId) => moveTask(dragId, { type: "bounties" }, t.id)}
+                            showStreaks={settings.streaksEnabled}
+                            onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
+                            onDragStart={(id) => setDraggingTaskId(id)}
+                            onDragEnd={handleDragEnd}
+                            hideCompletedSubtasks={settings.hideCompletedSubtasks}
+                            onOpenDocument={handleOpenDocument}
+                          />
+                        ))}
+                      </DroppableColumn>
+                  )}
                 </div>
               </div>
             </>
@@ -6825,8 +7738,8 @@ export default function App() {
                       onTitleClick={() => focusListColumn(col.id)}
                       onDropCard={(payload) => moveTask(payload.id, { type: "list", columnId: col.id }, payload.beforeId)}
                       onDropEnd={handleDragEnd}
-                      scrollable={settings.inlineAdd}
-                      footer={settings.inlineAdd ? (
+                      scrollable
+                      footer={(
                         <form
                           className="mt-2 flex gap-1"
                           onSubmit={(e) => { e.preventDefault(); addInlineTask(col.id); }}
@@ -6847,7 +7760,7 @@ export default function App() {
                             <span className="sr-only">Add task</span>
                           </button>
                         </form>
-                      ) : undefined}
+                      )}
                     >
                       {(itemsByColumn.get(col.id) || []).map((t) => (
                         <Card
@@ -6965,7 +7878,7 @@ export default function App() {
                             {t.completedAt ? ` • Completed ${new Date(t.completedAt).toLocaleString()}` : ""}
                             {settings.streaksEnabled &&
                               t.recurrence &&
-                              (t.recurrence.type === "daily" || t.recurrence.type === "weekly") &&
+                              isFrequentRecurrence(t.recurrence) &&
                               typeof t.streak === "number" && t.streak > 0
                                 ? ` • 🔥 ${t.streak}`
                                 : ""}
@@ -7168,6 +8081,13 @@ export default function App() {
           onRevealBounty={revealBounty}
           onTransferBounty={transferBounty}
           onPreviewDocument={handleOpenDocument}
+          walletConversionEnabled={settings.walletConversionEnabled}
+          walletPrimaryCurrency={settings.walletPrimaryCurrency}
+          bountyListEnabled={bountyListEnabled}
+          bountyListLabel={activeBountyListLabel}
+          bountyListKey={activeBountyListKey}
+          onAddToBountyList={addTaskToBountyList}
+          onRemoveFromBountyList={removeTaskFromBountyList}
         />
       )}
 
@@ -7177,23 +8097,6 @@ export default function App() {
           onClose={() => setPreviewDocument(null)}
           onDownloadDocument={handleDownloadDocument}
           onOpenExternal={openDocumentExternally}
-        />
-      )}
-
-      {/* Add bar Advanced recurrence modal */}
-      {showAddAdvanced && (
-        <RecurrenceModal
-          initial={addCustomRule}
-          initialSchedule={scheduleDate}
-          onClose={() => setShowAddAdvanced(false)}
-          onApply={(r, sched) => {
-            setAddCustomRule(r);
-            setScheduleDate(sched || "");
-            if (sched && currentBoard?.kind === "week" && dayChoice !== "bounties") {
-              setDayChoice(new Date(sched).getDay() as Weekday);
-            }
-            setShowAddAdvanced(false);
-          }}
         />
       )}
 
@@ -7244,6 +8147,9 @@ export default function App() {
           currentBoardId={currentBoardId}
           setSettings={setSettings}
           setBoards={setBoards}
+          bountyListEnabled={bountyListEnabled}
+          activeBountyListKey={activeBountyListKey}
+          bountyListOptions={bountyListOptions}
           shouldReloadForNavigation={shouldReloadForNavigation}
           defaultRelays={defaultRelays}
           setDefaultRelays={setDefaultRelays}
@@ -7273,7 +8179,7 @@ export default function App() {
                 nb = { ...b, nostr: { boardId: nostrId, relays } } as Board;
               }
               setTimeout(() => {
-                publishBoardMetadata(nb).catch(() => {});
+                publishBoardMetadata(nb, { force: true }).catch(() => {});
                 tasks.filter(t => t.boardId === nb.id).forEach(t => {
                   maybePublishTask(t, nb, { skipBoardMetadata: true }).catch(() => {});
                 });
@@ -7347,6 +8253,7 @@ export default function App() {
               settings.walletPaymentRequestsEnabled && settings.walletPaymentRequestsBackgroundChecksEnabled
             }
             tokenStateResetNonce={walletTokenStateResetNonce}
+            mintBackupEnabled={settings.walletMintBackupEnabled}
           />
         )}
       </Suspense>
@@ -8114,14 +9021,31 @@ function labelOf(r: Recurrence): string {
   switch (r.type) {
     case "none": return "None";
     case "daily": return "Daily";
-    case "weekly": return `Weekly on ${r.days.map((d) => WD_SHORT[d]).join(", ") || "(none)"}`;
-    case "every": return `Every ${r.n} ${r.unit === "day" ? "day(s)" : "week(s)"}`;
-    case "monthlyDay": return `Monthly on day ${r.day}`;
+    case "weekly": {
+      const daySet = new Set(r.days);
+      const isWeekdays = WEEKDAYS.every((d) => daySet.has(d)) && daySet.size === WEEKDAYS.length;
+      if (isWeekdays) return "Weekdays";
+      return `Weekly on ${r.days.map((d) => WD_SHORT[d]).join(", ") || "(none)"}`;
+    }
+    case "every": {
+      const unitLabel = r.unit === "hour"
+        ? r.n === 1 ? "hour" : "hours"
+        : r.unit === "day"
+          ? r.n === 1 ? "day" : "days"
+          : r.n === 1 ? "week" : "weeks";
+      return `Every ${r.n} ${unitLabel}`;
+    }
+    case "monthlyDay": {
+      const interval = Math.max(1, r.interval ?? 1);
+      if (interval === 1) return `Monthly on day ${r.day}`;
+      if (interval === 12) return `Yearly on day ${r.day}`;
+      return `Every ${interval} months on day ${r.day}`;
+    }
   }
 }
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument }: {
+function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListLabel, bountyListKey, onAddToBountyList, onRemoveFromBountyList }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
@@ -8132,6 +9056,13 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   onRevealBounty?: (taskId: string)=>Promise<void>;
   onTransferBounty?: (taskId: string, recipientHex: string)=>Promise<void>;
   onPreviewDocument?: (task: Task, doc: TaskDocument) => void;
+  walletConversionEnabled: boolean;
+  walletPrimaryCurrency: "sat" | "usd";
+  bountyListEnabled: boolean;
+  bountyListLabel: string;
+  bountyListKey?: string | null;
+  onAddToBountyList?: (taskId: string) => void;
+  onRemoveFromBountyList?: (taskId: string) => void;
 }) {
   const [title, setTitle] = useState(task.title);
   const [note, setNote] = useState(task.note || "");
@@ -8144,28 +9075,246 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   const dragSubtaskIdRef = useRef<string | null>(null);
   const [rule, setRule] = useState<Recurrence>(task.recurrence ?? R_NONE);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [repeatSheetOpen, setRepeatSheetOpen] = useState(false);
+  const [repeatCustomSheetOpen, setRepeatCustomSheetOpen] = useState(false);
+  const [endRepeatSheetOpen, setEndRepeatSheetOpen] = useState(false);
   const initialDate = isoDatePart(task.dueISO);
   const initialTime = isoTimePart(task.dueISO);
+  const defaultTimeValue = initialTime || "09:00";
   const defaultHasTime = task.dueTimeEnabled ?? false;
   const [scheduledDate, setScheduledDate] = useState(initialDate);
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : '');
   const hasDueTime = scheduledTime.trim().length > 0;
+
   const [reminderSelection, setReminderSelection] = useState<ReminderPreset[]>(task.reminders ?? []);
-  const [bountyAmount, setBountyAmount] = useState<number | "">(task.bounty?.amount ?? "");
+  const lastTimeRef = useRef<string>(defaultTimeValue);
+  const [dateEnabled, setDateEnabled] = useState(() => !!initialDate);
+  const [dateDetailsOpen, setDateDetailsOpen] = useState(false);
+  const [calendarBaseDate, setCalendarBaseDate] = useState(initialDate);
+  const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
+  const timePickerMinuteColumnRef = useRef<HTMLDivElement | null>(null);
+  const timePickerMeridiemColumnRef = useRef<HTMLDivElement | null>(null);
+  const timePickerHourScrollFrame = useRef<number | null>(null);
+  const timePickerMinuteScrollFrame = useRef<number | null>(null);
+  const timePickerMeridiemScrollFrame = useRef<number | null>(null);
+  const timePickerHourSnapTimeout = useRef<number | null>(null);
+  const timePickerMinuteSnapTimeout = useRef<number | null>(null);
+  const timePickerMeridiemSnapTimeout = useRef<number | null>(null);
+  const timePickerHourValueRef = useRef(0);
+  const timePickerMinuteValueRef = useRef(0);
+  const timePickerMeridiemValueRef = useRef<Meridiem>("AM");
+  const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
+  const [subtasksExpanded, setSubtasksExpanded] = useState(false);
+  const [timeDetailsOpen, setTimeDetailsOpen] = useState(false);
   const [, setBountyState] = useState<Task["bounty"]["state"]>(task.bounty?.state || "locked");
-  const [encryptWhenAttach, setEncryptWhenAttach] = useState(true);
   const { createSendToken, receiveToken, mintUrl } = useCashu();
-  const [lockToRecipient, setLockToRecipient] = useState(false);
-  const [recipientInput, setRecipientInput] = useState("");
-  const [signRecipientInput, setSignRecipientInput] = useState("");
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
+  const [signOverSheetOpen, setSignOverSheetOpen] = useState(false);
+  const [lockToSelf, setLockToSelf] = useState(true);
+  const [bountyExpanded, setBountyExpanded] = useState(false);
+  const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
+  const [lockNpubSheetOpen, setLockNpubSheetOpen] = useState(false);
+  const [lockRecipientSelection, setLockRecipientSelection] = useState<LockRecipientSelection | null>(null);
+  const updateContacts = useCallback((compute: (prev: Contact[]) => Contact[]) => {
+    setContacts((prev) => {
+      const next = compute(prev);
+      saveContactsToStorage(next);
+      return next;
+    });
+  }, []);
   const [signingBounty, setSigningBounty] = useState(false);
   const { show: showToast } = useToast();
-  const streakEligible = rule.type === "daily" || rule.type === "weekly";
+  const streakEligible = isFrequentRecurrence(rule);
   const currentStreak = typeof task.streak === "number" ? task.streak : 0;
   const bestStreak = Math.max(
     currentStreak,
     typeof task.longestStreak === "number" ? task.longestStreak : currentStreak,
   );
+  const bountyButtonActive = bountyListEnabled && !!bountyListKey;
+  const taskInBountyList = bountyButtonActive && bountyListKey ? taskHasBountyList(task, bountyListKey) : false;
+  const bountyButtonLabel = bountyListLabel || "Bounties";
+  const bountyButtonTargetLabel = bountyButtonLabel.includes("•")
+    ? (bountyButtonLabel.split("•").pop() || bountyButtonLabel).trim() || "Bounties"
+    : bountyButtonLabel;
+  const contactsByHex = useMemo(() => {
+    const map = new Map<string, Contact>();
+    contacts.forEach((contact) => {
+      const hex = normalizeNostrPubkey(contact.npub);
+      if (hex) map.set(hex, contact);
+    });
+    return map;
+  }, [contacts]);
+  const quickLockOptions = useMemo<QuickLockOption[]>(() => {
+    const options: QuickLockOption[] = [];
+    const ownerHex = normalizeNostrPubkey(task.createdBy || "");
+    if (ownerHex) {
+      const contact = contactsByHex.get(ownerHex);
+      const sourceValue = contact?.npub?.trim() || (task.createdBy ? toNpubKey(task.createdBy) : ownerHex);
+      const label = contact?.name?.trim() || shortenPubkey(sourceValue);
+      options.push({
+        id: "creator",
+        title: "Task creator",
+        value: sourceValue,
+        label,
+        contactId: contact?.id,
+      });
+    }
+    const completerHex = normalizeNostrPubkey(task.completedBy || "");
+    if (completerHex) {
+      const contact = contactsByHex.get(completerHex);
+      const sourceValue = contact?.npub?.trim() || (task.completedBy ? toNpubKey(task.completedBy) : completerHex);
+      const label = contact?.name?.trim() || shortenPubkey(sourceValue);
+      options.push({
+        id: "completer",
+        title: "Task fulfiller",
+        value: sourceValue,
+        label,
+        contactId: contact?.id,
+      });
+    }
+    return options;
+  }, [contactsByHex, task.completedBy, task.createdBy]);
+  const handleUpsertLockContact = useCallback(
+    ({ id, name, npub }: { id: string | null; name: string; npub: string }) => {
+      const trimmedNpub = npub.trim();
+      if (!trimmedNpub) return;
+      const trimmedName = name.trim();
+      updateContacts((prev) => {
+        if (id) {
+          return prev.map((contact) =>
+            contact.id === id ? { ...contact, name: trimmedName, npub: trimmedNpub } : contact,
+          );
+        }
+        const newContact: Contact = {
+          id: makeContactId(),
+          name: trimmedName,
+          address: "",
+          paymentRequest: "",
+          npub: trimmedNpub,
+        };
+        return [...prev, newContact];
+      });
+    },
+    [updateContacts],
+  );
+  const handleDeleteLockContact = useCallback(
+    (contactId: string) => {
+      updateContacts((prev) => prev.filter((contact) => contact.id !== contactId));
+    },
+    [updateContacts],
+  );
+  const handleLockRecipientSelect = useCallback((selection: LockRecipientSelection) => {
+    setLockRecipientSelection(selection);
+    setLockToSelf(false);
+    setLockNpubSheetOpen(false);
+  }, []);
+  const handleToggleLockToSelf = useCallback(() => {
+    setLockToSelf((prev) => {
+      const next = !prev;
+      if (next) {
+        setLockRecipientSelection(null);
+      }
+      return next;
+    });
+  }, []);
+  const handleClearLockRecipient = useCallback(() => {
+    setLockRecipientSelection(null);
+  }, []);
+  const handleOpenAttachSheet = useCallback(() => {
+    setLockToSelf(true);
+    setLockRecipientSelection(null);
+    setAttachSheetOpen(true);
+  }, []);
+  const handleAttachBounty = useCallback(
+    async (amountSat: number, overrideMint?: string) => {
+      if (!amountSat || amountSat <= 0) {
+        throw new Error("Enter an amount greater than zero.");
+      }
+      const recipientPubkey = lockRecipientSelection
+        ? normalizeNostrPubkey(lockRecipientSelection.value)
+        : null;
+      const recipientHex = ensureXOnlyHex(recipientPubkey);
+      if (lockRecipientSelection && (!recipientPubkey || !recipientHex)) {
+        throw new Error("Selected npub is invalid.");
+      }
+      const sendOptions: { p2pk?: { pubkey: string }; mintUrl?: string } = {};
+      if (recipientPubkey) {
+        sendOptions.p2pk = { pubkey: recipientPubkey };
+      }
+      if (overrideMint?.trim()) {
+        sendOptions.mintUrl = overrideMint.trim();
+      }
+      const { token: tok, lockInfo, mintUrl: sendMintUrl } = await createSendToken(amountSat, sendOptions);
+      const bountyMint = sendMintUrl || overrideMint || mintUrl;
+      const lockType: Task["bounty"]["lock"] =
+        lockInfo?.type === "p2pk" ? "p2pk" : lockToSelf ? "unknown" : "none";
+      const selfPubkey = (window as any).nostrPK as string | undefined;
+      const selfHex = ensureXOnlyHex(selfPubkey);
+      const bounty: Task["bounty"] = {
+        id: crypto.randomUUID(),
+        token: lockToSelf || recipientHex ? "" : tok,
+        amount: amountSat,
+        mint: bountyMint,
+        state: lockToSelf || recipientHex ? "locked" : "unlocked",
+        owner: task.createdBy || (window as any).nostrPK || "",
+        sender: (window as any).nostrPK || "",
+        receiver: recipientHex || (lockToSelf ? selfHex : undefined) || undefined,
+        updatedAt: new Date().toISOString(),
+        lock: lockType,
+      };
+      if (recipientHex) {
+        const enc = await encryptEcashTokenForRecipient(recipientHex, tok);
+        bounty.enc = enc;
+      } else if (lockToSelf) {
+        const funderHex = selfHex || "";
+        if (!funderHex) {
+          throw new Error("Locking to yourself requires a connected Nostr key.");
+        }
+        const enc = await encryptEcashTokenForRecipient(funderHex, tok);
+        bounty.enc = enc;
+      }
+      save({ bounty });
+      if (bountyButtonActive) {
+        onAddToBountyList?.(task.id);
+      }
+      const summaryPrefix = recipientHex
+        ? "Locked bounty"
+        : lockToSelf
+          ? "Hidden bounty"
+          : "Attached bounty";
+      appendWalletHistoryEntry({
+        id: `attach-bounty-${bounty.id}`,
+        summary: `${summaryPrefix} • ${amountSat} sats`,
+        detail: tok,
+        detailKind: "token",
+        type: "ecash",
+        direction: "out",
+        amountSat,
+        mintUrl: bountyMint ?? undefined,
+      });
+      setAttachSheetOpen(false);
+      setLockToSelf(true);
+      setLockRecipientSelection(null);
+    },
+    [bountyButtonActive, createSendToken, lockRecipientSelection, lockToSelf, mintUrl, onAddToBountyList, save, task.createdBy, task.id],
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleContactsUpdated = () => {
+      setContacts(loadContactsFromStorage());
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === LS_LIGHTNING_CONTACTS) {
+        handleContactsUpdated();
+      }
+    };
+    window.addEventListener("taskify:contacts-updated", handleContactsUpdated);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("taskify:contacts-updated", handleContactsUpdated);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
 
   const reminderOptions = useMemo(() => buildReminderOptions(reminderSelection), [reminderSelection]);
 
@@ -8187,19 +9336,122 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
       })
       .join(', ');
   }, [reminderPresetMap, reminderSelection]);
+  const dateSummary = useMemo(() => {
+    if (!scheduledDate) return "Not set";
+    const parsed = new Date(`${scheduledDate}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return scheduledDate;
+    const today = new Date();
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const diffDays = Math.round((parsed.getTime() - startOfToday.getTime()) / 86400000);
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "Tomorrow";
+    if (diffDays === -1) return "Yesterday";
+    return parsed.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  }, [scheduledDate]);
+  const timeSummary = useMemo(() => {
+    if (!hasDueTime) return "Off";
+    return formatTimeLabel(isoFromDateTime(scheduledDate, scheduledTime));
+  }, [hasDueTime, scheduledDate, scheduledTime]);
+  const endRepeatSummary = useMemo(() => {
+    if (!rule.untilISO) return "Never";
+    const parsed = new Date(rule.untilISO);
+    if (Number.isNaN(parsed.getTime())) return "Custom date";
+    return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  }, [rule]);
+  const reminderRowSummary = useMemo(() => {
+    if (!hasDueTime) return "Enable time";
+    if (!reminderSelection.length) return "None";
+    return reminderSummary;
+  }, [hasDueTime, reminderSelection.length, reminderSummary]);
+  const timePickerParts = useMemo(
+    () => parseTimePickerValue(scheduledTime, defaultTimeValue),
+    [scheduledTime, defaultTimeValue],
+  );
+  const timePickerHour = timePickerParts.hour;
+  const timePickerMinute = timePickerParts.minute;
+  const timePickerMeridiem = timePickerParts.meridiem;
+  useEffect(() => {
+    if (scheduledDate) {
+      setCalendarBaseDate(scheduledDate);
+    }
+  }, [scheduledDate]);
 
   useEffect(() => {
     if (!hasDueTime && reminderSelection.length) {
       setReminderSelection([]);
     }
   }, [hasDueTime, reminderSelection]);
+  useEffect(() => {
+    if (!dateEnabled) {
+      setDateDetailsOpen(false);
+    }
+  }, [dateEnabled]);
+  useEffect(() => {
+    if (!hasDueTime) {
+      setTimeDetailsOpen(false);
+      setReminderPickerExpanded(false);
+    }
+  }, [hasDueTime]);
+  useEffect(() => {
+    setCalendarBaseDate(initialDate);
+  }, [task.id, initialDate]);
+  useEffect(() => {
+    timePickerHourValueRef.current = timePickerHour;
+  }, [timePickerHour]);
+  useEffect(() => {
+    timePickerMinuteValueRef.current = timePickerMinute;
+  }, [timePickerMinute]);
+  useEffect(() => {
+    timePickerMeridiemValueRef.current = timePickerMeridiem;
+  }, [timePickerMeridiem]);
+  useEffect(
+    () => () => {
+      if (timePickerHourScrollFrame.current != null) {
+        cancelAnimationFrame(timePickerHourScrollFrame.current);
+      }
+      if (timePickerMinuteScrollFrame.current != null) {
+        cancelAnimationFrame(timePickerMinuteScrollFrame.current);
+      }
+      if (timePickerMeridiemScrollFrame.current != null) {
+        cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
+      }
+      const snapRefs = [timePickerHourSnapTimeout, timePickerMinuteSnapTimeout, timePickerMeridiemSnapTimeout];
+      for (const ref of snapRefs) {
+        if (ref.current != null) {
+          window.clearTimeout(ref.current);
+          ref.current = null;
+        }
+      }
+    },
+    [],
+  );
+  useLayoutEffect(() => {
+    if (!timeDetailsOpen || !hasDueTime) return;
+    const hourIndex = HOURS_12.indexOf(timePickerHour);
+    if (hourIndex >= 0) {
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+    }
+    const minuteIndex = MINUTES.indexOf(timePickerMinute);
+    if (minuteIndex >= 0) {
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+    }
+    const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
+    if (meridiemIndex >= 0) {
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+    }
+  }, [timeDetailsOpen, hasDueTime, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
   useEffect(() => {
-    setSignRecipientInput("");
     setSigningBounty(false);
   }, [task.id]);
+  useEffect(() => {
+    if (hasDueTime && scheduledTime) {
+      lastTimeRef.current = scheduledTime;
+    }
+  }, [hasDueTime, scheduledTime]);
 
   const me = (window as any).nostrPK as string | undefined;
+  const meHex = ensureXOnlyHex(me);
 
   function compressedToRawHex(value: string): string {
     if (typeof value !== "string") return value;
@@ -8224,59 +9476,75 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     return `${value.slice(0, 10)}…${value.slice(-6)}`;
   }
 
-  const normalizedCompletedBy = useMemo(
-    () => normalizeNostrPubkey(task.completedBy || ""),
-    [task.completedBy],
-  );
-
-  const normalizedCompletedByRaw = useMemo(
-    () => ensureXOnlyHex(normalizedCompletedBy) || null,
-    [normalizedCompletedBy],
-  );
-
-  const completedNpub = useMemo(
-    () => (normalizedCompletedBy ? toNpubKey(normalizedCompletedBy) : null),
-    [normalizedCompletedBy],
-  );
-
-  const completedDisplay = useMemo(
-    () => (completedNpub ? shortenPubkey(completedNpub) : null),
-    [completedNpub],
-  );
-
   const currentReceiverDisplay = useMemo(() => {
     const receiver = task.bounty?.receiver;
     if (!receiver) return null;
     return shortenPubkey(toNpubKey(receiver));
   }, [task.bounty?.receiver]);
 
-  const canTransferBounty = useMemo(() => {
-    const bounty = task.bounty;
-    if (!bounty || !me) return false;
-    if (bounty.state === "revoked" || bounty.state === "claimed") return false;
-    return (
-      (!!bounty.sender && pubkeysEqual(bounty.sender, me)) ||
-      (!!bounty.owner && pubkeysEqual(bounty.owner, me)) ||
-      pubkeysEqual(task.createdBy, me)
-    );
-  }, [me, task.bounty, task.createdBy]);
-
-  const canSignToCompleter = useMemo(() => {
-    if (!normalizedCompletedByRaw) return false;
+  const bountyReceiverIsViewer = useMemo(() => {
     const receiver = task.bounty?.receiver;
-    if (!receiver) return true;
-    return !pubkeysEqual(receiver, normalizedCompletedByRaw);
-  }, [normalizedCompletedByRaw, task.bounty?.receiver]);
+    if (!receiver) return false;
+    return pubkeysEqual(receiver, (window as any).nostrPK);
+  }, [task.bounty?.receiver]);
+
+  const bountySenderIsViewer = useMemo(() => {
+    if (!task.bounty?.sender || !meHex) return false;
+    return pubkeysEqual(task.bounty.sender, meHex);
+  }, [meHex, task.bounty?.sender]);
+
+  const canRemoveBounty = useMemo(() => {
+    if (!task.bounty) return false;
+    return task.bounty.state === "unlocked" || bountySenderIsViewer;
+  }, [bountySenderIsViewer, task.bounty]);
+
+  const bountyOwnerIsViewer = useMemo(() => {
+    if (!task.bounty?.owner || !meHex) return false;
+    return pubkeysEqual(task.bounty.owner, meHex);
+  }, [meHex, task.bounty?.owner]);
 
   const hasTransferableBounty = !!(task.bounty && (task.bounty.token || task.bounty.enc));
-  const showSignOver = Boolean(
-    onTransferBounty &&
-    task.completed &&
-    canTransferBounty &&
-    hasTransferableBounty,
-  );
 
-  const manualSignDisabled = signingBounty || !signRecipientInput.trim();
+  const bountyHasReceiver = !!task.bounty?.receiver;
+  const bountyReceiverGate = bountyHasReceiver ? bountyReceiverIsViewer : true;
+
+  const bountySignerHasKey = useMemo(() => {
+    if (!task.bounty || !meHex) return false;
+    const tokenAvailable = !!task.bounty.token?.trim();
+    if (tokenAvailable) {
+      return bountySenderIsViewer || bountyOwnerIsViewer || bountyReceiverIsViewer;
+    }
+    const enc = task.bounty.enc as any;
+    if (!enc) return false;
+    if (enc.alg === "aes-gcm-256") return bountySenderIsViewer || bountyOwnerIsViewer;
+    if (enc.alg === "nip04") return bountyReceiverIsViewer;
+    return false;
+  }, [bountyOwnerIsViewer, bountyReceiverIsViewer, bountySenderIsViewer, meHex, task.bounty]);
+
+  const bountyTokenReady = !!task.bounty?.token?.trim();
+
+  const canSignOverBounty = useMemo(() => {
+    if (!hasTransferableBounty || !bountySignerHasKey || !onTransferBounty) return false;
+    if (!task.bounty) return false;
+    return task.bounty.state !== "revoked" && task.bounty.state !== "claimed";
+  }, [bountySignerHasKey, hasTransferableBounty, onTransferBounty, task.bounty]);
+
+  const canRedeemBounty = useMemo(() => {
+    if (!task.bounty || !bountyReceiverGate) return false;
+    return task.bounty.state === "unlocked" && bountyTokenReady;
+  }, [bountyReceiverGate, bountyTokenReady, task.bounty]);
+
+  const canRevealBounty = useMemo(() => {
+    if (!task.bounty?.enc) return false;
+    const alg = (task.bounty.enc as any).alg;
+    return bountyReceiverIsViewer || alg === "aes-gcm-256";
+  }, [bountyReceiverIsViewer, task.bounty?.enc]);
+
+  useEffect(() => {
+    if (!task.bounty) {
+      setBountyExpanded(false);
+    }
+  }, [task.bounty]);
 
   async function handleSignOver(recipientHex: string, displayHint?: string) {
     if (!onTransferBounty || signingBounty) return;
@@ -8284,7 +9552,6 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     try {
       await onTransferBounty(task.id, recipientHex);
       setBountyState("locked");
-      setSignRecipientInput("");
       const label = displayHint || shortenPubkey(toNpubKey(recipientHex));
       if (label) {
         showToast(`Bounty locked to ${label}`, 2500);
@@ -8299,29 +9566,97 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     }
   }
 
-  async function handleSignToCompleter() {
-    if (!normalizedCompletedBy) return;
-    await handleSignOver(normalizedCompletedBy, completedDisplay || undefined);
-  }
+  const handleSignOverSelection = useCallback(
+    (selection: LockRecipientSelection) => {
+      const trimmed = selection.value.trim();
+      if (!trimmed) return;
+      const normalized = normalizeNostrPubkey(trimmed);
+      if (!normalized) {
+        alert("Enter a valid recipient npub or hex.");
+        return;
+      }
+      if (task.bounty?.receiver && pubkeysEqual(task.bounty.receiver, normalized)) {
+        alert("Bounty is already locked to that recipient.");
+        return;
+      }
+      handleSignOver(normalized, selection.label);
+      setSignOverSheetOpen(false);
+    },
+    [handleSignOver, task.bounty?.receiver],
+  );
 
-  async function handleManualSign() {
-    if (!onTransferBounty) return;
-    const trimmed = signRecipientInput.trim();
-    if (!trimmed) {
-      alert("Enter a recipient npub or hex.");
-      return;
+  const handleCopyBountyToken = useCallback(async () => {
+    const token = task.bounty?.token?.trim();
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      showToast("Bounty token copied", 1800);
+    } catch (error) {
+      console.error("Failed to copy bounty token", error);
+      alert("Unable to copy bounty token.");
     }
-    const normalized = normalizeNostrPubkey(trimmed);
-    if (!normalized) {
-      alert("Enter a valid recipient npub or hex.");
-      return;
+  }, [showToast, task.bounty?.token]);
+
+  const handleMarkBountyClaimed = useCallback(() => {
+    if (!task.bounty) return;
+    const next = normalizeBounty({
+      ...task.bounty,
+      token: "",
+      state: "claimed",
+      updatedAt: new Date().toISOString(),
+    });
+    if (!next) return;
+    setBountyState("claimed");
+    save({ bounty: next });
+  }, [save, task.bounty]);
+
+  const redeemCurrentBounty = useCallback(
+    async (fromRect?: DOMRect) => {
+      if (!task.bounty?.token) return;
+      try {
+        const bountyToken = task.bounty.token;
+        const res = await receiveToken(bountyToken);
+        if (res.savedForLater) {
+          alert("Token saved for later redemption. We'll redeem it when your connection returns.");
+          return;
+        }
+        if (res.crossMint) {
+          alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
+        }
+        const amt = res.proofs.reduce((a, p) => a + (p?.amount || 0), 0);
+        appendWalletHistoryEntry({
+          id: `redeem-bounty-${Date.now()}`,
+          summary: `Redeemed bounty • ${amt} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
+          detail: bountyToken,
+          detailKind: "token",
+          type: "ecash",
+          direction: "in",
+          amountSat: amt,
+          mintUrl: res.usedMintUrl ?? task.bounty?.mint ?? undefined,
+        });
+        onRedeemCoins?.(fromRect);
+        save({ bounty: undefined });
+      } catch (error) {
+        console.error(error);
+        alert("Unable to redeem bounty token right now.");
+      }
+    },
+    [appendWalletHistoryEntry, onRedeemCoins, receiveToken, save, task.bounty?.token],
+  );
+
+  const handleRemoveBounty = useCallback(() => {
+    if (!task.bounty || !canRemoveBounty) return;
+    save({ bounty: undefined });
+  }, [canRemoveBounty, save, task.bounty]);
+
+  const handleToggleBountyList = useCallback(() => {
+    if (!bountyButtonActive) return;
+    if (taskInBountyList) {
+      onRemoveFromBountyList?.(task.id);
+    } else {
+      onAddToBountyList?.(task.id);
     }
-    if (task.bounty?.receiver && pubkeysEqual(task.bounty.receiver, normalized)) {
-      alert("Bounty is already locked to that recipient.");
-      return;
-    }
-    await handleSignOver(normalized);
-  }
+  }, [bountyButtonActive, onAddToBountyList, onRemoveFromBountyList, task.id, taskInBountyList]);
 
 
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -8452,10 +9787,147 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     });
   }, [hasDueTime]);
 
+  const handleRepeatSelect = useCallback((next: Recurrence) => {
+    setRule((prev) => {
+      if (prev.untilISO) {
+        return { ...next, untilISO: prev.untilISO };
+      }
+      return next;
+    });
+    setRepeatSheetOpen(false);
+    setRepeatCustomSheetOpen(false);
+  }, []);
+
+  const handleOpenCustomRepeat = useCallback(() => {
+    setRepeatSheetOpen(false);
+    setRepeatCustomSheetOpen(true);
+  }, []);
+
+  const handleOpenAdvancedRepeat = useCallback(() => {
+    setRepeatSheetOpen(false);
+    setRepeatCustomSheetOpen(false);
+    setShowAdvanced(true);
+  }, []);
+  function toggleDateSwitch() {
+    setDateEnabled((prev) => {
+      const next = !prev;
+      if (next) {
+        if (!scheduledDate) {
+          const todayISO = isoDatePart(new Date().toISOString());
+          setScheduledDate(todayISO);
+          setCalendarBaseDate(todayISO);
+        } else {
+          setCalendarBaseDate(scheduledDate);
+        }
+        setDateDetailsOpen(true);
+        setTimeDetailsOpen(false);
+      } else {
+        setDateDetailsOpen(false);
+      }
+      return next;
+    });
+  }
+
+  function handleDateRowToggle() {
+    if (!dateEnabled) return;
+    setDateDetailsOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setTimeDetailsOpen(false);
+      }
+      return next;
+    });
+  }
+  const setTimePickerFromParts = useCallback((hour: number, minute: number, meridiem: Meridiem) => {
+    const nextValue = formatTimePickerValue(hour, minute, meridiem);
+    setScheduledTime((prev) => (prev === nextValue ? prev : nextValue));
+  }, [setScheduledTime]);
+  const handleTimePickerHourScroll = useCallback(() => {
+    const column = timePickerHourColumnRef.current;
+    if (!column) return;
+    if (timePickerHourScrollFrame.current != null) {
+      cancelAnimationFrame(timePickerHourScrollFrame.current);
+    }
+    timePickerHourScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
+      if (clampedIndex == null) return;
+      const nextHour = HOURS_12[clampedIndex];
+      if (typeof nextHour === "number" && timePickerHourValueRef.current !== nextHour) {
+        setTimePickerFromParts(nextHour, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+      }
+      if (typeof nextHour === "number") {
+        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex);
+      }
+    });
+  }, [setTimePickerFromParts]);
+  const handleTimePickerMinuteScroll = useCallback(() => {
+    const column = timePickerMinuteColumnRef.current;
+    if (!column) return;
+    if (timePickerMinuteScrollFrame.current != null) {
+      cancelAnimationFrame(timePickerMinuteScrollFrame.current);
+    }
+    timePickerMinuteScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
+      if (clampedIndex == null) return;
+      const nextMinute = MINUTES[clampedIndex];
+      if (typeof nextMinute === "number" && timePickerMinuteValueRef.current !== nextMinute) {
+        setTimePickerFromParts(timePickerHourValueRef.current, nextMinute, timePickerMeridiemValueRef.current);
+      }
+      if (typeof nextMinute === "number") {
+        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex);
+      }
+    });
+  }, [setTimePickerFromParts]);
+  const handleTimePickerMeridiemScroll = useCallback(() => {
+    const column = timePickerMeridiemColumnRef.current;
+    if (!column) return;
+    if (timePickerMeridiemScrollFrame.current != null) {
+      cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
+    }
+    timePickerMeridiemScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
+      if (clampedIndex == null) return;
+      const nextMeridiem = MERIDIEMS[clampedIndex];
+      if (nextMeridiem && timePickerMeridiemValueRef.current !== nextMeridiem) {
+        setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, nextMeridiem);
+      }
+      if (nextMeridiem) {
+        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex);
+      }
+    });
+  }, [setTimePickerFromParts]);
+
+  function handleToggleTime() {
+    if (hasDueTime) {
+      setScheduledTime("");
+      setTimeDetailsOpen(false);
+      return;
+    }
+    const fallback = lastTimeRef.current || defaultTimeValue;
+    setScheduledTime(fallback);
+    setTimeDetailsOpen(true);
+    setDateDetailsOpen(false);
+  }
+
+  function handleTimeRowToggle() {
+    if (!hasDueTime) return;
+    setTimeDetailsOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setDateDetailsOpen(false);
+      }
+      return next;
+    });
+  }
+
   function buildTask(overrides: Partial<Task> = {}): Task {
-    const baseDate = scheduledDate || isoDatePart(task.dueISO);
+    const baseDate = scheduledDate || initialDate || isoDatePart(task.dueISO);
     const hasTime = hasDueTime;
-    const dueISO = isoFromDateTime(baseDate, hasTime ? scheduledTime : undefined);
+    const dateUnchanged = baseDate === (initialDate || "");
+    const timeUnchanged = hasTime === defaultHasTime && (!hasTime || scheduledTime === initialTime);
+    const dueISO = dateUnchanged && timeUnchanged
+      ? task.dueISO
+      : isoFromDateTime(baseDate, hasTime ? scheduledTime : undefined);
     const hiddenUntilISO = hiddenUntilForBoard(dueISO, boardKind, weekStart);
     const reminderValues = hasTime ? [...reminderSelection] : [];
     return {
@@ -8484,618 +9956,658 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   }
 
   return (
-    <Modal
-      onClose={onCancel}
-      title="Edit task"
-      actions={
-        <button
-          className="accent-button button-sm pressable"
-          onClick={() => save()}
-        >
-          Save
-        </button>
-      }
-    >
-      <div className="space-y-4">
-        <input value={title} onChange={e=>setTitle(e.target.value)}
-               className="pill-input w-full" placeholder="Title"/>
-        <textarea value={note} onChange={e=>setNote(e.target.value)} onPaste={handlePaste}
-                  className="pill-textarea w-full" rows={3}
-                  placeholder="Notes (optional)"/>
-        {images.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {images.map((img, i) => (
-              <div key={i} className="relative">
-                <img src={img} className="max-h-40 rounded-lg" />
-                <button type="button" className="absolute top-1 right-1 bg-black/70 rounded-full px-1 text-xs" onClick={() => setImages(images.filter((_, j) => j !== i))}>×</button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <label className="text-sm font-medium">Attachments</label>
-            <input
-              ref={documentInputRef}
-              type="file"
-              accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              className="hidden"
-              multiple
-              onChange={handleDocumentAttach}
-            />
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={() => documentInputRef.current?.click()}
-            >
-              Add document
-            </button>
-          </div>
-          {documents.length > 0 && (
-            <ul className="space-y-1">
-              {documents.map((doc) => (
-                <li key={doc.id} className="doc-edit-row">
-                  <div className="doc-edit-row__info">
-                    <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-                    <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
-                  </div>
-                  <div className="doc-edit-row__actions">
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={() => onPreviewDocument?.(task, doc)}
-                    >
-                      Preview
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable text-rose-500"
-                      onClick={() => setDocuments((prev) => prev.filter((item) => item.id !== doc.id))}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+    <>
+      <Modal onClose={onCancel} showClose={false} variant="fullscreen">
+      <div className="edit-modal">
+        <div className="edit-sheet__header">
+          <button
+            type="button"
+            className="edit-sheet__action"
+            onClick={onCancel}
+            aria-label="Close editor"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+          <div className="edit-sheet__title">Details</div>
+          <button
+            type="button"
+            className="edit-sheet__action edit-sheet__action--accent"
+            onClick={() => save()}
+            aria-label="Save task"
+          >
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         </div>
 
-        <div
-          onDragOver={handleSubtaskDragOver(null)}
-          onDrop={handleSubtaskDrop(null)}
-        >
-          <div className="flex items-center mb-2">
-            <label className="text-sm font-medium">Subtasks</label>
-          </div>
-          {subtasks.map((st) => (
-            <div
-              key={st.id}
-              className="flex items-center gap-2 mb-1 cursor-grab active:cursor-grabbing"
-              style={{ touchAction: 'auto' }}
-              draggable
-              onDragStart={handleSubtaskDragStart(st.id)}
-              onDragEnd={handleSubtaskDragEnd}
-              onDragOver={handleSubtaskDragOver(st.id)}
-              onDrop={handleSubtaskDrop(st.id)}
-            >
+        <section className="edit-card">
+          <div className="space-y-3">
+            <div className="edit-card__detail edit-card__detail--field">
               <input
-                type="checkbox"
-                checked={!!st.completed}
-                onChange={() => setSubtasks(prev => prev.map(s => s.id === st.id ? { ...s, completed: !s.completed } : s))}
-               
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="edit-field-input"
+                placeholder="Title"
               />
-              <input
-                className="pill-input flex-1 text-sm"
-                value={st.title}
-                onChange={(e) => setSubtasks(prev => prev.map(s => s.id === st.id ? { ...s, title: e.target.value } : s))}
-                placeholder="Subtask"
+            </div>
+            <div className="edit-card__detail edit-card__detail--field space-y-2">
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                onPaste={handlePaste}
+                className="edit-field-textarea"
+                rows={3}
+                placeholder="Notes (optional)"
               />
+              <div className="edit-detail-actions">
+                <input
+                  ref={documentInputRef}
+                  type="file"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  className="hidden"
+                  multiple
+                  onChange={handleDocumentAttach}
+                />
+                <button
+                  type="button"
+                  className="ghost-button button-sm pressable"
+                  onClick={() => documentInputRef.current?.click()}
+                >
+                  Attach
+                </button>
+              </div>
+            </div>
+            {images.length > 0 && (
+              <div className="edit-media-grid">
+                {images.map((img, i) => (
+                  <div key={i} className="relative">
+                    <img src={img} className="max-h-40 rounded-lg" alt="Attachment" />
+                    <button
+                      type="button"
+                      className="absolute top-1 right-1 rounded-full bg-black/70 px-1 text-xs"
+                      onClick={() => setImages(images.filter((_, j) => j !== i))}
+                      aria-label="Remove image"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {documents.length > 0 && (
+              <ul className="space-y-1">
+                {documents.map((doc) => (
+                  <li key={doc.id} className="doc-edit-row">
+                    <div className="doc-edit-row__info">
+                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
+                      <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
+                    </div>
+                    <div className="doc-edit-row__actions">
+                      <button
+                        type="button"
+                        className="ghost-button button-sm pressable"
+                        onClick={() => onPreviewDocument?.(task, doc)}
+                      >
+                        Preview
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button button-sm pressable text-rose-500"
+                        onClick={() => setDocuments((prev) => prev.filter((item) => item.id !== doc.id))}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="edit-card__detail edit-card__detail--field">
               <button
                 type="button"
-                className="text-sm text-rose-500"
-                onClick={() => setSubtasks(prev => prev.filter(s => s.id !== st.id))}
+                className="edit-row edit-row--interactive edit-row--inline"
+                onClick={() => setSubtasksExpanded((prev) => !prev)}
               >
-                ✕
+                <span className="edit-row__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                    <path d="M6 7h12M6 12h12M6 17h12" />
+                    <circle cx="4" cy="7" r="1" />
+                    <circle cx="4" cy="12" r="1" />
+                    <circle cx="4" cy="17" r="1" />
+                  </svg>
+                </span>
+                <div className="edit-row__content">{subtasksExpanded ? "Hide subtasks" : "Show subtasks"}</div>
+                <div className="edit-row__value">{subtasks.length}</div>
+                <span className="edit-row__chevron" aria-hidden="true">›</span>
               </button>
-            </div>
-          ))}
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              ref={newSubtaskRef}
-              value={newSubtask}
-              onChange={e=>setNewSubtask(e.target.value)}
-              onKeyDown={e=>{ if (e.key === "Enter") { e.preventDefault(); addSubtask(true); } }}
-              placeholder="New subtask…"
-              className="pill-input flex-1 text-sm"
-            />
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={() => addSubtask()}
-            >
-              Add
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <label htmlFor="edit-schedule" className="block mb-1 text-sm font-medium">Scheduled for</label>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              id="edit-schedule"
-              type="date"
-              value={scheduledDate}
-              onChange={e=>setScheduledDate(e.target.value)}
-              className="pill-input flex-1 min-w-[10rem] sm:max-w-[13rem]"
-              title="Scheduled date"
-            />
-            <input
-              type="time"
-              value={scheduledTime}
-              onChange={(e) => setScheduledTime(e.target.value)}
-              className="pill-input flex-none min-w-[8rem] sm:min-w-[8.5rem]"
-              title="Scheduled time"
-            />
-          </div>
-          <div className="mt-1 text-xs text-secondary">Leave the time blank if the task has no due time.</div>
-        </div>
-
-        <div className="wallet-section space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">Notifications</div>
-            {reminderSelection.length > 0 && (
-              <div className="ml-auto text-xs text-secondary">
-                {reminderSummary}
-              </div>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {reminderOptions.map((opt) => {
-              const active = reminderSelection.includes(opt.id);
-              const cls = active ? 'accent-button button-sm pressable' : 'ghost-button button-sm pressable';
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  className={cls}
-                  onClick={() => toggleReminder(opt.id)}
-                  disabled={!hasDueTime}
-                  title={opt.label}
-                >
-                  {opt.badge}
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={handleAddCustomReminder}
-              disabled={!hasDueTime}
-              title="Add a custom reminder"
-            >
-              Custom…
-            </button>
-          </div>
-          {!hasDueTime && (
-            <div className="text-xs text-secondary">Set a due time to enable reminders.</div>
-          )}
-        </div>
-
-        {/* Recurrence section */}
-        <div className="wallet-section space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">Recurrence</div>
-            <div className="ml-auto text-xs text-secondary">{labelOf(rule)}</div>
-          </div>
-          <div className="mt-2 flex gap-2 flex-wrap">
-            <button className="ghost-button button-sm pressable" onClick={() => setRule(R_NONE)}>None</button>
-            <button className="ghost-button button-sm pressable" onClick={() => setRule({ type: "daily" })}>Daily</button>
-            <button className="ghost-button button-sm pressable" onClick={() => setRule({ type: "weekly", days: [1,2,3,4,5] })}>Mon–Fri</button>
-            <button className="ghost-button button-sm pressable" onClick={() => setRule({ type: "weekly", days: [0,6] })}>Weekends</button>
-            <button className="ghost-button button-sm pressable ml-auto" onClick={() => setShowAdvanced(true)} title="Advanced recurrence…">Advanced…</button>
-          </div>
-        </div>
-
-        {streakEligible && (
-          <div className="wallet-section space-y-2">
-            <div className="text-sm font-medium">Streaks</div>
-            <div className="text-xs text-secondary">
-              <div className="flex flex-wrap items-center gap-3">
-                <span>
-                  Current streak: <span className="font-semibold text-primary">{currentStreak}</span>
-                </span>
-                <span>
-                  Longest streak: <span className="font-semibold text-primary">{bestStreak}</span>
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Bounty (ecash) */}
-        <div className="wallet-section space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">Bounty (ecash)</div>
-            {task.bounty && (
-              <div className="ml-auto flex items-center gap-2 text-[0.6875rem]">
-                <span className={`px-2 py-0.5 rounded-full border ${task.bounty.state==='unlocked' ? 'bg-emerald-700/30 border-emerald-700' : task.bounty.state==='locked' ? 'bg-neutral-700/40 border-neutral-600' : task.bounty.state==='revoked' ? 'bg-rose-700/30 border-rose-700' : 'bg-surface-muted border-surface'}`}>{bountyStateLabel(task.bounty)}</span>
-                {task.createdBy && pubkeysEqual(task.createdBy, (window as any).nostrPK) && <span className="px-2 py-0.5 rounded-full bg-surface-muted border border-surface" title="You created the task">owner: you</span>}
-                {task.bounty.sender && pubkeysEqual(task.bounty.sender, (window as any).nostrPK) && <span className="px-2 py-0.5 rounded-full bg-surface-muted border border-surface" title="You funded the bounty">funder: you</span>}
-                {task.bounty.receiver && pubkeysEqual(task.bounty.receiver, (window as any).nostrPK) && <span className="px-2 py-0.5 rounded-full bg-surface-muted border border-surface" title="You are the recipient">recipient: you</span>}
-              </div>
-            )}
-          </div>
-          {!task.bounty ? (
-            <div className="mt-2 space-y-2">
-              <div className="flex items-center gap-2">
-                <input type="number" min={1} value={bountyAmount as number || ""}
-                       onChange={(e)=>setBountyAmount(e.target.value ? parseInt(e.target.value,10) : "")}
-                       placeholder="Amount (sats)"
-                       className="pill-input w-40"/>
-                <button className="accent-button button-sm pressable"
-                        onClick={async () => {
-                          if (typeof bountyAmount !== 'number' || bountyAmount <= 0) return;
-                          const recipientHex = lockToRecipient
-                            ? normalizeNostrPubkey(recipientInput) || normalizeNostrPubkey(task.createdBy || "")
-                            : null;
-                          if (lockToRecipient && !recipientHex) {
-                            alert("Enter a valid recipient npub/hex or ensure the task has an owner.");
-                            return;
-                          }
-                          try {
-                            const { token: tok, lockInfo } = await createSendToken(
-                              bountyAmount,
-                              recipientHex ? { p2pk: { pubkey: recipientHex } } : undefined,
-                            );
-                            const lockType: Task["bounty"]["lock"] = lockInfo?.type === "p2pk"
-                              ? "p2pk"
-                              : encryptWhenAttach
-                                ? "unknown"
-                                : "none";
-                            const b: Task["bounty"] = {
-                              id: crypto.randomUUID(),
-                              token: lockToRecipient || encryptWhenAttach ? "" : tok,
-                              amount: bountyAmount,
-                              mint: mintUrl,
-                              state: lockToRecipient || encryptWhenAttach ? "locked" : "unlocked",
-                              owner: task.createdBy || (window as any).nostrPK || "",
-                              sender: (window as any).nostrPK || "",
-                              receiver: recipientHex || undefined,
-                              updatedAt: new Date().toISOString(),
-                              lock: lockType,
-                            };
-                            if (lockToRecipient && recipientHex) {
-                              try {
-                                const enc = await encryptEcashTokenForRecipient(recipientHex, tok);
-                                b.enc = enc;
-                                b.token = "";
-                                b.lock = "p2pk";
-                              } catch (e) {
-                                alert("Recipient encryption failed: " + (e as Error).message);
-                                return;
-                              }
-                            } else if (encryptWhenAttach) {
-                              try {
-                                const enc = await encryptEcashTokenForFunder(tok);
-                                b.enc = enc;
-                                b.token = "";
-                              } catch (e) {
-                                alert("Encryption failed: "+ (e as Error).message);
-                                return;
-                              }
-                            }
-                            appendWalletHistoryEntry({
-                              id: `bounty-${Date.now()}`,
-                              summary: `Attached bounty • ${bountyAmount} sats`,
-                              detail: tok,
-                              detailKind: "token",
-                              type: "ecash",
-                              direction: "out",
-                              amountSat: bountyAmount,
-                              mintUrl: mintUrl || undefined,
-                            });
-                            const normalized = normalizeBounty(b);
-                            if (!normalized) return;
-                            save({ bounty: normalized });
-                          } catch (e) {
-                            alert("Failed to create token: "+ (e as Error).message);
-                          }
-                        }}
-                >Attach</button>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="flex items-center gap-2 text-xs text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={encryptWhenAttach && !lockToRecipient}
-                    onChange={(e)=> setEncryptWhenAttach(e.target.checked)}
-                    disabled={lockToRecipient}
-                  />
-                  Hide/encrypt token until I reveal (uses your local key)
-                </label>
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-xs text-secondary">
-                    <input
-                      type="checkbox"
-                      checked={lockToRecipient}
-                      onChange={(e)=>{ setLockToRecipient(e.target.checked); if (e.target.checked) setEncryptWhenAttach(false); }}
-                    />
-                    Lock to recipient (Nostr npub/hex)
-                  </label>
-                  {task.createdBy && (
-                    <button
-                      className="ghost-button button-sm pressable"
-                      onClick={()=>{ setRecipientInput(task.createdBy!); setLockToRecipient(true); setEncryptWhenAttach(false);} }
-                      title="Use task owner"
-                    >Use owner</button>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  placeholder="npub1... or 64-hex pubkey"
-                  value={recipientInput}
-                  onChange={(e)=> setRecipientInput(e.target.value)}
-                  className="pill-input w-full text-xs"
-                  disabled={!lockToRecipient}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="mt-2 space-y-2">
-              <div className="text-xs text-secondary">Amount</div>
-              <input type="number" min={1} value={(bountyAmount as number) || task.bounty?.amount || ""}
-                     onChange={(e)=>setBountyAmount(e.target.value ? parseInt(e.target.value,10) : "")}
-                     className="pill-input w-40"/>
-              <div className="text-xs text-secondary">Token</div>
-              {task.bounty.enc && !task.bounty.token ? (
-                <div className="bg-surface-muted border border-surface rounded-2xl p-3 text-xs text-secondary">
-                  {((task.bounty.enc as any).alg === 'aes-gcm-256')
-                    ? 'Hidden (encrypted by funder). Only the funder can reveal.'
-                    : 'Locked to recipient\'s Nostr key (nip04). Only the recipient can decrypt.'}
-                </div>
-              ) : (
-                <textarea readOnly value={task.bounty.token || ""}
-                          className="pill-textarea w-full" rows={3}/>
-              )}
-              <div className="flex gap-2 flex-wrap">
-                {task.bounty.token && (
-                  task.bounty.state === 'unlocked' ? (
-                        <button
-                          className="accent-button button-sm pressable"
-                          onClick={async (e) => {
-                            const fromRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                            try {
-                              const bountyToken = task.bounty!.token!;
-                              const res = await receiveToken(bountyToken);
-                              if (res.savedForLater) {
-                                alert('Token saved for later redemption. We\'ll redeem it when your connection returns.');
-                                return;
-                              }
-                              if (res.crossMint) {
-                            alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
-                          }
-                          const amt = res.proofs.reduce((a, p) => a + (p?.amount || 0), 0);
-                              appendWalletHistoryEntry({
-                                id: `redeem-bounty-${Date.now()}`,
-                                summary: `Redeemed bounty • ${amt} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
-                                detail: bountyToken,
-                                detailKind: "token",
-                                type: "ecash",
-                                direction: "in",
-                                amountSat: amt,
-                                mintUrl: res.usedMintUrl ?? mintUrl ?? undefined,
-                              });
-                          // Coins fly from the button to the selector target
-                          try { onRedeemCoins?.(fromRect); } catch {}
-                          setBountyState('claimed');
-                          const claimed = normalizeBounty({ ...task.bounty!, token: '', state: 'claimed', updatedAt: new Date().toISOString() });
-                          if (claimed) save({ bounty: claimed });
-                        } catch (e) {
-                          alert('Redeem failed: ' + (e as Error).message);
-                        }
-                      }}
+              {subtasksExpanded && (
+                <div className="space-y-2 pt-2">
+                  {subtasks.map((st) => (
+                    <div
+                      key={st.id}
+                      className="flex items-center gap-2"
+                      style={{ touchAction: "auto" }}
+                      draggable
+                      onDragStart={handleSubtaskDragStart(st.id)}
+                      onDragEnd={handleSubtaskDragEnd}
+                      onDragOver={handleSubtaskDragOver(st.id)}
+                      onDrop={handleSubtaskDrop(st.id)}
                     >
-                      Redeem
-                    </button>
-                  ) : (
-                    <button
-                      className="ghost-button button-sm pressable"
-                      onClick={async () => { try { await navigator.clipboard?.writeText(task.bounty!.token!); } catch {} }}
-                    >
-                      Copy token
-                    </button>
-                  )
-                )}
-                {task.bounty.enc && !task.bounty.token && (window as any).nostrPK && (
-                  ((task.bounty.enc as any).alg === 'aes-gcm-256' && pubkeysEqual(task.bounty.sender, (window as any).nostrPK)) ||
-                  ((task.bounty.enc as any).alg === 'nip04' && pubkeysEqual(task.bounty.receiver, (window as any).nostrPK))
-                ) && (
-                  <button className="accent-button button-sm pressable"
-                          onClick={async () => {
-                            try {
-                              if (onRevealBounty) await onRevealBounty(task.id);
-                            } catch {}
-                          }}>Reveal (decrypt)</button>
-                )}
-                <button
-                  className={`ghost-button button-sm pressable ${task.bounty.token ? '' : 'opacity-50 cursor-not-allowed'}`}
-                  disabled={!task.bounty.token}
-                  onClick={() => {
-                    if (!task.bounty.token) return;
-                    setBountyState('claimed');
-                    const claimed = normalizeBounty({ ...task.bounty!, state: 'claimed', updatedAt: new Date().toISOString() });
-                    if (claimed) save({ bounty: claimed });
-                  }}
-                >
-                  Mark claimed
-                </button>
-                {showSignOver && (
-                  <div className="basis-full rounded-xl border border-surface bg-surface-muted/60 px-3 py-3 text-[0.75rem] text-secondary space-y-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-primary">Sign bounty to recipient</span>
-                      {currentReceiverDisplay && (
-                        <span className="ml-auto text-[0.6875rem] text-secondary">Current lock: {currentReceiverDisplay}</span>
-                      )}
-                    </div>
-                    <div className="text-[0.6875rem] text-secondary">
-                      Quickly re-encrypt the token so only the intended npub can redeem it.
-                    </div>
-                    {canSignToCompleter && (
-                      <button
-                        className={`accent-button button-sm pressable ${signingBounty ? 'opacity-70 cursor-wait' : ''}`}
-                        title={completedNpub || undefined}
-                        disabled={signingBounty}
-                        onClick={() => { void handleSignToCompleter(); }}
-                      >
-                        {signingBounty ? 'Signing…' : `Sign to completer${completedDisplay ? ` (${completedDisplay})` : ''}`}
-                      </button>
-                    )}
-                    <div className="flex flex-wrap items-center gap-2">
                       <input
-                        type="text"
-                        value={signRecipientInput}
-                        onChange={(e) => setSignRecipientInput(e.target.value)}
-                        placeholder="npub1... or 64-hex pubkey"
-                        className="pill-input flex-1 min-w-[11rem] text-xs"
-                        autoComplete="off"
-                        spellCheck={false}
-                        disabled={signingBounty}
+                        type="checkbox"
+                        checked={!!st.completed}
+                        onChange={() => setSubtasks((prev) => prev.map((s) => (s.id === st.id ? { ...s, completed: !s.completed } : s)))}
+                      />
+                      <input
+                        className="edit-field-input flex-1"
+                        value={st.title}
+                        onChange={(e) => setSubtasks((prev) => prev.map((s) => (s.id === st.id ? { ...s, title: e.target.value } : s)))}
+                        placeholder="Subtask"
                       />
                       <button
-                        className={`accent-button button-sm pressable ${manualSignDisabled ? 'opacity-70 cursor-not-allowed' : ''}`}
-                        disabled={manualSignDisabled}
-                        onClick={() => { void handleManualSign(); }}
+                        type="button"
+                        className="text-sm text-rose-500"
+                        onClick={() => setSubtasks((prev) => prev.filter((s) => s.id !== st.id))}
                       >
-                        {signingBounty ? 'Signing…' : 'Sign to recipient'}
+                        ✕
                       </button>
                     </div>
-                  </div>
-                )}
-                {task.bounty.state === 'locked' && (
-                  <>
-                    <button className="accent-button button-sm pressable"
-                            onClick={() => {
-                              // Placeholder unlock: trust user has reissued unlocked token externally
-                              const newTok = prompt('Paste unlocked token (after you reissued in your wallet):');
-                              if (!newTok) return;
-                              const unlocked = normalizeBounty({ ...task.bounty!, token: newTok, state: 'unlocked', updatedAt: new Date().toISOString() });
-                              if (unlocked) save({ bounty: unlocked });
-                            }}>Unlock…</button>
-                    <button
-                      className={`px-3 py-2 rounded-xl ${((window as any).nostrPK && (task.bounty!.sender === (window as any).nostrPK || task.createdBy === (window as any).nostrPK)) ? 'bg-rose-600/80 hover:bg-rose-600' : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'}`}
-                      disabled={!((window as any).nostrPK && (task.bounty!.sender === (window as any).nostrPK || task.createdBy === (window as any).nostrPK))}
-                      onClick={() => {
-                        if (!((window as any).nostrPK && (task.bounty!.sender === (window as any).nostrPK || task.createdBy === (window as any).nostrPK))) return;
-                        const revoked = normalizeBounty({ ...task.bounty!, state: 'revoked', updatedAt: new Date().toISOString() });
-                        if (revoked) save({ bounty: revoked });
+                  ))}
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={newSubtaskRef}
+                      value={newSubtask}
+                      onChange={(e) => setNewSubtask(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addSubtask(true);
+                        }
                       }}
+                      placeholder="New subtask…"
+                      className="edit-field-input flex-1"
+                    />
+                    <button
+                      type="button"
+                      className="ghost-button button-sm pressable"
+                      onClick={() => addSubtask()}
                     >
-                      Revoke
+                      Add
                     </button>
-                  </>
-                )}
-                <button
-                  className={`ml-auto px-3 py-2 rounded-xl ${task.bounty.state==='claimed' ? 'bg-neutral-800' : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'}`}
-                  disabled={task.bounty.state !== 'claimed'}
-                  onClick={() => {
-                    if (task.bounty.state !== 'claimed') return;
-                    save({ bounty: undefined });
-                  }}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="edit-card">
+          <div className="edit-card__title">Date &amp; Time</div>
+          <div className="edit-row">
+            <span className="edit-row__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                <rect x="3" y="5" width="18" height="16" rx="3" ry="3" />
+                <path d="M8 3v4M16 3v4M3 11h18" />
+              </svg>
+            </span>
+            <div
+              className={`edit-row__content ${dateEnabled ? "edit-row__content--tappable" : ""}`}
+              onClick={handleDateRowToggle}
+              role={dateEnabled ? "button" : undefined}
+              tabIndex={dateEnabled ? 0 : -1}
+              onKeyDown={(e) => {
+                if (!dateEnabled) return;
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleDateRowToggle();
+                }
+              }}
+            >
+              <div className="edit-row__label">Date</div>
+              {dateEnabled && <div className="edit-row__meta">{dateSummary}</div>}
+            </div>
+            <button
+              type="button"
+              className={`edit-toggle ${dateEnabled ? "is-on" : ""}`}
+              role="switch"
+              aria-checked={dateEnabled}
+              aria-label="Toggle date"
+              onClick={toggleDateSwitch}
+            >
+              <span className="edit-toggle__thumb" />
+            </button>
+          </div>
+          {dateEnabled && dateDetailsOpen && (
+            <div className="edit-card__detail space-y-3">
+              <DatePickerCalendar
+                baseDate={calendarBaseDate}
+                selectedDate={scheduledDate}
+                onSelectDate={(iso) => setScheduledDate(iso)}
+              />
+            </div>
+          )}
+
+          <div className="edit-row">
+            <span className="edit-row__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                <circle cx="12" cy="12" r="8.5" />
+                <path d="M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <div
+              className={`edit-row__content ${hasDueTime ? "edit-row__content--tappable" : ""}`}
+              onClick={handleTimeRowToggle}
+              role={hasDueTime ? "button" : undefined}
+              tabIndex={hasDueTime ? 0 : -1}
+              onKeyDown={(e) => {
+                if (!hasDueTime) return;
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleTimeRowToggle();
+                }
+              }}
+            >
+              <div className="edit-row__label">Time</div>
+              {hasDueTime && <div className="edit-row__meta">{timeSummary}</div>}
+            </div>
+            <button
+              type="button"
+              className={`edit-toggle ${hasDueTime ? "is-on" : ""}`}
+              role="switch"
+              aria-checked={hasDueTime}
+              aria-label="Toggle due time"
+              onClick={handleToggleTime}
+            >
+              <span className="edit-toggle__thumb" />
+            </button>
+          </div>
+          {hasDueTime && timeDetailsOpen && (
+            <div className="edit-card__detail space-y-2">
+              <div className="edit-time-picker" role="group" aria-label="Select time">
+                <div
+                  className="edit-time-picker__column"
+                  ref={timePickerHourColumnRef}
+                  onScroll={handleTimePickerHourScroll}
+                  role="listbox"
+                  aria-label="Select hour"
                 >
-                  Remove bounty
-                </button>
+                  {HOURS_12.map((hour, idx) => (
+                    <div
+                      key={hour}
+                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
+                      data-picker-index={idx}
+                      role="option"
+                      aria-selected={timePickerHour === hour}
+                    >
+                      {String(hour).padStart(2, "0")}
+                    </div>
+                  ))}
+                </div>
+                <div className="edit-time-picker__separator" aria-hidden="true">
+                  :
+                </div>
+                <div
+                  className="edit-time-picker__column"
+                  ref={timePickerMinuteColumnRef}
+                  onScroll={handleTimePickerMinuteScroll}
+                  role="listbox"
+                  aria-label="Select minute"
+                >
+                  {MINUTES.map((minute, idx) => (
+                    <div
+                      key={minute}
+                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
+                      data-picker-index={idx}
+                      role="option"
+                      aria-selected={timePickerMinute === minute}
+                    >
+                      {String(minute).padStart(2, "0")}
+                    </div>
+                  ))}
+                </div>
+                <div
+                  className="edit-time-picker__column edit-time-picker__column--meridiem"
+                  ref={timePickerMeridiemColumnRef}
+                  onScroll={handleTimePickerMeridiemScroll}
+                  role="listbox"
+                  aria-label="Select AM or PM"
+                >
+                  {MERIDIEMS.map((label, idx) => (
+                    <div
+                      key={label}
+                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
+                      data-picker-index={idx}
+                      role="option"
+                      aria-selected={timePickerMeridiem === label}
+                    >
+                      {label}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
-        </div>
 
-        {/* Creator info */}
-        <div className="pt-2">
-          {(() => {
-            const raw = task.createdBy || "";
-            let display = raw;
-            try {
-              if (raw.startsWith("npub")) {
-                const dec = nip19.decode(raw);
-                if (typeof dec.data === 'string') display = dec.data;
-                else if (dec.data && (dec.data as any).length) {
-                  const arr = dec.data as unknown as ArrayLike<number>;
-                  display = Array.from(arr).map((x)=>x.toString(16).padStart(2,'0')).join('');
-                }
-              }
-            } catch {}
-            const short = display
-              ? display.length > 16
-                ? display.slice(0, 10) + "…" + display.slice(-6)
-                : display
-              : "(not set)";
-            const canCopy = !!display;
-            return (
-              <div className="flex items-center justify-between text-[0.6875rem] text-secondary">
-                <div>
-                  Created by: <span className="font-mono text-secondary">{short}</span>
-                </div>
-                <button
-                  className={`ghost-button button-sm pressable ${canCopy ? '' : 'opacity-50 cursor-not-allowed'}`}
-                  title={canCopy ? 'Copy creator key (hex)' : 'No key to copy'}
-                  onClick={async () => { if (canCopy) { try { await navigator.clipboard?.writeText(display); } catch {} } }}
-                  disabled={!canCopy}
-                >
-                  Copy
-                </button>
+          <button
+            type="button"
+            className="edit-row edit-row--interactive"
+            onClick={() => setRepeatSheetOpen(true)}
+          >
+            <span className="edit-row__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                <path d="M4 12h16M7 7l-3 5 3 5M17 17l3-5-3-5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <div className="edit-row__content">
+              <div className="edit-row__label">Repeat</div>
+            </div>
+            <div className="edit-row__value">{labelOf(rule)}</div>
+            <span className="edit-row__chevron" aria-hidden="true">›</span>
+          </button>
+
+          {rule.type !== "none" && (
+            <button
+              type="button"
+              className="edit-row edit-row--interactive"
+              onClick={() => setEndRepeatSheetOpen(true)}
+            >
+              <span className="edit-row__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                  <path d="M6 6h12v12H6z" opacity="0.35" />
+                  <path d="M6 12h12" />
+                </svg>
+              </span>
+              <div className="edit-row__content">
+                <div className="edit-row__label">End Repeat</div>
               </div>
-            );
-          })()}
-        </div>
+              <div className="edit-row__value">{endRepeatSummary}</div>
+              <span className="edit-row__chevron" aria-hidden="true">›</span>
+            </button>
+          )}
 
-        {/* Completed by info (only when completed) */}
-        {task.completed && (
-          <div className="pt-1">
-            {(() => {
-              const raw = task.completedBy || "";
-              let display = raw;
-              try {
-                if (raw.startsWith("npub")) {
-                  const dec = nip19.decode(raw);
-                  if (typeof dec.data === 'string') display = dec.data;
-                  else if (dec.data && (dec.data as any).length) {
-                    const arr = dec.data as unknown as ArrayLike<number>;
-                    display = Array.from(arr).map((x)=>x.toString(16).padStart(2,'0')).join('');
-                  }
-                }
-              } catch {}
-              const short = display
-                ? display.length > 16
-                  ? display.slice(0, 10) + "…" + display.slice(-6)
-                  : display
-                : "(not set)";
-              const canCopy = !!display;
-              return (
-                <div className="flex items-center justify-between text-[0.6875rem] text-secondary">
-                  <div>
-                    Completed by: <span className="font-mono text-secondary">{short}</span>
-                  </div>
-                  <button
-                    className={`ghost-button button-sm pressable ${canCopy ? '' : 'opacity-50 cursor-not-allowed'}`}
-                    title={canCopy ? 'Copy completer key (hex)' : 'No key to copy'}
-                    onClick={async () => { if (canCopy) { try { await navigator.clipboard?.writeText(display); } catch {} } }}
-                    disabled={!canCopy}
-                  >
-                    Copy
-                  </button>
+          {hasDueTime && (
+            <>
+              <button
+                type="button"
+                className="edit-row edit-row--interactive"
+                onClick={() => setReminderPickerExpanded((prev) => !prev)}
+              >
+                <span className="edit-row__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                    <path d="M12 5a5 5 0 0 1 5 5v3.25l1.25 2.5H5.75L7 13.25V10a5 5 0 0 1 5-5z" />
+                    <path d="M10 19a2 2 0 0 0 4 0" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <div className="edit-row__content">
+                  <div className="edit-row__label">Reminders</div>
                 </div>
-              );
-            })()}
-          </div>
+                <div className="edit-row__value">{reminderRowSummary}</div>
+                <span className="edit-row__chevron" aria-hidden="true">›</span>
+              </button>
+              {reminderPickerExpanded && (
+                <div className="edit-card__detail space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {reminderOptions.map((opt) => {
+                      const active = reminderSelection.includes(opt.id);
+                      const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          className={cls}
+                          onClick={() => toggleReminder(opt.id)}
+                          disabled={!hasDueTime}
+                          title={opt.label}
+                        >
+                          {opt.badge}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      className="ghost-button button-sm pressable"
+                      onClick={handleAddCustomReminder}
+                      disabled={!hasDueTime}
+                      title="Add a custom reminder"
+                    >
+                      Custom…
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+
+        {task.bounty ? (
+          <section className="edit-card space-y-2">
+            <div className="edit-card__title">Bounty (ecash)</div>
+            <div className={`wallet-history__item bounty-card${bountyExpanded ? " wallet-history__item--open" : ""}`}>
+              <button
+                type="button"
+                className="wallet-history__summary bounty-card__summary"
+                onClick={() => setBountyExpanded((prev) => !prev)}
+                aria-expanded={bountyExpanded}
+              >
+                <div className="wallet-history__icon" aria-hidden="true">
+                  <EcashGlyph className="wallet-history__glyph" />
+                </div>
+                <div className="wallet-history__body">
+                  <div className="wallet-history__title-row">
+                    <span className="wallet-history__type">Ecash bounty</span>
+                    <span className="wallet-history__time">{bountyStateLabel(task.bounty)}</span>
+                  </div>
+                </div>
+                <div className="wallet-history__value">
+                  {typeof task.bounty.amount === "number" && (
+                    <span className="wallet-history__amount wallet-history__amount--in">+{task.bounty.amount} sats</span>
+                  )}
+                </div>
+              </button>
+
+              {!bountyExpanded && (
+                <div className="bounty-card__actions px-4 pb-3">
+                  {task.bounty.state === "locked" && canRevealBounty && bountySignerHasKey && (
+                    <button
+                      className="accent-button button-sm pressable"
+                      onClick={async () => {
+                        try {
+                          await onRevealBounty?.(task.id);
+                          setBountyState("unlocked");
+                        } catch (error) {
+                          alert((error as Error)?.message || "Unable to reveal bounty token.");
+                        }
+                      }}
+                      disabled={!canRevealBounty}
+                    >
+                      {bountyReceiverIsViewer ? "Unlock" : "Reveal"}
+                    </button>
+                  )}
+
+                  {canSignOverBounty && (
+                    <button
+                      className="ghost-button button-sm pressable"
+                      onClick={() => setSignOverSheetOpen(true)}
+                      disabled={signingBounty}
+                    >
+                      {signingBounty ? "Signing…" : "Sign over"}
+                    </button>
+                  )}
+
+                  {canRedeemBounty && (
+                    <>
+                      <button
+                        className="accent-button button-sm pressable"
+                        onClick={(e) => redeemCurrentBounty((e.currentTarget as HTMLElement).getBoundingClientRect())}
+                        disabled={!bountyTokenReady}
+                      >
+                        Redeem
+                      </button>
+                      <button
+                        className="ghost-button button-sm pressable"
+                        onClick={handleCopyBountyToken}
+                        disabled={!bountyTokenReady}
+                      >
+                        Copy
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {bountyExpanded && (
+                <div className="bounty-card__details">
+                  <div className="bounty-card__meta">
+                    <div>
+                      <div className="bounty-card__label">Status</div>
+                      <div className="bounty-card__value">{bountyStateLabel(task.bounty)}</div>
+                    </div>
+                    <div>
+                      <div className="bounty-card__label">Amount</div>
+                      <div className="bounty-card__value font-semibold">
+                        {typeof task.bounty.amount === "number" ? `${task.bounty.amount} sats` : "Unknown"}
+                      </div>
+                    </div>
+                    {task.bounty.receiver && (
+                      <div>
+                        <div className="bounty-card__label">Locked to</div>
+                        <div className="bounty-card__value">{currentReceiverDisplay || "recipient"}</div>
+                      </div>
+                    )}
+                    {task.bounty.mint && (
+                      <div>
+                        <div className="bounty-card__label">Mint</div>
+                        <div className="bounty-card__value break-all">{task.bounty.mint}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="bounty-card__label">Token</div>
+                    {task.bounty.enc && !task.bounty.token ? (
+                      <div className="bounty-card__token-note">
+                        {((task.bounty.enc as any).alg === "aes-gcm-256")
+                          ? "Hidden (encrypted by funder). Only the funder can reveal."
+                          : "Locked to recipient's Nostr key (nip04). Only the recipient can decrypt."}
+                      </div>
+                    ) : (
+                      <textarea
+                        readOnly
+                        value={task.bounty.token || ""}
+                        className="pill-textarea w-full"
+                        rows={3}
+                      />
+                    )}
+                  </div>
+
+                  <div className="bounty-card__actions">
+                    {task.bounty.state === "locked" && task.bounty.enc && bountySignerHasKey && (
+                      <button
+                        className="accent-button button-sm pressable"
+                        onClick={async () => {
+                          try {
+                            await onRevealBounty?.(task.id);
+                            setBountyState("unlocked");
+                          } catch (error) {
+                            alert((error as Error)?.message || "Unable to reveal bounty token.");
+                          }
+                        }}
+                        disabled={!canRevealBounty}
+                      >
+                        {bountyReceiverIsViewer ? "Unlock" : "Reveal"}
+                      </button>
+                    )}
+
+                    {canSignOverBounty && (
+                      <button
+                        className="ghost-button button-sm pressable"
+                        onClick={() => setSignOverSheetOpen(true)}
+                        disabled={signingBounty}
+                      >
+                        {signingBounty ? "Signing…" : "Sign over"}
+                      </button>
+                    )}
+
+                    {canRedeemBounty && (
+                      <>
+                        <button
+                          className="accent-button button-sm pressable"
+                          onClick={(e) => redeemCurrentBounty((e.currentTarget as HTMLElement).getBoundingClientRect())}
+                          disabled={!bountyTokenReady}
+                        >
+                          Redeem
+                        </button>
+                        <button
+                          className="ghost-button button-sm pressable"
+                          onClick={handleCopyBountyToken}
+                          disabled={!bountyTokenReady}
+                        >
+                          Copy
+                        </button>
+                        <button
+                          className="ghost-button button-sm pressable"
+                          onClick={handleMarkBountyClaimed}
+                          disabled={!bountyTokenReady}
+                        >
+                          Mark as claimed
+                        </button>
+                      </>
+                    )}
+
+                    {task.bounty && canRemoveBounty && (
+                      <button
+                        className="ghost-button button-sm pressable text-rose-500"
+                        onClick={handleRemoveBounty}
+                      >
+                        Remove bounty
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        ) : (
+          <button
+            type="button"
+            className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
+            onClick={handleOpenAttachSheet}
+          >
+            Attach bounty
+          </button>
         )}
 
-        <div className="pt-2 flex justify-between">
-          <button className="pressable px-4 py-2 rounded-full bg-rose-600/80 hover:bg-rose-600" onClick={onDelete}>Delete</button>
-          <div className="flex gap-2">
-            <button className="ghost-button button-sm pressable" onClick={copyCurrent}>Copy</button>
-            <button className="ghost-button button-sm pressable" onClick={onCancel}>Cancel</button>
+        {streakEligible && (
+          <section className="edit-card space-y-2">
+            <div className="edit-card__title">Streaks</div>
+            <div className="text-xs text-secondary flex flex-wrap items-center gap-3">
+              <span>
+                Current streak: <span className="font-semibold text-primary">{currentStreak}</span>
+              </span>
+              <span>
+                Longest streak: <span className="font-semibold text-primary">{bestStreak}</span>
+              </span>
+            </div>
+          </section>
+        )}
+
+        <div className="edit-actions">
+          <button
+            type="button"
+            className="pressable rounded-full bg-rose-600/80 px-4 py-2 text-sm font-semibold hover:bg-rose-600"
+            onClick={task.bounty ? () => alert("Remove the bounty before deleting this task.") : onDelete}
+            disabled={!!task.bounty}
+          >
+            Delete
+          </button>
+          <div className="edit-actions__secondary">
+            {bountyButtonActive && (
+              <button type="button" className="ghost-button button-sm pressable" onClick={handleToggleBountyList}>
+                {taskInBountyList ? `Remove from ${bountyButtonTargetLabel}` : `Add to ${bountyButtonTargetLabel}`}
+              </button>
+            )}
+            <button type="button" className="ghost-button button-sm pressable" onClick={copyCurrent}>Copy Task</button>
           </div>
         </div>
       </div>
@@ -9104,10 +10616,766 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
         <RecurrenceModal
           initial={rule}
           onClose={() => setShowAdvanced(false)}
-          onApply={(r) => { setRule(r); setShowAdvanced(false); }}
+          onApply={(r) => {
+            setRule(r);
+            setShowAdvanced(false);
+          }}
         />
       )}
     </Modal>
+
+    <RepeatPickerSheet
+      open={repeatSheetOpen}
+      onClose={() => setRepeatSheetOpen(false)}
+      rule={rule}
+      scheduledDate={scheduledDate}
+      onSelect={handleRepeatSelect}
+      onOpenCustom={handleOpenCustomRepeat}
+      onOpenAdvanced={handleOpenAdvancedRepeat}
+    />
+    <RepeatCustomSheet
+      open={repeatCustomSheetOpen}
+      onClose={() => setRepeatCustomSheetOpen(false)}
+      scheduledDate={scheduledDate}
+      rule={rule}
+      onApply={handleRepeatSelect}
+      onOpenAdvanced={handleOpenAdvancedRepeat}
+    />
+    <EndRepeatSheet
+      open={endRepeatSheetOpen}
+      onClose={() => setEndRepeatSheetOpen(false)}
+      rule={rule}
+      scheduledDate={scheduledDate}
+      onSelect={(untilISO) =>
+        setRule((prev) => {
+          const next: Recurrence = { ...prev };
+          if (untilISO) {
+            next.untilISO = untilISO;
+          } else {
+            delete next.untilISO;
+          }
+          return next;
+        })
+      }
+    />
+
+    <LockToNpubSheet
+      open={lockNpubSheetOpen}
+      onClose={() => setLockNpubSheetOpen(false)}
+      contacts={contacts}
+      quickOptions={quickLockOptions}
+      onSelect={handleLockRecipientSelect}
+      onUpsertContact={handleUpsertLockContact}
+      onDeleteContact={handleDeleteLockContact}
+      selected={lockRecipientSelection}
+    />
+    <LockToNpubSheet
+      open={signOverSheetOpen}
+      onClose={() => setSignOverSheetOpen(false)}
+      contacts={contacts}
+      quickOptions={quickLockOptions}
+      onSelect={handleSignOverSelection}
+      onUpsertContact={handleUpsertLockContact}
+      onDeleteContact={handleDeleteLockContact}
+      selected={null}
+    />
+    <BountyAttachSheet
+      open={attachSheetOpen}
+      onClose={() => setAttachSheetOpen(false)}
+      onAttach={handleAttachBounty}
+      lockToSelf={lockToSelf}
+      onToggleLockToSelf={handleToggleLockToSelf}
+      onOpenLockContacts={() => setLockNpubSheetOpen(true)}
+      lockRecipient={lockRecipientSelection}
+      onClearRecipient={handleClearLockRecipient}
+      walletConversionEnabled={walletConversionEnabled}
+      walletPrimaryCurrency={walletPrimaryCurrency}
+      mintUrl={mintUrl}
+    />
+    </>
+  );
+
+}
+
+function LockToNpubSheet({
+  open,
+  onClose,
+  contacts,
+  quickOptions,
+  onSelect,
+  onUpsertContact,
+  onDeleteContact,
+  selected,
+}: {
+  open: boolean;
+  onClose: () => void;
+  contacts: Contact[];
+  quickOptions: QuickLockOption[];
+  onSelect: (selection: LockRecipientSelection) => void;
+  onUpsertContact: (payload: { id: string | null; name: string; npub: string }) => void;
+  onDeleteContact: (id: string) => void;
+  selected?: LockRecipientSelection | null;
+}) {
+  const [formVisible, setFormVisible] = useState(false);
+  const [formState, setFormState] = useState<{ id: string | null; name: string; npub: string }>({
+    id: null,
+    name: "",
+    npub: "",
+  });
+  const [formError, setFormError] = useState("");
+  const [manualValue, setManualValue] = useState("");
+  const npubContacts = useMemo(
+    () => contacts.filter((contact) => contact.npub.trim().length > 0),
+    [contacts],
+  );
+  useEffect(() => {
+    if (!open) {
+      setFormVisible(false);
+      setFormState({ id: null, name: "", npub: "" });
+      setFormError("");
+      setManualValue("");
+    }
+  }, [open]);
+
+  const shorten = useCallback((value: string) => {
+    if (value.length <= 28) return value;
+    return `${value.slice(0, 12)}…${value.slice(-6)}`;
+  }, []);
+  const selectedValue = selected?.value?.trim() || "";
+
+  const handleSubmit = useCallback(
+    (event?: React.FormEvent) => {
+      if (event) event.preventDefault();
+      const trimmed = formState.npub.trim();
+      if (!trimmed) {
+        setFormError("Enter a npub or hex key.");
+        return;
+      }
+      onUpsertContact({ id: formState.id, name: formState.name, npub: trimmed });
+      setFormVisible(false);
+      setFormState({ id: null, name: "", npub: "" });
+      setFormError("");
+    },
+    [formState, onUpsertContact],
+  );
+
+  const handleSelect = useCallback(
+    (value: string, label: string, contactId?: string) => {
+      onSelect({ value, label, contactId });
+      onClose();
+    },
+    [onClose, onSelect],
+  );
+
+  const handleDelete = useCallback(
+    (id: string) => {
+      if (!window.confirm("Remove this contact?")) return;
+      onDeleteContact(id);
+    },
+    [onDeleteContact],
+  );
+
+  return (
+    <ActionSheet open={open} onClose={onClose} title="Lock to npub" stackLevel={90}>
+      <div className="wallet-section space-y-4 text-sm">
+        {quickOptions.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Quick select</div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              {quickOptions.map((option) => {
+                const optionValue = option.value.trim();
+                const isActive = !!selectedValue && selectedValue === optionValue;
+                const optionClass = isActive ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={optionClass}
+                    onClick={() => handleSelect(optionValue, option.label, option.contactId)}
+                    disabled={isActive}
+                  >
+                    <span className="text-secondary">{option.title}:</span>
+                    <span className="font-semibold text-primary">{option.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium">Contacts with npub</div>
+            <button
+              className="ghost-button button-sm pressable"
+              type="button"
+              onClick={() => {
+                setFormVisible(true);
+                setFormState({ id: null, name: "", npub: "" });
+                setFormError("");
+              }}
+            >
+              Add contact
+            </button>
+          </div>
+          {formVisible && (
+            <form className="space-y-2" onSubmit={handleSubmit}>
+              <input
+                className="pill-input"
+                placeholder="Contact name (optional)"
+                value={formState.name}
+                onChange={(e) => setFormState((prev) => ({ ...prev, name: e.target.value }))}
+              />
+              <input
+                className="pill-input"
+                placeholder="npub1… or hex pubkey"
+                value={formState.npub}
+                onChange={(e) => setFormState((prev) => ({ ...prev, npub: e.target.value }))}
+              />
+              {formError && <div className="text-[11px] text-rose-500">{formError}</div>}
+              <div className="flex flex-wrap gap-2 text-xs">
+                <button className="accent-button button-sm pressable" type="submit">
+                  {formState.id ? "Save contact" : "Add contact"}
+                </button>
+                <button
+                  className="ghost-button button-sm pressable"
+                  type="button"
+                  onClick={() => {
+                    setFormVisible(false);
+                    setFormState({ id: null, name: "", npub: "" });
+                    setFormError("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+          {npubContacts.length > 0 ? (
+            <div className="space-y-2">
+              {npubContacts.map((contact) => {
+                const trimmed = contact.npub.trim();
+                const displayName = contact.name?.trim() || shorten(trimmed);
+                return (
+                  <div key={contact.id} className="rounded-2xl border border-surface bg-surface p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-medium">{displayName}</div>
+                      <button
+                        type="button"
+                        className={selectedValue && selectedValue === trimmed ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
+                        onClick={() => handleSelect(trimmed, displayName, contact.id)}
+                        disabled={!!selectedValue && selectedValue === trimmed}
+                      >
+                        {selectedValue && selectedValue === trimmed ? "Selected" : "Use"}
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-secondary break-all">{trimmed}</div>
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                      <button
+                        type="button"
+                        className="ghost-button button-sm pressable"
+                        onClick={() => {
+                          setFormVisible(true);
+                          setFormState({ id: contact.id, name: contact.name || "", npub: trimmed });
+                          setFormError("");
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button button-sm pressable text-rose-400"
+                        onClick={() => handleDelete(contact.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-secondary text-sm">
+              No saved contacts with a npub yet. Add one to lock bounties to a teammate.
+            </div>
+          )}
+        </div>
+        <div className="space-y-2">
+          <div className="text-sm font-medium">Manual input</div>
+          <input
+            className="pill-input w-full"
+            placeholder="npub1… or hex pubkey"
+            value={manualValue}
+            onChange={(e) => setManualValue(e.target.value)}
+          />
+          <div className="flex flex-wrap gap-2 text-xs">
+            <button
+              className="accent-button button-sm pressable"
+              type="button"
+              onClick={() => {
+                const trimmed = manualValue.trim();
+                if (!trimmed) return;
+                handleSelect(trimmed, shorten(trimmed));
+                setManualValue("");
+              }}
+              disabled={!manualValue.trim()}
+            >
+              Use npub
+            </button>
+            <button
+              className="ghost-button button-sm pressable"
+              type="button"
+              onClick={() => setManualValue("")}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      </div>
+    </ActionSheet>
+  );
+}
+
+function normalizeMintUrlLite(url: string): string {
+  return (url || "").trim().replace(/\/+$/, "");
+}
+
+function formatMintLabel(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname) return parsed.hostname;
+  } catch {
+    // ignore parse errors
+  }
+  return url.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+function sumMintProofs(proofs: Proof[]): number {
+  if (!Array.isArray(proofs)) return 0;
+  return proofs.reduce((sum, proof) => {
+    const amt = Number.isFinite(proof?.amount) ? Number(proof.amount) : 0;
+    return sum + (amt > 0 ? Math.floor(amt) : 0);
+  }, 0);
+}
+
+function ChevronDownIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" {...props}>
+      <path d="M5.22 7.97a.75.75 0 0 0-1.06 1.06l5 5a.75.75 0 0 0 1.06 0l5-5a.75.75 0 1 0-1.06-1.06L10 12.44 5.22 7.97Z" />
+    </svg>
+  );
+}
+
+function BountyAttachSheet({
+  open,
+  onClose,
+  onAttach,
+  lockToSelf,
+  onToggleLockToSelf,
+  onOpenLockContacts,
+  lockRecipient,
+  onClearRecipient,
+  walletConversionEnabled,
+  walletPrimaryCurrency,
+  mintUrl,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAttach: (amountSat: number, mintUrl?: string) => Promise<void>;
+  lockToSelf: boolean;
+  onToggleLockToSelf: () => void;
+  onOpenLockContacts: () => void;
+  lockRecipient: LockRecipientSelection | null;
+  onClearRecipient: () => void;
+  walletConversionEnabled: boolean;
+  walletPrimaryCurrency: "sat" | "usd";
+  mintUrl: string;
+}) {
+  const [amountInput, setAmountInput] = useState("");
+  const [primaryCurrency, setPrimaryCurrency] = useState<"sat" | "usd">(
+    walletConversionEnabled && walletPrimaryCurrency === "usd" ? "usd" : "sat",
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [btcUsdPrice, setBtcUsdPrice] = useState<number | null>(null);
+  const [priceStatus, setPriceStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [mintOptions, setMintOptions] = useState<{
+    url: string;
+    normalized: string;
+    balance: number;
+    isActive: boolean;
+  }[]>([]);
+  const [selectedMint, setSelectedMint] = useState("");
+  const usdFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+    [],
+  );
+  const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
+  const canToggleCurrency = walletConversionEnabled;
+
+  useEffect(() => {
+    if (!open) return;
+    setAmountInput("");
+    setSubmitError("");
+    setPrimaryCurrency(walletConversionEnabled && walletPrimaryCurrency === "usd" ? "usd" : "sat");
+  }, [open, walletConversionEnabled, walletPrimaryCurrency]);
+
+  const refreshMintOptions = useCallback(() => {
+    try {
+      const store = loadProofStore();
+      const storeEntries = new Map<string, { url: string; proofs: Proof[] }>();
+      Object.entries(store).forEach(([url, proofs]) => {
+        const normalized = normalizeMintUrlLite(url);
+        if (!normalized) return;
+        storeEntries.set(normalized, {
+          url,
+          proofs: Array.isArray(proofs) ? (proofs as Proof[]) : [],
+        });
+      });
+
+      let trackedMints = getMintList();
+      const trackedSet = new Set<string>();
+      for (const url of trackedMints) {
+        const normalized = normalizeMintUrlLite(url);
+        if (!normalized) continue;
+        trackedSet.add(normalized);
+      }
+
+      if (mintUrl) {
+        const normalizedActive = normalizeMintUrlLite(mintUrl);
+        if (normalizedActive && !trackedSet.has(normalizedActive)) {
+          trackedMints = addMintToList(mintUrl);
+          trackedSet.add(normalizedActive);
+        }
+      }
+
+      storeEntries.forEach((payload, normalized) => {
+        const hasBalance = payload.proofs.some((proof) => (proof?.amount ?? 0) > 0);
+        if (hasBalance && !trackedSet.has(normalized)) {
+          trackedMints = addMintToList(payload.url);
+          trackedSet.add(normalized);
+        }
+      });
+
+      const entries: { url: string; normalized: string; balance: number; isActive: boolean }[] = [];
+      const seen = new Set<string>();
+      for (const url of trackedMints) {
+        const normalized = normalizeMintUrlLite(url);
+        if (!normalized || seen.has(normalized)) continue;
+        const payload = storeEntries.get(normalized);
+        const proofs = payload?.proofs ?? [];
+        const balance = sumMintProofs(proofs);
+        entries.push({
+          url: payload?.url ?? url,
+          normalized,
+          balance,
+          isActive: normalized === normalizeMintUrlLite(mintUrl),
+        });
+        seen.add(normalized);
+      }
+
+      entries.sort((a, b) => b.balance - a.balance || a.url.localeCompare(b.url));
+      setMintOptions(entries);
+    } catch {
+      setMintOptions([]);
+    }
+  }, [mintUrl]);
+
+  useEffect(() => {
+    if (!open) return;
+    refreshMintOptions();
+  }, [open, refreshMintOptions]);
+
+  useEffect(() => {
+    if (!open) return;
+    const normalizedActive = mintUrl ? normalizeMintUrlLite(mintUrl) : "";
+    setSelectedMint((current) => {
+      if (current && mintOptions.some((option) => option.normalized === current)) {
+        return current;
+      }
+      if (normalizedActive && mintOptions.some((option) => option.normalized === normalizedActive)) {
+        return normalizedActive;
+      }
+      return mintOptions[0]?.normalized ?? normalizedActive ?? "";
+    });
+  }, [mintOptions, mintUrl, open]);
+
+  useEffect(() => {
+    if (!open || !walletConversionEnabled) {
+      setPriceStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    try {
+      const cachedRaw = localStorage.getItem(LS_BTC_USD_PRICE_CACHE);
+      if (cachedRaw) {
+        const parsed = JSON.parse(cachedRaw);
+        const cached = Number(parsed?.price);
+        if (Number.isFinite(cached) && cached > 0) {
+          setBtcUsdPrice((current) => (current == null ? cached : current));
+        }
+      }
+    } catch {
+      // ignore cache parse errors
+    }
+    setPriceStatus("loading");
+    (async () => {
+      try {
+        const response = await fetch(COINBASE_SPOT_PRICE_URL, { headers: { Accept: "application/json" } });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload: any = await response.json();
+        const amount = Number(payload?.data?.amount);
+        if (!Number.isFinite(amount) || amount <= 0) throw new Error("Invalid price data");
+        if (cancelled) return;
+        setBtcUsdPrice(amount);
+        setPriceStatus("idle");
+        try {
+          localStorage.setItem(
+            LS_BTC_USD_PRICE_CACHE,
+            JSON.stringify({ price: amount, updatedAt: Date.now() }),
+          );
+        } catch {
+          // ignore cache failures
+        }
+      } catch {
+        if (!cancelled) {
+          setPriceStatus("error");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, walletConversionEnabled]);
+
+  const keypadKeys = primaryCurrency === "usd"
+    ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
+    : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"];
+
+  const handleKeypadInput = (key: string) => {
+    setAmountInput((prev) => {
+      if (key === "clear") return "";
+      if (key === "backspace") return prev.slice(0, -1);
+      if (primaryCurrency === "usd" && key === "decimal") {
+        if (prev.includes(".")) return prev;
+        return prev ? `${prev}.` : "0.";
+      }
+      if (key === "decimal") return prev;
+      if (prev === "0" && key !== "decimal") {
+        return key;
+      }
+      return `${prev}${key}`;
+    });
+  };
+
+  const trimmedInput = amountInput.trim();
+  const parsedAmount = useMemo(() => {
+    if (!trimmedInput) return { sats: 0, error: "" };
+    if (primaryCurrency === "usd") {
+      const numeric = Number.parseFloat(trimmedInput);
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        return { sats: 0, error: "Enter a valid USD amount." };
+      }
+      if (!walletConversionEnabled) {
+        return { sats: 0, error: "USD entry is disabled." };
+      }
+      if (!btcUsdPrice || btcUsdPrice <= 0) {
+        return {
+          sats: 0,
+          error: priceStatus === "error" ? "USD price unavailable." : "Fetching BTC/USD price…",
+        };
+      }
+      const sats = Math.floor((numeric / btcUsdPrice) * SATS_PER_BTC);
+      if (sats <= 0) {
+        return { sats: 0, error: "Amount is too small." };
+      }
+      return { sats, error: "" };
+    }
+    const numeric = Number.parseInt(trimmedInput, 10);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return { sats: 0, error: "Enter an amount in sats." };
+    }
+    return { sats: numeric, error: "" };
+  }, [trimmedInput, primaryCurrency, walletConversionEnabled, btcUsdPrice, priceStatus]);
+
+  const primaryDisplay = useMemo(() => {
+    if (primaryCurrency === "usd") {
+      const numeric = Number.parseFloat(trimmedInput || "0");
+      const displayValue = Number.isFinite(numeric) ? numeric : 0;
+      return usdFormatter.format(displayValue);
+    }
+    return `${trimmedInput || "0"} sats`;
+  }, [primaryCurrency, trimmedInput, usdFormatter]);
+
+  const secondaryDisplay = useMemo(() => {
+    if (primaryCurrency === "usd") {
+      return parsedAmount.sats > 0 ? `${parsedAmount.sats} sats` : "≈ 0 sats";
+    }
+    if (!walletConversionEnabled) return "";
+    if (!btcUsdPrice || btcUsdPrice <= 0) {
+      return priceStatus === "error" ? "USD unavailable" : "";
+    }
+    const sats = Number.parseInt(trimmedInput || "0", 10);
+    if (!Number.isFinite(sats) || sats <= 0) return "";
+    const usdValue = (sats / SATS_PER_BTC) * btcUsdPrice;
+    return `≈ ${usdFormatter.format(usdValue)}`;
+  }, [btcUsdPrice, parsedAmount.sats, priceStatus, primaryCurrency, trimmedInput, usdFormatter, walletConversionEnabled]);
+
+  const selectedMintOption = useMemo(
+    () => mintOptions.find((option) => option.normalized === selectedMint) || null,
+    [mintOptions, selectedMint],
+  );
+
+  const selectedMintLabel = selectedMintOption ? formatMintLabel(selectedMintOption.url) : "Choose a mint";
+  const selectedMintBalanceLabel = selectedMintOption
+    ? `${satFormatter.format(selectedMintOption.balance)} sat available`
+    : "Select a mint to use";
+
+  const handleAttach = async () => {
+    if (parsedAmount.sats <= 0 || parsedAmount.error) {
+      setSubmitError(parsedAmount.error || "Enter an amount to attach.");
+      return;
+    }
+    const targetMint = selectedMintOption?.url || mintUrl || undefined;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await onAttach(parsedAmount.sats, targetMint);
+      setAmountInput("");
+      onClose();
+    } catch (error) {
+      setSubmitError((error as Error)?.message || "Unable to attach bounty.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const lockStatusLabel = lockRecipient
+    ? `Locking to ${lockRecipient.label}`
+    : lockToSelf
+      ? "Hidden until you reveal"
+      : "Unlocked token";
+  const lockStatusHint = lockRecipient
+    ? "Only this recipient can decrypt it."
+    : lockToSelf
+      ? "Encrypted to your Nostr key."
+      : "Anyone with the token can redeem it.";
+
+  return (
+    <ActionSheet open={open} onClose={onClose} title="Attach bounty" stackLevel={70} panelClassName="sheet-panel--tall">
+      <div className="wallet-section space-y-4 text-sm">
+        <div className="space-y-2 text-left">
+          {mintOptions.length ? (
+            <div className="relative">
+              <select
+                className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0"
+                aria-label="Select mint"
+                value={selectedMint}
+                onChange={(event) => setSelectedMint(event.target.value)}
+              >
+                {mintOptions.map((option) => (
+                  <option key={option.normalized} value={option.normalized}>
+                    {formatMintLabel(option.url)}
+                  </option>
+                ))}
+              </select>
+              <div className="pill-input lightning-mint-select__display">
+                <div className="lightning-mint-select__label">{selectedMintLabel}</div>
+                <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
+              </div>
+              <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
+            </div>
+          ) : (
+            <div className="text-sm text-secondary">Add a mint in Wallet → Mint balances to attach bounties.</div>
+          )}
+        </div>
+        <button
+          type="button"
+          className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
+          onClick={canToggleCurrency ? () => setPrimaryCurrency((prev) => (prev === "usd" ? "sat" : "usd")) : undefined}
+          disabled={!canToggleCurrency}
+        >
+          <div className="wallet-balance-card__amount lightning-amount-display__primary">{primaryDisplay}</div>
+          <div className="wallet-balance-card__secondary lightning-amount-display__secondary">{secondaryDisplay}</div>
+        </button>
+        <div className="grid grid-cols-2 gap-2 text-xs font-semibold">
+          <button
+            type="button"
+            className={`glass-panel pressable py-1${lockToSelf && !lockRecipient ? " ring-2 ring-accent/50" : ""}`}
+            onClick={onToggleLockToSelf}
+          >
+            {lockToSelf ? "Lock to me (hidden)" : "Lock to me"}
+          </button>
+          <button
+            type="button"
+            className={`glass-panel pressable py-1${lockRecipient ? " ring-2 ring-accent/50" : ""}`}
+            onClick={onOpenLockContacts}
+          >
+            {lockRecipient ? `Locking to ${lockRecipient.label}` : "Lock to npub"}
+          </button>
+        </div>
+        <div className="rounded-2xl border border-surface bg-surface-muted p-3 space-y-1">
+          <div className="flex items-center gap-3">
+            <span
+              className={`inline-flex h-10 w-10 items-center justify-center rounded-full ${
+                lockRecipient
+                  ? "bg-sky-500/15 text-sky-400"
+                  : lockToSelf
+                    ? "bg-accent/15 text-accent"
+                    : "bg-surface text-secondary"
+              }`}
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                <rect x={5} y={11} width={14} height={10} rx={2} />
+                <path d="M8 11V7a4 4 0 1 1 8 0v4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <div>
+              <div className="text-sm font-semibold text-primary">{lockStatusLabel}</div>
+              <div className="text-[11px] text-secondary">{lockStatusHint}</div>
+            </div>
+            {lockRecipient && (
+              <button className="ghost-button button-sm pressable ml-auto" type="button" onClick={onClearRecipient}>
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {keypadKeys.map((key) => {
+            const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
+            return (
+              <button
+                key={key}
+                type="button"
+                className="glass-panel pressable py-3 text-lg font-semibold"
+                onClick={() => handleKeypadInput(handlerKey)}
+              >
+                {key === "clear" ? "Clear" : key}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
+          onClick={handleAttach}
+          disabled={submitting || parsedAmount.sats <= 0}
+        >
+          {submitting ? "Attaching…" : "Attach"}
+        </button>
+        {(submitError || parsedAmount.error) && (
+          <div className="text-xs text-rose-500 text-center">{submitError || parsedAmount.error}</div>
+        )}
+        {!submitError && !parsedAmount.error && priceStatus === "loading" && walletConversionEnabled && (
+          <div className="text-[11px] text-secondary text-center">Fetching BTC/USD price…</div>
+        )}
+      </div>
+    </ActionSheet>
   );
 }
 
@@ -9171,18 +11439,358 @@ function RecurrenceModal({
   );
 }
 
+type RepeatSheetOption = {
+  id: string;
+  label: string;
+  description?: string;
+  rule?: Recurrence;
+  action?: "custom";
+};
+
+function RepeatPickerSheet({
+  open,
+  onClose,
+  rule,
+  scheduledDate,
+  onSelect,
+  onOpenCustom,
+  onOpenAdvanced,
+}: {
+  open: boolean;
+  onClose: () => void;
+  rule: Recurrence;
+  scheduledDate?: string;
+  onSelect: (r: Recurrence) => void;
+  onOpenCustom: () => void;
+  onOpenAdvanced: () => void;
+}) {
+  const weekday = useMemo(() => repeatWeekdayFromInput(scheduledDate), [scheduledDate]);
+  const monthDay = useMemo(() => repeatMonthDayFromInput(scheduledDate), [scheduledDate]);
+
+  const options = useMemo<RepeatSheetOption[]>(() => {
+    const clampDay = monthDay;
+    return [
+      { id: "never", label: "Never", rule: { type: "none" } },
+      { id: "hourly", label: "Hourly", rule: { type: "every", n: 1, unit: "hour" } },
+      { id: "daily", label: "Daily", rule: { type: "daily" } },
+      { id: "weekdays", label: "Weekdays", rule: { type: "weekly", days: [1, 2, 3, 4, 5] } },
+      { id: "weekends", label: "Weekends", rule: { type: "weekly", days: [0, 6] } },
+      {
+        id: "weekly",
+        label: "Weekly",
+        rule: { type: "weekly", days: [weekday] },
+      },
+      { id: "biweekly", label: "Biweekly", rule: { type: "every", n: 2, unit: "week" } },
+      {
+        id: "monthly",
+        label: "Monthly",
+        rule: { type: "monthlyDay", day: clampDay },
+      },
+      {
+        id: "quarterly",
+        label: "Every 3 Months",
+        rule: { type: "monthlyDay", day: clampDay, interval: 3 },
+      },
+      {
+        id: "semiannual",
+        label: "Every 6 Months",
+        rule: { type: "monthlyDay", day: clampDay, interval: 6 },
+      },
+      {
+        id: "yearly",
+        label: "Yearly",
+        rule: { type: "monthlyDay", day: clampDay, interval: 12 },
+      },
+      { id: "custom", label: "Custom", action: "custom" },
+    ];
+  }, [monthDay, weekday]);
+
+  return (
+    <ActionSheet open={open} onClose={onClose} title="Repeat">
+      <div className="space-y-4">
+        <div className="overflow-hidden rounded-2xl border border-border bg-elevated">
+          {options.map((opt) => {
+            const isCustom = opt.action === "custom";
+            const active = opt.rule ? recurrenceMatchesPreset(rule, opt.rule) : false;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface"
+                onClick={() => {
+                  if (isCustom) {
+                    onOpenCustom();
+                  } else if (opt.rule) {
+                    onSelect(opt.rule);
+                  }
+                }}
+              >
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-primary">{opt.label}</div>
+                  {opt.description && <div className="text-xs text-secondary">{opt.description}</div>}
+                </div>
+                {active && <span className="text-accent text-sm font-semibold">✓</span>}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          className="ghost-button button-sm pressable w-full"
+          onClick={onOpenAdvanced}
+        >
+          Advanced recurrence…
+        </button>
+      </div>
+    </ActionSheet>
+  );
+}
+
+type RepeatFrequency = "days" | "months" | "years";
+
+function RepeatCustomSheet({
+  open,
+  onClose,
+  scheduledDate,
+  rule,
+  onApply,
+  onOpenAdvanced,
+}: {
+  open: boolean;
+  onClose: () => void;
+  scheduledDate?: string;
+  rule: Recurrence;
+  onApply: (r: Recurrence) => void;
+  onOpenAdvanced: () => void;
+}) {
+  const [frequency, setFrequency] = useState<RepeatFrequency>("days");
+  const [amount, setAmount] = useState("1");
+  const monthDay = useMemo(() => {
+    if (rule.type === "monthlyDay") return rule.day;
+    return repeatMonthDayFromInput(scheduledDate);
+  }, [rule, scheduledDate]);
+
+  useEffect(() => {
+    if (!open) {
+      setFrequency("days");
+      setAmount("1");
+      return;
+    }
+
+    if (rule.type === "every" && rule.unit === "day") {
+      setFrequency("days");
+      setAmount(String(rule.n));
+    } else if (rule.type === "monthlyDay") {
+      const interval = rule.interval ?? 1;
+      if (interval % 12 === 0) {
+        setFrequency("years");
+        setAmount(String(Math.max(1, Math.floor(interval / 12))));
+      } else {
+        setFrequency("months");
+        setAmount(String(interval));
+      }
+    } else {
+      setFrequency("days");
+      setAmount("1");
+    }
+  }, [open, rule]);
+
+  const numericAmount = useMemo(() => {
+    const parsed = Number.parseInt(amount || "1", 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+    return Math.min(parsed, 60);
+  }, [amount]);
+
+  const summary = useMemo(() => {
+    const unitLabel = frequency.slice(0, -1); // crude singularization
+    const plural = numericAmount === 1 ? unitLabel : frequency;
+    return `Event will occur every ${numericAmount} ${plural}.`;
+  }, [frequency, numericAmount]);
+
+  function handleApply() {
+    if (frequency === "days") {
+      onApply({ type: "every", n: numericAmount, unit: "day" });
+    } else {
+      const interval = frequency === "months" ? numericAmount : numericAmount * 12;
+      onApply({ type: "monthlyDay", day: monthDay, interval });
+    }
+  }
+
+  return (
+    <ActionSheet open={open} onClose={onClose} title="Custom">
+      <div className="space-y-4">
+        <div className="space-y-2 rounded-2xl border border-border bg-elevated p-4">
+          <label className="text-xs font-semibold uppercase tracking-wide text-secondary" htmlFor="repeat-frequency">
+            Frequency
+          </label>
+          <select
+            id="repeat-frequency"
+            className="pill-select w-full"
+            value={frequency}
+            onChange={(e) => setFrequency(e.target.value as RepeatFrequency)}
+          >
+            <option value="days">Days</option>
+            <option value="months">Months</option>
+            <option value="years">Years</option>
+          </select>
+        </div>
+        <div className="space-y-2 rounded-2xl border border-border bg-elevated p-4">
+          <label className="text-xs font-semibold uppercase tracking-wide text-secondary" htmlFor="repeat-amount">
+            Every
+          </label>
+          <input
+            id="repeat-amount"
+            type="number"
+            min={1}
+            max={60}
+            inputMode="numeric"
+            className="pill-input w-full text-center text-lg"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+          <div className="text-xs text-secondary">{summary}</div>
+        </div>
+        <button type="button" className="accent-button accent-button--tall pressable w-full" onClick={handleApply}>
+          Apply
+        </button>
+        <button type="button" className="ghost-button button-sm pressable w-full" onClick={onOpenAdvanced}>
+          Advanced recurrence…
+        </button>
+      </div>
+    </ActionSheet>
+  );
+}
+
+function EndRepeatSheet({
+  open,
+  onClose,
+  rule,
+  scheduledDate,
+  onSelect,
+}: {
+  open: boolean;
+  onClose: () => void;
+  rule: Recurrence;
+  scheduledDate?: string;
+  onSelect: (untilISO?: string) => void;
+}) {
+  const [mode, setMode] = useState<"menu" | "calendar">("menu");
+  const [calendarBaseDate, setCalendarBaseDate] = useState(() => (rule.untilISO ? isoDatePart(rule.untilISO) : scheduledDate));
+  const [selectedDate, setSelectedDate] = useState(() => (rule.untilISO ? isoDatePart(rule.untilISO) : ""));
+
+  useEffect(() => {
+    if (!open) return;
+    setMode("menu");
+    const baseDate = rule.untilISO ? isoDatePart(rule.untilISO) : scheduledDate;
+    setSelectedDate(rule.untilISO ? isoDatePart(rule.untilISO) : "");
+    setCalendarBaseDate(baseDate);
+  }, [open, rule.untilISO, scheduledDate]);
+
+  const handleSelectCalendarDay = useCallback(
+    (iso: string) => {
+      setSelectedDate(iso);
+      onSelect(new Date(iso).toISOString());
+      setMode("menu");
+      onClose();
+    },
+    [onClose, onSelect],
+  );
+
+  return (
+    <ActionSheet
+      open={open}
+      onClose={onClose}
+      title="End repeat"
+      actions={
+        mode === "calendar" ? (
+          <button className="ghost-button button-sm pressable" onClick={() => setMode("menu")}>Back</button>
+        ) : undefined
+      }
+    >
+      {mode === "menu" ? (
+        <div className="overflow-hidden rounded-2xl border border-border bg-elevated">
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface"
+            onClick={() => {
+              onSelect(undefined);
+              onClose();
+            }}
+          >
+            <div className="flex-1">
+              <div className="text-sm font-medium text-primary">Never</div>
+            </div>
+            {!rule.untilISO && <span className="text-accent text-sm font-semibold">✓</span>}
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface"
+            onClick={() => setMode("calendar")}
+          >
+            <div className="flex-1">
+              <div className="text-sm font-medium text-primary">On date</div>
+              {rule.untilISO && (
+                <div className="text-xs text-secondary">
+                  {new Date(rule.untilISO).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}
+                </div>
+              )}
+            </div>
+            {rule.untilISO && <span className="text-accent text-sm font-semibold">✓</span>}
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-border bg-elevated p-4">
+            <DatePickerCalendar
+              baseDate={calendarBaseDate}
+              selectedDate={selectedDate}
+              onSelectDate={handleSelectCalendarDay}
+            />
+          </div>
+        </div>
+      )}
+    </ActionSheet>
+  );
+}
+
+function repeatWeekdayFromInput(value?: string): Weekday {
+  const base = repeatBaseDate(value);
+  return base.getDay() as Weekday;
+}
+
+function repeatMonthDayFromInput(value?: string): number {
+  const base = repeatBaseDate(value);
+  return Math.min(28, Math.max(1, base.getDate()));
+}
+
+function repeatBaseDate(value?: string): Date {
+  if (!value) return new Date();
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return new Date();
+  return parsed;
+}
+
+function recurrenceMatchesPreset(candidate: Recurrence, preset: Recurrence): boolean {
+  const candidateRest = { ...(candidate as Record<string, unknown>) };
+  const presetRest = { ...(preset as Record<string, unknown>) };
+  delete candidateRest.untilISO;
+  delete presetRest.untilISO;
+  return JSON.stringify(candidateRest) === JSON.stringify(presetRest);
+}
+
 function RecurrencePicker({ value, onChange }: { value: Recurrence; onChange: (r: Recurrence)=>void }) {
   const [weekly, setWeekly] = useState<Set<Weekday>>(new Set());
   const [everyN, setEveryN] = useState(2);
-  const [unit, setUnit] = useState<"day"|"week">("day");
+  const [unit, setUnit] = useState<"hour"|"day"|"week">("day");
   const [monthDay, setMonthDay] = useState(15);
+  const [monthInterval, setMonthInterval] = useState(1);
   const [end, setEnd] = useState(value.untilISO ? value.untilISO.slice(0,10) : "");
 
   useEffect(()=>{
     switch (value.type) {
       case "weekly": setWeekly(new Set(value.days)); break;
       case "every": setEveryN(value.n); setUnit(value.unit); break;
-      case "monthlyDay": setMonthDay(value.day); break;
+      case "monthlyDay": setMonthDay(value.day); setMonthInterval(value.interval ?? 1); break;
       default: setWeekly(new Set());
     }
     setEnd(value.untilISO ? value.untilISO.slice(0,10) : "");
@@ -9203,7 +11811,15 @@ function RecurrencePicker({ value, onChange }: { value: Recurrence; onChange: (r
       onChange(withEnd(sorted.length ? { type: "weekly", days: sorted } : { type: "none" }));
     }
   function applyEvery() { onChange(withEnd({ type:"every", n: Math.max(1, everyN || 1), unit })); }
-  function applyMonthly() { onChange(withEnd({ type:"monthlyDay", day: Math.min(28, Math.max(1, monthDay)) })); }
+  function applyMonthly() {
+    onChange(
+      withEnd({
+        type:"monthlyDay",
+        day: Math.min(28, Math.max(1, monthDay)),
+        interval: Math.max(1, Math.min(24, monthInterval || 1)),
+      })
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -9241,8 +11857,9 @@ function RecurrencePicker({ value, onChange }: { value: Recurrence; onChange: (r
             onChange={e=>setEveryN(parseInt(e.target.value || "1",10))}
             className="pill-input w-24 text-center"
           />
-          <select value={unit} onChange={e=>setUnit(e.target.value as "day"|"week")}
-                  className="pill-select w-28">
+          <select value={unit} onChange={e=>setUnit(e.target.value as "hour"|"day"|"week")}
+                  className="pill-select w-32">
+            <option value="hour">Hours</option>
             <option value="day">Days</option>
             <option value="week">Weeks</option>
           </select>
@@ -9252,15 +11869,26 @@ function RecurrencePicker({ value, onChange }: { value: Recurrence; onChange: (r
 
       <div className="wallet-section space-y-3">
         <div className="text-sm font-medium">Monthly</div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs uppercase tracking-wide text-secondary">Day</label>
           <input
             type="number"
             min={1}
             max={28}
             value={monthDay}
             onChange={e=>setMonthDay(parseInt(e.target.value || '1',10))}
-            className="pill-input w-24 text-center"
+            className="pill-input w-20 text-center"
           />
+          <label className="text-xs uppercase tracking-wide text-secondary">Every</label>
+          <input
+            type="number"
+            min={1}
+            max={24}
+            value={monthInterval}
+            onChange={e=>setMonthInterval(parseInt(e.target.value || '1',10))}
+            className="pill-input w-20 text-center"
+          />
+          <span className="text-xs uppercase tracking-wide text-secondary">Month(s)</span>
           <button className="accent-button button-sm pressable" onClick={applyMonthly}>Apply</button>
         </div>
       </div>
@@ -9279,12 +11907,38 @@ function RecurrencePicker({ value, onChange }: { value: Recurrence; onChange: (r
 }
 
 /* Generic modal */
-function Modal({ children, onClose, title, actions, showClose = true }: React.PropsWithChildren<{ onClose: ()=>void; title?: React.ReactNode; actions?: React.ReactNode; showClose?: boolean }>) {
+function Modal({
+  children,
+  onClose,
+  title,
+  actions,
+  showClose = true,
+  variant = "default",
+}: React.PropsWithChildren<{
+  onClose: () => void;
+  title?: React.ReactNode;
+  actions?: React.ReactNode;
+  showClose?: boolean;
+  variant?: "default" | "fullscreen";
+}>) {
+  const backdropClass =
+    variant === "fullscreen" ? "modal-backdrop modal-backdrop--fullscreen" : "modal-backdrop";
+  const panelClass =
+    variant === "fullscreen" ? "modal-panel modal-panel--fullscreen" : "modal-panel";
+  const headerClass =
+    variant === "fullscreen"
+      ? "modal-panel__header modal-panel__header--spaced"
+      : "modal-panel__header";
+  const bodyClass =
+    variant === "fullscreen"
+      ? "modal-panel__body modal-panel__body--fullscreen"
+      : "modal-panel__body";
+
   return (
-    <div className="modal-backdrop">
-      <div className="modal-panel">
+    <div className={backdropClass}>
+      <div className={panelClass}>
         {(title || actions || showClose) && (
-          <div className="modal-panel__header">
+          <div className={headerClass}>
             {title && <div className="text-lg font-semibold text-primary">{title}</div>}
             {(actions || showClose) && (
               <div className="ml-auto flex items-center gap-2">
@@ -9298,7 +11952,7 @@ function Modal({ children, onClose, title, actions, showClose = true }: React.Pr
             )}
           </div>
         )}
-        <div className="modal-panel__body">{children}</div>
+        <div className={bodyClass}>{children}</div>
       </div>
     </div>
   );
@@ -9326,6 +11980,9 @@ function SettingsModal({
   currentBoardId,
   setSettings,
   setBoards,
+  bountyListEnabled,
+  activeBountyListKey,
+  bountyListOptions,
   shouldReloadForNavigation,
   defaultRelays,
   setDefaultRelays,
@@ -9351,6 +12008,9 @@ function SettingsModal({
   currentBoardId: string;
   setSettings: (s: Partial<Settings>) => void;
   setBoards: React.Dispatch<React.SetStateAction<Board[]>>;
+  bountyListEnabled: boolean;
+  activeBountyListKey: string | null;
+  bountyListOptions: { key: string; label: string; ref: BountyListRef }[];
   shouldReloadForNavigation: () => boolean;
   defaultRelays: string[];
   setDefaultRelays: (rls: string[]) => void;
@@ -9384,10 +12044,18 @@ function SettingsModal({
   const [walletSeedVisible, setWalletSeedVisible] = useState(false);
   const [walletSeedWords, setWalletSeedWords] = useState<string | null>(null);
   const [walletSeedError, setWalletSeedError] = useState<string | null>(null);
+  const [mintBackupState, setMintBackupState] = useState<
+    "idle" | "syncing" | "success" | "error" | "restoring"
+  >("idle");
+  const [mintBackupMessage, setMintBackupMessage] = useState("");
+  const [mintBackupCache, setMintBackupCache] = useState<MintBackupPayload | null>(() => loadMintBackupCache());
   const [bibleExpanded, setBibleExpanded] = useState(false);
   const [backupExpanded, setBackupExpanded] = useState(false);
   const [showPushAdvanced, setShowPushAdvanced] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [boardKeyInfo, setBoardKeyInfo] = useState<{ npub: string; nsec: string; pk: string } | null>(null);
+  const [staleCleanupBusy, setStaleCleanupBusy] = useState(false);
+  const [staleCleanupMessage, setStaleCleanupMessage] = useState<string | null>(null);
   const [reloadNeeded, setReloadNeeded] = useState(false);
   const [walletCounters, setWalletCounters] = useState<Record<string, Record<string, number>>>(() => getWalletCountersByMint());
   const [keysetCounterBusy, setKeysetCounterBusy] = useState<string | null>(null);
@@ -9398,6 +12066,7 @@ function SettingsModal({
   const [debugConsoleState, setDebugConsoleState] = useState<"inactive" | "loading" | "active">("inactive");
   const [debugConsoleMessage, setDebugConsoleMessage] = useState<string | null>(null);
   const debugConsoleScriptRef = useRef<HTMLScriptElement | null>(null);
+  const mintBackupPoolRef = useRef<SimplePool | null>(null);
 
   const [newDefaultRelay, setNewDefaultRelay] = useState("");
   const [newBoardRelay, setNewBoardRelay] = useState("");
@@ -9432,8 +12101,129 @@ function SettingsModal({
       return !manageBoard.children.some((childId) => compoundChildMatchesBoard(childId, board));
     });
   }, [boards, manageBoard]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!manageBoard?.nostr?.boardId) {
+        setBoardKeyInfo(null);
+        return;
+      }
+      try {
+        const keys = await deriveBoardNostrKeys(manageBoard.nostr.boardId);
+        if (!cancelled) setBoardKeyInfo({ npub: keys.npub, nsec: keys.nsec, pk: keys.pk });
+      } catch {
+        if (!cancelled) setBoardKeyInfo(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [manageBoard?.nostr?.boardId]);
   // Mint selector moved to Wallet modal; no need to read here.
   const { show: showToast } = useToast();
+  const cleanupStaleBoardEvents = useCallback(async () => {
+    if (staleCleanupBusy) return;
+    if (!manageBoard?.nostr?.boardId) {
+      showToast("Enable sharing first to clean up stale events.", 3000);
+      return;
+    }
+    setStaleCleanupBusy(true);
+    setStaleCleanupMessage("Scanning relays for stale events…");
+    try {
+      const relayList = Array.from(new Set(
+        (manageBoard.nostr.relays?.length ? manageBoard.nostr.relays : (defaultRelays.length ? defaultRelays : DEFAULT_NOSTR_RELAYS))
+          .map((r) => r.trim())
+          .filter(Boolean)
+      ));
+      if (!relayList.length) throw new Error("No relays configured for this board.");
+      const boardId = manageBoard.nostr.boardId;
+      const boardKeys = await deriveBoardNostrKeys(boardId);
+      const bTag = boardTag(boardId);
+      const pool = createNostrPool();
+      const events: NostrEvent[] = await new Promise((resolve) => {
+        const collected: NostrEvent[] = [];
+        const seen = new Set<string>();
+        let pending = relayList.length;
+        const finalize = () => {
+          try { unsub(); } catch {}
+          resolve(collected);
+        };
+        const unsub = pool.subscribe(
+          relayList,
+          [{ kinds: [30301], "#b": [bTag], limit: 2000 }],
+          (ev) => {
+            if (!ev || typeof ev.id !== "string" || seen.has(ev.id)) return;
+            seen.add(ev.id);
+            collected.push(ev);
+          },
+          () => {
+            pending -= 1;
+            if (pending <= 0) finalize();
+          },
+        );
+        setTimeout(finalize, 5000);
+      });
+      const uniqueEvents = new Map<string, NostrEvent>();
+      for (const ev of events || []) {
+        if (ev && typeof ev.id === "string" && !uniqueEvents.has(ev.id)) {
+          uniqueEvents.set(ev.id, ev);
+        }
+      }
+      const authored = Array.from(uniqueEvents.values()).filter((ev) => ev.pubkey === boardKeys.pk);
+      if (!authored.length) {
+        setStaleCleanupMessage("No board-authored events found on relays.");
+        return;
+      }
+      const tagVal = (ev: NostrEvent, name: string): string | undefined => {
+        const tag = ev.tags.find((t) => t[0] === name);
+        return tag ? tag[1] : undefined;
+      };
+      const latestByTask = new Map<string, number>();
+      authored.forEach((ev) => {
+        const taskId = tagVal(ev, "d");
+        if (!taskId) return;
+        const key = `${ev.kind}:${ev.pubkey}:${taskId}`;
+        const ts = typeof ev.created_at === "number" ? ev.created_at : 0;
+        const current = latestByTask.get(key) || 0;
+        if (ts > current) latestByTask.set(key, ts);
+      });
+      const staleIds: string[] = [];
+      authored.forEach((ev) => {
+        const taskId = tagVal(ev, "d");
+        if (!taskId) return;
+        const key = `${ev.kind}:${ev.pubkey}:${taskId}`;
+        const latest = latestByTask.get(key) || 0;
+        const ts = typeof ev.created_at === "number" ? ev.created_at : 0;
+        if (ts < latest) staleIds.push(ev.id);
+      });
+      if (!staleIds.length) {
+        setStaleCleanupMessage("No stale events found.");
+        return;
+      }
+      const chunkSize = 50;
+      for (let i = 0; i < staleIds.length; i += chunkSize) {
+        const chunk = staleIds.slice(i, i + chunkSize);
+        const tags = chunk.map((id) => ["e", id] as string[]);
+        const ev = finalizeEvent({
+          kind: 5,
+          tags,
+          content: "Clean up stale Taskify board events",
+          created_at: Math.floor(Date.now() / 1000),
+          pubkey: boardKeys.pk,
+        }, boardKeys.sk);
+        pool.publishEvent(relayList, ev as unknown as NostrEvent);
+      }
+      const skipped = uniqueEvents.size - authored.length;
+      const base = `Requested deletion for ${staleIds.length} stale event${staleIds.length === 1 ? "" : "s"}.`;
+      const suffix = skipped ? ` Skipped ${skipped} event${skipped === 1 ? "" : "s"} signed by other keys.` : "";
+      setStaleCleanupMessage(base + suffix);
+      showToast("Deletion requests sent", 2500);
+    } catch (error: any) {
+      console.error("Failed to clean stale board events", error);
+      setStaleCleanupMessage(error?.message || "Unable to clean stale events.");
+      showToast("Unable to clean stale events", 3000);
+    } finally {
+      setStaleCleanupBusy(false);
+    }
+  }, [defaultRelays, manageBoard, showToast, staleCleanupBusy]);
   const { mintUrl, payInvoice, checkProofStates } = useCashu();
   const [donateAmt, setDonateAmt] = useState("");
   const [donateComment, setDonateComment] = useState("");
@@ -9647,6 +12437,9 @@ function SettingsModal({
     }
     if (document.querySelector("#eruda")) {
       setDebugConsoleState("active");
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
+      }
       showToast("Debug console already enabled.", 2500);
       return;
     }
@@ -9660,6 +12453,9 @@ function SettingsModal({
         try {
           (window as any)?.eruda?.init?.();
           setDebugConsoleState("active");
+          if (typeof localStorage !== "undefined") {
+            localStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
+          }
           showToast("Debug console enabled.", 2500);
         } catch (error: any) {
           setDebugConsoleState("inactive");
@@ -9694,6 +12490,9 @@ function SettingsModal({
         eruda?.destroy?.();
       } catch {}
     }
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(DEBUG_CONSOLE_STORAGE_KEY);
+    }
     setDebugConsoleState("inactive");
     showToast("Debug console disabled.", 2000);
   }, [debugConsoleScriptRef, setDebugConsoleMessage, setDebugConsoleState, showToast]);
@@ -9708,8 +12507,13 @@ function SettingsModal({
   useEffect(() => {
     if (typeof document !== "undefined" && document.querySelector("#eruda")) {
       setDebugConsoleState("active");
+      return;
     }
-  }, []);
+    if (typeof localStorage !== "undefined") {
+      const persisted = localStorage.getItem(DEBUG_CONSOLE_STORAGE_KEY) === "true";
+      if (persisted) enableDebugConsole();
+    }
+  }, [enableDebugConsole]);
   const sortedP2pkKeys = useMemo(() => {
     return [...p2pkKeys].sort((a, b) => {
       const labelA = (a.label || "").toLowerCase();
@@ -9847,6 +12651,104 @@ function SettingsModal({
       showToast("Unable to save wallet seed", 2000);
     }
   }, [ensureWalletSeedLoaded, showToast]);
+
+  const mintBackupRelays = useMemo(
+    () =>
+      (defaultRelays.length ? defaultRelays : DEFAULT_NOSTR_RELAYS)
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter((url): url is string => !!url),
+    [defaultRelays],
+  );
+
+  const ensureMintBackupPool = useCallback(() => {
+    if (mintBackupPoolRef.current) return mintBackupPoolRef.current;
+    mintBackupPoolRef.current = new SimplePool();
+    return mintBackupPoolRef.current;
+  }, []);
+
+  const persistMintBackupCacheState = useCallback((payload: MintBackupPayload) => {
+    setMintBackupCache(payload);
+    persistMintBackupCache(payload);
+  }, []);
+
+  const syncMintBackup = useCallback(async () => {
+    if (!settings.walletMintBackupEnabled) return;
+    setMintBackupState("syncing");
+    setMintBackupMessage("");
+    try {
+      if (!mintBackupRelays.length) {
+        throw new Error("No Nostr relays configured.");
+      }
+      const mnemonic = getWalletSeedMnemonic();
+      const keys = deriveMintBackupKeys(mnemonic);
+      const mints = getMintList();
+      const template = await createMintBackupTemplate(mints, keys, {
+        clientTag: MINT_BACKUP_CLIENT_TAG,
+        timestamp: Math.floor(Date.now() / 1000),
+      });
+      const pool = ensureMintBackupPool();
+      const signed = finalizeEvent({ ...template, pubkey: keys.publicKeyHex }, keys.privateKeyHex);
+      await pool.publish(mintBackupRelays, signed);
+      persistMintBackupCacheState({
+        mints,
+        timestamp: template.created_at || Math.floor(Date.now() / 1000),
+      });
+      setMintBackupState("success");
+      setMintBackupMessage("Mint list backed up to Nostr.");
+    } catch (error: any) {
+      console.error("[wallet] Unable to sync mint backup", error);
+      setMintBackupState("error");
+      setMintBackupMessage(error?.message || "Unable to back up mints.");
+    }
+  }, [ensureMintBackupPool, mintBackupRelays, persistMintBackupCacheState, settings.walletMintBackupEnabled]);
+
+  const handleRestoreMintBackup = useCallback(async () => {
+    setMintBackupState("restoring");
+    setMintBackupMessage("");
+    try {
+      if (!mintBackupRelays.length) {
+        throw new Error("No Nostr relays configured.");
+      }
+      const mnemonic = getWalletSeedMnemonic();
+      const keys = deriveMintBackupKeys(mnemonic);
+      const pool = ensureMintBackupPool();
+      const events = await pool.list(mintBackupRelays, [
+        { kinds: [MINT_BACKUP_KIND], authors: [keys.publicKeyHex], "#d": [MINT_BACKUP_D_TAG] },
+      ]);
+      const latest = events.reduce<null | { created_at?: number; content: string }>((current, ev) => {
+        if (!ev) return current;
+        if (!current || (ev.created_at || 0) > (current.created_at || 0)) return ev;
+        return current;
+      }, null);
+      if (!latest) {
+        throw new Error("No mint backups found.");
+      }
+      const payload = await decryptMintBackupPayload(latest.content, keys);
+      const restoredMints = payload.mints;
+      replaceMintList(restoredMints);
+      persistMintBackupCacheState({
+        mints: restoredMints,
+        timestamp: payload.timestamp || latest.created_at || Math.floor(Date.now() / 1000),
+      });
+      setMintBackupState("success");
+      setMintBackupMessage(
+        `Restored ${restoredMints.length} mint${restoredMints.length === 1 ? "" : "s"} from backup.`,
+      );
+    } catch (error: any) {
+      console.error("[wallet] Unable to restore mint backup", error);
+      setMintBackupState("error");
+      setMintBackupMessage(error?.message || "Unable to restore mint backup.");
+    }
+  }, [ensureMintBackupPool, mintBackupRelays, persistMintBackupCacheState]);
+
+  useEffect(() => {
+    if (!settings.walletMintBackupEnabled) {
+      setMintBackupState("idle");
+      setMintBackupMessage("");
+      return;
+    }
+    void syncMintBackup();
+  }, [settings.walletMintBackupEnabled, syncMintBackup]);
 
   const handleBackgroundImageSelection = useCallback(async (file: File | null) => {
     if (!file) return;
@@ -10016,6 +12918,9 @@ function SettingsModal({
         proofs: loadProofStore(),
         activeMint: getActiveMint(),
         history: cashuHistory,
+        trackedMints: getMintList(),
+        pendingTokens: listPendingTokens(),
+        walletSeed: getWalletSeedBackup(),
       },
     };
   }, []);
@@ -10110,6 +13015,18 @@ function SettingsModal({
         } catch {
           localStorage.removeItem("cashuHistory");
         }
+      }
+      if ("trackedMints" in cashuData && cashuData.trackedMints !== undefined) {
+        replaceMintList(Array.isArray(cashuData.trackedMints) ? cashuData.trackedMints : []);
+      }
+      if ("pendingTokens" in cashuData && cashuData.pendingTokens !== undefined) {
+        const entries = Array.isArray(cashuData.pendingTokens)
+          ? (cashuData.pendingTokens as PendingTokenEntry[])
+          : [];
+        replacePendingTokens(entries);
+      }
+      if ("walletSeed" in cashuData && cashuData.walletSeed) {
+        restoreWalletSeedBackup(cashuData.walletSeed as WalletSeedBackupPayload);
       }
     }
     setReloadNeeded(true);
@@ -10263,14 +13180,8 @@ function SettingsModal({
       if (!amtSat) throw new Error("Enter amount in sats");
       if (!mintUrl) throw new Error("Set a Cashu mint in Wallet first");
 
-      const lnAddress = DONATION_LIGHTNING_ADDRESS;
-      if (isPlaceholderValue(lnAddress) || !lnAddress.includes("@")) {
-        throw new Error("Donation address is not configured.");
-      }
+      const lnAddress = "dev@solife.me";
       const [name, domain] = lnAddress.split("@");
-      if (!name || !domain) {
-        throw new Error("Donation address is invalid.");
-      }
       const infoRes = await fetch(`https://${domain}/.well-known/lnurlp/${name}`);
       if (!infoRes.ok) throw new Error("Unable to fetch LNURL pay info");
       const info = await infoRes.json();
@@ -11045,7 +13956,6 @@ function SettingsModal({
                     event.currentTarget.value = "";
                   }}
                 />
-                <div className="text-xs text-secondary mt-2">Upload a photo to replace the gradient background. Taskify blurs it and matches the accent color automatically.</div>
                 {settings.backgroundImage && (
                   <div className="mt-3 space-y-3">
                     <div className="flex flex-wrap items-center gap-3">
@@ -11071,98 +13981,96 @@ function SettingsModal({
                             />
                             <span>{backgroundAccentHex}</span>
                           </span>
-                          <span>{settings.accent === 'background' ? 'Accent follows the photo color you picked.' : 'Pick a photo accent below to sync buttons and badges.'}</span>
                         </div>
                       )}
                     </div>
-                    <div>
-                      <div className="text-xs text-secondary mb-1">Background clarity</div>
-                      <div className="flex gap-2">
-                        <button
-                          className={pillButtonClass(settings.backgroundBlur !== 'sharp')}
-                          onClick={() => setSettings({ backgroundBlur: 'blurred' })}
-                        >
-                          Blurred
-                        </button>
-                        <button
-                          className={pillButtonClass(settings.backgroundBlur === 'sharp')}
-                          onClick={() => setSettings({ backgroundBlur: 'sharp' })}
-                        >
-                          Sharp
-                        </button>
-                      </div>
-                      <div className="text-xs text-secondary mt-2">Blur softens distractions; Sharp keeps the photo crisp behind your boards.</div>
-                    </div>
                   </div>
                 )}
-              </div>
-              <div>
-                <div className="text-sm font-medium mb-2">Accent color</div>
-                <div className="flex flex-wrap gap-3">
-                  {ACCENT_CHOICES.map((choice) => {
-                    const active = settings.accent === choice.id;
-                    return (
-                      <button
-                        key={choice.id}
-                        type="button"
-                        className={`accent-swatch pressable ${active ? 'accent-swatch--active' : ''}`}
-                        style={{
-                          "--swatch-color": choice.fill,
-                          "--swatch-ring": choice.ring,
-                          "--swatch-border": choice.border,
-                          "--swatch-border-active": choice.borderActive,
-                          "--swatch-shadow": choice.shadow,
-                          "--swatch-active-shadow": choice.shadowActive,
-                        } as React.CSSProperties}
-                        aria-label={choice.label}
-                        aria-pressed={active}
-                        onClick={() => setSettings({ accent: choice.id })}
-                      >
-                        <span className="sr-only">{choice.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                {photoAccents.length > 0 && (
-                  <div className="mt-3 space-y-2">
-                    <div className="text-xs text-secondary uppercase tracking-[0.12em]">Photo accents</div>
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <div className="text-sm font-medium mb-2">Accent color</div>
                     <div className="flex flex-wrap gap-3">
-                      {photoAccents.map((palette, index) => {
-                        const active = settings.accent === 'background' && settings.backgroundAccentIndex === index;
+                      {[...ACCENT_CHOICES.map((choice) => ({
+                        type: 'preset' as const,
+                        key: choice.id,
+                        label: choice.label,
+                        fill: choice.fill,
+                        ring: choice.ring,
+                        border: choice.border,
+                        borderActive: choice.borderActive,
+                        shadow: choice.shadow,
+                        shadowActive: choice.shadowActive,
+                      })),
+                      ...photoAccents.map((palette, index) => ({
+                        type: 'photo' as const,
+                        key: `photo-${index}`,
+                        label: `Photo accent ${index + 1}`,
+                        fill: palette.fill,
+                        ring: palette.ring,
+                        border: palette.border,
+                        borderActive: palette.borderActive,
+                        shadow: palette.shadow,
+                        shadowActive: palette.shadowActive,
+                        index,
+                      }))].map((choice) => {
+                        const active =
+                          choice.type === 'photo'
+                            ? settings.accent === 'background' && settings.backgroundAccentIndex === choice.index
+                            : settings.accent === choice.key;
+
                         return (
                           <button
-                            key={`photo-accent-${index}`}
+                            key={choice.key}
                             type="button"
                             className={`accent-swatch pressable ${active ? 'accent-swatch--active' : ''}`}
                             style={{
-                              "--swatch-color": palette.fill,
-                              "--swatch-ring": palette.ring,
-                              "--swatch-border": palette.border,
-                              "--swatch-border-active": palette.borderActive,
-                              "--swatch-shadow": palette.shadow,
-                              "--swatch-active-shadow": palette.shadowActive,
+                              "--swatch-color": choice.fill,
+                              "--swatch-ring": choice.ring,
+                              "--swatch-border": choice.border,
+                              "--swatch-border-active": choice.borderActive,
+                              "--swatch-shadow": choice.shadow,
+                              "--swatch-active-shadow": choice.shadowActive,
                             } as React.CSSProperties}
-                            aria-label={`Photo accent ${index + 1}`}
+                            aria-label={choice.label}
                             aria-pressed={active}
-                            onClick={() => handleSelectPhotoAccent(index)}
+                            onClick={() => {
+                              if (choice.type === 'photo') {
+                                handleSelectPhotoAccent(choice.index ?? 0);
+                              } else {
+                                setSettings({ accent: choice.key });
+                              }
+                            }}
                           >
-                            <span className="sr-only">Photo accent {index + 1}</span>
+                            <span className="sr-only">{choice.label}</span>
                           </button>
                         );
                       })}
                     </div>
                   </div>
-                )}
-                <div className="text-xs text-secondary mt-2">
-                  {photoAccents.length > 0
-                    ? settings.accent === 'background'
-                      ? 'Buttons, badges, and focus states now use the photo accent you chose.'
-                      : 'Choose one of your photo accents above or stick with the presets.'
-                    : 'Switch the highlight color used across buttons, badges, and focus states.'}
                 </div>
+                {settings.backgroundImage && (
+                  <div>
+                    <div className="text-xs text-secondary mb-1">Background clarity</div>
+                    <div className="flex gap-2">
+                      <button
+                        className={pillButtonClass(settings.backgroundBlur !== 'sharp')}
+                        onClick={() => setSettings({ backgroundBlur: 'blurred' })}
+                      >
+                        Blurred
+                      </button>
+                      <button
+                        className={pillButtonClass(settings.backgroundBlur === 'sharp')}
+                        onClick={() => setSettings({ backgroundBlur: 'sharp' })}
+                      >
+                        Sharp
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
               <div>
-                <div className="text-sm font-medium mb-2">Open app to</div>
+                <div className="text-sm font-medium mb-1">Open app to</div>
+                <div className="text-xs text-secondary mb-2">Choose whether Taskify launches to your boards or directly into the wallet.</div>
                 <div className="flex gap-2">
                   <button
                     className={pillButtonClass(settings.startupView === "main")}
@@ -11177,21 +14085,21 @@ function SettingsModal({
                     Wallet
                   </button>
                 </div>
-                <div className="text-xs text-secondary mt-2">Choose whether Taskify launches to your boards or directly into the wallet.</div>
               </div>
               <div className="space-y-4 pt-4 border-t border-neutral-800">
                 <div>
-                  <div className="text-sm font-medium mb-2">Font size</div>
+                  <div className="text-sm font-medium mb-1">Font size</div>
+                  <div className="text-xs text-secondary mb-2">Scales the entire UI. Defaults to a compact size.</div>
                   <div className="flex flex-wrap gap-1">
                     <button className={`${pillButtonClass(settings.baseFontSize == null)} button-xs`} onClick={() => setSettings({ baseFontSize: null })}>System</button>
                     <button className={`${pillButtonClass(settings.baseFontSize === 14)} button-xs`} onClick={() => setSettings({baseFontSize: 14 })}>Sm</button>
                     <button className={`${pillButtonClass(settings.baseFontSize === 20)} button-xs`} onClick={() => setSettings({baseFontSize: 20 })}>Lg</button>
                     <button className={`${pillButtonClass(settings.baseFontSize === 22)} button-xs`} onClick={() => setSettings({baseFontSize: 22 })}>X-Lg</button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">Scales the entire UI. Defaults to a compact size.</div>
                 </div>
                 <div>
-                  <div className="text-sm font-medium mb-2">Hide completed subtasks</div>
+                  <div className="text-sm font-medium mb-1">Hide completed subtasks</div>
+                  <div className="text-xs text-secondary mb-2">Keep finished subtasks out of cards. Open Edit to review them later.</div>
                   <div className="flex gap-2">
                     <button
                       className={pillButtonClass(settings.hideCompletedSubtasks)}
@@ -11200,17 +14108,10 @@ function SettingsModal({
                       {settings.hideCompletedSubtasks ? "On" : "Off"}
                     </button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">Keep finished subtasks out of cards. Open Edit to review them later.</div>
                 </div>
                 <div>
-                  <div className="text-sm font-medium mb-2">Add tasks within lists</div>
-                  <div className="flex gap-2">
-                    <button className={pillButtonClass(settings.inlineAdd)} onClick={() => setSettings({ inlineAdd: true })}>Inline</button>
-                    <button className={pillButtonClass(!settings.inlineAdd)} onClick={() => setSettings({ inlineAdd: false })}>Top bar</button>
-                  </div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium mb-2">Add lists from task view</div>
+                  <div className="text-sm font-medium mb-1">Add lists from task view</div>
+                  <div className="text-xs text-secondary mb-2">Place an Add list button beside your board columns.</div>
                   <div className="flex gap-2">
                     <button
                       className={pillButtonClass(settings.listAddButtonEnabled)}
@@ -11225,19 +14126,19 @@ function SettingsModal({
                       Hide
                     </button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">Place an Add list button beside your board columns.</div>
                 </div>
                 <div>
-                  <div className="text-sm font-medium mb-2">Week starts on</div>
+                  <div className="text-sm font-medium mb-1">Week starts on</div>
+                  <div className="text-xs text-secondary mb-2">Affects when weekly recurring tasks re-appear.</div>
                   <div className="flex gap-2">
                     <button className={pillButtonClass(settings.weekStart === 6)} onClick={() => setSettings({ weekStart: 6 })}>Saturday</button>
                     <button className={pillButtonClass(settings.weekStart === 0)} onClick={() => setSettings({ weekStart: 0 })}>Sunday</button>
                     <button className={pillButtonClass(settings.weekStart === 1)} onClick={() => setSettings({ weekStart: 1 })}>Monday</button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">Affects when weekly recurring tasks re-appear.</div>
                 </div>
                 <div>
-                  <div className="text-sm font-medium mb-2">Show full week for recurring tasks</div>
+                  <div className="text-sm font-medium mb-1">Show full week for recurring tasks</div>
+                  <div className="text-xs text-secondary mb-2">Display all occurrences for the current week at once.</div>
                   <div className="flex gap-2">
                     <button
                       className={pillButtonClass(settings.showFullWeekRecurring)}
@@ -11246,10 +14147,10 @@ function SettingsModal({
                       {settings.showFullWeekRecurring ? "On" : "Off"}
                     </button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">Display all occurrences for the current week at once.</div>
                 </div>
                 <div>
-                  <div className="text-sm font-medium mb-2">Completed tab</div>
+                  <div className="text-sm font-medium mb-1">Completed tab</div>
+                  <div className="text-xs text-secondary mb-2">Hide the completed tab and show a Clear completed button instead.</div>
                   <div className="flex gap-2">
                     <button
                       className={pillButtonClass(settings.completedTab)}
@@ -11258,10 +14159,10 @@ function SettingsModal({
                       {settings.completedTab ? "On" : "Off"}
                     </button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">Hide the completed tab and show a Clear completed button instead.</div>
                 </div>
                 <div>
-                  <div className="text-sm font-medium mb-2">Streaks</div>
+                  <div className="text-sm font-medium mb-1">Streaks</div>
+                  <div className="text-xs text-secondary mb-2">Track consecutive completions on recurring tasks.</div>
                   <div className="flex gap-2">
                     <button
                       className={pillButtonClass(settings.streaksEnabled)}
@@ -11270,7 +14171,6 @@ function SettingsModal({
                       {settings.streaksEnabled ? "On" : "Off"}
                     </button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">Track consecutive completions on recurring tasks.</div>
                 </div>
                 <div>
                   <div className="text-sm font-medium mb-2">Board on app start</div>
@@ -11316,7 +14216,8 @@ function SettingsModal({
           {walletExpanded && (
             <div className="space-y-4">
               <div>
-                <div className="text-sm font-medium mb-2">Currency conversion</div>
+                <div className="text-sm font-medium mb-1">Currency conversion</div>
+                <div className="text-xs text-secondary mb-2">Show USD equivalents by fetching spot BTC prices from Coinbase.</div>
                 <div className="flex gap-2">
                   <button
                     className={pillButtonClass(settings.walletConversionEnabled)}
@@ -11327,26 +14228,10 @@ function SettingsModal({
                     onClick={() => setSettings({ walletConversionEnabled: false, walletPrimaryCurrency: "sat" })}
                   >Off</button>
                 </div>
-                <div className="text-xs text-secondary mt-2">Show USD equivalents by fetching spot BTC prices from Coinbase.</div>
               </div>
-              {settings.walletConversionEnabled && (
-                <div>
-                  <div className="text-sm font-medium mb-2">Primary display</div>
-                  <div className="flex gap-2">
-                    <button
-                      className={pillButtonClass(settings.walletPrimaryCurrency === "sat")}
-                      onClick={() => setSettings({ walletPrimaryCurrency: "sat" })}
-                    >Sats</button>
-                    <button
-                      className={pillButtonClass(settings.walletPrimaryCurrency === "usd")}
-                      onClick={() => setSettings({ walletPrimaryCurrency: "usd" })}
-                    >USD</button>
-                  </div>
-                  <div className="text-xs text-secondary mt-2">You can also tap the unit label in the wallet header to toggle.</div>
-                </div>
-              )}
               <div>
-                <div className="text-sm font-medium mb-2">npub.cash lightning address</div>
+                <div className="text-sm font-medium mb-1">npub.cash lightning address</div>
+                <div className="text-xs text-secondary mb-2">Share a lightning address powered by npub.cash using your Taskify Nostr keys.</div>
                 <div className="flex gap-2">
                   <button
                     className={pillButtonClass(settings.npubCashLightningAddressEnabled)}
@@ -11357,13 +14242,11 @@ function SettingsModal({
                     onClick={() => setSettings({ npubCashLightningAddressEnabled: false, npubCashAutoClaim: false })}
                   >Off</button>
                 </div>
-                <div className="text-xs text-secondary mt-2">
-                  Share a lightning address powered by npub.cash using your Taskify Nostr keys.
-                </div>
               </div>
               {settings.npubCashLightningAddressEnabled && (
                 <div>
-                  <div className="text-sm font-medium mb-2">Auto-claim npub.cash eCash</div>
+                  <div className="text-sm font-medium mb-1">Auto-claim npub.cash eCash</div>
+                  <div className="text-xs text-secondary mb-2">Automatically claim pending npub.cash tokens each time the wallet opens.</div>
                   <div className="flex gap-2">
                     <button
                       className={pillButtonClass(settings.npubCashAutoClaim)}
@@ -11374,13 +14257,91 @@ function SettingsModal({
                       onClick={() => setSettings({ npubCashAutoClaim: false })}
                     >Off</button>
                   </div>
-                  <div className="text-xs text-secondary mt-2">
-                    Automatically claim pending npub.cash tokens each time the wallet opens.
-                  </div>
                 </div>
               )}
               <div>
-                <div className="text-sm font-medium mb-2">Wallet seed backup (NUT-13)</div>
+                <div className="text-sm font-medium mb-1">Bounty tracking</div>
+                <div className="text-xs text-secondary mb-2">Sync bounty cards across boards. Disable to hide the Bounties column entirely.</div>
+                <div className="flex gap-2">
+                  <button
+                    className={pillButtonClass(bountyListEnabled)}
+                    onClick={() => setSettings({ walletBountiesEnabled: true })}
+                  >On</button>
+                  <button
+                    className={pillButtonClass(!bountyListEnabled)}
+                    onClick={() => setSettings({ walletBountiesEnabled: false })}
+                  >Off</button>
+                </div>
+              </div>
+              {bountyListEnabled && (
+                <div>
+                  <div className="text-sm font-medium mb-1">Bounties list</div>
+                  <div className="text-xs text-secondary mb-2">Choose which shared board/list powers the Bounties column when you add tasks or attach rewards.</div>
+                  <select
+                    className="pill-input w-full"
+                    value={activeBountyListKey || ""}
+                    onChange={(e) => {
+                      const next = bountyListOptions.find((opt) => opt.key === e.target.value);
+                      if (next) {
+                        setSettings({ walletBountyList: { ...next.ref } });
+                      }
+                    }}
+                  >
+                    {bountyListOptions.map((option) => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div>
+                <div className="text-sm font-medium mb-1">Nostr mint backup</div>
+                <div className="text-xs text-secondary mb-2">Automatically back up your saved mint list to Taskify's Nostr relays using your wallet seed.</div>
+                <div className="flex gap-2">
+                  <button
+                    className={pillButtonClass(settings.walletMintBackupEnabled)}
+                    onClick={() => setSettings({ walletMintBackupEnabled: true })}
+                  >
+                    On
+                  </button>
+                  <button
+                    className={pillButtonClass(!settings.walletMintBackupEnabled)}
+                    onClick={() => setSettings({ walletMintBackupEnabled: false })}
+                  >
+                    Off
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <button
+                    className="ghost-button button-sm pressable"
+                    onClick={syncMintBackup}
+                    disabled={!settings.walletMintBackupEnabled || mintBackupState === "syncing"}
+                  >
+                    {mintBackupState === "syncing" ? "Backing up…" : "Sync now"}
+                  </button>
+                  <button
+                    className="ghost-button button-sm pressable"
+                    onClick={handleRestoreMintBackup}
+                    disabled={mintBackupState === "restoring"}
+                  >
+                    {mintBackupState === "restoring" ? "Restoring…" : "Restore"}
+                  </button>
+                </div>
+                {mintBackupCache?.timestamp ? (
+                  <div className="text-[11px] text-secondary mt-1">
+                    Last backup: {new Date((mintBackupCache.timestamp || 0) * 1000).toLocaleString()}
+                  </div>
+                ) : null}
+                {mintBackupMessage && (
+                  <div className={`text-xs mt-1 ${mintBackupState === "error" ? "text-rose-400" : "text-secondary"}`}>
+                    {mintBackupMessage}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">Wallet seed backup</div>
+                <div className="text-xs text-secondary mb-2">
+                  Save these 12 words in a secure place. The exported file also includes deterministic counters for each mint so you can restore your Cashu wallet elsewhere.
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <button
                     className={`${walletSeedVisible ? "ghost-button" : "accent-button"} button-sm pressable`}
@@ -11401,12 +14362,12 @@ function SettingsModal({
                   </div>
                 )}
                 {walletSeedError && <div className="text-xs text-rose-400 mt-2">{walletSeedError}</div>}
-                <div className="text-xs text-secondary mt-2">
-                  Save these 12 words in a secure place. The exported file also includes deterministic counters for each mint so you can restore your Cashu wallet elsewhere.
-                </div>
               </div>
               <div>
-                <div className="text-sm font-medium mb-2">Background token state checks</div>
+                <div className="text-sm font-medium mb-1">Background token state checks</div>
+                <div className="text-xs text-secondary mb-2">
+                  Periodically check supported mints for the status of sent eCash proofs and alert when a payment is received.
+                </div>
                 <div className="flex gap-2">
                   <button
                     className={pillButtonClass(settings.walletSentStateChecksEnabled)}
@@ -11417,12 +14378,10 @@ function SettingsModal({
                     onClick={() => setSettings({ walletSentStateChecksEnabled: false })}
                   >Off</button>
                 </div>
-                <div className="text-xs text-secondary mt-2">
-                  Periodically check supported mints for the status of sent eCash proofs and alert when a payment is received.
-                </div>
               </div>
               <div>
-                <div className="text-sm font-medium mb-2">Reset sent token tracking</div>
+                <div className="text-sm font-medium mb-1">Reset sent token tracking</div>
+                <div className="text-xs text-secondary mb-2">Clears stored proof subscriptions so old eCash tokens stop retrying status updates.</div>
                 <div className="flex gap-2">
                   <button
                     className="ghost-button button-sm pressable text-rose-400"
@@ -11435,12 +14394,10 @@ function SettingsModal({
                     }}
                   >Reset tracking</button>
                 </div>
-                <div className="text-xs text-secondary mt-2">
-                  Clears stored proof subscriptions so old eCash tokens stop retrying status updates.
-                </div>
               </div>
               <div>
-                <div className="text-sm font-medium mb-2">Payment requests (NUT-18)</div>
+                <div className="text-sm font-medium mb-1">Payment requests</div>
+                <div className="text-xs text-secondary mb-2">Create Cashu payment requests and share them over Nostr for others to fund.</div>
                 <div className="flex gap-2">
                   <button
                     className={pillButtonClass(settings.walletPaymentRequestsEnabled)}
@@ -11453,9 +14410,6 @@ function SettingsModal({
                       walletPaymentRequestsBackgroundChecksEnabled: false,
                     })}
                   >Off</button>
-                </div>
-                <div className="text-xs text-secondary mt-2">
-                  Create Cashu payment requests and share them over Nostr for others to fund.
                 </div>
               </div>
               {settings.walletPaymentRequestsEnabled && (
@@ -12113,11 +15067,7 @@ function SettingsModal({
         {/* Development donation */}
         <section className="wallet-section space-y-3">
           <div className="text-sm font-medium mb-2">Support development</div>
-          <div className="text-xs text-secondary mb-3">
-            {(!isPlaceholderValue(DONATION_LIGHTNING_ADDRESS) && DONATION_LIGHTNING_ADDRESS.includes("@"))
-              ? `Donate from your internal wallet to ${DONATION_LIGHTNING_ADDRESS}`
-              : "Configure a Lightning address to accept donations from your internal wallet."}
-          </div>
+          <div className="text-xs text-secondary mb-3">Donate from your internal wallet to dev@solife.me</div>
           <div className="flex gap-2 mb-2 w-full">
             <input
               className="pill-input flex-1 min-w-[7rem]"
@@ -12149,22 +15099,14 @@ function SettingsModal({
         <section className="wallet-section space-y-2 text-xs text-secondary">
           <div>
             Please submit feedback or feature requests to{' '}
-            {isPlaceholderValue(SUPPORT_CONTACT_EMAIL) ? (
-              <span className="text-secondary">configure a support email</span>
-            ) : (
-              <button
-                className="link-accent"
-                onClick={async ()=>{ try { await navigator.clipboard?.writeText(SUPPORT_CONTACT_EMAIL); showToast(`Copied ${SUPPORT_CONTACT_EMAIL}`); } catch {} }}
-              >{SUPPORT_CONTACT_EMAIL}</button>
-            )}{' '}or share Board ID{' '}
-            {isPlaceholderValue(FEEDBACK_BOARD_ID) ? (
-              <span className="text-secondary">configure a board ID</span>
-            ) : (
-              <button
-                className="link-accent"
-                onClick={async ()=>{ try { await navigator.clipboard?.writeText(FEEDBACK_BOARD_ID); showToast('Copied Board ID'); } catch {} }}
-              >{FEEDBACK_BOARD_ID}</button>
-            )}
+            <button
+              className="link-accent"
+              onClick={async ()=>{ try { await navigator.clipboard?.writeText('dev@solife.me'); showToast('Copied dev@solife.me'); } catch {} }}
+            >dev@solife.me</button>{' '}or share Board ID{' '}
+            <button
+              className="link-accent"
+              onClick={async ()=>{ try { await navigator.clipboard?.writeText('c3db0d84-ee89-43df-a31e-edb4c75be32b'); showToast('Copied Board ID'); } catch {} }}
+            >c3db0d84-ee89-43df-a31e-edb4c75be32b</button>
           </div>
         </section>
 
@@ -12435,6 +15377,34 @@ function SettingsModal({
                 </div>
                   {showAdvanced && (
                     <>
+                      <div className="text-xs text-secondary">Board Nostr key (npub)</div>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          readOnly
+                          value={boardKeyInfo?.npub || ""}
+                          placeholder="Deriving board key…"
+                          className="pill-input flex-1 min-w-0"
+                        />
+                        <button
+                          className="ghost-button button-sm pressable"
+                          disabled={!boardKeyInfo}
+                          onClick={async ()=>{ if (!boardKeyInfo) return; try { await navigator.clipboard?.writeText(boardKeyInfo.npub); } catch {} }}
+                        >Copy</button>
+                      </div>
+                      <div className="text-xs text-secondary">Board secret key (nsec)</div>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          readOnly
+                          value={boardKeyInfo?.nsec || ""}
+                          placeholder="Deriving board key…"
+                          className="pill-input flex-1 min-w-0"
+                        />
+                        <button
+                          className="ghost-button button-sm pressable"
+                          disabled={!boardKeyInfo}
+                          onClick={async ()=>{ if (!boardKeyInfo) return; try { await navigator.clipboard?.writeText(boardKeyInfo.nsec); } catch {} }}
+                        >Copy</button>
+                      </div>
                       <div className="text-xs text-secondary">Relays</div>
                       <div className="flex gap-2 mb-2">
                         <input
@@ -12464,6 +15434,16 @@ function SettingsModal({
                           </li>
                         ))}
                       </ul>
+                      <button
+                        className="ghost-button button-sm pressable w-full justify-center"
+                        onClick={cleanupStaleBoardEvents}
+                        disabled={staleCleanupBusy}
+                      >
+                        {staleCleanupBusy ? "Cleaning stale events…" : "Clean up stale events"}
+                      </button>
+                      {staleCleanupMessage && (
+                        <div className="text-xs text-secondary mt-1">{staleCleanupMessage}</div>
+                      )}
                       <button className="ghost-button button-sm pressable" onClick={()=>onRegenerateBoardId(manageBoard.id)}>Generate new board ID</button>
                     </>
                   )}

@@ -12,6 +12,10 @@ self.addEventListener('activate', (event) => {
 
 const CACHE_PREFIX = 'taskify-cache-';
 const CACHE = `${CACHE_PREFIX}v2`;
+const CONFIG_CACHE = `${CACHE_PREFIX}config`;
+const DEFAULT_WORKER_BASE_URL = self.location.origin;
+let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
+let workerBaseUrlReady = restoreWorkerBaseUrl();
 let updateNotified = false;
 
 self.addEventListener('fetch', (event) => {
@@ -21,8 +25,9 @@ self.addEventListener('fetch', (event) => {
     (async () => {
       const cache = await caches.open(CACHE);
       const cached = await cache.match(event.request);
+      const cachedForCompare = cached ? cached.clone() : null;
 
-      const fetchPromise = fetchAndUpdateCache(cache, event.request, cached);
+      const fetchPromise = fetchAndUpdateCache(cache, event.request, cachedForCompare);
 
       if (cached) {
         event.waitUntil(fetchPromise.catch(() => undefined));
@@ -158,12 +163,13 @@ async function handlePushEvent() {
 }
 
 async function fetchPendingRemindersWithRetry(maxAttempts = 3, delayMs = 500) {
+  const apiBase = await getWorkerBaseUrl();
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       const registration = await self.registration;
       const subscription = await registration.pushManager.getSubscription();
       if (!subscription) return [];
-      const response = await fetch('/api/reminders/poll', {
+      const response = await fetch(`${apiBase}/api/reminders/poll`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ endpoint: subscription.endpoint }),
@@ -189,6 +195,56 @@ async function fetchPendingRemindersWithRetry(maxAttempts = 3, delayMs = 500) {
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function normalizeBaseUrl(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const normalized = new URL(trimmed, DEFAULT_WORKER_BASE_URL).origin;
+    const noTrailingSlash = normalized.replace(/\/$/, '');
+    return noTrailingSlash || null;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreWorkerBaseUrl() {
+  try {
+    const cache = await caches.open(CONFIG_CACHE);
+    const response = await cache.match('worker-base-url');
+    const text = response ? (await response.text()) : '';
+    const normalized = normalizeBaseUrl(text);
+    if (normalized) {
+      workerBaseUrl = normalized;
+    }
+  } catch {}
+}
+
+async function persistWorkerBaseUrl(baseUrl) {
+  try {
+    const cache = await caches.open(CONFIG_CACHE);
+    await cache.put('worker-base-url', new Response(baseUrl));
+  } catch {}
+}
+
+async function getWorkerBaseUrl() {
+  try {
+    await workerBaseUrlReady;
+  } catch {}
+  return workerBaseUrl || DEFAULT_WORKER_BASE_URL;
+}
+
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+  if (data.type !== 'TASKIFY_CONFIG') return;
+  const normalized = normalizeBaseUrl(data.workerBaseUrl);
+  if (!normalized) return;
+  workerBaseUrl = normalized;
+  workerBaseUrlReady = Promise.resolve();
+  persistWorkerBaseUrl(normalized);
+});
 
 function buildReminderTitle(item) {
   const raw = typeof item?.title === 'string' ? item.title : '';

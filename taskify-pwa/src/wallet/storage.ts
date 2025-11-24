@@ -4,7 +4,6 @@ const LS_KEY = "cashu_proofs_v1";
 const LS_ACTIVE_MINT = "cashu_active_mint_v1";
 const LS_PENDING_TOKENS = "cashu_pending_tokens_v1";
 const LS_MINT_LIST = "cashu_tracked_mints_v1";
-export const DEFAULT_CASHU_MINT_URL = "<CASHU_MINT_URL>";
 
 export type PendingTokenEntry = {
   id: string;
@@ -58,7 +57,7 @@ function persistMintList(urls: string[]) {
   }
 }
 
-function sanitizeMintList(raw: string[]): string[] {
+export function sanitizeMintList(raw: string[]): string[] {
   const sanitized: string[] = [];
   const seen = new Set<string>();
   for (const entry of raw) {
@@ -77,6 +76,12 @@ export function getMintList(): string[] {
   if (sanitized.length !== raw.length) {
     persistMintList(sanitized);
   }
+  return sanitized;
+}
+
+export function replaceMintList(urls: string[]): string[] {
+  const sanitized = sanitizeMintList(Array.isArray(urls) ? urls : []);
+  persistMintList(sanitized);
   return sanitized;
 }
 
@@ -103,7 +108,7 @@ function loadPendingTokenEntries(): PendingTokenEntry[] {
   return safeParse<PendingTokenEntry[]>(localStorage.getItem(LS_PENDING_TOKENS), []);
 }
 
-function savePendingTokenEntries(entries: PendingTokenEntry[]) {
+function normalizePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry[] {
   const normalized: PendingTokenEntry[] = [];
   for (const entry of entries) {
     if (!entry?.mint || !entry?.token) continue;
@@ -118,6 +123,11 @@ function savePendingTokenEntries(entries: PendingTokenEntry[]) {
       lastError: entry.lastError,
     });
   }
+  return normalized;
+}
+
+function savePendingTokenEntries(entries: PendingTokenEntry[]) {
+  const normalized = normalizePendingTokens(entries);
   localStorage.setItem(LS_PENDING_TOKENS, JSON.stringify(normalized));
 }
 
@@ -177,6 +187,12 @@ export function markPendingTokenAttempt(id: string, error?: string) {
   }
 }
 
+export function replacePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry[] {
+  const normalized = normalizePendingTokens(Array.isArray(entries) ? entries : []);
+  savePendingTokenEntries(normalized);
+  return normalized;
+}
+
 export function getProofs(mintUrl: string): Proof[] {
   const s = loadStore();
   return Array.isArray(s[mintUrl]) ? s[mintUrl] : [];
@@ -212,9 +228,9 @@ export function clearProofs(mintUrl: string) {
 
 export function getActiveMint(): string {
   try {
-    return localStorage.getItem(LS_ACTIVE_MINT) || DEFAULT_CASHU_MINT_URL;
+    return localStorage.getItem(LS_ACTIVE_MINT) || "https://mint.solife.me";
   } catch {
-    return DEFAULT_CASHU_MINT_URL;
+    return "https://mint.solife.me";
   }
 }
 

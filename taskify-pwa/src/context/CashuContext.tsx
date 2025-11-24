@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { MeltProofsResponse, MeltQuoteResponse, MintQuoteResponse, Proof, ProofState } from "@cashu/cashu-ts";
-import { getDecodedToken } from "@cashu/cashu-ts";
+import { getDecodedToken, getEncodedToken } from "@cashu/cashu-ts";
 import { CashuManager, type CreateSendTokenOptions, type SendTokenLockInfo } from "../wallet/CashuManager";
 import {
   addPendingToken,
@@ -80,7 +80,7 @@ type CashuContextType = {
   receiveToken: (encoded: string) => Promise<ReceiveTokenResult>;
   createSendToken: (
     amount: number,
-    options?: CreateSendTokenOptions,
+    options?: CreateSendTokenOptions & { mintUrl?: string },
   ) => Promise<{ token: string; proofs: Proof[]; mintUrl: string; lockInfo?: SendTokenLockInfo }>;
   payInvoice: (
     invoice: string,
@@ -152,6 +152,33 @@ function deriveTokenAmount(token: string): number {
   } catch {
     return 0;
   }
+}
+
+function isTokenAlreadySpentError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as any)?.code;
+  if (typeof code === "number" && code === 11001) return true;
+  if (typeof code === "string" && Number.parseInt(code, 10) === 11001) return true;
+
+  const detail = typeof (err as any)?.detail === "string" ? (err as any).detail.toLowerCase() : "";
+  if (detail.includes("already spent")) return true;
+
+  const message = typeof (err as any)?.message === "string" ? (err as any).message.toLowerCase() : "";
+  if (message.includes("already spent")) return true;
+
+  const responseData =
+    typeof (err as any)?.response === "object" && (err as any).response !== null
+      ? ((err as any).response as Record<string, unknown>).data
+      : null;
+  if (responseData && typeof responseData === "object") {
+    const dataCode = (responseData as any)?.code;
+    if (typeof dataCode === "number" && dataCode === 11001) return true;
+    if (typeof dataCode === "string" && Number.parseInt(dataCode, 10) === 11001) return true;
+    const dataDetail = typeof (responseData as any)?.detail === "string" ? (responseData as any).detail.toLowerCase() : "";
+    if (dataDetail.includes("already spent")) return true;
+  }
+
+  return false;
 }
 
 function normalizeMintUrl(url: string): string {
@@ -253,7 +280,43 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       const activeMint = manager ? manager.mintUrl.replace(/\/$/, "") : null;
       const targetManager =
         manager && activeMint === normalizedEntryMint ? manager : await ensureManagerForMint(entry.mint);
-      const proofs = await targetManager.receiveToken(entry.token);
+      const receiveTokenFromEntry = async () => targetManager.receiveToken(entry.token);
+      const proofs = await receiveTokenFromEntry().catch(async (error) => {
+        if (!isTokenAlreadySpentError(error)) {
+          throw error;
+        }
+
+        const decoded: any = getDecodedToken(entry.token);
+        const entries: any[] = decoded
+          ? Array.isArray(decoded?.token)
+            ? decoded.token
+            : decoded?.proofs
+              ? [decoded]
+              : []
+          : [];
+        const normalizedMint = normalizeMintUrl(targetManager.mintUrl);
+        const proofsForMint = entries
+          .filter((item) => normalizeMintUrl(item?.mint ?? "") === normalizedMint)
+          .flatMap((item) => (Array.isArray(item?.proofs) ? item.proofs : []));
+        if (!proofsForMint.length) {
+          throw error;
+        }
+        const states = await targetManager.checkProofStates(proofsForMint);
+        const spendableProofs = proofsForMint.filter((proof, index) => {
+          const stateLabel = typeof states[index]?.state === "string" ? states[index]!.state.toUpperCase() : "";
+          return stateLabel !== "SPENT";
+        });
+        if (!spendableProofs.length) {
+          removePendingToken(entry.id);
+          throw new Error("Token already spent");
+        }
+        const partialToken = getEncodedToken({
+          mint: targetManager.mintUrl,
+          proofs: spendableProofs,
+          unit: targetManager.unit,
+        });
+        return targetManager.receiveToken(partialToken);
+      });
       removePendingToken(entry.id);
       if (targetManager === manager) {
         setBalance(targetManager.balance);
@@ -645,15 +708,42 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
   const createSendToken = useCallback(async (
     amount: number,
-    options?: CreateSendTokenOptions,
+    options?: CreateSendTokenOptions & { mintUrl?: string },
   ) => {
-    if (!manager) throw new Error("Wallet not ready");
-    const res = await manager.createSendToken(amount, options);
-    setBalance(manager.balance);
-    setProofs(manager.proofs);
+    const overrideUrl = options?.mintUrl;
+    const normalizedOverride = overrideUrl ? normalizeMintUrl(overrideUrl) : null;
+    const activeNormalized = manager ? normalizeMintUrl(manager.mintUrl) : null;
+
+    let targetManager: CashuManager | null = null;
+    if (normalizedOverride) {
+      if (manager && normalizedOverride === activeNormalized) {
+        targetManager = manager;
+      } else if (overrideUrl) {
+        targetManager = await ensureManagerForMint(overrideUrl);
+      }
+    } else if (manager) {
+      targetManager = manager;
+    }
+
+    if (!targetManager) throw new Error("Wallet not ready");
+
+    const { mintUrl: _mintOverride, ...sendOptions } = options ?? {};
+    const res = await targetManager.createSendToken(amount, sendOptions);
+
+    if (targetManager === manager) {
+      setBalance(manager.balance);
+      setProofs(manager.proofs);
+    } else {
+      const normalizedTarget = normalizeMintUrl(targetManager.mintUrl);
+      if (normalizedTarget === activeNormalized) {
+        setBalance(targetManager.balance);
+        setProofs(targetManager.proofs);
+      }
+    }
     refreshTotalBalance();
-    return { token: res.token, proofs: res.send, mintUrl: manager.mintUrl, lockInfo: res.lockInfo };
-  }, [manager, refreshTotalBalance]);
+
+    return { token: res.token, proofs: res.send, mintUrl: targetManager.mintUrl, lockInfo: res.lockInfo };
+  }, [ensureManagerForMint, manager, refreshTotalBalance]);
 
   const createTokenFromProofSelection = useCallback(
     async (secrets: string[]) => {

@@ -14,7 +14,7 @@ export type WalletSeedRecord = {
 
 type WalletCounterStore = Record<string, number>;
 
-type WalletSeedBackupPayload = {
+export type WalletSeedBackupPayload = {
   type: "nut13-wallet-backup";
   version: 1;
   mnemonic: string;
@@ -257,6 +257,45 @@ export function getWalletSeedBackup(): WalletSeedBackupPayload {
 
 export function getWalletSeedBackupJson(): string {
   return JSON.stringify(getWalletSeedBackup(), null, 2);
+}
+
+export function restoreWalletSeedBackup(payload: unknown): WalletSeedRecord {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Invalid wallet seed backup");
+  }
+  const data = payload as Record<string, unknown>;
+  if (data.type !== "nut13-wallet-backup") {
+    throw new Error("Invalid wallet seed backup type");
+  }
+  if (data.version !== 1) {
+    throw new Error("Unsupported wallet seed backup version");
+  }
+  const mnemonicRaw = typeof data.mnemonic === "string" ? data.mnemonic : "";
+  const mnemonic = normalizeMnemonic(mnemonicRaw);
+  if (!mnemonic || !validateMnemonic(mnemonic, wordlist)) {
+    throw new Error("Invalid wallet seed phrase in backup");
+  }
+  const countersRaw = data.counters;
+  const normalizedCounters: WalletCounterStore = {};
+  if (countersRaw && typeof countersRaw === "object") {
+    for (const [mint, entries] of Object.entries(countersRaw as Record<string, unknown>)) {
+      if (!mint || typeof entries !== "object" || !entries) continue;
+      for (const [keysetId, value] of Object.entries(entries as Record<string, unknown>)) {
+        const numeric = Math.max(0, Math.floor(Number(value)));
+        if (!Number.isFinite(numeric)) continue;
+        normalizedCounters[counterKey(normalizeMintUrl(mint), keysetId)] = numeric;
+      }
+    }
+  }
+
+  const record: WalletSeedRecord = {
+    mnemonic,
+    seedHex: bytesToHex(mnemonicToSeedSync(mnemonic)),
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : undefined,
+  };
+  persistSeedRecord(record);
+  persistCounterStore(normalizedCounters);
+  return record;
 }
 
 export function regenerateWalletSeed(): WalletSeedRecord {
