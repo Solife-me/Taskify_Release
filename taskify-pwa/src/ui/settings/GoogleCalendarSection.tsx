@@ -18,8 +18,19 @@ export function GoogleCalendarSection({
   onDisconnect,
   onSync,
 }: Props) {
-  const connected = connectionStatus.connected;
-  const status = connected ? connectionStatus.status : null;
+  const safeCalendars = Array.isArray(calendars)
+    ? calendars.filter((cal) => cal && typeof cal.id === "string" && typeof cal.name === "string")
+    : [];
+
+  const connected = Boolean(
+    connectionStatus &&
+      typeof connectionStatus === "object" &&
+      (connectionStatus as { connected?: unknown }).connected === true,
+  );
+  const connectedStatus = connected
+    ? (connectionStatus as Extract<GcalConnectionStatus, { connected: true }>)
+    : null;
+  const status = connectedStatus?.status ?? null;
   const needsReauth = status === "needs_reauth" || status === "token_expired";
 
   const formatLastSync = (ts: number | null) => {
@@ -57,7 +68,7 @@ export function GoogleCalendarSection({
           <div className="space-y-1">
             <div className="flex items-center justify-between">
               <span className="text-xs text-secondary truncate max-w-[60%]">
-                {connectionStatus.googleEmail}
+                {connectedStatus?.googleEmail || "Google account"}
               </span>
               {needsReauth ? (
                 <span className="text-xs text-red-400">Reconnect required</span>
@@ -65,18 +76,18 @@ export function GoogleCalendarSection({
                 <span className="text-xs text-yellow-400">Sync failed</span>
               ) : (
                 <span className="text-xs text-secondary">
-                  Synced {formatLastSync(connectionStatus.lastSyncAt)}
+                  Synced {formatLastSync(connectedStatus?.lastSyncAt ?? null)}
                 </span>
               )}
             </div>
-            {connectionStatus.lastError && (
-              <div className="text-xs text-red-400 truncate">{connectionStatus.lastError}</div>
+            {connectedStatus?.lastError && (
+              <div className="text-xs text-red-400 truncate">{connectedStatus.lastError}</div>
             )}
           </div>
 
-          {calendars.length > 0 && (
+          {safeCalendars.length > 0 && (
             <div className="text-xs text-secondary">
-              {calendars.length} calendar{calendars.length === 1 ? "" : "s"} connected. Manage visibility from Upcoming filters.
+              {safeCalendars.length} calendar{safeCalendars.length === 1 ? "" : "s"} connected. Manage visibility from Upcoming filters.
             </div>
           )}
 
