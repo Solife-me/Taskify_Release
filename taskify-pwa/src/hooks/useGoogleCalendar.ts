@@ -18,6 +18,47 @@ const LS_GCAL_STATUS = "taskify_gcal_status_v1";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+function normalizeConnectionStatus(input: unknown): GcalConnectionStatus {
+  if (!input || typeof input !== "object") return { connected: false };
+  const raw = input as Record<string, unknown>;
+  if (raw.connected !== true) return { connected: false };
+  return {
+    connected: true,
+    status:
+      raw.status === "active" ||
+      raw.status === "token_expired" ||
+      raw.status === "needs_reauth" ||
+      raw.status === "sync_failed" ||
+      raw.status === "disconnected"
+        ? raw.status
+        : "active",
+    googleEmail: typeof raw.googleEmail === "string" ? raw.googleEmail : "",
+    lastSyncAt: typeof raw.lastSyncAt === "number" ? raw.lastSyncAt : null,
+    lastError: typeof raw.lastError === "string" ? raw.lastError : null,
+  };
+}
+
+function normalizeCalendars(input: unknown): GcalCalendar[] {
+  if (!Array.isArray(input)) return [];
+  const out: GcalCalendar[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    const id = typeof raw.id === "string" ? raw.id : "";
+    const name = typeof raw.name === "string" ? raw.name : "";
+    if (!id || !name) continue;
+    out.push({
+      id,
+      name,
+      primary_cal: raw.primary_cal === 1 ? 1 : 0,
+      selected: raw.selected === 1 ? 1 : 0,
+      color: typeof raw.color === "string" ? raw.color : null,
+      timezone: typeof raw.timezone === "string" ? raw.timezone : null,
+    });
+  }
+  return out;
+}
+
 function normalizeExternalEvents(input: unknown): GcalExternalEvent[] {
   if (!Array.isArray(input)) return [];
   const out: GcalExternalEvent[] = [];
@@ -93,7 +134,7 @@ export function useGoogleCalendar(
   const [connectionStatus, setConnectionStatus] = useState<GcalConnectionStatus>(() => {
     try {
       const raw = kvStorage.getItem(LS_GCAL_STATUS);
-      if (raw) return JSON.parse(raw) as GcalConnectionStatus;
+      if (raw) return normalizeConnectionStatus(JSON.parse(raw));
     } catch {}
     return { connected: false };
   });
@@ -101,7 +142,7 @@ export function useGoogleCalendar(
   const [calendars, setCalendars] = useState<GcalCalendar[]>(() => {
     try {
       const raw = kvStorage.getItem(LS_GCAL_CALENDARS);
-      if (raw) return JSON.parse(raw) as GcalCalendar[];
+      if (raw) return normalizeCalendars(JSON.parse(raw));
     } catch {}
     return [];
   });
@@ -158,8 +199,8 @@ export function useGoogleCalendar(
       const res = await gcalFetch(workerBaseUrl, "/api/gcal/status", privkeyHex);
       if (!mountedRef.current) return;
       if (res.ok) {
-        const data = await res.json() as GcalConnectionStatus;
-        setConnectionStatus(data);
+        const data = await res.json();
+        setConnectionStatus(normalizeConnectionStatus(data));
       }
     } catch {
       // network error — keep cached status
@@ -172,8 +213,8 @@ export function useGoogleCalendar(
       const res = await gcalFetch(workerBaseUrl, "/api/gcal/calendars", privkeyHex);
       if (!mountedRef.current) return;
       if (res.ok) {
-        const data = await res.json() as GcalCalendar[];
-        setCalendars(data);
+        const data = await res.json();
+        setCalendars(normalizeCalendars(data));
       }
     } catch {}
   }, [workerBaseUrl, privkeyHex]);
