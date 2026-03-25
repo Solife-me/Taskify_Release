@@ -44,7 +44,7 @@ export function GoogleCalendarSection({
           </p>
           <button
             type="button"
-            className={pillButtonClass}
+            className="ghost-button button-sm pressable"
             onClick={onConnect}
             disabled={loading}
           >
