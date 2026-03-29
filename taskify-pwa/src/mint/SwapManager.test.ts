@@ -1,5 +1,5 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import { test, describe, expect } from "vitest";
+
 import { SwapManager } from "./SwapManager.ts";
 
 type Proof = { amount?: number; secret?: string; C?: string; id?: string };
@@ -14,7 +14,7 @@ test("swap throws when wallet.swap is not supported", async () => {
   };
 
   const manager = new SwapManager(connection);
-  await assert.rejects(() => manager.swap([], []), /not supported/i);
+  await expect(() => manager.swap([], [])).rejects.toThrow(/not supported/i);
 });
 
 test("swap calls init, wallet.swap, validateProofsDleq, and uses ttlMs:0", async () => {
@@ -52,14 +52,14 @@ test("swap calls init, wallet.swap, validateProofsDleq, and uses ttlMs:0", async
   const manager = new SwapManager(connection);
   const result = await manager.swap(inputs as any, outputs as any);
 
-  assert.equal(calls.init, true);
-  assert.deepEqual(calls.walletSwap, { inProofs: inputs, outProofs: outputs });
-  assert.deepEqual(calls.validate, swappedProofs);
-  assert.deepEqual(result, swappedProofs);
+  expect(calls.init).toBe(true);
+  expect(calls.walletSwap).toEqual({ inProofs: inputs, outProofs: outputs });
+  expect(calls.validate).toEqual(swappedProofs);
+  expect(result).toEqual(swappedProofs);
 
   const rateLimit = calls.rateLimit as { key: string; options: { ttlMs: number } };
-  assert.equal(rateLimit.options.ttlMs, 0);
-  assert.match(rateLimit.key, /^key:POST:swap:/);
+  expect(rateLimit.options.ttlMs).toBe(0);
+  expect(rateLimit.key).toMatch(/^key:POST:swap:/);
 });
 
 test("swap accepts wallet response as direct proof array", async () => {
@@ -74,5 +74,5 @@ test("swap accepts wallet response as direct proof array", async () => {
 
   const manager = new SwapManager(connection);
   const result = await manager.swap([{ secret: "in" } as any], [{ amount: 5 } as any]);
-  assert.deepEqual(result, direct);
+  expect(result).toEqual(direct);
 });

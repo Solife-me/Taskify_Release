@@ -65,9 +65,9 @@ export type Settings = {
   nostrBackupMetadataEnabled: boolean;
   pushNotifications: PushPreferences;
   // Legacy Agent Mode toggle; panel access is now controlled by ?agent=1.
-  agentModeEnabled: boolean;
+
   // Legacy no-op permission flag kept only for backwards compatibility with stored settings.
-  allowAgentCommands: boolean;
+
 };
 
 // ---- Accent choices ----

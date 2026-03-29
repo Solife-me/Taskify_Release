@@ -127,7 +127,7 @@ public final class TaskifyBoard {
 // MARK: - Profile / Identity
 
 /// Stored in Keychain, not SwiftData.
-public struct TaskifyProfile: Codable {
+public struct TaskifyProfile: Codable, Equatable {
     public var name: String
     public var nsecHex: String          // 32-byte hex
     public var npub: String             // bech32
@@ -143,7 +143,7 @@ public struct TaskifyProfile: Codable {
     }
 }
 
-public struct ProfileBoardEntry: Codable {
+public struct ProfileBoardEntry: Codable, Equatable {
     public var id: String
     public var name: String
     public init(id: String, name: String) {

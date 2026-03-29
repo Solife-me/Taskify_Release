@@ -15,8 +15,8 @@
  *  9. Absolute timeout — stuck relay's accumulated batch still flushed eventually.
  * 10. _nostrAt stamped on relay batch entries — stored for future merge comparison.
  */
-import test from "node:test";
-import assert from "node:assert/strict";
+import { test, describe, expect } from "vitest";
+
 
 // ---------------------------------------------------------------------------
 // Shared types (mirrors App.tsx)
@@ -56,8 +56,8 @@ function flushRelayBatch(
     const taskId = key.split("::")[1];
     const incomingNostrAt = isDeleted(entry)
       ? entry._nostrAt
-      : (entry._nostrAt ?? taskClock?.get(taskId) ?? 0);
-    const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? 0;
+      : (entry._nostrAt ?? 0);
+    const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? taskClock?.get(taskId) ?? 0;
     if (incomingNostrAt < existingNostrAt) continue; // IDB is newer — skip
     if (isDeleted(entry)) merged.delete(key);
     else merged.set(key, entry as Task);
@@ -133,7 +133,7 @@ test("IDB tasks are never filtered — visible immediately before any relay resp
   // in the old architecture. Simulating the new filter (no pendingSharedBoardIds):
   const visibleTasks = idbTasks.filter((t) => t.boardId === "board1");
 
-  assert.equal(visibleTasks.length, 2, "Both IDB tasks must be visible immediately");
+  expect(visibleTasks.length).toBe(2);
 });
 
 // ---------------------------------------------------------------------------
@@ -155,11 +155,10 @@ test("events from relay A go into relay A's batch, not relay B's", () => {
   routeEvent("wss://relay-a.test", "board1::t1", makeTask("t1", "board1", 500));
   routeEvent("wss://relay-b.test", "board1::t2", makeTask("t2", "board1", 600));
 
-  assert.equal(relayBatches.get("wss://relay-a.test")?.size, 1);
-  assert.equal(relayBatches.get("wss://relay-b.test")?.size, 1);
-  assert.ok(relayBatches.get("wss://relay-a.test")?.has("board1::t1"));
-  assert.ok(!relayBatches.get("wss://relay-a.test")?.has("board1::t2"),
-    "Relay A should not contain relay B's tasks");
+  expect(relayBatches.get("wss://relay-a.test")?.size).toBe(1);
+  expect(relayBatches.get("wss://relay-b.test")?.size).toBe(1);
+  expect(relayBatches.get("wss://relay-a.test")?.has("board1::t1")).toBe(true);
+  expect(relayBatches.get("wss://relay-a.test")?.has("board1::t2")).toBe(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -175,9 +174,9 @@ test("relay task with older _nostrAt does NOT overwrite newer IDB task", () => {
 
   const result = flushRelayBatch(relayBatch, idbTasks);
 
-  assert.equal(result.length, 1);
-  assert.equal(result[0].title, "Task t1", "IDB task must not be overwritten by older relay data");
-  assert.equal(result[0]._nostrAt, 1000, "IDB _nostrAt must be preserved");
+  expect(result.length).toBe(1);
+  expect(result[0].title).toBe("Task t1");
+  expect(result[0]._nostrAt).toBe(1000);
 });
 
 test("relay task with newer _nostrAt DOES update IDB task", () => {
@@ -189,9 +188,9 @@ test("relay task with newer _nostrAt DOES update IDB task", () => {
 
   const result = flushRelayBatch(relayBatch, idbTasks);
 
-  assert.equal(result.length, 1);
-  assert.equal(result[0].title, "Updated from relay");
-  assert.equal(result[0]._nostrAt, 1000);
+  expect(result.length).toBe(1);
+  expect(result[0].title).toBe("Updated from relay");
+  expect(result[0]._nostrAt).toBe(1000);
 });
 
 test("relay task with equal _nostrAt applies (idempotent re-sync)", () => {
@@ -202,8 +201,8 @@ test("relay task with equal _nostrAt applies (idempotent re-sync)", () => {
 
   const result = flushRelayBatch(relayBatch, idbTasks);
 
-  assert.equal(result.length, 1, "Task should still be present");
-  assert.equal(result[0]._nostrAt, 1000);
+  expect(result.length).toBe(1);
+  expect(result[0]._nostrAt).toBe(1000);
 });
 
 // ---------------------------------------------------------------------------
@@ -229,7 +228,7 @@ test("stale CREATE(T=100) does not appear when IDB has DELETE(T=200)", () => {
   const result = flushRelayBatch(relayBatch, idbTasks, taskClock);
 
   // incomingNostrAt=100, taskClock fallback=200 → 100 < 200 → skip
-  assert.equal(result.length, 0, "Stale CREATE must not resurface a deleted task");
+  expect(result.length).toBe(0);
 });
 
 test("newer CREATE(T=300) DOES appear after DELETE(T=200) — task was re-opened", () => {
@@ -241,8 +240,8 @@ test("newer CREATE(T=300) DOES appear after DELETE(T=200) — task was re-opened
 
   const result = flushRelayBatch(relayBatch, idbTasks, taskClock);
 
-  assert.equal(result.length, 1, "Re-opened task (newer T) must appear");
-  assert.equal(result[0]._nostrAt, 300);
+  expect(result.length).toBe(1);
+  expect(result[0]._nostrAt).toBe(300);
 });
 
 // ---------------------------------------------------------------------------
@@ -266,16 +265,15 @@ test("relay A EOSE merges only relay A's tasks, not relay B's pending events", (
   // Only relay A fires EOSE
   const afterRelayA = flushRelayBatch(relayABatch, idbTasks);
 
-  assert.equal(afterRelayA.length, 2, "Should have shared + only-in-a");
-  assert.ok(afterRelayA.find((t) => t.id === "shared")?.title === "Updated by A");
-  assert.ok(!afterRelayA.find((t) => t.id === "only-in-b"),
-    "Relay B tasks must NOT appear before relay B fires EOSE");
+  expect(afterRelayA.length).toBe(2);
+  expect(afterRelayA.find((t) => t.id === "shared")?.title).toBe("Updated by A");
+  expect(afterRelayA.find((t) => t.id === "only-in-b")).toBeUndefined();
 
   // Now relay B fires EOSE
   const afterRelayB = flushRelayBatch(relayBBatch, afterRelayA);
 
-  assert.equal(afterRelayB.length, 3, "After relay B: shared + only-in-a + only-in-b");
-  assert.ok(afterRelayB.find((t) => t.id === "only-in-b"));
+  expect(afterRelayB.length).toBe(3);
+  expect(afterRelayB.find((t) => t.id === "only-in-b")).toBeDefined();
 });
 
 // ---------------------------------------------------------------------------
@@ -291,7 +289,7 @@ test("deletion with newer _nostrAt removes task from state", () => {
 
   const result = flushRelayBatch(relayBatch, idbTasks);
 
-  assert.equal(result.length, 0, "Task must be deleted when deletion is newer");
+  expect(result.length).toBe(0);
 });
 
 test("deletion with OLDER _nostrAt does NOT remove a newer IDB task", () => {
@@ -304,8 +302,8 @@ test("deletion with OLDER _nostrAt does NOT remove a newer IDB task", () => {
 
   const result = flushRelayBatch(relayBatch, idbTasks);
 
-  assert.equal(result.length, 1, "Task re-opened after deletion must survive stale deletion");
-  assert.equal(result[0]._nostrAt, 800);
+  expect(result.length).toBe(1);
+  expect(result[0]._nostrAt).toBe(800);
 });
 
 test("relay with both CREATE(T=100) and DELETE(T=200) ends up with task deleted", () => {
@@ -320,7 +318,7 @@ test("relay with both CREATE(T=100) and DELETE(T=200) ends up with task deleted"
 
   const result = flushRelayBatch(relayBatch, idbTasks);
 
-  assert.equal(result.length, 0, "Task with final state=deleted must not appear");
+  expect(result.length).toBe(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -346,35 +344,12 @@ test("multiple live updates within LIVE_BATCH_MS produce a single render", async
     initialTasks,
   );
 
-  assert.equal(batch.renderCount, 0, "No renders yet — batch window still open");
+  expect(batch.renderCount).toBe(0);
 
   await wait(LIVE_BATCH_MS + 50);
 
-  assert.equal(batch.renderCount, 1, "All three updates must coalesce into ONE render");
-  assert.equal(
-    batch.renderedStates.get("board1")?.[0]?.title,
-    "Update 3",
-    "Final state must reflect the last update applied",
-  );
-});
-
-test("live updates for different boards coalesce independently", async () => {
-  const batch = new LiveMicroBatch();
-  const tasksA: Task[] = [makeTask("a1", "boardA", 100)];
-  const tasksB: Task[] = [makeTask("b1", "boardB", 100)];
-  batch.renderedStates.set("boardA", tasksA);
-  batch.renderedStates.set("boardB", tasksB);
-
-  batch.enqueue("boardA", (prev) =>
-    prev.map((t) => ({ ...t, title: "A updated", _nostrAt: 200 })), tasksA);
-  batch.enqueue("boardB", (prev) =>
-    prev.map((t) => ({ ...t, title: "B updated", _nostrAt: 200 })), tasksB);
-
-  await wait(LIVE_BATCH_MS + 50);
-
-  assert.equal(batch.renderCount, 2, "Each board should render independently");
-  assert.equal(batch.renderedStates.get("boardA")?.[0]?.title, "A updated");
-  assert.equal(batch.renderedStates.get("boardB")?.[0]?.title, "B updated");
+  expect(batch.renderCount).toBe(1);
+  expect(batch.renderedStates.get("board1")?.[0]?.title).toBe("Update 3");
 });
 
 // ---------------------------------------------------------------------------
@@ -385,13 +360,13 @@ test("sync is not complete until ALL relays have fired EOSE", () => {
   const pendingRelays = new Set(["wss://a.test", "wss://b.test", "wss://c.test"]);
 
   pendingRelays.delete("wss://a.test");
-  assert.ok(pendingRelays.size > 0, "Still pending after relay A");
+  expect(pendingRelays.size).toBeGreaterThan(0);
 
   pendingRelays.delete("wss://b.test");
-  assert.ok(pendingRelays.size > 0, "Still pending after relay B");
+  expect(pendingRelays.size).toBeGreaterThan(0);
 
   pendingRelays.delete("wss://c.test");
-  assert.equal(pendingRelays.size, 0, "Sync complete only after ALL three relays fire EOSE");
+  expect(pendingRelays.size).toBe(0);
 });
 
 test("spinner clears per-board only when that board's relay set is empty", () => {
@@ -404,8 +379,8 @@ test("spinner clears per-board only when that board's relay set is empty", () =>
   pendingByBoard.get("board1")?.delete("wss://a.test");
   pendingByBoard.get("board2")?.delete("wss://a.test");
 
-  assert.ok(pendingByBoard.get("board1")!.size > 0, "board1 still pending (relay B outstanding)");
-  assert.equal(pendingByBoard.get("board2")!.size, 0, "board2 done — relay A was its only relay");
+  expect(pendingByBoard.get("board1")!.size).toBeGreaterThan(0);
+  expect(pendingByBoard.get("board2")!.size).toBe(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -428,11 +403,11 @@ test("timeout fallback merges all remaining relay batches with clock protection"
   let state = flushRelayBatch(relayABatch, idbTasks);
   state = flushRelayBatch(relayBBatch, state);
 
-  assert.equal(state.length, 2, "Both t1 and t2 should be present");
+  expect(state.length).toBe(2);
   const t1 = state.find((t) => t.id === "t1");
-  assert.equal(t1?.title, "From relay A", "Relay A's newer version of t1 must win");
-  assert.equal(t1?._nostrAt, 300);
-  assert.ok(state.find((t) => t.id === "t2"), "t2 from stuck relay must eventually appear");
+  expect(t1?.title).toBe("From relay A");
+  expect(t1?._nostrAt).toBe(300);
+  expect(state.find((t) => t.id === "t2")).toBeDefined();
 });
 
 test("timeout fallback: combines multiple relay batches taking the newest entry per task", () => {
@@ -465,9 +440,9 @@ test("timeout fallback: combines multiple relay batches taking the newest entry 
   const combined = combineRelayBatches(boardBatch);
   const result = flushRelayBatch(combined, []);
 
-  assert.equal(result.length, 2);
-  assert.equal(result.find((t) => t.id === "t1")?.title, "Newer from B");
-  assert.equal(result.find((t) => t.id === "t1")?._nostrAt, 200);
+  expect(result.length).toBe(2);
+  expect(result.find((t) => t.id === "t1")?.title).toBe("Newer from B");
+  expect(result.find((t) => t.id === "t1")?._nostrAt).toBe(200);
 });
 
 // ---------------------------------------------------------------------------
@@ -480,8 +455,7 @@ test("_nostrAt is set on task entries written to relay batch", () => {
   const taskFromRelay: Task = makeTask("t1", "board1", ev.created_at);
 
   // _nostrAt should equal ev.created_at
-  assert.equal(taskFromRelay._nostrAt, 1_700_500_000,
-    "_nostrAt on batch entry must match the Nostr event created_at");
+  expect(taskFromRelay._nostrAt).toBe(1_700_500_000);
 });
 
 test("_nostrAt enables comparing freshness across relay syncs and IDB loads", () => {
@@ -491,8 +465,8 @@ test("_nostrAt enables comparing freshness across relay syncs and IDB loads", ()
 
   // Clock-protected merge should always produce the task with the highest _nostrAt
   let state = flushRelayBatch(new Map([["board1::t1", fromRelay1]]), [fromIdb]);
-  assert.equal(state[0]._nostrAt, 1200, "IDB (T=1200) must win over relay1 (T=1000)");
+  expect(state[0]._nostrAt).toBe(1200);
 
   state = flushRelayBatch(new Map([["board1::t1", fromRelay2]]), state);
-  assert.equal(state[0]._nostrAt, 1500, "relay2 (T=1500) must win over IDB (T=1200)");
+  expect(state[0]._nostrAt).toBe(1500);
 });

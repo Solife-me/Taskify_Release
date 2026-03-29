@@ -91,8 +91,7 @@ function useSettings() {
         ) || DEFAULT_FILE_STORAGE_SERVER;
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
-      const agentModeEnabled = parsed?.agentModeEnabled === true;
-      const allowAgentCommands = parsed?.allowAgentCommands !== false;
+
       const pushRaw = parsed?.pushNotifications;
       const inferredPlatform = detectPushPlatformFromNavigator();
       const storedPlatform = pushRaw?.platform === "android"
@@ -194,8 +193,7 @@ function useSettings() {
         nostrBackupEnabled,
         nostrBackupMetadataEnabled,
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
-        agentModeEnabled,
-        allowAgentCommands,
+
       };
     } catch {
       return {
@@ -228,8 +226,7 @@ function useSettings() {
         cloudBackupsEnabled: false,
         nostrBackupEnabled: true,
         nostrBackupMetadataEnabled: true,
-        agentModeEnabled: false,
-        allowAgentCommands: true,
+
         scriptureMemoryEnabled: false,
         scriptureMemoryBoardId: null,
         scriptureMemoryFrequency: "daily",
@@ -315,7 +312,7 @@ function useSettings() {
       }
       next.nostrBackupEnabled = next.nostrBackupEnabled !== false;
       next.nostrBackupMetadataEnabled = next.nostrBackupEnabled;
-      next.allowAgentCommands = next.allowAgentCommands === true;
+
       if (!next.bibleTrackerEnabled) {
         next.bibleTrackerEnabled = false;
         next.scriptureMemoryEnabled = false;
