@@ -8,41 +8,32 @@ import Security
 public enum KeychainStore {
 
     private static let service = "ai.taskify.ios"
+    private static let profileStore = ProfileIdentityStore(secureStore: Adapter())
 
     // MARK: - Profile storage
 
     /// Saves the active profile to the Keychain.
     public static func saveProfile(_ profile: TaskifyProfile) throws {
-        let data = try JSONEncoder().encode(profile)
-        try set(data, key: "profile:\(profile.name)")
-        try set(Data(profile.name.utf8), key: "active_profile")
+        try profileStore.saveProfile(profile)
     }
 
     /// Loads the active profile from the Keychain.
     public static func loadActiveProfile() throws -> TaskifyProfile? {
-        guard let nameData = try? get(key: "active_profile"),
-              let name = String(data: nameData, encoding: .utf8),
-              let data = try? get(key: "profile:\(name)") else { return nil }
-        return try JSONDecoder().decode(TaskifyProfile.self, from: data)
+        try profileStore.loadActiveProfile()
     }
 
     /// Returns all saved profile names.
     public static func allProfileNames() throws -> [String] {
-        guard let data = try? get(key: "profile_names") else { return [] }
-        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+        try profileStore.allProfileNames()
     }
 
     public static func saveProfileNames(_ names: [String]) throws {
-        let data = try JSONEncoder().encode(names)
-        try set(data, key: "profile_names")
+        try profileStore.saveProfileNames(names)
     }
 
     /// Deletes a profile from the Keychain.
     public static func deleteProfile(name: String) throws {
-        try delete(key: "profile:\(name)")
-        var names = (try? allProfileNames()) ?? []
-        names.removeAll { $0 == name }
-        try saveProfileNames(names)
+        try profileStore.deleteProfile(name: name)
     }
 
     // MARK: - Low-level Keychain operations
@@ -92,6 +83,12 @@ public enum KeychainStore {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.deleteFailed(status)
         }
+    }
+
+    private struct Adapter: SecureStore {
+        func set(_ data: Data, key: String) throws { try KeychainStore.set(data, key: key) }
+        func get(key: String) throws -> Data? { try KeychainStore.get(key: key) }
+        func delete(key: String) throws { try KeychainStore.delete(key: key) }
     }
 }
 

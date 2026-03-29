@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import type { Task } from "../../domains/tasks/taskTypes";
 import type { CalendarEvent } from "../../domains/tasks/taskTypes";
 import type { TaskDocument } from "../../lib/documents";
@@ -7,6 +7,7 @@ import type { UrlPreviewData } from "../../lib/urlPreview";
 import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
 import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } from "./TaskTitle";
 import { DocumentThumbnail } from "./DocumentPreviewModal";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
 export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
   const [imageFailed, setImageFailed] = useState(false);
@@ -76,6 +77,11 @@ export function TaskMedia({
   const hasDocuments = Boolean(task.documents && task.documents.length);
   const derivedPreview = useTaskPreview(task);
   const hasPreview = Boolean(derivedPreview);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const openPreview = useCallback((src: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPreviewSrc(src);
+  }, []);
 
   if (!noteText && !hasImages && !hasDocuments && !hasPreview) return null;
 
@@ -84,6 +90,9 @@ export function TaskMedia({
 
   return (
     <div className={wrapperClasses}>
+      {previewSrc && (
+        <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      )}
       {noteText && (
         <div
           className={`${noteDetailClass}text-xs text-secondary break-words`}
@@ -95,7 +104,14 @@ export function TaskMedia({
       {hasImages ? (
         <div className="space-y-2">
           {task.images!.map((img, i) => (
-            <img key={i} src={img} className="max-h-40 w-full rounded-2xl object-contain" />
+            <img
+              key={i}
+              src={img}
+              className="max-h-40 w-full rounded-2xl object-contain cursor-zoom-in"
+              onClick={(e) => openPreview(img, e)}
+              role="button"
+              aria-label="View full image"
+            />
           ))}
         </div>
       ) : null}

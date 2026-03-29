@@ -39,7 +39,8 @@ async function encryptContent(boardId: string, plaintext: string): Promise<strin
 }
 
 async function decryptContent(boardId: string, data: string): Promise<string> {
-  return decryptFromBoard(boardId, data);
+  const result = await decryptFromBoard(boardId, data);
+  return result.plaintext;
 }
 
 function getUserPubkeyHex(config: TaskifyConfig): string | undefined {

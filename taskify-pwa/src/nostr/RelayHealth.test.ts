@@ -1,5 +1,5 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import { test, describe, expect } from "vitest";
+
 import { RelayHealthTracker } from "./RelayHealth.ts";
 
 const RELAY = "wss://relay.example.com";
@@ -9,40 +9,40 @@ const RELAY_B = "wss://relay-b.example.com";
 
 test("canAttempt returns true for unknown relay", () => {
   const tracker = new RelayHealthTracker();
-  assert.equal(tracker.canAttempt(RELAY), true);
+  expect(tracker.canAttempt(RELAY)).toBe(true);
 });
 
 test("canAttempt returns true immediately after markSuccess", () => {
   const tracker = new RelayHealthTracker();
   tracker.markFailure(RELAY);
   tracker.markSuccess(RELAY);
-  assert.equal(tracker.canAttempt(RELAY), true);
+  expect(tracker.canAttempt(RELAY)).toBe(true);
 });
 
 test("canAttempt returns false immediately after markFailure", () => {
   const tracker = new RelayHealthTracker();
   tracker.markFailure(RELAY);
-  assert.equal(tracker.canAttempt(RELAY), false);
+  expect(tracker.canAttempt(RELAY)).toBe(false);
 });
 
 // --- nextAttemptIn ---
 
 test("nextAttemptIn returns 0 for unknown relay", () => {
   const tracker = new RelayHealthTracker();
-  assert.equal(tracker.nextAttemptIn(RELAY), 0);
+  expect(tracker.nextAttemptIn(RELAY)).toBe(0);
 });
 
 test("nextAttemptIn returns 0 after markSuccess", () => {
   const tracker = new RelayHealthTracker();
   tracker.markFailure(RELAY);
   tracker.markSuccess(RELAY);
-  assert.equal(tracker.nextAttemptIn(RELAY), 0);
+  expect(tracker.nextAttemptIn(RELAY)).toBe(0);
 });
 
 test("nextAttemptIn returns positive number after markFailure", () => {
   const tracker = new RelayHealthTracker();
   tracker.markFailure(RELAY);
-  assert.ok(tracker.nextAttemptIn(RELAY) > 0);
+  expect(tracker.nextAttemptIn(RELAY)).toBeGreaterThan(0);
 });
 
 // --- markSuccess clears state ---
@@ -53,8 +53,8 @@ test("markSuccess resets consecutiveFailures to 0", () => {
   tracker.markFailure(RELAY);
   tracker.markSuccess(RELAY);
   const state = tracker.status(RELAY);
-  assert.ok(state !== null);
-  assert.equal(state!.consecutiveFailures, 0);
+  expect(state).not.toBeNull();
+  expect(state!.consecutiveFailures).toBe(0);
 });
 
 test("markSuccess sets lastSuccessAt", () => {
@@ -62,9 +62,9 @@ test("markSuccess sets lastSuccessAt", () => {
   const before = Date.now();
   tracker.markSuccess(RELAY);
   const state = tracker.status(RELAY);
-  assert.ok(state !== null);
-  assert.ok(state!.lastSuccessAt !== undefined);
-  assert.ok(state!.lastSuccessAt! >= before);
+  expect(state).not.toBeNull();
+  expect(state!.lastSuccessAt).toBeDefined();
+  expect(state!.lastSuccessAt!).toBeGreaterThanOrEqual(before);
 });
 
 test("markSuccess clears nextAllowedAttemptAt", () => {
@@ -72,8 +72,8 @@ test("markSuccess clears nextAllowedAttemptAt", () => {
   tracker.markFailure(RELAY);
   tracker.markSuccess(RELAY);
   const state = tracker.status(RELAY);
-  assert.ok(state !== null);
-  assert.equal(state!.nextAllowedAttemptAt, undefined);
+  expect(state).not.toBeNull();
+  expect(state!.nextAllowedAttemptAt).toBe(undefined);
 });
 
 // --- markFailure increments ---
@@ -81,9 +81,9 @@ test("markSuccess clears nextAllowedAttemptAt", () => {
 test("markFailure increments consecutiveFailures", () => {
   const tracker = new RelayHealthTracker();
   tracker.markFailure(RELAY);
-  assert.equal(tracker.status(RELAY)!.consecutiveFailures, 1);
+  expect(tracker.status(RELAY)!.consecutiveFailures).toBe(1);
   tracker.markFailure(RELAY);
-  assert.equal(tracker.status(RELAY)!.consecutiveFailures, 2);
+  expect(tracker.status(RELAY)!.consecutiveFailures).toBe(2);
 });
 
 test("markFailure sets lastFailureAt", () => {
@@ -91,8 +91,8 @@ test("markFailure sets lastFailureAt", () => {
   const before = Date.now();
   tracker.markFailure(RELAY);
   const state = tracker.status(RELAY);
-  assert.ok(state!.lastFailureAt !== undefined);
-  assert.ok(state!.lastFailureAt! >= before);
+  expect(state!.lastFailureAt).toBeDefined();
+  expect(state!.lastFailureAt!).toBeGreaterThanOrEqual(before);
 });
 
 test("markFailure sets nextAllowedAttemptAt in the future", () => {
@@ -100,8 +100,8 @@ test("markFailure sets nextAllowedAttemptAt in the future", () => {
   const before = Date.now();
   tracker.markFailure(RELAY);
   const state = tracker.status(RELAY);
-  assert.ok(state!.nextAllowedAttemptAt !== undefined);
-  assert.ok(state!.nextAllowedAttemptAt! > before);
+  expect(state!.nextAllowedAttemptAt).toBeDefined();
+  expect(state!.nextAllowedAttemptAt!).toBeGreaterThan(before);
 });
 
 // --- severity weighting ---
@@ -119,7 +119,7 @@ test("markFailure with low severity results in strictly smaller backoff than nor
   }
   const low = trackerLow.nextAttemptIn(RELAY);
   const normal = trackerNormal.nextAttemptIn(RELAY);
-  assert.ok(low < normal, `low=${low} should be < normal=${normal}`);
+  expect(low).toBeLessThan(normal);
 });
 
 test("markFailure with high severity results in larger backoff than normal", () => {
@@ -129,7 +129,7 @@ test("markFailure with high severity results in larger backoff than normal", () 
   trackerNormal.markFailure(RELAY);
   const high = trackerHigh.nextAttemptIn(RELAY);
   const normal = trackerNormal.nextAttemptIn(RELAY);
-  assert.ok(high > normal, `high=${high} should be > normal=${normal}`);
+  expect(high).toBeGreaterThan(normal);
 });
 
 // --- exponential backoff grows with failures ---
@@ -140,7 +140,7 @@ test("backoff grows with consecutive failures", () => {
   const first = tracker.nextAttemptIn(RELAY);
   tracker.markFailure(RELAY);
   const second = tracker.nextAttemptIn(RELAY);
-  assert.ok(second > first, `second=${second} should be > first=${first}`);
+  expect(second).toBeGreaterThan(first);
 });
 
 // --- relay isolation ---
@@ -148,28 +148,26 @@ test("backoff grows with consecutive failures", () => {
 test("failure on one relay does not affect another", () => {
   const tracker = new RelayHealthTracker();
   tracker.markFailure(RELAY);
-  assert.equal(tracker.canAttempt(RELAY_B), true);
+  expect(tracker.canAttempt(RELAY_B)).toBe(true);
 });
 
 test("status returns null for unknown relay", () => {
   const tracker = new RelayHealthTracker();
-  assert.equal(tracker.status(RELAY), null);
+  expect(tracker.status(RELAY)).toBe(null);
 });
 
 // --- onBackoffExpiry ---
 
-test("onBackoffExpiry fires immediately if relay is healthy", (_, done) => {
-  const tracker = new RelayHealthTracker();
-  tracker.onBackoffExpiry(RELAY, () => {
-    done();
-  });
-});
+test("onBackoffExpiry fires immediately if relay is healthy", () =>
+  new Promise<void>((resolve) => {
+    const tracker = new RelayHealthTracker();
+    tracker.onBackoffExpiry(RELAY, () => resolve());
+  }));
 
-test("onBackoffExpiry fires immediately after markSuccess", (_, done) => {
-  const tracker = new RelayHealthTracker();
-  tracker.markFailure(RELAY);
-  tracker.markSuccess(RELAY);
-  tracker.onBackoffExpiry(RELAY, () => {
-    done();
-  });
-});
+test("onBackoffExpiry fires immediately after markSuccess", () =>
+  new Promise<void>((resolve) => {
+    const tracker = new RelayHealthTracker();
+    tracker.markFailure(RELAY);
+    tracker.markSuccess(RELAY);
+    tracker.onBackoffExpiry(RELAY, () => resolve());
+  }));

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Taskify Home</title>
+    <meta
+      name="description"
+      content="Taskify is a privacy-first task and calendar app with optional Google Calendar integration. Learn what the app does and review the Privacy Policy and Terms of Service."
+    />
+    <meta name="theme-color" content="#0f172a" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #07111f;
+        --bg-top: #0b1830;
+        --card: rgba(9, 19, 36, 0.78);
+        --card-strong: rgba(13, 28, 49, 0.96);
+        --border: rgba(159, 185, 224, 0.18);
+        --text: #eef4ff;
+        --muted: #a9bad8;
+        --accent: #5eead4;
+        --accent-strong: #22d3ee;
+        --shadow: 0 28px 80px rgba(2, 8, 23, 0.45);
+        --max: 1080px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        font-family: Inter, "SF Pro Display", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 32%),
+          radial-gradient(circle at top right, rgba(94, 234, 212, 0.12), transparent 28%),
+          linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 52%, #040814 100%);
+        color: var(--text);
+      }
+
+      body {
+        line-height: 1.65;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      a:hover {
+        color: var(--accent-strong);
+      }
+
+      .shell {
+        width: min(calc(100% - 32px), var(--max));
+        margin: 0 auto;
+        padding: 24px 0 72px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 28px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .brand-mark {
+        width: 42px;
+        height: 42px;
+        border-radius: 14px;
+        background:
+          linear-gradient(145deg, rgba(94, 234, 212, 0.95), rgba(34, 211, 238, 0.45)),
+          #0f172a;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.35),
+          0 18px 34px rgba(34, 211, 238, 0.24);
+      }
+
+      .nav-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        justify-content: flex-end;
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        padding: 36px;
+        border: 1px solid var(--border);
+        border-radius: 32px;
+        background:
+          linear-gradient(160deg, rgba(17, 32, 58, 0.96), rgba(7, 17, 31, 0.92)),
+          var(--card-strong);
+        box-shadow: var(--shadow);
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -90px -110px auto;
+        width: 260px;
+        height: 260px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(94, 234, 212, 0.28), transparent 70%);
+        pointer-events: none;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(94, 234, 212, 0.1);
+        border: 1px solid rgba(94, 234, 212, 0.2);
+        color: #c7fff7;
+        font-size: 0.94rem;
+      }
+
+      h1,
+      h2 {
+        line-height: 1.08;
+        margin: 0 0 14px;
+      }
+
+      h1 {
+        max-width: 12ch;
+        font-size: clamp(2.5rem, 5vw, 4.7rem);
+        letter-spacing: -0.05em;
+        margin-top: 18px;
+      }
+
+      .lead {
+        max-width: 760px;
+        font-size: clamp(1.05rem, 2.2vw, 1.28rem);
+        color: var(--muted);
+        margin: 0 0 24px;
+      }
+
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+
+      .button,
+      .link-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        font-weight: 600;
+        border: 1px solid transparent;
+      }
+
+      .button {
+        background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+        color: #042033;
+        box-shadow: 0 16px 34px rgba(34, 211, 238, 0.2);
+      }
+
+      .link-chip {
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+        border-color: var(--border);
+      }
+
+      .hero-note {
+        max-width: 720px;
+        color: #d7e7ff;
+        font-size: 0.98rem;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 18px;
+        margin-top: 22px;
+      }
+
+      .panel {
+        padding: 26px;
+        border-radius: 26px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+      }
+
+      .panel h2 {
+        font-size: 1.4rem;
+      }
+
+      .panel p {
+        margin: 0 0 14px;
+        color: var(--muted);
+      }
+
+      .panel ul {
+        margin: 0;
+        padding-left: 20px;
+        color: var(--muted);
+      }
+
+      .panel li + li {
+        margin-top: 10px;
+      }
+
+      .span-7 {
+        grid-column: span 7;
+      }
+
+      .span-5 {
+        grid-column: span 5;
+      }
+
+      .span-4 {
+        grid-column: span 4;
+      }
+
+      .span-8 {
+        grid-column: span 8;
+      }
+
+      .kicker {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: #8bcfda;
+        margin-bottom: 10px;
+      }
+
+      .footer {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 14px;
+        margin-top: 24px;
+        padding: 20px 4px 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      @media (max-width: 860px) {
+        .hero,
+        .panel {
+          padding: 24px;
+        }
+
+        .span-4,
+        .span-5,
+        .span-7,
+        .span-8 {
+          grid-column: 1 / -1;
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .nav-links {
+          justify-content: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <span>Taskify</span>
+        </div>
+        <nav class="nav-links" aria-label="Taskify links">
+          <a class="link-chip" href="/privacy">Privacy Policy</a>
+          <a class="link-chip" href="/terms">Terms of Service</a>
+          <a class="link-chip" href="mailto:support@solife.me">support@solife.me</a>
+        </nav>
+      </header>
+
+      <section class="hero">
+        <div class="eyebrow">Public product page for Taskify</div>
+        <h1>Plan tasks and stay synced with your calendar.</h1>
+        <p class="lead">
+          Taskify is a privacy-first task and planning app for managing tasks, due dates, reminders, boards,
+          and calendar views. This page is public and does not require login so visitors can review what the app does.
+        </p>
+        <div class="cta-row">
+          <a class="button" href="/">Open Taskify App</a>
+          <a class="link-chip" href="/privacy">Review Privacy Policy</a>
+          <a class="link-chip" href="/terms">Review Terms</a>
+        </div>
+        <p class="hero-note">
+          Taskify also offers an optional Google Calendar integration so users can connect their Google account,
+          view selected calendars inside Taskify, and keep upcoming events visible alongside tasks.
+        </p>
+      </section>
+
+      <section class="grid" aria-label="Taskify overview">
+        <article class="panel span-7">
+          <div class="kicker">What Taskify Does</div>
+          <h2>One place for tasks, schedules, and reminders.</h2>
+          <p>
+            Taskify helps users capture tasks, organize them into boards, add due dates and reminders,
+            and review work in an upcoming calendar-style view.
+          </p>
+          <ul>
+            <li>Create, edit, and complete personal tasks.</li>
+            <li>Organize tasks by boards, lists, and upcoming dates.</li>
+            <li>Use reminders and calendar views to track what is next.</li>
+            <li>Optionally connect Google Calendar to bring calendar events into Taskify.</li>
+          </ul>
+        </article>
+
+        <article class="panel span-5">
+          <div class="kicker">Google Calendar</div>
+          <h2>Why Taskify requests Google access.</h2>
+          <p>
+            The Google Calendar connection is used only when a user chooses to enable it. Taskify uses that access
+            to read the user’s selected calendars and event data so calendar activity can appear inside the app.
+          </p>
+          <p>
+            This integration supports Taskify’s scheduling experience and helps users review tasks and calendar events in one place.
+          </p>
+        </article>
+
+        <article class="panel span-4">
+          <div class="kicker">Public Access</div>
+          <h2>No sign-in required here.</h2>
+          <p>
+            This `/home` page is intentionally public so Google reviewers and visitors can see what Taskify is,
+            what it is used for, and how to contact support without needing an account.
+          </p>
+        </article>
+
+        <article class="panel span-8">
+          <div class="kicker">Important Links</div>
+          <h2>Policies and support.</h2>
+          <p>
+            Review Taskify’s legal and privacy information, or contact support directly.
+          </p>
+          <ul>
+            <li><a href="/privacy">Privacy Policy</a></li>
+            <li><a href="/terms">Terms of Service</a></li>
+            <li><a href="mailto:support@solife.me">support@solife.me</a></li>
+          </ul>
+        </article>
+      </section>
+
+      <footer class="footer">
+        <span>Taskify by SoLife</span>
+        <span>Privacy-first task management with optional Google Calendar integration.</span>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -35,7 +35,7 @@ import { BackupSection } from "./BackupSection";
 import { GoogleCalendarSection } from "./GoogleCalendarSection";
 import type { GcalCalendar, GcalConnectionStatus } from "../../hooks/useGoogleCalendar";
 import { ManageBoardModal } from "./ManageBoardModal";
-import { TASKIFY_AGENT_CONTRACT_BLOCK } from "../agent/agentPromptContract";
+
 
 export function SettingsModal({
   embedded,
@@ -269,14 +269,7 @@ export function SettingsModal({
     }
   }, [showToast, taskifyAiInstructionBlock]);
 
-  const handleCopyTaskifyAgentContract = useCallback(async () => {
-    try {
-      await navigator.clipboard?.writeText(TASKIFY_AGENT_CONTRACT_BLOCK);
-      showToast("Taskify agent contract copied", 2000);
-    } catch {
-      showToast("Unable to copy contract", 2000);
-    }
-  }, [showToast]);
+
 
   async function handleDonate() {
     setDonateState("sending");
@@ -463,27 +456,7 @@ export function SettingsModal({
             />
           </div>
 
-          <div className="space-y-2 pt-2 border-t border-neutral-800">
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">Browser agent contract</div>
-              <button
-                className="ghost-button button-sm pressable ml-auto"
-                onClick={handleCopyTaskifyAgentContract}
-              >
-                Copy contract
-              </button>
-            </div>
-            <div className="text-xs text-secondary">
-              Paste this into an AI agent that can open the Taskify URL and execute JavaScript in the page. It describes
-              the strict JSON command envelope and the trusted-npub security modes.
-            </div>
-            <textarea
-              readOnly
-              value={TASKIFY_AGENT_CONTRACT_BLOCK}
-              className="pill-textarea w-full min-h-[20rem] font-mono text-[11px] leading-relaxed"
-              spellCheck={false}
-            />
-          </div>
+
         </section>
 
         {/* Development donation */}

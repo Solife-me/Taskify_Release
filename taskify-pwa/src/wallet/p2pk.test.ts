@@ -1,5 +1,5 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import { test, describe, expect } from "vitest";
+
 import { extractPubkeysFromP2PKSecret, proofIsLockedToPubkey } from "./p2pk.ts";
 
 const COMPRESSED_A = "02" + "11".repeat(32);
@@ -12,7 +12,7 @@ function makeSecret(payload: unknown): string {
 }
 
 test("extractPubkeysFromP2PKSecret returns empty on invalid JSON", () => {
-  assert.deepEqual(extractPubkeysFromP2PKSecret("not-json"), []);
+  expect(extractPubkeysFromP2PKSecret("not-json")).toEqual([]);
 });
 
 test("extractPubkeysFromP2PKSecret collects data + tags and dedupes", () => {
@@ -26,18 +26,18 @@ test("extractPubkeysFromP2PKSecret collects data + tags and dedupes", () => {
   });
 
   const keys = extractPubkeysFromP2PKSecret(secret);
-  assert.equal(keys.length, 3);
-  assert.ok(keys.includes(COMPRESSED_A.toLowerCase()));
-  assert.ok(keys.includes(COMPRESSED_B.toLowerCase()));
+  expect(keys.length).toBe(3);
+  expect(keys.includes(COMPRESSED_A.toLowerCase())).toBe(true);
+  expect(keys.includes(COMPRESSED_B.toLowerCase())).toBe(true);
   // x-only is normalized to compressed with 02 prefix
-  assert.ok(keys.includes(("02" + X_ONLY).toLowerCase()));
+  expect(keys.includes(("02" + X_ONLY).toLowerCase())).toBe(true);
 });
 
 test("extractPubkeysFromP2PKSecret normalizes uncompressed pubkeys", () => {
   const secret = makeSecret({ data: UNCOMPRESSED });
   const keys = extractPubkeysFromP2PKSecret(secret);
-  assert.equal(keys.length, 1);
-  assert.equal(keys[0], ("02" + "44".repeat(32)).toLowerCase());
+  expect(keys.length).toBe(1);
+  expect(keys[0]).toBe(("02" + "44".repeat(32)).toLowerCase());
 });
 
 test("proofIsLockedToPubkey returns true when target key is present", () => {
@@ -47,14 +47,14 @@ test("proofIsLockedToPubkey returns true when target key is present", () => {
   });
   const proof: any = { secret };
 
-  assert.equal(proofIsLockedToPubkey(proof, COMPRESSED_A), true);
-  assert.equal(proofIsLockedToPubkey(proof, COMPRESSED_B), true);
+  expect(proofIsLockedToPubkey(proof, COMPRESSED_A)).toBe(true);
+  expect(proofIsLockedToPubkey(proof, COMPRESSED_B)).toBe(true);
 });
 
 test("proofIsLockedToPubkey returns false for missing/invalid key", () => {
   const secret = makeSecret({ data: COMPRESSED_A });
   const proof: any = { secret };
 
-  assert.equal(proofIsLockedToPubkey(proof, COMPRESSED_B), false);
-  assert.equal(proofIsLockedToPubkey(proof, "not-a-key"), false);
+  expect(proofIsLockedToPubkey(proof, COMPRESSED_B)).toBe(false);
+  expect(proofIsLockedToPubkey(proof, "not-a-key")).toBe(false);
 });

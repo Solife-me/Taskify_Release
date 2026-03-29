@@ -15,8 +15,8 @@
  *     before the async subscribe promise resolves.
  *  7. Handler errors are isolated — one bad handler doesn't kill others.
  */
-import test from "node:test";
-import assert from "node:assert/strict";
+import { test, describe, expect } from "vitest";
+
 
 // ---------------------------------------------------------------------------
 // Inline implementations of the core algorithms (mirrors SubscriptionManager)
@@ -124,7 +124,7 @@ test("delivers all events under high inbound volume (flood test)", async () => {
 
   await wait(200);
 
-  assert.equal(received.length, EVENT_COUNT, `Expected ${EVENT_COUNT} events delivered, got ${received.length}`);
+  expect(received.length).toBe(EVENT_COUNT);
 });
 
 test("does not crash on malformed events (rawEvent throws, no id)", async () => {
@@ -142,7 +142,7 @@ test("does not crash on malformed events (rawEvent throws, no id)", async () => 
 
   await wait(50);
 
-  assert.deepEqual(received, ["good-1"], "Only well-formed events should be delivered");
+  expect(received).toEqual(["good-1"], "Only well-formed events should be delivered");
 });
 
 test("deduplicates events with the same id", async () => {
@@ -155,8 +155,8 @@ test("deduplicates events with the same id", async () => {
 
   await wait(50);
 
-  assert.equal(received.length, 1, "Duplicate events must be de-duplicated");
-  assert.equal(received[0], "dup-id");
+  expect(received.length).toBe(1);
+  expect(received[0]).toBe("dup-id");
 });
 
 test("seenIds are bounded — no unbounded memory growth under flood", async () => {
@@ -169,10 +169,7 @@ test("seenIds are bounded — no unbounded memory growth under flood", async () 
 
   await wait(200);
 
-  assert.ok(
-    state.seenIds.size <= MAX_SEEN_IDS,
-    `seenIds grew to ${state.seenIds.size}, must stay ≤ MAX_SEEN_IDS=${MAX_SEEN_IDS}`,
-  );
+  expect(state.seenIds.size).toBeLessThanOrEqual(MAX_SEEN_IDS);
 });
 
 test("released handlers receive no further events", async () => {
@@ -187,7 +184,7 @@ test("released handlers receive no further events", async () => {
 
   ingestEvent(state, () => makeEvent("before-release"));
   await wait(50);
-  assert.equal(received.length, 1);
+  expect(received.length).toBe(1);
 
   // Release handler
   state.handlers.delete(h);
@@ -196,7 +193,7 @@ test("released handlers receive no further events", async () => {
   ingestEvent(state, () => makeEvent("after-release-2"));
   await wait(50);
 
-  assert.equal(received.length, 1, "No events should arrive after handler is released");
+  expect(received.length).toBe(1);
 });
 
 test("handler errors are isolated — one bad handler does not kill others", async () => {
@@ -214,7 +211,7 @@ test("handler errors are isolated — one bad handler does not kill others", asy
   ingestEvent(state, () => makeEvent("test-event-2"));
   await wait(50);
 
-  assert.deepEqual(received, ["test-event-1", "test-event-2"],
+  expect(received).toEqual(["test-event-1", "test-event-2"],
     "Good handler should receive events even if another handler throws");
 });
 
@@ -252,13 +249,10 @@ test("frame-budgeted batching: large burst does not deliver more than FLUSH_BATC
     if (frameCount > 20) break; // safety guard
   }
 
-  assert.equal(received.length, BURST, `All ${BURST} events must eventually be delivered`);
+  expect(received.length).toBe(BURST);
   // Each batch should be at most FLUSH_BATCH_SIZE
   for (const size of batchSizes) {
-    assert.ok(
-      size <= FLUSH_BATCH_SIZE,
-      `Batch of ${size} exceeds FLUSH_BATCH_SIZE=${FLUSH_BATCH_SIZE}`,
-    );
+    expect(size).toBeLessThanOrEqual(FLUSH_BATCH_SIZE);
   }
 });
 
@@ -300,9 +294,9 @@ test("SessionPool cleanup race: close() before subscribe resolves releases subsc
 
   releaseCallCount = 0;
   await simulateSubscribeManyWithRace(true); // cleanup before promise resolves
-  assert.equal(releaseCallCount, 1, "Subscription must be released when cleanup fires before promise resolves");
+  expect(releaseCallCount).toBe(1);
 
   releaseCallCount = 0;
   await simulateSubscribeManyWithRace(false); // normal case: no early cleanup
-  assert.equal(releaseCallCount, 0, "Subscription should NOT be auto-released in normal flow");
+  expect(releaseCallCount).toBe(0);
 });

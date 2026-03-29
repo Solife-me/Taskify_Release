@@ -185,7 +185,7 @@ import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import { publishFileServerPreference } from "./nostr/ProfilePublisher";
 import { EcashGlyph } from "./components/EcashGlyph";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
-const AgentModeOnboarding = lazy(() => import("./onboarding/AgentModeOnboarding").then(m => ({ default: m.AgentModeOnboarding })));
+
 import {
   buildBoardShareEnvelope,
   buildCalendarEventInviteEnvelope,
@@ -211,7 +211,7 @@ import { EditModal } from "./ui/task/EditModal";
 import EventEditModal from "./ui/calendar/EventEditModal";
 import { AddBoardModal } from "./ui/board/AddBoardModal";
 import { SettingsModal } from "./ui/board/SettingsModal";
-const AgentModePanel = lazy(() => import("./ui/agent/AgentModePanel").then(m => ({ default: m.AgentModePanel })));
+
 import { Modal } from "./ui/Modal";
 import { CustomReminderSheet } from "./ui/reminders/CustomReminderSheet";
 import { RecurrencePicker, RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "./ui/recurrence/RecurrencePicker";
@@ -219,18 +219,7 @@ import { BoardQrScanner } from "./ui/board/BoardQrScanner";
 import { BountyAttachSheet, normalizeMintUrlLite, formatMintLabel, sumMintProofs } from "./ui/bounty/BountyAttachSheet";
 import { LockToNpubSheet } from "./ui/bounty/LockToNpubSheet";
 import { TimeZoneSheet } from "./ui/reminders/TimeZoneSheet";
-// agentDispatcher is loaded dynamically inside the agent runtime effect to keep it out of the main bundle
-import {
-  addTrustedNpub as addTrustedNpubToConfig,
-  clearTrustedNpubs,
-  defaultAgentSecurityConfig,
-  loadAgentSecurityConfig,
-  normalizeAgentSecurityConfig,
-  removeTrustedNpub as removeTrustedNpubFromConfig,
-  saveAgentSecurityConfig,
-  type AgentSecurityConfig,
-} from "./agent/agentSecurity";
-import { setAgentRuntime } from "./agent/agentRuntime";
+
 import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
 
@@ -1682,7 +1671,7 @@ const LS_UPCOMING_SORT = "taskify_upcoming_sort_v1";
 const LS_UPCOMING_BOARD_GROUPING = "taskify_upcoming_board_grouping_v1";
 const LS_UPCOMING_FILTER_PRESETS = "taskify_upcoming_filter_presets_v1";
 const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
-const LS_AGENT_MODE_ONBOARDING_DONE = "taskify_agent_onboarding_done_v1";
+
 const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
 const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
@@ -5062,18 +5051,7 @@ export default function App() {
   });
   const [boards, setBoards] = useBoards();
   const [settings, setSettings] = useSettings();
-  const [agentSecurityConfig, setAgentSecurityConfigState] = useState<AgentSecurityConfig>(() => {
-    try {
-      if (new URLSearchParams(window.location.search).get("agent") === "1") {
-        return loadAgentSecurityConfig();
-      }
-    } catch {}
-    return defaultAgentSecurityConfig();
-  });
-  const agentSecurityConfigRef = useRef(agentSecurityConfig);
-  useEffect(() => {
-    agentSecurityConfigRef.current = agentSecurityConfig;
-  }, [agentSecurityConfig]);
+
   useEffect(() => {
     try {
       kvStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
@@ -6315,6 +6293,36 @@ export default function App() {
   useEffect(() => { boardsRef.current = boards; }, [boards]);
   const tasksRef = useRef<Task[]>(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+
+  // AES key migration: track items encrypted with the legacy key (SHA-256(boardId) == public tag).
+  // When detected, we re-encrypt and re-publish with the secure labeled key.
+  const aesMigrationPendingTasksRef = useRef<Set<string>>(new Set());
+  const aesMigrationPendingBoardIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pendingBoardIds = aesMigrationPendingBoardIdsRef.current;
+    if (pendingBoardIds.size === 0) return;
+    aesMigrationPendingBoardIdsRef.current = new Set();
+    for (const boardId of pendingBoardIds) {
+      const board = boardsRef.current.find((b) => b.nostr?.boardId === boardId);
+      if (!board) continue;
+      publishBoardMetadataRef.current?.(board)?.catch(() => {});
+    }
+  }, [boards]);
+
+  useEffect(() => {
+    const pendingTaskIds = aesMigrationPendingTasksRef.current;
+    if (pendingTaskIds.size === 0) return;
+    aesMigrationPendingTasksRef.current = new Set();
+    for (const taskId of pendingTaskIds) {
+      const task = tasksRef.current.find((t) => t.id === taskId);
+      if (!task) continue;
+      const board = boardsRef.current.find((b) => b.id === task.boardId);
+      if (!board) continue;
+      maybePublishTaskRef.current?.(task, board, { skipBoardMetadata: true })?.catch(() => {});
+    }
+  }, [tasks]);
+
   const calendarEventsRef = useRef<CalendarEvent[]>(calendarEvents);
   useEffect(() => { calendarEventsRef.current = calendarEvents; }, [calendarEvents]);
   const [inboxProcessedSeed] = useState<string[]>(() => {
@@ -7588,34 +7596,7 @@ export default function App() {
   }, [currentBoard?.kind, view]);
   const showSettings = activePage === "settings";
   const [addBoardOpen, setAddBoardOpen] = useState(false);
-  const [showAgentPanel, setShowAgentPanel] = useState(false);
-  const [agentSessionEnabled] = useState<boolean>(() => {
-    try {
-      return new URLSearchParams(window.location.search).get("agent") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [showAgentModeOnboarding, setShowAgentModeOnboarding] = useState<boolean>(() => {
-    if (!agentSessionEnabled) return false;
-    try {
-      return kvStorage.getItem(LS_AGENT_MODE_ONBOARDING_DONE) !== "done";
-    } catch {
-      return true;
-    }
-  });
 
-  useEffect(() => {
-    if (!agentSessionEnabled) return;
-    setShowAgentPanel(true);
-  }, [agentSessionEnabled]);
-
-  const completeAgentModeOnboarding = useCallback(() => {
-    try {
-      kvStorage.setItem(LS_AGENT_MODE_ONBOARDING_DONE, "done");
-    } catch {}
-    setShowAgentModeOnboarding(false);
-  }, []);
 
   const nostrBackupPublishedSnapshotRef = useRef<string | null>(null);
   const nostrBackupDebounceTimerRef = useRef<number | null>(null);
@@ -8038,52 +8019,7 @@ export default function App() {
     prefetchWalletModal();
     startTransition(() => setActivePage("contacts"));
   }, [prefetchWalletModal, shouldReloadForNavigation]);
-  const commitAgentSecurityConfig = useCallback((next: AgentSecurityConfig) => {
-    const normalized = normalizeAgentSecurityConfig({
-      ...next,
-      updatedISO: new Date().toISOString(),
-    });
-    setAgentSecurityConfigState(normalized);
-    saveAgentSecurityConfig(normalized);
-    return normalized;
-  }, []);
-  const updateAgentSecurityConfig = useCallback(
-    (updates: Partial<Pick<AgentSecurityConfig, "enabled" | "mode">>) =>
-      commitAgentSecurityConfig({
-        ...agentSecurityConfigRef.current,
-        ...updates,
-      }),
-    [commitAgentSecurityConfig],
-  );
-  const addTrustedAgentNpub = useCallback(
-    (npub: string) =>
-      commitAgentSecurityConfig(
-        addTrustedNpubToConfig(agentSecurityConfigRef.current, npub),
-      ),
-    [commitAgentSecurityConfig],
-  );
-  const removeTrustedAgentNpub = useCallback(
-    (npub: string) =>
-      commitAgentSecurityConfig(
-        removeTrustedNpubFromConfig(agentSecurityConfigRef.current, npub),
-      ),
-    [commitAgentSecurityConfig],
-  );
-  const clearTrustedAgentNpubs = useCallback(
-    () => commitAgentSecurityConfig(clearTrustedNpubs(agentSecurityConfigRef.current)),
-    [commitAgentSecurityConfig],
-  );
-  const setStrictWithTrustedAgentNpub = useCallback(
-    (npub: string) => {
-      const seeded = addTrustedNpubToConfig(agentSecurityConfigRef.current, npub);
-      return commitAgentSecurityConfig({
-        ...seeded,
-        enabled: true,
-        mode: "strict",
-      });
-    },
-    [commitAgentSecurityConfig],
-  );
+
   const openShareBoard = useCallback(() => {
     if (shouldReloadForNavigation()) return;
     if (!currentBoard) return;
@@ -8116,11 +8052,13 @@ export default function App() {
   }, []);
 
   const createBoardFromName = useCallback(
-    (name: string, type: "lists" | "compound") => {
+    (name: string, type: "lists" | "compound", shared = true) => {
       if (shouldReloadForNavigation()) return null;
       const trimmed = name.trim();
       if (!trimmed) return null;
       const id = crypto.randomUUID();
+      const nostrBoardId = shared ? crypto.randomUUID() : undefined;
+      const relayList = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
       let board: Board;
       if (type === "compound") {
         board = {
@@ -8133,7 +8071,8 @@ export default function App() {
           clearCompletedDisabled: false,
           indexCardEnabled: false,
           hideChildBoardNames: false,
-        };
+          ...(nostrBoardId ? { nostr: { boardId: nostrBoardId, relays: relayList } } : {}),
+        } as Board;
       } else {
         board = {
           id,
@@ -8144,13 +8083,17 @@ export default function App() {
           hidden: false,
           clearCompletedDisabled: false,
           indexCardEnabled: false,
-        };
+          ...(nostrBoardId ? { nostr: { boardId: nostrBoardId, relays: relayList } } : {}),
+        } as Board;
       }
       setBoards((prev) => [...prev, board]);
       changeBoard(id);
+      if (shared && nostrBoardId) {
+        publishBoardMetadataRef.current?.(board).catch(() => {});
+      }
       return id;
     },
-    [changeBoard, setBoards, shouldReloadForNavigation],
+    [changeBoard, defaultRelays, setBoards, shouldReloadForNavigation],
   );
 
   const joinSharedBoard = useCallback(
@@ -8220,7 +8163,6 @@ export default function App() {
     }
   }, []);
   const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
-    if (agentSessionEnabled) return false;
     if (!onboardingNeedsKeySelection) return false;
     try {
       return kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) !== "done";
@@ -8276,7 +8218,7 @@ export default function App() {
   const onboardingPushConfigured = !!workerBaseUrl && !!vapidPublicKey;
   // True while any onboarding/welcome overlay is blocking the app. Used to gate
   // background interaction via the HTML `inert` attribute.
-  const isOnboardingActive = showFirstRunOnboarding || showAgentModeOnboarding;
+  const isOnboardingActive = showFirstRunOnboarding;
   // Keep the ref in sync every render so nav callbacks can read it safely.
   isOnboardingActiveRef.current = isOnboardingActive;
   // Hard state-level gate: if onboarding is active, force activePage to the
@@ -12842,11 +12784,16 @@ export default function App() {
     const kindTag = tagValue(ev, "k");
     const name = tagValue(ev, "name");
     let payload: any = {};
+    let boardDecryptedWithLegacyKey = false;
     try {
-      const dec = await decryptFromBoard(boardId, ev.content);
-      payload = dec ? JSON.parse(dec) : {};
+      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
+      boardDecryptedWithLegacyKey = usedLegacyKey;
+      payload = plaintext ? JSON.parse(plaintext) : {};
     } catch {
       try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
+    }
+    if (boardDecryptedWithLegacyKey) {
+      aesMigrationPendingBoardIdsRef.current.add(boardId);
     }
     setBoards((prev) => {
       const boardIndex = prev.findIndex((item) => item.id === board.id);
@@ -13039,11 +12986,16 @@ export default function App() {
     }
 
     let payload: any = {};
+    let taskDecryptedWithLegacyKey = false;
     try {
-      const dec = await decryptFromBoard(boardId, ev.content);
-      payload = dec ? JSON.parse(dec) : {};
+      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
+      taskDecryptedWithLegacyKey = usedLegacyKey;
+      payload = plaintext ? JSON.parse(plaintext) : {};
     } catch {
       try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
+    }
+    if (taskDecryptedWithLegacyKey) {
+      aesMigrationPendingTasksRef.current.add(taskId);
     }
     const status = tagValue(ev, "status");
     const col = tagValue(ev, "col");
@@ -15395,182 +15347,7 @@ export default function App() {
     if (undoTask) { setTasks(prev => [...prev, undoTask]); setUndoTask(null); }
   }
 
-  useEffect(() => {
-    if (!agentSessionEnabled) {
-      setAgentRuntime(null);
-      delete (window as any).__taskifyAgent;
-      delete (window as any).taskifyAgent;
-      return;
-    }
 
-    const nextFrame = async () =>
-      await new Promise<void>((resolve) => {
-        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-          window.requestAnimationFrame(() => resolve());
-          return;
-        }
-        setTimeout(resolve, 0);
-      });
-
-    const resolveAgentBoard = (requestedBoardId?: string) => {
-      const visibleBoards = boards.filter((board) => !board.archived && !board.hidden);
-      if (requestedBoardId && requestedBoardId !== "inbox") {
-        const board = boards.find((entry) => entry.id === requestedBoardId);
-        if (!board) {
-          throw { code: "NOT_FOUND", message: "Board not found" };
-        }
-        return board;
-      }
-      return (
-        boards.find((entry) => entry.id === currentBoardId)
-        ?? visibleBoards[0]
-        ?? boards[0]
-        ?? null
-      );
-    };
-
-    setAgentRuntime({
-      getDefaultBoardId: () => resolveAgentBoard()?.id ?? null,
-      async getTask(taskId: string) {
-        return tasksRef.current.find((task) => task.id === taskId) ?? null;
-      },
-      async listTasks(options: { boardId?: string; status: "open" | "done" | "any" }) {
-        return tasksRef.current.filter((task) => {
-          if (options.boardId && task.boardId !== options.boardId) return false;
-          if (options.status === "open" && task.completed) return false;
-          if (options.status === "done" && !task.completed) return false;
-          return true;
-        });
-      },
-      async createTask(input) {
-        const targetBoard = resolveAgentBoard(input.boardId);
-        if (!targetBoard) {
-          throw { code: "NOT_FOUND", message: "Board not found" };
-        }
-        const nowISO = new Date().toISOString();
-        const createdBy = normalizeAgentPubkey(nostrPK) ?? undefined;
-        const createdTask = buildImportedTaskFromPayload(
-          {
-            title: input.title,
-            note: input.note,
-            ...(input.dueISO ? { dueISO: input.dueISO } : {}),
-            ...(input.priority ? { priority: input.priority } : {}),
-          },
-          {
-            overrides: {
-              boardId: targetBoard.id,
-              ...(createdBy ? { createdBy } : {}),
-              ...(createdBy ? { lastEditedBy: createdBy } : {}),
-              updatedAt: nowISO,
-            } as Partial<Task>,
-            taskPool: tasksRef.current.slice(),
-          },
-        );
-        if (!createdTask) {
-          throw { code: "INTERNAL", message: "Failed to create task" };
-        }
-        const nextTask: Task = {
-          ...createdTask,
-          ...(createdBy ? { createdBy } : {}),
-          ...(createdBy ? { lastEditedBy: createdBy } : {}),
-          updatedAt: nowISO,
-        };
-        saveEdit(nextTask);
-        await nextFrame();
-        return tasksRef.current.find((task) => task.id === nextTask.id) ?? nextTask;
-      },
-      async updateTask(taskId, patch) {
-        const existing = tasksRef.current.find((task) => task.id === taskId);
-        if (!existing) return null;
-
-        const editor = normalizeAgentPubkey(nostrPK) ?? existing.lastEditedBy ?? existing.createdBy;
-        const nextTask: Task = {
-          ...existing,
-          ...(patch.title !== undefined ? { title: patch.title } : {}),
-          ...(patch.note !== undefined ? { note: patch.note } : {}),
-          ...(patch.priority === null
-            ? { priority: undefined }
-            : patch.priority !== undefined
-              ? { priority: patch.priority }
-              : {}),
-          ...(editor ? { lastEditedBy: editor } : {}),
-          updatedAt: new Date().toISOString(),
-        };
-
-        if (patch.dueISO !== undefined) {
-          if (patch.dueISO === null) {
-            nextTask.dueDateEnabled = false;
-            nextTask.dueTimeEnabled = false;
-          } else {
-            nextTask.dueISO = patch.dueISO;
-            nextTask.dueDateEnabled = true;
-          }
-        }
-
-        saveEdit(nextTask);
-        await nextFrame();
-        return tasksRef.current.find((task) => task.id === taskId) ?? nextTask;
-      },
-      async setTaskStatus(taskId, status) {
-        const existing = tasksRef.current.find((task) => task.id === taskId);
-        if (!existing) return null;
-        if (status === "done") {
-          if (!existing.completed) {
-            completeTask(taskId);
-            await nextFrame();
-          }
-        } else if (existing.completed) {
-          restoreTask(taskId);
-          await nextFrame();
-        }
-        await nextFrame();
-        return tasksRef.current.find((task) => task.id === taskId) ?? existing;
-      },
-      getAgentSecurityConfig: () => agentSecurityConfigRef.current,
-      setAgentSecurityConfig: (config) => commitAgentSecurityConfig(config),
-    });
-
-    const executeAgentCommand = async (input: unknown) => {
-      const { dispatchAgentCommand } = await import("./agent/agentDispatcher");
-      if (typeof input === "string") {
-        return await dispatchAgentCommand(input);
-      }
-      try {
-        return await dispatchAgentCommand(JSON.stringify(input));
-      } catch {
-        return await dispatchAgentCommand("{");
-      }
-    };
-
-    const agentApi = {
-      version: 1,
-      exec(input: unknown) {
-        return executeAgentCommand(input);
-      },
-      open() {
-        setShowAgentPanel(true);
-      },
-      close() {
-        setShowAgentPanel(false);
-      },
-    };
-
-    (window as any).__taskifyAgent = agentApi;
-    (window as any).taskifyAgent = agentApi;
-
-    return () => {
-      setAgentRuntime(null);
-      delete (window as any).__taskifyAgent;
-      delete (window as any).taskifyAgent;
-    };
-  }, [
-    agentSessionEnabled,
-    boards,
-    commitAgentSecurityConfig,
-    currentBoardId,
-    nostrPK,
-    saveEdit,
-  ]);
 
   function restoreTask(id: string) {
     const t = tasks.find((x) => x.id === id);
@@ -19336,33 +19113,7 @@ export default function App() {
             </div>
             <div className="app-tab-switcher__label">Settings</div>
           </button>
-          {agentSessionEnabled && (
-            <button
-              type="button"
-              className={`app-tab-switcher__btn pressable${showAgentPanel ? " app-tab-switcher__btn--active" : ""}`}
-              onClick={() => setShowAgentPanel((v) => !v)}
-              aria-label="Agent"
-              title="Agent Mode"
-            >
-              <div className="app-tab-switcher__icon">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="app-tab-switcher__icon-svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.7}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <polyline points="8 12 12 16 16 12" />
-                  <line x1="12" y1="8" x2="12" y2="16" />
-                </svg>
-              </div>
-              <div className="app-tab-switcher__label">Agent</div>
-            </button>
-          )}
+
         </div>
       </div>
 
@@ -19856,7 +19607,10 @@ export default function App() {
 
       {/* Undo Snackbar */}
       {undoTask && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3">
+        <div
+          className="fixed left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3 z-[9999]"
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.75rem)" }}
+        >
           Task deleted
           <button onClick={undoDelete} className="accent-button button-sm pressable">Undo</button>
         </div>
@@ -20171,7 +19925,7 @@ export default function App() {
         </Modal>
       )}
 
-      {!agentSessionEnabled && showFirstRunOnboarding && (
+      {showFirstRunOnboarding && (
         <Modal onClose={() => {}} title="Welcome to Taskify" showClose={false}>
           <FirstRunOnboarding
             pushSupported={onboardingPushSupported}
@@ -20186,18 +19940,6 @@ export default function App() {
           />
         </Modal>
       )}
-
-      <Suspense fallback={null}>
-        {agentSessionEnabled && showAgentModeOnboarding && (
-          <Modal onClose={() => {}} title="Agent Mode Setup" showClose={false}>
-            <AgentModeOnboarding
-              onUseExistingKey={handleOnboardingUseExistingKey}
-              onGenerateNewKey={handleOnboardingGenerateNewKey}
-              onComplete={completeAgentModeOnboarding}
-            />
-          </Modal>
-        )}
-      </Suspense>
 
       {addBoardOpen && (
         <AddBoardModal
@@ -20456,20 +20198,6 @@ export default function App() {
         )}
       </Suspense>
 
-      {/* Agent Mode Panel */}
-      <Suspense fallback={null}>
-        {agentSessionEnabled && showAgentPanel && (
-          <AgentModePanel
-            securityConfig={agentSecurityConfig}
-            onUpdateSecurityConfig={updateAgentSecurityConfig}
-            onAddTrustedNpub={addTrustedAgentNpub}
-            onSetStrictWithTrustedNpub={setStrictWithTrustedAgentNpub}
-            onRemoveTrustedNpub={removeTrustedAgentNpub}
-            onClearTrustedNpubs={clearTrustedAgentNpubs}
-            onClose={() => setShowAgentPanel(false)}
-          />
-        )}
-      </Suspense>
 
       {/* ── Add task menu: New Task / Dictate ─────────────────────────────── */}
       <ActionSheet

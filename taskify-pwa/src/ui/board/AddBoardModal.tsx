@@ -11,12 +11,13 @@ export function AddBoardModal({
   onJoinBoard,
 }: {
   onClose: () => void;
-  onCreateBoard: (name: string, type: "lists" | "compound") => string | null;
+  onCreateBoard: (name: string, type: "lists" | "compound", shared: boolean) => string | null;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
 }) {
   const { show: showToast } = useToast();
   const [newBoardName, setNewBoardName] = useState("");
   const [newBoardType, setNewBoardType] = useState<"lists" | "compound">("lists");
+  const [newBoardShared, setNewBoardShared] = useState(true);
   const [joinBoardId, setJoinBoardId] = useState("");
   const [joinStatus, setJoinStatus] = useState<{ tone: "info" | "error"; message: string } | null>(null);
   const [scannerActive, setScannerActive] = useState(false);
@@ -76,11 +77,11 @@ export function AddBoardModal({
       showToast("Enter a board name");
       return;
     }
-    const createdId = onCreateBoard(trimmed, newBoardType);
+    const createdId = onCreateBoard(trimmed, newBoardType, newBoardShared);
     if (!createdId) return;
-    showToast("Board created");
+    showToast(newBoardShared ? "Board created & synced" : "Board created (local only)");
     onClose();
-  }, [newBoardName, newBoardType, onCreateBoard, onClose, showToast]);
+  }, [newBoardName, newBoardType, newBoardShared, onCreateBoard, onClose, showToast]);
 
   const handleJoinBoard = useCallback(() => {
     const parsed = parseBoardSharePayload(joinBoardId);
@@ -233,6 +234,55 @@ export function AddBoardModal({
                   onClick={() => setNewBoardType("compound")}
                 >
                   Compound
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="share-mode-header">
+                <label className="text-xs uppercase tracking-wide text-secondary">Storage</label>
+                <button
+                  type="button"
+                  className="share-mode-info-button pressable"
+                  aria-label="Storage details"
+                  aria-expanded={infoOpen === "storage"}
+                  aria-controls="add-board-storage-info"
+                  onClick={() => toggleInfo("storage")}
+                  ref={setInfoButtonRef("storage")}
+                >
+                  <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
+                </button>
+                {infoOpen === "storage" && (
+                  <div
+                    className="share-mode-info"
+                    role="tooltip"
+                    id="add-board-storage-info"
+                    ref={setInfoPanelRef("storage")}
+                  >
+                    <div className="share-mode-info__row">
+                      <div className="share-mode-info__label">Shared</div>
+                      <div className="share-mode-info__text">Synced via Nostr. Recoverable from your nsec on any device.</div>
+                    </div>
+                    <div className="share-mode-info__row">
+                      <div className="share-mode-info__label">Local only</div>
+                      <div className="share-mode-info__text">Stored on this device only. Cannot be recovered if lost.</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={pillButtonClass(newBoardShared)}
+                  onClick={() => setNewBoardShared(true)}
+                >
+                  Shared
+                </button>
+                <button
+                  type="button"
+                  className={pillButtonClass(!newBoardShared)}
+                  onClick={() => setNewBoardShared(false)}
+                >
+                  Local only
                 </button>
               </div>
             </div>

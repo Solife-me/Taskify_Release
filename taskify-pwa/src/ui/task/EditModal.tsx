@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 import { nip19 } from "nostr-tools";
 import { normalizeTaskAssignmentStatus } from "taskify-core";
 
@@ -240,6 +241,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [prioritySheetOpen, setPrioritySheetOpen] = useState(false);
   const [note, setNote] = useState(task.note || "");
   const [images, setImages] = useState<string[]>(task.images || []);
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
@@ -1680,11 +1682,21 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 </button>
               </div>
             </div>
+            {previewImageSrc && (
+              <ImagePreviewModal src={previewImageSrc} onClose={() => setPreviewImageSrc(null)} />
+            )}
             {images.length > 0 && (
               <div className="edit-media-grid">
                 {images.map((img, i) => (
                   <div key={i} className="relative">
-                    <img src={img} className="max-h-40 rounded-lg" alt="Attachment" />
+                    <img
+                      src={img}
+                      className="max-h-40 rounded-lg cursor-zoom-in"
+                      alt="Attachment"
+                      onClick={() => setPreviewImageSrc(img)}
+                      role="button"
+                      aria-label="View full image"
+                    />
                     <button
                       type="button"
                       className="absolute top-1 right-1 rounded-full bg-black/70 px-1 text-xs"
