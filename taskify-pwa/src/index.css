@@ -2160,8 +2160,11 @@ html.light .control-matrix__btn[data-hovered="true"] {
   inset: 0;
   z-index: 50;
   background: rgba(7, 10, 20, 0.56);
-  backdrop-filter: blur(26px);
-  -webkit-backdrop-filter: blur(26px);
+  /* NOTE: Do NOT apply backdrop-filter here. On iOS/WebKit, a backdrop-filter
+     on an ancestor creates a new compositing stacking context, which prevents
+     child panels (sheet-panel, modal-panel, wallet-section, etc.) from blurring
+     against the real content behind the overlay — they appear nearly opaque instead.
+     The dim effect is provided by the semi-transparent background alone. */
 }
 
 .overlay-scrim {

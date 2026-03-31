@@ -80,7 +80,8 @@ struct AuthSessionManagerTests {
 
         await manager.signIn(secretKeyInput: "nsec1...", profileName: "Nathan", relays: [])
 
-        #expect(saved?.relays == ["wss://relay.damus.io", "wss://relay.snort.social"])
+        // Should fall back to the full PWA-matching default preset (matches DEFAULT_NOSTR_RELAYS)
+        #expect(saved?.relays == AuthSessionManager.defaultRelayPreset)
     }
 
     @Test("invalid nsec/hex shows PWA-parity validation message")
@@ -138,5 +139,17 @@ struct AuthSessionManagerTests {
         await manager.signOut()
         #expect(await manager.state == .signedOut)
         #expect(cleared == true)
+    }
+
+    @Test("default relay preset matches PWA DEFAULT_NOSTR_RELAYS exactly")
+    func defaultRelayPresetMatchesPWA() {
+        // Source of truth: taskify-core/src/nostrPrimitives.ts DEFAULT_NOSTR_RELAYS
+        let pwaDefaults = [
+            "wss://relay.damus.io",
+            "wss://nos.lol",
+            "wss://relay.snort.social",
+            "wss://relay.primal.net",
+        ]
+        #expect(AuthSessionManager.defaultRelayPreset == pwaDefaults)
     }
 }
