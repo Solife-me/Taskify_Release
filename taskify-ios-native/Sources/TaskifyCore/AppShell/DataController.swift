@@ -686,8 +686,11 @@ public final class DataController: ObservableObject {
 
     private func allRelayURLs() -> [String] {
         let profileRelays = profile?.relays ?? []
+        // Fall back to the full PWA-matching default preset when no profile relays are set.
+        // Mirrors DEFAULT_NOSTR_RELAYS in taskify-core/src/nostrPrimitives.ts.
+        let baseRelays = profileRelays.isEmpty ? AuthSessionManager.defaultRelayPreset : profileRelays
         let boardRelays = allStoredRelayHints()
-        return normalizeRelayList(profileRelays + boardRelays)
+        return normalizeRelayList(baseRelays + boardRelays)
     }
 
     private func allStoredRelayHints() -> [String] {
@@ -1736,6 +1739,8 @@ public final class DataController: ObservableObject {
     }
 
     private func buildTaskPayload(_ task: TaskifyTask) -> [String: Any] {
+        // Field set matches PWA maybePublishTask body in App.tsx.
+        // Reminders are device-specific and intentionally excluded (same as PWA).
         [
             "title": task.title,
             "priority": nullable(task.priority),
@@ -1756,6 +1761,8 @@ public final class DataController: ObservableObject {
             "dueDateEnabled": nullable(task.dueDateEnabled),
             "dueTimeEnabled": nullable(task.dueTimeEnabled),
             "dueTimeZone": nullable(task.dueTimeZone),
+            // inboxItem — included with explicit null to signal removals (mirrors PWA)
+            "inboxItem": nullable(task.inboxItem),
             "images": jsonField(task.imagesJSON),
             "documents": jsonField(task.documentsJSON),
             "subtasks": jsonField(task.subtasksJSON),

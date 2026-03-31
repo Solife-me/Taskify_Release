@@ -11,7 +11,13 @@ public enum AuthState: Equatable {
 public final class AuthSessionManager {
     public private(set) var state: AuthState = .signedOut
 
-    public static let defaultRelayPreset = ["wss://relay.damus.io", "wss://relay.snort.social"]
+    /// Default Nostr relays — matches DEFAULT_NOSTR_RELAYS in taskify-core/src/nostrPrimitives.ts.
+    public static let defaultRelayPreset = [
+        "wss://relay.damus.io",
+        "wss://nos.lol",
+        "wss://relay.snort.social",
+        "wss://relay.primal.net",
+    ]
 
     private let loadActiveProfileFn: () throws -> TaskifyProfile?
     private let saveProfileFn: (TaskifyProfile) throws -> Void
