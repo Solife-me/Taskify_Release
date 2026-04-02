@@ -1167,6 +1167,45 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
   }
 
+  async function attachSingleDocument(file: File, fallbackLabel: string): Promise<TaskDocument> {
+    const label = file.name || fallbackLabel;
+    setUploadingLabel(`Preparing ${label}…`);
+    const docs = await readDocumentsFromFiles([file] as File[]);
+    const doc = docs[0];
+    if (!doc) {
+      throw new Error(`Could not read ${label}. The selected file may not be supported.`);
+    }
+    if (!isSharedBoard) return doc;
+
+    setUploadingLabel(`Uploading ${label}…`);
+    const row = createUploadingDocumentRow(doc, label);
+    const rowId = row.id;
+    setUploadingDocumentRows((prev) => [...prev, row]);
+    try {
+      const uploaded = await uploadSharedDocument(file, doc, {
+        onProgress: (progress) =>
+          setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, progress)),
+        onPhaseChange: (phase) =>
+          setUploadingDocumentRows((prev) => setUploadingDocumentRowPhase(prev, rowId, phase)),
+      });
+      setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, 1));
+      return uploaded;
+    } finally {
+      setUploadingDocumentRows((prev) => removeUploadingDocumentRow(prev, rowId));
+    }
+  }
+
+  async function attachDocumentsSequentially(files: File[], fallbackLabel: string): Promise<TaskDocument[]> {
+    const attached: TaskDocument[] = [];
+    for (const file of files) {
+      const doc = await attachSingleDocument(file, fallbackLabel);
+      attached.push(doc);
+      setDocuments((prev) => [...prev, doc]);
+      setUploadingCount((prev) => Math.max(0, prev - 1));
+    }
+    return attached;
+  }
+
   useEffect(() => {
     return startUploadingDotsTimer(uploadingDocumentRows.length, setUploadingDotPhase);
   }, [uploadingDocumentRows.length]);
@@ -1197,41 +1236,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     if (!fileList.length) return;
     try {
       setSaveError(null);
-      setUploadingCount((prev) => prev + fileList.length);
-      const nextDocs: TaskDocument[] = [];
-      for (const file of fileList) {
-        const label = file.name || "pasted image";
-        setUploadingLabel(`Preparing ${label}…`);
-        const docs = await readDocumentsFromFiles([file] as any);
-        const doc = docs[0];
-        if (!doc) throw new Error(`Could not read ${label}.`);
-        if (isSharedBoard) {
-          setUploadingLabel(`Uploading ${label}…`);
-          const row = createUploadingDocumentRow(doc, label);
-          const rowId = row.id;
-          setUploadingDocumentRows((prev) => [...prev, row]);
-          try {
-            const uploaded = await uploadSharedDocument(file, doc, {
-              onProgress: (progress) =>
-                setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, progress)),
-              onPhaseChange: (phase) =>
-                setUploadingDocumentRows((prev) => setUploadingDocumentRowPhase(prev, rowId, phase)),
-            });
-            setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, 1));
-            nextDocs.push(uploaded);
-          } finally {
-            setUploadingDocumentRows((prev) => removeUploadingDocumentRow(prev, rowId));
-          }
-        } else {
-          nextDocs.push(doc);
-        }
-      }
-      setDocuments((prev) => [...prev, ...nextDocs]);
+      setUploadingCount(fileList.length);
+      await attachDocumentsSequentially(fileList, "pasted image");
     } catch (err: any) {
       console.error("Failed to attach pasted image", err);
       setSaveError(err?.message || "Failed to upload pasted image attachment.");
     } finally {
-      setUploadingCount((prev) => Math.max(0, prev - fileList.length));
+      setUploadingCount(0);
       setUploadingLabel(null);
     }
   }
@@ -1242,42 +1253,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const fileList = Array.from(files);
     try {
       setSaveError(null);
-      setUploadingCount((prev) => prev + fileList.length);
-      const nextDocs: TaskDocument[] = [];
-      for (let index = 0; index < fileList.length; index += 1) {
-        const file = fileList[index];
-        const label = file.name || "attachment";
-        setUploadingLabel(`Preparing ${label}…`);
-        const docs = await readDocumentsFromFiles([file] as any);
-        const doc = docs[0];
-        if (!doc) throw new Error(`Could not read ${label}. The selected file may not be supported.`);
-        if (isSharedBoard) {
-          setUploadingLabel(`Uploading ${label}…`);
-          const row = createUploadingDocumentRow(doc, label);
-          const rowId = row.id;
-          setUploadingDocumentRows((prev) => [...prev, row]);
-          try {
-            const uploaded = await uploadSharedDocument(file, doc, {
-              onProgress: (progress) =>
-                setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, progress)),
-              onPhaseChange: (phase) =>
-                setUploadingDocumentRows((prev) => setUploadingDocumentRowPhase(prev, rowId, phase)),
-            });
-            setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, 1));
-            nextDocs.push(uploaded);
-          } finally {
-            setUploadingDocumentRows((prev) => removeUploadingDocumentRow(prev, rowId));
-          }
-        } else {
-          nextDocs.push(doc);
-        }
-      }
-      setDocuments((prev) => [...prev, ...nextDocs]);
+      setUploadingCount(fileList.length);
+      await attachDocumentsSequentially(fileList, "attachment");
     } catch (err: any) {
       console.error("Failed to attach document", err);
       setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
     } finally {
-      setUploadingCount((prev) => Math.max(0, prev - fileList.length));
+      setUploadingCount(0);
       setUploadingLabel(null);
       e.target.value = "";
     }
