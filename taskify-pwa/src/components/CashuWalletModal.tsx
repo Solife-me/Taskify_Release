@@ -72,7 +72,8 @@ import {
 import { SessionPool } from "../nostr/SessionPool";
 import { NostrSession } from "../nostr/NostrSession";
 import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePublisher";
-import { uploadAvatarToNip96 } from "../nostr/Nip96Client";
+import { uploadAvatarToNip96, uploadAvatar } from "../nostr/Nip96Client";
+import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
 import {
   markHistoryEntrySpentRaw,
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
@@ -1747,6 +1748,7 @@ export default function CashuWalletModal({
   mintBackupEnabled: mintBackupEnabledProp,
   contactsSyncEnabled,
   fileStorageServer,
+  fileServers,
   messageItems,
   onAcceptMessage,
   onMaybeMessage,
@@ -1772,6 +1774,7 @@ export default function CashuWalletModal({
   mintBackupEnabled: boolean;
   contactsSyncEnabled: boolean;
   fileStorageServer: string;
+  fileServers?: string;
   messageItems: WalletMessageItem[];
   messagesUnreadCount: number;
   onAcceptMessage: (id: string) => void;
@@ -13815,8 +13818,11 @@ export default function CashuWalletModal({
           setProfilePhotoError("");
           setProfileMessage("Uploading profile photo…");
           try {
-            const upload = await uploadAvatarToNip96({
-              serverUrl: preferredFileServer,
+            const servers = parseFileServers(fileServers);
+            const serverEntry = findServerEntry(servers, preferredFileServer)
+              ?? { url: preferredFileServer, type: "nip96" as FileServerType };
+            const upload = await uploadAvatar({
+              serverEntry,
               file: profilePhotoUploadRef.current.blob,
               filename: profilePhotoUploadRef.current.name || "avatar.jpg",
               contentType: profilePhotoUploadRef.current.contentType,
@@ -13906,6 +13912,7 @@ export default function CashuWalletModal({
       ensureNostrIdentity,
       nostrMissingReason,
       preferredFileServer,
+      fileServers,
       profileForm,
       publishContactsToNostr,
       publishProfileMetadata,
@@ -13915,7 +13922,7 @@ export default function CashuWalletModal({
       setProfileStatus,
       setProfileForm,
       upsertContact,
-      uploadAvatarToNip96,
+      uploadAvatar,
     ],
   );
 

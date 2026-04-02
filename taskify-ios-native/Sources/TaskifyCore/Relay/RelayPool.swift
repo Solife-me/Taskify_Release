@@ -343,50 +343,39 @@ public actor RelayPool: RelayPoolProtocol {
     }
 }
 
-// MARK: - SubscriptionState
-
 private struct SubscriptionState {
     let key: String
     let filters: [[String: Any]]
     let onEvent: (NostrEvent, String?) -> Void
     let onEose: (String?) -> Void
     var refCount: Int = 1
-    var pendingEvents: [(NostrEvent, String?)] = []
+    var pendingEvents: [(NostrEvent, String)] = []
 }
-
-// MARK: - CursorStore
 
 /// Tracks the highest `created_at` seen per subscription key.
-/// Mirrors CursorStore.ts — used as `since` on reconnect/resubscribe.
 private struct CursorStore {
     private var cursors: [String: Int] = [:]
-
     mutating func update(subId: String, createdAt: Int) {
-        let prev = cursors[subId] ?? 0
-        if createdAt > prev { cursors[subId] = createdAt }
+        cursors[subId] = max(cursors[subId] ?? 0, createdAt)
     }
-
-    func since(for subId: String) -> Int? {
-        cursors[subId]
-    }
+    func value(for subId: String) -> Int? { cursors[subId] }
 }
 
-// MARK: - EventCache
-
-/// Deduplication ring buffer — mirrors EventCache.ts (maxSize 2048).
+/// Small ring buffer to dedupe recently seen event ids.
 private struct EventCache {
-    private var seenIds: [String] = []
-    private var seenSet: Set<String> = []
-    private let maxSize = 2048
+    private let maxSize = 5000
+    private var order: [String] = []
+    private var set: Set<String> = []
 
-    mutating func contains(_ id: String) -> Bool { seenSet.contains(id) }
+    mutating func contains(_ id: String) -> Bool { set.contains(id) }
 
     mutating func add(id: String) {
-        seenSet.insert(id)
-        seenIds.append(id)
-        if seenIds.count > maxSize, let first = seenIds.first {
-            seenSet.remove(first)
-            seenIds.removeFirst()
+        guard !set.contains(id) else { return }
+        set.insert(id)
+        order.append(id)
+        if order.count > maxSize, let first = order.first {
+            order.removeFirst()
+            set.remove(first)
         }
     }
 }

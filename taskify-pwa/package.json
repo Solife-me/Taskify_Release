@@ -22,6 +22,8 @@
     "buffer": "^6.0.3",
     "events": "^3.3.0",
     "jszip": "^3.10.1",
+    "mammoth": "^1.12.0",
+    "markdown-it": "^14.1.1",
     "nostr-tools": "^2.16.2",
     "pdfjs-dist": "^4.7.76",
     "process": "^0.11.10",
@@ -33,7 +35,8 @@
     "stream-browserify": "^3.0.0",
     "taskify-core": "file:../taskify-core",
     "taskify-runtime-nostr": "file:../taskify-runtime-nostr",
-    "util": "^0.12.5"
+    "util": "^0.12.5",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",

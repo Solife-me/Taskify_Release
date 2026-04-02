@@ -12,18 +12,21 @@ let package = Package(
         .executable(name: "TaskifyApp", targets: ["TaskifyApp"]),
     ],
     dependencies: [
-        // secp256k1 — required for Nostr key ops and NIP-44 conversation key derivation.
-        // Apple CryptoKit does not include secp256k1.
         .package(
-            url: "https://github.com/21-DOT-DEV/swift-secp256k1.git",
-            from: "0.21.0"
+            url: "https://github.com/Solife-me/nostr-sdk-ios.git",
+            branch: "feat/public-nip44-conversation-key"
+        ),
+        .package(
+            url: "https://github.com/GigaBitcoin/secp256k1.swift",
+            exact: "0.12.2"
         ),
     ],
     targets: [
         .target(
             name: "TaskifyCore",
             dependencies: [
-                .product(name: "P256K", package: "swift-secp256k1"),
+                .product(name: "NostrSDK", package: "nostr-sdk-ios"),
+                .product(name: "secp256k1", package: "secp256k1.swift"),
             ],
             path: "Sources/TaskifyCore"
         ),
