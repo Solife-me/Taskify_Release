@@ -4397,8 +4397,16 @@ function useBoards() {
       const migrated = migrateBoards(JSON.parse(raw));
       if (migrated && migrated.length) return migrated;
     }
-    // default: one Week board
-    return [{ id: "week-default", name: "Week", kind: "week", archived: false, hidden: false, clearCompletedDisabled: false }];
+    // default: one shared Week board for fresh installs
+    return [{
+      id: "week-default",
+      name: "Week",
+      kind: "week",
+      nostr: { boardId: crypto.randomUUID(), relays: Array.from(DEFAULT_NOSTR_RELAYS) },
+      archived: false,
+      hidden: false,
+      clearCompletedDisabled: false,
+    }];
   });
   const boardsFirstRun = useRef(true);
   useEffect(() => {
