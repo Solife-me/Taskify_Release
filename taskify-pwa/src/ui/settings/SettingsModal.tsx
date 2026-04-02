@@ -360,6 +360,7 @@ export function SettingsModal({
           onBoardChanged={onBoardChanged}
           onManageBoard={(id) => setManageBoardId(id)}
           onClose={handleClose}
+          defaultRelays={defaultRelays}
         />
 
         {/* View */}
