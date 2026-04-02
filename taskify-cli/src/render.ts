@@ -219,8 +219,9 @@ export function renderTaskCard(task: FullTaskRecord, trustedNpubs: string[], loc
     console.log(`${lbl("Documents:")}${task.documents.length}`);
     task.documents.forEach((doc, idx) => {
       const name = typeof doc.name === "string" ? doc.name : `document-${idx + 1}`;
-      const url = typeof doc.url === "string" ? doc.url : "";
-      console.log(`  - ${name}${url ? ` (${url})` : ""}`);
+      const url = typeof doc.remoteUrl === "string" ? doc.remoteUrl : (typeof doc.url === "string" ? doc.url : "");
+      const flags = [doc.encrypted === true ? "encrypted" : null, typeof doc.kind === "string" ? doc.kind : null].filter(Boolean).join(", ");
+      console.log(`  - ${name}${flags ? ` [${flags}]` : ""}${url ? ` (${url})` : ""}`);
     });
   }
 
