@@ -74,8 +74,7 @@ export type TaskifyConfig = ProfileConfig & {
 export const DEFAULT_RELAYS = [
   "wss://relay.damus.io",
   "wss://nos.lol",
-  "wss://relay.snort.social",
-  "wss://relay.primal.net",
+  "wss://relay.solife.me",
 ];
 
 const DEFAULT_PROFILE: ProfileConfig = {

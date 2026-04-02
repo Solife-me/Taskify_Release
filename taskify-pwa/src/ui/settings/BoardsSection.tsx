@@ -4,6 +4,7 @@ import type { Board, Task, Weekday } from "../../domains/tasks/taskTypes";
 import { compoundChildMatchesBoard } from "../../domains/tasks/boardUtils";
 import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";
+import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import { BIBLE_BOARD_ID, BOARD_ID_REGEX } from "./settingsConstants";
 
 export function BoardsSection({
@@ -17,6 +18,7 @@ export function BoardsSection({
   onBoardChanged,
   onManageBoard,
   onClose,
+  defaultRelays,
 }: {
   boards: Board[];
   currentBoardId: string;
@@ -28,6 +30,7 @@ export function BoardsSection({
   onBoardChanged: (boardId: string, options?: { republishTasks?: boolean; board?: Board }) => void;
   onManageBoard: (id: string) => void;
   onClose: () => void;
+  defaultRelays: string[];
 }) {
   const { show: showToast } = useToast();
   const [newBoardName, setNewBoardName] = useState("");
@@ -105,6 +108,8 @@ export function BoardsSection({
       return;
     }
     const id = crypto.randomUUID();
+    const nostrBoardId = crypto.randomUUID();
+    const relayList = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
     let board: Board;
     if (newBoardType === "compound") {
       board = {
@@ -117,6 +122,7 @@ export function BoardsSection({
         clearCompletedDisabled: false,
         indexCardEnabled: false,
         hideChildBoardNames: false,
+        nostr: { boardId: nostrBoardId, relays: relayList },
       };
     } else {
       board = {
@@ -128,12 +134,15 @@ export function BoardsSection({
         hidden: false,
         clearCompletedDisabled: false,
         indexCardEnabled: false,
+        nostr: { boardId: nostrBoardId, relays: relayList },
       };
     }
     setBoards(prev => [...prev, board]);
     setNewBoardName("");
     changeBoard(id);
     setNewBoardType("lists");
+    setTimeout(() => onBoardChanged(board.id, { board }), 0);
+    showToast("Board created & synced");
   }
 
   function archiveBoard(id: string) {
