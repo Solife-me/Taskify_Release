@@ -10,15 +10,12 @@
     "pretest": "npm run build",
     "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
-  "peerDependencies": {
+  "dependencies": {
     "@noble/hashes": "^1.4.0",
     "@nostr-dev-kit/ndk": "^2.18.1",
     "nostr-tools": "^2.16.2"
   },
   "devDependencies": {
-    "@noble/hashes": "^1.4.0",
-    "@nostr-dev-kit/ndk": "^2.18.1",
-    "nostr-tools": "^2.16.2",
     "typescript": "^5.9.3"
   }
 }

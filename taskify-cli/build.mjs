@@ -23,6 +23,10 @@ await esbuild.build({
   external: [
     ...NODE_BUILTINS,
     ...NODE_BUILTINS.map((b) => `node:${b}`),
+    "@nostr-dev-kit/ndk",
+    "nostr-tools",
+    "@noble/hashes/sha256",
+    "@noble/hashes/utils",
   ],
   // Provide a require() shim so bundled CJS deps (commander etc.) work in ESM context
   banner: {
