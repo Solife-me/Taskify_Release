@@ -1,8 +1,7 @@
 export const DEFAULT_NOSTR_RELAYS = [
     "wss://relay.damus.io",
     "wss://nos.lol",
-    "wss://relay.snort.social",
-    "wss://relay.primal.net",
+    "wss://relay.solife.me",
 ];
 function toArrayBuffer(bytes) {
     return Uint8Array.from(bytes).buffer;
