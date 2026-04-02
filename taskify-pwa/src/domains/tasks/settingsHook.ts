@@ -8,7 +8,7 @@ import { LS_MINT_BACKUP_ENABLED } from "../../localStorageKeys";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS } from "../../storage/taskifyDb";
 import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../../lib/fileStorage";
+import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../../lib/fileStorage";
 import { detectPushPlatformFromNavigator, INFERRED_PUSH_PLATFORM } from "../push/pushUtils";
 import type { PushPreferences } from "../push/pushUtils";
 import { SCRIPTURE_MEMORY_FREQUENCIES, SCRIPTURE_MEMORY_SORTS } from "../scripture/scriptureUtils";
@@ -89,6 +89,12 @@ function useSettings() {
             ? parsed.fileStorageServer.trim()
             : DEFAULT_FILE_STORAGE_SERVER,
         ) || DEFAULT_FILE_STORAGE_SERVER;
+      const encryptedFileStorageServer =
+        normalizeFileServerUrl(
+          typeof parsed?.encryptedFileStorageServer === "string" && parsed.encryptedFileStorageServer.trim()
+            ? parsed.encryptedFileStorageServer.trim()
+            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
+        ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
 
@@ -186,6 +192,7 @@ function useSettings() {
           : false,
         walletContactsSyncEnabled,
         fileStorageServer,
+        encryptedFileStorageServer,
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -221,6 +228,7 @@ function useSettings() {
         walletPaymentRequestsBackgroundChecksEnabled: true,
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
+        encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
         cloudBackupsEnabled: false,
@@ -262,6 +270,19 @@ function useSettings() {
       } else {
         next.fileStorageServer =
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileStorageServer")) {
+        const rawServer = (s as any).encryptedFileStorageServer;
+        const normalizedServer =
+          typeof rawServer === "string" && rawServer.trim()
+            ? normalizeFileServerUrl(rawServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER
+            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+        next.encryptedFileStorageServer = normalizedServer;
+      } else if (!next.encryptedFileStorageServer) {
+        next.encryptedFileStorageServer = DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+      } else {
+        next.encryptedFileStorageServer =
+          normalizeFileServerUrl(next.encryptedFileStorageServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       }
       if (!next.backgroundImage) {
         next.backgroundImage = null;

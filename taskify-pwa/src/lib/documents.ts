@@ -1,7 +1,10 @@
 import JSZip from "jszip";
 import readXlsxFile from "read-excel-file/browser";
+import MarkdownIt from "markdown-it";
+import * as mammoth from "mammoth/mammoth.browser";
+import * as XLSX from "xlsx";
 
-export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx";
+export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx" | "txt" | "md" | "json" | "csv" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp3" | "aac" | "m4a" | "wav" | "mp4" | "mov" | "webm";
 
 export type TaskDocumentPreview =
   | { type: "image"; data: string }
@@ -11,7 +14,10 @@ export type TaskDocumentPreview =
 export type TaskDocumentFull =
   | { type: "pdf"; data: string }
   | { type: "html"; data: string }
-  | { type: "text"; data: string };
+  | { type: "text"; data: string }
+  | { type: "image"; data: string }
+  | { type: "audio"; data: string }
+  | { type: "video"; data: string };
 
 export type TaskDocument = {
   id: string;
@@ -23,6 +29,9 @@ export type TaskDocument = {
   createdAt: string;
   preview?: TaskDocumentPreview;
   full?: TaskDocumentFull;
+  remoteUrl?: string;
+  encrypted?: boolean;
+  encryptionBoardId?: string;
 };
 
 const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
@@ -31,7 +40,25 @@ const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
   ".docx": "docx",
   ".xls": "xls",
   ".xlsx": "xlsx",
+  ".txt": "txt",
+  ".md": "md",
+  ".json": "json",
+  ".csv": "csv",
+  ".png": "png",
+  ".jpg": "jpg",
+  ".jpeg": "jpeg",
+  ".webp": "webp",
+  ".gif": "gif",
+  ".mp3": "mp3",
+  ".aac": "aac",
+  ".m4a": "m4a",
+  ".wav": "wav",
+  ".mp4": "mp4",
+  ".mov": "mov",
+  ".webm": "webm",
 };
+
+const markdownRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
 const MIME_TO_KIND: Record<string, TaskDocumentKind> = {
   "application/pdf": "pdf",
@@ -40,6 +67,28 @@ const MIME_TO_KIND: Record<string, TaskDocumentKind> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.ms-excel": "xls",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "application/json": "json",
+  "text/json": "json",
+  "text/csv": "csv",
+  "image/png": "png",
+  "image/jpeg": "jpeg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/aac": "aac",
+  "audio/x-aac": "aac",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/wav": "wav",
+  "audio/wave": "wav",
+  "audio/x-wav": "wav",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
 };
 
 const KIND_MIME_FALLBACK: Record<TaskDocumentKind, string> = {
@@ -48,6 +97,22 @@ const KIND_MIME_FALLBACK: Record<TaskDocumentKind, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xls: "application/vnd.ms-excel",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  txt: "text/plain",
+  md: "text/markdown",
+  json: "application/json",
+  csv: "text/csv",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  mp3: "audio/mpeg",
+  aac: "audio/aac",
+  m4a: "audio/mp4",
+  wav: "audio/wav",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
 };
 
 function isPrintableTextChar(ch: string): boolean {
@@ -101,7 +166,11 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
     if (!entry || typeof entry !== "object") continue;
     const name = typeof (entry as any).name === "string" ? (entry as any).name : "";
     const dataUrl = typeof (entry as any).dataUrl === "string" ? (entry as any).dataUrl : "";
-    if (!name || !dataUrl) continue;
+    const remoteUrl = typeof (entry as any).remoteUrl === "string" ? (entry as any).remoteUrl.trim() : "";
+    const encrypted = (entry as any).encrypted === true;
+    const encryptionBoardId = typeof (entry as any).encryptionBoardId === "string" ? (entry as any).encryptionBoardId.trim() : "";
+    // Accept legacy inline docs (dataUrl present) and remote-first docs (remoteUrl present)
+    if (!name || (!dataUrl && !remoteUrl)) continue;
     const kindInput = typeof (entry as any).kind === "string" ? (entry as any).kind.toLowerCase() : "";
     const mime = typeof (entry as any).mimeType === "string" ? (entry as any).mimeType : "";
     const kind = (["pdf", "doc", "docx", "xls", "xlsx"] as const).includes(kindInput as TaskDocumentKind)
@@ -125,6 +194,9 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
       createdAt: createdAtRaw && !Number.isNaN(Date.parse(createdAtRaw)) ? createdAtRaw : new Date().toISOString(),
       preview: preview || undefined,
       full: full || undefined,
+      ...(remoteUrl ? { remoteUrl } : {}),
+      ...(encrypted ? { encrypted: true } : {}),
+      ...(encryptionBoardId ? { encryptionBoardId } : {}),
     });
   }
   return normalized.length ? normalized : undefined;
@@ -160,7 +232,7 @@ function normalizeFull(raw: unknown, fallbackKind: TaskDocumentKind): TaskDocume
   const type = typeof (raw as any).type === "string" ? (raw as any).type : "";
   const data = typeof (raw as any).data === "string" ? (raw as any).data : "";
   if (!data) return null;
-  if (type === "pdf" || type === "html" || type === "text") {
+  if (type === "pdf" || type === "html" || type === "text" || type === "image" || type === "audio" || type === "video") {
     return { type, data } as TaskDocumentFull;
   }
   return null;
@@ -190,7 +262,7 @@ function arrayBufferFromDataUrl(dataUrl: string): ArrayBuffer {
 
 let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
 
-async function ensurePdfjs() {
+export async function ensurePdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import("pdfjs-dist").then(async (module) => {
       try {
@@ -223,6 +295,36 @@ async function generatePdfPreview(buffer: ArrayBuffer): Promise<string | undefin
     if (!ctx) return undefined;
     await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
     return canvas.toDataURL("image/png");
+  } catch {
+    return undefined;
+  }
+}
+
+
+async function generateVideoPreview(dataUrl: string): Promise<string | undefined> {
+  if (typeof document === "undefined") return undefined;
+  try {
+    const video = document.createElement("video");
+    video.src = dataUrl;
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = "anonymous";
+    await new Promise<void>((resolve, reject) => {
+      video.addEventListener("loadeddata", () => resolve(), { once: true });
+      video.addEventListener("error", () => reject(new Error("video preview failed")), { once: true });
+    });
+    video.currentTime = Math.min(0.1, Number.isFinite(video.duration) ? video.duration / 2 : 0.1);
+    await new Promise<void>((resolve) => {
+      video.addEventListener("seeked", () => resolve(), { once: true });
+      setTimeout(resolve, 250);
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 320;
+    canvas.height = video.videoHeight || 180;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
   } catch {
     return undefined;
   }
@@ -394,6 +496,33 @@ function wrapDocHtml(html: string): string {
   return `<div class="doc-fragment">${html}</div>`;
 }
 
+function isTextKind(kind: TaskDocumentKind): boolean {
+  return kind === "txt" || kind === "md" || kind === "json" || kind === "csv";
+}
+
+function isImageKind(kind: TaskDocumentKind): boolean {
+  return kind === "png" || kind === "jpg" || kind === "jpeg" || kind === "webp" || kind === "gif";
+}
+
+function isAudioKind(kind: TaskDocumentKind): boolean {
+  return kind === "mp3" || kind === "aac" || kind === "m4a" || kind === "wav";
+}
+
+function isVideoKind(kind: TaskDocumentKind): boolean {
+  return kind === "mp4" || kind === "mov" || kind === "webm";
+}
+
+async function generateTextDocument(buffer: ArrayBuffer): Promise<{ previewText?: string; fullText?: string }> {
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    const text = cleanDocText(decoder.decode(new Uint8Array(buffer)));
+    if (!text) return {};
+    return { previewText: text.slice(0, 2000), fullText: text };
+  } catch {
+    return {};
+  }
+}
+
 function cleanDocText(value: string): string {
   return value
     .replace(/\r\n/g, "\n")
@@ -434,25 +563,51 @@ async function generateSpreadsheetMarkup(
   buffer: ArrayBuffer,
   kind: TaskDocumentKind
 ): Promise<{ previewHtml?: string; fullHtml?: string }> {
-  if (kind === "xls") {
-    // Legacy .xls parsing is intentionally not supported without SheetJS (xlsx).
-    return {};
-  }
-
   try {
-    const blob = new Blob([buffer]);
-    const rows = await readXlsxFile(blob);
-    const rowsArray = Array.isArray(rows) ? (rows as Array<Array<unknown>>) : [];
-    if (!rowsArray.length) return {};
-    const fullHtml = wrapSheetHtml(rowsArray, 100, 20);
-    const previewHtml = wrapSheetHtml(rowsArray, 20, 8);
-    return { previewHtml, fullHtml };
+    const workbook = XLSX.read(buffer, { type: "array", cellStyles: true, cellHTML: true, cellNF: true });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) return {};
+    const fullTable = XLSX.utils.sheet_to_html(sheet, { editable: false, id: "doc-sheet-table" });
+    const fullHtml = `<div class="doc-sheet doc-sheet--rich"><div class="doc-sheet__tab">${escapeHtml(sheetName)}</div>${fullTable}</div>`;
+    try {
+      const blob = new Blob([buffer]);
+      const rows = await readXlsxFile(blob);
+      const rowsArray = Array.isArray(rows) ? (rows as Array<Array<unknown>>) : [];
+      const previewHtml = rowsArray.length ? wrapSheetHtml(rowsArray, 12, 6, sheetName) : fullHtml;
+      return { previewHtml, fullHtml };
+    } catch {
+      return { previewHtml: fullHtml, fullHtml };
+    }
   } catch {
     return {};
   }
 }
 
-function wrapSheetHtml(rows: Array<Array<unknown>>, maxRows: number, maxCols: number): string {
+async function generateDocxMarkupRich(buffer: ArrayBuffer): Promise<{ previewHtml?: string; fullHtml?: string }> {
+  try {
+    const result = await mammoth.convertToHtml({ arrayBuffer: buffer }, {
+      includeDefaultStyleMap: true,
+      styleMap: [
+        "p[style-name='Heading 1'] => h1:fresh",
+        "p[style-name='Heading 2'] => h2:fresh",
+        "p[style-name='Heading 3'] => h3:fresh",
+        "p[style-name='Title'] => h1.doc-title:fresh",
+        "p[style-name='Subtitle'] => h2.doc-subtitle:fresh"
+      ]
+    });
+    const html = (result.value || "").trim();
+    if (!html) return {};
+    return {
+      previewHtml: `<div class="doc-rich doc-rich--preview">${html}</div>`,
+      fullHtml: `<div class="doc-rich">${html}</div>`,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function wrapSheetHtml(rows: Array<Array<unknown>>, maxRows: number, maxCols: number, sheetName = "Sheet 1"): string {
   const limitedRows = rows.slice(0, maxRows);
   const body = limitedRows
     .map((row) => {
@@ -465,22 +620,34 @@ function wrapSheetHtml(rows: Array<Array<unknown>>, maxRows: number, maxCols: nu
       return `<tr>${cells.join("")}</tr>`;
     })
     .join("");
-  return `<div class="doc-sheet"><table><tbody>${body}</tbody></table></div>`;
+  return `<div class="doc-sheet"><div class="doc-sheet__tab">${escapeHtml(sheetName)}</div><table><tbody>${body}</tbody></table></div>`;
 }
 
-export async function createDocumentAttachment(file: File): Promise<TaskDocument> {
-  const kind = inferKind(file.name, file.type);
+export async function createDocumentFromDataUrl(input: {
+  id?: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+  createdAt?: string;
+  size?: number;
+  remoteUrl?: string;
+  encrypted?: boolean;
+  encryptionBoardId?: string;
+}): Promise<TaskDocument> {
+  const kind = inferKind(input.name, input.mimeType);
   if (!kind) throw new Error("Unsupported file type");
-  const dataUrl = await readFileAsDataURL(file);
-  const buffer = await file.arrayBuffer();
+  const buffer = arrayBufferFromDataUrl(input.dataUrl);
   const base: TaskDocument = {
-    id: generateId(),
-    name: file.name,
-    mimeType: guessMime(kind, file.type),
+    id: input.id || generateId(),
+    name: input.name,
+    mimeType: guessMime(kind, input.mimeType),
     kind,
-    size: typeof file.size === "number" ? file.size : undefined,
-    dataUrl,
-    createdAt: new Date().toISOString(),
+    size: typeof input.size === "number" ? input.size : undefined,
+    dataUrl: input.dataUrl,
+    createdAt: input.createdAt || new Date().toISOString(),
+    ...(input.remoteUrl ? { remoteUrl: input.remoteUrl } : {}),
+    ...(input.encrypted ? { encrypted: true } : {}),
+    ...(input.encryptionBoardId ? { encryptionBoardId: input.encryptionBoardId } : {}),
   };
 
   if (kind === "pdf") {
@@ -489,20 +656,53 @@ export async function createDocumentAttachment(file: File): Promise<TaskDocument
       base.preview = { type: "image", data: previewImage };
     }
   } else if (kind === "docx") {
-    const { previewHtml, fullHtml } = await generateDocxMarkup(buffer);
+    const rich = await generateDocxMarkupRich(buffer);
+    const fallback = !rich.fullHtml ? await generateDocxMarkup(buffer) : {};
+    const previewHtml = rich.previewHtml || fallback.previewHtml;
+    const fullHtml = rich.fullHtml || fallback.fullHtml;
     if (previewHtml) base.preview = { type: "html", data: previewHtml };
     if (fullHtml) base.full = { type: "html", data: fullHtml };
   } else if (kind === "doc") {
     const { previewText, fullText } = generateDocBinary(buffer);
     if (previewText) base.preview = { type: "text", data: previewText };
     if (fullText) base.full = { type: "text", data: fullText };
-  } else {
+  } else if (kind === "xls" || kind === "xlsx") {
     const { previewHtml, fullHtml } = await generateSpreadsheetMarkup(buffer, kind);
     if (previewHtml) base.preview = { type: "html", data: previewHtml };
     if (fullHtml) base.full = { type: "html", data: fullHtml };
+  } else if (kind === "md") {
+    const { fullText } = await generateTextDocument(buffer);
+    if (fullText) {
+      const rendered = `<div class="doc-rich doc-markdown">${markdownRenderer.render(fullText)}</div>`;
+      base.preview = { type: "html", data: rendered };
+      base.full = { type: "html", data: rendered };
+    }
+  } else if (isTextKind(kind)) {
+    const { previewText, fullText } = await generateTextDocument(buffer);
+    if (previewText) base.preview = { type: "text", data: previewText };
+    if (fullText) base.full = { type: "text", data: fullText };
+  } else if (isImageKind(kind)) {
+    base.preview = { type: "image", data: input.dataUrl };
+    base.full = { type: "image", data: input.dataUrl };
+  } else if (isAudioKind(kind)) {
+    base.full = { type: "audio", data: input.dataUrl };
+  } else if (isVideoKind(kind)) {
+    const previewImage = await generateVideoPreview(input.dataUrl);
+    if (previewImage) base.preview = { type: "image", data: previewImage };
+    base.full = { type: "video", data: input.dataUrl };
   }
 
   return base;
+}
+
+export async function createDocumentAttachment(file: File): Promise<TaskDocument> {
+  const dataUrl = await readFileAsDataURL(file);
+  return createDocumentFromDataUrl({
+    name: file.name,
+    mimeType: file.type,
+    dataUrl,
+    size: typeof file.size === "number" ? file.size : undefined,
+  });
 }
 
 export function ensureDocumentPreview(doc: TaskDocument): TaskDocument {
@@ -527,6 +727,21 @@ export function ensureDocumentPreview(doc: TaskDocument): TaskDocument {
       preview: { type: "text", data: next.full.data },
     };
   }
+  if (next.full?.type === "image") {
+    return {
+      ...next,
+      preview: { type: "image", data: next.full.data },
+    };
+  }
+  if (next.full?.type === "audio") {
+    return next;
+  }
+  if (next.full?.type === "video") {
+    return {
+      ...next,
+      preview: { type: "text", data: next.full.data },
+    };
+  }
   return next;
 }
 
@@ -545,6 +760,8 @@ async function buildPreviewFromDocument(doc: TaskDocument): Promise<TaskDocument
   if (!buffer.byteLength) return null;
 
   if (ensured.kind === "docx") {
+    const rich = await generateDocxMarkupRich(buffer);
+    if (rich.previewHtml) return { type: "html", data: rich.previewHtml };
     const { previewHtml } = await generateDocxMarkup(buffer);
     if (previewHtml) return { type: "html", data: previewHtml };
     return null;
@@ -556,8 +773,25 @@ async function buildPreviewFromDocument(doc: TaskDocument): Promise<TaskDocument
     return null;
   }
 
-  const { previewHtml } = await generateSpreadsheetMarkup(buffer, ensured.kind);
-  if (previewHtml) return { type: "html", data: previewHtml };
+  if (ensured.kind === "xls" || ensured.kind === "xlsx") {
+    const { previewHtml } = await generateSpreadsheetMarkup(buffer, ensured.kind);
+    if (previewHtml) return { type: "html", data: previewHtml };
+    return null;
+  }
+
+  if (ensured.kind === "md") {
+    const { fullText } = await generateTextDocument(buffer);
+    if (fullText) return { type: "html", data: `<div class="doc-rich doc-markdown">${markdownRenderer.render(fullText)}</div>` };
+    return null;
+  }
+
+  if (isTextKind(ensured.kind)) {
+    const { previewText } = await generateTextDocument(buffer);
+    if (previewText) return { type: "text", data: previewText };
+    return null;
+  }
+
+  if (isImageKind(ensured.kind)) return { type: "image", data: ensured.dataUrl };
   return null;
 }
 
@@ -581,4 +815,12 @@ export async function readDocumentsFromFiles(list: FileList | File[]): Promise<T
     attachments.push(ensureDocumentPreview(doc));
   }
   return attachments;
+}
+
+export function documentAssetCacheKey(doc: Pick<TaskDocument, "remoteUrl" | "encrypted" | "encryptionBoardId" | "id">, boardId?: string): string {
+  if (doc.remoteUrl) {
+    const keyBoardId = doc.encrypted ? (doc.encryptionBoardId || boardId || "") : "public";
+    return `remote::${doc.remoteUrl}::${keyBoardId}`;
+  }
+  return `inline::${doc.id}`;
 }

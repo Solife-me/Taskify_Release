@@ -381,7 +381,7 @@ public final class DataController: ObservableObject {
     ) async -> ProfileBoardEntry? {
         guard let ctx = modelContext, var prof = profile else { return nil }
         let boardId = UUID().uuidString
-        let board = TaskifyBoard(id: boardId, name: name, kind: kind)
+        let board = TaskifyBoard(id: boardId, name: name, kind: kind, sharedBoardId: boardId)
         if !columns.isEmpty {
             let colData = try? JSONEncoder().encode(columns)
             board.columnsJSON = colData.flatMap { String(data: $0, encoding: .utf8) }
@@ -426,7 +426,7 @@ public final class DataController: ObservableObject {
             return prof.boards.first(where: { $0.id == boardId })
         }
 
-        let board = TaskifyBoard(id: boardId, name: name, kind: "lists")
+        let board = TaskifyBoard(id: boardId, name: name, kind: "lists", sharedBoardId: boardId)
         if !relayHints.isEmpty {
             board.relayHintsJSON = encodeJSONString(relayHints)
         }
@@ -463,7 +463,7 @@ public final class DataController: ObservableObject {
             )
         }
         return BoardSettingsSnapshot(
-            id: board.id,
+            id: sharedBoardId(for: board),
             name: board.name,
             kind: board.kind,
             columns: decodedColumns(board.columnsJSON),
@@ -544,7 +544,7 @@ public final class DataController: ObservableObject {
     public func boardShareEnvelope(boardId: String) -> String? {
         guard let board = fetchBoardModel(id: boardId) else { return nil }
         return BoardShareContract.buildEnvelopeString(
-            boardId: board.id,
+            boardId: sharedBoardId(for: board),
             boardName: board.name,
             relays: effectiveRelays(for: board)
         )
@@ -706,7 +706,9 @@ public final class DataController: ObservableObject {
 
     private func refreshBoardMetadata(boardId: String) async {
         guard let pool = relayPool else { return }
-        let bTag = boardTagHash(boardId)
+        let tagMap = boardTagMap()
+        let sharedId = sharedBoardId(forBoardId: boardId)
+        let bTag = boardTagHash(sharedId)
         let events = await pool.fetchEvents(filters: [
             [
                 "kinds": [TaskifyEventKind.boardDefinition.rawValue],
@@ -721,7 +723,8 @@ public final class DataController: ObservableObject {
         ])
 
         guard let latest = events.max(by: { $0.created_at < $1.created_at }) else { return }
-        applyIncomingBoardDefinition(latest, boardId: boardId)
+        let resolvedBoardId = self.boardId(forBoardDefinitionEvent: latest, boardTagMap: tagMap) ?? boardId
+        applyIncomingBoardDefinition(latest, boardId: resolvedBoardId)
     }
 
     private func refreshCalendarEvents(boardId: String) async {
@@ -742,11 +745,13 @@ public final class DataController: ObservableObject {
 
     private func applyIncomingBoardDefinition(_ event: NostrEvent, boardId: String) {
         let board = fetchOrCreateBoard(boardId: boardId)
+        let sharedId = self.boardId(forBoardDefinitionEvent: event, boardTagMap: boardTagMap()) ?? sharedBoardId(for: board)
+        board.sharedBoardId = sharedId
         if let last = board.metadataCreatedAt, event.created_at < last { return }
 
         let previousScope = activeBoardId == boardId ? activeSourceBoardIds(for: boardId) : []
         let decoded: BoardDefinitionPayload?
-        if let plaintext = try? decryptTaskPayload(event.content, boardId: boardId) {
+        if let plaintext = try? decryptTaskPayload(event.content, boardId: sharedId) {
             decoded = BoardDefinitionCodec.decode(plaintext)
         } else {
             decoded = BoardDefinitionCodec.decode(event.content)
@@ -986,7 +991,8 @@ public final class DataController: ObservableObject {
         pendingBoardSyncIDs = Set(sourceBoardIds)
 
         for sourceBoardId in sourceBoardIds {
-            let bTag = boardTagHash(sourceBoardId)
+            let sharedId = sharedBoardId(forBoardId: sourceBoardId)
+            let bTag = boardTagHash(sharedId)
             let board = fetchOrCreateBoard(boardId: sourceBoardId)
             let since: Int
             if let cursor = board.lastSyncAt, cursor > 0 {
@@ -1060,6 +1066,27 @@ public final class DataController: ObservableObject {
             kind: board.kind,
             childBoardIDs: decodedStringArray(board.childrenJSON)
         )
+    }
+
+    private func sharedBoardId(for board: TaskifyBoard) -> String {
+        trimmedString(board.sharedBoardId) ?? board.id
+    }
+
+    private func sharedBoardId(forBoardId boardId: String) -> String {
+        guard let board = fetchBoardModel(id: boardId) else { return boardId }
+        return sharedBoardId(for: board)
+    }
+
+    private func boardTagMap() -> [String: String] {
+        Dictionary(uniqueKeysWithValues: fetchStoredBoards().flatMap { board -> [(String, String)] in
+            let sharedId = sharedBoardId(for: board)
+            let tag = boardTagHash(sharedId)
+            var pairs: [(String, String)] = [(tag, board.id)]
+            if board.id != sharedId {
+                pairs.append((boardTagHash(board.id), board.id))
+            }
+            return pairs
+        })
     }
 
     private func effectiveRelays(for board: TaskifyBoard) -> [String] {
@@ -1555,8 +1582,9 @@ public final class DataController: ObservableObject {
 
     private func handleIncomingTaskEvent(_ event: NostrEvent, boardId: String) {
         guard let ctx = modelContext else { return }
+        let sharedId = sharedBoardId(forBoardId: boardId)
         guard let taskId = event.tagValue("d"), !taskId.isEmpty,
-              let plaintext = try? decryptTaskPayload(event.content, boardId: boardId),
+              let plaintext = try? decryptTaskPayload(event.content, boardId: sharedId),
               let data = plaintext.data(using: .utf8),
               let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let status = event.tagValue("status")
@@ -1660,8 +1688,9 @@ public final class DataController: ObservableObject {
     private func publishBoardMetadata(_ board: TaskifyBoard) async {
         guard let pool = relayPool else { return }
         do {
-            let boardKeyInfo = try BoardKeyInfo(boardId: board.id)
-            let bTag = boardTagHash(board.id)
+            let sharedId = sharedBoardId(for: board)
+            let boardKeyInfo = try BoardKeyInfo(boardId: sharedId)
+            let bTag = boardTagHash(sharedId)
             let childBoardIds = decodedStringArray(board.childrenJSON)
             let columns = decodedColumns(board.columnsJSON)
             let payload = BoardDefinitionPayload(
@@ -1679,7 +1708,7 @@ public final class DataController: ObservableObject {
                 version: 1
             )
             guard let raw = BoardDefinitionCodec.encode(payload) else { return }
-            let encrypted = try encryptTaskPayload(raw, boardId: board.id)
+            let encrypted = try encryptTaskPayload(raw, boardId: sharedId)
             var tags: [[String]] = [["d", bTag], ["b", bTag], ["k", board.kind], ["name", board.name]]
             if board.kind == "lists" {
                 tags.append(contentsOf: columns.map { ["col", $0.id, $0.name] })
@@ -1713,12 +1742,13 @@ public final class DataController: ObservableObject {
             if let board {
                 await publishBoardMetadata(board)
             }
-            let boardKeyInfo = try BoardKeyInfo(boardId: task.boardId)
+            let sharedId = board.map(sharedBoardId(for:)) ?? task.boardId
+            let boardKeyInfo = try BoardKeyInfo(boardId: sharedId)
             let payload = buildTaskPayload(task)
             let json = try JSONSerialization.data(withJSONObject: payload)
             let plaintext = String(data: json, encoding: .utf8)!
-            let encrypted = try encryptTaskPayload(plaintext, boardId: task.boardId)
-            let bTag = boardTagHash(task.boardId)
+            let encrypted = try encryptTaskPayload(plaintext, boardId: sharedId)
+            let bTag = boardTagHash(sharedId)
             let colTag = board?.kind == "week" ? "day" : (task.column ?? "")
 
             let unsigned = UnsignedNostrEvent(

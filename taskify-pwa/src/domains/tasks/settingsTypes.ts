@@ -57,6 +57,9 @@ export type Settings = {
   walletMintBackupEnabled: boolean;
   walletContactsSyncEnabled: boolean;
   fileStorageServer: string;
+  encryptedFileStorageServer: string;
+  fileServers: string; // JSON-serialized FileServerEntry[]
+  encryptedFileServers: string; // JSON-serialized FileServerEntry[]
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;

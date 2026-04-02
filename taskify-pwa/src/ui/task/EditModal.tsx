@@ -92,6 +92,9 @@ import {
   readDocumentsFromFiles,
   type TaskDocument,
 } from "../../lib/documents";
+import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
+import { createUploadingDocumentRow, markStaleUploadingRowsIndeterminate, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
+import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
   sendShareMessage,
@@ -213,11 +216,11 @@ function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssign
 // They will be properly extracted in subsequent refactor steps.
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListKey, onAddToBountyList, onRemoveFromBountyList, defaultRelays, nostrPK, nostrSkHex }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListKey, onAddToBountyList, onRemoveFromBountyList, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
-  onSave: (t: Task)=>void;
+  onSave: (t: Task)=>void | Promise<void>;
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
@@ -235,6 +238,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   defaultRelays: string[];
   nostrPK: string;
   nostrSkHex: string;
+  fileServers: string;
+  fileStorageServer: string;
 }) {
   const [title, setTitle] = useState(task.title);
   const [priority, setPriority] = useState<TaskPriority | 0>(() => normalizeTaskPriority(task.priority) ?? 0);
@@ -243,6 +248,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [images, setImages] = useState<string[]>(task.images || []);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const [uploadingLabel, setUploadingLabel] = useState<string | null>(null);
+  const [uploadingDocumentRows, setUploadingDocumentRows] = useState<UploadingDocumentRow[]>([]);
+  const [uploadingDotPhase, setUploadingDotPhase] = useState(0);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
   const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
@@ -337,6 +348,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     [boards, selectedBoardId],
   );
   const selectedBoardKind = selectedBoard?.kind ?? boardKind;
+  const selectedServerEntry = useMemo<FileServerEntry>(() => {
+    const servers = parseFileServers(fileServers);
+    return findServerEntry(servers, fileStorageServer) || { url: fileStorageServer, type: "nip96" };
+  }, [fileServers, fileStorageServer]);
+  const isSharedBoard = !!selectedBoard?.nostr;
   const locationSummary = useMemo(() => {
     if (!selectedBoard) return "Select board";
     const boardLabel = selectedBoard.name || "Board";
@@ -1113,34 +1129,142 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }, [bountyButtonActive, onAddToBountyList, onRemoveFromBountyList, task.id, taskInBountyList]);
 
 
+  async function uploadSharedImage(file: File): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return encryptAndUploadAttachment({
+      boardId: selectedBoard!.nostr!.boardId,
+      data: bytes,
+      mimeType: file.type || "application/octet-stream",
+      filename: file.name || "image",
+      serverEntry: selectedServerEntry,
+      nostrSkHex,
+    });
+  }
+
+  async function uploadSharedDocument(file: File, doc: TaskDocument, handlers?: { onProgress?: (progress: number) => void; onPhaseChange?: (phase: "uploading" | "processing") => void }): Promise<TaskDocument> {
+    console.info("[attachment-debug] shared-document:start", {
+      filename: file.name,
+      fileType: file.type,
+      fileBytes: file.size,
+      docKind: doc.kind,
+      docMimeType: doc.mimeType,
+      boardId: selectedBoard?.nostr?.boardId,
+      serverUrl: selectedServerEntry?.url,
+      serverType: selectedServerEntry?.type,
+    });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const remoteUrl = await encryptAndUploadAttachment({
+      boardId: selectedBoard!.nostr!.boardId,
+      data: bytes,
+      mimeType: doc.mimeType || file.type || "application/octet-stream",
+      filename: doc.name || file.name || "document",
+      serverEntry: selectedServerEntry,
+      nostrSkHex,
+      onProgress: (progress) => handlers?.onProgress?.(progress),
+      onPhaseChange: (phase) => handlers?.onPhaseChange?.(phase),
+    });
+    const { dataUrl, preview, full, ...rest } = doc as any;
+    return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
+  }
+
+  async function attachSingleDocument(file: File, fallbackLabel: string): Promise<TaskDocument> {
+    const label = file.name || fallbackLabel;
+    setUploadingLabel(`Preparing ${label}…`);
+    const docs = await readDocumentsFromFiles([file] as File[]);
+    const doc = docs[0];
+    if (!doc) {
+      throw new Error(`Could not read ${label}. The selected file may not be supported.`);
+    }
+    if (!isSharedBoard) return doc;
+
+    setUploadingLabel(`Uploading ${label}…`);
+    const row = createUploadingDocumentRow(doc, label);
+    const rowId = row.id;
+    setUploadingDocumentRows((prev) => [...prev, row]);
+    try {
+      const uploaded = await uploadSharedDocument(file, doc, {
+        onProgress: (progress) =>
+          setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, progress)),
+        onPhaseChange: (phase) =>
+          setUploadingDocumentRows((prev) => setUploadingDocumentRowPhase(prev, rowId, phase)),
+      });
+      setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, 1));
+      return uploaded;
+    } finally {
+      setUploadingDocumentRows((prev) => removeUploadingDocumentRow(prev, rowId));
+    }
+  }
+
+  async function attachDocumentsSequentially(files: File[], fallbackLabel: string): Promise<TaskDocument[]> {
+    const attached: TaskDocument[] = [];
+    for (const file of files) {
+      const doc = await attachSingleDocument(file, fallbackLabel);
+      attached.push(doc);
+      setDocuments((prev) => [...prev, doc]);
+      setUploadingCount((prev) => Math.max(0, prev - 1));
+    }
+    return attached;
+  }
+
+  useEffect(() => {
+    return startUploadingDotsTimer(uploadingDocumentRows.length, setUploadingDotPhase);
+  }, [uploadingDocumentRows.length]);
+
+  useEffect(() => {
+    if (!uploadingDocumentRows.length) return;
+    const interval = window.setInterval(() => {
+      setUploadingDocumentRows((prev) => markStaleUploadingRowsIndeterminate(prev));
+    }, 300);
+    return () => window.clearInterval(interval);
+  }, [uploadingDocumentRows]);
+
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
-    const imgs = Array.from(items).filter(it => it.type.startsWith("image/"));
-    if (imgs.length) {
-      e.preventDefault();
-      const datas: string[] = [];
-      for (const it of imgs) {
+    const imgs = Array.from(items).filter((it) => it.type.startsWith("image/"));
+    if (!imgs.length) return;
+    e.preventDefault();
+    const fileList = imgs
+      .map((it, index) => {
         const file = it.getAsFile();
-        if (file) datas.push(await fileToDataURL(file));
-      }
-      setImages(prev => [...prev, ...datas]);
+        if (!file) return null;
+        if (file.name) return file;
+        const extension = (file.type || "image/png").split("/")[1] || "png";
+        return new File([file], `pasted-image-${Date.now()}-${index}.${extension}`, { type: file.type || "image/png" });
+      })
+      .filter(Boolean) as File[];
+    if (!fileList.length) return;
+    try {
+      setSaveError(null);
+      setUploadingCount(fileList.length);
+      await attachDocumentsSequentially(fileList, "pasted image");
+    } catch (err: any) {
+      console.error("Failed to attach pasted image", err);
+      setSaveError(err?.message || "Failed to upload pasted image attachment.");
+    } finally {
+      setUploadingCount(0);
+      setUploadingLabel(null);
     }
   }
 
   async function handleDocumentAttach(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || !files.length) return;
+    const fileList = Array.from(files);
     try {
-      const docs = await readDocumentsFromFiles(files);
-      setDocuments((prev) => [...prev, ...docs]);
-    } catch (err) {
+      setSaveError(null);
+      setUploadingCount(fileList.length);
+      await attachDocumentsSequentially(fileList, "attachment");
+    } catch (err: any) {
       console.error("Failed to attach document", err);
-      alert("Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
+      setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
     } finally {
+      setUploadingCount(0);
+      setUploadingLabel(null);
       e.target.value = "";
     }
   }
+
 
   function addSubtask(keepKeyboard = false) {
     const title = newSubtask.trim();
@@ -1459,8 +1583,17 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     };
   }
 
-  function save(overrides: Partial<Task> = {}) {
-    onSave(normalizeTaskBounty(buildTask(overrides)));
+  async function save(overrides: Partial<Task> = {}) {
+    if (saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(normalizeTaskBounty(buildTask(overrides)));
+    } catch (err: any) {
+      console.error("Failed to save task", err);
+      setSaveError(err?.message || "Failed to save task.");
+      setSaving(false);
+    }
   }
 
   async function copyCurrent() {
@@ -1598,13 +1731,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 
   return (
     <>
-      <Modal onClose={onCancel} showClose={false} variant="fullscreen">
+      <Modal onClose={() => { if (!saving && uploadingCount === 0) onCancel(); }} showClose={false} variant="fullscreen">
       <div className="edit-modal">
         <div className="edit-sheet__header">
           <button
             type="button"
             className="edit-sheet__action"
-            onClick={onCancel}
+            onClick={() => { if (!saving && uploadingCount === 0) onCancel(); }}
             aria-label="Close editor"
           >
             <span aria-hidden="true">×</span>
@@ -1615,12 +1748,24 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             className="edit-sheet__action edit-sheet__action--accent"
             onClick={() => save()}
             aria-label="Save task"
+            disabled={saving || uploadingCount > 0}
           >
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
-              <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            {saving || uploadingCount > 0 ? (
+              <span className="text-xs px-1">…</span>
+            ) : (
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
           </button>
         </div>
+
+        {saveError && (
+          <div className="px-4 pt-2 text-xs" style={{ color: "var(--color-rose, #f43f5e)" }}>
+            {saveError}
+          </div>
+        )}
+
 
         {onSwitchToEvent && (
           <div className="mt-[-1rem] mb-[-1rem] w-full pb-[0.1rem]">
@@ -1668,7 +1813,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 <input
                   ref={documentInputRef}
                   type="file"
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.gif,.mp3,.aac,.m4a,.wav,.mp4,.mov,.webm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/markdown,application/json,text/csv,image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/aac,audio/mp4,audio/wav,video/mp4,video/quicktime,video/webm"
                   className="hidden"
                   multiple
                   onChange={handleDocumentAttach}
@@ -1709,8 +1854,22 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 ))}
               </div>
             )}
-            {documents.length > 0 && (
+            {(uploadingDocumentRows.length > 0 || documents.length > 0) && (
               <ul className="space-y-1">
+                {uploadingDocumentRows.map((doc) => (
+                  <li key={doc.id} className="doc-edit-row doc-edit-row--uploading">
+                    <div className="doc-edit-row__info">
+                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
+                      <div className="doc-edit-row__meta">{doc.kind}</div>
+                    </div>
+                    <div className="doc-edit-row__actions">
+                      <span className="doc-edit-row__status">{doc.phase === "processing" ? "Processing" : "Uploading"}<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
+                    </div>
+                    <div className={`doc-edit-row__progress${doc.indeterminate ? " doc-edit-row__progress--indeterminate" : ""}`} aria-hidden="true">
+                      <div className={`doc-edit-row__progress-bar${doc.indeterminate ? " doc-edit-row__progress-bar--indeterminate" : ""}`} style={doc.indeterminate ? undefined : { width: `${Math.max(12, Math.round(doc.progress * 100))}%` }} />
+                    </div>
+                  </li>
+                ))}
                 {documents.map((doc) => (
                   <li key={doc.id} className="doc-edit-row">
                     <div className="doc-edit-row__info">

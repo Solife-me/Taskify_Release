@@ -102,6 +102,7 @@ public final class TaskifyCalendarEvent {
 @Model
 public final class TaskifyBoard {
     @Attribute(.unique) public var id: String
+    public var sharedBoardId: String?
     public var name: String
     public var kind: String             // "lists" | "week" | "compound"
     public var archived: Bool
@@ -118,8 +119,9 @@ public final class TaskifyBoard {
     public var sortMode: String?
     public var sortDirection: String?
 
-    public init(id: String, name: String, kind: String = "lists") {
+    public init(id: String, name: String, kind: String = "lists", sharedBoardId: String? = nil) {
         self.id = id
+        self.sharedBoardId = sharedBoardId
         self.name = name
         self.kind = kind
         self.archived = false

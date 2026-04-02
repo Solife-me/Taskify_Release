@@ -1,14 +1,12 @@
 // @ts-nocheck
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { nip19 } from "nostr-tools";
 import { kvStorage } from "../../storage/kvStorage";
 import { LS_NOSTR_SK } from "../../nostrKeys";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../../lib/fileStorage";
-import { publishFileServerPreference } from "../../nostr/ProfilePublisher";
+import { FileServersSection } from "./FileServersSection";
 import { toNsec } from "../../domains/nostr/nostrKeyUtils";
 import type { Settings } from "../../domains/tasks/settingsTypes";
-import { useToast } from "../../context/ToastContext";
 import { pillButtonClass } from "./settingsConstants";
 
 export function NostrSection({
@@ -32,15 +30,8 @@ export function NostrSection({
   showAdvanced: boolean;
   setShowAdvanced: (fn: (prev: boolean) => boolean) => void;
 }) {
-  const { show: showToast } = useToast();
   const [customSk, setCustomSk] = useState("");
   const [newDefaultRelay, setNewDefaultRelay] = useState("");
-  const [fileServerInput, setFileServerInput] = useState(
-    settings.fileStorageServer || DEFAULT_FILE_STORAGE_SERVER,
-  );
-  const [fileServerStatus, setFileServerStatus] = useState<string | null>(null);
-  const [fileServerSaving, setFileServerSaving] = useState(false);
-
   const pubkeyNpub = useMemo(() => {
     const trimmed = (pubkeyHex || "").trim();
     if (!trimmed) return "";
@@ -51,54 +42,6 @@ export function NostrSection({
     } catch {}
     return trimmed;
   }, [pubkeyHex]);
-
-  useEffect(() => {
-    setFileServerInput(settings.fileStorageServer || DEFAULT_FILE_STORAGE_SERVER);
-  }, [settings.fileStorageServer]);
-
-  const readNostrSecret = useCallback((): string | null => {
-    try {
-      const raw = kvStorage.getItem(LS_NOSTR_SK);
-      if (raw && /^[0-9a-fA-F]{64}$/.test(raw.trim())) {
-        return raw.trim().toLowerCase();
-      }
-    } catch {}
-    return null;
-  }, []);
-
-  const handleSaveFileServer = useCallback(async () => {
-    const normalized = normalizeFileServerUrl(fileServerInput);
-    if (!normalized && fileServerInput.trim()) {
-      setFileServerStatus("Enter a valid file storage server URL (e.g., https://nostr.build).");
-      return;
-    }
-    const targetServer = normalized || DEFAULT_FILE_STORAGE_SERVER;
-    setFileServerSaving(true);
-    setFileServerStatus(null);
-    try {
-      setSettings({ fileStorageServer: targetServer });
-      setFileServerInput(targetServer);
-      const secret = readNostrSecret();
-      if (!secret) {
-        setFileServerStatus("Add your Nostr private key first.");
-        return;
-      }
-      const relayList = (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
-        .map((r) => r.trim())
-        .filter(Boolean);
-      if (!relayList.length) {
-        setFileServerStatus("Add at least one relay to publish your file server.");
-        return;
-      }
-      await publishFileServerPreference([targetServer], { relays: relayList, signer: secret });
-      setFileServerStatus("Published file storage server");
-      showToast("File storage server saved", 2000);
-    } catch (error: any) {
-      setFileServerStatus(error?.message || "Unable to save file storage server.");
-    } finally {
-      setFileServerSaving(false);
-    }
-  }, [defaultRelays, fileServerInput, readNostrSecret, setSettings, showToast]);
 
   return (
     <section className="wallet-section space-y-3">
@@ -179,30 +122,26 @@ export function NostrSection({
             </div>
           </div>
 
-          {/* File storage server */}
-          <div className="mb-3">
-            <div className="text-xs text-secondary mb-1">File storage server</div>
-            <div className="flex gap-2 mb-1">
-              <input
-                className="pill-input flex-1"
-                value={fileServerInput}
-                onChange={(e)=>setFileServerInput(e.target.value)}
-                placeholder={DEFAULT_FILE_STORAGE_SERVER}
+          <div className="mb-3 space-y-4">
+            <div>
+              <div className="text-xs text-secondary mb-1">Public file servers</div>
+              <FileServersSection
+                fileStorageServer={settings.fileStorageServer}
+                fileServers={settings.fileServers || ""}
+                onSelectServer={(url) => setSettings({ fileStorageServer: url })}
+                onUpdateServers={(serialized) => setSettings({ fileServers: serialized })}
               />
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={handleSaveFileServer}
-                disabled={fileServerSaving}
-              >
-                {fileServerSaving ? "Saving…" : "Save"}
-              </button>
             </div>
-            <div className="text-xs text-secondary">
-              Used for profile photo uploads (NIP-96). Default: {DEFAULT_FILE_STORAGE_SERVER}
+            <div>
+              <div className="text-xs text-secondary mb-1">Encrypted file servers</div>
+              <FileServersSection
+                fileStorageServer={settings.encryptedFileStorageServer}
+                fileServers={settings.encryptedFileServers || ""}
+                onSelectServer={(url) => setSettings({ encryptedFileStorageServer: url })}
+                onUpdateServers={(serialized) => setSettings({ encryptedFileServers: serialized })}
+                addWarning={(type) => type && type !== "originless" ? "Warning: NIP-96 and Blossom servers may fail for encrypted uploads. Originless is recommended." : null}
+              />
             </div>
-            {fileServerStatus && (
-              <div className="text-xs text-secondary mt-1">{fileServerStatus}</div>
-            )}
           </div>
 
           {/* Default relays */}

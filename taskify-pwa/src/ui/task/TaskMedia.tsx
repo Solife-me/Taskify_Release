@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import type { Task } from "../../domains/tasks/taskTypes";
 import type { CalendarEvent } from "../../domains/tasks/taskTypes";
 import type { TaskDocument } from "../../lib/documents";
@@ -7,7 +7,21 @@ import type { UrlPreviewData } from "../../lib/urlPreview";
 import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
 import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } from "./TaskTitle";
 import { DocumentThumbnail } from "./DocumentPreviewModal";
+import { decryptAttachment } from "../../lib/attachmentCrypto";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { decryptAttachment } from "../../lib/attachmentCrypto";
+
+function ResolvedTaskImage({ src, boardId }: { src: string; boardId?: string }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
+  useEffect(() => {
+    let cancelled = false;
+    if (!src || src.startsWith("data:")) { setResolvedSrc(src); return; }
+    if (!boardId) { setResolvedSrc(src); return; }
+    decryptAttachment({ boardId, url: src, mimeType: "image/jpeg" }).then((next) => { if (!cancelled) setResolvedSrc(next); }).catch(() => { if (!cancelled) setResolvedSrc(src); });
+    return () => { cancelled = true; };
+  }, [src, boardId]);
+  return <img src={resolvedSrc} className="max-h-40 w-full rounded-2xl object-contain" />;
+}
 
 export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
   const [imageFailed, setImageFailed] = useState(false);
@@ -63,6 +77,83 @@ export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: 
   return card;
 }
 
+const decryptedImageCache = new Map<string, string>();
+
+function inferMimeFromUrl(url: string): string {
+  const clean = url.split("?")[0].toLowerCase();
+  if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
+  if (clean.endsWith(".png")) return "image/png";
+  if (clean.endsWith(".gif")) return "image/gif";
+  if (clean.endsWith(".webp")) return "image/webp";
+  if (clean.endsWith(".heic")) return "image/heic";
+  return "application/octet-stream";
+}
+
+function useDecryptedSrc(src: string, boardId: string | undefined) {
+  const [decryptedSrc, setDecryptedSrc] = useState<string | null>(() => {
+    if (src.startsWith("data:") || !boardId) return src;
+    return decryptedImageCache.get(`${boardId}::${src}`) || null;
+  });
+  const [decrypting, setDecrypting] = useState<boolean>(!src.startsWith("data:") && !!boardId && !decryptedSrc);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (src.startsWith("data:") || !boardId) {
+      setDecryptedSrc(src);
+      setDecrypting(false);
+      setError(null);
+      return;
+    }
+    const cacheKey = `${boardId}::${src}`;
+    const cached = decryptedImageCache.get(cacheKey);
+    if (cached) {
+      setDecryptedSrc(cached);
+      setDecrypting(false);
+      setError(null);
+      return;
+    }
+    setDecrypting(true);
+    setError(null);
+    decryptAttachment({ boardId, url: src, mimeType: inferMimeFromUrl(src) })
+      .then((next) => {
+        if (cancelled) return;
+        decryptedImageCache.set(cacheKey, next);
+        setDecryptedSrc(next);
+        setDecrypting(false);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setError(err?.message || "Failed to decrypt image");
+        setDecrypting(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [src, boardId]);
+
+  return { decryptedSrc, decrypting, error };
+}
+
+function DecryptableImage({ src, boardId, onOpen }: { src: string; boardId?: string; onOpen: (src: string, e: React.MouseEvent) => void }) {
+  const { decryptedSrc, decrypting, error } = useDecryptedSrc(src, boardId);
+  if (decrypting) {
+    return <div className="max-h-40 w-full rounded-2xl bg-surface opacity-50" style={{ height: "10rem" }} />;
+  }
+  if (error || !decryptedSrc) {
+    return <div className="max-h-40 w-full rounded-2xl bg-surface text-xs text-secondary flex items-center justify-center" style={{ height: "10rem" }}>⚠ failed</div>;
+  }
+  return (
+    <img
+      src={decryptedSrc}
+      className="max-h-40 w-full rounded-2xl object-contain cursor-zoom-in"
+      onClick={(e) => onOpen(decryptedSrc, e)}
+      role="button"
+      aria-label="View full image"
+    />
+  );
+}
+
 export function TaskMedia({
   task,
   indent = false,
@@ -104,14 +195,7 @@ export function TaskMedia({
       {hasImages ? (
         <div className="space-y-2">
           {task.images!.map((img, i) => (
-            <img
-              key={i}
-              src={img}
-              className="max-h-40 w-full rounded-2xl object-contain cursor-zoom-in"
-              onClick={(e) => openPreview(img, e)}
-              role="button"
-              aria-label="View full image"
-            />
+            <DecryptableImage key={i} src={img} boardId={task.boardId} onOpen={openPreview} />
           ))}
         </div>
       ) : null}
@@ -121,6 +205,7 @@ export function TaskMedia({
             <DocumentThumbnail
               key={doc.id}
               document={doc}
+              boardId={task.boardId}
               onClick={() => onOpenDocument?.(task, doc)}
             />
           ))}

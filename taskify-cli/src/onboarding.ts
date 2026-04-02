@@ -48,9 +48,8 @@ export async function runOnboarding(profileName?: string): Promise<void> {
   const DEFAULT_RELAYS = [
     "wss://relay.damus.io",
     "wss://nos.lol",
-    "wss://relay.snort.social",
-    "wss://relay.primal.net",
-  ];
+    "wss://relay.solife.me",
+    ];
 
   let nsec: string | undefined;
   let relays: string[] = [...DEFAULT_RELAYS];

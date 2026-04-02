@@ -4,6 +4,9 @@ import { join } from "path";
 import { homedir } from "os";
 import type { ReminderPreset } from "./shared/taskTypes.js";
 
+export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = "https://nostr.build";
+export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://originless.solife.me";
+
 export const CONFIG_DIR = join(homedir(), ".taskify-cli");
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
@@ -51,6 +54,8 @@ export type ProfileConfig = {
   taskReminders: Record<string, ReminderPreset[]>;
   processedInboxRumorIds?: string[];
   contacts?: Contact[];
+  fileStorageServer?: string;
+  encryptedFileStorageServer?: string;
   agent?: {
     apiKey?: string;
     baseUrl?: string;   // default: https://api.openai.com/v1
@@ -74,8 +79,7 @@ export type TaskifyConfig = ProfileConfig & {
 export const DEFAULT_RELAYS = [
   "wss://relay.damus.io",
   "wss://nos.lol",
-  "wss://relay.snort.social",
-  "wss://relay.primal.net",
+  "wss://relay.solife.me",
 ];
 
 const DEFAULT_PROFILE: ProfileConfig = {
@@ -87,6 +91,8 @@ const DEFAULT_PROFILE: ProfileConfig = {
   boards: [],
   taskReminders: {},
   processedInboxRumorIds: [],
+  fileStorageServer: DEFAULT_PUBLIC_FILE_STORAGE_SERVER,
+  encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
 };
 
 function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
@@ -99,6 +105,8 @@ function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
     trustedNpubs: partial.trustedNpubs ?? [],
     boards: partial.boards ?? [],
     contacts: partial.contacts ?? [],
+    fileStorageServer: partial.fileStorageServer ?? DEFAULT_PUBLIC_FILE_STORAGE_SERVER,
+    encryptedFileStorageServer: partial.encryptedFileStorageServer ?? DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
   };
 }
 
@@ -175,6 +183,8 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     taskReminders: cfg.taskReminders,
     processedInboxRumorIds: cfg.processedInboxRumorIds,
     contacts: cfg.contacts,
+    fileStorageServer: cfg.fileStorageServer,
+    encryptedFileStorageServer: cfg.encryptedFileStorageServer,
     agent: cfg.agent,
   };
   const stored: StoredConfig = {
