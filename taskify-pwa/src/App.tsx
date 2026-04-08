@@ -15534,6 +15534,19 @@ export default function App() {
     });
   }
 
+  const moveSelectedTasksToBoard = useCallback((boardId: string) => {
+    if (!selectedTasks.length) return;
+    selectedTasks.forEach((task) => moveTaskToBoard(task.id, boardId));
+    const boardName = boards.find((board) => board.id === boardId)?.name || "board";
+    const eventCount = selectedEvents.length;
+    if (eventCount > 0) {
+      showToast(`Moved ${selectedTasks.length} task${selectedTasks.length === 1 ? "" : "s"} to ${boardName}. ${eventCount} selected event${eventCount === 1 ? " was" : "s were"} unchanged.`);
+    } else {
+      showToast(selectedTasks.length === 1 ? `Task moved to ${boardName}` : `${selectedTasks.length} tasks moved to ${boardName}`);
+    }
+    exitSelectionMode();
+  }, [boards, exitSelectionMode, selectedEvents.length, selectedTasks, showToast]);
+
   const selectionMoveTargets = useMemo(() => (
     boards.filter((board) => board.kind !== "bible").map((board) => ({
       id: board.id,
