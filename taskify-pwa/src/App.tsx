@@ -5014,14 +5014,45 @@ export default function App() {
   const { show: showToast } = useToast();
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [selectionMoveSheetOpen, setSelectionMoveSheetOpen] = useState(false);
+  const selectedItemIdSet = useMemo(() => new Set(selectedItemIds), [selectedItemIds]);
+  const selectedTasks = useMemo(() => tasks.filter((task) => selectedItemIdSet.has(task.id)), [tasks, selectedItemIdSet]);
+  const selectedEvents = useMemo(() => calendarEvents.filter((event) => selectedItemIdSet.has(event.id)), [calendarEvents, selectedItemIdSet]);
+  const selectedCount = selectedTasks.length + selectedEvents.length;
+  const clearSelection = useCallback(() => {
+    setSelectedItemIds([]);
+  }, []);
+  const exitSelectionMode = useCallback(() => {
+    setIsSelectionMode(false);
+    setSelectedItemIds([]);
+    setSelectionMoveSheetOpen(false);
+  }, []);
   const toggleItemSelection = useCallback((id: string) => {
     setSelectedItemIds(p => p.includes(id) ? p.filter(i => i !== id) : [...p, id]);
   }, []);
   useEffect(() => {
-    const handleToggle = () => { setIsSelectionMode(p => !p); setSelectedItemIds([]); };
+    const handleToggle = () => {
+      setSelectionMoveSheetOpen(false);
+      setIsSelectionMode((p) => {
+        if (p) {
+          setSelectedItemIds([]);
+          return false;
+        }
+        setSelectedItemIds([]);
+        return true;
+      });
+    };
     window.addEventListener('toggleSelectionMode', handleToggle);
     return () => window.removeEventListener('toggleSelectionMode', handleToggle);
   }, []);
+  useEffect(() => {
+    if (!isSelectionMode) return;
+    setSelectedItemIds((prev) => prev.filter((id) => tasks.some((task) => task.id === id) || calendarEvents.some((event) => event.id === id)));
+  }, [calendarEvents, isSelectionMode, tasks]);
+  useEffect(() => {
+    if (!isSelectionMode || selectedCount > 0) return;
+    setSelectionMoveSheetOpen(false);
+  }, [isSelectionMode, selectedCount]);
   const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
   const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
   const runtimeConfigPromiseRef = useRef<Promise<void> | null>(null);
@@ -15392,6 +15423,37 @@ export default function App() {
   const dismissInboxMessage = (id: string) => completeTask(id, { inboxAction: "dismiss" });
   const maybeInboxMessage = (id: string) => completeTask(id, { inboxAction: "maybe" });
   const declineInboxMessage = (id: string) => completeTask(id, { inboxAction: "decline" });
+
+  const completeSelectedItems = useCallback(() => {
+    if (!selectedTasks.length) return;
+    selectedTasks.forEach((task) => {
+      if (!task.completed) completeTask(task.id);
+    });
+    showToast(selectedTasks.length === 1 ? "Task completed" : `${selectedTasks.length} tasks completed`);
+    exitSelectionMode();
+  }, [completeTask, exitSelectionMode, selectedTasks, showToast]);
+
+  const deleteSelectedItems = useCallback(() => {
+    if (!selectedCount) return;
+    selectedEvents.forEach((event) => deleteCalendarEvent(event.id, { skipPrompt: true }));
+    selectedTasks.forEach((task) => deleteTask(task.id, { skipPrompt: true }));
+    showToast(selectedCount === 1 ? "Item deleted" : `${selectedCount} items deleted`);
+    exitSelectionMode();
+  }, [deleteCalendarEvent, deleteTask, exitSelectionMode, selectedCount, selectedEvents, selectedTasks, showToast]);
+
+  const moveSelectedTasksToBoard = useCallback((boardId: string) => {
+    if (!selectedTasks.length) return;
+    selectedTasks.forEach((task) => moveTaskToBoard(task.id, boardId));
+    const boardName = boards.find((board) => board.id === boardId)?.name || "board";
+    const eventCount = selectedEvents.length;
+    if (eventCount > 0) {
+      showToast(`Moved ${selectedTasks.length} task${selectedTasks.length === 1 ? "" : "s"} to ${boardName}. ${eventCount} selected event${eventCount === 1 ? " was" : "s were"} unchanged.`);
+    } else {
+      showToast(selectedTasks.length === 1 ? `Task moved to ${boardName}` : `${selectedTasks.length} tasks moved to ${boardName}`);
+    }
+    exitSelectionMode();
+  }, [boards, exitSelectionMode, moveTaskToBoard, selectedEvents.length, selectedTasks, showToast]);
+
   const markInboxMessagesRead = (dmEventIds: string[]) => {
     if (!dmEventIds.length) return;
     setTasks((prev) =>
@@ -17272,6 +17334,14 @@ export default function App() {
       return arr;
     });
   }
+
+  const selectionMoveTargets = useMemo(() => (
+    boards.filter((board) => board.kind !== "bible").map((board) => ({
+      id: board.id,
+      name: board.name,
+      kind: board.kind,
+    }))
+  ), [boards]);
 
   function moveTaskToBoard(id: string, boardId: string) {
     setTasks(prev => {
@@ -19688,6 +19758,34 @@ export default function App() {
         </div>
       </ActionSheet>
 
+      <ActionSheet
+        open={selectionMoveSheetOpen}
+        onClose={() => setSelectionMoveSheetOpen(false)}
+        title="Move selected tasks"
+      >
+        {selectedTasks.length === 0 ? (
+          <div className="text-sm text-secondary">Select one or more tasks to move.</div>
+        ) : (
+          <div className="space-y-2">
+            {selectionMoveTargets.map((board) => (
+              <button
+                key={board.id}
+                type="button"
+                className="contact-row pressable"
+                onClick={() => moveSelectedTasksToBoard(board.id)}
+              >
+                <div className="contact-row__text">
+                  <div className="contact-row__name">{board.name}</div>
+                  <div className="contact-row__meta">
+                    <span className="contact-row__meta-text capitalize">{board.kind}</span>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </ActionSheet>
+
       <ActionSheet open={inboxOpen} onClose={() => setInboxOpen(false)} title="Inbox">
         {inboxPendingItems.length === 0 && pendingCalendarInvites.length === 0 ? (
           <div className="text-sm text-secondary">No shared items.</div>
@@ -19866,6 +19964,69 @@ export default function App() {
               <path d="M9 3h6l1 1h5v2H3V4h5l1-1z" />
               <path d="M5 7h14l-1.5 13h-11L5 7z" />
             </svg>
+          </div>
+        </div>
+      )}
+
+      {isSelectionMode && (
+        <div
+          className="fixed left-1/2 z-[10000] flex w-[calc(100%-1.5rem)] max-w-xl -translate-x-1/2 items-center gap-2 rounded-2xl border border-white/10 bg-black/75 px-3 py-3 backdrop-blur-xl shadow-2xl"
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.75rem)" }}
+        >
+          <button
+            type="button"
+            className="ghost-button button-sm pressable shrink-0"
+            onClick={exitSelectionMode}
+          >
+            Cancel
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-primary">
+              {selectedCount ? `${selectedCount} selected` : "Select items"}
+            </div>
+            <div className="text-[11px] text-secondary">
+              {selectedCount
+                ? selectedEvents.length > 0
+                  ? "Bulk complete applies to tasks only."
+                  : "Choose an action for the selected tasks."
+                : "Tap tasks or events to select them."}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              className="ghost-button button-sm pressable"
+              onClick={clearSelection}
+              disabled={!selectedCount}
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              className="ghost-button button-sm pressable"
+              onClick={() => setSelectionMoveSheetOpen(true)}
+              disabled={!selectedTasks.length}
+              title={selectedTasks.length ? "Move selected tasks" : "Select one or more tasks to move"}
+            >
+              Move
+            </button>
+            <button
+              type="button"
+              className="ghost-button button-sm pressable"
+              onClick={completeSelectedItems}
+              disabled={!selectedTasks.some((task) => !task.completed)}
+              title={selectedTasks.some((task) => !task.completed) ? "Mark selected tasks complete" : "Select incomplete tasks to complete"}
+            >
+              Complete
+            </button>
+            <button
+              type="button"
+              className="ghost-button button-sm pressable text-rose-400"
+              onClick={deleteSelectedItems}
+              disabled={!selectedCount}
+            >
+              Delete
+            </button>
           </div>
         </div>
       )}

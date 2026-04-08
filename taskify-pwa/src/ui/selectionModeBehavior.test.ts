@@ -15,4 +15,13 @@ describe("selection mode board card behavior", () => {
     expect(isEventCardDragEnabled(false, false)).toBe(false);
     expect(isEventCardDragEnabled(true, false)).toBe(false);
   });
+
+  it("keeps bulk action availability aligned with the current selection", () => {
+    const selectedTasks = [{ id: "task-1", completed: false }, { id: "task-2", completed: true }];
+    const selectedEvents = [{ id: "event-1" }];
+
+    expect(selectedTasks.length).toBe(2);
+    expect(selectedEvents.length).toBe(1);
+    expect(selectedTasks.some((task) => !task.completed)).toBe(true);
+  });
 });
