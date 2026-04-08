@@ -9,7 +9,6 @@ import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } fro
 import { DocumentThumbnail } from "./DocumentPreviewModal";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
 import { ImagePreviewModal } from "./ImagePreviewModal";
-import { decryptAttachment } from "../../lib/attachmentCrypto";
 
 function ResolvedTaskImage({ src, boardId }: { src: string; boardId?: string }) {
   const [resolvedSrc, setResolvedSrc] = useState(src);
