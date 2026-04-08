@@ -15441,6 +15441,99 @@ export default function App() {
     exitSelectionMode();
   }, [deleteCalendarEvent, deleteTask, exitSelectionMode, selectedCount, selectedEvents, selectedTasks, showToast]);
 
+  function moveTaskToBoard(id: string, boardId: string) {
+    setTasks(prev => {
+      const arr = [...prev];
+      const fromIdx = arr.findIndex(t => t.id === id);
+      if (fromIdx < 0) return prev;
+      const task = arr[fromIdx];
+      const targetBoard = boards.find(b => b.id === boardId);
+      if (!targetBoard || targetBoard.kind === "bible") return prev;
+      const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
+
+      // remove from source
+      arr.splice(fromIdx, 1);
+
+      const sortByOrder = (list: Task[]) =>
+        [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const publishSet = new Set<Task>();
+
+      // recompute order for source board using the visible ordering
+      const sourceOrdered = sortByOrder(arr.filter((t) => t.boardId === task.boardId));
+      sourceOrdered.forEach((t, index) => {
+        if ((t.order ?? 0) !== index) {
+          const idx = arr.findIndex((x) => x.id === t.id);
+          if (idx >= 0) {
+            arr[idx] = {
+              ...t,
+              order: index,
+              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
+            };
+            publishSet.add(arr[idx]);
+          }
+        }
+      });
+
+      let destinationBoardId = boardId;
+      const updated: Task = {
+        ...task,
+        boardId,
+        lastEditedBy: editorPubkey || task.lastEditedBy || task.createdBy,
+      };
+      if (targetBoard.kind === "week") {
+        updated.column = "day";
+        updated.columnId = undefined;
+      } else if (targetBoard.kind === "compound") {
+        const childBoard = targetBoard.children
+          .map((childId) => boards.find((b) => b.id === childId))
+          .find((b): b is Extract<Board, { kind: "lists" }> => !!b && b.kind === "lists");
+        if (!childBoard || !childBoard.columns.length) return prev;
+        destinationBoardId = childBoard.id;
+        updated.boardId = childBoard.id;
+        updated.column = undefined;
+        updated.columnId = childBoard.columns[0]?.id;
+        updated.dueISO = isoForWeekday(0);
+      } else {
+        updated.column = undefined;
+        updated.columnId = targetBoard.columns[0]?.id;
+        updated.dueISO = isoForWeekday(0);
+      }
+
+      arr.push(updated);
+
+      const targetBoardId = targetBoard.kind === "compound" ? destinationBoardId : boardId;
+      const targetOrdered = sortByOrder(arr.filter((t) => t.boardId === targetBoardId));
+      targetOrdered.forEach((t, index) => {
+        const nextOrder = index;
+        if (t.id === updated.id) {
+          updated.order = nextOrder;
+          return;
+        }
+        if ((t.order ?? 0) !== nextOrder) {
+          const idx = arr.findIndex((x) => x.id === t.id);
+          if (idx >= 0) {
+            arr[idx] = {
+              ...t,
+              order: nextOrder,
+              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
+            };
+            publishSet.add(arr[idx]);
+          }
+        }
+      });
+
+      const updatedIdx = arr.findIndex((t) => t.id === updated.id);
+      if (updatedIdx >= 0) arr[updatedIdx] = updated;
+      publishSet.add(updated);
+
+      try {
+        publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
+      } catch {}
+
+      return arr;
+    });
+  }
+
   const moveSelectedTasksToBoard = useCallback((boardId: string) => {
     if (!selectedTasks.length) return;
     selectedTasks.forEach((task) => moveTaskToBoard(task.id, boardId));
@@ -15452,7 +15545,7 @@ export default function App() {
       showToast(selectedTasks.length === 1 ? `Task moved to ${boardName}` : `${selectedTasks.length} tasks moved to ${boardName}`);
     }
     exitSelectionMode();
-  }, [boards, exitSelectionMode, moveTaskToBoard, selectedEvents.length, selectedTasks, showToast]);
+  }, [boards, exitSelectionMode, selectedEvents.length, selectedTasks, showToast]);
 
   const markInboxMessagesRead = (dmEventIds: string[]) => {
     if (!dmEventIds.length) return;
@@ -17342,99 +17435,6 @@ export default function App() {
       kind: board.kind,
     }))
   ), [boards]);
-
-  function moveTaskToBoard(id: string, boardId: string) {
-    setTasks(prev => {
-      const arr = [...prev];
-      const fromIdx = arr.findIndex(t => t.id === id);
-      if (fromIdx < 0) return prev;
-      const task = arr[fromIdx];
-      const targetBoard = boards.find(b => b.id === boardId);
-      if (!targetBoard || targetBoard.kind === "bible") return prev;
-      const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
-
-      // remove from source
-      arr.splice(fromIdx, 1);
-
-      const sortByOrder = (list: Task[]) =>
-        [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-      const publishSet = new Set<Task>();
-
-      // recompute order for source board using the visible ordering
-      const sourceOrdered = sortByOrder(arr.filter((t) => t.boardId === task.boardId));
-      sourceOrdered.forEach((t, index) => {
-        if ((t.order ?? 0) !== index) {
-          const idx = arr.findIndex((x) => x.id === t.id);
-          if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: index,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
-          }
-        }
-      });
-
-      let destinationBoardId = boardId;
-      const updated: Task = {
-        ...task,
-        boardId,
-        lastEditedBy: editorPubkey || task.lastEditedBy || task.createdBy,
-      };
-      if (targetBoard.kind === "week") {
-        updated.column = "day";
-        updated.columnId = undefined;
-      } else if (targetBoard.kind === "compound") {
-        const childBoard = targetBoard.children
-          .map((childId) => boards.find((b) => b.id === childId))
-          .find((b): b is Extract<Board, { kind: "lists" }> => !!b && b.kind === "lists");
-        if (!childBoard || !childBoard.columns.length) return prev;
-        destinationBoardId = childBoard.id;
-        updated.boardId = childBoard.id;
-        updated.column = undefined;
-        updated.columnId = childBoard.columns[0]?.id;
-        updated.dueISO = isoForWeekday(0);
-      } else {
-        updated.column = undefined;
-        updated.columnId = targetBoard.columns[0]?.id;
-        updated.dueISO = isoForWeekday(0);
-      }
-
-      arr.push(updated);
-
-      const targetBoardId = targetBoard.kind === "compound" ? destinationBoardId : boardId;
-      const targetOrdered = sortByOrder(arr.filter((t) => t.boardId === targetBoardId));
-      targetOrdered.forEach((t, index) => {
-        const nextOrder = index;
-        if (t.id === updated.id) {
-          updated.order = nextOrder;
-          return;
-        }
-        if ((t.order ?? 0) !== nextOrder) {
-          const idx = arr.findIndex((x) => x.id === t.id);
-          if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: nextOrder,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
-          }
-        }
-      });
-
-      const updatedIdx = arr.findIndex((t) => t.id === updated.id);
-      if (updatedIdx >= 0) arr[updatedIdx] = updated;
-      publishSet.add(updated);
-
-      try {
-        publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
-      } catch {}
-
-      return arr;
-    });
-  }
 
   // Subscribe to Nostr for all shared boards
   const nostrBoardsKey = useMemo(() => {
