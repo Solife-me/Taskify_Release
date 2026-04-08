@@ -5015,44 +5015,6 @@ export default function App() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [selectionMoveSheetOpen, setSelectionMoveSheetOpen] = useState(false);
-  const selectedItemIdSet = useMemo(() => new Set(selectedItemIds), [selectedItemIds]);
-  const selectedTasks = useMemo(() => tasks.filter((task) => selectedItemIdSet.has(task.id)), [tasks, selectedItemIdSet]);
-  const selectedEvents = useMemo(() => calendarEvents.filter((event) => selectedItemIdSet.has(event.id)), [calendarEvents, selectedItemIdSet]);
-  const selectedCount = selectedTasks.length + selectedEvents.length;
-  const clearSelection = useCallback(() => {
-    setSelectedItemIds([]);
-  }, []);
-  const exitSelectionMode = useCallback(() => {
-    setIsSelectionMode(false);
-    setSelectedItemIds([]);
-    setSelectionMoveSheetOpen(false);
-  }, []);
-  const toggleItemSelection = useCallback((id: string) => {
-    setSelectedItemIds(p => p.includes(id) ? p.filter(i => i !== id) : [...p, id]);
-  }, []);
-  useEffect(() => {
-    const handleToggle = () => {
-      setSelectionMoveSheetOpen(false);
-      setIsSelectionMode((p) => {
-        if (p) {
-          setSelectedItemIds([]);
-          return false;
-        }
-        setSelectedItemIds([]);
-        return true;
-      });
-    };
-    window.addEventListener('toggleSelectionMode', handleToggle);
-    return () => window.removeEventListener('toggleSelectionMode', handleToggle);
-  }, []);
-  useEffect(() => {
-    if (!isSelectionMode) return;
-    setSelectedItemIds((prev) => prev.filter((id) => tasks.some((task) => task.id === id) || calendarEvents.some((event) => event.id === id)));
-  }, [calendarEvents, isSelectionMode, tasks]);
-  useEffect(() => {
-    if (!isSelectionMode || selectedCount > 0) return;
-    setSelectionMoveSheetOpen(false);
-  }, [isSelectionMode, selectedCount]);
   const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
   const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
   const runtimeConfigPromiseRef = useRef<Promise<void> | null>(null);
@@ -5282,6 +5244,44 @@ export default function App() {
 
   const [tasks, setTasks] = useTasks();
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
+  const selectedItemIdSet = useMemo(() => new Set(selectedItemIds), [selectedItemIds]);
+  const selectedTasks = useMemo(() => tasks.filter((task) => selectedItemIdSet.has(task.id)), [tasks, selectedItemIdSet]);
+  const selectedEvents = useMemo(() => calendarEvents.filter((event) => selectedItemIdSet.has(event.id)), [calendarEvents, selectedItemIdSet]);
+  const selectedCount = selectedTasks.length + selectedEvents.length;
+  const clearSelection = useCallback(() => {
+    setSelectedItemIds([]);
+  }, []);
+  const exitSelectionMode = useCallback(() => {
+    setIsSelectionMode(false);
+    setSelectedItemIds([]);
+    setSelectionMoveSheetOpen(false);
+  }, []);
+  const toggleItemSelection = useCallback((id: string) => {
+    setSelectedItemIds((p) => p.includes(id) ? p.filter((i) => i !== id) : [...p, id]);
+  }, []);
+  useEffect(() => {
+    const handleToggle = () => {
+      setSelectionMoveSheetOpen(false);
+      setIsSelectionMode((p) => {
+        if (p) {
+          setSelectedItemIds([]);
+          return false;
+        }
+        setSelectedItemIds([]);
+        return true;
+      });
+    };
+    window.addEventListener('toggleSelectionMode', handleToggle);
+    return () => window.removeEventListener('toggleSelectionMode', handleToggle);
+  }, []);
+  useEffect(() => {
+    if (!isSelectionMode) return;
+    setSelectedItemIds((prev) => prev.filter((id) => tasks.some((task) => task.id === id) || calendarEvents.some((event) => event.id === id)));
+  }, [calendarEvents, isSelectionMode, tasks]);
+  useEffect(() => {
+    if (!isSelectionMode || selectedCount > 0) return;
+    setSelectionMoveSheetOpen(false);
+  }, [isSelectionMode, selectedCount]);
   const [calendarInvites, setCalendarInvites] = useState<CalendarInvite[]>(() => {
     try {
       const raw = kvStorage.getItem(LS_CALENDAR_INVITES);
