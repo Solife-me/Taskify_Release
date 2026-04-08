@@ -8,6 +8,10 @@ import { stripUrlsFromText } from "../task/TaskTitle";
 import { EventTitle, EventMedia } from "../task/TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
 
+export function isEventCardDragEnabled(isSelectionMode?: boolean, isDraggable?: boolean) {
+  return Boolean(isDraggable) && !isSelectionMode;
+}
+
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export function getDraggedEventId(dataTransfer: DataTransfer | null | undefined) {
@@ -36,6 +40,9 @@ export function EventCard({
   onOpenDocument,
   onDragStart,
   onDragEnd,
+  isSelectionMode,
+  isSelected,
+  onToggleSelect,
 }: {
   event: CalendarEvent;
   onEdit?: () => void;
@@ -45,6 +52,9 @@ export function EventCard({
   onOpenDocument?: (event: CalendarEvent, doc: TaskDocument) => void;
   onDragStart?: (id: string) => void;
   onDragEnd?: () => void;
+  isSelectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const iconSizeStyle = useMemo(() => ({ "--icon-size": "1.85rem" } as React.CSSProperties), []);
   const creatorNpub = useMemo(() => toNpub(event.createdBy || event.boardPubkey || ""), [event.createdBy, event.boardPubkey]);
@@ -100,26 +110,29 @@ export function EventCard({
     hasUrl;
   const isInteractive = typeof onEdit === "function";
   const isDraggable = typeof onDragStart === "function";
+  const dragEnabled = isEventCardDragEnabled(isSelectionMode, isDraggable);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (!onEdit) return;
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onEdit();
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      if (isSelectionMode && onToggleSelect) {
+        onToggleSelect(event.id);
+        return;
       }
+      onEdit?.();
     },
-    [onEdit],
+    [event.id, isSelectionMode, onEdit, onToggleSelect],
   );
   const handleDragStart = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      if (!onDragStart) return;
+      if (!dragEnabled || !onDragStart) return;
       e.dataTransfer.setData("text/event-id", event.id);
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setDragImage(e.currentTarget, 0, 0);
       onDragStart(event.id);
     },
-    [event.id, onDragStart],
+    [dragEnabled, event.id, onDragStart],
   );
   const handleDragEnd = useCallback(() => {
     onDragEnd?.();
@@ -134,11 +147,28 @@ export function EventCard({
       data-agent-creator-npub={creatorNpub || undefined}
       data-agent-last-editor-npub={lastEditorNpub || undefined}
       style={{ touchAction: "auto" }}
-      draggable={isDraggable}
-      onDragStart={isDraggable ? handleDragStart : undefined}
-      onDragEnd={isDraggable ? handleDragEnd : undefined}
+      draggable={dragEnabled}
+      onDragStart={dragEnabled ? handleDragStart : undefined}
+      onDragEnd={dragEnabled ? handleDragEnd : undefined}
     >
       <div className="flex items-start gap-3">
+        {isSelectionMode ? (
+          <div
+            className="flex-shrink-0 flex items-center justify-center pt-1"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onToggleSelect?.(event.id);
+            }}
+            role="checkbox"
+            aria-checked={isSelected}
+            tabIndex={0}
+          >
+            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${isSelected ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--secondary)]'}`}>
+              {isSelected ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> : null}
+            </div>
+          </div>
+        ) : null}
         <div className="icon-button flex-shrink-0" style={iconSizeStyle} aria-hidden="true">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -157,11 +187,17 @@ export function EventCard({
           </svg>
         </div>
         <div
-          className={`flex-1 min-w-0 space-y-1 ${isInteractive ? "cursor-pointer" : ""}`}
-          role={isInteractive ? "button" : undefined}
-          tabIndex={isInteractive ? 0 : undefined}
-          onClick={onEdit}
-          onKeyDown={isInteractive ? handleKeyDown : undefined}
+          className={`flex-1 min-w-0 space-y-1 ${isInteractive || isSelectionMode ? "cursor-pointer" : ""}`}
+          role={isInteractive || isSelectionMode ? "button" : undefined}
+          tabIndex={isInteractive || isSelectionMode ? 0 : undefined}
+          onClick={() => {
+            if (isSelectionMode && onToggleSelect) {
+              onToggleSelect(event.id);
+              return;
+            }
+            onEdit?.();
+          }}
+          onKeyDown={isInteractive || isSelectionMode ? handleKeyDown : undefined}
         >
           <div className="task-card__title">{event.title ? <EventTitle event={event} /> : "Untitled"}</div>
           {timeLabel ? <div className="text-xs text-secondary">{timeLabel}</div> : null}

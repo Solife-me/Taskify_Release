@@ -7,6 +7,10 @@ import { TaskTitle, useTaskPreview } from "./TaskTitle";
 import { TaskMedia } from "./TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
 
+export function isCardDragEnabled(isSelectionMode?: boolean) {
+  return !isSelectionMode;
+}
+
 function formatTimeLabel(iso: string, timeZone?: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
@@ -39,6 +43,9 @@ export function Card({
   hideCompletedSubtasks,
   onOpenDocument,
   onDismissInbox,
+  isSelectionMode,
+  isSelected,
+  onToggleSelect,
 }: {
   task: Task;
   meta?: React.ReactNode;
@@ -54,6 +61,9 @@ export function Card({
   hideCompletedSubtasks: boolean;
   onOpenDocument: (task: Task, doc: TaskDocument) => void;
   onDismissInbox?: () => void;
+  isSelectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
@@ -110,6 +120,10 @@ export function Card({
   }, [task.title, task.priority, task.note, task.images?.length, task.documents?.length, visibleSubtasks.length]);
 
   function handleDragStart(e: React.DragEvent) {
+    if (!isCardDragEnabled(isSelectionMode)) {
+      e.preventDefault();
+      return;
+    }
     e.dataTransfer.setData('text/task-id', task.id);
     e.dataTransfer.setData('text/plain', task.id);
     e.dataTransfer.effectAllowed = 'move';
@@ -179,7 +193,7 @@ export function Card({
       data-agent-creator-npub={creatorNpub || undefined}
       data-agent-last-editor-npub={lastEditorNpub || undefined}
       style={{ touchAction: 'auto' }}
-      draggable
+      draggable={isCardDragEnabled(isSelectionMode)}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}
@@ -194,8 +208,29 @@ export function Card({
       )}
 
       <div className="flex items-start gap-3">
+        {isSelectionMode && (
+          <div 
+            className="flex-shrink-0 flex items-center justify-center pt-1" 
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); onToggleSelect?.(task.id); }}
+            role="checkbox"
+            aria-checked={isSelected}
+            tabIndex={0}
+          >
+            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${isSelected ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--secondary)]'}`}>
+              {isSelected && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
+            </div>
+          </div>
+        )}
         <button
-          onClick={handleCompleteClick}
+          onClick={(e) => {
+            if (isSelectionMode && onToggleSelect) {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleSelect(task.id);
+              return;
+            }
+            handleCompleteClick(e);
+          }}
           aria-label={task.completed ? 'Mark incomplete' : 'Complete task'}
           title={task.completed ? 'Mark incomplete' : 'Mark complete'}
           className="icon-button pressable flex-shrink-0"
@@ -220,7 +255,15 @@ export function Card({
           className="flex-1 min-w-0 cursor-pointer space-y-1"
           role="button"
           tabIndex={0}
-          onClick={onEdit}
+          onClick={(e) => {
+            if (isSelectionMode && onToggleSelect) {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleSelect(task.id);
+            } else {
+              onEdit();
+            }
+          }}
           onKeyDown={handleEditKeyDown}
         >
           <div
