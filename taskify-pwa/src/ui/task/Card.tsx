@@ -7,6 +7,11 @@ import { TaskTitle, useTaskPreview } from "./TaskTitle";
 import { TaskMedia } from "./TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
 
+export function isCardDragEnabled(isSelectionMode?: boolean, isSelected?: boolean) {
+  if (isSelectionMode) return !!isSelected;
+  return true;
+}
+
 function formatTimeLabel(iso: string, timeZone?: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
@@ -24,6 +29,13 @@ export function getDraggedTaskId(dataTransfer: DataTransfer | null | undefined) 
   return id || null;
 }
 
+export function getDraggedTaskIds(dataTransfer: DataTransfer | null | undefined): string[] | null {
+  if (!dataTransfer) return null;
+  const raw = dataTransfer.getData("text/task-ids");
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
 export function Card({
   task,
   meta,
@@ -39,6 +51,10 @@ export function Card({
   hideCompletedSubtasks,
   onOpenDocument,
   onDismissInbox,
+  isSelectionMode,
+  isSelected,
+  onToggleSelect,
+  selectedTaskIds,
 }: {
   task: Task;
   meta?: React.ReactNode;
@@ -54,6 +70,10 @@ export function Card({
   hideCompletedSubtasks: boolean;
   onOpenDocument: (task: Task, doc: TaskDocument) => void;
   onDismissInbox?: () => void;
+  isSelectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (id: string) => void;
+  selectedTaskIds?: string[];
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
@@ -110,10 +130,50 @@ export function Card({
   }, [task.title, task.priority, task.note, task.images?.length, task.documents?.length, visibleSubtasks.length]);
 
   function handleDragStart(e: React.DragEvent) {
+    if (!isCardDragEnabled(isSelectionMode, isSelected)) {
+      e.preventDefault();
+      return;
+    }
     e.dataTransfer.setData('text/task-id', task.id);
     e.dataTransfer.setData('text/plain', task.id);
+    const isMultiDrag = isSelectionMode && isSelected && selectedTaskIds && selectedTaskIds.length > 1;
+    if (isMultiDrag) {
+      e.dataTransfer.setData('text/task-ids', JSON.stringify(selectedTaskIds));
+    }
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setDragImage(e.currentTarget as HTMLElement, 0, 0);
+
+    if (isMultiDrag) {
+      const count = selectedTaskIds!.length;
+      const cardEl = e.currentTarget as HTMLElement;
+      const rect = cardEl.getBoundingClientRect();
+      const container = document.createElement('div');
+      container.style.cssText = `position:fixed;top:-9999px;left:-9999px;pointer-events:none;z-index:99999;`;
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = `position:relative;width:${rect.width}px;`;
+      // Stacked offset cards behind
+      const stackCount = Math.min(count - 1, 2);
+      for (let i = stackCount; i >= 1; i--) {
+        const layer = document.createElement('div');
+        layer.style.cssText = `position:absolute;top:${i * 4}px;left:${i * 2}px;right:${-i * 2}px;height:${rect.height}px;border-radius:16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);`;
+        wrapper.appendChild(layer);
+      }
+      // Clone the actual card
+      const clone = cardEl.cloneNode(true) as HTMLElement;
+      clone.style.cssText = `position:relative;width:${rect.width}px;border-radius:16px;overflow:hidden;`;
+      wrapper.appendChild(clone);
+      // Badge with count
+      const badge = document.createElement('div');
+      badge.textContent = String(count);
+      badge.style.cssText = `position:absolute;top:-6px;right:-6px;min-width:22px;height:22px;border-radius:11px;background:var(--accent,#3b82f6);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 6px;box-shadow:0 2px 6px rgba(0,0,0,0.4);`;
+      wrapper.appendChild(badge);
+      container.appendChild(wrapper);
+      document.body.appendChild(container);
+      e.dataTransfer.setDragImage(container, 0, 0);
+      requestAnimationFrame(() => document.body.removeChild(container));
+    } else {
+      e.dataTransfer.setDragImage(e.currentTarget as HTMLElement, 0, 0);
+    }
+
     onDragStart(task.id);
   }
   function handleDragOver(e: React.DragEvent) {
@@ -179,7 +239,7 @@ export function Card({
       data-agent-creator-npub={creatorNpub || undefined}
       data-agent-last-editor-npub={lastEditorNpub || undefined}
       style={{ touchAction: 'auto' }}
-      draggable
+      draggable={isCardDragEnabled(isSelectionMode, isSelected)}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}
@@ -194,8 +254,29 @@ export function Card({
       )}
 
       <div className="flex items-start gap-3">
+        {isSelectionMode && (
+          <div 
+            className="flex-shrink-0 flex items-center justify-center pt-1" 
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); onToggleSelect?.(task.id); }}
+            role="checkbox"
+            aria-checked={isSelected}
+            tabIndex={0}
+          >
+            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${isSelected ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--secondary)]'}`}>
+              {isSelected && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
+            </div>
+          </div>
+        )}
         <button
-          onClick={handleCompleteClick}
+          onClick={(e) => {
+            if (isSelectionMode && onToggleSelect) {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleSelect(task.id);
+              return;
+            }
+            handleCompleteClick(e);
+          }}
           aria-label={task.completed ? 'Mark incomplete' : 'Complete task'}
           title={task.completed ? 'Mark incomplete' : 'Mark complete'}
           className="icon-button pressable flex-shrink-0"
@@ -220,7 +301,15 @@ export function Card({
           className="flex-1 min-w-0 cursor-pointer space-y-1"
           role="button"
           tabIndex={0}
-          onClick={onEdit}
+          onClick={(e) => {
+            if (isSelectionMode && onToggleSelect) {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleSelect(task.id);
+            } else {
+              onEdit();
+            }
+          }}
           onKeyDown={handleEditKeyDown}
         >
           <div
