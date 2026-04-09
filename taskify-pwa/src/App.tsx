@@ -17420,51 +17420,66 @@ export default function App() {
   }
 
   const moveSelectedTasksToBoard = useCallback((boardId: string) => {
-    if (!selectedTasks.length) return;
+    if (!selectedTasks.length && !selectedEvents.length) return;
     selectedTasks.forEach((task) => moveTaskToBoard(task.id, boardId));
-    const boardName = boards.find((board) => board.id === boardId)?.name || "board";
-    const eventCount = selectedEvents.length;
-    if (eventCount > 0) {
-      showToast(`Moved ${selectedTasks.length} task${selectedTasks.length === 1 ? "" : "s"} to ${boardName}. ${eventCount} selected event${eventCount === 1 ? " was" : "s were"} unchanged.`);
-    } else {
-      showToast(selectedTasks.length === 1 ? `Task moved to ${boardName}` : `${selectedTasks.length} tasks moved to ${boardName}`);
+    if (selectedEvents.length) {
+      setCalendarEvents((prev) => prev.map((ev) => {
+        if (!selectedItemIdSet.has(ev.id)) return ev;
+        const updated: CalendarEvent = { ...ev, boardId, columnId: undefined };
+        maybePublishCalendarEvent(updated).catch(() => {});
+        return updated;
+      }));
     }
+    const boardName = boards.find((board) => board.id === boardId)?.name || "board";
+    const totalMoved = selectedTasks.length + selectedEvents.length;
+    showToast(totalMoved === 1 ? `Item moved to ${boardName}` : `${totalMoved} items moved to ${boardName}`);
     exitSelectionMode();
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedEvents.length, selectedTasks, showToast]);
+  }, [boards, exitSelectionMode, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
 
   const moveSelectedTasksToColumn = useCallback((boardId: string, columnId: string) => {
-    if (!selectedTasks.length) return;
+    if (!selectedTasks.length && !selectedEvents.length) return;
     const board = boards.find((b) => b.id === boardId);
     const col = board && board.kind === "lists" ? board.columns.find((c) => c.id === columnId) : null;
-    selectedTasks.forEach((task) => {
-      setTasks((prev) => {
-        const idx = prev.findIndex((t) => t.id === task.id);
-        if (idx < 0) return prev;
-        const copy = [...prev];
-        const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
-        const updated: Task = {
-          ...copy[idx],
-          boardId,
-          column: undefined,
-          columnId,
-          lastEditedBy: editorPubkey || copy[idx].lastEditedBy || copy[idx].createdBy,
-        };
-        copy[idx] = updated;
-        maybePublishTask(updated).catch(() => {});
-        return copy;
+    const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
+    if (selectedTasks.length) {
+      selectedTasks.forEach((task) => {
+        setTasks((prev) => {
+          const idx = prev.findIndex((t) => t.id === task.id);
+          if (idx < 0) return prev;
+          const copy = [...prev];
+          const updated: Task = {
+            ...copy[idx],
+            boardId,
+            column: undefined,
+            columnId,
+            lastEditedBy: editorPubkey || copy[idx].lastEditedBy || copy[idx].createdBy,
+          };
+          copy[idx] = updated;
+          maybePublishTask(updated).catch(() => {});
+          return copy;
+        });
       });
-    });
+    }
+    if (selectedEvents.length) {
+      setCalendarEvents((prev) => prev.map((ev) => {
+        if (!selectedItemIdSet.has(ev.id)) return ev;
+        const updated: CalendarEvent = { ...ev, boardId, columnId };
+        maybePublishCalendarEvent(updated).catch(() => {});
+        return updated;
+      }));
+    }
     const boardName = board?.name || "board";
     const colName = col?.name || "list";
-    showToast(selectedTasks.length === 1 ? `Task moved to ${colName} in ${boardName}` : `${selectedTasks.length} tasks moved to ${colName} in ${boardName}`);
+    const totalMoved = selectedTasks.length + selectedEvents.length;
+    showToast(totalMoved === 1 ? `Item moved to ${colName} in ${boardName}` : `${totalMoved} items moved to ${colName} in ${boardName}`);
     exitSelectionMode();
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedTasks, setTasks, showToast]);
+  }, [boards, exitSelectionMode, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
 
   const selectionMoveTargets = useMemo(() => (
     boards.filter((board) => board.kind !== "bible" && !board.archived && !board.hidden).map((board) => ({
@@ -19817,11 +19832,11 @@ export default function App() {
       <ActionSheet
         open={selectionMoveSheetOpen}
         onClose={() => { setSelectionMoveSheetOpen(false); setSelectionMoveStep("board"); setSelectionMoveBoardId(null); }}
-        title={selectionMoveStep === "column" ? "Choose a list" : "Move selected tasks"}
+        title={selectionMoveStep === "column" ? "Choose a list" : "Move selected items"}
         stackLevel={10001}
       >
-        {selectedTasks.length === 0 ? (
-          <div className="text-sm text-secondary">Select one or more tasks to move.</div>
+        {selectedCount === 0 ? (
+          <div className="text-sm text-secondary">Select one or more items to move.</div>
         ) : selectionMoveStep === "board" ? (
           <div className="space-y-2">
             {selectionMoveTargets.map((board) => (
@@ -20100,7 +20115,7 @@ export default function App() {
       {isSelectionMode && (
         <div
           className="selection-bar glass-panel fixed left-1/2 z-[10000] -translate-x-1/2 w-[calc(100%-1rem)] max-w-md rounded-2xl"
-          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.5rem)" }}
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-height) + 0.25rem)" }}
         >
           {/* Top row: count + cancel */}
           <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
@@ -20131,7 +20146,7 @@ export default function App() {
               type="button"
               className="selection-bar__action pressable"
               onClick={() => setSelectionMoveSheetOpen(true)}
-              disabled={!selectedTasks.length}
+              disabled={!selectedCount}
               title="Move"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l3 3 3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
