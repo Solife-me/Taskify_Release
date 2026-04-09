@@ -684,6 +684,55 @@ html.light .glass-panel::after {
   padding-bottom: calc(var(--app-tab-pill-offset) + 3.5rem);
 }
 
+/* ---------- Selection bar ---------- */
+.selection-bar__action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.75rem;
+  color: var(--secondary);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+.selection-bar__action:not(:disabled):hover,
+.selection-bar__action:not(:disabled):active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--primary);
+}
+.selection-bar__action:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.selection-bar__action--danger {
+  color: #f87171;
+}
+.selection-bar__action--danger:not(:disabled):hover,
+.selection-bar__action--danger:not(:disabled):active {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+}
+html.light .selection-bar__action:not(:disabled):hover,
+html.light .selection-bar__action:not(:disabled):active {
+  background: rgba(12, 24, 63, 0.06);
+}
+html.light .selection-bar__action--danger {
+  color: #dc2626;
+}
+html.light .selection-bar__action--danger:not(:disabled):hover,
+html.light .selection-bar__action--danger:not(:disabled):active {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+/* Extra bottom space on board columns when selection bar is visible. */
+.board-selection-pad [data-column-scroll] {
+  padding-bottom: 5rem;
+}
+
 .upcoming-filter {
   display: flex;
   flex-direction: column;

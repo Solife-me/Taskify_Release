@@ -5001,7 +5001,7 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
           </button>
         </div>
       )}
-      <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''}>
+      <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''} data-column-scroll={scrollable ? "" : undefined}>
         <div className="space-y-.25">{children}</div>
       </div>
       {scrollable && footer ? <div className="mt-auto flex-shrink-0 pt-2">{footer}</div> : null}
@@ -18402,7 +18402,7 @@ export default function App() {
               {/* HORIZONTAL board: single row, side-scroll */}
               <div
                 ref={scrollerRef}
-                className="flex-1 min-h-0 overflow-x-auto pb-0 w-full"
+                className={`flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
                 style={{ WebkitOverflowScrolling: "touch" }} // fluid momentum scroll on iOS
               >
                 <div className="flex gap-4 min-w-max h-full items-stretch">
@@ -18534,7 +18534,7 @@ export default function App() {
               // LISTS board (multiple custom columns) — still a horizontal row
               <div
                 ref={scrollerRef}
-                className="flex-1 min-h-0 overflow-x-auto pb-0 w-full"
+                className={`flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
                 style={{ WebkitOverflowScrolling: "touch" }}
             >
               <div className="flex gap-4 min-w-max h-full items-stretch">
@@ -20099,62 +20099,63 @@ export default function App() {
 
       {isSelectionMode && (
         <div
-          className="fixed left-1/2 z-[10000] flex w-[calc(100%-1.5rem)] max-w-xl -translate-x-1/2 items-center gap-2 rounded-2xl border border-white/10 bg-black/75 px-3 py-3 backdrop-blur-xl shadow-2xl"
-          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.75rem)" }}
+          className="selection-bar glass-panel fixed left-1/2 z-[10000] -translate-x-1/2 w-[calc(100%-1rem)] max-w-md rounded-2xl"
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.5rem)" }}
         >
-          <button
-            type="button"
-            className="ghost-button button-sm pressable shrink-0"
-            onClick={exitSelectionMode}
-          >
-            Cancel
-          </button>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-primary">
+          {/* Top row: count + cancel */}
+          <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
+            <div className="text-sm font-semibold text-primary">
               {selectedCount ? `${selectedCount} selected` : "Select items"}
             </div>
-            <div className="text-[11px] text-secondary">
-              {selectedCount
-                ? selectedEvents.length > 0
-                  ? "Bulk complete applies to tasks only."
-                  : "Choose an action for the selected tasks."
-                : "Tap tasks or events to select them."}
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              className="ghost-button button-sm pressable"
+              className="text-xs text-secondary hover:text-primary pressable px-2 py-0.5 rounded-lg"
+              onClick={exitSelectionMode}
+            >
+              Cancel
+            </button>
+          </div>
+          {/* Action buttons row */}
+          <div className="flex items-center justify-around px-2 pb-2.5 pt-0.5">
+            <button
+              type="button"
+              className="selection-bar__action pressable"
               onClick={clearSelection}
               disabled={!selectedCount}
+              title="Clear selection"
             >
-              Clear
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              <span>Clear</span>
             </button>
             <button
               type="button"
-              className="ghost-button button-sm pressable"
+              className="selection-bar__action pressable"
               onClick={() => setSelectionMoveSheetOpen(true)}
               disabled={!selectedTasks.length}
-              title={selectedTasks.length ? "Move selected tasks" : "Select one or more tasks to move"}
+              title="Move"
             >
-              Move
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l3 3 3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+              <span>Move</span>
             </button>
             <button
               type="button"
-              className="ghost-button button-sm pressable"
+              className="selection-bar__action pressable"
               onClick={completeSelectedItems}
               disabled={!selectedTasks.some((task) => !task.completed)}
-              title={selectedTasks.some((task) => !task.completed) ? "Mark selected tasks complete" : "Select incomplete tasks to complete"}
+              title="Complete"
             >
-              Complete
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Done</span>
             </button>
             <button
               type="button"
-              className="ghost-button button-sm pressable text-rose-400"
+              className="selection-bar__action selection-bar__action--danger pressable"
               onClick={deleteSelectedItems}
               disabled={!selectedCount}
+              title="Delete"
             >
-              Delete
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M9 3h6l1 1h5v2H3V4h5l1-1z"/><path d="M5 7h14l-1.5 13h-11L5 7z"/></svg>
+              <span>Delete</span>
             </button>
           </div>
         </div>
