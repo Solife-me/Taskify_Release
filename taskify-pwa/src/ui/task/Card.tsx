@@ -7,8 +7,9 @@ import { TaskTitle, useTaskPreview } from "./TaskTitle";
 import { TaskMedia } from "./TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
 
-export function isCardDragEnabled(isSelectionMode?: boolean) {
-  return !isSelectionMode;
+export function isCardDragEnabled(isSelectionMode?: boolean, isSelected?: boolean) {
+  if (isSelectionMode) return !!isSelected;
+  return true;
 }
 
 function formatTimeLabel(iso: string, timeZone?: string): string {
@@ -26,6 +27,13 @@ export function getDraggedTaskId(dataTransfer: DataTransfer | null | undefined) 
   if (!dataTransfer) return null;
   const id = dataTransfer.getData("text/task-id") || dataTransfer.getData("text/plain");
   return id || null;
+}
+
+export function getDraggedTaskIds(dataTransfer: DataTransfer | null | undefined): string[] | null {
+  if (!dataTransfer) return null;
+  const raw = dataTransfer.getData("text/task-ids");
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 export function Card({
@@ -46,6 +54,7 @@ export function Card({
   isSelectionMode,
   isSelected,
   onToggleSelect,
+  selectedTaskIds,
 }: {
   task: Task;
   meta?: React.ReactNode;
@@ -64,6 +73,7 @@ export function Card({
   isSelectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (id: string) => void;
+  selectedTaskIds?: string[];
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
@@ -120,14 +130,50 @@ export function Card({
   }, [task.title, task.priority, task.note, task.images?.length, task.documents?.length, visibleSubtasks.length]);
 
   function handleDragStart(e: React.DragEvent) {
-    if (!isCardDragEnabled(isSelectionMode)) {
+    if (!isCardDragEnabled(isSelectionMode, isSelected)) {
       e.preventDefault();
       return;
     }
     e.dataTransfer.setData('text/task-id', task.id);
     e.dataTransfer.setData('text/plain', task.id);
+    const isMultiDrag = isSelectionMode && isSelected && selectedTaskIds && selectedTaskIds.length > 1;
+    if (isMultiDrag) {
+      e.dataTransfer.setData('text/task-ids', JSON.stringify(selectedTaskIds));
+    }
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setDragImage(e.currentTarget as HTMLElement, 0, 0);
+
+    if (isMultiDrag) {
+      const count = selectedTaskIds!.length;
+      const cardEl = e.currentTarget as HTMLElement;
+      const rect = cardEl.getBoundingClientRect();
+      const container = document.createElement('div');
+      container.style.cssText = `position:fixed;top:-9999px;left:-9999px;pointer-events:none;z-index:99999;`;
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = `position:relative;width:${rect.width}px;`;
+      // Stacked offset cards behind
+      const stackCount = Math.min(count - 1, 2);
+      for (let i = stackCount; i >= 1; i--) {
+        const layer = document.createElement('div');
+        layer.style.cssText = `position:absolute;top:${i * 4}px;left:${i * 2}px;right:${-i * 2}px;height:${rect.height}px;border-radius:16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);`;
+        wrapper.appendChild(layer);
+      }
+      // Clone the actual card
+      const clone = cardEl.cloneNode(true) as HTMLElement;
+      clone.style.cssText = `position:relative;width:${rect.width}px;border-radius:16px;overflow:hidden;`;
+      wrapper.appendChild(clone);
+      // Badge with count
+      const badge = document.createElement('div');
+      badge.textContent = String(count);
+      badge.style.cssText = `position:absolute;top:-6px;right:-6px;min-width:22px;height:22px;border-radius:11px;background:var(--accent,#3b82f6);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 6px;box-shadow:0 2px 6px rgba(0,0,0,0.4);`;
+      wrapper.appendChild(badge);
+      container.appendChild(wrapper);
+      document.body.appendChild(container);
+      e.dataTransfer.setDragImage(container, 0, 0);
+      requestAnimationFrame(() => document.body.removeChild(container));
+    } else {
+      e.dataTransfer.setDragImage(e.currentTarget as HTMLElement, 0, 0);
+    }
+
     onDragStart(task.id);
   }
   function handleDragOver(e: React.DragEvent) {
@@ -193,7 +239,7 @@ export function Card({
       data-agent-creator-npub={creatorNpub || undefined}
       data-agent-last-editor-npub={lastEditorNpub || undefined}
       style={{ touchAction: 'auto' }}
-      draggable={isCardDragEnabled(isSelectionMode)}
+      draggable={isCardDragEnabled(isSelectionMode, isSelected)}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}
