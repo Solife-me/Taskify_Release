@@ -1755,11 +1755,16 @@ export default function CashuWalletModal({
   onDeclineMessage,
   onDismissMessage,
   onMarkMessagesRead,
+  inboxPendingItems,
+  pendingCalendarInvites,
+  onCalendarInviteRsvp,
+  onDismissCalendarInvite,
+  formatCalendarInviteWhen,
 }: {
   open: boolean;
   onClose: () => void;
   onOpenBounties?: () => void;
-  page?: "wallet" | "contacts";
+  page?: "wallet" | "contacts" | "chat";
   showTabSwitcher?: boolean;
   showBottomNav?: boolean;
   walletConversionEnabled: boolean;
@@ -1782,6 +1787,11 @@ export default function CashuWalletModal({
   onDeclineMessage: (id: string) => void;
   onDismissMessage: (id: string) => void;
   onMarkMessagesRead: (dmEventIds: string[]) => void;
+  inboxPendingItems?: WalletMessageItem[];
+  pendingCalendarInvites?: { id: string; title?: string; start?: string; end?: string; sender?: { pubkey?: string; name?: string; npub?: string }; status: string }[];
+  onCalendarInviteRsvp?: (invite: any, status: string) => void;
+  onDismissCalendarInvite?: (invite: any) => void;
+  formatCalendarInviteWhen?: (invite: any) => string;
 }) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -2065,6 +2075,9 @@ export default function CashuWalletModal({
   const [scannedContact, setScannedContact] = useState<Contact | null>(null);
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const isContactsPage = page === "contacts";
+  const isChatPage = page === "chat";
+  const [chatView, setChatView] = useState<"threads" | "conversation" | "contacts" | "new-message">("threads");
+  const [chatCompose, setChatCompose] = useState("");
   const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>([]);
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
   const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
@@ -2084,11 +2097,11 @@ export default function CashuWalletModal({
   const [dmSearch, setDmSearch] = useState("");
   const [showStrangersOnly, setShowStrangersOnly] = useState(false);
   useEffect(() => {
-    if (showTabSwitcher || isContactsPage) return;
+    if (showTabSwitcher || isContactsPage || isChatPage) return;
     if (walletTab !== "wallet") {
       setWalletTab("wallet");
     }
-  }, [isContactsPage, showTabSwitcher, walletTab]);
+  }, [isChatPage, isContactsPage, showTabSwitcher, walletTab]);
   const toggleDmMessageExpanded = useCallback((eventId: string) => {
     setDmExpandedMessages((prev) => {
       const next = new Set(prev);
@@ -13926,16 +13939,16 @@ export default function CashuWalletModal({
     ],
   );
 
-  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}`;
+  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}${isChatPage ? " wallet-modal--chat" : ""}`;
   const contactsPanelInline = !showTabSwitcher && isContactsPage;
   const contactsPanelOpen = contactsTabOpen || contactsPanelInline;
-  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage;
+  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage && !isChatPage;
 
   if (!open) return null;
 
   return (
     <div className={walletRootClass}>
-      {!isContactsPage && (
+      {!isContactsPage && !isChatPage && (
         <>
           <div className="wallet-modal__header">
             <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
@@ -14802,6 +14815,732 @@ export default function CashuWalletModal({
             </div>
           )}
         </>
+      )}
+
+      {/* ── Chat Page ─────────────────────────────────────────────────── */}
+      {isChatPage && (
+        <div className="chat-page">
+          {chatView === "threads" && (
+            <div className="chat-page__threads">
+              {/* Header */}
+              <div className="chat-page__header">
+                <button
+                  type="button"
+                  className={`contact-avatar pressable${profileCard.picture?.trim() ? " contact-avatar--image contact-avatar--profile" : " contact-avatar--profile"}`}
+                  onClick={() => {
+                    setActiveContactId("profile");
+                    setContactView("detail");
+                    setChatView("contacts");
+                  }}
+                  aria-label="Open profile"
+                >
+                  {profileCard.picture?.trim() ? (
+                    <img src={profileCard.picture.trim()} alt={myCardName} className="contact-avatar__img" />
+                  ) : (
+                    contactInitials(myCardName)
+                  )}
+                </button>
+                <div className="chat-page__header-title">Chat</div>
+                <button
+                  type="button"
+                  className="glass-icon-button glass-icon-button--accent pressable"
+                  onClick={() => setChatView("new-message")}
+                  title="New message"
+                  aria-label="New message"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Search */}
+              <div className="chat-page__search">
+                <input
+                  className="chat-page__search-input"
+                  placeholder="Search"
+                  value={dmSearch}
+                  onChange={(event) => setDmSearch(event.target.value)}
+                />
+              </div>
+
+              {/* Inbox section */}
+              {((inboxPendingItems && inboxPendingItems.length > 0) || (pendingCalendarInvites && pendingCalendarInvites.length > 0)) && (
+                <div className="chat-inbox-section">
+                  <div className="chat-inbox-section__title">Inbox</div>
+                  {pendingCalendarInvites && pendingCalendarInvites.map((invite) => {
+                    const senderName =
+                      invite.sender?.name ||
+                      invite.sender?.npub ||
+                      "Someone";
+                    const whenLabel = formatCalendarInviteWhen ? formatCalendarInviteWhen(invite) : "";
+                    return (
+                      <div key={invite.id} className="chat-inbox-item">
+                        <div className="chat-inbox-item__icon">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="4" y="5" width="16" height="15" rx="2" />
+                            <path d="M8 3v4" />
+                            <path d="M16 3v4" />
+                            <path d="M4 11h16" />
+                          </svg>
+                        </div>
+                        <div className="chat-inbox-item__body">
+                          <div className="chat-inbox-item__title">{invite.title || "Event invite"}</div>
+                          <div className="chat-inbox-item__meta">
+                            {whenLabel ? `${whenLabel} • ` : ""}From {senderName}
+                          </div>
+                        </div>
+                        <div className="chat-inbox-item__actions">
+                          <button type="button" className="accent-button button-xs pressable" onClick={() => onCalendarInviteRsvp?.(invite, "accepted")}>Accept</button>
+                          <button type="button" className="ghost-button button-xs pressable" onClick={() => onCalendarInviteRsvp?.(invite, "tentative")}>Maybe</button>
+                          <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDismissCalendarInvite?.(invite)}>Dismiss</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {inboxPendingItems && inboxPendingItems.map((item) => {
+                    const senderName = item.sender?.name || item.sender?.npub || "Someone";
+                    const isTaskAssignment = item.type === "task" && !!(item.task as any)?.assignment;
+                    const typeLabel =
+                      item.type === "board"
+                        ? "Board"
+                        : item.type === "contact"
+                          ? "Contact"
+                          : isTaskAssignment
+                            ? "Task assignment"
+                            : "Task";
+                    return (
+                      <div key={item.id} className="chat-inbox-item">
+                        <div className="chat-inbox-item__icon">
+                          {item.type === "board" ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3" y="3" width="7" height="7" rx="2" />
+                              <rect x="14" y="3" width="7" height="7" rx="2" />
+                              <rect x="3" y="14" width="7" height="7" rx="2" />
+                              <rect x="14" y="14" width="7" height="7" rx="2" />
+                            </svg>
+                          ) : item.type === "contact" ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
+                              <circle cx="12" cy="8" r="4" />
+                            </svg>
+                          ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M9 11l3 3L22 4" />
+                              <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="chat-inbox-item__body">
+                          <div className="chat-inbox-item__title">{item.title}</div>
+                          <div className="chat-inbox-item__meta">{typeLabel} • From {senderName}</div>
+                        </div>
+                        <div className="chat-inbox-item__actions">
+                          {isTaskAssignment ? (
+                            <>
+                              <button type="button" className="accent-button button-xs pressable" onClick={() => onAcceptMessage(item.id)}>Accept</button>
+                              <button type="button" className="ghost-button button-xs pressable" onClick={() => onMaybeMessage(item.id)}>Maybe</button>
+                              <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDeclineMessage(item.id)}>Decline</button>
+                            </>
+                          ) : (
+                            <>
+                              <button type="button" className="accent-button button-xs pressable" onClick={() => onAcceptMessage(item.id)}>Add</button>
+                              <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDismissMessage(item.id)}>Dismiss</button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Strangers toggle */}
+              {!showStrangersOnly && dmThreads.some((t) => t.isStranger) && (
+                <button
+                  className="wallet-messages__thread wallet-messages__thread--stranger pressable"
+                  onClick={() => {
+                    setShowStrangersOnly(true);
+                    setActiveThreadPeer(null);
+                  }}
+                >
+                  <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&#9678;</div>
+                  <div className="wallet-messages__thread-body">
+                    <div className="wallet-messages__thread-title">
+                      Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
+                    </div>
+                    <div className="wallet-messages__thread-preview">
+                      {dmThreads.find((t) => t.isStranger)?.lastPreview || "New requests"}
+                    </div>
+                  </div>
+                  <div className="wallet-messages__thread-meta">
+                    <span className="wallet-messages__thread-date">
+                      {dmThreads.find((t) => t.isStranger)
+                        ? formatShortDate(dmThreads.find((t) => t.isStranger)!.lastCreatedAt)
+                        : ""}
+                    </span>
+                  </div>
+                </button>
+              )}
+              {showStrangersOnly && (
+                <button
+                  className="wallet-messages__thread pressable"
+                  onClick={() => setShowStrangersOnly(false)}
+                >
+                  <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&larr;</div>
+                  <div className="wallet-messages__thread-body">
+                    <div className="wallet-messages__thread-title">Back to everyone</div>
+                    <div className="wallet-messages__thread-preview">View all conversations</div>
+                  </div>
+                </button>
+              )}
+
+              {/* Thread list */}
+              <div className="chat-page__thread-list">
+                {(showStrangersOnly
+                  ? dmThreads.filter((t) => t.isStranger)
+                  : dmThreads.filter((t) => {
+                      if (!dmSearch.trim()) return !t.isStranger;
+                      const meta = peerLabelFor(t.peerPubkey);
+                      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${t.lastPreview} ${t.peerPubkey}`.toLowerCase();
+                      return haystack.includes(dmSearch.trim().toLowerCase());
+                    })
+                ).map((thread) => {
+                  const meta = peerLabelFor(thread.peerPubkey);
+                  const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+                  return (
+                    <button
+                      key={thread.peerPubkey}
+                      className="wallet-messages__thread pressable"
+                      onClick={() => {
+                        setActiveThreadPeer(thread.peerPubkey);
+                        setChatView("conversation");
+                        setDmView("thread");
+                        const unreadIds = thread.messages
+                          .map((m) => m.eventId)
+                          .filter((id) => {
+                            const item = messageItemsByEventId.get(id);
+                            if (!item) return false;
+                            const status = item.status;
+                            return status !== "accepted" && status !== "deleted" && status !== "read";
+                          });
+                        if (unreadIds.length) {
+                          onMarkMessagesRead(unreadIds);
+                        }
+                      }}
+                    >
+                      <div className="wallet-messages__avatar">
+                        {meta.picture ? (
+                          <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
+                        ) : (
+                          <span>{meta.label.slice(0, 2)}</span>
+                        )}
+                      </div>
+                      <div className="wallet-messages__thread-body">
+                        <div className="wallet-messages__thread-title">
+                          {meta.label}
+                          {unreadCount > 0 ? ` (${unreadCount})` : ""}
+                        </div>
+                        {meta.subtitle && (
+                          <div className="wallet-messages__thread-subtitle">{meta.subtitle}</div>
+                        )}
+                        <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+                      </div>
+                      <div className="wallet-messages__thread-meta">
+                        <span className="wallet-messages__thread-date">
+                          {formatShortDate(thread.lastCreatedAt)}
+                        </span>
+                        {unreadCount > 0 && (
+                          <span className="chat-unread-badge">{unreadCount}</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+                {dmThreads.length === 0 && !inboxPendingItems?.length && !pendingCalendarInvites?.length && (
+                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "3rem 1rem" }}>
+                    No messages yet. Start a conversation or incoming DMs will appear here.
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom contacts button */}
+              <div className="chat-page__footer-actions">
+                <button
+                  type="button"
+                  className="ghost-button button-sm pressable"
+                  onClick={() => {
+                    setContactView("list");
+                    setChatView("contacts");
+                  }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1 inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
+                    <circle cx="12" cy="8" r="4" />
+                  </svg>
+                  Contacts
+                </button>
+              </div>
+            </div>
+          )}
+
+          {chatView === "conversation" && activeThread && (
+            <div className="chat-conversation">
+              {/* Conversation header */}
+              <div className="chat-conversation__header">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    setChatView("threads");
+                    setActiveThreadPeer(null);
+                    setDmView("list");
+                  }}
+                  aria-label="Back to threads"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                {(() => {
+                  const meta = peerLabelFor(activeThread.peerPubkey);
+                  return (
+                    <div className="chat-conversation__peer-info">
+                      <div className="chat-conversation__peer-avatar">
+                        {meta.picture ? (
+                          <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
+                        ) : (
+                          <span>{meta.label.slice(0, 2)}</span>
+                        )}
+                      </div>
+                      <div className="chat-conversation__peer-name">{meta.label}</div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Stranger actions */}
+              {activeThread.isStranger && (
+                <div className="chat-conversation__stranger-bar">
+                  <button
+                    type="button"
+                    className="ghost-button button-xs pressable"
+                    onClick={() => toggleBlockPeer(activeThread.peerPubkey)}
+                  >
+                    {dmBlockedPeersRef.current.has(activeThread.peerPubkey) ? "Unblock" : "Block"}
+                  </button>
+                  <button
+                    type="button"
+                    className="accent-button button-xs pressable"
+                    onClick={() => handleAddPeerToContacts(activeThread.peerPubkey)}
+                  >
+                    Add to contacts
+                  </button>
+                </div>
+              )}
+
+              {/* Messages */}
+              <div className="chat-conversation__messages">
+                {activeThread.messages.map((msg) => {
+                  const matchedItem = messageItemsByEventId.get(msg.eventId);
+                  const isPayment = msg.attachment?.type === "payment";
+                  const isContact = msg.attachment?.type === "contact";
+                  const isBoard = msg.attachment?.type === "board";
+                  const isTask = msg.attachment?.type === "task";
+                  const isStructured = !!msg.attachment && msg.attachment.type !== "text";
+                  const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}`;
+                  const actionStatus = matchedItem?.status;
+                  const showActionButtons =
+                    actionStatus !== "accepted" &&
+                    actionStatus !== "declined" &&
+                    actionStatus !== "tentative" &&
+                    actionStatus !== "deleted";
+
+                  return (
+                    <div
+                      key={msg.eventId}
+                      className={`chat-message ${msg.isIncoming ? "chat-message--in" : "chat-message--out"}`}
+                    >
+                      <div className={bubbleClass}>
+                        {isBoard && (
+                          <div className="chat-bubble__card">
+                            <div className="chat-bubble__card-title">{msg.attachment?.boardName || "Shared board"}</div>
+                            <div className="chat-bubble__card-meta">Add this board to your workspace</div>
+                            {showActionButtons && (
+                              <div className="chat-bubble__card-actions">
+                                <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add board</button>
+                                <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                              </div>
+                            )}
+                            {!showActionButtons && actionStatus && (
+                              <div className="chat-bubble__card-status">{actionStatus}</div>
+                            )}
+                          </div>
+                        )}
+                        {isContact && (() => {
+                          const ca = msg.attachment;
+                          const contactName = ca?.contactName || ca?.displayName || ca?.username || "Contact";
+                          return (
+                            <div className="chat-bubble__card">
+                              <div className="chat-bubble__card-title">{contactName}</div>
+                              <div className="chat-bubble__card-meta">{ca?.npub ? `${ca.npub.slice(0, 16)}...` : "Shared contact"}</div>
+                              {showActionButtons && (
+                                <div className="chat-bubble__card-actions">
+                                  <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add contact</button>
+                                  <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                </div>
+                              )}
+                              {!showActionButtons && actionStatus && (
+                                <div className="chat-bubble__card-status">{actionStatus}</div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {isTask && (() => {
+                          const ta = msg.attachment?.task;
+                          const isAssignment = !!(ta?.assignment || matchedItem?.task?.assignment);
+                          return (
+                            <div className="chat-bubble__card">
+                              <div className="chat-bubble__card-title">{ta?.title || "Shared task"}</div>
+                              <div className="chat-bubble__card-meta">{isAssignment ? "Task assignment" : "Shared task"}</div>
+                              {showActionButtons && (
+                                <div className="chat-bubble__card-actions">
+                                  {isAssignment ? (
+                                    <>
+                                      <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Accept</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onMaybeMessage(matchedItem.id)}>Maybe</button>
+                                      <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => matchedItem && onDeclineMessage(matchedItem.id)}>Decline</button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add task</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                              {!showActionButtons && actionStatus && (
+                                <div className="chat-bubble__card-status">{actionStatus}</div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {isPayment && (
+                          <div className="chat-bubble__card">
+                            <div className="chat-bubble__card-title">
+                              {msg.attachment?.amountSat != null
+                                ? `${msg.attachment.amountSat} sats`
+                                : "Payment"}
+                            </div>
+                            <div className="chat-bubble__card-meta">{msg.attachment?.detail || "eCash payment"}</div>
+                          </div>
+                        )}
+                        {msg.attachment?.type === "text" && (
+                          <div className="chat-bubble__text">{msg.content}</div>
+                        )}
+                        <div className="chat-bubble__time">
+                          {formatDmDay(msg.createdAt)} &middot; {formatDmTime(msg.createdAt)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Compose bar */}
+              <div className="chat-compose">
+                <input
+                  className="chat-compose__input"
+                  placeholder="Message"
+                  value={chatCompose}
+                  onChange={(e) => setChatCompose(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
+                      e.preventDefault();
+                      void (async () => {
+                        const text = chatCompose.trim();
+                        if (!text) return;
+                        setChatCompose("");
+                        try {
+                          const { identity } = readNostrIdentity();
+                          if (!identity) return;
+                          const recipientHex = activeThread.peerPubkey.toLowerCase();
+                          const senderHex = identity.pubkey.toLowerCase();
+                          const publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+                          if (!publishRelays.length) return;
+                          const pool = ensureNostrPool();
+                          const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                          await publishNip17Giftwraps({
+                            content: text,
+                            senderHex,
+                            recipientHex,
+                            senderSecret: identity.secret,
+                            publish,
+                          });
+                        } catch (err) {
+                          console.warn("[chat] send failed", err);
+                          setChatCompose(text);
+                        }
+                      })();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="chat-compose__send pressable"
+                  disabled={!chatCompose.trim()}
+                  onClick={() => {
+                    void (async () => {
+                      const text = chatCompose.trim();
+                      if (!text) return;
+                      setChatCompose("");
+                      try {
+                        const identity = await readNostrIdentity();
+                        if (!identity) return;
+                        const recipientHex = activeThread.peerPubkey.toLowerCase();
+                        const senderHex = identity.pubkey.toLowerCase();
+                        const publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+                        if (!publishRelays.length) return;
+                        const publish = (event: NostrEvent) => publishWithTimeout(event, publishRelays);
+                        await publishNip17Giftwraps({
+                          content: text,
+                          senderHex,
+                          recipientHex,
+                          senderSecret: identity.secret,
+                          publish,
+                        });
+                      } catch (err) {
+                        console.warn("[chat] send failed", err);
+                        setChatCompose(text);
+                      }
+                    })();
+                  }}
+                  aria-label="Send message"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {chatView === "new-message" && (
+            <div className="chat-new-message">
+              <div className="chat-page__header">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => setChatView("threads")}
+                  aria-label="Cancel"
+                >
+                  <CloseIcon className="h-4 w-4" />
+                </button>
+                <div className="chat-page__header-title">New Message</div>
+                <div style={{ width: "2rem" }} />
+              </div>
+              <div className="chat-page__search">
+                <input
+                  className="chat-page__search-input"
+                  placeholder="Search contacts"
+                  value={dmSearch}
+                  onChange={(event) => setDmSearch(event.target.value)}
+                />
+              </div>
+              <div className="chat-new-message__list">
+                {sortedContacts
+                  .filter((c) => {
+                    if (!dmSearch.trim()) return true;
+                    const hay = `${c.name} ${c.displayName || ""} ${c.username || ""} ${c.npub} ${c.nip05 || ""}`.toLowerCase();
+                    return hay.includes(dmSearch.trim().toLowerCase());
+                  })
+                  .map((contact) => {
+                    const contactLabel = contactDisplayLabel(contact);
+                    const photo = contact.picture?.trim();
+                    return (
+                      <button
+                        key={contact.id}
+                        className="wallet-messages__thread pressable"
+                        onClick={() => {
+                          const hex = compressedToRawHex(normalizeNostrPubkey(contact.npub || "")).toLowerCase();
+                          if (hex) {
+                            setActiveThreadPeer(hex);
+                            setChatView("conversation");
+                            setDmView("thread");
+                            setDmSearch("");
+                          }
+                        }}
+                      >
+                        <div className="wallet-messages__avatar">
+                          {photo ? (
+                            <img src={photo} alt={contactLabel} className="wallet-messages__avatar-img" />
+                          ) : (
+                            <span>{contactInitials(contactLabel)}</span>
+                          )}
+                        </div>
+                        <div className="wallet-messages__thread-body">
+                          <div className="wallet-messages__thread-title">{contactLabel}</div>
+                          {contact.nip05 && (
+                            <div className="wallet-messages__thread-subtitle">{contact.nip05}</div>
+                          )}
+                          {!contact.nip05 && contact.npub && (
+                            <div className="wallet-messages__thread-subtitle">{contact.npub.slice(0, 20)}...</div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                {sortedContacts.length === 0 && (
+                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
+                    No contacts yet. Add contacts from the contacts view.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {chatView === "contacts" && (
+            <div className="chat-contacts-view">
+              <div className="chat-page__header">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => setChatView("threads")}
+                  aria-label="Back to chat"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title">
+                  {contactView === "edit"
+                    ? contactEditDraft.isProfile
+                      ? "Edit My Card"
+                      : contactEditDraft.id
+                        ? "Edit Contact"
+                        : "New Contact"
+                    : contactView === "detail"
+                      ? ""
+                      : "Contacts"}
+                </div>
+                {contactView === "list" ? (
+                  <button
+                    type="button"
+                    className="glass-icon-button glass-icon-button--accent pressable"
+                    onClick={handleStartAddContact}
+                    title="Add contact"
+                    aria-label="Add contact"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                  </button>
+                ) : contactView === "detail" ? (
+                  <button
+                    className="glass-icon-button pressable"
+                    onClick={handleBackToContactsList}
+                    aria-label="Back to contacts"
+                  >
+                    <BackIcon className="h-5 w-5" />
+                  </button>
+                ) : (
+                  <button
+                    className="glass-icon-button pressable"
+                    onClick={handleCancelContactEdit}
+                    aria-label="Cancel"
+                  >
+                    <CloseIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <div className="chat-contacts-view__body">
+                <div
+                  ref={contactsPanelRef}
+                  className="contacts-shell"
+                >
+                  {contactView === "list" && (
+                    <div className="contacts-list-view">
+                      {(() => {
+                        const profileSubtitleIsNip05 =
+                          !!profileCard.nip05 &&
+                          !!myCardSubtitle &&
+                          normalizeNip05(profileCard.nip05) === normalizeNip05(myCardSubtitle);
+                        const profileNip05Verified =
+                          profileSubtitleIsNip05 &&
+                          isNip05VerifiedFor(profileCard.id, profileCard.nip05, profileCard.npub);
+                        const profilePhoto = profileCard.picture?.trim();
+                        return (
+                          <button
+                            type="button"
+                            className="contact-row pressable"
+                            onClick={() => {
+                              setActiveContactId("profile");
+                              setContactView("detail");
+                            }}
+                          >
+                            <div className={`contact-avatar${profilePhoto ? " contact-avatar--image" : ""}`}>
+                              {profilePhoto ? (
+                                <img src={profilePhoto} alt={myCardName} className="contact-avatar__img" />
+                              ) : (
+                                contactInitials(myCardName)
+                              )}
+                            </div>
+                            <div className="contact-row__text">
+                              <div className="contact-row__name">{myCardName}</div>
+                              {myCardSubtitle && (
+                                <div className="contact-row__meta">
+                                  <span className="contact-row__meta-text">{myCardSubtitle}</span>
+                                  {profileNip05Verified && <span className="contact-nip05-badge" title="Verified">&#10004;</span>}
+                                </div>
+                              )}
+                            </div>
+                            <span className="contact-row__chevron">&rsaquo;</span>
+                          </button>
+                        );
+                      })()}
+                      {sortedContacts.map((contact) => {
+                        const displayName = contactDisplayLabel(contact);
+                        const photo = contact.picture?.trim();
+                        const sub = contact.nip05 || contact.npub || contact.address || "";
+                        const subIsNip05 = !!contact.nip05 && normalizeNip05(contact.nip05) === normalizeNip05(sub);
+                        const nip05Verified = subIsNip05 && isNip05VerifiedFor(contact.id, contact.nip05, contact.npub);
+                        return (
+                          <button
+                            key={contact.id}
+                            type="button"
+                            className="contact-row pressable"
+                            onClick={() => {
+                              setActiveContactId(contact.id);
+                              setContactView("detail");
+                            }}
+                          >
+                            <div className={`contact-avatar${photo ? " contact-avatar--image" : ""}`}>
+                              {photo ? (
+                                <img src={photo} alt={displayName} className="contact-avatar__img" />
+                              ) : (
+                                contactInitials(displayName)
+                              )}
+                            </div>
+                            <div className="contact-row__text">
+                              <div className="contact-row__name">{displayName}</div>
+                              {sub && (
+                                <div className="contact-row__meta">
+                                  <span className="contact-row__meta-text">{sub.length > 30 ? sub.slice(0, 28) + "..." : sub}</span>
+                                  {nip05Verified && <span className="contact-nip05-badge" title="Verified">&#10004;</span>}
+                                </div>
+                              )}
+                            </div>
+                            <span className="contact-row__chevron">&rsaquo;</span>
+                          </button>
+                        );
+                      })}
+                      {sortedContacts.length === 0 && (
+                        <div className="text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
+                          No contacts yet. Tap + to add one.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       <ActionSheet
