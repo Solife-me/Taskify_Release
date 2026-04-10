@@ -15312,7 +15312,7 @@ export default function CashuWalletModal({
 
               {/* Messages */}
               <div className="chat-conversation__messages">
-                {activeThread.messages.map((msg) => {
+                {activeThread.messages.filter((msg) => !msg.eventId.startsWith("draft-")).map((msg) => {
                   const matchedItem = messageItemsByEventId.get(msg.eventId);
                   const isPayment = msg.attachment?.type === "payment";
                   const isContact = msg.attachment?.type === "contact";
@@ -15652,8 +15652,14 @@ export default function CashuWalletModal({
                       type="button"
                       className="contact-row contact-row--profile pressable"
                       onClick={() => {
-                        setActiveContactId("profile");
-                        setContactView("detail");
+                        const normalized = normalizeNostrPubkey(myCardNpub);
+                        const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                        if (hex) {
+                          openConversationForPeer(hex);
+                        } else {
+                          setActiveContactId("profile");
+                          setContactView("detail");
+                        }
                       }}
                     >
                       <div className={`contact-avatar${profileCard.picture?.trim() ? " contact-avatar--image" : ""}`}>
