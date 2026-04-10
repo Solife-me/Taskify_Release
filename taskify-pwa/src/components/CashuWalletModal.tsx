@@ -5188,12 +5188,27 @@ export default function CashuWalletModal({
     () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
     [activeThreadPeer, dmThreads],
   );
+  const openConversationForPeer = useCallback(
+    (peerHex: string | null | undefined) => {
+      const normalizedPeer = (peerHex || "").trim().toLowerCase();
+      if (!normalizedPeer) return false;
+      setActiveThreadPeer(normalizedPeer);
+      setDmView("thread");
+      setChatView("conversation");
+      setContactView("list");
+      setActiveContactId(null);
+      setDmSearch("");
+      return true;
+    },
+    [],
+  );
   useEffect(() => {
+    if (dmView === "thread" && chatView !== "conversation") return;
     if (dmView === "thread" && !activeThread) {
       setDmView("list");
       setActiveThreadPeer(null);
     }
-  }, [activeThread, dmView]);
+  }, [activeThread, chatView, dmView]);
   const threadUnreadMap = useMemo(() => {
     const map = new Map<string, number>();
     dmThreads.forEach((thread) => {
@@ -15512,11 +15527,18 @@ export default function CashuWalletModal({
                   </button>
                 ) : contactView === "detail" ? (
                   <button
-                    className="glass-icon-button pressable"
-                    onClick={handleBackToContactsList}
-                    aria-label="Back to contact list"
+                    className="glass-icon-button glass-icon-button--accent pressable"
+                    onClick={() => {
+                      if (activeContactId === "profile") {
+                        handleStartEditCurrentContact();
+                      } else {
+                        handleBackToContactsList();
+                      }
+                    }}
+                    aria-label={activeContactId === "profile" ? "Edit profile" : "Back to contact list"}
+                    title={activeContactId === "profile" ? "Edit profile" : "Back to contact list"}
                   >
-                    <BackIcon className="h-5 w-5" />
+                    {activeContactId === "profile" ? <PencilIcon className="h-4 w-4" /> : <BackIcon className="h-5 w-5" />}
                   </button>
                 ) : (
                   <button
@@ -15613,11 +15635,7 @@ export default function CashuWalletModal({
                             onClick={() => {
                               const normalized = normalizeNostrPubkey(contact.npub || "");
                               const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
-                              if (hex) {
-                                setActiveThreadPeer(hex);
-                                setChatView("conversation");
-                                setDmView("thread");
-                                setDmSearch("");
+                              if (hex && openConversationForPeer(hex)) {
                                 return;
                               }
                               setActiveContactId(contact.id);
