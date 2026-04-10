@@ -2076,7 +2076,7 @@ export default function CashuWalletModal({
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const isContactsPage = page === "contacts";
   const isChatPage = page === "chat";
-  const [chatView, setChatView] = useState<"threads" | "conversation" | "contacts" | "new-message">("threads");
+  const [chatView, setChatView] = useState<"threads" | "conversation" | "new-message">("threads");
   const [chatCompose, setChatCompose] = useState("");
   const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>([]);
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
@@ -10117,7 +10117,6 @@ export default function CashuWalletModal({
   }, [contactsSyncEnabled, nostrMissingReason, migrateNip51ContactsIfNeeded]);
 
   useEffect(() => {
-    if (!contactsTabOpen) return;
     if (!contactsSyncEnabled) return;
     if (!contactsPublishQueuedRef.current) return;
     const timer = window.setTimeout(() => {
@@ -10126,7 +10125,7 @@ export default function CashuWalletModal({
       }
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [contactsSyncEnabled, contactsTabOpen, publishContactsToNostr]);
+  }, [contactsSyncEnabled, contacts, contactSyncMeta.fingerprint, publishContactsToNostr]);
 
   useEffect(() => {
     if (!contactsTabOpen && !contactsOpen) {
@@ -14830,7 +14829,7 @@ export default function CashuWalletModal({
                   onClick={() => {
                     setActiveContactId("profile");
                     setContactView("detail");
-                    setChatView("contacts");
+                    setChatView("new-message");
                   }}
                   aria-label="Open profile"
                 >
@@ -15065,23 +15064,6 @@ export default function CashuWalletModal({
                 )}
               </div>
 
-              {/* Bottom contacts button */}
-              <div className="chat-page__footer-actions">
-                <button
-                  type="button"
-                  className="ghost-button button-sm pressable"
-                  onClick={() => {
-                    setContactView("list");
-                    setChatView("contacts");
-                  }}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1 inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
-                    <circle cx="12" cy="8" r="4" />
-                  </svg>
-                  Contacts
-                </button>
-              </div>
             </div>
           )}
 
@@ -15325,86 +15307,22 @@ export default function CashuWalletModal({
 
           {chatView === "new-message" && (
             <div className="chat-new-message">
-              <div className="chat-page__header">
+              <div className="chat-page__header chat-page__header--safe-area">
                 <button
                   className="glass-icon-button pressable"
-                  onClick={() => setChatView("threads")}
-                  aria-label="Cancel"
+                  onClick={() => {
+                    setChatView("threads");
+                    setContactView("list");
+                    setActiveContactId(null);
+                    setDmSearch("");
+                  }}
+                  aria-label={contactView === "detail" ? "Back to contacts" : contactView === "edit" ? "Cancel" : "Close new message"}
                 >
-                  <CloseIcon className="h-4 w-4" />
-                </button>
-                <div className="chat-page__header-title">New Message</div>
-                <div style={{ width: "2rem" }} />
-              </div>
-              <div className="chat-page__search">
-                <input
-                  className="chat-page__search-input"
-                  placeholder="Search contacts"
-                  value={dmSearch}
-                  onChange={(event) => setDmSearch(event.target.value)}
-                />
-              </div>
-              <div className="chat-new-message__list">
-                {sortedContacts
-                  .filter((c) => {
-                    if (!dmSearch.trim()) return true;
-                    const hay = `${c.name} ${c.displayName || ""} ${c.username || ""} ${c.npub} ${c.nip05 || ""}`.toLowerCase();
-                    return hay.includes(dmSearch.trim().toLowerCase());
-                  })
-                  .map((contact) => {
-                    const contactLabel = contactDisplayLabel(contact);
-                    const photo = contact.picture?.trim();
-                    return (
-                      <button
-                        key={contact.id}
-                        className="wallet-messages__thread pressable"
-                        onClick={() => {
-                          const hex = compressedToRawHex(normalizeNostrPubkey(contact.npub || "")).toLowerCase();
-                          if (hex) {
-                            setActiveThreadPeer(hex);
-                            setChatView("conversation");
-                            setDmView("thread");
-                            setDmSearch("");
-                          }
-                        }}
-                      >
-                        <div className="wallet-messages__avatar">
-                          {photo ? (
-                            <img src={photo} alt={contactLabel} className="wallet-messages__avatar-img" />
-                          ) : (
-                            <span>{contactInitials(contactLabel)}</span>
-                          )}
-                        </div>
-                        <div className="wallet-messages__thread-body">
-                          <div className="wallet-messages__thread-title">{contactLabel}</div>
-                          {contact.nip05 && (
-                            <div className="wallet-messages__thread-subtitle">{contact.nip05}</div>
-                          )}
-                          {!contact.nip05 && contact.npub && (
-                            <div className="wallet-messages__thread-subtitle">{contact.npub.slice(0, 20)}...</div>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                {sortedContacts.length === 0 && (
-                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
-                    No contacts yet. Add contacts from the contacts view.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {chatView === "contacts" && (
-            <div className="chat-contacts-view">
-              <div className="chat-page__header">
-                <button
-                  className="glass-icon-button pressable"
-                  onClick={() => setChatView("threads")}
-                  aria-label="Back to chat"
-                >
-                  <BackIcon className="h-5 w-5" />
+                  {contactView === "detail" ? (
+                    <BackIcon className="h-5 w-5" />
+                  ) : (
+                    <CloseIcon className="h-4 w-4" />
+                  )}
                 </button>
                 <div className="chat-page__header-title">
                   {contactView === "edit"
@@ -15414,8 +15332,10 @@ export default function CashuWalletModal({
                         ? "Edit Contact"
                         : "New Contact"
                     : contactView === "detail"
-                      ? ""
-                      : "Contacts"}
+                      ? activeContactId === "profile"
+                        ? "My Profile"
+                        : "Contact"
+                      : "New Message"}
                 </div>
                 {contactView === "list" ? (
                   <button
@@ -15434,7 +15354,7 @@ export default function CashuWalletModal({
                   <button
                     className="glass-icon-button pressable"
                     onClick={handleBackToContactsList}
-                    aria-label="Back to contacts"
+                    aria-label="Back to contact list"
                   >
                     <BackIcon className="h-5 w-5" />
                   </button>
@@ -15448,80 +15368,114 @@ export default function CashuWalletModal({
                   </button>
                 )}
               </div>
-              <div className="chat-contacts-view__body">
-                <div
-                  ref={contactsPanelRef}
-                  className="contacts-shell"
-                >
-                  {contactView === "list" && (
-                    <div className="contacts-list-view">
-                      {(() => {
-                        const profileSubtitleIsNip05 =
-                          !!profileCard.nip05 &&
-                          !!myCardSubtitle &&
-                          normalizeNip05(profileCard.nip05) === normalizeNip05(myCardSubtitle);
-                        const profileNip05Verified =
-                          profileSubtitleIsNip05 &&
-                          isNip05VerifiedFor(profileCard.id, profileCard.nip05, profileCard.npub);
-                        const profilePhoto = profileCard.picture?.trim();
-                        return (
-                          <button
-                            type="button"
-                            className="contact-row pressable"
-                            onClick={() => {
-                              setActiveContactId("profile");
-                              setContactView("detail");
-                            }}
-                          >
-                            <div className={`contact-avatar${profilePhoto ? " contact-avatar--image" : ""}`}>
-                              {profilePhoto ? (
-                                <img src={profilePhoto} alt={myCardName} className="contact-avatar__img" />
-                              ) : (
-                                contactInitials(myCardName)
-                              )}
-                            </div>
-                            <div className="contact-row__text">
-                              <div className="contact-row__name">{myCardName}</div>
-                              {myCardSubtitle && (
-                                <div className="contact-row__meta">
-                                  <span className="contact-row__meta-text">{myCardSubtitle}</span>
-                                  {profileNip05Verified && <span className="contact-nip05-badge" title="Verified">&#10004;</span>}
-                                </div>
-                              )}
-                            </div>
-                            <span className="contact-row__chevron">&rsaquo;</span>
-                          </button>
-                        );
-                      })()}
-                      {sortedContacts.map((contact) => {
-                        const displayName = contactDisplayLabel(contact);
+              {contactView === "list" && (
+                <>
+                  <div className="chat-page__search">
+                    <input
+                      className="chat-page__search-input"
+                      placeholder="Search contacts"
+                      value={dmSearch}
+                      onChange={(event) => setDmSearch(event.target.value)}
+                    />
+                  </div>
+                  <div className="chat-new-message__list">
+                    <div className="chat-new-message__actions">
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
+                        onClick={() => {
+                          setScannerMessage("");
+                          setShowScanner(true);
+                        }}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <QrScanIcon className="h-4 w-4" />
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">Scan QR</span>
+                          <span className="chat-new-message__action-subtitle">Add a contact or start a chat from a code</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
+                        onClick={handleStartAddContact}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <PlusIcon className="h-4 w-4" />
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">Add contact</span>
+                          <span className="chat-new-message__action-subtitle">Create a contact card manually</span>
+                        </span>
+                      </button>
+                    </div>
+                    <div className="chat-new-message__section-label">Contacts</div>
+                    <button
+                      type="button"
+                      className="contact-row contact-row--profile pressable"
+                      onClick={() => {
+                        setActiveContactId("profile");
+                        setContactView("detail");
+                      }}
+                    >
+                      <div className={`contact-avatar${profileCard.picture?.trim() ? " contact-avatar--image" : ""}`}>
+                        {profileCard.picture?.trim() ? (
+                          <img src={profileCard.picture.trim()} alt={myCardName} className="contact-avatar__img" />
+                        ) : (
+                          contactInitials(myCardName)
+                        )}
+                      </div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{myCardName}</div>
+                        {myCardSubtitle && (
+                          <div className="contact-row__meta">
+                            <span className="contact-row__meta-text">{myCardSubtitle}</span>
+                          </div>
+                        )}
+                      </div>
+                      <span className="contact-row__chevron">&rsaquo;</span>
+                    </button>
+                    {sortedContacts
+                      .filter((c) => {
+                        if (!dmSearch.trim()) return true;
+                        const hay = `${c.name} ${c.displayName || ""} ${c.username || ""} ${c.npub} ${c.nip05 || ""}`.toLowerCase();
+                        return hay.includes(dmSearch.trim().toLowerCase());
+                      })
+                      .map((contact) => {
+                        const contactLabel = contactDisplayLabel(contact);
                         const photo = contact.picture?.trim();
-                        const sub = contact.nip05 || contact.npub || contact.address || "";
-                        const subIsNip05 = !!contact.nip05 && normalizeNip05(contact.nip05) === normalizeNip05(sub);
-                        const nip05Verified = subIsNip05 && isNip05VerifiedFor(contact.id, contact.nip05, contact.npub);
+                        const subtitle = contact.nip05 || contact.npub || contact.address || "";
                         return (
                           <button
                             key={contact.id}
-                            type="button"
                             className="contact-row pressable"
                             onClick={() => {
+                              const normalized = normalizeNostrPubkey(contact.npub || "");
+                              const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                              if (hex) {
+                                setActiveThreadPeer(hex);
+                                setChatView("conversation");
+                                setDmView("thread");
+                                setDmSearch("");
+                                return;
+                              }
                               setActiveContactId(contact.id);
                               setContactView("detail");
                             }}
                           >
                             <div className={`contact-avatar${photo ? " contact-avatar--image" : ""}`}>
                               {photo ? (
-                                <img src={photo} alt={displayName} className="contact-avatar__img" />
+                                <img src={photo} alt={contactLabel} className="contact-avatar__img" />
                               ) : (
-                                contactInitials(displayName)
+                                contactInitials(contactLabel)
                               )}
                             </div>
                             <div className="contact-row__text">
-                              <div className="contact-row__name">{displayName}</div>
-                              {sub && (
+                              <div className="contact-row__name">{contactLabel}</div>
+                              {subtitle && (
                                 <div className="contact-row__meta">
-                                  <span className="contact-row__meta-text">{sub.length > 30 ? sub.slice(0, 28) + "..." : sub}</span>
-                                  {nip05Verified && <span className="contact-nip05-badge" title="Verified">&#10004;</span>}
+                                  <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
                                 </div>
                               )}
                             </div>
@@ -15529,15 +15483,365 @@ export default function CashuWalletModal({
                           </button>
                         );
                       })}
-                      {sortedContacts.length === 0 && (
-                        <div className="text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
-                          No contacts yet. Tap + to add one.
+                    {sortedContacts.length === 0 && (
+                      <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
+                        No contacts yet. Add one or scan a QR to start chatting.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              {contactView !== "list" && (
+                <div className="chat-new-message__list chat-new-message__list--detail">
+                  <div ref={contactsPanelRef} className="contacts-shell">
+                    {contactView === "detail" && detailTarget && (
+                      <div className="contact-detail-view">
+                        <div className="contact-hero">
+                          <div className="contact-hero__center">
+                            <div className="contact-qr-wrapper">
+                              {detailShareValue ? (
+                                <QrCodeCard
+                                  className="contact-qr-card"
+                                  value={detailShareValue}
+                                  label={detailTitle}
+                                  size={200}
+                                  flat
+                                  hideLabel
+                                  hideCopyButton
+                                />
+                              ) : (
+                                <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
+                              )}
+                            </div>
+                            <div className={`contact-heading${detailTarget.picture ? "" : " contact-heading--text-only"}`}>
+                              {detailTarget.picture && (
+                                <img src={detailTarget.picture} alt={detailTitle} className="contact-portrait" />
+                              )}
+                              <div className="contact-heading__text">
+                                <div className="flex items-center gap-2">
+                                  <div className="contact-name-lg" title={detailTitle}>
+                                    {truncateContactName(detailTitle, 34)}
+                                  </div>
+                                  {activeContactId === "profile" && profileCard.npub && (
+                                    <button
+                                      type="button"
+                                      className="contact-pill contact-pill--circle pressable"
+                                      title="Share your npub"
+                                      onClick={() => {
+                                        setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
+                                        setShareContactStatus(null);
+                                        setShareContactPickerOpen(true);
+                                      }}
+                                    >
+                                      <ShareArrowIcon className="contact-pill__icon" />
+                                    </button>
+                                  )}
+                                </div>
+                                {detailUsername && (
+                                  <div className="contact-username" title={detailUsername}>
+                                    {truncateContactValue(detailUsername, 33)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                      )}
+
+                        {activeContact && (detailHasLightning || detailCanShare) && (
+                          <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
+                            {detailHasLightning && (
+                              <button
+                                type="button"
+                                className="contact-pill pressable"
+                                onClick={() => {
+                                  applyLightningContact(activeContact);
+                                  setContactsTabOpen(false);
+                                }}
+                              >
+                                Pay lightning
+                              </button>
+                            )}
+                            {detailCanShare && (
+                              <button
+                                type="button"
+                                className="contact-pill pressable"
+                                onClick={() => {
+                                  openEcashSendToContact(activeContact);
+                                  setContactsTabOpen(false);
+                                }}
+                              >
+                                Pay eCash
+                              </button>
+                            )}
+                            {detailCanShare && (
+                              <button
+                                type="button"
+                                className="contact-pill contact-pill--circle pressable"
+                                title="Share contact"
+                                onClick={() => {
+                                  setShareContactSource(activeContact);
+                                  setShareContactStatus(null);
+                                  setShareContactPickerOpen(true);
+                                }}
+                              >
+                                <ShareArrowIcon className="contact-pill__icon" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="contact-fields">
+                          {detailFields.length ? (
+                            detailFields.map((field) => {
+                              const isNip05Field = field.key === "nip05";
+                              return (
+                                <div key={field.key} className="contact-field">
+                                  <div className="contact-field__label">{field.label}</div>
+                                  <button
+                                    type="button"
+                                    className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
+                                      isNip05Field ? " contact-field__value--nip05" : ""
+                                    }`}
+                                    onClick={() => handleCopyContactField(field.value, field.label)}
+                                    title={field.value}
+                                  >
+                                    <span className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}>
+                                      {field.multiline ? field.value : truncateContactValue(field.value, 36)}
+                                    </span>
+                                    {isNip05Field && detailNip05Verified && (
+                                      <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                                    )}
+                                  </button>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
+                          )}
+                        </div>
+
+                        {activeContact && (
+                          <div className="contact-actions-row">
+                            <button
+                              type="button"
+                              className="contact-pill contact-pill--danger pressable"
+                              onClick={() => {
+                                if (window.confirm("Remove this contact?")) {
+                                  handleDeleteContact(activeContact.id);
+                                  setContactView("list");
+                                  setActiveContactId(null);
+                                }
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {contactView === "detail" && !detailTarget && (
+                      <div className="contact-empty text-secondary">
+                        Contact not found.{" "}
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-primary underline"
+                          onClick={() => {
+                            setContactView("list");
+                            setActiveContactId(null);
+                          }}
+                        >
+                          Go back
+                        </button>
+                      </div>
+                    )}
+
+                    {contactView === "edit" &&
+            (() => {
+              const profilePhoto = contactEditDraft.picture.trim();
+              const profileInitials =
+                contactEditDraft.displayName ||
+                contactEditDraft.name ||
+                contactEditDraft.username ||
+                myCardName;
+              const showContactFields = contactEditDraft.isProfile || showCustomContactFields;
+
+              return (
+                <form
+                  id="contact-edit-form"
+                  className="contact-edit-view"
+                  onSubmit={(event) => event.preventDefault()}
+                >
+                  {contactEditDraft.isProfile ? (
+                    <div className="contact-photo-card">
+                      <div className="contact-photo-title">Profile photo</div>
+                      <div className="contact-photo-body">
+                        <div
+                          className={
+                            profilePhoto
+                              ? "contact-avatar contact-avatar--image contact-avatar--xl"
+                              : "contact-avatar contact-avatar--xl"
+                          }
+                        >
+                          {profilePhoto ? (
+                            <img src={profilePhoto} alt={profileInitials} className="contact-avatar__img" />
+                          ) : (
+                            contactInitials(profileInitials)
+                          )}
+                        </div>
+                        <div className="contact-photo-actions">
+                          <button
+                            type="button"
+                            className="accent-button pressable contact-photo-upload"
+                            onClick={() => {
+                              setProfilePhotoError("");
+                              profilePhotoInputRef.current?.click();
+                            }}
+                            disabled={profilePhotoBusy}
+                          >
+                            {profilePhotoBusy ? "Processing…" : profilePhoto ? "Replace photo" : "Upload photo"}
+                          </button>
+                          {profilePhoto && (
+                            <button
+                              type="button"
+                              className="ghost-button button-sm pressable contact-photo-remove"
+                              onClick={handleClearProfilePhoto}
+                              disabled={profilePhotoBusy}
+                            >
+                              Remove photo
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          ref={profilePhotoInputRef}
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          onChange={handleProfilePhotoChange}
+                        />
+                        {profilePhotoError && <div className="contact-error">{profilePhotoError}</div>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="contact-import-card">
+                      <div className="contact-import-title">Import from npub / NIP-05</div>
+                      <div className="contact-import-actions contact-import-actions--top">
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-import-scan"
+                          onClick={() => {
+                            setShowScanner(true);
+                          }}
+                        >
+                          Scan QR
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-custom-toggle"
+                          onClick={() => setShowCustomContactFields((prev) => !prev)}
+                        >
+                          {showCustomContactFields ? "Hide custom fields" : "Custom contact"}
+                        </button>
+                        {publicFollowOptions.length > 0 && (
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable contact-import-follow"
+                            onClick={() => setPublicFollowPickerOpen(true)}
+                          >
+                            Pick from follows
+                          </button>
+                        )}
+                      </div>
+                      <div className="contact-import-row">
+                        <input
+                          className="contact-edit-input contact-import-input"
+                          placeholder="npub1… or name@example.com"
+                          value={contactLookupInput}
+                          onChange={(e) => setContactLookupInput(e.target.value)}
+                          autoComplete="off"
+                        />
+                        <button
+                          type="button"
+                          className="accent-button pressable contact-import-button"
+                          onClick={async () => {
+                            await handleContactImportAction();
+                          }}
+                          disabled={contactLookupBusy}
+                        >
+                          {contactLookupBusy ? "…" : contactLookupInput.trim() ? "Import" : "Paste"}
+                        </button>
+                      </div>
+                      {contactLookupError && <div className="contact-error">{contactLookupError}</div>}
                     </div>
                   )}
+
+                  {showContactFields && (
+                    <div className="contact-edit-grid">
+                      {!contactEditDraft.isProfile && (
+                        <input
+                          className="contact-edit-input"
+                          placeholder="Nickname"
+                          value={contactEditDraft.name}
+                          onChange={(e) => setContactEditDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        />
+                      )}
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Display name"
+                        value={contactEditDraft.displayName}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, displayName: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Username"
+                        value={contactEditDraft.username}
+                        onChange={(e) => {
+                          const sanitized = sanitizeUsername(e.target.value);
+                          setContactEditDraft((prev) => ({ ...prev, username: sanitized }));
+                        }}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Lightning address"
+                        autoComplete="off"
+                        value={contactEditDraft.address}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, address: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="npub or hex pubkey"
+                        autoComplete="off"
+                        value={contactEditDraft.npub}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, npub: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="NIP-05 (name@example.com)"
+                        autoComplete="off"
+                        value={contactEditDraft.nip05}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, nip05: e.target.value }))}
+                      />
+                      <textarea
+                        className="contact-edit-input contact-edit-textarea"
+                        rows={3}
+                        placeholder="About"
+                        value={contactEditDraft.about}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, about: e.target.value }))}
+                      />
+                    </div>
+                  )}
+
+                  <div className="contact-edit-note text-secondary">
+                    Saving publishes your updates to Nostr (contacts stay encrypted).
+                  </div>
+
+                  {contactEditError && <div className="contact-error">{contactEditError}</div>}
+                </form>
+              );
+            })()}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>
