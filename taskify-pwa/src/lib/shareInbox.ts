@@ -301,11 +301,13 @@ export async function sendShareMessage(
   }
   const senderPubkey = getPublicKey(hexToBytes(senderSecretHex)).toLowerCase();
   const normalizedRecipient = recipientRaw.toLowerCase();
+  // The inner kind:14 rumor carries the canonical DM timestamp.
+  const rumorCreatedAt = Math.floor(Date.now() / 1000);
   const rumorBase = {
     kind: 14,
     content,
     tags: [["p", normalizedRecipient]],
-    created_at: resolveNip17Timestamp(),
+    created_at: rumorCreatedAt,
     pubkey: senderPubkey,
   };
   const rumor = {

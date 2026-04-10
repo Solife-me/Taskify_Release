@@ -7716,7 +7716,7 @@ export default function App() {
   // header view
   const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
   const [activePage, setActivePage] = useState<
-    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "contacts" | "settings"
+    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings"
   >("boards");
   // Ref updated every render so navigation callbacks can read the gate without
   // stale-closure issues (isOnboardingActive is derived further down).
@@ -8023,8 +8023,8 @@ export default function App() {
     showSettings,
   ]);
   const showWallet = activePage === "wallet";
-  const showContacts = activePage === "contacts";
-  const showWalletShell = showWallet || showContacts;
+  const showChat = activePage === "chat";
+  const showWalletShell = showWallet || showChat;
   const walletModalPrefetchedRef = useRef(false);
   const prefetchWalletModal = useCallback(() => {
     if (walletModalPrefetchedRef.current) return;
@@ -8148,11 +8148,11 @@ export default function App() {
     }
     startTransition(() => setActivePage("boards"));
   }, [activePage, shouldReloadForNavigation]);
-  const openContactsPage = useCallback(() => {
+  const openChatPage = useCallback(() => {
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     prefetchWalletModal();
-    startTransition(() => setActivePage("contacts"));
+    startTransition(() => setActivePage("chat"));
   }, [prefetchWalletModal, shouldReloadForNavigation]);
 
   const openShareBoard = useCallback(() => {
@@ -9239,7 +9239,6 @@ export default function App() {
   const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [upcomingHover, setUpcomingHover] = useState(false);
-  const [inboxOpen, setInboxOpen] = useState(false);
   const [upcomingFilterOpen, setUpcomingFilterOpen] = useState(false);
   const [upcomingUsHolidaysEnabled, setUpcomingUsHolidaysEnabled] = useState<boolean>(() => {
     const raw = kvStorage.getItem(LS_UPCOMING_US_HOLIDAYS_ENABLED);
@@ -19331,30 +19330,6 @@ export default function App() {
                 <circle cx="11" cy="18" r="2" />
               </svg>
             </button>
-            <button
-              type="button"
-              className="app-header__icon-btn pressable"
-              onClick={() => setInboxOpen(true)}
-              title="Inbox"
-              aria-label={`Inbox${inboxPendingCount ? ` (${inboxPendingCount})` : ""}`}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-[18px] w-[18px]"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.8}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M4 4h16v12H4z" />
-                <path d="M4 12l4 4h8l4-4" />
-              </svg>
-              {inboxPendingCount > 0 && (
-                <span className="app-header__badge">{inboxPendingCount}</span>
-              )}
-            </button>
           </div>
         </div>
       )}
@@ -19420,7 +19395,7 @@ export default function App() {
               handleDragEnd();
             }}
           >
-            <div className="app-tab-switcher__icon app-tab-switcher__icon--badge">
+            <div className="app-tab-switcher__icon">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="app-tab-switcher__icon-svg"
@@ -19437,9 +19412,6 @@ export default function App() {
                 <path d="M4 11h16" />
                 <path d="M12 14v3l2 1" />
               </svg>
-              {inboxPendingCount > 0 && (
-                <span className="app-tab-switcher__badge">{inboxPendingCount}</span>
-              )}
             </div>
             <div className="app-tab-switcher__label">Upcoming</div>
           </button>
@@ -19475,11 +19447,11 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={`app-tab-switcher__btn pressable${activePage === "contacts" ? " app-tab-switcher__btn--active" : ""}`}
-            onClick={openContactsPage}
-            aria-label="Contacts"
+            className={`app-tab-switcher__btn pressable${activePage === "chat" ? " app-tab-switcher__btn--active" : ""}`}
+            onClick={openChatPage}
+            aria-label="Chat"
           >
-            <div className="app-tab-switcher__icon">
+            <div className="app-tab-switcher__icon app-tab-switcher__icon--badge">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="app-tab-switcher__icon-svg"
@@ -19490,11 +19462,13 @@ export default function App() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
               >
-                <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
-                <circle cx="12" cy="8" r="4" />
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
+              {inboxPendingCount > 0 && (
+                <span className="app-tab-switcher__badge">{inboxPendingCount}</span>
+              )}
             </div>
-            <div className="app-tab-switcher__label">Contacts</div>
+            <div className="app-tab-switcher__label">Chat</div>
           </button>
           <button
             type="button"
@@ -19924,149 +19898,6 @@ export default function App() {
         )}
       </ActionSheet>
 
-      <ActionSheet open={inboxOpen} onClose={() => setInboxOpen(false)} title="Inbox">
-        {inboxPendingItems.length === 0 && pendingCalendarInvites.length === 0 ? (
-          <div className="text-sm text-secondary">No shared items.</div>
-        ) : (
-          <div className="space-y-4">
-            {pendingCalendarInvites.length > 0 && (
-              <div>
-                <div className="text-xs text-secondary mb-2">Event invites</div>
-                <ul className="space-y-2">
-                  {pendingCalendarInvites.map((invite) => {
-                    const senderName =
-                      invite.sender?.name ||
-                      invite.sender?.npub ||
-                      (invite.sender?.pubkey ? shortenNpub(toNpub(invite.sender.pubkey)) : "Someone");
-                    const whenLabel = formatCalendarInviteWhen(invite);
-                    return (
-                      <li key={invite.id} className="task-card space-y-2" data-form="stacked">
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1">
-                            <div className="text-sm font-medium leading-[1.15]">{invite.title || "Event invite"}</div>
-                            <div className="text-xs text-secondary">
-                              {whenLabel ? `${whenLabel} • ` : ""}From {senderName}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            className="accent-button button-sm pressable"
-                            onClick={() => void handleCalendarInviteRsvp(invite, "accepted")}
-                          >
-                            Accept
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => void handleCalendarInviteRsvp(invite, "tentative")}
-                          >
-                            Tentative
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable text-rose-400"
-                            onClick={() => void handleCalendarInviteRsvp(invite, "declined")}
-                          >
-                            Decline
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => dismissCalendarInvite(invite)}
-                          >
-                            Dismiss
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-
-            {inboxPendingItems.length > 0 && (
-              <div>
-                <div className="text-xs text-secondary mb-2">Shared items</div>
-                <ul className="space-y-2">
-                  {inboxPendingItems.map((item) => {
-                    const senderName = item.sender?.name || item.sender?.npub || "Someone";
-                    const isTaskAssignment = item.type === "task" && isAssignedSharedTask(item.task);
-                    const typeLabel =
-                      item.type === "board"
-                        ? `Board • ${item.boardName || "Shared board"}`
-                        : item.type === "contact"
-                          ? "Contact"
-                          : isTaskAssignment
-                            ? "Task assignment"
-                            : "Task";
-                    return (
-                      <li key={item.id} className="task-card space-y-2" data-form="stacked">
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1">
-                            <div className="text-sm font-medium leading-[1.15]">{item.title}</div>
-                            <div className="text-xs text-secondary">
-                              {typeLabel} • From {senderName}
-                            </div>
-                            {item.note && (
-                              <div className="text-xs text-secondary whitespace-pre-wrap">{item.note}</div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {isTaskAssignment ? (
-                            <>
-                              <button
-                                type="button"
-                                className="accent-button button-sm pressable"
-                                onClick={() => acceptInboxMessage(item.id)}
-                              >
-                                Accept
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-sm pressable"
-                                onClick={() => maybeInboxMessage(item.id)}
-                              >
-                                Maybe
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-sm pressable text-rose-400"
-                                onClick={() => declineInboxMessage(item.id)}
-                              >
-                                Decline
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                className="accent-button button-sm pressable"
-                                onClick={() => acceptInboxMessage(item.id)}
-                              >
-                                Add
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-sm pressable text-rose-400"
-                                onClick={() => dismissInboxMessage(item.id)}
-                              >
-                                Dismiss
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-      </ActionSheet>
 
       {/* Drag trash can */}
       {(draggingTaskId || draggingEventId) && (
@@ -20743,7 +20574,7 @@ export default function App() {
             open={showWalletShell}
             onClose={closeWallet}
             onOpenBounties={openWalletBounties}
-            page={showContacts ? "contacts" : "wallet"}
+            page={showChat ? "chat" : "wallet"}
             showTabSwitcher={false}
             showBottomNav
             walletConversionEnabled={settings.walletConversionEnabled}
@@ -20768,6 +20599,11 @@ export default function App() {
             onDeclineMessage={declineInboxMessage}
             onDismissMessage={dismissInboxMessage}
             onMarkMessagesRead={markInboxMessagesRead}
+            inboxPendingItems={inboxPendingItems}
+            pendingCalendarInvites={pendingCalendarInvites}
+            onCalendarInviteRsvp={handleCalendarInviteRsvp}
+            onDismissCalendarInvite={dismissCalendarInvite}
+            formatCalendarInviteWhen={formatCalendarInviteWhen}
           />
         )}
       </Suspense>

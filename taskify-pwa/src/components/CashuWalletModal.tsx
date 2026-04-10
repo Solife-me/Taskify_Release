@@ -53,6 +53,8 @@ import {
   LS_CONTACT_PROFILE_CACHE,
   LS_DM_BLOCKED_PEERS,
   LS_DM_DELETED_EVENTS,
+  LS_DM_MESSAGE_CACHE,
+  LS_DM_SYNC_META,
   LS_PROFILE_EVENT_IDS,
   LS_PROFILE_METADATA_CACHE,
 } from "../localStorageKeys";
@@ -154,6 +156,7 @@ const HISTORY_ID_TIMESTAMP_REGEX = /(\d{10,})/;
 const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
 const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const PAYMENT_HISTORY_EVENT_ID_REGEX = /^payment-request-(?:recv|pending)-([a-f0-9]{32,})$/i;
+const CHAT_TIMESTAMP_REVEAL_WIDTH = 92;
 
 function deriveTimestampFromId(value: string): number {
   if (typeof value !== "string" || !value) return Date.now();
@@ -940,6 +943,7 @@ type DecryptedNostrDm = {
   senderPubkey?: string | null;
   recipientPubkey?: string | null;
   recipientPubkeys?: string[] | null;
+  createdAt?: number | null;
 };
 
 type WalletDmMessage = {
@@ -959,6 +963,22 @@ type WalletDmThread = {
   lastCreatedAt: number;
   lastPreview: string;
   isStranger: boolean;
+};
+
+type PendingDmMessage = {
+  id: string;
+  content: string;
+  peerPubkey: string;
+  createdAt: number;
+  status: "sending" | "sent" | "done";
+};
+
+type DmThreadListEntry =
+  | { kind: "thread"; thread: WalletDmThread; lastCreatedAt: number }
+  | { kind: "strangers"; lastCreatedAt: number; lastPreview: string };
+
+type DmSyncMeta = {
+  lastCompletedSyncAt: number;
 };
 
 type ContactViewMode = "list" | "detail" | "edit";
@@ -1707,10 +1727,91 @@ function formatDmTime(tsSeconds: number): string {
   return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+function formatDmDateSeparator(tsSeconds: number): string {
+  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
+  const date = new Date(tsSeconds * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((today.getTime() - msgDay.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  const sameYear = date.getFullYear() === now.getFullYear();
+  if (sameYear) return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 function truncatePreview(value: string, limit = 72): string {
   const trimmed = (value || "").trim();
   if (trimmed.length <= limit) return trimmed;
   return `${trimmed.slice(0, limit)}…`;
+}
+
+function isWalletDmAttachment(value: unknown): value is WalletDmAttachment {
+  if (!value || typeof value !== "object") return false;
+  const type = (value as { type?: unknown }).type;
+  return typeof type === "string";
+}
+
+function isWalletDmMessage(value: unknown): value is WalletDmMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<WalletDmMessage>;
+  return (
+    typeof candidate.eventId === "string" &&
+    typeof candidate.peerPubkey === "string" &&
+    typeof candidate.isIncoming === "boolean" &&
+    typeof candidate.createdAt === "number" &&
+    typeof candidate.content === "string" &&
+    typeof candidate.preview === "string"
+  );
+}
+
+function isResolvedPendingDm(pending: PendingDmMessage, messages: WalletDmMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      !message.isIncoming &&
+      message.peerPubkey === pending.peerPubkey &&
+      message.content === pending.content &&
+      Math.abs(message.createdAt - pending.createdAt) < 15,
+  );
+}
+
+function readDmCache(): WalletDmMessage[] {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(isWalletDmMessage)
+      .map((entry) => ({
+        id: entry.id || entry.eventId,
+        eventId: entry.eventId,
+        peerPubkey: entry.peerPubkey.toLowerCase(),
+        isIncoming: entry.isIncoming,
+        createdAt: entry.createdAt,
+        content: entry.content,
+        preview: entry.preview,
+        attachment: isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" },
+      }))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-400);
+  } catch {
+    return [];
+  }
+}
+
+function readDmSyncMeta(): DmSyncMeta {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META);
+    if (!raw) return { lastCompletedSyncAt: 0 };
+    const parsed = JSON.parse(raw) as Partial<DmSyncMeta> | null;
+    const value = typeof parsed?.lastCompletedSyncAt === "number" ? parsed.lastCompletedSyncAt : 0;
+    return { lastCompletedSyncAt: Number.isFinite(value) ? value : 0 };
+  } catch {
+    return { lastCompletedSyncAt: 0 };
+  }
 }
 
 function shortenNpubDisplay(npub: string | null | undefined, lead = 8, tail = 6): string {
@@ -1755,11 +1856,16 @@ export default function CashuWalletModal({
   onDeclineMessage,
   onDismissMessage,
   onMarkMessagesRead,
+  inboxPendingItems,
+  pendingCalendarInvites,
+  onCalendarInviteRsvp,
+  onDismissCalendarInvite,
+  formatCalendarInviteWhen,
 }: {
   open: boolean;
   onClose: () => void;
   onOpenBounties?: () => void;
-  page?: "wallet" | "contacts";
+  page?: "wallet" | "contacts" | "chat";
   showTabSwitcher?: boolean;
   showBottomNav?: boolean;
   walletConversionEnabled: boolean;
@@ -1782,6 +1888,11 @@ export default function CashuWalletModal({
   onDeclineMessage: (id: string) => void;
   onDismissMessage: (id: string) => void;
   onMarkMessagesRead: (dmEventIds: string[]) => void;
+  inboxPendingItems?: WalletMessageItem[];
+  pendingCalendarInvites?: { id: string; title?: string; start?: string; end?: string; sender?: { pubkey?: string; name?: string; npub?: string }; status: string }[];
+  onCalendarInviteRsvp?: (invite: any, status: string) => void;
+  onDismissCalendarInvite?: (invite: any) => void;
+  formatCalendarInviteWhen?: (invite: any) => string;
 }) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -2065,7 +2176,22 @@ export default function CashuWalletModal({
   const [scannedContact, setScannedContact] = useState<Contact | null>(null);
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const isContactsPage = page === "contacts";
-  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>([]);
+  const isChatPage = page === "chat";
+  const [chatView, setChatView] = useState<"threads" | "conversation" | "new-message">("threads");
+  const [chatCompose, setChatCompose] = useState("");
+  const [pendingMessages, setPendingMessages] = useState<PendingDmMessage[]>([]);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const messagesInnerRef = useRef<HTMLDivElement>(null);
+  const dragTouchStartX = useRef(0);
+  const dragTouchStartY = useRef(0);
+  const dragDirectionLocked = useRef<"horizontal" | "vertical" | null>(null);
+  const dmListViewRef = useRef<"list" | "strangers">("list");
+  const dmAutoScrollStateRef = useRef<{ threadPeer: string | null; itemCount: number }>({
+    threadPeer: null,
+    itemCount: 0,
+  });
+  const chatModeUsesContacts = isChatPage && chatView === "new-message";
+  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => readDmCache());
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
   const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
   const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2078,17 +2204,32 @@ export default function CashuWalletModal({
   const [, setDmPeerProfilesVersion] = useState(0);
   const dmProcessedEventsRef = useRef<Set<string>>(new Set());
   const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
-  const dmLastSyncRef = useRef<number>(0);
+  const dmLastSyncRef = useRef<number>(readDmSyncMeta().lastCompletedSyncAt || 0);
   const [dmView, setDmView] = useState<"list" | "thread" | "strangers">("list");
   const [activeThreadPeer, setActiveThreadPeer] = useState<string | null>(null);
   const [dmSearch, setDmSearch] = useState("");
-  const [showStrangersOnly, setShowStrangersOnly] = useState(false);
   useEffect(() => {
-    if (showTabSwitcher || isContactsPage) return;
+    setPendingMessages([]);
+  }, [activeThreadPeer]);
+  const visiblePendingMessages = useMemo(
+    () => pendingMessages.filter((message) => !isResolvedPendingDm(message, dmMessages)),
+    [dmMessages, pendingMessages],
+  );
+  // Remove optimistic pending bubbles from state once the real outgoing DM is present.
+  useEffect(() => {
+    setPendingMessages(prev =>
+      {
+        const next = prev.filter((message) => !isResolvedPendingDm(message, dmMessages));
+        return next.length === prev.length ? prev : next;
+      },
+    );
+  }, [dmMessages]);
+  useEffect(() => {
+    if (showTabSwitcher || isContactsPage || isChatPage) return;
     if (walletTab !== "wallet") {
       setWalletTab("wallet");
     }
-  }, [isContactsPage, showTabSwitcher, walletTab]);
+  }, [isChatPage, isContactsPage, showTabSwitcher, walletTab]);
   const toggleDmMessageExpanded = useCallback((eventId: string) => {
     setDmExpandedMessages((prev) => {
       const next = new Set(prev);
@@ -2130,6 +2271,34 @@ export default function CashuWalletModal({
       // ignore storage failures
     }
   }, []);
+  const persistDmMessages = useCallback((messages: WalletDmMessage[]) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages.slice(-400)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistDmSyncMeta = useCallback((meta: DmSyncMeta) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META, JSON.stringify(meta));
+      dmLastSyncRef.current = meta.lastCompletedSyncAt || 0;
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  useEffect(() => {
+    persistDmMessages(dmMessages);
+  }, [dmMessages, persistDmMessages]);
+
+  useEffect(() => {
+    if (!isChatPage || !open || chatView !== "threads") return;
+    if (dmMessages.length > 0) return;
+    const cached = readDmCache();
+    if (cached.length > 0) {
+      setDmMessages(cached);
+    }
+  }, [chatView, dmMessages.length, isChatPage, open]);
+
   useEffect(() => {
     try {
       const rawDeleted = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_DELETED_EVENTS);
@@ -2646,7 +2815,16 @@ export default function CashuWalletModal({
             }
           }
 
-          return { content, senderPubkey: event.pubkey, recipientPubkey, recipientPubkeys };
+          return {
+            content,
+            senderPubkey: event.pubkey,
+            recipientPubkey,
+            recipientPubkeys,
+            createdAt:
+              typeof event.created_at === "number" && Number.isFinite(event.created_at) && event.created_at > 0
+                ? Math.floor(event.created_at)
+                : null,
+          };
         }
         if (event.kind === 1059 && nip44?.v2) {
           if (PAYMENT_REQUEST_DEBUG) {
@@ -2702,11 +2880,16 @@ export default function CashuWalletModal({
             }
             return null;
           }
+          const rumorCreatedAt =
+            typeof rumor.created_at === "number" && Number.isFinite(rumor.created_at) && rumor.created_at > 0
+              ? Math.floor(rumor.created_at)
+              : null;
           return {
             content: rumor.content,
             senderPubkey,
             recipientPubkey: rumorRecipients[0] ?? null,
             recipientPubkeys: rumorRecipients,
+            createdAt: rumorCreatedAt,
           };
         }
       } catch (err) {
@@ -2737,30 +2920,45 @@ export default function CashuWalletModal({
 
   const resolvePeerPubkey = useCallback(
     (event: NostrEvent, identityPubkey: string, senderPubkey?: string | null, recipientPubkey?: string | null): string => {
+      // Always return raw 64-char hex (no "02"/"03" prefix) so peerPubkey is consistent
+      // with the format used in openConversationForPeer.
+      const toRaw = (v: string | null | undefined): string | null => {
+        if (!v) return null;
+        const lc = v.toLowerCase();
+        if (/^(02|03)[0-9a-f]{64}$/.test(lc)) return lc.slice(2);
+        if (/^[0-9a-f]{64}$/.test(lc)) return lc;
+        return null;
+      };
+
       const normalizedIdentity = normalizeNostrPubkey(identityPubkey) ?? identityPubkey;
       const normalizedSender = senderPubkey ? normalizeNostrPubkey(senderPubkey) ?? senderPubkey : null;
       const normalizedRecipient = recipientPubkey ? normalizeNostrPubkey(recipientPubkey) ?? recipientPubkey : null;
 
-      if (normalizedSender && normalizedSender !== normalizedIdentity) {
-        return normalizedSender;
-      }
+      // Normal outgoing: sender is identity, recipient is someone else → peer is recipient
       if (normalizedRecipient && normalizedRecipient !== normalizedIdentity) {
-        return normalizedRecipient;
+        return toRaw(normalizedRecipient) ?? normalizedRecipient;
+      }
+      // Normal incoming: sender is someone else → peer is sender
+      if (normalizedSender && normalizedSender !== normalizedIdentity) {
+        return toRaw(normalizedSender) ?? normalizedSender;
+      }
+      // Self-send (NIP-17 note-to-self): both sender and recipient equal identity.
+      // Do NOT fall through to event.pubkey (that's the ephemeral giftwrap key).
+      if (normalizedSender === normalizedIdentity && normalizedRecipient === normalizedIdentity) {
+        return toRaw(identityPubkey) ?? identityPubkey.toLowerCase();
       }
 
-      const normalizedAuthor = normalizeNostrPubkey(event.pubkey) ?? event.pubkey;
-      if (normalizedAuthor !== normalizedIdentity) {
-        return normalizedAuthor;
-      }
+      // Fallback: use giftwrap's p-tag recipient if it differs from identity
       const pTag = Array.isArray(event.tags)
         ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
         : null;
       const peer = pTag?.[1];
       const normalizedPeer = peer ? normalizeNostrPubkey(peer) ?? peer : null;
       if (normalizedPeer && normalizedPeer !== normalizedIdentity) {
-        return normalizedPeer;
+        return toRaw(normalizedPeer) ?? normalizedPeer;
       }
-      return normalizedSender || normalizedAuthor;
+
+      return toRaw(normalizedSender) ?? toRaw(identityPubkey) ?? identityPubkey.toLowerCase();
     },
     [normalizeNostrPubkey],
   );
@@ -3063,7 +3261,17 @@ export default function CashuWalletModal({
   const handleBackToContactsList = useCallback(() => {
     setContactView("list");
     setActiveContactId(null);
-  }, []);
+    if (isChatPage) {
+      setChatView("new-message");
+    }
+  }, [isChatPage]);
+  const handleReturnToProfileCard = useCallback(() => {
+    setActiveContactId("profile");
+    setContactView("detail");
+    if (isChatPage) {
+      setChatView("new-message");
+    }
+  }, [isChatPage]);
   const contactsPublishQueuedRef = useRef(false);
   const [contactsContext, setContactsContext] = useState<"lightning" | "ecash" | null>(null);
   const contactsContextRef = useRef<"lightning" | "ecash" | null>(null);
@@ -4878,7 +5086,14 @@ export default function CashuWalletModal({
         }
       }
 
-      const createdAt = Number(event.created_at) || Math.floor(Date.now() / 1000);
+      const createdAt =
+        (typeof decrypted.createdAt === "number" && Number.isFinite(decrypted.createdAt) && decrypted.createdAt > 0
+          ? Math.floor(decrypted.createdAt)
+          : 0) ||
+        (typeof event.created_at === "number" && Number.isFinite(event.created_at) && event.created_at > 0
+          ? Math.floor(event.created_at)
+          : 0) ||
+        Math.floor(Date.now() / 1000);
       const normalizedSender = decrypted.senderPubkey
         ? normalizeNostrPubkey(decrypted.senderPubkey) ?? decrypted.senderPubkey
         : null;
@@ -4904,8 +5119,14 @@ export default function CashuWalletModal({
 
       dmProcessedEventsRef.current.add(event.id);
       setDmMessages((prev) => {
-        if (prev.some((m) => m.eventId === event.id)) return prev;
-        const next = [...prev, message].sort((a, b) => a.createdAt - b.createdAt);
+        const existingIndex = prev.findIndex((m) => m.eventId === event.id);
+        const next =
+          existingIndex >= 0
+            ? prev.map((entry, index) =>
+                index === existingIndex ? { ...message, id: entry.id || message.id } : entry,
+              )
+            : [...prev, message];
+        next.sort((a, b) => a.createdAt - b.createdAt);
         if (next.length > 400) next.shift();
         return next;
       });
@@ -4927,7 +5148,11 @@ export default function CashuWalletModal({
     const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
     if (!relays.length) return;
     const now = Math.floor(Date.now() / 1000);
-    const since = Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
+    const lastCompletedSyncAt = Math.floor(dmLastSyncRef.current / 1000);
+    // NIP-17 giftwraps use random past timestamps (up to 2 days back per spec).
+    // Look back 3 days before last sync to ensure all events with jittered timestamps are caught.
+    const incrementalSince = lastCompletedSyncAt > 0 ? Math.max(0, lastCompletedSyncAt - 3 * 24 * 60 * 60) : 0;
+    const since = incrementalSince > 0 ? incrementalSince : Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
     try {
       const session = await NostrSession.init(relays);
       const filters = [
@@ -4955,11 +5180,13 @@ export default function CashuWalletModal({
       for (const ev of ordered) {
         await handleDmEvent(ev as NostrEvent);
       }
-      dmLastSyncRef.current = Date.now();
+      const completedAt = Date.now();
+      dmLastSyncRef.current = completedAt;
+      persistDmSyncMeta({ lastCompletedSyncAt: completedAt });
     } catch (err) {
       console.warn("Failed to sync DMs", err);
     }
-  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, stopDmSubscription]);
+  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, persistDmSyncMeta, stopDmSubscription]);
   const contactIndex = useMemo(() => {
     const map = new Map<
       string,
@@ -5055,6 +5282,8 @@ export default function CashuWalletModal({
     if (!dmMessages.length) return [] as WalletDmThread[];
     const threads = new Map<string, WalletDmThread>();
     const contactKeys = new Set(Array.from(contactIndex.keys()));
+    // Use reactive identity pubkey (falls back to ref) so self-chat is never a stranger
+    const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
     dmMessages.forEach((msg) => {
       const preview = dmPreviewForMessage(msg);
       const peer = msg.peerPubkey.toLowerCase();
@@ -5066,7 +5295,7 @@ export default function CashuWalletModal({
           messages: [],
           lastCreatedAt: 0,
           lastPreview: "",
-          isStranger: !contactKeys.has(peer),
+          isStranger: !contactKeys.has(peer) && (ownHex === "" || peer !== ownHex),
         };
       base.messages.push(msg);
       if (msg.createdAt > base.lastCreatedAt) {
@@ -5081,17 +5310,128 @@ export default function CashuWalletModal({
     }));
     ordered.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
     return ordered;
-  }, [contactIndex, dmMessages, dmPreviewForMessage]);
+  }, [contactIndex, dmMessages, dmPreviewForMessage, nostrIdentityInfo]);
   const activeThread = useMemo(
     () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
     [activeThreadPeer, dmThreads],
   );
+  const strangerThreads = useMemo(
+    () => dmThreads.filter((thread) => thread.isStranger),
+    [dmThreads],
+  );
+  const matchesDmThreadSearch = useCallback(
+    (thread: WalletDmThread) => {
+      if (!dmSearch.trim()) return true;
+      const meta = peerLabelFor(thread.peerPubkey);
+      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${thread.lastPreview} ${thread.peerPubkey}`.toLowerCase();
+      return haystack.includes(dmSearch.trim().toLowerCase());
+    },
+    [dmSearch, peerLabelFor],
+  );
+  const dmThreadListEntries = useMemo<DmThreadListEntry[]>(() => {
+    if (dmSearch.trim()) {
+      return dmThreads
+        .filter(matchesDmThreadSearch)
+        .map((thread) => ({ kind: "thread" as const, thread, lastCreatedAt: thread.lastCreatedAt }));
+    }
+    if (dmView === "strangers") {
+      return strangerThreads.map((thread) => ({
+        kind: "thread" as const,
+        thread,
+        lastCreatedAt: thread.lastCreatedAt,
+      }));
+    }
+    const entries: DmThreadListEntry[] = dmThreads
+      .filter((thread) => !thread.isStranger)
+      .map((thread) => ({ kind: "thread", thread, lastCreatedAt: thread.lastCreatedAt }));
+    if (strangerThreads.length) {
+      const latestStrangerThread = strangerThreads.reduce((latest, thread) =>
+        thread.lastCreatedAt > latest.lastCreatedAt ? thread : latest,
+      );
+      entries.push({
+        kind: "strangers",
+        lastCreatedAt: latestStrangerThread.lastCreatedAt,
+        lastPreview: latestStrangerThread.lastPreview || "New requests",
+      });
+    }
+    entries.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
+    return entries;
+  }, [dmSearch, dmThreads, dmView, matchesDmThreadSearch, strangerThreads]);
+  const activeThreadPendingMessages = useMemo(
+    () =>
+      activeThread
+        ? visiblePendingMessages.filter((message) => message.peerPubkey === activeThread.peerPubkey)
+        : [],
+    [activeThread, visiblePendingMessages],
+  );
   useEffect(() => {
-    if (dmView === "thread" && !activeThread) {
-      setDmView("list");
+    if (!open || !isChatPage || chatView !== "conversation" || !activeThread) {
+      dmAutoScrollStateRef.current = { threadPeer: activeThread?.peerPubkey ?? null, itemCount: 0 };
+      return;
+    }
+    const nextState = {
+      threadPeer: activeThread.peerPubkey,
+      itemCount: activeThread.messages.length + activeThreadPendingMessages.length,
+    };
+    const prevState = dmAutoScrollStateRef.current;
+    const threadChanged = prevState.threadPeer !== nextState.threadPeer;
+    const grew = nextState.itemCount > prevState.itemCount;
+    dmAutoScrollStateRef.current = nextState;
+    if (!threadChanged && !grew) return;
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    const behavior: ScrollBehavior = threadChanged ? "auto" : "smooth";
+    requestAnimationFrame(() => {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+    });
+  }, [activeThread, activeThreadPendingMessages.length, chatView, isChatPage, open]);
+  const openConversationForPeer = useCallback(
+    (peerHex: string | null | undefined) => {
+      // Normalise to raw 64-char hex (strip "02"/"03" prefix if present)
+      const raw = (peerHex || "").trim().toLowerCase();
+      const normalizedPeer = /^(02|03)[0-9a-f]{64}$/.test(raw) ? raw.slice(2) : raw;
+      if (!normalizedPeer) return false;
+      // Match regardless of whether stored peerPubkey uses raw or compressed form
+      const peerMatches = (mp: string) => {
+        const lc = mp.toLowerCase();
+        return lc === normalizedPeer || lc === `02${normalizedPeer}` || lc === `03${normalizedPeer}`;
+      };
+      const hasThread = dmMessages.some((message) => peerMatches(message.peerPubkey));
+      if (!hasThread) {
+        setDmMessages((prev) => {
+          if (prev.some((message) => peerMatches(message.peerPubkey))) return prev;
+          return [
+            ...prev,
+            {
+              id: `draft-${normalizedPeer}`,
+              eventId: `draft-${normalizedPeer}`,
+              peerPubkey: normalizedPeer,
+              isIncoming: false,
+              createdAt: Math.floor(Date.now() / 1000),
+              content: "",
+              preview: "",
+              attachment: { type: "text" },
+            },
+          ];
+        });
+      }
+      setActiveThreadPeer(normalizedPeer);
+      setDmView("thread");
+      setChatView("conversation");
+      setContactView("list");
+      setActiveContactId(null);
+      setDmSearch("");
+      return true;
+    },
+    [dmMessages],
+  );
+  useEffect(() => {
+    if (dmView === "thread" && chatView !== "conversation") return;
+    if (dmView === "thread" && !activeThread && !activeThreadPeer) {
+      setDmView(dmListViewRef.current);
       setActiveThreadPeer(null);
     }
-  }, [activeThread, dmView]);
+  }, [activeThread, chatView, dmView]);
   const threadUnreadMap = useMemo(() => {
     const map = new Map<string, number>();
     dmThreads.forEach((thread) => {
@@ -5108,16 +5448,12 @@ export default function CashuWalletModal({
   }, [dmThreads, messageItemsByEventId]);
   const strangerUnreadCount = useMemo(
     () =>
-      dmThreads.reduce((acc, thread) => {
-        if (!thread.isStranger) return acc;
-        return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
-      }, 0),
-    [dmThreads, threadUnreadMap],
+      strangerThreads.reduce((acc, thread) => acc + (threadUnreadMap.get(thread.peerPubkey) || 0), 0),
+    [strangerThreads, threadUnreadMap],
   );
   const mainUnreadCount = useMemo(
     () =>
       dmThreads.reduce((acc, thread) => {
-        if (thread.isStranger) return acc;
         return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
       }, 0),
     [dmThreads, threadUnreadMap],
@@ -5650,11 +5986,13 @@ export default function CashuWalletModal({
       }
       const normalizedSender = senderHex.toLowerCase();
       const normalizedRecipient = recipientHex.toLowerCase();
+      // The inner kind:14 rumor carries the canonical DM timestamp.
+      const rumorCreatedAt = Math.floor(Date.now() / 1000);
       const rumorBase = {
         kind: 14,
         content,
         tags: [["p", normalizedRecipient]] as string[][],
-        created_at: resolveNip17Timestamp(),
+        created_at: rumorCreatedAt,
         pubkey: normalizedSender,
       };
       const rumor = {
@@ -5662,6 +6000,7 @@ export default function CashuWalletModal({
         id: getEventHash(rumorBase),
       } satisfies Partial<NostrEvent>;
       const wrapRecipients = Array.from(new Set([normalizedRecipient, normalizedSender]));
+      let selfWrapEvent: NostrEvent | null = null;
       for (const wrapRecipient of wrapRecipients) {
         const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecret), wrapRecipient);
         const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
@@ -5683,7 +6022,12 @@ export default function CashuWalletModal({
         };
         const wrapEvent = finalizeEvent(wrapTemplate, wrapKey.bytes);
         await publish(wrapEvent);
+        // Track the self-addressed wrap so callers can immediately process it locally
+        if (wrapRecipient === normalizedSender) {
+          selfWrapEvent = wrapEvent as NostrEvent;
+        }
       }
+      return { selfWrapEvent };
     },
     [resolveNip17Timestamp],
   );
@@ -10104,7 +10448,6 @@ export default function CashuWalletModal({
   }, [contactsSyncEnabled, nostrMissingReason, migrateNip51ContactsIfNeeded]);
 
   useEffect(() => {
-    if (!contactsTabOpen) return;
     if (!contactsSyncEnabled) return;
     if (!contactsPublishQueuedRef.current) return;
     const timer = window.setTimeout(() => {
@@ -10113,10 +10456,10 @@ export default function CashuWalletModal({
       }
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [contactsSyncEnabled, contactsTabOpen, publishContactsToNostr]);
+  }, [contactsSyncEnabled, contacts, contactSyncMeta.fingerprint, publishContactsToNostr]);
 
   useEffect(() => {
-    if (!contactsTabOpen && !contactsOpen) {
+    if (!contactsTabOpen && !contactsOpen && !chatModeUsesContacts) {
       contactProfilesRefreshedRef.current = false;
       return;
     }
@@ -10128,7 +10471,7 @@ export default function CashuWalletModal({
         void syncContactsFromNostr({ silent: true });
       }
     }
-  }, [contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
+  }, [chatModeUsesContacts, contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
 
   useEffect(() => {
     if (contactsTabOpen) return;
@@ -13476,8 +13819,12 @@ export default function CashuWalletModal({
       setContactEditError("");
       setContactLookupError("");
       setShowCustomContactFields(false);
+      if (contactEditDraft.isProfile) {
+        handleReturnToProfileCard();
+        return;
+      }
       setContactView(detailTarget ? "detail" : "list");
-    }, [detailTarget]);
+    }, [contactEditDraft.isProfile, detailTarget, handleReturnToProfileCard]);
 
     const detailTitle = detailTarget ? contactPrimaryName(detailTarget) : "Contact";
     const detailIsNostrContact = useMemo(() => {
@@ -13926,16 +14273,16 @@ export default function CashuWalletModal({
     ],
   );
 
-  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}`;
+  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}${isChatPage ? " wallet-modal--chat" : ""}`;
   const contactsPanelInline = !showTabSwitcher && isContactsPage;
   const contactsPanelOpen = contactsTabOpen || contactsPanelInline;
-  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage;
+  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage && !isChatPage;
 
   if (!open) return null;
 
   return (
     <div className={walletRootClass}>
-      {!isContactsPage && (
+      {!isContactsPage && !isChatPage && (
         <>
           <div className="wallet-modal__header">
             <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
@@ -14025,115 +14372,110 @@ export default function CashuWalletModal({
               />
             </div>
             <div className="wallet-messages__body">
-              {dmView === "list" && (
+              {(dmView === "list" || dmView === "strangers") && (
                 <div className="wallet-messages__list space-y-2">
-                {showStrangersOnly && (
-                  <button
-                    className="wallet-messages__thread pressable"
-                    onClick={() => {
-                      setShowStrangersOnly(false);
-                    }}
-                  >
-                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">⇠</div>
-                    <div className="wallet-messages__thread-body">
-                      <div className="wallet-messages__thread-title">Back to everyone</div>
-                      <div className="wallet-messages__thread-preview">View all conversations</div>
-                    </div>
-                  </button>
-                )}
-                {!showStrangersOnly && dmThreads.some((t) => t.isStranger) && (
-                  <button
-                    className="wallet-messages__thread wallet-messages__thread--stranger pressable"
-                    onClick={() => {
-                      setShowStrangersOnly(true);
-                      setActiveThreadPeer(null);
-                    }}
-                  >
-                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">◎</div>
-                    <div className="wallet-messages__thread-body">
-                      <div className="wallet-messages__thread-title">
-                        Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
+                  {dmView === "strangers" && !dmSearch.trim() && (
+                    <button
+                      className="wallet-messages__thread pressable"
+                      onClick={() => {
+                        dmListViewRef.current = "list";
+                        setDmView("list");
+                        setActiveThreadPeer(null);
+                      }}
+                    >
+                      <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&larr;</div>
+                      <div className="wallet-messages__thread-body">
+                        <div className="wallet-messages__thread-title">Back to everyone</div>
+                        <div className="wallet-messages__thread-preview">View all conversations</div>
                       </div>
-                      <div className="wallet-messages__thread-preview">
-                        {dmThreads.find((t) => t.isStranger)?.lastPreview || "New requests"}
-                      </div>
-                    </div>
-                    <div className="wallet-messages__thread-meta">
-                      <span className="wallet-messages__thread-date">
-                        {dmThreads.find((t) => t.isStranger)
-                          ? formatShortDate(dmThreads.find((t) => t.isStranger)!.lastCreatedAt)
-                          : ""}
-                      </span>
-                    </div>
-                  </button>
-                )}
-                {(showStrangersOnly
-                  ? dmThreads.filter((t) => t.isStranger)
-                  : dmThreads.filter((t) => {
-                      if (!dmSearch.trim()) return !t.isStranger;
-                      const meta = peerLabelFor(t.peerPubkey);
-                      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${t.lastPreview} ${t.peerPubkey}`.toLowerCase();
-                      return haystack.includes(dmSearch.trim().toLowerCase());
-                    })
-                ).map((thread) => (
-                  <button
-                    key={thread.peerPubkey}
-                    className="wallet-messages__thread pressable"
-                    onClick={() => {
-                      setActiveThreadPeer(thread.peerPubkey);
-                      setDmView("thread");
-                      const unreadIds = thread.messages
-                        .map((m) => m.eventId)
-                        .filter((id) => {
-                          const item = messageItemsByEventId.get(id);
-                          if (!item) return false;
-                          const status = item.status;
-                          return status !== "accepted" && status !== "deleted" && status !== "read";
-                        });
-                      if (unreadIds.length) {
-                        onMarkMessagesRead(unreadIds);
-                      }
-                    }}
-                  >
-                    {(() => {
-                      const meta = peerLabelFor(thread.peerPubkey);
-                      const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+                    </button>
+                  )}
+                  {dmThreadListEntries.map((entry) => {
+                    if (entry.kind === "strangers") {
                       return (
-                        <>
-                          <div className="wallet-messages__avatar">
-                            {meta.picture ? (
-                              <img
-                                src={meta.picture}
-                                alt={meta.label}
-                                className="wallet-messages__avatar-img"
-                              />
-                            ) : (
-                              <span>{meta.label.slice(0, 2)}</span>
-                            )}
-                          </div>
+                        <button
+                          key="wallet-strangers-group"
+                          className="wallet-messages__thread wallet-messages__thread--stranger pressable"
+                          onClick={() => {
+                            dmListViewRef.current = "strangers";
+                            setDmView("strangers");
+                            setActiveThreadPeer(null);
+                          }}
+                        >
+                          <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&#9678;</div>
                           <div className="wallet-messages__thread-body">
                             <div className="wallet-messages__thread-title">
-                              {meta.label}
-                              {unreadCount > 0 ? ` (${unreadCount})` : ""}
+                              Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
                             </div>
-                            {meta.subtitle && (
-                              <div className="wallet-messages__thread-subtitle">{meta.subtitle}</div>
-                            )}
-                            <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+                            <div className="wallet-messages__thread-preview">{entry.lastPreview}</div>
                           </div>
                           <div className="wallet-messages__thread-meta">
                             <span className="wallet-messages__thread-date">
-                              {formatShortDate(thread.lastCreatedAt)}
+                              {formatShortDate(entry.lastCreatedAt)}
                             </span>
+                            {strangerUnreadCount > 0 && (
+                              <span className="chat-unread-badge">{strangerUnreadCount}</span>
+                            )}
                           </div>
-                        </>
+                        </button>
                       );
-                    })()}
-                  </button>
-                ))}
-                {dmThreads.length === 0 && (
+                    }
+                    const thread = entry.thread;
+                    const meta = peerLabelFor(thread.peerPubkey);
+                    const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+                    return (
+                      <button
+                        key={thread.peerPubkey}
+                        className="wallet-messages__thread pressable"
+                        onClick={() => {
+                          dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
+                          setActiveThreadPeer(thread.peerPubkey);
+                          setDmView("thread");
+                          const unreadIds = thread.messages
+                            .map((m) => m.eventId)
+                            .filter((id) => {
+                              const item = messageItemsByEventId.get(id);
+                              if (!item) return false;
+                              const status = item.status;
+                              return status !== "accepted" && status !== "deleted" && status !== "read";
+                            });
+                          if (unreadIds.length) {
+                            onMarkMessagesRead(unreadIds);
+                          }
+                        }}
+                      >
+                        <div className="wallet-messages__avatar">
+                          {meta.picture ? (
+                            <img
+                              src={meta.picture}
+                              alt={meta.label}
+                              className="wallet-messages__avatar-img"
+                            />
+                          ) : (
+                            <span>{meta.label.slice(0, 2)}</span>
+                          )}
+                        </div>
+                        <div className="wallet-messages__thread-body">
+                          <div className="wallet-messages__thread-title">
+                            {meta.label}
+                            {unreadCount > 0 ? ` (${unreadCount})` : ""}
+                          </div>
+                          <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+                        </div>
+                        <div className="wallet-messages__thread-meta">
+                          <span className="wallet-messages__thread-date">
+                            {formatShortDate(thread.lastCreatedAt)}
+                          </span>
+                          {unreadCount > 0 && <span className="chat-unread-badge">{unreadCount}</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                {dmThreadListEntries.length === 0 && (
                   <div className="wallet-messages__empty text-secondary text-sm text-center">
-                    No messages yet. Incoming DMs will appear here.
+                    {dmView === "strangers" && !dmSearch.trim()
+                      ? "No stranger messages yet."
+                      : "No messages yet. Incoming DMs will appear here."}
                   </div>
                 )}
                 </div>
@@ -14141,26 +14483,23 @@ export default function CashuWalletModal({
               {dmView === "thread" && activeThread && (
                 <div className="wallet-messages__thread-view">
                 <div className="wallet-messages__thread-header">
-                  <button
-                    className="glass-icon-button pressable"
-                    onClick={() => {
-                      setDmView(showStrangersOnly ? "list" : "list");
-                      setActiveThreadPeer(null);
-                    }}
-                  >
+	                  <button
+	                    className="glass-icon-button pressable"
+	                    onClick={() => {
+	                      setDmView(dmListViewRef.current);
+	                      setActiveThreadPeer(null);
+	                    }}
+	                  >
                     <BackIcon className="h-4 w-4" />
                   </button>
-                  {(() => {
-                    const meta = peerLabelFor(activeThread.peerPubkey);
-                    return (
-                      <div className="wallet-messages__thread-title">
-                        <div className="wallet-messages__thread-title-text">{meta.label}</div>
-                        {meta.subtitle && (
-                          <div className="wallet-messages__thread-subtitle">{meta.subtitle}</div>
-                        )}
-                      </div>
-                    );
-                  })()}
+	                  {(() => {
+	                    const meta = peerLabelFor(activeThread.peerPubkey);
+	                    return (
+	                      <div className="wallet-messages__thread-title">
+	                        <div className="wallet-messages__thread-title-text">{meta.label}</div>
+	                      </div>
+	                    );
+	                  })()}
                   <span className="wallet-messages__thread-date">
                     {formatDmDay(activeThread.lastCreatedAt)}
                   </span>
@@ -14802,6 +15141,1239 @@ export default function CashuWalletModal({
             </div>
           )}
         </>
+      )}
+
+      {/* ── Chat Page ─────────────────────────────────────────────────── */}
+      {isChatPage && (
+        <div className="chat-page">
+          {chatView === "threads" && (
+            <div className="chat-page__threads">
+              {/* Header */}
+              <div className={`chat-page__header chat-page__header--safe-area${contactView !== "list" ? " chat-page__header--compact" : ""}`}>
+                <button
+                  type="button"
+                  className={`contact-avatar pressable${profileCard.picture?.trim() ? " contact-avatar--image contact-avatar--profile" : " contact-avatar--profile"}`}
+                  onClick={() => {
+                    setActiveContactId("profile");
+                    setContactView("detail");
+                    setChatView("new-message");
+                  }}
+                  aria-label="Open profile"
+                >
+                  {profileCard.picture?.trim() ? (
+                    <img src={profileCard.picture.trim()} alt={myCardName} className="contact-avatar__img" />
+                  ) : (
+                    contactInitials(myCardName)
+                  )}
+                </button>
+                <div className="chat-page__header-title">Chat</div>
+                <button
+                  type="button"
+                  className="glass-icon-button glass-icon-button--accent pressable"
+                  onClick={() => setChatView("new-message")}
+                  title="New message"
+                  aria-label="New message"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Search */}
+              <div className="chat-page__search">
+                <input
+                  className="chat-page__search-input"
+                  placeholder="Search"
+                  value={dmSearch}
+                  onChange={(event) => setDmSearch(event.target.value)}
+                />
+              </div>
+
+              {/* Inbox section */}
+              {((inboxPendingItems && inboxPendingItems.length > 0) || (pendingCalendarInvites && pendingCalendarInvites.length > 0)) && (
+                <div className="chat-inbox-section">
+                  <div className="chat-inbox-section__title">Inbox</div>
+                  {pendingCalendarInvites && pendingCalendarInvites.map((invite) => {
+                    const senderName =
+                      invite.sender?.name ||
+                      invite.sender?.npub ||
+                      "Someone";
+                    const whenLabel = formatCalendarInviteWhen ? formatCalendarInviteWhen(invite) : "";
+                    return (
+                      <div key={invite.id} className="chat-inbox-item">
+                        <div className="chat-inbox-item__icon">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="4" y="5" width="16" height="15" rx="2" />
+                            <path d="M8 3v4" />
+                            <path d="M16 3v4" />
+                            <path d="M4 11h16" />
+                          </svg>
+                        </div>
+                        <div className="chat-inbox-item__body">
+                          <div className="chat-inbox-item__title">{invite.title || "Event invite"}</div>
+                          <div className="chat-inbox-item__meta">
+                            {whenLabel ? `${whenLabel} • ` : ""}From {senderName}
+                          </div>
+                        </div>
+                        <div className="chat-inbox-item__actions">
+                          <button type="button" className="accent-button button-xs pressable" onClick={() => onCalendarInviteRsvp?.(invite, "accepted")}>Accept</button>
+                          <button type="button" className="ghost-button button-xs pressable" onClick={() => onCalendarInviteRsvp?.(invite, "tentative")}>Maybe</button>
+                          <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDismissCalendarInvite?.(invite)}>Dismiss</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {inboxPendingItems && inboxPendingItems.map((item) => {
+                    const senderName = item.sender?.name || item.sender?.npub || "Someone";
+                    const isTaskAssignment = item.type === "task" && !!(item.task as any)?.assignment;
+                    const typeLabel =
+                      item.type === "board"
+                        ? "Board"
+                        : item.type === "contact"
+                          ? "Contact"
+                          : isTaskAssignment
+                            ? "Task assignment"
+                            : "Task";
+                    return (
+                      <div key={item.id} className="chat-inbox-item">
+                        <div className="chat-inbox-item__icon">
+                          {item.type === "board" ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3" y="3" width="7" height="7" rx="2" />
+                              <rect x="14" y="3" width="7" height="7" rx="2" />
+                              <rect x="3" y="14" width="7" height="7" rx="2" />
+                              <rect x="14" y="14" width="7" height="7" rx="2" />
+                            </svg>
+                          ) : item.type === "contact" ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
+                              <circle cx="12" cy="8" r="4" />
+                            </svg>
+                          ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M9 11l3 3L22 4" />
+                              <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="chat-inbox-item__body">
+                          <div className="chat-inbox-item__title">{item.title}</div>
+                          <div className="chat-inbox-item__meta">{typeLabel} • From {senderName}</div>
+                        </div>
+                        <div className="chat-inbox-item__actions">
+                          {isTaskAssignment ? (
+                            <>
+                              <button type="button" className="accent-button button-xs pressable" onClick={() => onAcceptMessage(item.id)}>Accept</button>
+                              <button type="button" className="ghost-button button-xs pressable" onClick={() => onMaybeMessage(item.id)}>Maybe</button>
+                              <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDeclineMessage(item.id)}>Decline</button>
+                            </>
+                          ) : (
+                            <>
+                              <button type="button" className="accent-button button-xs pressable" onClick={() => onAcceptMessage(item.id)}>Add</button>
+                              <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDismissMessage(item.id)}>Dismiss</button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+		              {/* Thread list */}
+		              <div className="chat-page__thread-list">
+		                {dmView === "strangers" && !dmSearch.trim() && (
+		                  <button
+		                    className="wallet-messages__thread pressable"
+		                    onClick={() => {
+		                      dmListViewRef.current = "list";
+		                      setDmView("list");
+		                      setActiveThreadPeer(null);
+		                    }}
+		                  >
+		                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&larr;</div>
+		                    <div className="wallet-messages__thread-body">
+		                      <div className="wallet-messages__thread-title">Back to everyone</div>
+		                      <div className="wallet-messages__thread-preview">View all conversations</div>
+		                    </div>
+		                  </button>
+		                )}
+		                {dmThreadListEntries.map((entry) => {
+		                  if (entry.kind === "strangers") {
+		                    return (
+		                      <button
+		                        key="strangers-group"
+		                        className="wallet-messages__thread wallet-messages__thread--stranger pressable"
+		                        onClick={() => {
+		                          dmListViewRef.current = "strangers";
+		                          setDmView("strangers");
+		                          setActiveThreadPeer(null);
+		                        }}
+		                      >
+		                        <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&#9678;</div>
+		                        <div className="wallet-messages__thread-body">
+		                          <div className="wallet-messages__thread-title">
+		                            Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
+		                          </div>
+		                          <div className="wallet-messages__thread-preview">{entry.lastPreview}</div>
+		                        </div>
+		                        <div className="wallet-messages__thread-meta">
+		                          <span className="wallet-messages__thread-date">
+		                            {formatShortDate(entry.lastCreatedAt)}
+		                          </span>
+		                          {strangerUnreadCount > 0 && (
+		                            <span className="chat-unread-badge">{strangerUnreadCount}</span>
+		                          )}
+		                        </div>
+		                      </button>
+		                    );
+		                  }
+		                  const thread = entry.thread;
+		                  const meta = peerLabelFor(thread.peerPubkey);
+		                  const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+		                  return (
+		                    <button
+		                      key={thread.peerPubkey}
+		                      className="wallet-messages__thread pressable"
+		                      onClick={() => {
+		                        dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
+		                        setActiveThreadPeer(thread.peerPubkey);
+		                        setChatView("conversation");
+		                        setDmView("thread");
+		                        const unreadIds = thread.messages
+		                          .map((m) => m.eventId)
+		                          .filter((id) => {
+		                            const item = messageItemsByEventId.get(id);
+		                            if (!item) return false;
+		                            const status = item.status;
+		                            return status !== "accepted" && status !== "deleted" && status !== "read";
+		                          });
+		                        if (unreadIds.length) {
+		                          onMarkMessagesRead(unreadIds);
+		                        }
+		                      }}
+		                    >
+		                      <div className="wallet-messages__avatar">
+		                        {meta.picture ? (
+		                          <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
+		                        ) : (
+		                          <span>{meta.label.slice(0, 2)}</span>
+		                        )}
+		                      </div>
+		                      <div className="wallet-messages__thread-body">
+		                        <div className="wallet-messages__thread-title">
+		                          {meta.label}
+		                          {unreadCount > 0 ? ` (${unreadCount})` : ""}
+		                        </div>
+		                        <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+		                      </div>
+		                      <div className="wallet-messages__thread-meta">
+		                        <span className="wallet-messages__thread-date">
+		                          {formatShortDate(thread.lastCreatedAt)}
+		                        </span>
+		                        {unreadCount > 0 && (
+		                          <span className="chat-unread-badge">{unreadCount}</span>
+		                        )}
+		                      </div>
+		                    </button>
+		                  );
+		                })}
+		                {dmThreadListEntries.length === 0 && !inboxPendingItems?.length && !pendingCalendarInvites?.length && (
+		                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "3rem 1rem" }}>
+		                    {dmView === "strangers" && !dmSearch.trim()
+		                      ? "No stranger messages yet."
+		                      : "No messages yet. Start a conversation or incoming DMs will appear here."}
+		                  </div>
+		                )}
+		              </div>
+
+            </div>
+          )}
+
+          {chatView === "conversation" && activeThread && (
+            <div className="chat-conversation">
+              {/* Conversation header */}
+              <div className="chat-conversation__header">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    setChatView("threads");
+                    setActiveThreadPeer(null);
+                    setDmView(dmListViewRef.current);
+                  }}
+                  aria-label="Back to threads"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                {(() => {
+                  const ownNormalized = normalizeNostrPubkey(myCardNpub);
+                  const ownHex = ownNormalized ? compressedToRawHex(ownNormalized).toLowerCase() : "";
+                  const isSelf = ownHex !== "" && activeThread.peerPubkey === ownHex;
+                  const meta = isSelf
+                    ? { label: myCardName, picture: profileCard.picture?.trim() || undefined, subtitle: undefined, verifiedNip05: null }
+                    : peerLabelFor(activeThread.peerPubkey);
+                  const openContact = () => {
+                    if (isSelf) return;
+                    const existingContact = contacts.find((contact) => {
+                      const normalized = normalizeNostrPubkey(contact.npub || "");
+                      const contactHex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                      return contactHex === activeThread.peerPubkey;
+                    });
+                    if (existingContact) {
+                      setActiveContactId(existingContact.id);
+                      setContactView("detail");
+                    } else {
+                      const peerMeta = getPeerProfile(activeThread.peerPubkey);
+                      const created = upsertContact({
+                        npub: formatNpub(activeThread.peerPubkey) || "",
+                        name: peerMeta.displayName || peerMeta.username || peerMeta.label,
+                        displayName: peerMeta.displayName || peerMeta.label,
+                        username: sanitizeUsername(peerMeta.username || ""),
+                        address: peerMeta.lud16 || "",
+                        nip05: peerMeta.nip05 || "",
+                        about: peerMeta.about || "",
+                        picture: peerMeta.picture || "",
+                      });
+                      if (created) {
+                        setActiveContactId(created.id);
+                        setContactView("detail");
+                      } else {
+                        setActiveContactId(null);
+                        setContactEditDraft({
+                          id: null,
+                          name: peerMeta.displayName || peerMeta.username || peerMeta.label,
+                          displayName: peerMeta.displayName || peerMeta.label,
+                          username: sanitizeUsername(peerMeta.username || ""),
+                          address: peerMeta.lud16 || "",
+                          npub: formatNpub(activeThread.peerPubkey) || "",
+                          nip05: peerMeta.nip05 || "",
+                          about: peerMeta.about || "",
+                          picture: peerMeta.picture || "",
+                          isProfile: false,
+                        });
+                        setContactView("edit");
+                      }
+                    }
+                    setChatView("new-message");
+                  };
+                  return (
+                    <button
+                      type="button"
+                      className={`chat-conversation__peer-center${isSelf ? "" : " pressable"}`}
+                      onClick={openContact}
+                      aria-label={isSelf ? "My notes" : `Open contact card for ${meta.label}`}
+                    >
+                      <div className="chat-conversation__peer-avatar chat-conversation__peer-avatar--lg">
+                        {meta.picture ? (
+                          <img src={meta.picture} alt={meta.label} />
+                        ) : (
+                          <span>{meta.label.slice(0, 2)}</span>
+                        )}
+                      </div>
+                      <div className="chat-conversation__peer-name">{meta.label}</div>
+                    </button>
+                  );
+                })()}
+                <div className="chat-conversation__header-spacer" />
+              </div>
+
+              {/* Stranger actions */}
+              {activeThread.isStranger && (() => {
+                const ownNormalized = normalizeNostrPubkey(myCardNpub);
+                const ownHex = ownNormalized ? compressedToRawHex(ownNormalized).toLowerCase() : "";
+                return ownHex === "" || activeThread.peerPubkey !== ownHex;
+              })() && (
+                <div className="chat-conversation__stranger-bar">
+                  <button
+                    type="button"
+                    className="ghost-button button-xs pressable"
+                    onClick={() => toggleBlockPeer(activeThread.peerPubkey)}
+                  >
+                    {dmBlockedPeersRef.current.has(activeThread.peerPubkey) ? "Unblock" : "Block"}
+                  </button>
+                  <button
+                    type="button"
+                    className="accent-button button-xs pressable"
+                    onClick={() => handleAddPeerToContacts(activeThread.peerPubkey)}
+                  >
+                    Add to contacts
+                  </button>
+                </div>
+              )}
+
+              {/* Messages */}
+              <div
+                ref={messagesScrollRef}
+                className="chat-conversation__messages"
+                style={{ ["--chat-timestamp-reveal-width" as any]: `${CHAT_TIMESTAMP_REVEAL_WIDTH}px` }}
+                onTouchStart={(e) => {
+                  dragTouchStartX.current = e.touches[0].clientX;
+                  dragTouchStartY.current = e.touches[0].clientY;
+                  dragDirectionLocked.current = null;
+                  if (messagesInnerRef.current) {
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-duration", "0ms");
+                  }
+                }}
+                onTouchMove={(e) => {
+                  const dx = dragTouchStartX.current - e.touches[0].clientX;
+                  const dy = Math.abs(e.touches[0].clientY - dragTouchStartY.current);
+                  if (!dragDirectionLocked.current) {
+                    if (Math.abs(dx) > dy + 4) dragDirectionLocked.current = "horizontal";
+                    else if (dy > Math.abs(dx) + 4) dragDirectionLocked.current = "vertical";
+                  }
+                  if (dragDirectionLocked.current !== "horizontal") return;
+                  const offset = Math.max(0, Math.min(CHAT_TIMESTAMP_REVEAL_WIDTH, dx));
+                  if (messagesInnerRef.current) {
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-offset", `${offset}px`);
+                  }
+                }}
+                onTouchEnd={() => {
+                  dragDirectionLocked.current = null;
+                  if (messagesInnerRef.current) {
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-duration", "300ms");
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-offset", "0px");
+                  }
+                }}
+              >
+                <div ref={messagesInnerRef} className="chat-messages-inner">
+                  {activeThread.messages.filter((msg) => !msg.eventId.startsWith("draft-")).map((msg, idx, arr) => {
+                    const prevMsg = idx > 0 ? arr[idx - 1] : null;
+                    const prevDay = prevMsg ? new Date(prevMsg.createdAt * 1000) : null;
+                    const msgDay = new Date(msg.createdAt * 1000);
+                    const showDateSep = !prevDay ||
+                      prevDay.getFullYear() !== msgDay.getFullYear() ||
+                      prevDay.getMonth() !== msgDay.getMonth() ||
+                      prevDay.getDate() !== msgDay.getDate();
+                    const matchedItem = messageItemsByEventId.get(msg.eventId);
+                    const isPayment = msg.attachment?.type === "payment";
+                    const isContact = msg.attachment?.type === "contact";
+                    const isBoard = msg.attachment?.type === "board";
+                    const isTask = msg.attachment?.type === "task";
+                    const isStructured = !!msg.attachment && msg.attachment.type !== "text";
+                    const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}`;
+                    const actionStatus = matchedItem?.status;
+                    const showActionButtons =
+                      actionStatus !== "accepted" &&
+                      actionStatus !== "declined" &&
+                      actionStatus !== "tentative" &&
+                      actionStatus !== "deleted";
+
+                    return (
+                      <React.Fragment key={msg.eventId}>
+                        {showDateSep && (
+                          <div className="chat-date-separator">{formatDmDateSeparator(msg.createdAt)}</div>
+                        )}
+                        <div className={`chat-message ${msg.isIncoming ? "chat-message--in" : "chat-message--out"}`}>
+                          <div className="chat-message__body">
+                            <div className={bubbleClass}>
+                              {isBoard && (
+                                <div className="chat-bubble__card">
+                                  <div className="chat-bubble__card-title">{msg.attachment?.boardName || "Shared board"}</div>
+                                  <div className="chat-bubble__card-meta">Add this board to your workspace</div>
+                                  {showActionButtons && (
+                                    <div className="chat-bubble__card-actions">
+                                      <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add board</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                    </div>
+                                  )}
+                                  {!showActionButtons && actionStatus && (
+                                    <div className="chat-bubble__card-status">{actionStatus}</div>
+                                  )}
+                                </div>
+                              )}
+                              {isContact && (() => {
+                                const ca = msg.attachment;
+                                const contactName = ca?.contactName || ca?.displayName || ca?.username || "Contact";
+                                return (
+                                  <div className="chat-bubble__card">
+                                    <div className="chat-bubble__card-title">{contactName}</div>
+                                    <div className="chat-bubble__card-meta">{ca?.npub ? `${ca.npub.slice(0, 16)}...` : "Shared contact"}</div>
+                                    {showActionButtons && (
+                                      <div className="chat-bubble__card-actions">
+                                        <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add contact</button>
+                                        <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                      </div>
+                                    )}
+                                    {!showActionButtons && actionStatus && (
+                                      <div className="chat-bubble__card-status">{actionStatus}</div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {isTask && (() => {
+                                const ta = msg.attachment?.task;
+                                const isAssignment = !!(ta?.assignment || matchedItem?.task?.assignment);
+                                return (
+                                  <div className="chat-bubble__card">
+                                    <div className="chat-bubble__card-title">{ta?.title || "Shared task"}</div>
+                                    <div className="chat-bubble__card-meta">{isAssignment ? "Task assignment" : "Shared task"}</div>
+                                    {showActionButtons && (
+                                      <div className="chat-bubble__card-actions">
+                                        {isAssignment ? (
+                                          <>
+                                            <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Accept</button>
+                                            <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onMaybeMessage(matchedItem.id)}>Maybe</button>
+                                            <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => matchedItem && onDeclineMessage(matchedItem.id)}>Decline</button>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add task</button>
+                                            <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+                                    {!showActionButtons && actionStatus && (
+                                      <div className="chat-bubble__card-status">{actionStatus}</div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {isPayment && (
+                                <div className="chat-bubble__card">
+                                  <div className="chat-bubble__card-title">
+                                    {msg.attachment?.amountSat != null
+                                      ? `${msg.attachment.amountSat} sats`
+                                      : "Payment"}
+                                  </div>
+                                  <div className="chat-bubble__card-meta">{msg.attachment?.detail || "eCash payment"}</div>
+                                </div>
+                              )}
+                              {msg.attachment?.type === "text" && (
+                                <div className="chat-bubble__card chat-bubble__card--text">
+                                  <div className="chat-bubble__text">{msg.content}</div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="chat-message__timestamp">{formatDmTime(msg.createdAt)}</div>
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+                  {/* Pending messages */}
+                  {visiblePendingMessages.map((pm) => (
+                    <div key={pm.id} className="chat-message chat-message--out">
+                      <div className="chat-message__body">
+                        <div className="chat-message__bubble-wrap">
+                          <div className="chat-bubble chat-bubble--out chat-bubble--pending">
+                            <div className="chat-bubble__card chat-bubble__card--text">
+                              <div className="chat-bubble__text">{pm.content}</div>
+                            </div>
+                          </div>
+                          {pm.status === "sending" && <div className="chat-sending-spinner" />}
+                          {pm.status === "sent" && <div className="chat-sending-check" key={`check-${pm.id}`}>✓</div>}
+                        </div>
+                      </div>
+                      <div className="chat-message__timestamp">{formatDmTime(pm.createdAt)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Compose bar */}
+              <div className="chat-compose">
+                <input
+                  className="chat-compose__input"
+                  placeholder="Message"
+                  value={chatCompose}
+                  onChange={(e) => setChatCompose(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
+                      e.preventDefault();
+                      void (async () => {
+                        const text = chatCompose.trim();
+                        if (!text) return;
+                        setChatCompose("");
+                        const pendingId = crypto.randomUUID();
+                        const pendingCreatedAt = Math.floor(Date.now() / 1000);
+                        setPendingMessages(prev => [
+                          ...prev,
+                          {
+                            id: pendingId,
+                            content: text,
+                            peerPubkey: activeThread.peerPubkey,
+                            createdAt: pendingCreatedAt,
+                            status: "sending",
+                          },
+                        ]);
+                        try {
+                          const { identity } = readNostrIdentity();
+                          if (!identity) return;
+                          const recipientHex = activeThread.peerPubkey.toLowerCase();
+                          const senderHex = identity.pubkey.toLowerCase();
+                          const publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+                          if (!publishRelays.length) return;
+                          const pool = ensureNostrPool();
+                          const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                          const { selfWrapEvent } = await publishNip17Giftwraps({
+                            content: text,
+                            senderHex,
+                            recipientHex,
+                            senderSecret: identity.secret,
+                            publish,
+                          });
+                          if (selfWrapEvent) {
+                            await handleDmEvent(selfWrapEvent);
+                          }
+                          setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
+                          setTimeout(() => setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "done" as const } : m)), 2000);
+                        } catch (err) {
+                          setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
+                          console.warn("[chat] send failed", err);
+                          setChatCompose(text);
+                        }
+                      })();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="chat-compose__send pressable"
+                  disabled={!chatCompose.trim()}
+                  onClick={() => {
+                    void (async () => {
+                      const text = chatCompose.trim();
+                      if (!text) return;
+                      setChatCompose("");
+                      const pendingId = crypto.randomUUID();
+                      const pendingCreatedAt = Math.floor(Date.now() / 1000);
+                      setPendingMessages(prev => [
+                        ...prev,
+                        {
+                          id: pendingId,
+                          content: text,
+                          peerPubkey: activeThread.peerPubkey,
+                          createdAt: pendingCreatedAt,
+                          status: "sending",
+                        },
+                      ]);
+                      try {
+                        const { identity } = readNostrIdentity();
+                        if (!identity) return;
+                        const recipientHex = activeThread.peerPubkey.toLowerCase();
+                        const senderHex = identity.pubkey.toLowerCase();
+                        const publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+                        if (!publishRelays.length) return;
+                        const pool = ensureNostrPool();
+                        const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                        const { selfWrapEvent } = await publishNip17Giftwraps({
+                          content: text,
+                          senderHex,
+                          recipientHex,
+                          senderSecret: identity.secret,
+                          publish,
+                        });
+                        if (selfWrapEvent) {
+                          await handleDmEvent(selfWrapEvent);
+                        }
+                        setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
+                        setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
+                      } catch (err) {
+                        setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
+                        console.warn("[chat] send failed", err);
+                        setChatCompose(text);
+                      }
+                    })();
+                  }}
+                  aria-label="Send message"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {chatView === "new-message" && (
+            <div className="chat-new-message">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    if (contactView === "edit") {
+                      if (contactEditDraft.isProfile) {
+                        handleReturnToProfileCard();
+                      } else {
+                        handleCancelContactEdit();
+                      }
+                      return;
+                    }
+                    if (contactView === "detail") {
+                      if (activeContactId === "profile") {
+                        setChatView("threads");
+                        setContactView("list");
+                        setActiveContactId(null);
+                        setDmSearch("");
+                      } else {
+                        handleBackToContactsList();
+                      }
+                      return;
+                    }
+                    setChatView("threads");
+                    setContactView("list");
+                    setActiveContactId(null);
+                    setDmSearch("");
+                  }}
+                  aria-label={contactView === "edit" ? (contactEditDraft.isProfile ? "Back to profile" : "Cancel") : contactView === "detail" ? (activeContactId === "profile" ? "Back to chats" : "Back to contacts") : "Back to chats"}
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title">
+                  {contactView === "edit"
+                    ? contactEditDraft.isProfile
+                      ? "Edit My Card"
+                      : contactEditDraft.id
+                        ? "Edit Contact"
+                        : "New Contact"
+                    : contactView === "detail"
+                      ? activeContactId === "profile"
+                        ? "My Profile"
+                        : "Contact"
+                      : "New Message"}
+                </div>
+                {contactView === "list" ? (
+                  <button
+                    type="button"
+                    className="glass-icon-button glass-icon-button--accent pressable"
+                    onClick={handleStartAddContact}
+                    title="Add contact"
+                    aria-label="Add contact"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                  </button>
+                ) : contactView === "detail" ? (
+                  activeContactId === "profile" ? (
+                    <button
+                      className="glass-icon-button glass-icon-button--accent pressable"
+                      onClick={handleStartEditCurrentContact}
+                      aria-label="Edit profile"
+                      title="Edit profile"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                    </button>
+                  ) : detailIsNostrContact ? (
+                    detailContactCanFollow ? (
+                      <button
+                        type="button"
+                        className="contact-pill contact-pill--accent contact-pill--compact pressable"
+                        onClick={handleToggleFollowDetailContact}
+                      >
+                        {detailContactFollowed ? "Unfollow" : "Follow"}
+                      </button>
+                    ) : (
+                      <div className="contacts-header-spacer" aria-hidden="true" />
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      className="glass-icon-button glass-icon-button--accent pressable"
+                      onClick={handleStartEditCurrentContact}
+                      aria-label="Edit contact"
+                      title="Edit contact"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                    </button>
+                  )
+                ) : (
+                  <button
+                    type="button"
+                    className="glass-icon-button glass-icon-button--accent pressable"
+                    aria-label={contactEditDraft.isProfile ? "Save profile" : "Save contact"}
+                    onClick={() => {
+                      void handleContactEditSubmit();
+                    }}
+                    disabled={contactsPublishState === "publishing" || profileStatus === "publishing" || profilePhotoBusy}
+                  >
+                    <CheckIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              {contactView === "list" && (
+                <>
+                  <div className="chat-page__search">
+                    <input
+                      className="chat-page__search-input"
+                      placeholder="Search contacts"
+                      value={dmSearch}
+                      onChange={(event) => setDmSearch(event.target.value)}
+                    />
+                  </div>
+                  <div className="chat-new-message__list">
+                    <div className="chat-new-message__actions">
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
+                        onClick={() => {
+                          setScannerMessage("");
+                          setShowScanner(true);
+                        }}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="16" y="3" width="5" height="5" rx="1" /><rect x="3" y="16" width="5" height="5" rx="1" /><path d="M10 4h2" /><path d="M10 8h4" /><path d="M4 10v2" /><path d="M8 10v4" /><path d="M10 10h2" /><path d="M14 10v2" /><path d="M16 10h2" /><path d="M20 10v4" /><path d="M10 14h4" /><path d="M16 14h2" /><path d="M10 18v2" /><path d="M14 16v5" /><path d="M18 18h3" /></svg>
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">Scan QR</span>
+                          <span className="chat-new-message__action-subtitle">Add a contact or start a chat from a code</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
+                        onClick={handleStartAddContact}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">Add contact</span>
+                          <span className="chat-new-message__action-subtitle">Create a contact card manually</span>
+                        </span>
+                      </button>
+                    </div>
+                    <div className="chat-new-message__section-label">Contacts</div>
+                    <button
+                      type="button"
+                      className="contact-row contact-row--profile pressable"
+                      onClick={() => {
+                        const normalized = normalizeNostrPubkey(myCardNpub);
+                        const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                        if (hex) {
+                          openConversationForPeer(hex);
+                        } else {
+                          setActiveContactId("profile");
+                          setContactView("detail");
+                        }
+                      }}
+                    >
+                      <div className={`contact-avatar${profileCard.picture?.trim() ? " contact-avatar--image" : ""}`}>
+                        {profileCard.picture?.trim() ? (
+                          <img src={profileCard.picture.trim()} alt={myCardName} className="contact-avatar__img" />
+                        ) : (
+                          contactInitials(myCardName)
+                        )}
+                      </div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{myCardName}</div>
+                        {myCardSubtitle && (
+                          <div className="contact-row__meta">
+                            <span className="contact-row__meta-text">{myCardSubtitle}</span>
+                          </div>
+                        )}
+                      </div>
+                      <span className="contact-row__chevron">&rsaquo;</span>
+                    </button>
+                    {sortedContacts
+                      .filter((c) => {
+                        if (!dmSearch.trim()) return true;
+                        const hay = `${c.name} ${c.displayName || ""} ${c.username || ""} ${c.npub} ${c.nip05 || ""}`.toLowerCase();
+                        return hay.includes(dmSearch.trim().toLowerCase());
+                      })
+                      .map((contact) => {
+                        const contactLabel = contactDisplayLabel(contact);
+                        const photo = contact.picture?.trim();
+                        const subtitle = contact.nip05 || contact.npub || contact.address || "";
+                        return (
+                          <button
+                            key={contact.id}
+                            className="contact-row pressable"
+                            onClick={() => {
+                              const normalized = normalizeNostrPubkey(contact.npub || "");
+                              const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                              if (hex && openConversationForPeer(hex)) {
+                                return;
+                              }
+                              setActiveContactId(contact.id);
+                              setContactView("detail");
+                            }}
+                          >
+                            <div className={`contact-avatar${photo ? " contact-avatar--image" : ""}`}>
+                              {photo ? (
+                                <img src={photo} alt={contactLabel} className="contact-avatar__img" />
+                              ) : (
+                                contactInitials(contactLabel)
+                              )}
+                            </div>
+                            <div className="contact-row__text">
+                              <div className="contact-row__name">{contactLabel}</div>
+                              {subtitle && (
+                                <div className="contact-row__meta">
+                                  <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
+                                </div>
+                              )}
+                            </div>
+                            <span className="contact-row__chevron">&rsaquo;</span>
+                          </button>
+                        );
+                      })}
+                    {sortedContacts.length === 0 && (
+                      <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
+                        No contacts yet. Add one or scan a QR to start chatting.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              {contactView !== "list" && (
+                <div className="chat-new-message__list chat-new-message__list--detail">
+                  <div ref={contactsPanelRef} className="contacts-shell" aria-busy={contactSyncState.status === "loading" || contactsPublishState === "publishing"}>
+                    {contactView === "detail" && detailTarget && (
+                      <div className="contact-detail-view">
+                        <div className="contact-hero">
+                          <div className="contact-hero__center">
+                            <div className="contact-qr-wrapper">
+                              {detailShareValue ? (
+                                <QrCodeCard
+                                  className="contact-qr-card"
+                                  value={detailShareValue}
+                                  label={detailTitle}
+                                  size={200}
+                                  flat
+                                  hideLabel
+                                  hideCopyButton
+                                />
+                              ) : (
+                                <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
+                              )}
+                            </div>
+                            <div className={`contact-heading${detailTarget.picture ? "" : " contact-heading--text-only"}`}>
+                              {detailTarget.picture && (
+                                <img src={detailTarget.picture} alt={detailTitle} className="contact-portrait" />
+                              )}
+                              <div className="contact-heading__text">
+                                <div className="flex items-center gap-2">
+                                  <div className="contact-name-lg" title={detailTitle}>
+                                    {truncateContactName(detailTitle, 34)}
+                                  </div>
+                                  {activeContactId === "profile" && profileCard.npub && (
+                                    <button
+                                      type="button"
+                                      className="contact-pill contact-pill--circle pressable"
+                                      title="Share your npub"
+                                      onClick={() => {
+                                        setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
+                                        setShareContactStatus(null);
+                                        setShareContactPickerOpen(true);
+                                      }}
+                                    >
+                                      <ShareArrowIcon className="contact-pill__icon" />
+                                    </button>
+                                  )}
+                                </div>
+                                {detailUsername && (
+                                  <div className="contact-username" title={detailUsername}>
+                                    {truncateContactValue(detailUsername, 33)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {activeContact && (detailHasLightning || detailCanShare) && (
+                          <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
+                            {detailHasLightning && (
+                              <button
+                                type="button"
+                                className="contact-pill pressable"
+                                onClick={() => {
+                                  applyLightningContact(activeContact);
+                                  setContactsTabOpen(false);
+                                }}
+                              >
+                                Pay lightning
+                              </button>
+                            )}
+                            {detailCanShare && (
+                              <button
+                                type="button"
+                                className="contact-pill pressable"
+                                onClick={() => {
+                                  openEcashSendToContact(activeContact);
+                                  setContactsTabOpen(false);
+                                }}
+                              >
+                                Pay eCash
+                              </button>
+                            )}
+                            {detailCanShare && (
+                              <button
+                                type="button"
+                                className="contact-pill contact-pill--circle pressable"
+                                title="Share contact"
+                                onClick={() => {
+                                  setShareContactSource(activeContact);
+                                  setShareContactStatus(null);
+                                  setShareContactPickerOpen(true);
+                                }}
+                              >
+                                <ShareArrowIcon className="contact-pill__icon" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="contact-fields">
+                          {detailFields.length ? (
+                            detailFields.map((field) => {
+                              const isNip05Field = field.key === "nip05";
+                              return (
+                                <div key={field.key} className="contact-field">
+                                  <div className="contact-field__label">{field.label}</div>
+                                  <button
+                                    type="button"
+                                    className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
+                                      isNip05Field ? " contact-field__value--nip05" : ""
+                                    }`}
+                                    onClick={() => handleCopyContactField(field.value, field.label)}
+                                    title={field.value}
+                                  >
+                                    <span className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}>
+                                      {field.multiline ? field.value : truncateContactValue(field.value, 36)}
+                                    </span>
+                                    {isNip05Field && detailNip05Verified && (
+                                      <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                                    )}
+                                  </button>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
+                          )}
+                        </div>
+
+                        {activeContact && (
+                          <div className="contact-actions-row">
+                            <button
+                              type="button"
+                              className="contact-pill contact-pill--danger pressable"
+                              onClick={() => {
+                                if (window.confirm("Remove this contact?")) {
+                                  handleDeleteContact(activeContact.id);
+                                  setContactView("list");
+                                  setActiveContactId(null);
+                                }
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {contactView === "detail" && !detailTarget && (
+                      <div className="contact-empty text-secondary">
+                        Contact not found.{" "}
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-primary underline"
+                          onClick={() => {
+                            setContactView("list");
+                            setActiveContactId(null);
+                          }}
+                        >
+                          Go back
+                        </button>
+                      </div>
+                    )}
+
+                    {contactView === "edit" &&
+            (() => {
+              const profilePhoto = contactEditDraft.picture.trim();
+              const profileInitials =
+                contactEditDraft.displayName ||
+                contactEditDraft.name ||
+                contactEditDraft.username ||
+                myCardName;
+              const showContactFields = contactEditDraft.isProfile || showCustomContactFields;
+
+              return (
+                <form
+                  id="contact-edit-form"
+                  className="contact-edit-view"
+                  onSubmit={(event) => event.preventDefault()}
+                >
+                  {contactEditDraft.isProfile ? (
+                    <div className="contact-photo-card">
+                      <div className="contact-photo-title">Profile photo</div>
+                      <div className="contact-photo-body">
+                        <div
+                          className={
+                            profilePhoto
+                              ? "contact-avatar contact-avatar--image contact-avatar--xl"
+                              : "contact-avatar contact-avatar--xl"
+                          }
+                        >
+                          {profilePhoto ? (
+                            <img src={profilePhoto} alt={profileInitials} className="contact-avatar__img" />
+                          ) : (
+                            contactInitials(profileInitials)
+                          )}
+                        </div>
+                        <div className="contact-photo-actions">
+                          <button
+                            type="button"
+                            className="accent-button pressable contact-photo-upload"
+                            onClick={() => {
+                              setProfilePhotoError("");
+                              profilePhotoInputRef.current?.click();
+                            }}
+                            disabled={profilePhotoBusy}
+                          >
+                            {profilePhotoBusy ? "Processing…" : profilePhoto ? "Replace photo" : "Upload photo"}
+                          </button>
+                          {profilePhoto && (
+                            <button
+                              type="button"
+                              className="ghost-button button-sm pressable contact-photo-remove"
+                              onClick={handleClearProfilePhoto}
+                              disabled={profilePhotoBusy}
+                            >
+                              Remove photo
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          ref={profilePhotoInputRef}
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          onChange={handleProfilePhotoChange}
+                        />
+                        {profilePhotoError && <div className="contact-error">{profilePhotoError}</div>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="contact-import-card">
+                      <div className="contact-import-title">Import from npub / NIP-05</div>
+                      <div className="contact-import-actions contact-import-actions--top">
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-import-scan"
+                          onClick={() => {
+                            setShowScanner(true);
+                          }}
+                        >
+                          Scan QR
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-custom-toggle"
+                          onClick={() => setShowCustomContactFields((prev) => !prev)}
+                        >
+                          {showCustomContactFields ? "Hide custom fields" : "Custom contact"}
+                        </button>
+                        {publicFollowOptions.length > 0 && (
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable contact-import-follow"
+                            onClick={() => setPublicFollowPickerOpen(true)}
+                          >
+                            Pick from follows
+                          </button>
+                        )}
+                      </div>
+                      <div className="contact-import-row">
+                        <input
+                          className="contact-edit-input contact-import-input"
+                          placeholder="npub1… or name@example.com"
+                          value={contactLookupInput}
+                          onChange={(e) => setContactLookupInput(e.target.value)}
+                          autoComplete="off"
+                        />
+                        <button
+                          type="button"
+                          className="accent-button pressable contact-import-button"
+                          onClick={async () => {
+                            await handleContactImportAction();
+                          }}
+                          disabled={contactLookupBusy}
+                        >
+                          {contactLookupBusy ? "…" : contactLookupInput.trim() ? "Import" : "Paste"}
+                        </button>
+                      </div>
+                      {contactLookupError && <div className="contact-error">{contactLookupError}</div>}
+                    </div>
+                  )}
+
+                  {showContactFields && (
+                    <div className="contact-edit-grid">
+                      {!contactEditDraft.isProfile && (
+                        <input
+                          className="contact-edit-input"
+                          placeholder="Nickname"
+                          value={contactEditDraft.name}
+                          onChange={(e) => setContactEditDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        />
+                      )}
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Display name"
+                        value={contactEditDraft.displayName}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, displayName: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Username"
+                        value={contactEditDraft.username}
+                        onChange={(e) => {
+                          const sanitized = sanitizeUsername(e.target.value);
+                          setContactEditDraft((prev) => ({ ...prev, username: sanitized }));
+                        }}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Lightning address"
+                        autoComplete="off"
+                        value={contactEditDraft.address}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, address: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="npub or hex pubkey"
+                        autoComplete="off"
+                        value={contactEditDraft.npub}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, npub: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="NIP-05 (name@example.com)"
+                        autoComplete="off"
+                        value={contactEditDraft.nip05}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, nip05: e.target.value }))}
+                      />
+                      <textarea
+                        className="contact-edit-input contact-edit-textarea"
+                        rows={3}
+                        placeholder="About"
+                        value={contactEditDraft.about}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, about: e.target.value }))}
+                      />
+                    </div>
+                  )}
+
+                  <div className="contact-edit-note text-secondary">
+                    Saving publishes your updates to Nostr (contacts stay encrypted).
+                  </div>
+
+                  {contactEditError && <div className="contact-error">{contactEditError}</div>}
+                </form>
+              );
+            })()}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       <ActionSheet
