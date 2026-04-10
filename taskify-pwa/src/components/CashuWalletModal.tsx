@@ -2216,6 +2216,7 @@ export default function CashuWalletModal({
   const persistDmSyncMeta = useCallback((meta: DmSyncMeta) => {
     try {
       idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META, JSON.stringify(meta));
+      dmLastSyncRef.current = meta.lastCompletedSyncAt || 0;
     } catch {
       // ignore storage failures
     }
@@ -2224,6 +2225,15 @@ export default function CashuWalletModal({
     dmProcessedEventsRef.current = new Set(dmMessages.map((msg) => msg.eventId));
     persistDmMessages(dmMessages);
   }, [dmMessages, persistDmMessages]);
+
+  useEffect(() => {
+    if (!isChatPage || !open || chatView !== "threads") return;
+    if (dmMessages.length > 0) return;
+    const cached = readDmCache();
+    if (cached.length > 0) {
+      setDmMessages(cached);
+    }
+  }, [chatView, dmMessages.length, isChatPage, open]);
 
   useEffect(() => {
     try {
@@ -3158,6 +3168,13 @@ export default function CashuWalletModal({
   const handleBackToContactsList = useCallback(() => {
     setContactView("list");
     setActiveContactId(null);
+    if (isChatPage) {
+      setChatView("new-message");
+    }
+  }, [isChatPage]);
+  const handleReturnToProfileCard = useCallback(() => {
+    setActiveContactId("profile");
+    setContactView("detail");
     if (isChatPage) {
       setChatView("new-message");
     }
@@ -5192,6 +5209,25 @@ export default function CashuWalletModal({
     (peerHex: string | null | undefined) => {
       const normalizedPeer = (peerHex || "").trim().toLowerCase();
       if (!normalizedPeer) return false;
+      const hasThread = dmMessages.some((message) => message.peerPubkey.toLowerCase() === normalizedPeer);
+      if (!hasThread) {
+        setDmMessages((prev) => {
+          if (prev.some((message) => message.peerPubkey.toLowerCase() === normalizedPeer)) return prev;
+          return [
+            ...prev,
+            {
+              id: `draft-${normalizedPeer}`,
+              eventId: `draft-${normalizedPeer}`,
+              peerPubkey: normalizedPeer,
+              isIncoming: false,
+              createdAt: Math.floor(Date.now() / 1000),
+              content: "",
+              preview: "",
+              attachment: { type: "text" },
+            },
+          ];
+        });
+      }
       setActiveThreadPeer(normalizedPeer);
       setDmView("thread");
       setChatView("conversation");
@@ -5200,11 +5236,11 @@ export default function CashuWalletModal({
       setDmSearch("");
       return true;
     },
-    [],
+    [dmMessages],
   );
   useEffect(() => {
     if (dmView === "thread" && chatView !== "conversation") return;
-    if (dmView === "thread" && !activeThread) {
+    if (dmView === "thread" && !activeThread && !activeThreadPeer) {
       setDmView("list");
       setActiveThreadPeer(null);
     }
@@ -13592,8 +13628,12 @@ export default function CashuWalletModal({
       setContactEditError("");
       setContactLookupError("");
       setShowCustomContactFields(false);
+      if (contactEditDraft.isProfile) {
+        handleReturnToProfileCard();
+        return;
+      }
       setContactView(detailTarget ? "detail" : "list");
-    }, [detailTarget]);
+    }, [contactEditDraft.isProfile, detailTarget, handleReturnToProfileCard]);
 
     const detailTitle = detailTarget ? contactPrimaryName(detailTarget) : "Contact";
     const detailIsNostrContact = useMemo(() => {
@@ -15460,30 +15500,27 @@ export default function CashuWalletModal({
 
           {chatView === "new-message" && (
             <div className="chat-new-message">
-              {activeContactId !== "profile" && (
-                <div className="chat-page__header chat-page__header--safe-area">
-                  <button
-                    className="glass-icon-button pressable"
-                    onClick={() => {
-                      setChatView("threads");
-                      setContactView("list");
-                      setActiveContactId(null);
-                      setDmSearch("");
-                    }}
-                    aria-label="Back to chats"
-                  >
-                    <BackIcon className="h-5 w-5" />
-                  </button>
-                  <div className="chat-page__header-title">New message</div>
-                  <div className="contacts-header-spacer" aria-hidden="true" />
-                </div>
-              )}
-              <div className={`chat-page__header chat-page__header--safe-area${contactView !== "list" ? " chat-page__header--compact" : ""}`}>
+              <div className="chat-page__header chat-page__header--safe-area">
                 <button
                   className="glass-icon-button pressable"
                   onClick={() => {
-                    if (contactView === "detail" || contactView === "edit") {
-                      handleBackToContactsList();
+                    if (contactView === "edit") {
+                      if (contactEditDraft.isProfile) {
+                        handleReturnToProfileCard();
+                      } else {
+                        handleCancelContactEdit();
+                      }
+                      return;
+                    }
+                    if (contactView === "detail") {
+                      if (activeContactId === "profile") {
+                        setChatView("threads");
+                        setContactView("list");
+                        setActiveContactId(null);
+                        setDmSearch("");
+                      } else {
+                        handleBackToContactsList();
+                      }
                       return;
                     }
                     setChatView("threads");
@@ -15491,13 +15528,9 @@ export default function CashuWalletModal({
                     setActiveContactId(null);
                     setDmSearch("");
                   }}
-                  aria-label={contactView === "detail" ? "Back to contacts" : contactView === "edit" ? "Cancel" : "Close new message"}
+                  aria-label={contactView === "edit" ? (contactEditDraft.isProfile ? "Back to profile" : "Cancel") : contactView === "detail" ? (activeContactId === "profile" ? "Back to chats" : "Back to contacts") : "Back to chats"}
                 >
-                  {contactView === "detail" ? (
-                    <BackIcon className="h-5 w-5" />
-                  ) : (
-                    <CloseIcon className="h-4 w-4" />
-                  )}
+                  <BackIcon className="h-5 w-5" />
                 </button>
                 <div className="chat-page__header-title">
                   {contactView === "edit"
@@ -15526,27 +15559,49 @@ export default function CashuWalletModal({
                     </svg>
                   </button>
                 ) : contactView === "detail" ? (
-                  <button
-                    className="glass-icon-button glass-icon-button--accent pressable"
-                    onClick={() => {
-                      if (activeContactId === "profile") {
-                        handleStartEditCurrentContact();
-                      } else {
-                        handleBackToContactsList();
-                      }
-                    }}
-                    aria-label={activeContactId === "profile" ? "Edit profile" : "Back to contact list"}
-                    title={activeContactId === "profile" ? "Edit profile" : "Back to contact list"}
-                  >
-                    {activeContactId === "profile" ? <PencilIcon className="h-4 w-4" /> : <BackIcon className="h-5 w-5" />}
-                  </button>
+                  activeContactId === "profile" ? (
+                    <button
+                      className="glass-icon-button glass-icon-button--accent pressable"
+                      onClick={handleStartEditCurrentContact}
+                      aria-label="Edit profile"
+                      title="Edit profile"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                    </button>
+                  ) : detailIsNostrContact ? (
+                    detailContactCanFollow ? (
+                      <button
+                        type="button"
+                        className="contact-pill contact-pill--accent contact-pill--compact pressable"
+                        onClick={handleToggleFollowDetailContact}
+                      >
+                        {detailContactFollowed ? "Unfollow" : "Follow"}
+                      </button>
+                    ) : (
+                      <div className="contacts-header-spacer" aria-hidden="true" />
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      className="glass-icon-button glass-icon-button--accent pressable"
+                      onClick={handleStartEditCurrentContact}
+                      aria-label="Edit contact"
+                      title="Edit contact"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                    </button>
+                  )
                 ) : (
                   <button
-                    className="glass-icon-button pressable"
-                    onClick={handleCancelContactEdit}
-                    aria-label="Cancel"
+                    type="button"
+                    className="glass-icon-button glass-icon-button--accent pressable"
+                    aria-label={contactEditDraft.isProfile ? "Save profile" : "Save contact"}
+                    onClick={() => {
+                      void handleContactEditSubmit();
+                    }}
+                    disabled={contactsPublishState === "publishing" || profileStatus === "publishing" || profilePhotoBusy}
                   >
-                    <CloseIcon className="h-4 w-4" />
+                    <CheckIcon className="h-4 w-4" />
                   </button>
                 )}
               </div>
@@ -15672,7 +15727,6 @@ export default function CashuWalletModal({
               {contactView !== "list" && (
                 <div className="chat-new-message__list chat-new-message__list--detail">
                   <div ref={contactsPanelRef} className="contacts-shell" aria-busy={contactSyncState.status === "loading" || contactsPublishState === "publishing"}>
-                    {activeContactId === "profile" ? null : contactsHeader}
                     {contactView === "detail" && detailTarget && (
                       <div className="contact-detail-view">
                         <div className="contact-hero">

@@ -5032,6 +5032,7 @@ html.light .wallet-modal__unit {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-height: 0;
 }
 
 .contacts-sheet-header {
