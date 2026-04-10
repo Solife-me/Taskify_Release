@@ -6873,7 +6873,7 @@ html.light .chat-page__icon-btn {
 }
 
 .chat-page__search-input:focus {
-  border-color: rgba(123, 97, 255, 0.6);
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
   background: rgba(255, 255, 255, 0.1);
 }
 
@@ -6940,8 +6940,8 @@ html.light .chat-inbox-item {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(123, 97, 255, 0.18);
-  color: #b6a4ff;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -7118,6 +7118,7 @@ html.light .chat-conversation__header {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  text-align: left;
 }
 
 .chat-conversation__peer-avatar {
@@ -7244,6 +7245,27 @@ html.light .chat-bubble--in {
   -webkit-backdrop-filter: none;
 }
 
+.chat-bubble__card {
+  padding: 0.7rem 0.9rem 0.65rem;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.chat-bubble--out .chat-bubble__card {
+  background: color-mix(in srgb, var(--accent) 72%, rgba(255, 255, 255, 0.08));
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.chat-bubble__card--text {
+  padding-bottom: 0.45rem;
+}
+
+html.light .chat-bubble__card {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
 .chat-bubble__text {
   white-space: pre-wrap;
   word-break: break-word;
@@ -7294,7 +7316,7 @@ html.light .chat-compose {
 }
 
 .chat-compose__input:focus {
-  border-color: rgba(123, 97, 255, 0.6);
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
   background: rgba(255, 255, 255, 0.12);
 }
 
@@ -7394,8 +7416,8 @@ html.light .chat-compose__input {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: rgba(123, 97, 255, 0.18);
-  color: #b6a4ff;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
 }
 
 .chat-new-message__action-copy {

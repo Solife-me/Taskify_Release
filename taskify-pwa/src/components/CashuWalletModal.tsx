@@ -53,6 +53,8 @@ import {
   LS_CONTACT_PROFILE_CACHE,
   LS_DM_BLOCKED_PEERS,
   LS_DM_DELETED_EVENTS,
+  LS_DM_MESSAGE_CACHE,
+  LS_DM_SYNC_META,
   LS_PROFILE_EVENT_IDS,
   LS_PROFILE_METADATA_CACHE,
 } from "../localStorageKeys";
@@ -961,6 +963,10 @@ type WalletDmThread = {
   isStranger: boolean;
 };
 
+type DmSyncMeta = {
+  lastCompletedSyncAt: number;
+};
+
 type ContactViewMode = "list" | "detail" | "edit";
 
 type ContactEditDraft = {
@@ -1713,6 +1719,62 @@ function truncatePreview(value: string, limit = 72): string {
   return `${trimmed.slice(0, limit)}…`;
 }
 
+function isWalletDmAttachment(value: unknown): value is WalletDmAttachment {
+  if (!value || typeof value !== "object") return false;
+  const type = (value as { type?: unknown }).type;
+  return typeof type === "string";
+}
+
+function isWalletDmMessage(value: unknown): value is WalletDmMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<WalletDmMessage>;
+  return (
+    typeof candidate.eventId === "string" &&
+    typeof candidate.peerPubkey === "string" &&
+    typeof candidate.isIncoming === "boolean" &&
+    typeof candidate.createdAt === "number" &&
+    typeof candidate.content === "string" &&
+    typeof candidate.preview === "string"
+  );
+}
+
+function readDmCache(): WalletDmMessage[] {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(isWalletDmMessage)
+      .map((entry) => ({
+        id: entry.id || entry.eventId,
+        eventId: entry.eventId,
+        peerPubkey: entry.peerPubkey.toLowerCase(),
+        isIncoming: entry.isIncoming,
+        createdAt: entry.createdAt,
+        content: entry.content,
+        preview: entry.preview,
+        attachment: isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" },
+      }))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-400);
+  } catch {
+    return [];
+  }
+}
+
+function readDmSyncMeta(): DmSyncMeta {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META);
+    if (!raw) return { lastCompletedSyncAt: 0 };
+    const parsed = JSON.parse(raw) as Partial<DmSyncMeta> | null;
+    const value = typeof parsed?.lastCompletedSyncAt === "number" ? parsed.lastCompletedSyncAt : 0;
+    return { lastCompletedSyncAt: Number.isFinite(value) ? value : 0 };
+  } catch {
+    return { lastCompletedSyncAt: 0 };
+  }
+}
+
 function shortenNpubDisplay(npub: string | null | undefined, lead = 8, tail = 6): string {
   if (!npub) return "";
   const value = npub.trim();
@@ -2079,7 +2141,7 @@ export default function CashuWalletModal({
   const [chatView, setChatView] = useState<"threads" | "conversation" | "new-message">("threads");
   const [chatCompose, setChatCompose] = useState("");
   const chatModeUsesContacts = isChatPage && chatView === "new-message";
-  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>([]);
+  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => readDmCache());
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
   const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
   const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2092,7 +2154,7 @@ export default function CashuWalletModal({
   const [, setDmPeerProfilesVersion] = useState(0);
   const dmProcessedEventsRef = useRef<Set<string>>(new Set());
   const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
-  const dmLastSyncRef = useRef<number>(0);
+  const dmLastSyncRef = useRef<number>(readDmSyncMeta().lastCompletedSyncAt || 0);
   const [dmView, setDmView] = useState<"list" | "thread" | "strangers">("list");
   const [activeThreadPeer, setActiveThreadPeer] = useState<string | null>(null);
   const [dmSearch, setDmSearch] = useState("");
@@ -2144,6 +2206,25 @@ export default function CashuWalletModal({
       // ignore storage failures
     }
   }, []);
+  const persistDmMessages = useCallback((messages: WalletDmMessage[]) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages.slice(-400)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistDmSyncMeta = useCallback((meta: DmSyncMeta) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META, JSON.stringify(meta));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  useEffect(() => {
+    dmProcessedEventsRef.current = new Set(dmMessages.map((msg) => msg.eventId));
+    persistDmMessages(dmMessages);
+  }, [dmMessages, persistDmMessages]);
+
   useEffect(() => {
     try {
       const rawDeleted = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_DELETED_EVENTS);
@@ -3077,7 +3158,10 @@ export default function CashuWalletModal({
   const handleBackToContactsList = useCallback(() => {
     setContactView("list");
     setActiveContactId(null);
-  }, []);
+    if (isChatPage) {
+      setChatView("new-message");
+    }
+  }, [isChatPage]);
   const contactsPublishQueuedRef = useRef(false);
   const [contactsContext, setContactsContext] = useState<"lightning" | "ecash" | null>(null);
   const contactsContextRef = useRef<"lightning" | "ecash" | null>(null);
@@ -4941,7 +5025,9 @@ export default function CashuWalletModal({
     const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
     if (!relays.length) return;
     const now = Math.floor(Date.now() / 1000);
-    const since = Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
+    const lastCompletedSyncAt = Math.floor(dmLastSyncRef.current / 1000);
+    const incrementalSince = lastCompletedSyncAt > 0 ? Math.max(0, lastCompletedSyncAt - 24 * 60 * 60) : 0;
+    const since = incrementalSince > 0 ? incrementalSince : Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
     try {
       const session = await NostrSession.init(relays);
       const filters = [
@@ -4969,11 +5055,13 @@ export default function CashuWalletModal({
       for (const ev of ordered) {
         await handleDmEvent(ev as NostrEvent);
       }
-      dmLastSyncRef.current = Date.now();
+      const completedAt = Date.now();
+      dmLastSyncRef.current = completedAt;
+      persistDmSyncMeta({ lastCompletedSyncAt: completedAt });
     } catch (err) {
       console.warn("Failed to sync DMs", err);
     }
-  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, stopDmSubscription]);
+  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, persistDmSyncMeta, stopDmSubscription]);
   const contactIndex = useMemo(() => {
     const map = new Map<
       string,
@@ -14823,7 +14911,7 @@ export default function CashuWalletModal({
           {chatView === "threads" && (
             <div className="chat-page__threads">
               {/* Header */}
-              <div className="chat-page__header chat-page__header--safe-area">
+              <div className={`chat-page__header chat-page__header--safe-area${contactView !== "list" ? " chat-page__header--compact" : ""}`}>
                 <button
                   type="button"
                   className={`contact-avatar pressable${profileCard.picture?.trim() ? " contact-avatar--image contact-avatar--profile" : " contact-avatar--profile"}`}
@@ -15086,7 +15174,54 @@ export default function CashuWalletModal({
                 {(() => {
                   const meta = peerLabelFor(activeThread.peerPubkey);
                   return (
-                    <div className="chat-conversation__peer-info">
+                    <button
+                      type="button"
+                      className="chat-conversation__peer-info pressable"
+                      onClick={() => {
+                        const existingContact = contacts.find((contact) => {
+                          const normalized = normalizeNostrPubkey(contact.npub || "");
+                          const contactHex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                          return contactHex === activeThread.peerPubkey;
+                        });
+                        if (existingContact) {
+                          setActiveContactId(existingContact.id);
+                          setContactView("detail");
+                        } else {
+                          const meta = getPeerProfile(activeThread.peerPubkey);
+                          const created = upsertContact({
+                            npub: formatNpub(activeThread.peerPubkey) || "",
+                            name: meta.displayName || meta.username || meta.label,
+                            displayName: meta.displayName || meta.label,
+                            username: sanitizeUsername(meta.username || ""),
+                            address: meta.lud16 || "",
+                            nip05: meta.nip05 || "",
+                            about: meta.about || "",
+                            picture: meta.picture || "",
+                          });
+                          if (created) {
+                            setActiveContactId(created.id);
+                            setContactView("detail");
+                          } else {
+                            setActiveContactId(null);
+                            setContactEditDraft({
+                              id: null,
+                              name: meta.displayName || meta.username || meta.label,
+                              displayName: meta.displayName || meta.label,
+                              username: sanitizeUsername(meta.username || ""),
+                              address: meta.lud16 || "",
+                              npub: formatNpub(activeThread.peerPubkey) || "",
+                              nip05: meta.nip05 || "",
+                              about: meta.about || "",
+                              picture: meta.picture || "",
+                              isProfile: false,
+                            });
+                            setContactView("edit");
+                          }
+                        }
+                        setChatView("new-message");
+                      }}
+                      aria-label={`Open contact card for ${meta.label}`}
+                    >
                       <div className="chat-conversation__peer-avatar">
                         {meta.picture ? (
                           <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
@@ -15095,7 +15230,7 @@ export default function CashuWalletModal({
                         )}
                       </div>
                       <div className="chat-conversation__peer-name">{meta.label}</div>
-                    </div>
+                    </button>
                   );
                 })()}
               </div>
@@ -15217,7 +15352,9 @@ export default function CashuWalletModal({
                           </div>
                         )}
                         {msg.attachment?.type === "text" && (
-                          <div className="chat-bubble__text">{msg.content}</div>
+                          <div className="chat-bubble__card chat-bubble__card--text">
+                            <div className="chat-bubble__text">{msg.content}</div>
+                          </div>
                         )}
                         <div className="chat-bubble__time">
                           {formatDmDay(msg.createdAt)} &middot; {formatDmTime(msg.createdAt)}
@@ -15308,10 +15445,32 @@ export default function CashuWalletModal({
 
           {chatView === "new-message" && (
             <div className="chat-new-message">
-              <div className="chat-page__header chat-page__header--safe-area">
+              {activeContactId !== "profile" && (
+                <div className="chat-page__header chat-page__header--safe-area">
+                  <button
+                    className="glass-icon-button pressable"
+                    onClick={() => {
+                      setChatView("threads");
+                      setContactView("list");
+                      setActiveContactId(null);
+                      setDmSearch("");
+                    }}
+                    aria-label="Back to chats"
+                  >
+                    <BackIcon className="h-5 w-5" />
+                  </button>
+                  <div className="chat-page__header-title">New message</div>
+                  <div className="contacts-header-spacer" aria-hidden="true" />
+                </div>
+              )}
+              <div className={`chat-page__header chat-page__header--safe-area${contactView !== "list" ? " chat-page__header--compact" : ""}`}>
                 <button
                   className="glass-icon-button pressable"
                   onClick={() => {
+                    if (contactView === "detail" || contactView === "edit") {
+                      handleBackToContactsList();
+                      return;
+                    }
                     setChatView("threads");
                     setContactView("list");
                     setActiveContactId(null);
@@ -15390,7 +15549,7 @@ export default function CashuWalletModal({
                         }}
                       >
                         <span className="chat-new-message__action-icon" aria-hidden="true">
-                          <QrCodeIcon className="h-4 w-4" />
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="16" y="3" width="5" height="5" rx="1" /><rect x="3" y="16" width="5" height="5" rx="1" /><path d="M10 4h2" /><path d="M10 8h4" /><path d="M4 10v2" /><path d="M8 10v4" /><path d="M10 10h2" /><path d="M14 10v2" /><path d="M16 10h2" /><path d="M20 10v4" /><path d="M10 14h4" /><path d="M16 14h2" /><path d="M10 18v2" /><path d="M14 16v5" /><path d="M18 18h3" /></svg>
                         </span>
                         <span className="chat-new-message__action-copy">
                           <span className="chat-new-message__action-title">Scan QR</span>
@@ -15403,7 +15562,7 @@ export default function CashuWalletModal({
                         onClick={handleStartAddContact}
                       >
                         <span className="chat-new-message__action-icon" aria-hidden="true">
-                          <AddIcon className="h-4 w-4" />
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                         </span>
                         <span className="chat-new-message__action-copy">
                           <span className="chat-new-message__action-title">Add contact</span>
@@ -15495,7 +15654,7 @@ export default function CashuWalletModal({
               {contactView !== "list" && (
                 <div className="chat-new-message__list chat-new-message__list--detail">
                   <div ref={contactsPanelRef} className="contacts-shell" aria-busy={contactSyncState.status === "loading" || contactsPublishState === "publishing"}>
-                    {contactsHeader}
+                    {activeContactId === "profile" ? null : contactsHeader}
                     {contactView === "detail" && detailTarget && (
                       <div className="contact-detail-view">
                         <div className="contact-hero">
