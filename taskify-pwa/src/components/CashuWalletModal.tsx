@@ -2078,6 +2078,7 @@ export default function CashuWalletModal({
   const isChatPage = page === "chat";
   const [chatView, setChatView] = useState<"threads" | "conversation" | "new-message">("threads");
   const [chatCompose, setChatCompose] = useState("");
+  const chatModeUsesContacts = isChatPage && chatView === "new-message";
   const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>([]);
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
   const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
@@ -10128,7 +10129,7 @@ export default function CashuWalletModal({
   }, [contactsSyncEnabled, contacts, contactSyncMeta.fingerprint, publishContactsToNostr]);
 
   useEffect(() => {
-    if (!contactsTabOpen && !contactsOpen) {
+    if (!contactsTabOpen && !contactsOpen && !chatModeUsesContacts) {
       contactProfilesRefreshedRef.current = false;
       return;
     }
@@ -10140,7 +10141,7 @@ export default function CashuWalletModal({
         void syncContactsFromNostr({ silent: true });
       }
     }
-  }, [contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
+  }, [chatModeUsesContacts, contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
 
   useEffect(() => {
     if (contactsTabOpen) return;
@@ -14822,7 +14823,7 @@ export default function CashuWalletModal({
           {chatView === "threads" && (
             <div className="chat-page__threads">
               {/* Header */}
-              <div className="chat-page__header">
+              <div className="chat-page__header chat-page__header--safe-area">
                 <button
                   type="button"
                   className={`contact-avatar pressable${profileCard.picture?.trim() ? " contact-avatar--image contact-avatar--profile" : " contact-avatar--profile"}`}
@@ -15389,7 +15390,7 @@ export default function CashuWalletModal({
                         }}
                       >
                         <span className="chat-new-message__action-icon" aria-hidden="true">
-                          <QrScanIcon className="h-4 w-4" />
+                          <QrCodeIcon className="h-4 w-4" />
                         </span>
                         <span className="chat-new-message__action-copy">
                           <span className="chat-new-message__action-title">Scan QR</span>
@@ -15402,7 +15403,7 @@ export default function CashuWalletModal({
                         onClick={handleStartAddContact}
                       >
                         <span className="chat-new-message__action-icon" aria-hidden="true">
-                          <PlusIcon className="h-4 w-4" />
+                          <AddIcon className="h-4 w-4" />
                         </span>
                         <span className="chat-new-message__action-copy">
                           <span className="chat-new-message__action-title">Add contact</span>
@@ -15493,7 +15494,8 @@ export default function CashuWalletModal({
               )}
               {contactView !== "list" && (
                 <div className="chat-new-message__list chat-new-message__list--detail">
-                  <div ref={contactsPanelRef} className="contacts-shell">
+                  <div ref={contactsPanelRef} className="contacts-shell" aria-busy={contactSyncState.status === "loading" || contactsPublishState === "publishing"}>
+                    {contactsHeader}
                     {contactView === "detail" && detailTarget && (
                       <div className="contact-detail-view">
                         <div className="contact-hero">
