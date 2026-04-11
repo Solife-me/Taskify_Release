@@ -5236,6 +5236,27 @@ export default function CashuWalletModal({
     });
     return map;
   }, [pendingCalendarInvites]);
+  const isUnreadThreadStatus = useCallback((status?: string | null) => {
+    if (!status) return false;
+    return (
+      status !== "accepted" &&
+      status !== "deleted" &&
+      status !== "dismissed" &&
+      status !== "declined" &&
+      status !== "tentative" &&
+      status !== "read"
+    );
+  }, []);
+  const collectUnreadThreadItemEventIds = useCallback(
+    (messages: WalletDmMessage[]) =>
+      messages
+        .map((message) => message.eventId)
+        .filter((id) => {
+          const item = messageItemsByEventId.get(id) || pendingMessageItemsByEventId.get(id);
+          return isUnreadThreadStatus(item?.status);
+        }),
+    [isUnreadThreadStatus, messageItemsByEventId, pendingMessageItemsByEventId],
+  );
   const syntheticDmMessages = useMemo(() => {
     const existingEventIds = new Set(dmMessages.map((message) => message.eventId));
     const messages: WalletDmMessage[] = [];
@@ -6108,23 +6129,12 @@ export default function CashuWalletModal({
         const item = messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
         const invite = pendingCalendarInvitesByEventId.get(msg.eventId);
         const status = item?.status || invite?.status;
-        if (!status) return acc;
-        if (
-          status === "accepted" ||
-          status === "deleted" ||
-          status === "dismissed" ||
-          status === "declined" ||
-          status === "tentative" ||
-          status === "read"
-        ) {
-          return acc;
-        }
-        return acc + 1;
+        return isUnreadThreadStatus(status) ? acc + 1 : acc;
       }, 0);
       map.set(thread.peerPubkey, count);
     });
     return map;
-  }, [dmThreads, messageItemsByEventId, pendingCalendarInvitesByEventId, pendingMessageItemsByEventId]);
+  }, [dmThreads, isUnreadThreadStatus, messageItemsByEventId, pendingCalendarInvitesByEventId, pendingMessageItemsByEventId]);
   const strangerUnreadCount = useMemo(
     () =>
       strangerThreads.reduce((acc, thread) => acc + (threadUnreadMap.get(thread.peerPubkey) || 0), 0),
@@ -6142,18 +6152,11 @@ export default function CashuWalletModal({
     : false;
   useEffect(() => {
     if (!activeThread) return;
-    const unreadIds = activeThread.messages
-      .map((m) => m.eventId)
-      .filter((id) => {
-        const item = messageItemsByEventId.get(id);
-        if (!item) return false;
-        const status = item.status;
-        return status !== "accepted" && status !== "deleted" && status !== "read";
-      });
+    const unreadIds = collectUnreadThreadItemEventIds(activeThread.messages);
     if (unreadIds.length) {
       onMarkMessagesRead(unreadIds);
     }
-  }, [activeThread, messageItemsByEventId, onMarkMessagesRead]);
+  }, [activeThread, collectUnreadThreadItemEventIds, onMarkMessagesRead]);
   const toggleBlockPeer = useCallback(
     (peerPubkey: string) => {
       const key = (peerPubkey || "").toLowerCase().trim();
@@ -15448,14 +15451,7 @@ export default function CashuWalletModal({
                           dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
                           setActiveThreadPeer(thread.peerPubkey);
                           setDmView("thread");
-                          const unreadIds = thread.messages
-                            .map((m) => m.eventId)
-                            .filter((id) => {
-                              const item = messageItemsByEventId.get(id);
-                              if (!item) return false;
-                              const status = item.status;
-                              return status !== "accepted" && status !== "deleted" && status !== "read";
-                            });
+                          const unreadIds = collectUnreadThreadItemEventIds(thread.messages);
                           if (unreadIds.length) {
                             onMarkMessagesRead(unreadIds);
                           }
@@ -16358,14 +16354,7 @@ export default function CashuWalletModal({
 		                        setActiveThreadPeer(thread.peerPubkey);
 		                        setChatView("conversation");
 		                        setDmView("thread");
-		                        const unreadIds = thread.messages
-		                          .map((m) => m.eventId)
-		                          .filter((id) => {
-		                            const item = messageItemsByEventId.get(id);
-		                            if (!item) return false;
-		                            const status = item.status;
-		                            return status !== "accepted" && status !== "deleted" && status !== "read";
-		                          });
+		                        const unreadIds = collectUnreadThreadItemEventIds(thread.messages);
 		                        if (unreadIds.length) {
 		                          onMarkMessagesRead(unreadIds);
 		                        }
