@@ -354,7 +354,7 @@ type TaskAssignee = {
   respondedAt?: number;
 };
 
-type CalendarInviteStatus = "pending" | CalendarRsvpStatus | "dismissed";
+type CalendarInviteStatus = "pending" | "read" | CalendarRsvpStatus | "dismissed";
 
 type CalendarInvite = {
   id: string;
@@ -5507,7 +5507,11 @@ export default function App() {
     [walletMessageItems],
   );
   const pendingCalendarInvites = useMemo(
-    () => calendarInvites.filter((invite) => invite.status === "pending"),
+    () => calendarInvites.filter((invite) => invite.status === "pending" || invite.status === "read"),
+    [calendarInvites],
+  );
+  const unreadCalendarInviteCount = useMemo(
+    () => calendarInvites.filter((invite) => invite.status === "pending").length,
     [calendarInvites],
   );
   const formatCalendarInviteWhen = useCallback((invite: CalendarInvite): string => {
@@ -5544,7 +5548,7 @@ export default function App() {
     if (endDateLabel === dateLabel) return `${dateLabel} • ${startTimeLabel} – ${endTimeLabel}`;
     return `${dateLabel} • ${startTimeLabel} – ${endDateLabel} ${endTimeLabel}`;
   }, []);
-  const inboxPendingCount = inboxPendingItems.length + pendingCalendarInvites.length;
+  const chatUnreadCount = messagesUnreadCount + unreadCalendarInviteCount;
   const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
   const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
@@ -15443,6 +15447,15 @@ export default function App() {
         };
       }),
     );
+    setCalendarInvites((prev) =>
+      prev.map((invite) => {
+        const eventId = invite.eventId?.trim();
+        const syntheticId = eventId || `calendar-invite-${invite.id}`;
+        if ((!eventId || !normalizedIds.has(eventId)) && !normalizedIds.has(syntheticId)) return invite;
+        if (invite.status !== "pending") return invite;
+        return { ...invite, status: "read" };
+      }),
+    );
   };
 
   function deleteTask(
@@ -19466,8 +19479,8 @@ export default function App() {
               >
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
-              {inboxPendingCount > 0 && (
-                <span className="app-tab-switcher__badge">{inboxPendingCount}</span>
+              {chatUnreadCount > 0 && (
+                <span className="app-tab-switcher__badge">{chatUnreadCount}</span>
               )}
             </div>
             <div className="app-tab-switcher__label">Chat</div>
