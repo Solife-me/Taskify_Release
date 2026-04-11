@@ -282,6 +282,14 @@ function getWalletMessageStatusLabel(
   return null;
 }
 
+function getCalendarInviteStatusLabel(status?: string | null): string | null {
+  if (status === "accepted") return "Event added";
+  if (status === "tentative") return "Responded: maybe";
+  if (status === "declined") return "Responded: declined";
+  if (status === "dismissed") return "Dismissed";
+  return null;
+}
+
 function mintListsEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
@@ -606,6 +614,14 @@ function estimateDataUrlSize(value: string): number {
 
 function isDataUrl(value: string): boolean {
   return /^data:image\//i.test(value.trim());
+}
+
+function pickPreferredProfilePhoto(...candidates: Array<string | null | undefined>): string | undefined {
+  const normalized = candidates
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  if (!normalized.length) return undefined;
+  return normalized.find((value) => isDataUrl(value)) || normalized[0];
 }
 
 function shouldCacheProfilePhoto(value: string): boolean {
@@ -935,6 +951,17 @@ type WalletDmAttachment =
       taskId?: string | null;
       status?: string | null;
     }
+  | {
+      type: "event";
+      title?: string | null;
+      start?: string | null;
+      end?: string | null;
+      whenLabel?: string | null;
+      inviteId?: string | null;
+      status?: string | null;
+      canonical?: string | null;
+      view?: string | null;
+    }
   | { type: "payment"; amountSat?: number | null; detail?: string | null; raw?: string | null }
   | { type: "text" };
 
@@ -979,6 +1006,29 @@ type DmThreadListEntry =
 
 type DmSyncMeta = {
   lastCompletedSyncAt: number;
+};
+
+type PendingCalendarInvite = {
+  id: string;
+  source: "dm" | "nostr";
+  eventId: string;
+  canonical: string;
+  view: string;
+  eventKey: string;
+  inviteToken: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  relays?: string[];
+  sender?: { pubkey?: string; name?: string; npub?: string };
+  receivedAt: string;
+  status: string;
+};
+
+type SharedContactPreview = {
+  contact: Contact;
+  itemId?: string | null;
+  status?: WalletMessageItem["status"] | "dismissed" | null;
 };
 
 type ContactViewMode = "list" | "detail" | "edit";
@@ -1814,6 +1864,54 @@ function readDmSyncMeta(): DmSyncMeta {
   }
 }
 
+function parseDateLikeToUnixSeconds(value: string | null | undefined, fallback = Math.floor(Date.now() / 1000)): number {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  const parsed = new Date(value);
+  const millis = parsed.getTime();
+  if (Number.isNaN(millis) || millis <= 0) return fallback;
+  return Math.floor(millis / 1000);
+}
+
+function normalizeDmPeerHex(value: string | null | undefined): string | null {
+  const normalized = normalizeNostrPubkey(value || "");
+  const candidate = (normalized || value || "").trim();
+  if (!candidate) return null;
+  if (/^(02|03)[0-9a-fA-F]{64}$/.test(candidate)) return candidate.slice(-64).toLowerCase();
+  if (/^0x[0-9a-fA-F]{64}$/.test(candidate)) return candidate.slice(-64).toLowerCase();
+  if (/^[0-9a-fA-F]{64}$/.test(candidate)) return candidate.toLowerCase();
+  return candidate.toLowerCase();
+}
+
+function cachedContactProfileToDmProfile(entry: CachedContactProfile): ContactProfile {
+  return {
+    ...entry.profile,
+    picture: pickPreferredProfilePhoto(entry.pictureDataUrl, entry.profile.picture),
+  };
+}
+
+function buildInitialDmPeerProfiles(messages: WalletDmMessage[]): Map<string, ContactProfile> {
+  const cachedProfiles = loadContactProfileCache();
+  const next = new Map<string, ContactProfile>();
+  messages.forEach((message) => {
+    const peerHex = normalizeDmPeerHex(message.peerPubkey);
+    if (!peerHex || next.has(peerHex)) return;
+    const cached = cachedProfiles[peerHex];
+    if (!cached?.profile) return;
+    next.set(peerHex, cachedContactProfileToDmProfile(cached));
+  });
+  return next;
+}
+
+function buildWalletMessageSyntheticEventId(item: WalletMessageItem): string {
+  const dmEventId = item.dmEventId?.trim();
+  return dmEventId || `wallet-message-${item.id}`;
+}
+
+function buildCalendarInviteSyntheticEventId(invite: PendingCalendarInvite): string {
+  const eventId = invite.eventId?.trim();
+  return eventId || `calendar-invite-${invite.id}`;
+}
+
 function shortenNpubDisplay(npub: string | null | undefined, lead = 8, tail = 6): string {
   if (!npub) return "";
   const value = npub.trim();
@@ -1889,7 +1987,7 @@ export default function CashuWalletModal({
   onDismissMessage: (id: string) => void;
   onMarkMessagesRead: (dmEventIds: string[]) => void;
   inboxPendingItems?: WalletMessageItem[];
-  pendingCalendarInvites?: { id: string; title?: string; start?: string; end?: string; sender?: { pubkey?: string; name?: string; npub?: string }; status: string }[];
+  pendingCalendarInvites?: PendingCalendarInvite[];
   onCalendarInviteRsvp?: (invite: any, status: string) => void;
   onDismissCalendarInvite?: (invite: any) => void;
   formatCalendarInviteWhen?: (invite: any) => string;
@@ -2174,6 +2272,7 @@ export default function CashuWalletModal({
     | { type: "paymentRequest"; request: string };
   const [pendingScan, setPendingScan] = useState<PendingScan | null>(null);
   const [scannedContact, setScannedContact] = useState<Contact | null>(null);
+  const [sharedContactPreview, setSharedContactPreview] = useState<SharedContactPreview | null>(null);
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const isContactsPage = page === "contacts";
   const isChatPage = page === "chat";
@@ -2191,7 +2290,9 @@ export default function CashuWalletModal({
     itemCount: 0,
   });
   const chatModeUsesContacts = isChatPage && chatView === "new-message";
-  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => readDmCache());
+  const initialDmMessages = useMemo(() => readDmCache(), []);
+  const initialDmPeerProfiles = useMemo(() => buildInitialDmPeerProfiles(initialDmMessages), [initialDmMessages]);
+  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => initialDmMessages);
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
   const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
   const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2199,7 +2300,7 @@ export default function CashuWalletModal({
   const [dmDeletedEventsVersion, setDmDeletedEventsVersion] = useState(0);
   const dmBlockedPeersRef = useRef<Set<string>>(new Set());
   const [, setDmBlockedPeersVersion] = useState(0);
-  const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(new Map());
+  const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(initialDmPeerProfiles);
   const dmPeerProfileLoadingRef = useRef<Set<string>>(new Set());
   const [, setDmPeerProfilesVersion] = useState(0);
   const dmProcessedEventsRef = useRef<Set<string>>(new Set());
@@ -2286,6 +2387,61 @@ export default function CashuWalletModal({
       // ignore storage failures
     }
   }, []);
+  const persistDmPeerProfileCache = useCallback(
+    (peerHex: string, profile: ContactProfile, updatedAt: number, pictureDataUrl?: string) => {
+      const normalizedPeerHex = normalizeDmPeerHex(peerHex);
+      if (!normalizedPeerHex) return;
+      const cache = loadContactProfileCache();
+      const existing = cache[normalizedPeerHex];
+      const existingUpdatedAt = existing?.updatedAt ?? 0;
+      const incomingUpdatedAt =
+        Number.isFinite(updatedAt) && updatedAt > 0 ? Math.floor(updatedAt) : existingUpdatedAt;
+      const preferIncoming = incomingUpdatedAt >= existingUpdatedAt;
+      const mergeString = (incoming?: string, current?: string) => {
+        const incomingValue = typeof incoming === "string" ? incoming.trim() : "";
+        const currentValue = typeof current === "string" ? current.trim() : "";
+        return preferIncoming ? incomingValue || currentValue || undefined : currentValue || incomingValue || undefined;
+      };
+      const normalizeRelays = (value?: string[]) =>
+        Array.isArray(value) && value.length
+          ? Array.from(
+              new Set(
+                value
+                  .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+                  .filter(Boolean),
+              ),
+            )
+          : undefined;
+      const incomingPictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
+      const existingPictureUrl = typeof existing?.profile.picture === "string" ? existing.profile.picture.trim() : "";
+      const nextPictureDataUrl =
+        (pictureDataUrl && isDataUrl(pictureDataUrl) ? pictureDataUrl.trim() : "") ||
+        (existing?.pictureDataUrl && incomingPictureUrl && incomingPictureUrl === existingPictureUrl
+          ? existing.pictureDataUrl
+          : undefined);
+      const nextEntry = normalizeCachedContactProfile({
+        profile: {
+          username: mergeString(profile.username, existing?.profile.username),
+          displayName: mergeString(profile.displayName, existing?.profile.displayName),
+          about: mergeString(profile.about, existing?.profile.about),
+          picture: mergeString(profile.picture, existing?.profile.picture),
+          lud16: mergeString(profile.lud16, existing?.profile.lud16),
+          nip05: mergeString(profile.nip05, existing?.profile.nip05),
+          paymentRequest: mergeString(profile.paymentRequest, existing?.profile.paymentRequest),
+          creq: mergeString(profile.creq, existing?.profile.creq),
+          relays: preferIncoming
+            ? normalizeRelays(profile.relays) || normalizeRelays(existing?.profile.relays)
+            : normalizeRelays(existing?.profile.relays) || normalizeRelays(profile.relays),
+        },
+        updatedAt: Math.max(existingUpdatedAt, incomingUpdatedAt),
+        pictureDataUrl: nextPictureDataUrl,
+      });
+      if (!nextEntry) return;
+      cache[normalizedPeerHex] = nextEntry;
+      persistContactProfileCache(cache);
+    },
+    [],
+  );
   useEffect(() => {
     persistDmMessages(dmMessages);
   }, [dmMessages, persistDmMessages]);
@@ -4824,6 +4980,120 @@ export default function CashuWalletModal({
     });
     return map;
   }, [messageItems]);
+  const pendingMessageItemsByEventId = useMemo(() => {
+    const map = new Map<string, WalletMessageItem>();
+    (inboxPendingItems || []).forEach((item) => {
+      map.set(buildWalletMessageSyntheticEventId(item), item);
+    });
+    return map;
+  }, [inboxPendingItems]);
+  const pendingCalendarInvitesByEventId = useMemo(() => {
+    const map = new Map<string, PendingCalendarInvite>();
+    (pendingCalendarInvites || []).forEach((invite) => {
+      map.set(buildCalendarInviteSyntheticEventId(invite), invite);
+    });
+    return map;
+  }, [pendingCalendarInvites]);
+  const syntheticDmMessages = useMemo(() => {
+    const existingEventIds = new Set(dmMessages.map((message) => message.eventId));
+    const messages: WalletDmMessage[] = [];
+    (inboxPendingItems || []).forEach((item) => {
+      const eventId = buildWalletMessageSyntheticEventId(item);
+      if (existingEventIds.has(eventId)) return;
+      const peerHex = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
+      if (!peerHex) return;
+      const title = item.title?.trim() || item.task?.title?.trim() || item.boardName?.trim() || "Shared item";
+      const createdAt = parseDateLikeToUnixSeconds(item.receivedAt);
+      const preview =
+        item.type === "board"
+          ? `Shared board: ${item.boardName || title}`
+          : item.type === "contact"
+            ? `Shared contact: ${item.contact?.name || item.contact?.displayName || title}`
+            : item.type === "task"
+              ? `Shared task: ${title}`
+              : title;
+      const attachment: WalletDmAttachment =
+        item.type === "board"
+          ? {
+              type: "board",
+              boardName: item.boardName || title,
+              boardId: item.boardId,
+              taskId: item.id,
+              status: item.status ?? null,
+            }
+          : item.type === "contact"
+            ? {
+                type: "contact",
+                contactName: item.contact?.name || item.contact?.displayName || title,
+                displayName: item.contact?.displayName,
+                username: item.contact?.username,
+                npub: item.contact?.npub,
+                nip05: item.contact?.nip05,
+                address: item.contact?.address,
+                picture: item.contact?.picture,
+                taskId: item.id,
+                status: item.status ?? null,
+              }
+            : item.type === "task"
+              ? {
+                  type: "task",
+                  task: item.task || null,
+                  taskId: item.id,
+                  status: item.status ?? null,
+                }
+              : { type: "text" };
+      messages.push({
+        id: eventId,
+        eventId,
+        peerPubkey: peerHex,
+        isIncoming: true,
+        createdAt,
+        content: item.note?.trim() || title,
+        preview,
+        attachment,
+      });
+    });
+    (pendingCalendarInvites || []).forEach((invite) => {
+      const eventId = buildCalendarInviteSyntheticEventId(invite);
+      if (existingEventIds.has(eventId)) return;
+      const peerHex = normalizeDmPeerHex(invite.sender?.pubkey || invite.sender?.npub);
+      if (!peerHex) return;
+      const whenLabel = formatCalendarInviteWhen ? formatCalendarInviteWhen(invite) : "";
+      const title = invite.title?.trim() || "Event invite";
+      messages.push({
+        id: eventId,
+        eventId,
+        peerPubkey: peerHex,
+        isIncoming: true,
+        createdAt: parseDateLikeToUnixSeconds(invite.receivedAt || invite.start),
+        content: invite.view?.trim() || invite.canonical?.trim() || title,
+        preview: whenLabel ? `Event invite: ${title} · ${whenLabel}` : `Event invite: ${title}`,
+        attachment: {
+          type: "event",
+          title,
+          start: invite.start,
+          end: invite.end,
+          whenLabel,
+          inviteId: invite.id,
+          status: invite.status,
+          canonical: invite.canonical,
+          view: invite.view,
+        },
+      });
+    });
+    messages.sort((a, b) => a.createdAt - b.createdAt);
+    return messages;
+  }, [dmMessages, formatCalendarInviteWhen, inboxPendingItems, pendingCalendarInvites]);
+  const displayDmMessages = useMemo(() => {
+    const merged = new Map<string, WalletDmMessage>();
+    syntheticDmMessages.forEach((message) => {
+      merged.set(message.eventId, message);
+    });
+    dmMessages.forEach((message) => {
+      merged.set(message.eventId, message);
+    });
+    return Array.from(merged.values()).sort((a, b) => a.createdAt - b.createdAt);
+  }, [dmMessages, syntheticDmMessages]);
   const paymentHistoryByEventId = useMemo(() => {
     const map = new Map<string, HistoryItem>();
     history.forEach((entry) => {
@@ -4879,6 +5149,9 @@ export default function CashuWalletModal({
       if (!normalized) return null;
       const peerHex = compressedToRawHex(normalized).toLowerCase();
       if (dmPeerProfilesRef.current.has(peerHex)) return dmPeerProfilesRef.current.get(peerHex)!;
+      const cachedProfiles = loadContactProfileCache();
+      const cached = cachedProfiles[peerHex];
+      const cachedProfile = cached?.profile ? cachedContactProfileToDmProfile(cached) : null;
       const contactEntry = contacts.find((c) => {
         const cn = normalizeNostrPubkey(c.npub || "");
         if (!cn) return false;
@@ -4886,13 +5159,18 @@ export default function CashuWalletModal({
       });
       if (contactEntry) {
         dmPeerProfilesRef.current.set(peerHex, {
-          username: contactEntry.username || contactEntry.name,
+          username: contactEntry.username || contactEntry.name || cachedProfile?.username,
           displayName: contactDisplayLabel(contactEntry),
           lud16: contactEntry.address || undefined,
           paymentRequest: contactEntry.paymentRequest || undefined,
-          nip05: contactEntry.nip05 || undefined,
-          picture: contactEntry.picture || undefined,
-          about: contactEntry.about || undefined,
+          nip05: contactEntry.nip05 || cachedProfile?.nip05 || undefined,
+          picture: pickPreferredProfilePhoto(cached?.pictureDataUrl, contactEntry.picture, cachedProfile?.picture),
+          about: contactEntry.about || cachedProfile?.about || undefined,
+          creq: cachedProfile?.creq,
+          relays:
+            Array.isArray(contactEntry.relays) && contactEntry.relays.length
+              ? contactEntry.relays
+              : cachedProfile?.relays,
         });
         setDmPeerProfilesVersion((v) => v + 1);
         if (contactEntry.nip05) {
@@ -4905,20 +5183,18 @@ export default function CashuWalletModal({
         }
         return dmPeerProfilesRef.current.get(peerHex)!;
       }
-      const cachedProfiles = loadContactProfileCache();
-      const cached = cachedProfiles[peerHex];
-      if (cached?.profile) {
-        dmPeerProfilesRef.current.set(peerHex, cached.profile);
+      if (cachedProfile) {
+        dmPeerProfilesRef.current.set(peerHex, cachedProfile);
         setDmPeerProfilesVersion((v) => v + 1);
-        if (cached.profile.nip05) {
+        if (cachedProfile.nip05) {
           ensureNip05VerificationRef.current?.(
             `dm-${peerHex}`,
-            cached.profile.nip05,
+            cachedProfile.nip05,
             pubkey,
             cached.updatedAt ?? null,
           );
         }
-        return cached.profile;
+        return cachedProfile;
       }
       if (dmPeerProfileLoadingRef.current.has(peerHex)) return null;
       dmPeerProfileLoadingRef.current.add(peerHex);
@@ -4932,17 +5208,43 @@ export default function CashuWalletModal({
           : null;
         if (profileEvent?.content) {
           const profile = parseProfileContent(profileEvent.content);
-          dmPeerProfilesRef.current.set(peerHex, profile);
+          const updatedAt = (profileEvent.created_at || 0) * 1000;
+          const pictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
+          const cachedPictureUrl = typeof cached?.profile.picture === "string" ? cached.profile.picture.trim() : "";
+          const immediatePicture = pickPreferredProfilePhoto(
+            pictureUrl && cached?.pictureDataUrl && pictureUrl === cachedPictureUrl ? cached.pictureDataUrl : undefined,
+            profile.picture,
+          );
+          const displayProfile: ContactProfile = {
+            ...profile,
+            picture: immediatePicture,
+          };
+          dmPeerProfilesRef.current.set(peerHex, displayProfile);
           setDmPeerProfilesVersion((v) => v + 1);
+          persistDmPeerProfileCache(
+            peerHex,
+            profile,
+            updatedAt,
+            immediatePicture && isDataUrl(immediatePicture) ? immediatePicture : undefined,
+          );
+          if (!immediatePicture && pictureUrl && shouldCacheProfilePhoto(pictureUrl)) {
+            void fetchProfilePhotoDataUrl(pictureUrl).then((dataUrl) => {
+              if (!dataUrl) return;
+              const current = dmPeerProfilesRef.current.get(peerHex) || profile;
+              dmPeerProfilesRef.current.set(peerHex, { ...current, picture: dataUrl });
+              setDmPeerProfilesVersion((v) => v + 1);
+              persistDmPeerProfileCache(peerHex, profile, updatedAt, dataUrl);
+            });
+          }
           if (profile.nip05) {
             ensureNip05VerificationRef.current?.(
               `dm-${peerHex}`,
               profile.nip05,
               pubkey,
-              (profileEvent.created_at || 0) * 1000,
+              updatedAt,
             );
           }
-          return profile;
+          return displayProfile;
         }
       } catch (err) {
         console.warn("Failed to load DM peer profile", err);
@@ -4957,6 +5259,7 @@ export default function CashuWalletModal({
       defaultNostrRelays,
       normalizeNostrPubkey,
       parseProfileContent,
+      persistDmPeerProfileCache,
     ],
   );
   const getPeerProfile = useCallback(
@@ -5226,7 +5529,7 @@ export default function CashuWalletModal({
         shortenNpubDisplay(npub) ||
         peerHex.slice(0, 10);
       const subtitle = verifiedNip05 || profile?.username || undefined;
-      const picture = contact?.picture || (profile?.picture || "").trim() || undefined;
+      const picture = pickPreferredProfilePhoto(profile?.picture, contact?.picture);
       return { label, subtitle, picture, verifiedNip05 };
     },
     [contactIndex, formatNpubDisplay],
@@ -5250,7 +5553,7 @@ export default function CashuWalletModal({
         (profile?.username && profile.username.trim()) ||
         (npubDisplay ? shortenNpubDisplay(npubDisplay, 10, 6) : hex?.slice(0, 12) || "Contact");
       const subtitle = verifiedNip05 || profile?.username || (npubDisplay || undefined);
-      const picture = (profile?.picture || fallbackPicture || "").trim() || undefined;
+      const picture = pickPreferredProfilePhoto(profile?.picture, fallbackPicture);
       return {
         label,
         subtitle,
@@ -5261,10 +5564,64 @@ export default function CashuWalletModal({
     },
     [compressedToRawHex, formatNpubDisplay, normalizeNostrPubkey],
   );
+  const buildSharedContactPreview = useCallback(
+    (
+      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
+      item?: WalletMessageItem | null,
+    ): SharedContactPreview | null => {
+      const attachmentNpub = attachment?.npub || item?.contact?.npub || "";
+      const normalizedNpub = normalizeNostrPubkey(attachmentNpub);
+      const contactHex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
+      const profile = contactHex ? dmPeerProfilesRef.current.get(contactHex) : undefined;
+      const normalized = normalizeContact({
+        id: item?.id ? `shared-contact-${item.id}` : makeContactId(),
+        kind: attachmentNpub ? "nostr" : "custom",
+        name:
+          item?.contact?.name ||
+          attachment?.contactName ||
+          attachment?.displayName ||
+          profile?.displayName ||
+          attachment?.username ||
+          profile?.username ||
+          "",
+        displayName: attachment?.displayName || item?.contact?.displayName || profile?.displayName || "",
+        username: attachment?.username || item?.contact?.username || profile?.username || "",
+        address: attachment?.address || item?.contact?.address || profile?.lud16 || "",
+        npub: attachmentNpub,
+        nip05: attachment?.nip05 || item?.contact?.nip05 || profile?.nip05 || "",
+        about: profile?.about || "",
+        picture: pickPreferredProfilePhoto(profile?.picture, attachment?.picture || item?.contact?.picture || null),
+        source: "sync",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      if (!normalized) return null;
+      return {
+        contact: normalized,
+        itemId: item?.id ?? attachment?.taskId ?? null,
+        status: item?.status ?? attachment?.status ?? null,
+      };
+    },
+    [compressedToRawHex, makeContactId, normalizeContact, normalizeNostrPubkey],
+  );
+  const openSharedContactPreview = useCallback(
+    (
+      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
+      item?: WalletMessageItem | null,
+    ) => {
+      const preview = buildSharedContactPreview(attachment, item);
+      if (!preview) {
+        showToast("Unable to open shared contact", 2200);
+        return;
+      }
+      setSharedContactPreview(preview);
+    },
+    [buildSharedContactPreview, showToast],
+  );
   useEffect(() => {
-    if (!dmMessages.length) return;
+    if (!displayDmMessages.length) return;
     const targets = new Set<string>();
-    dmMessages.forEach((msg) => {
+    displayDmMessages.forEach((msg) => {
       if (msg.peerPubkey) {
         const normalized = normalizeNostrPubkey(msg.peerPubkey);
         if (normalized) targets.add(normalized);
@@ -5277,14 +5634,14 @@ export default function CashuWalletModal({
     targets.forEach((pubkey) => {
       void ensurePeerProfile(pubkey);
     });
-  }, [dmMessages, ensurePeerProfile]);
+  }, [displayDmMessages, ensurePeerProfile]);
   const dmThreads = useMemo(() => {
-    if (!dmMessages.length) return [] as WalletDmThread[];
+    if (!displayDmMessages.length) return [] as WalletDmThread[];
     const threads = new Map<string, WalletDmThread>();
     const contactKeys = new Set(Array.from(contactIndex.keys()));
     // Use reactive identity pubkey (falls back to ref) so self-chat is never a stranger
     const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
-    dmMessages.forEach((msg) => {
+    displayDmMessages.forEach((msg) => {
       const preview = dmPreviewForMessage(msg);
       const peer = msg.peerPubkey.toLowerCase();
       const existing = threads.get(peer);
@@ -5310,7 +5667,7 @@ export default function CashuWalletModal({
     }));
     ordered.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
     return ordered;
-  }, [contactIndex, dmMessages, dmPreviewForMessage, nostrIdentityInfo]);
+  }, [contactIndex, displayDmMessages, dmPreviewForMessage, nostrIdentityInfo]);
   const activeThread = useMemo(
     () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
     [activeThreadPeer, dmThreads],
@@ -5396,7 +5753,7 @@ export default function CashuWalletModal({
         const lc = mp.toLowerCase();
         return lc === normalizedPeer || lc === `02${normalizedPeer}` || lc === `03${normalizedPeer}`;
       };
-      const hasThread = dmMessages.some((message) => peerMatches(message.peerPubkey));
+      const hasThread = displayDmMessages.some((message) => peerMatches(message.peerPubkey));
       if (!hasThread) {
         setDmMessages((prev) => {
           if (prev.some((message) => peerMatches(message.peerPubkey))) return prev;
@@ -5423,29 +5780,40 @@ export default function CashuWalletModal({
       setDmSearch("");
       return true;
     },
-    [dmMessages],
+    [displayDmMessages],
   );
   useEffect(() => {
-    if (dmView === "thread" && chatView !== "conversation") return;
-    if (dmView === "thread" && !activeThread && !activeThreadPeer) {
-      setDmView(dmListViewRef.current);
-      setActiveThreadPeer(null);
+    if (dmView !== "thread" || activeThread) return;
+    setDmView(dmListViewRef.current);
+    setActiveThreadPeer(null);
+    if (isChatPage && chatView === "conversation") {
+      setChatView("threads");
     }
-  }, [activeThread, chatView, dmView]);
+  }, [activeThread, chatView, dmView, isChatPage]);
   const threadUnreadMap = useMemo(() => {
     const map = new Map<string, number>();
     dmThreads.forEach((thread) => {
       const count = thread.messages.reduce((acc, msg) => {
-        const item = messageItemsByEventId.get(msg.eventId);
-        if (!item) return acc;
-        const status = item.status;
-        if (status === "accepted" || status === "deleted" || status === "read") return acc;
+        const item = messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
+        const invite = pendingCalendarInvitesByEventId.get(msg.eventId);
+        const status = item?.status || invite?.status;
+        if (!status) return acc;
+        if (
+          status === "accepted" ||
+          status === "deleted" ||
+          status === "dismissed" ||
+          status === "declined" ||
+          status === "tentative" ||
+          status === "read"
+        ) {
+          return acc;
+        }
         return acc + 1;
       }, 0);
       map.set(thread.peerPubkey, count);
     });
     return map;
-  }, [dmThreads, messageItemsByEventId]);
+  }, [dmThreads, messageItemsByEventId, pendingCalendarInvitesByEventId, pendingMessageItemsByEventId]);
   const strangerUnreadCount = useMemo(
     () =>
       strangerThreads.reduce((acc, thread) => acc + (threadUnreadMap.get(thread.peerPubkey) || 0), 0),
@@ -13651,6 +14019,56 @@ export default function CashuWalletModal({
         scannedContact.updatedAt ?? null,
       );
     }, [ensureNip05Verification, scannedContact]);
+    const sharedContactPreviewContact = sharedContactPreview?.contact ?? null;
+    const sharedContactPreviewTitle = sharedContactPreviewContact ? contactPrimaryName(sharedContactPreviewContact) : "Contact";
+    const sharedContactPreviewUsername = sharedContactPreviewContact
+      ? formatContactUsername(sharedContactPreviewContact.username)
+      : "";
+    const sharedContactPreviewShareValue = sharedContactPreviewContact
+      ? buildContactShareValue(sharedContactPreviewContact)
+      : null;
+    const sharedContactPreviewFields = buildContactFields(sharedContactPreviewContact);
+    const sharedContactPreviewNip05Verified = sharedContactPreviewContact
+      ? isNip05VerifiedFor(
+          sharedContactPreviewContact.id,
+          sharedContactPreviewContact.nip05,
+          sharedContactPreviewContact.npub,
+        )
+      : false;
+    const sharedContactPreviewSaved = useMemo(() => {
+      if (!sharedContactPreviewContact) return false;
+      const normalizedTarget = normalizeNostrPubkey(sharedContactPreviewContact.npub || "");
+      const targetHex = normalizedTarget ? compressedToRawHex(normalizedTarget).toLowerCase() : null;
+      return contacts.some((contact) => {
+        if (contact.id === sharedContactPreviewContact.id) return true;
+        if (targetHex) {
+          const normalizedContact = normalizeNostrPubkey(contact.npub || "");
+          const contactHex = normalizedContact ? compressedToRawHex(normalizedContact).toLowerCase() : null;
+          if (contactHex && contactHex === targetHex) return true;
+        }
+        return false;
+      });
+    }, [compressedToRawHex, contacts, normalizeNostrPubkey, sharedContactPreviewContact]);
+    const sharedContactPreviewCanShare =
+      !!sharedContactPreviewContact && contactHasNpub(sharedContactPreviewContact);
+    const sharedContactPreviewCanAccept =
+      !!sharedContactPreview &&
+      sharedContactPreview.status !== "accepted" &&
+      sharedContactPreview.status !== "deleted" &&
+      sharedContactPreview.status !== "dismissed";
+    useEffect(() => {
+      if (!sharedContactPreviewContact?.id) return;
+      ensureNip05Verification(
+        sharedContactPreviewContact.id,
+        sharedContactPreviewContact.nip05,
+        sharedContactPreviewContact.npub,
+        sharedContactPreviewContact.updatedAt ?? null,
+      );
+    }, [ensureNip05Verification, sharedContactPreviewContact]);
+    useEffect(() => {
+      if (open && isChatPage && chatView === "conversation") return;
+      setSharedContactPreview(null);
+    }, [chatView, isChatPage, open]);
 
     const handleSaveScannedContact = useCallback(() => {
       if (!scannedContact || scannedContactSaved) return;
@@ -13671,6 +14089,48 @@ export default function CashuWalletModal({
       publishContactsToNostr,
       scannedContact,
       scannedContactSaved,
+      showToast,
+      upsertContact,
+    ]);
+    const handleSaveSharedContactPreview = useCallback(() => {
+      if (!sharedContactPreview) return;
+      let nextContact = sharedContactPreview.contact;
+      if (!sharedContactPreviewSaved) {
+        const saved = upsertContact({
+          ...sharedContactPreview.contact,
+          source: sharedContactPreview.contact.source ?? "sync",
+        });
+        if (!saved) {
+          showToast("Unable to add contact", 2500);
+          return;
+        }
+        nextContact = saved;
+        contactsPublishQueuedRef.current = true;
+        if (contactsSyncEnabled) {
+          void publishContactsToNostr({ silent: true });
+        }
+      }
+      if (sharedContactPreview.itemId && sharedContactPreviewCanAccept) {
+        onAcceptMessage(sharedContactPreview.itemId);
+      }
+      setSharedContactPreview((current) =>
+        current
+          ? {
+              ...current,
+              contact: nextContact,
+              status: sharedContactPreviewCanAccept ? "accepted" : current.status,
+            }
+          : current,
+      );
+      showToast("Contact added", 2000);
+    }, [
+      contactsPublishQueuedRef,
+      contactsSyncEnabled,
+      onAcceptMessage,
+      publishContactsToNostr,
+      sharedContactPreview,
+      sharedContactPreviewCanAccept,
+      sharedContactPreviewSaved,
       showToast,
       upsertContact,
     ]);
@@ -13746,6 +14206,26 @@ export default function CashuWalletModal({
         ) : (
           <div className="contacts-header-spacer" aria-hidden="true" />
         )}
+      </div>
+    ) : null;
+    const sharedContactPreviewHeader = sharedContactPreview ? (
+      <div className="contacts-sheet-header contacts-sheet-header--detail">
+        <button
+          className="glass-icon-button pressable"
+          onClick={() => setSharedContactPreview(null)}
+          aria-label="Close shared contact"
+        >
+          <CloseIcon className="h-4 w-4" />
+        </button>
+        <div className="contacts-header-spacer" aria-hidden="true" />
+        <button
+          type="button"
+          className="contact-pill contact-pill--accent contact-pill--compact contact-pill--wrap pressable"
+          onClick={handleSaveSharedContactPreview}
+          disabled={sharedContactPreviewSaved && !sharedContactPreviewCanAccept}
+        >
+          {sharedContactPreviewSaved && !sharedContactPreviewCanAccept ? "In contacts" : "Add to contacts"}
+        </button>
       </div>
     ) : null;
 
@@ -14524,11 +15004,14 @@ export default function CashuWalletModal({
                 )}
                 <div className="wallet-messages__thread-messages">
                   {activeThread.messages.map((msg) => {
-                    const matchedItem = messageItemsByEventId.get(msg.eventId);
+                    const matchedItem =
+                      messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
+                    const matchedInvite = pendingCalendarInvitesByEventId.get(msg.eventId);
                     const isPayment = msg.attachment?.type === "payment";
                     const isContact = msg.attachment?.type === "contact";
                     const isBoard = msg.attachment?.type === "board";
                     const isTask = msg.attachment?.type === "task";
+                    const isEvent = msg.attachment?.type === "event";
                     const isStructured = !!msg.attachment && msg.attachment.type !== "text";
                     const bubbleClass = `wallet-message__bubble${isStructured ? " wallet-message__bubble--card" : ""}`;
                     const expanded = isDmMessageExpanded(msg.eventId);
@@ -14624,6 +15107,29 @@ export default function CashuWalletModal({
                           .filter((title): title is string => !!title)
                       : [];
                     const isTaskAssignment = !!(taskAttachment?.assignment || matchedItem?.task?.assignment);
+                    const eventAttachment = isEvent ? msg.attachment : null;
+                    const eventReferenceSeconds =
+                      eventAttachment?.start ? parseDateLikeToUnixSeconds(eventAttachment.start, msg.createdAt) : msg.createdAt;
+                    const eventDayLabel = (() => {
+                      const date = new Date(eventReferenceSeconds * 1000);
+                      const day = date.getDate();
+                      if (!Number.isFinite(day)) return cardDayLabel;
+                      return `${day}`.padStart(2, "0");
+                    })();
+                    const eventCardDate = formatShortDate(eventReferenceSeconds);
+                    const eventWhenLabel =
+                      eventAttachment?.whenLabel ||
+                      (matchedInvite && formatCalendarInviteWhen ? formatCalendarInviteWhen(matchedInvite) : "") ||
+                      "Event invite";
+                    const eventTitle = eventAttachment?.title || matchedInvite?.title || "Event invite";
+                    const eventCopyValue =
+                      (
+                        eventAttachment?.view ||
+                        matchedInvite?.view ||
+                        eventAttachment?.canonical ||
+                        matchedInvite?.canonical ||
+                        [eventTitle, eventWhenLabel].filter(Boolean).join("\n")
+                      ).trim() || eventTitle;
                     const cardTime = `${formatDmDay(paymentCreatedSeconds)} · ${formatDmTime(paymentCreatedSeconds)}`;
                     const paymentAmountLabel =
                       paymentHistoryEntry?.amountSat != null
@@ -14633,15 +15139,17 @@ export default function CashuWalletModal({
                           : null;
                     const paymentStatusLabel = paymentStatusInfo?.label;
                     const paymentSummary = paymentHistoryEntry?.summary;
-                    const actionStatus = matchedItem?.status;
+                    const actionStatus = matchedItem?.status || matchedInvite?.status;
                     const showActionButtons =
                       actionStatus !== "accepted" &&
                       actionStatus !== "declined" &&
                       actionStatus !== "tentative" &&
-                      actionStatus !== "deleted";
+                      actionStatus !== "deleted" &&
+                      actionStatus !== "dismissed";
                     const boardStatusLabel = getWalletMessageStatusLabel("board", actionStatus);
                     const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus);
                     const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus);
+                    const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
                     const copyValue = buildDmCopyValue(msg, {
                       paymentToken,
                       boardId: isBoard
@@ -14947,6 +15455,15 @@ export default function CashuWalletModal({
                                               className="ghost-button button-sm pressable"
                                               onClick={(event) => {
                                                 event.stopPropagation();
+                                                void copyMessageValue(copyValue, "Task");
+                                              }}
+                                            >
+                                              Copy
+                                            </button>
+                                            <button
+                                              className="ghost-button button-sm pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
                                                 if (matchedItem) onDismissMessage(matchedItem.id);
                                               }}
                                               disabled={!matchedItem}
@@ -14963,6 +15480,44 @@ export default function CashuWalletModal({
                                     )}
                                   </>
                                 )}
+                              </div>
+                            )}
+                            {isEvent && (
+                              <div className="wallet-message__card wallet-message__card--inline">
+                                <div className="wallet-message__card-icon">{eventDayLabel}</div>
+                                <div className="wallet-message__card-body">
+                                  <div className="wallet-message__card-title">{eventTitle}</div>
+                                  <div className="wallet-message__card-subtitle">{eventWhenLabel}</div>
+                                  {showActionButtons ? (
+                                    <div className="wallet-message__card-actions">
+                                      <button
+                                        className="accent-button button-sm pressable"
+                                        onClick={() => matchedInvite && onCalendarInviteRsvp?.(matchedInvite, "accepted")}
+                                        disabled={!matchedInvite}
+                                      >
+                                        Add event
+                                      </button>
+                                      <button
+                                        className="ghost-button button-sm pressable"
+                                        onClick={() => void copyMessageValue(eventCopyValue, "Event")}
+                                      >
+                                        Copy
+                                      </button>
+                                      <button
+                                        className="ghost-button button-sm pressable"
+                                        onClick={() => matchedInvite && onDismissCalendarInvite?.(matchedInvite)}
+                                        disabled={!matchedInvite}
+                                      >
+                                        Dismiss
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    eventStatusLabel && (
+                                      <div className="wallet-message__card-status">{eventStatusLabel}</div>
+                                    )
+                                  )}
+                                </div>
+                                <div className="wallet-message__card-meta">{eventCardDate}</div>
                               </div>
                             )}
                             {isPayment && (
@@ -15190,98 +15745,6 @@ export default function CashuWalletModal({
                   onChange={(event) => setDmSearch(event.target.value)}
                 />
               </div>
-
-              {/* Inbox section */}
-              {((inboxPendingItems && inboxPendingItems.length > 0) || (pendingCalendarInvites && pendingCalendarInvites.length > 0)) && (
-                <div className="chat-inbox-section">
-                  <div className="chat-inbox-section__title">Inbox</div>
-                  {pendingCalendarInvites && pendingCalendarInvites.map((invite) => {
-                    const senderName =
-                      invite.sender?.name ||
-                      invite.sender?.npub ||
-                      "Someone";
-                    const whenLabel = formatCalendarInviteWhen ? formatCalendarInviteWhen(invite) : "";
-                    return (
-                      <div key={invite.id} className="chat-inbox-item">
-                        <div className="chat-inbox-item__icon">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="4" y="5" width="16" height="15" rx="2" />
-                            <path d="M8 3v4" />
-                            <path d="M16 3v4" />
-                            <path d="M4 11h16" />
-                          </svg>
-                        </div>
-                        <div className="chat-inbox-item__body">
-                          <div className="chat-inbox-item__title">{invite.title || "Event invite"}</div>
-                          <div className="chat-inbox-item__meta">
-                            {whenLabel ? `${whenLabel} • ` : ""}From {senderName}
-                          </div>
-                        </div>
-                        <div className="chat-inbox-item__actions">
-                          <button type="button" className="accent-button button-xs pressable" onClick={() => onCalendarInviteRsvp?.(invite, "accepted")}>Accept</button>
-                          <button type="button" className="ghost-button button-xs pressable" onClick={() => onCalendarInviteRsvp?.(invite, "tentative")}>Maybe</button>
-                          <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDismissCalendarInvite?.(invite)}>Dismiss</button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {inboxPendingItems && inboxPendingItems.map((item) => {
-                    const senderName = item.sender?.name || item.sender?.npub || "Someone";
-                    const isTaskAssignment = item.type === "task" && !!(item.task as any)?.assignment;
-                    const typeLabel =
-                      item.type === "board"
-                        ? "Board"
-                        : item.type === "contact"
-                          ? "Contact"
-                          : isTaskAssignment
-                            ? "Task assignment"
-                            : "Task";
-                    return (
-                      <div key={item.id} className="chat-inbox-item">
-                        <div className="chat-inbox-item__icon">
-                          {item.type === "board" ? (
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="3" y="3" width="7" height="7" rx="2" />
-                              <rect x="14" y="3" width="7" height="7" rx="2" />
-                              <rect x="3" y="14" width="7" height="7" rx="2" />
-                              <rect x="14" y="14" width="7" height="7" rx="2" />
-                            </svg>
-                          ) : item.type === "contact" ? (
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
-                              <circle cx="12" cy="8" r="4" />
-                            </svg>
-                          ) : (
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M9 11l3 3L22 4" />
-                              <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
-                            </svg>
-                          )}
-                        </div>
-                        <div className="chat-inbox-item__body">
-                          <div className="chat-inbox-item__title">{item.title}</div>
-                          <div className="chat-inbox-item__meta">{typeLabel} • From {senderName}</div>
-                        </div>
-                        <div className="chat-inbox-item__actions">
-                          {isTaskAssignment ? (
-                            <>
-                              <button type="button" className="accent-button button-xs pressable" onClick={() => onAcceptMessage(item.id)}>Accept</button>
-                              <button type="button" className="ghost-button button-xs pressable" onClick={() => onMaybeMessage(item.id)}>Maybe</button>
-                              <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDeclineMessage(item.id)}>Decline</button>
-                            </>
-                          ) : (
-                            <>
-                              <button type="button" className="accent-button button-xs pressable" onClick={() => onAcceptMessage(item.id)}>Add</button>
-                              <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => onDismissMessage(item.id)}>Dismiss</button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
 		              {/* Thread list */}
 		              <div className="chat-page__thread-list">
 		                {dmView === "strangers" && !dmSearch.trim() && (
@@ -15380,7 +15843,7 @@ export default function CashuWalletModal({
 		                    </button>
 		                  );
 		                })}
-		                {dmThreadListEntries.length === 0 && !inboxPendingItems?.length && !pendingCalendarInvites?.length && (
+		                {dmThreadListEntries.length === 0 && (
 		                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "3rem 1rem" }}>
 		                    {dmView === "strangers" && !dmSearch.trim()
 		                      ? "No stranger messages yet."
@@ -15546,19 +16009,207 @@ export default function CashuWalletModal({
                       prevDay.getFullYear() !== msgDay.getFullYear() ||
                       prevDay.getMonth() !== msgDay.getMonth() ||
                       prevDay.getDate() !== msgDay.getDate();
-                    const matchedItem = messageItemsByEventId.get(msg.eventId);
+                    const matchedItem =
+                      messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
+                    const matchedInvite = pendingCalendarInvitesByEventId.get(msg.eventId);
                     const isPayment = msg.attachment?.type === "payment";
                     const isContact = msg.attachment?.type === "contact";
                     const isBoard = msg.attachment?.type === "board";
                     const isTask = msg.attachment?.type === "task";
+                    const isEvent = msg.attachment?.type === "event";
                     const isStructured = !!msg.attachment && msg.attachment.type !== "text";
                     const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}`;
-                    const actionStatus = matchedItem?.status;
+                    const expanded = isDmMessageExpanded(msg.eventId);
+                    const paymentState = isPayment
+                      ? (() => {
+                          const historyEntry = paymentHistoryByEventId.get(msg.eventId.toLowerCase()) || null;
+                          const paymentCreatedAtMs = historyEntry?.createdAt || msg.createdAt * 1000;
+                          const paymentDetails = selectIncomingPaymentFromPayload(
+                            tryParseJson<PaymentRequestPayload>(msg.attachment?.raw ?? null) ??
+                              tryParseJson<PaymentRequestPayload>(msg.content) ??
+                              msg.attachment?.raw ??
+                              msg.content,
+                          );
+                          const paymentAmount =
+                            historyEntry?.amountSat ??
+                            paymentDetails?.amount ??
+                            (typeof msg.attachment?.amountSat === "number" ? msg.attachment.amountSat : null);
+                          const paymentUnit =
+                            paymentDetails?.unit && typeof paymentDetails.unit === "string"
+                              ? paymentDetails.unit.toLowerCase()
+                              : "sat";
+                          const paymentMintRaw =
+                            paymentDetails?.mint && typeof paymentDetails.mint === "string"
+                              ? normalizeMintUrl(paymentDetails.mint)
+                              : null;
+                          const paymentMintLabel = historyEntry
+                            ? resolveMintDisplay(historyEntry)
+                            : paymentMintRaw;
+                          const paymentDetailValue =
+                            historyEntry?.detail ||
+                            (paymentDetails?.token as string | undefined) ||
+                            (typeof msg.attachment?.raw === "string" ? msg.attachment.raw : "") ||
+                            "";
+                          const resolvedType =
+                            historyEntry?.type ??
+                            (historyEntry?.detailKind === "invoice"
+                              ? "lightning"
+                              : paymentDetailValue
+                                ? "ecash"
+                                : undefined);
+                          const typeLabel =
+                            resolvedType === "lightning"
+                              ? "Lightning"
+                              : resolvedType === "ecash"
+                                ? "Ecash"
+                                : "Payment";
+                          const timeLabel = formatRelativeTime(paymentCreatedAtMs);
+                          const amountLabel = historyEntry
+                            ? formatHistoryAmount(historyEntry)
+                            : paymentAmount != null
+                              ? `${msg.isIncoming ? "+" : "−"}${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                              : null;
+                          const fiatValue =
+                            historyEntry?.fiatValueUsd != null
+                              ? historyEntry.fiatValueUsd
+                              : walletConversionEnabled && paymentAmount != null
+                                ? captureFiatValueUsd(Math.max(0, Math.floor(paymentAmount)))
+                                : null;
+                          const fiatLabel =
+                            walletConversionEnabled && fiatValue != null ? formatUsdAmount(fiatValue) : null;
+                          const statusInfo = historyEntry
+                            ? deriveHistoryStatus(historyEntry)
+                            : {
+                                label: msg.isIncoming ? "Received" : "Paid",
+                                tone: (msg.isIncoming ? "success" : undefined) as "success" | undefined,
+                              };
+                          const detailKind =
+                            historyEntry?.detailKind ||
+                            (paymentDetailValue && isCashuTokenDetail(paymentDetailValue, "token") ? "token" : undefined);
+                          const detailIsToken = isCashuTokenDetail(paymentDetailValue || undefined, detailKind);
+                          const detailLabel = detailIsToken
+                            ? "Cashu token"
+                            : detailKind === "invoice"
+                              ? "Lightning invoice"
+                              : undefined;
+                          const copyLabel = detailIsToken
+                            ? "Copy token"
+                            : detailKind === "invoice"
+                              ? "Copy invoice"
+                              : "Copy detail";
+                          const pendingAction =
+                            historyEntry && historyEntry.pendingTokenId && historyEntry.pendingStatus !== "redeemed"
+                              ? {
+                                  ariaLabel: "Redeem saved token",
+                                  handler: () => handleRedeemPendingHistoryItem(historyEntry),
+                                  busy: historyRedeemStates[historyEntry.id]?.status === "pending",
+                                  status: historyRedeemStates[historyEntry.id],
+                                }
+                              : historyEntry && historyEntry.mintQuote
+                                ? {
+                                    ariaLabel: "Refresh invoice",
+                                    handler: () => handleCheckHistoryMintQuote(historyEntry),
+                                    busy: historyMintQuoteStates[historyEntry.id]?.status === "pending",
+                                    status: historyMintQuoteStates[historyEntry.id],
+                                  }
+                                : historyEntry && historyEntry.tokenState && historyEntry.tokenState.lastState !== "SPENT"
+                                  ? {
+                                      ariaLabel: "Check token state",
+                                      handler: () => performTokenStateCheck(historyEntry),
+                                      busy: historyCheckStates[historyEntry.id]?.status === "pending",
+                                      status: historyCheckStates[historyEntry.id],
+                                    }
+                                  : null;
+                          return {
+                            historyEntry,
+                            paymentCreatedAtMs,
+                            typeLabel,
+                            timeLabel,
+                            amountLabel,
+                            fiatLabel,
+                            mintLabel: paymentMintLabel,
+                            statusInfo,
+                            detailValue: paymentDetailValue,
+                            detailLabel,
+                            detailIsToken,
+                            copyLabel,
+                            pendingAction,
+                            summary:
+                              historyEntry?.summary ||
+                              msg.attachment?.detail ||
+                              (paymentMintLabel ? `${statusInfo.label} ${paymentMintLabel}` : null),
+                            amountSatLabel:
+                              paymentAmount != null ? `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} sat` : "—",
+                            createdLabel: new Date(paymentCreatedAtMs).toLocaleString(),
+                            showRedeemButton: !!(historyEntry?.pendingTokenId && historyEntry.pendingStatus !== "redeemed"),
+                            canMarkTokenSpent: !!historyEntry?.tokenState && historyEntry.tokenState.lastState !== "SPENT",
+                          };
+                        })()
+                      : null;
+                    const contactAttachment = isContact ? msg.attachment : null;
+                    const contactMeta = contactAttachment
+                      ? sharedContactMetaFor(
+                          contactAttachment.npub,
+                          contactAttachment.contactName ||
+                            contactAttachment.displayName ||
+                            contactAttachment.username ||
+                            matchedItem?.contact?.displayName ||
+                            matchedItem?.contact?.name ||
+                            matchedItem?.title,
+                          contactAttachment.picture || matchedItem?.contact?.picture || null,
+                        )
+                      : null;
+                    const taskAttachment = isTask ? msg.attachment?.task || matchedItem?.task || null : null;
+                    const taskDueSeconds = taskAttachment?.dueISO
+                      ? Math.floor(new Date(taskAttachment.dueISO).getTime() / 1000)
+                      : null;
+                    const taskHasDue = !!(taskDueSeconds && Number.isFinite(taskDueSeconds) && taskDueSeconds > 0);
+                    const taskDayLabel = taskHasDue
+                      ? `${new Date((taskDueSeconds as number) * 1000).getDate()}`.padStart(2, "0")
+                      : `${new Date(msg.createdAt * 1000).getDate()}`.padStart(2, "0");
+                    const taskCardDate = taskHasDue ? formatShortDate(taskDueSeconds as number) : formatShortDate(msg.createdAt);
+                    const taskDueLabel = taskHasDue
+                      ? `Due ${formatDmDay(taskDueSeconds as number)}${
+                          taskAttachment?.dueTimeEnabled ? ` · ${formatDmTime(taskDueSeconds as number)}` : ""
+                        }`
+                      : "Shared task";
+                    const taskSubtasks = Array.isArray(taskAttachment?.subtasks)
+                      ? taskAttachment.subtasks
+                          .map((subtask) => subtask.title?.trim())
+                          .filter((title): title is string => !!title)
+                      : [];
+                    const isTaskAssignment = !!(taskAttachment?.assignment || matchedItem?.task?.assignment);
+                    const taskCopyValue = isTask
+                      ? buildDmCopyValue(msg, { taskPayload: taskAttachment || matchedItem?.task || null })
+                      : "";
+                    const eventAttachment = isEvent ? msg.attachment : null;
+                    const eventReferenceSeconds =
+                      eventAttachment?.start ? parseDateLikeToUnixSeconds(eventAttachment.start, msg.createdAt) : msg.createdAt;
+                    const eventDayLabel = `${new Date(eventReferenceSeconds * 1000).getDate()}`.padStart(2, "0");
+                    const eventCardDate = formatShortDate(eventReferenceSeconds);
+                    const eventWhenLabel =
+                      eventAttachment?.whenLabel ||
+                      (matchedInvite && formatCalendarInviteWhen ? formatCalendarInviteWhen(matchedInvite) : "") ||
+                      "Event invite";
+                    const eventTitle = eventAttachment?.title || matchedInvite?.title || "Event invite";
+                    const eventCopyValue =
+                      (
+                        eventAttachment?.view ||
+                        matchedInvite?.view ||
+                        eventAttachment?.canonical ||
+                        matchedInvite?.canonical ||
+                        [eventTitle, eventWhenLabel].filter(Boolean).join("\n")
+                      ).trim() || eventTitle;
+                    const actionStatus = matchedItem?.status || matchedInvite?.status;
                     const showActionButtons =
                       actionStatus !== "accepted" &&
                       actionStatus !== "declined" &&
                       actionStatus !== "tentative" &&
-                      actionStatus !== "deleted";
+                      actionStatus !== "deleted" &&
+                      actionStatus !== "dismissed";
+                    const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus as WalletMessageItem["status"]);
+                    const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus as WalletMessageItem["status"]);
+                    const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
 
                     return (
                       <React.Fragment key={msg.eventId}>
@@ -15584,34 +16235,86 @@ export default function CashuWalletModal({
                                 </div>
                               )}
                               {isContact && (() => {
-                                const ca = msg.attachment;
-                                const contactName = ca?.contactName || ca?.displayName || ca?.username || "Contact";
+                                const contactName =
+                                  contactMeta?.label ||
+                                  contactAttachment?.contactName ||
+                                  contactAttachment?.displayName ||
+                                  contactAttachment?.username ||
+                                  "Contact";
+                                const contactSubtitle = contactMeta?.subtitle || "Shared contact";
                                 return (
-                                  <div className="chat-bubble__card">
-                                    <div className="chat-bubble__card-title">{contactName}</div>
-                                    <div className="chat-bubble__card-meta">{ca?.npub ? `${ca.npub.slice(0, 16)}...` : "Shared contact"}</div>
-                                    {showActionButtons && (
-                                      <div className="chat-bubble__card-actions">
-                                        <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add contact</button>
-                                        <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                  <div className="chat-bubble__card chat-bubble__card--contact-preview">
+                                    <button
+                                      type="button"
+                                      className="chat-bubble__contact-preview pressable"
+                                      onClick={() => openSharedContactPreview(contactAttachment, matchedItem)}
+                                    >
+                                      <div className="chat-bubble__contact-avatar">
+                                        {contactMeta?.picture ? (
+                                          <img src={contactMeta.picture} alt={contactName} className="contact-avatar__img" />
+                                        ) : (
+                                          contactInitials(contactName)
+                                        )}
                                       </div>
-                                    )}
-                                    {!showActionButtons && actionStatus && (
-                                      <div className="chat-bubble__card-status">{actionStatus}</div>
+                                      <div className="chat-bubble__contact-copy">
+                                        <div className="chat-bubble__contact-name">{contactName}</div>
+                                        <div className="chat-bubble__contact-subtitle">
+                                          <span>{contactSubtitle}</span>
+                                          {contactMeta?.verifiedNip05 && (
+                                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                                          )}
+                                        </div>
+                                      </div>
+                                      <span className="chat-bubble__contact-chevron" aria-hidden="true">›</span>
+                                    </button>
+                                    {!showActionButtons && contactStatusLabel && (
+                                      <div className="chat-bubble__card-status">{contactStatusLabel}</div>
                                     )}
                                   </div>
                                 );
                               })()}
                               {isTask && (() => {
-                                const ta = msg.attachment?.task;
-                                const isAssignment = !!(ta?.assignment || matchedItem?.task?.assignment);
                                 return (
-                                  <div className="chat-bubble__card">
-                                    <div className="chat-bubble__card-title">{ta?.title || "Shared task"}</div>
-                                    <div className="chat-bubble__card-meta">{isAssignment ? "Task assignment" : "Shared task"}</div>
+                                  <div className="chat-bubble__card chat-bubble__card--structured">
+                                    <div className="chat-bubble__card-shell">
+                                      <div className="wallet-message__card-icon">{taskDayLabel}</div>
+                                      <div className="wallet-message__card-body">
+                                        <div className="wallet-message__card-title">{taskAttachment?.title || "Shared task"}</div>
+                                        <div className="wallet-message__card-subtitle">
+                                          {isTaskAssignment ? "Task assignment" : taskDueLabel}
+                                        </div>
+                                      </div>
+                                      <div className="wallet-message__card-meta">{taskCardDate}</div>
+                                    </div>
+                                    {(taskAttachment?.note || taskHasDue || taskSubtasks.length > 0) && (
+                                      <div className="chat-bubble__card-details">
+                                        {taskAttachment?.note && (
+                                          <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
+                                            <span>Note</span>
+                                            <span className="wallet-message__detail-value">{taskAttachment.note}</span>
+                                          </div>
+                                        )}
+                                        {taskHasDue && (
+                                          <div className="wallet-message__detail-row">
+                                            <span>Due</span>
+                                            <span className="wallet-message__detail-value">{taskDueLabel.replace("Due ", "")}</span>
+                                          </div>
+                                        )}
+                                        {taskSubtasks.length > 0 && (
+                                          <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
+                                            <span>Checklist</span>
+                                            <div className="chat-bubble__task-list">
+                                              {taskSubtasks.slice(0, 6).map((title) => (
+                                                <div key={title} className="chat-bubble__task-list-item">{title}</div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
                                     {showActionButtons && (
-                                      <div className="chat-bubble__card-actions">
-                                        {isAssignment ? (
+                                      <div className="wallet-message__card-actions">
+                                        {isTaskAssignment ? (
                                           <>
                                             <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Accept</button>
                                             <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onMaybeMessage(matchedItem.id)}>Maybe</button>
@@ -15620,25 +16323,379 @@ export default function CashuWalletModal({
                                         ) : (
                                           <>
                                             <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add task</button>
+                                            <button type="button" className="ghost-button button-xs pressable" onClick={() => void copyMessageValue(taskCopyValue, "Task")}>Copy</button>
                                             <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
                                           </>
                                         )}
                                       </div>
                                     )}
-                                    {!showActionButtons && actionStatus && (
-                                      <div className="chat-bubble__card-status">{actionStatus}</div>
+                                    {!showActionButtons && taskStatusLabel && (
+                                      <div className="chat-bubble__card-status">{taskStatusLabel}</div>
                                     )}
                                   </div>
                                 );
                               })()}
-                              {isPayment && (
-                                <div className="chat-bubble__card">
-                                  <div className="chat-bubble__card-title">
-                                    {msg.attachment?.amountSat != null
-                                      ? `${msg.attachment.amountSat} sats`
-                                      : "Payment"}
+                              {isEvent && (
+                                <div className="chat-bubble__card chat-bubble__card--structured">
+                                  <div className="chat-bubble__card-shell">
+                                    <div className="wallet-message__card-icon">{eventDayLabel}</div>
+                                    <div className="wallet-message__card-body">
+                                      <div className="wallet-message__card-title">{eventTitle}</div>
+                                      <div className="wallet-message__card-subtitle">{eventWhenLabel}</div>
+                                    </div>
+                                    <div className="wallet-message__card-meta">{eventCardDate}</div>
                                   </div>
-                                  <div className="chat-bubble__card-meta">{msg.attachment?.detail || "eCash payment"}</div>
+                                  {showActionButtons && (
+                                    <div className="wallet-message__card-actions">
+                                      <button type="button" className="accent-button button-xs pressable" onClick={() => matchedInvite && onCalendarInviteRsvp?.(matchedInvite, "accepted")}>Add event</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => void copyMessageValue(eventCopyValue, "Event")}>Copy</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedInvite && onDismissCalendarInvite?.(matchedInvite)}>Dismiss</button>
+                                    </div>
+                                  )}
+                                  {!showActionButtons && eventStatusLabel && (
+                                    <div className="chat-bubble__card-status">{eventStatusLabel}</div>
+                                  )}
+                                </div>
+                              )}
+                              {isPayment && (
+                                <div className="chat-bubble__payment-history">
+                                  <div className={`wallet-history__item${expanded ? " wallet-history__item--open" : ""}`}>
+                                    <button
+                                      type="button"
+                                      className="wallet-history__summary pressable"
+                                      onClick={() => toggleDmMessageExpanded(msg.eventId)}
+                                      aria-expanded={expanded}
+                                      aria-label="Toggle payment details"
+                                    >
+                                      <div className="wallet-history__icon" aria-hidden="true">
+                                        {paymentState?.typeLabel === "Lightning" ? (
+                                          <LightningGlyph className="wallet-history__glyph" />
+                                        ) : (
+                                          <EcashGlyph className="wallet-history__glyph" />
+                                        )}
+                                      </div>
+                                      <div className="wallet-history__body">
+                                        <div className="wallet-history__title-row">
+                                          <span className="wallet-history__type">{paymentState?.typeLabel || "Payment"}</span>
+                                          {paymentState?.timeLabel && (
+                                            <span className="wallet-history__time">{paymentState.timeLabel}</span>
+                                          )}
+                                        </div>
+                                        <div className="wallet-history__meta-row">
+                                          <span
+                                            className={`wallet-history__status${
+                                              paymentState?.statusInfo?.tone ? ` wallet-history__status--${paymentState.statusInfo.tone}` : ""
+                                            }`}
+                                          >
+                                            {paymentState?.statusInfo?.label || "Received"}
+                                          </span>
+                                          {paymentState?.mintLabel && (
+                                            <span className="wallet-history__mint">{paymentState.mintLabel}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="wallet-history__value">
+                                        {paymentState?.amountLabel && (
+                                          <span
+                                            className={`wallet-history__amount wallet-history__amount--${
+                                              msg.isIncoming ? "in" : "out"
+                                            }`}
+                                          >
+                                            {paymentState.amountLabel}
+                                          </span>
+                                        )}
+                                        {paymentState?.fiatLabel && (
+                                          <span className="wallet-history__fiat">{paymentState.fiatLabel}</span>
+                                        )}
+                                        {paymentState?.pendingAction && (
+                                          <button
+                                            type="button"
+                                            className="wallet-history__refresh"
+                                            disabled={paymentState.pendingAction.busy}
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              paymentState.pendingAction?.handler();
+                                            }}
+                                            aria-label={paymentState.pendingAction.ariaLabel}
+                                          >
+                                            ↻
+                                          </button>
+                                        )}
+                                      </div>
+                                    </button>
+                                    {expanded && paymentState && (
+                                      <div className="wallet-history__details">
+                                        {paymentState.detailLabel && paymentState.detailValue && (
+                                          <QrCodeCard
+                                            className="wallet-history__qr"
+                                            value={paymentState.detailValue}
+                                            label={paymentState.detailLabel}
+                                            copyLabel={paymentState.copyLabel}
+                                            size={220}
+                                            enableNut16Animation={paymentState.detailIsToken}
+                                          />
+                                        )}
+                                        <div className="wallet-history__details-grid">
+                                          <div className="wallet-history__metric">
+                                            <span>Amount</span>
+                                            <span className="wallet-history__metric-value">
+                                              {paymentState.amountSatLabel}
+                                            </span>
+                                          </div>
+                                          {paymentState.fiatLabel && (
+                                            <div className="wallet-history__metric">
+                                              <span>Fiat</span>
+                                              <span className="wallet-history__metric-value">{paymentState.fiatLabel}</span>
+                                            </div>
+                                          )}
+                                          <div className="wallet-history__metric">
+                                            <span>Status</span>
+                                            <span className="wallet-history__metric-value">
+                                              {paymentState.statusInfo.label}
+                                            </span>
+                                          </div>
+                                          <div className="wallet-history__metric">
+                                            <span>{msg.isIncoming ? "Time received" : "Time sent"}</span>
+                                            <span className="wallet-history__metric-value">
+                                              {paymentState.createdLabel}
+                                            </span>
+                                          </div>
+                                          {paymentState.mintLabel && (
+                                            <div className="wallet-history__metric">
+                                              <span>Mint</span>
+                                              <span className="wallet-history__metric-value">{paymentState.mintLabel}</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                        {paymentState.summary && (
+                                          <div className="wallet-history__detail-note">
+                                            {paymentState.summary}
+                                            {paymentState.historyEntry?.relatedTaskTitle && (
+                                              <div className="wallet-history__detail-task">
+                                                Task: {paymentState.historyEntry.relatedTaskTitle}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                        {paymentState.pendingAction?.status?.message && (
+                                          <div
+                                            className={`wallet-history__helper${
+                                              paymentState.pendingAction.status.status === "error"
+                                                ? " wallet-history__helper--error"
+                                                : paymentState.pendingAction.status.status === "success"
+                                                  ? " wallet-history__helper--success"
+                                                  : ""
+                                            }`}
+                                          >
+                                            {paymentState.pendingAction.status.message}
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry?.pendingTokenId &&
+                                          paymentState.showRedeemButton && (
+                                            <div className="wallet-history__section">
+                                              <div className="wallet-history__section-content">
+                                                <button
+                                                  className="accent-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    handleRedeemPendingHistoryItem(paymentState.historyEntry!);
+                                                  }}
+                                                  disabled={historyRedeemStates[paymentState.historyEntry.id]?.status === "pending"}
+                                                >
+                                                  Redeem
+                                                </button>
+                                                {historyRedeemStates[paymentState.historyEntry.id]?.message && (
+                                                  <div
+                                                    className={`wallet-history__helper${
+                                                      historyRedeemStates[paymentState.historyEntry.id]?.status === "error"
+                                                        ? " wallet-history__helper--error"
+                                                        : historyRedeemStates[paymentState.historyEntry.id]?.status === "success"
+                                                          ? " wallet-history__helper--success"
+                                                          : ""
+                                                    }`}
+                                                  >
+                                                    {historyRedeemStates[paymentState.historyEntry.id]?.message}
+                                                  </div>
+                                                )}
+                                              </div>
+                                              {paymentState.historyEntry.pendingTokenMint && (
+                                                <div className="wallet-history__helper">
+                                                  Saved mint: {paymentState.historyEntry.pendingTokenMint}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        {paymentState.historyEntry?.tokenState && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Token state</div>
+                                            <div className="wallet-history__section-content space-y-2 text-xs text-secondary">
+                                              <div className="text-tertiary break-all">
+                                                Mint: {paymentState.historyEntry.tokenState.mintUrl}
+                                              </div>
+                                              <div className="flex flex-wrap gap-2 items-center">
+                                                <button
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    performTokenStateCheck(paymentState.historyEntry!);
+                                                  }}
+                                                  disabled={historyCheckStates[paymentState.historyEntry.id]?.status === "pending"}
+                                                >
+                                                  Check token state
+                                                </button>
+                                                {historyCheckStates[paymentState.historyEntry.id]?.status === "pending" && <span>Checking…</span>}
+                                                {historyCheckStates[paymentState.historyEntry.id]?.status === "success" &&
+                                                  historyCheckStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-accent">
+                                                      {historyCheckStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                                {historyCheckStates[paymentState.historyEntry.id]?.status === "error" &&
+                                                  historyCheckStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-rose-400">
+                                                      {historyCheckStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                              </div>
+                                              {typeof paymentState.historyEntry.tokenState.lastCheckedAt === "number" && (
+                                                <div className="text-tertiary">
+                                                  Last checked: {new Date(paymentState.historyEntry.tokenState.lastCheckedAt).toLocaleString()}
+                                                </div>
+                                              )}
+                                              {paymentState.historyEntry.tokenState.lastWitnesses &&
+                                                Object.keys(paymentState.historyEntry.tokenState.lastWitnesses).length > 0 && (
+                                                  <div className="space-y-1">
+                                                    <div className="text-tertiary">Witness data</div>
+                                                    {Object.entries(paymentState.historyEntry.tokenState.lastWitnesses).map(([y, witness]) => (
+                                                      <div key={y} className="break-all">
+                                                        <div className="text-tertiary">Y: {y}</div>
+                                                        <div>{witness}</div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry?.mintQuote && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Invoice</div>
+                                            <div className="wallet-history__section-content space-y-1 text-xs text-secondary">
+                                              {paymentState.historyEntry.mintQuote.mintUrl && (
+                                                <div className="text-tertiary break-all">
+                                                  Mint: {paymentState.historyEntry.mintQuote.mintUrl}
+                                                </div>
+                                              )}
+                                              <div className="text-tertiary">
+                                                Amount: {paymentState.historyEntry.mintQuote.amount} sats
+                                              </div>
+                                              <div className="flex flex-wrap gap-2 items-center">
+                                                <button
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    handleCheckHistoryMintQuote(paymentState.historyEntry!);
+                                                  }}
+                                                  disabled={historyMintQuoteStates[paymentState.historyEntry.id]?.status === "pending"}
+                                                >
+                                                  Check invoice
+                                                </button>
+                                                {historyMintQuoteStates[paymentState.historyEntry.id]?.status === "pending" && <span>Checking…</span>}
+                                                {historyMintQuoteStates[paymentState.historyEntry.id]?.status === "success" &&
+                                                  historyMintQuoteStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-accent">
+                                                      {historyMintQuoteStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                                {historyMintQuoteStates[paymentState.historyEntry.id]?.status === "error" &&
+                                                  historyMintQuoteStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-rose-400">
+                                                      {historyMintQuoteStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                              </div>
+                                              {paymentState.historyEntry.mintQuote.createdAt && (
+                                                <div className="text-tertiary">
+                                                  Created: {new Date(paymentState.historyEntry.mintQuote.createdAt).toLocaleString()}
+                                                </div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry?.revertToken && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Revert</div>
+                                            <div className="wallet-history__section-content flex flex-wrap gap-2 items-center text-xs text-secondary">
+                                              <button
+                                                className="accent-button button-sm pressable"
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  handleRevertHistoryToken(paymentState.historyEntry!);
+                                                }}
+                                                disabled={historyRevertState[paymentState.historyEntry.id]?.status === "pending"}
+                                              >
+                                                Revert token
+                                              </button>
+                                              {historyRevertState[paymentState.historyEntry.id]?.status === "pending" && <span>Redeeming…</span>}
+                                              {historyRevertState[paymentState.historyEntry.id]?.status === "success" &&
+                                                historyRevertState[paymentState.historyEntry.id]?.message && (
+                                                  <span className="text-accent">
+                                                    {historyRevertState[paymentState.historyEntry.id]?.message}
+                                                  </span>
+                                                )}
+                                              {historyRevertState[paymentState.historyEntry.id]?.status === "error" &&
+                                                historyRevertState[paymentState.historyEntry.id]?.message && (
+                                                  <span className="text-rose-400">
+                                                    {historyRevertState[paymentState.historyEntry.id]?.message}
+                                                  </span>
+                                                )}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Actions</div>
+                                            <div className="wallet-history__section-content flex flex-wrap gap-2 items-center text-xs text-secondary">
+                                              {paymentState.canMarkTokenSpent && (
+                                                <button
+                                                  type="button"
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    handleMarkHistoryTokenSpent(paymentState.historyEntry!);
+                                                  }}
+                                                >
+                                                  Mark token spent
+                                                </button>
+                                              )}
+                                              <button
+                                                type="button"
+                                                className="ghost-button button-sm pressable"
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  handleDeleteHistoryEntry(paymentState.historyEntry!);
+                                                }}
+                                              >
+                                                Delete entry
+                                              </button>
+                                              {paymentState.detailValue && !paymentState.detailLabel && (
+                                                <button
+                                                  type="button"
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    void copyMessageValue(paymentState.detailValue, "Payment detail");
+                                                  }}
+                                                >
+                                                  Copy detail
+                                                </button>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               )}
                               {msg.attachment?.type === "text" && (
@@ -18595,6 +19652,133 @@ export default function CashuWalletModal({
                             {field.multiline ? field.value : truncateContactValue(field.value, 36)}
                           </span>
                           {isNip05Field && scannedContactNip05Verified && (
+                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </ActionSheet>
+
+        <ActionSheet
+          open={!!sharedContactPreview}
+          onClose={() => setSharedContactPreview(null)}
+          header={sharedContactPreviewHeader}
+          stackLevel={76}
+        >
+          {sharedContactPreviewContact && (
+            <div className="contact-detail-view">
+              <div className="contact-hero">
+                <div className="contact-hero__center">
+                  <div className="contact-qr-wrapper">
+                    {sharedContactPreviewShareValue ? (
+                      <QrCodeCard
+                        className="contact-qr-card"
+                        value={sharedContactPreviewShareValue}
+                        label={sharedContactPreviewTitle}
+                        size={200}
+                        flat
+                        hideLabel
+                        hideCopyButton
+                      />
+                    ) : (
+                      <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
+                    )}
+                  </div>
+                  <div
+                    className={`contact-heading${sharedContactPreviewContact.picture ? "" : " contact-heading--text-only"}`}
+                  >
+                    {sharedContactPreviewContact.picture && (
+                      <img
+                        src={sharedContactPreviewContact.picture}
+                        alt={sharedContactPreviewTitle}
+                        className="contact-portrait"
+                      />
+                    )}
+                    <div className="contact-heading__text">
+                      <div className="contact-name-lg" title={sharedContactPreviewTitle}>
+                        {truncateContactName(sharedContactPreviewTitle, 34)}
+                      </div>
+                      {sharedContactPreviewUsername && (
+                        <div className="contact-username" title={sharedContactPreviewUsername}>
+                          {truncateContactValue(sharedContactPreviewUsername, 33)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {(contactHasLightning(sharedContactPreviewContact) || sharedContactPreviewCanShare) && (
+                <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
+                  {contactHasLightning(sharedContactPreviewContact) && (
+                    <button
+                      type="button"
+                      className="contact-pill pressable"
+                      onClick={() => {
+                        applyLightningContact(sharedContactPreviewContact);
+                        setSharedContactPreview(null);
+                      }}
+                    >
+                      Pay lightning
+                    </button>
+                  )}
+                  {sharedContactPreviewCanShare && (
+                    <button
+                      type="button"
+                      className="contact-pill pressable"
+                      onClick={() => {
+                        openEcashSendToContact(sharedContactPreviewContact);
+                        setSharedContactPreview(null);
+                      }}
+                    >
+                      Pay eCash
+                    </button>
+                  )}
+                  {sharedContactPreviewCanShare && (
+                    <button
+                      type="button"
+                      className="contact-pill contact-pill--circle pressable"
+                      title="Share contact"
+                      onClick={() => {
+                        setShareContactSource(sharedContactPreviewContact);
+                        setShareContactStatus(null);
+                        setShareContactPickerOpen(true);
+                      }}
+                    >
+                      <ShareArrowIcon className="contact-pill__icon" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="contact-fields">
+                {sharedContactPreviewFields.length ? (
+                  sharedContactPreviewFields.map((field) => {
+                    const isNip05Field = field.key === "nip05";
+                    return (
+                      <div key={field.key} className="contact-field">
+                        <div className="contact-field__label">{field.label}</div>
+                        <button
+                          type="button"
+                          className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
+                            isNip05Field ? " contact-field__value--nip05" : ""
+                          }`}
+                          onClick={() => handleCopyContactField(field.value, field.label)}
+                          title={field.value}
+                        >
+                          <span
+                            className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}
+                          >
+                            {field.multiline ? field.value : truncateContactValue(field.value, 36)}
+                          </span>
+                          {isNip05Field && sharedContactPreviewNip05Verified && (
                             <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
                           )}
                         </button>

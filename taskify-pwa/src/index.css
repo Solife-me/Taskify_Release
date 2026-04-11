@@ -7415,16 +7415,186 @@ html.light .chat-bubble--in.chat-bubble--card {
   border: none;
 }
 
+.chat-bubble__card--structured {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.chat-bubble__card--contact-preview {
+  padding: 0.34rem 0.4rem 0.38rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.chat-bubble__payment-history {
+  width: 100%;
+  color: var(--text-primary);
+}
+
+.chat-bubble__payment-history .wallet-history__item {
+  margin: 0;
+}
+
+.chat-bubble__payment-history .wallet-history__summary {
+  cursor: pointer;
+}
+
+.chat-bubble__contact-preview {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.72rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.chat-bubble__contact-avatar {
+  width: 2.7rem;
+  height: 2.7rem;
+  border-radius: 50%;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
+}
+
+.chat-bubble__contact-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.chat-bubble__contact-name {
+  font-size: 0.98rem;
+  font-weight: 700;
+  line-height: 1.18;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-bubble__contact-subtitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+.chat-bubble__contact-subtitle span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-bubble__contact-chevron {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.chat-bubble__card-shell {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.chat-bubble__card-title {
+  font-size: 0.98rem;
+  font-weight: 700;
+  line-height: 1.22;
+  color: var(--text-primary);
+}
+
+.chat-bubble__card-meta {
+  font-size: 0.84rem;
+  line-height: 1.25;
+  color: var(--text-secondary);
+}
+
+.chat-bubble__card-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.chat-bubble__card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chat-bubble__card-status {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.chat-bubble__task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.chat-bubble__task-list-item {
+  padding: 0.42rem 0.58rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  line-height: 1.25;
+}
+
 .chat-bubble--out .chat-bubble__card-actions .ghost-button,
-.chat-bubble--out .chat-bubble__card-actions .secondary-button {
+.chat-bubble--out .chat-bubble__card-actions .secondary-button,
+.chat-bubble--out .wallet-message__card-actions .ghost-button,
+.chat-bubble--out .wallet-message__card-actions .secondary-button {
   background: rgba(255, 255, 255, 0.18);
   border-color: rgba(255, 255, 255, 0.22);
   color: #fff;
 }
 
+.chat-bubble--out .chat-bubble__contact-avatar {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.chat-bubble--out .chat-bubble__contact-subtitle,
+.chat-bubble--out .chat-bubble__contact-chevron {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.chat-bubble--out .chat-bubble__payment-history .wallet-history__item {
+  color: var(--text-primary);
+}
+
 html.light .chat-bubble__card {
   background: rgba(255, 255, 255, 0.92);
   border-color: rgba(15, 23, 42, 0.08);
+}
+
+html.light .chat-bubble--in .chat-bubble__contact-avatar {
+  border-color: rgba(15, 23, 42, 0.08);
+  background: rgba(15, 23, 42, 0.05);
 }
 
 .chat-bubble__text {
