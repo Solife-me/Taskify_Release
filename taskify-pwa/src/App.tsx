@@ -15427,12 +15427,14 @@ export default function App() {
   const maybeInboxMessage = (id: string) => completeTask(id, { inboxAction: "maybe" });
   const declineInboxMessage = (id: string) => completeTask(id, { inboxAction: "decline" });
   const markInboxMessagesRead = (dmEventIds: string[]) => {
-    if (!dmEventIds.length) return;
+    const normalizedIds = new Set(dmEventIds.map((id) => id.trim()).filter(Boolean));
+    if (!normalizedIds.size) return;
     setTasks((prev) =>
       prev.map((task) => {
         if (task.boardId !== messagesBoardId) return task;
         const dmId = task.inboxItem?.dmEventId?.trim();
-        if (!dmId || !dmEventIds.includes(dmId)) return task;
+        const syntheticId = `wallet-message-${task.id}`;
+        if ((!dmId || !normalizedIds.has(dmId)) && !normalizedIds.has(syntheticId)) return task;
         const status = task.inboxItem?.status;
         if (status === "accepted" || status === "declined" || status === "tentative" || status === "deleted" || status === "read") return task;
         return {
