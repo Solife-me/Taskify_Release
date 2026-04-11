@@ -16018,7 +16018,7 @@ export default function CashuWalletModal({
                     const isTask = msg.attachment?.type === "task";
                     const isEvent = msg.attachment?.type === "event";
                     const isStructured = !!msg.attachment && msg.attachment.type !== "text";
-                    const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}`;
+                    const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}${isTask ? " chat-bubble--task-share-shell" : ""}`;
                     const expanded = isDmMessageExpanded(msg.eventId);
                     const paymentState = isPayment
                       ? (() => {
@@ -16274,46 +16274,47 @@ export default function CashuWalletModal({
                                 );
                               })()}
                               {isTask && (() => {
+                                const taskMetaLabel = isTaskAssignment
+                                  ? "Task assignment"
+                                  : taskHasDue
+                                    ? taskDueLabel
+                                    : "";
+                                const taskHasBoardDetail = !!taskAttachment?.note?.trim() || taskSubtasks.length > 0;
                                 return (
-                                  <div className="chat-bubble__card chat-bubble__card--structured">
-                                    <div className="chat-bubble__card-shell">
-                                      <div className="wallet-message__card-icon">{taskDayLabel}</div>
-                                      <div className="wallet-message__card-body">
-                                        <div className="wallet-message__card-title">{taskAttachment?.title || "Shared task"}</div>
-                                        <div className="wallet-message__card-subtitle">
-                                          {isTaskAssignment ? "Task assignment" : taskDueLabel}
+                                  <div className="chat-bubble__task-share">
+                                    <div className="task-card" data-form={taskHasBoardDetail ? "stacked" : "pill"}>
+                                      <div className="flex items-start gap-3">
+                                        <div
+                                          className="icon-button flex-shrink-0 chat-bubble__task-check"
+                                          style={{ ["--icon-size" as any]: "1.85rem" }}
+                                          aria-hidden="true"
+                                        />
+                                        <div className="flex-1 min-w-0 space-y-1">
+                                          <div className="task-card__title">{taskAttachment?.title || "Shared task"}</div>
+                                          {taskMetaLabel && <div className="task-card__meta">{taskMetaLabel}</div>}
                                         </div>
                                       </div>
-                                      <div className="wallet-message__card-meta">{taskCardDate}</div>
+                                      {taskAttachment?.note && (
+                                        <div
+                                          className="task-card__details text-xs text-secondary break-words"
+                                          style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+                                        >
+                                          {taskAttachment.note}
+                                        </div>
+                                      )}
+                                      {taskSubtasks.length > 0 && (
+                                        <ul className="task-card__details mt-2 space-y-1.5 text-xs text-secondary">
+                                          {taskSubtasks.slice(0, 6).map((title) => (
+                                            <li key={title} className="subtask-row">
+                                              <input type="checkbox" checked={false} readOnly disabled className="subtask-row__checkbox" />
+                                              <span className="subtask-row__text text-secondary">{title}</span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      )}
                                     </div>
-                                    {(taskAttachment?.note || taskHasDue || taskSubtasks.length > 0) && (
-                                      <div className="chat-bubble__card-details">
-                                        {taskAttachment?.note && (
-                                          <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
-                                            <span>Note</span>
-                                            <span className="wallet-message__detail-value">{taskAttachment.note}</span>
-                                          </div>
-                                        )}
-                                        {taskHasDue && (
-                                          <div className="wallet-message__detail-row">
-                                            <span>Due</span>
-                                            <span className="wallet-message__detail-value">{taskDueLabel.replace("Due ", "")}</span>
-                                          </div>
-                                        )}
-                                        {taskSubtasks.length > 0 && (
-                                          <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
-                                            <span>Checklist</span>
-                                            <div className="chat-bubble__task-list">
-                                              {taskSubtasks.slice(0, 6).map((title) => (
-                                                <div key={title} className="chat-bubble__task-list-item">{title}</div>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
                                     {showActionButtons && (
-                                      <div className="wallet-message__card-actions">
+                                      <div className="chat-bubble__task-action-bar">
                                         {isTaskAssignment ? (
                                           <>
                                             <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Accept</button>
@@ -16330,7 +16331,7 @@ export default function CashuWalletModal({
                                       </div>
                                     )}
                                     {!showActionButtons && taskStatusLabel && (
-                                      <div className="chat-bubble__card-status">{taskStatusLabel}</div>
+                                      <div className="chat-bubble__task-status">{taskStatusLabel}</div>
                                     )}
                                   </div>
                                 );
@@ -16377,9 +16378,6 @@ export default function CashuWalletModal({
                                       <div className="wallet-history__body">
                                         <div className="wallet-history__title-row">
                                           <span className="wallet-history__type">{paymentState?.typeLabel || "Payment"}</span>
-                                          {paymentState?.timeLabel && (
-                                            <span className="wallet-history__time">{paymentState.timeLabel}</span>
-                                          )}
                                         </div>
                                         <div className="wallet-history__meta-row">
                                           <span
@@ -16389,9 +16387,6 @@ export default function CashuWalletModal({
                                           >
                                             {paymentState?.statusInfo?.label || "Received"}
                                           </span>
-                                          {paymentState?.mintLabel && (
-                                            <span className="wallet-history__mint">{paymentState.mintLabel}</span>
-                                          )}
                                         </div>
                                       </div>
                                       <div className="wallet-history__value">

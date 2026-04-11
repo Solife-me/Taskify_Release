@@ -7441,6 +7441,43 @@ html.light .chat-bubble--in.chat-bubble--card {
   cursor: pointer;
 }
 
+.chat-bubble--task-share-shell,
+.chat-bubble--in.chat-bubble--card.chat-bubble--task-share-shell,
+.chat-bubble--out.chat-bubble--card.chat-bubble--task-share-shell {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.chat-bubble__task-share {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.chat-bubble__task-share .task-card {
+  margin: 0;
+}
+
+.chat-bubble__task-check {
+  pointer-events: none;
+}
+
+.chat-bubble__task-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chat-bubble__task-status {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
 .chat-bubble__contact-preview {
   width: 100%;
   display: grid;
@@ -7581,6 +7618,13 @@ html.light .chat-bubble--in.chat-bubble--card {
 .chat-bubble--out .chat-bubble__contact-subtitle,
 .chat-bubble--out .chat-bubble__contact-chevron {
   color: rgba(255, 255, 255, 0.78);
+}
+
+.chat-bubble--out .chat-bubble__task-action-bar .ghost-button,
+.chat-bubble--out .chat-bubble__task-action-bar .secondary-button {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #fff;
 }
 
 .chat-bubble--out .chat-bubble__payment-history .wallet-history__item {
