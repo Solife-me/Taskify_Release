@@ -2858,7 +2858,7 @@ html.light .wallet-balance-card {
 .wallet-messages__search-input {
   width: 100%;
   border-radius: 999px;
-  padding: 0.5rem 1rem;
+  padding: 0.5rem 2.85rem 0.5rem 1rem;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-primary);
@@ -6862,9 +6862,13 @@ html.light .chat-page__icon-btn {
   padding: 0.6rem 1.1rem 0.4rem;
 }
 
+.chat-page__search-shell {
+  position: relative;
+}
+
 .chat-page__search-input {
   width: 100%;
-  padding: 0.65rem 0.9rem;
+  padding: 0.65rem 2.95rem 0.65rem 0.9rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -6882,6 +6886,39 @@ html.light .chat-page__icon-btn {
 html.light .chat-page__search-input {
   background: rgba(15, 23, 42, 0.04);
   border-color: rgba(15, 23, 42, 0.1);
+}
+
+.chat-page__search-clear {
+  position: absolute;
+  right: 0.55rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1.85rem;
+  height: 1.85rem;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.chat-page__search-clear:hover,
+.chat-page__search-clear:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
+}
+
+.chat-page__search-clear:active {
+  transform: translateY(-50%) scale(0.96);
+}
+
+html.light .chat-page__search-clear {
+  background: rgba(15, 23, 42, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
 }
 
 .chat-page__body {
@@ -7780,6 +7817,248 @@ html.light .chat-compose__input {
 .chat-compose__send svg {
   width: 1.1rem;
   height: 1.1rem;
+}
+
+.chat-compose__attach {
+  width: 2.4rem;
+  height: 2.4rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-compose__attach:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.chat-compose__attach:active {
+  transform: scale(0.94);
+}
+
+html.light .chat-compose__attach {
+  background: rgba(15, 23, 42, 0.05);
+  border-color: rgba(15, 23, 42, 0.1);
+  color: var(--text-primary);
+}
+
+html.light .chat-compose__attach:hover {
+  background: rgba(15, 23, 42, 0.08);
+  border-color: rgba(15, 23, 42, 0.18);
+}
+
+.chat-compose__attach svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+/* File attachment bubbles (images / videos / docs) */
+.chat-bubble__card--file {
+  padding: 0;
+  overflow: hidden;
+  max-width: min(72vw, 18rem);
+}
+
+.chat-bubble__card--image,
+.chat-bubble__card--video {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.chat-file__image-frame,
+.chat-file__video-frame {
+  position: relative;
+  width: 100%;
+  min-height: 8rem;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 1rem;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-file__image,
+.chat-file__video {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 22rem;
+  object-fit: cover;
+  border-radius: 1rem;
+}
+
+.chat-file__image--pending {
+  filter: brightness(0.65);
+}
+
+.chat-file__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-file__error {
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.chat-file__progress-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0.55rem 0.75rem 0.65rem;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0));
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: #fff;
+}
+
+.chat-file__progress-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.chat-file__progress-track {
+  height: 3px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.chat-file__progress-track--doc {
+  margin-top: 0.4rem;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.chat-file__progress-bar {
+  height: 100%;
+  background: var(--accent, #5b9dff);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+/* Audio */
+.chat-bubble__card--audio {
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.chat-file__audio {
+  width: 100%;
+}
+
+.chat-file__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* Document (generic file) */
+.chat-bubble__card--doc {
+  padding: 0;
+}
+
+.chat-file__doc {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem 0.8rem;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-file__doc:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+
+.chat-file__doc--pending {
+  cursor: default;
+}
+
+.chat-file__doc-icon {
+  flex-shrink: 0;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 0.65rem;
+  background: rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+}
+
+.chat-file__doc-icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.chat-file__doc-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.chat-file__name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-file__size {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.chat-file__doc-action {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-file__doc-action svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+html.light .chat-file__doc-icon {
+  background: rgba(15, 23, 42, 0.06);
 }
 
 /* New message / contacts sub-view shared */

@@ -77,6 +77,16 @@ import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePubl
 import { uploadAvatarToNip96, uploadAvatar } from "../nostr/Nip96Client";
 import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
 import {
+  encryptAndUploadMessengerAttachment,
+  decryptMessengerAttachment,
+  isImageMime,
+  isVideoMime,
+  isAudioMime,
+  probeImageDimensions,
+  formatByteSize,
+  MESSENGER_ATTACHMENT_ALGO,
+} from "../lib/messengerAttachmentCrypto";
+import {
   markHistoryEntrySpentRaw,
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
   type MarkHistoryEntriesOldSpentEventDetail,
@@ -963,6 +973,19 @@ type WalletDmAttachment =
       view?: string | null;
     }
   | { type: "payment"; amountSat?: number | null; detail?: string | null; raw?: string | null }
+  | {
+      type: "file";
+      url: string;
+      mimeType: string;
+      filename?: string | null;
+      size?: number | null;
+      width?: number | null;
+      height?: number | null;
+      algorithm: string;
+      keyHex: string;
+      nonceHex: string;
+      sha256?: string | null;
+    }
   | { type: "text" };
 
 type DecryptedNostrDm = {
@@ -971,6 +994,8 @@ type DecryptedNostrDm = {
   recipientPubkey?: string | null;
   recipientPubkeys?: string[] | null;
   createdAt?: number | null;
+  kind?: number | null;
+  tags?: string[][] | null;
 };
 
 type WalletDmMessage = {
@@ -997,7 +1022,16 @@ type PendingDmMessage = {
   content: string;
   peerPubkey: string;
   createdAt: number;
-  status: "sending" | "sent" | "done";
+  status: "sending" | "sent" | "done" | "failed";
+  // File-attachment pending state (in-flight encrypt + upload + giftwrap)
+  file?: {
+    filename: string;
+    mimeType: string;
+    size: number;
+    previewUrl?: string; // object URL for local preview of in-flight image
+    progress: number; // 0..1
+    phase: "encrypting" | "uploading" | "sending";
+  } | null;
 };
 
 type DmThreadListEntry =
@@ -1928,6 +1962,204 @@ function tryParseJson<T = any>(value: string | null | undefined): T | null {
   }
 }
 
+type MessengerFileDescriptor = {
+  url: string;
+  mimeType: string;
+  filename?: string | null;
+  size?: number | null;
+  width?: number | null;
+  height?: number | null;
+  algorithm: string;
+  keyHex: string;
+  nonceHex: string;
+};
+
+function MessengerFileBubble({
+  descriptor,
+  isIncoming,
+}: {
+  descriptor: MessengerFileDescriptor;
+  isIncoming: boolean;
+}) {
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ready"; objectUrl: string; blob: Blob }
+    | { kind: "error"; message: string }
+  >(() => ({ kind: "idle" }));
+  const mimeLc = (descriptor.mimeType || "").toLowerCase();
+  const isImage = isImageMime(mimeLc);
+  const isVideo = isVideoMime(mimeLc);
+  const isAudio = isAudioMime(mimeLc);
+  const filename = descriptor.filename || "attachment";
+  const sizeLabel = formatByteSize(descriptor.size ?? 0);
+
+  const loadDescriptor = useCallback(async () => {
+    setState({ kind: "loading" });
+    try {
+      const result = await decryptMessengerAttachment({
+        url: descriptor.url,
+        mimeType: descriptor.mimeType,
+        keyHex: descriptor.keyHex,
+        nonceHex: descriptor.nonceHex,
+        algorithm: descriptor.algorithm,
+      });
+      setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
+    } catch (err: any) {
+      setState({ kind: "error", message: err?.message || "Failed to decrypt attachment" });
+    }
+  }, [descriptor.url, descriptor.mimeType, descriptor.keyHex, descriptor.nonceHex, descriptor.algorithm]);
+
+  // Auto-load media attachments (images, video, audio) so they render inline.
+  useEffect(() => {
+    if (isImage || isVideo || isAudio) {
+      void loadDescriptor();
+    }
+  }, [isImage, isVideo, isAudio, loadDescriptor]);
+
+  const handleDownload = useCallback(async () => {
+    let url: string | null = null;
+    if (state.kind === "ready") {
+      url = state.objectUrl;
+    } else {
+      try {
+        const result = await decryptMessengerAttachment({
+          url: descriptor.url,
+          mimeType: descriptor.mimeType,
+          keyHex: descriptor.keyHex,
+          nonceHex: descriptor.nonceHex,
+          algorithm: descriptor.algorithm,
+        });
+        url = result.objectUrl;
+        setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
+      } catch (err: any) {
+        setState({ kind: "error", message: err?.message || "Failed to decrypt attachment" });
+        return;
+      }
+    }
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [state, descriptor, filename]);
+
+  const aspectStyle = (() => {
+    const w = descriptor.width ?? 0;
+    const h = descriptor.height ?? 0;
+    if (w > 0 && h > 0) return { aspectRatio: `${w} / ${h}` } as React.CSSProperties;
+    return undefined;
+  })();
+
+  if (isImage) {
+    return (
+      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--image${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+        <div className="chat-file__image-frame" style={aspectStyle}>
+          {state.kind === "ready" ? (
+            <img src={state.objectUrl} alt={filename} className="chat-file__image" />
+          ) : state.kind === "error" ? (
+            <div className="chat-file__error">
+              <span>{state.message}</span>
+              <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="chat-file__loading">
+              <div className="chat-sending-spinner" />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (isVideo) {
+    return (
+      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--video${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+        <div className="chat-file__video-frame" style={aspectStyle}>
+          {state.kind === "ready" ? (
+            <video src={state.objectUrl} controls className="chat-file__video" />
+          ) : state.kind === "error" ? (
+            <div className="chat-file__error">
+              <span>{state.message}</span>
+              <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="chat-file__loading">
+              <div className="chat-sending-spinner" />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (isAudio) {
+    return (
+      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--audio${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+        {state.kind === "ready" ? (
+          <audio src={state.objectUrl} controls className="chat-file__audio" />
+        ) : state.kind === "error" ? (
+          <div className="chat-file__error">
+            <span>{state.message}</span>
+            <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="chat-file__loading">
+            <div className="chat-sending-spinner" />
+          </div>
+        )}
+        <div className="chat-file__meta">
+          <div className="chat-file__name" title={filename}>{filename}</div>
+          {sizeLabel && <div className="chat-file__size">{sizeLabel}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--doc${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+      <button
+        type="button"
+        className="chat-file__doc pressable"
+        onClick={handleDownload}
+        disabled={state.kind === "loading"}
+      >
+        <div className="chat-file__doc-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
+            <polyline points="13 2 13 9 20 9" />
+          </svg>
+        </div>
+        <div className="chat-file__doc-body">
+          <div className="chat-file__name" title={filename}>{filename}</div>
+          <div className="chat-file__size">
+            {state.kind === "loading"
+              ? "Decrypting…"
+              : state.kind === "error"
+                ? state.message
+                : sizeLabel || "Download"}
+          </div>
+        </div>
+        <div className="chat-file__doc-action">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </div>
+      </button>
+    </div>
+  );
+}
+
 export default function CashuWalletModal({
   open,
   onClose,
@@ -1948,6 +2180,8 @@ export default function CashuWalletModal({
   contactsSyncEnabled,
   fileStorageServer,
   fileServers,
+  encryptedFileStorageServer,
+  encryptedFileServers,
   messageItems,
   onAcceptMessage,
   onMaybeMessage,
@@ -1979,6 +2213,8 @@ export default function CashuWalletModal({
   contactsSyncEnabled: boolean;
   fileStorageServer: string;
   fileServers?: string;
+  encryptedFileStorageServer?: string;
+  encryptedFileServers?: string;
   messageItems: WalletMessageItem[];
   messagesUnreadCount: number;
   onAcceptMessage: (id: string) => void;
@@ -2279,6 +2515,10 @@ export default function CashuWalletModal({
   const [chatView, setChatView] = useState<"threads" | "conversation" | "new-message">("threads");
   const [chatCompose, setChatCompose] = useState("");
   const [pendingMessages, setPendingMessages] = useState<PendingDmMessage[]>([]);
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
+  const chatPhotoInputRef = useRef<HTMLInputElement>(null);
+  const chatCameraInputRef = useRef<HTMLInputElement>(null);
+  const chatFileInputRef = useRef<HTMLInputElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesInnerRef = useRef<HTMLDivElement>(null);
   const dragTouchStartX = useRef(0);
@@ -3014,7 +3254,7 @@ export default function CashuWalletModal({
           } catch {
             rumor = null;
           }
-          if (!rumor || rumor.kind !== 14 || typeof rumor.content !== "string") {
+          if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15) || typeof rumor.content !== "string") {
             return null;
           }
           const rumorPubkey = typeof rumor.pubkey === "string" ? rumor.pubkey.trim().toLowerCase() : "";
@@ -3046,6 +3286,8 @@ export default function CashuWalletModal({
             recipientPubkey: rumorRecipients[0] ?? null,
             recipientPubkeys: rumorRecipients,
             createdAt: rumorCreatedAt,
+            kind: typeof rumor.kind === "number" ? rumor.kind : null,
+            tags: Array.isArray(rumor.tags) ? (rumor.tags as string[][]) : null,
           };
         }
       } catch (err) {
@@ -5306,7 +5548,76 @@ export default function CashuWalletModal({
       const share = parseShareEnvelope(decrypted.content);
       const matchedItem = messageItems.find((item) => item.dmEventId && item.dmEventId === event.id);
 
-      if (share && share.item.type === "board") {
+      // 0xchat-compatible encrypted file attachment (kind-15 rumor).
+      // Inner rumor content is the plaintext URL to the encrypted blob; the crypto
+      // parameters live in dedicated tags per nostr-dart nip_017.dart:69-72.
+      const fileAttachment = (() => {
+        if (decrypted.kind !== 15) return null;
+        const tags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
+        let mimeType: string | null = null;
+        let algorithm: string | null = null;
+        let keyHex: string | null = null;
+        let nonceHex: string | null = null;
+        let sha256Tag: string | null = null;
+        let sizeTag: number | null = null;
+        let widthTag: number | null = null;
+        let heightTag: number | null = null;
+        let filenameTag: string | null = null;
+        for (const tag of tags) {
+          if (!Array.isArray(tag) || typeof tag[0] !== "string") continue;
+          const name = tag[0];
+          const value = typeof tag[1] === "string" ? tag[1] : "";
+          if (name === "file-type" && value) mimeType = value;
+          else if (name === "encryption-algorithm" && value) algorithm = value;
+          else if (name === "decryption-key" && value) keyHex = value;
+          else if (name === "decryption-nonce" && value) nonceHex = value;
+          else if (name === "x" && value) sha256Tag = value;
+          else if (name === "size" && value) {
+            const n = Number(value);
+            if (Number.isFinite(n) && n > 0) sizeTag = n;
+          } else if (name === "dim" && value) {
+            const parts = value.split(/x/i);
+            const w = Number(parts[0]);
+            const h = Number(parts[1]);
+            if (Number.isFinite(w) && w > 0) widthTag = w;
+            if (Number.isFinite(h) && h > 0) heightTag = h;
+          } else if (name === "filename" && value) filenameTag = value;
+        }
+        const url = (decrypted.content || "").trim();
+        if (!url || !keyHex || !nonceHex || !algorithm) return null;
+        if (!/^https?:\/\//i.test(url)) return null;
+        return {
+          type: "file" as const,
+          url,
+          mimeType: mimeType || "application/octet-stream",
+          filename: filenameTag,
+          size: sizeTag,
+          width: widthTag,
+          height: heightTag,
+          algorithm,
+          keyHex,
+          nonceHex,
+          sha256: sha256Tag,
+        };
+      })();
+
+      if (fileAttachment) {
+        attachment = fileAttachment;
+        const label = fileAttachment.filename || (isImageMime(fileAttachment.mimeType)
+          ? "Photo"
+          : isVideoMime(fileAttachment.mimeType)
+            ? "Video"
+            : isAudioMime(fileAttachment.mimeType)
+              ? "Audio"
+              : "File");
+        preview = isImageMime(fileAttachment.mimeType)
+          ? `📷 ${label}`
+          : isVideoMime(fileAttachment.mimeType)
+            ? `🎬 ${label}`
+            : isAudioMime(fileAttachment.mimeType)
+              ? `🎵 ${label}`
+              : `📎 ${label}`;
+      } else if (share && share.item.type === "board") {
         attachment = {
           type: "board",
           boardName: share.item.boardName || "Shared board",
@@ -6347,19 +6658,28 @@ export default function CashuWalletModal({
       recipientHex: string;
       senderSecret: string;
       publish: (event: NostrEvent) => Promise<void>;
+      kind?: number;
+      extraTags?: string[][];
     }) => {
-      const { content, senderHex, recipientHex, senderSecret, publish } = options;
+      const { content, senderHex, recipientHex, senderSecret, publish, kind, extraTags } = options;
       if (!nip44?.v2) {
         throw new Error("NIP-44 support is required to send this message");
       }
       const normalizedSender = senderHex.toLowerCase();
       const normalizedRecipient = recipientHex.toLowerCase();
-      // The inner kind:14 rumor carries the canonical DM timestamp.
+      const rumorKind = typeof kind === "number" ? kind : 14;
+      const combinedTags: string[][] = [["p", normalizedRecipient]];
+      if (Array.isArray(extraTags)) {
+        for (const tag of extraTags) {
+          if (Array.isArray(tag) && tag.length > 0) combinedTags.push(tag);
+        }
+      }
+      // The inner kind:14/15 rumor carries the canonical DM timestamp.
       const rumorCreatedAt = Math.floor(Date.now() / 1000);
       const rumorBase = {
-        kind: 14,
+        kind: rumorKind,
         content,
-        tags: [["p", normalizedRecipient]] as string[][],
+        tags: combinedTags,
         created_at: rumorCreatedAt,
         pubkey: normalizedSender,
       };
@@ -6398,6 +6718,207 @@ export default function CashuWalletModal({
       return { selfWrapEvent };
     },
     [resolveNip17Timestamp],
+  );
+
+  // Resolve the active file-server entry for encrypted messenger attachments.
+  // Mirrors the task EditModal selection pattern so the user's Settings choice
+  // (originless / blossom / NIP-96) is honored.
+  // Encrypted messenger attachments must go to the ENCRYPTED file server
+  // (same one the task EditModal uses). nostr.build (the default public
+  // server) content-sniffs uploads and returns 500 on opaque ciphertext.
+  // Fall back to the public server only if no encrypted server is set.
+  const resolveMessengerServerEntry = useCallback((): FileServerEntry => {
+    const primaryUrl = encryptedFileStorageServer || fileStorageServer;
+    const primaryServersRaw = encryptedFileServers || fileServers;
+    const servers = parseFileServers(primaryServersRaw);
+    const match = findServerEntry(servers, primaryUrl);
+    if (match) return match;
+    // If we have servers but no URL match, infer the type from the URL.
+    const inferredType: FileServerType = /originless/i.test(primaryUrl)
+      ? "originless"
+      : /blossom/i.test(primaryUrl)
+        ? "blossom"
+        : "nip96";
+    return {
+      url: primaryUrl || DEFAULT_FILE_STORAGE_SERVER,
+      type: inferredType,
+    };
+  }, [encryptedFileServers, encryptedFileStorageServer, fileServers, fileStorageServer]);
+
+  // Send one or more encrypted file attachments as 0xchat-compatible kind-15
+  // gift wraps. Each file produces a separate gift-wrap event (matching how
+  // 0xchat sends multi-file batches) and a separate pending bubble so the user
+  // sees per-file progress.
+  const sendMessengerFileAttachments = useCallback(
+    async (files: File[], peerPubkey: string) => {
+      const trimmedFiles = files.filter((file) => file && file.size > 0);
+      if (!trimmedFiles.length) return;
+      const { identity, reason } = readNostrIdentity();
+      if (!identity) {
+        showToast(reason || "Add your Taskify Nostr key in Settings → Nostr.", 4000);
+        return;
+      }
+      const recipientHex = peerPubkey.toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(recipientHex)) {
+        showToast("Recipient pubkey is invalid.", 4000);
+        return;
+      }
+      const senderHex = identity.pubkey.toLowerCase();
+      const serverEntry = resolveMessengerServerEntry();
+
+      let publishRelays: string[] = [];
+      try {
+        publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+      } catch (err) {
+        console.warn("[chat] file attach relay resolve failed", err);
+      }
+      if (!publishRelays.length) {
+        showToast("No relays available for NIP-17 inbox.", 4000);
+        return;
+      }
+      const pool = ensureNostrPool();
+      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+
+      for (const file of trimmedFiles) {
+        const pendingId = crypto.randomUUID();
+        const pendingCreatedAt = Math.floor(Date.now() / 1000);
+        const mimeType = file.type || "application/octet-stream";
+        const filename = file.name || "attachment";
+        const previewUrl = isImageMime(mimeType) ? URL.createObjectURL(file) : undefined;
+
+        setPendingMessages((prev) => [
+          ...prev,
+          {
+            id: pendingId,
+            content: "",
+            peerPubkey: recipientHex,
+            createdAt: pendingCreatedAt,
+            status: "sending",
+            file: {
+              filename,
+              mimeType,
+              size: file.size,
+              previewUrl,
+              progress: 0,
+              phase: "encrypting",
+            },
+          },
+        ]);
+
+        const updatePending = (patch: Partial<PendingDmMessage["file"]> & { status?: PendingDmMessage["status"] }) => {
+          setPendingMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== pendingId) return m;
+              const nextStatus = patch.status ?? m.status;
+              const nextFile = m.file
+                ? { ...m.file, ...patch, status: undefined as any }
+                : m.file;
+              if (nextFile) delete (nextFile as any).status;
+              return { ...m, status: nextStatus, file: nextFile };
+            }),
+          );
+        };
+
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          // Probe image dimensions from the plaintext blob before we lose it.
+          const dims = isImageMime(mimeType) ? await probeImageDimensions(file) : null;
+
+          updatePending({ phase: "uploading", progress: 0 });
+
+          const upload = await encryptAndUploadMessengerAttachment({
+            data: bytes,
+            mimeType,
+            filename,
+            serverEntry,
+            nostrSkHex: identity.secret,
+            onProgress: (progress) => updatePending({ progress }),
+            width: dims?.width,
+            height: dims?.height,
+          });
+
+          updatePending({ phase: "sending", progress: 1 });
+
+          // 0xchat-compatible kind-15 rumor tags
+          // (see nostr-dart lib/src/nips/nip_017.dart:69-72)
+          const extraTags: string[][] = [
+            ["file-type", upload.mimeType],
+            ["encryption-algorithm", MESSENGER_ATTACHMENT_ALGO],
+            ["decryption-key", upload.keyHex],
+            ["decryption-nonce", upload.nonceHex],
+          ];
+          // Bonus metadata tags (ignored by 0xchat, useful for our own UI)
+          if (upload.sha256) extraTags.push(["x", upload.sha256]);
+          if (upload.size > 0) extraTags.push(["size", String(upload.size)]);
+          if (upload.width && upload.height) {
+            extraTags.push(["dim", `${upload.width}x${upload.height}`]);
+          }
+          if (filename) extraTags.push(["filename", filename]);
+
+          const { selfWrapEvent } = await publishNip17Giftwraps({
+            content: upload.remoteUrl,
+            senderHex,
+            recipientHex,
+            senderSecret: identity.secret,
+            publish,
+            kind: 15,
+            extraTags,
+          });
+          if (selfWrapEvent) {
+            await handleDmEvent(selfWrapEvent);
+          }
+
+          // Mark sent, then drop the pending entry after a short delay
+          // (the real message from the self-wrap will already be in dmMessages).
+          updatePending({ status: "sent" });
+          setTimeout(() => {
+            setPendingMessages((prev) =>
+              prev.filter((m) => {
+                if (m.id !== pendingId) return true;
+                if (m.file?.previewUrl) URL.revokeObjectURL(m.file.previewUrl);
+                return false;
+              }),
+            );
+          }, 1500);
+        } catch (err: any) {
+          console.warn("[chat] file attach send failed", err);
+          // Detect the nostr.build "won't accept opaque ciphertext" failure
+          // pattern and show an actionable hint instead of the raw server
+          // message. nostr.build scans uploads for valid media and rejects
+          // encrypted blobs at ingest — users need an originless/blossom
+          // server for encrypted attachments.
+          const rawMsg = String(err?.message || "");
+          const serverUrl = (serverEntry?.url || "").toLowerCase();
+          const looksLikeNip96ContentScan =
+            serverEntry?.type === "nip96" &&
+            (/server error, please try again later/i.test(rawMsg) ||
+              /upload failed \(5\d\d\)/i.test(rawMsg));
+          const friendlyMessage = looksLikeNip96ContentScan
+            ? `${serverUrl.replace(/^https?:\/\//, "") || "This NIP-96 server"} rejected the encrypted file. NIP-96 hosts (like nostr.build) scan uploads for valid media and block opaque ciphertext. Switch your encrypted file server to an originless or blossom host in Settings → Storage.`
+            : rawMsg || "Failed to send attachment.";
+          showToast(friendlyMessage, 6000);
+          setPendingMessages((prev) =>
+            prev.filter((m) => {
+              if (m.id !== pendingId) return true;
+              if (m.file?.previewUrl) URL.revokeObjectURL(m.file.previewUrl);
+              return false;
+            }),
+          );
+        }
+      }
+    },
+    [
+      defaultNostrRelays,
+      ensureNostrPool,
+      handleDmEvent,
+      publishNip17Giftwraps,
+      readNostrIdentity,
+      resolveMessengerServerEntry,
+      resolveNip17Relays,
+      safePublish,
+      setPendingMessages,
+      showToast,
+    ],
   );
 
   const applyEcashContact = useCallback(
@@ -14844,12 +15365,28 @@ export default function CashuWalletModal({
             {walletTab === "messages" && (
               <div className="wallet-messages">
             <div className="wallet-messages__search">
-              <input
-                className="wallet-messages__search-input"
-                placeholder="Search"
-                value={dmSearch}
-                onChange={(event) => setDmSearch(event.target.value)}
-              />
+              <div className="chat-page__search-shell">
+                <input
+                  className="wallet-messages__search-input"
+                  placeholder="Search"
+                  value={dmSearch}
+                  onChange={(event) => setDmSearch(event.target.value)}
+                />
+                {dmSearch.length > 0 && (
+                  <button
+                    type="button"
+                    className="chat-page__search-clear pressable"
+                    aria-label="Clear search"
+                    title="Clear search"
+                    onClick={() => setDmSearch("")}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 6 6 18" />
+                      <path d="m6 6 12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </div>
             <div className="wallet-messages__body">
               {(dmView === "list" || dmView === "strangers") && (
@@ -15738,12 +16275,28 @@ export default function CashuWalletModal({
 
               {/* Search */}
               <div className="chat-page__search">
-                <input
-                  className="chat-page__search-input"
-                  placeholder="Search"
-                  value={dmSearch}
-                  onChange={(event) => setDmSearch(event.target.value)}
-                />
+                <div className="chat-page__search-shell">
+                  <input
+                    className="chat-page__search-input"
+                    placeholder="Search"
+                    value={dmSearch}
+                    onChange={(event) => setDmSearch(event.target.value)}
+                  />
+                  {dmSearch.length > 0 && (
+                    <button
+                      type="button"
+                      className="chat-page__search-clear pressable"
+                      aria-label="Clear search"
+                      title="Clear search"
+                      onClick={() => setDmSearch("")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
 		              {/* Thread list */}
 		              <div className="chat-page__thread-list">
@@ -16698,6 +17251,22 @@ export default function CashuWalletModal({
                                   <div className="chat-bubble__text">{msg.content}</div>
                                 </div>
                               )}
+                              {msg.attachment?.type === "file" && (
+                                <MessengerFileBubble
+                                  descriptor={{
+                                    url: msg.attachment.url,
+                                    mimeType: msg.attachment.mimeType,
+                                    filename: msg.attachment.filename,
+                                    size: msg.attachment.size,
+                                    width: msg.attachment.width,
+                                    height: msg.attachment.height,
+                                    algorithm: msg.attachment.algorithm,
+                                    keyHex: msg.attachment.keyHex,
+                                    nonceHex: msg.attachment.nonceHex,
+                                  }}
+                                  isIncoming={msg.isIncoming}
+                                />
+                              )}
                             </div>
                           </div>
                           <div className="chat-message__timestamp">{formatDmTime(msg.createdAt)}</div>
@@ -16711,9 +17280,63 @@ export default function CashuWalletModal({
                       <div className="chat-message__body">
                         <div className="chat-message__bubble-wrap">
                           <div className="chat-bubble chat-bubble--out chat-bubble--pending">
-                            <div className="chat-bubble__card chat-bubble__card--text">
-                              <div className="chat-bubble__text">{pm.content}</div>
-                            </div>
+                            {pm.file ? (
+                              <div className={`chat-bubble__card chat-bubble__card--file${isImageMime(pm.file.mimeType) ? " chat-bubble__card--image" : isVideoMime(pm.file.mimeType) ? " chat-bubble__card--video" : isAudioMime(pm.file.mimeType) ? " chat-bubble__card--audio" : " chat-bubble__card--doc"} chat-bubble__card--pending`}>
+                                {pm.file.previewUrl && isImageMime(pm.file.mimeType) ? (
+                                  <div className="chat-file__image-frame">
+                                    <img
+                                      src={pm.file.previewUrl}
+                                      alt={pm.file.filename}
+                                      className="chat-file__image chat-file__image--pending"
+                                    />
+                                    <div className="chat-file__progress-overlay">
+                                      <div className="chat-file__progress-label">
+                                        {pm.file.phase === "encrypting"
+                                          ? "Encrypting…"
+                                          : pm.file.phase === "uploading"
+                                            ? `Uploading ${Math.round((pm.file.progress || 0) * 100)}%`
+                                            : "Sending…"}
+                                      </div>
+                                      <div className="chat-file__progress-track">
+                                        <div
+                                          className="chat-file__progress-bar"
+                                          style={{ width: `${Math.round((pm.file.progress || 0) * 100)}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="chat-file__doc chat-file__doc--pending">
+                                    <div className="chat-file__doc-icon">
+                                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
+                                        <polyline points="13 2 13 9 20 9" />
+                                      </svg>
+                                    </div>
+                                    <div className="chat-file__doc-body">
+                                      <div className="chat-file__name" title={pm.file.filename}>{pm.file.filename}</div>
+                                      <div className="chat-file__size">
+                                        {pm.file.phase === "encrypting"
+                                          ? "Encrypting…"
+                                          : pm.file.phase === "uploading"
+                                            ? `Uploading ${Math.round((pm.file.progress || 0) * 100)}%`
+                                            : "Sending…"}
+                                      </div>
+                                      <div className="chat-file__progress-track chat-file__progress-track--doc">
+                                        <div
+                                          className="chat-file__progress-bar"
+                                          style={{ width: `${Math.round((pm.file.progress || 0) * 100)}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="chat-bubble__card chat-bubble__card--text">
+                                <div className="chat-bubble__text">{pm.content}</div>
+                              </div>
+                            )}
                           </div>
                           {pm.status === "sending" && <div className="chat-sending-spinner" />}
                           {pm.status === "sent" && <div className="chat-sending-check" key={`check-${pm.id}`}>✓</div>}
@@ -16727,6 +17350,52 @@ export default function CashuWalletModal({
 
               {/* Compose bar */}
               <div className="chat-compose">
+                <button
+                  type="button"
+                  className="chat-compose__attach pressable"
+                  onClick={() => setAttachSheetOpen(true)}
+                  aria-label="Attach file"
+                  title="Attach file"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                  </svg>
+                </button>
+                <input
+                  ref={chatPhotoInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    e.target.value = "";
+                    if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                  }}
+                />
+                <input
+                  ref={chatCameraInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  capture="environment"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    e.target.value = "";
+                    if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                  }}
+                />
+                <input
+                  ref={chatFileInputRef}
+                  type="file"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    e.target.value = "";
+                    if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                  }}
+                />
                 <input
                   className="chat-compose__input"
                   placeholder="Message"
@@ -16950,12 +17619,28 @@ export default function CashuWalletModal({
               {contactView === "list" && (
                 <>
                   <div className="chat-page__search">
-                    <input
-                      className="chat-page__search-input"
-                      placeholder="Search contacts"
-                      value={dmSearch}
-                      onChange={(event) => setDmSearch(event.target.value)}
-                    />
+                    <div className="chat-page__search-shell">
+                      <input
+                        className="chat-page__search-input"
+                        placeholder="Search contacts"
+                        value={dmSearch}
+                        onChange={(event) => setDmSearch(event.target.value)}
+                      />
+                      {dmSearch.length > 0 && (
+                        <button
+                          type="button"
+                          className="chat-page__search-clear pressable"
+                          aria-label="Clear search"
+                          title="Clear search"
+                          onClick={() => setDmSearch("")}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 6 6 18" />
+                            <path d="m6 6 12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="chat-new-message__list">
                     <div className="chat-new-message__actions">
@@ -17427,6 +18112,55 @@ export default function CashuWalletModal({
           )}
         </div>
       )}
+
+      <ActionSheet
+        open={attachSheetOpen}
+        onClose={() => setAttachSheetOpen(false)}
+        title="Attach"
+      >
+        <div className="wallet-section space-y-2 text-sm">
+          <button
+            className="ghost-button button-sm pressable w-full justify-between"
+            onClick={() => {
+              setAttachSheetOpen(false);
+              setTimeout(() => chatPhotoInputRef.current?.click(), 50);
+            }}
+          >
+            <span>Photo Library</span>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+          </button>
+          <button
+            className="ghost-button button-sm pressable w-full justify-between"
+            onClick={() => {
+              setAttachSheetOpen(false);
+              setTimeout(() => chatCameraInputRef.current?.click(), 50);
+            }}
+          >
+            <span>Take Photo or Video</span>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+          </button>
+          <button
+            className="ghost-button button-sm pressable w-full justify-between"
+            onClick={() => {
+              setAttachSheetOpen(false);
+              setTimeout(() => chatFileInputRef.current?.click(), 50);
+            }}
+          >
+            <span>Choose Files</span>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
+              <polyline points="13 2 13 9 20 9" />
+            </svg>
+          </button>
+        </div>
+      </ActionSheet>
 
       <ActionSheet
         open={receiveMode === "ecash"}
