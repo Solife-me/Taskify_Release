@@ -16254,7 +16254,7 @@ export default function CashuWalletModal({
                     contactInitials(myCardName)
                   )}
                 </button>
-                <div className="chat-page__header-title">Chat</div>
+                <div className="chat-page__header-title chat-page__header-title--centered">Chat</div>
                 <button
                   type="button"
                   className="glass-icon-button glass-icon-button--accent pressable"
@@ -16560,7 +16560,7 @@ export default function CashuWalletModal({
                     const isTask = msg.attachment?.type === "task";
                     const isEvent = msg.attachment?.type === "event";
                     const isStructured = !!msg.attachment && msg.attachment.type !== "text";
-                    const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}${isTask ? " chat-bubble--task-share-shell" : ""}`;
+                    const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}${isContact ? " chat-bubble--contact-shell" : ""}${isTask ? " chat-bubble--task-share-shell" : ""}`;
                     const expanded = isDmMessageExpanded(msg.eventId);
                     const paymentState = isPayment
                       ? (() => {
