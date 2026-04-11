@@ -5248,14 +5248,43 @@ export default function CashuWalletModal({
     );
   }, []);
   const collectUnreadThreadItemEventIds = useCallback(
-    (messages: WalletDmMessage[]) =>
-      messages
-        .map((message) => message.eventId)
-        .filter((id) => {
-          const item = messageItemsByEventId.get(id) || pendingMessageItemsByEventId.get(id);
-          return isUnreadThreadStatus(item?.status);
-        }),
-    [isUnreadThreadStatus, messageItemsByEventId, pendingMessageItemsByEventId],
+    (messages: WalletDmMessage[], peerPubkey?: string | null) => {
+      const unreadIds = new Set<string>();
+      messages.forEach((message) => {
+        const item = messageItemsByEventId.get(message.eventId) || pendingMessageItemsByEventId.get(message.eventId);
+        if (isUnreadThreadStatus(item?.status)) {
+          unreadIds.add(message.eventId);
+        }
+        const invite = pendingCalendarInvitesByEventId.get(message.eventId);
+        if (isUnreadThreadStatus(invite?.status)) {
+          unreadIds.add(message.eventId);
+        }
+      });
+      const normalizedPeer = normalizeDmPeerHex(peerPubkey || messages[0]?.peerPubkey || "");
+      if (normalizedPeer) {
+        (inboxPendingItems || []).forEach((item) => {
+          if (!isUnreadThreadStatus(item.status)) return;
+          const itemPeer = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
+          if (itemPeer !== normalizedPeer) return;
+          unreadIds.add(buildWalletMessageSyntheticEventId(item));
+        });
+        (pendingCalendarInvites || []).forEach((invite) => {
+          if (!isUnreadThreadStatus(invite.status)) return;
+          const invitePeer = normalizeDmPeerHex(invite.sender?.pubkey || invite.sender?.npub);
+          if (invitePeer !== normalizedPeer) return;
+          unreadIds.add(buildCalendarInviteSyntheticEventId(invite));
+        });
+      }
+      return Array.from(unreadIds);
+    },
+    [
+      inboxPendingItems,
+      isUnreadThreadStatus,
+      messageItemsByEventId,
+      pendingCalendarInvites,
+      pendingCalendarInvitesByEventId,
+      pendingMessageItemsByEventId,
+    ],
   );
   const syntheticDmMessages = useMemo(() => {
     const existingEventIds = new Set(dmMessages.map((message) => message.eventId));
@@ -6152,7 +6181,7 @@ export default function CashuWalletModal({
     : false;
   useEffect(() => {
     if (!activeThread) return;
-    const unreadIds = collectUnreadThreadItemEventIds(activeThread.messages);
+    const unreadIds = collectUnreadThreadItemEventIds(activeThread.messages, activeThread.peerPubkey);
     if (unreadIds.length) {
       onMarkMessagesRead(unreadIds);
     }
@@ -15451,7 +15480,7 @@ export default function CashuWalletModal({
                           dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
                           setActiveThreadPeer(thread.peerPubkey);
                           setDmView("thread");
-                          const unreadIds = collectUnreadThreadItemEventIds(thread.messages);
+                          const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
                           if (unreadIds.length) {
                             onMarkMessagesRead(unreadIds);
                           }
@@ -16354,7 +16383,7 @@ export default function CashuWalletModal({
 		                        setActiveThreadPeer(thread.peerPubkey);
 		                        setChatView("conversation");
 		                        setDmView("thread");
-		                        const unreadIds = collectUnreadThreadItemEventIds(thread.messages);
+		                        const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
 		                        if (unreadIds.length) {
 		                          onMarkMessagesRead(unreadIds);
 		                        }
