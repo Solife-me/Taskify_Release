@@ -6754,6 +6754,7 @@ html.light .wallet-modal__unit {
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .chat-page__header {
@@ -7078,6 +7079,16 @@ html.light .chat-inbox-item__actions .is-danger {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(
+    env(safe-area-inset-bottom, 0px) +
+      var(--app-tab-pill-height) +
+      max(var(--app-tab-pill-gap), 0px) +
+      1rem
+  );
 }
 
 .chat-page__empty {
