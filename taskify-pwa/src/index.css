@@ -6807,6 +6807,12 @@ html.light .chat-page__header {
   gap: 0.1rem;
 }
 
+.chat-page__header-title--centered {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
 .chat-page__header-title-main {
   font-size: 1.15rem;
   font-weight: 700;
@@ -7440,6 +7446,40 @@ html.light .chat-bubble--in.chat-bubble--card {
   background: rgba(232, 232, 237, 0.98);
 }
 
+.chat-bubble--in.chat-bubble--card.chat-bubble--contact-shell {
+  background: rgba(44, 44, 48, 0.98);
+}
+
+html.light .chat-bubble--in.chat-bubble--card.chat-bubble--contact-shell {
+  background: rgba(232, 232, 237, 0.98);
+}
+
+.chat-bubble--out.chat-bubble--card.chat-bubble--contact-shell {
+  background: color-mix(in srgb, var(--accent) 94%, #4aa3ff 6%);
+  color: #fff;
+}
+
+.chat-bubble--contact-shell::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 0.72rem;
+  height: 0.78rem;
+  background: inherit;
+}
+
+.chat-bubble--in.chat-bubble--contact-shell::after {
+  left: -0.12rem;
+  border-bottom-right-radius: 0.7rem;
+  transform: skewX(-28deg);
+}
+
+.chat-bubble--out.chat-bubble--contact-shell::after {
+  right: -0.12rem;
+  border-bottom-left-radius: 0.7rem;
+  transform: skewX(28deg);
+}
+
 .chat-bubble__card {
   padding: 0.58rem 0.78rem 0.56rem;
   border-radius: inherit;
@@ -7474,6 +7514,8 @@ html.light .chat-bubble--in.chat-bubble--card {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+  background: transparent;
+  border-color: transparent;
 }
 
 .chat-bubble__payment-history {
