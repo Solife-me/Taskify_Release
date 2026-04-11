@@ -17532,7 +17532,7 @@ export default function CashuWalletModal({
                 >
                   <BackIcon className="h-5 w-5" />
                 </button>
-                <div className="chat-page__header-title">
+                <div className={`chat-page__header-title${contactView === "list" ? " chat-page__header-title--centered" : ""}`}>
                   {contactView === "edit"
                     ? contactEditDraft.isProfile
                       ? "Edit My Card"
