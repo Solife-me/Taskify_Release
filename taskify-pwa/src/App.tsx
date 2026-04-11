@@ -20592,6 +20592,8 @@ export default function App() {
             contactsSyncEnabled={settings.walletContactsSyncEnabled}
             fileStorageServer={settings.fileStorageServer}
             fileServers={settings.fileServers}
+            encryptedFileStorageServer={settings.encryptedFileStorageServer}
+            encryptedFileServers={settings.encryptedFileServers}
             messageItems={walletMessageItems}
             messagesUnreadCount={messagesUnreadCount}
             onAcceptMessage={acceptInboxMessage}
