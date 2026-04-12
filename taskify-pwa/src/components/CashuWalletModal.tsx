@@ -6099,9 +6099,19 @@ export default function CashuWalletModal({
     const scroller = messagesScrollRef.current;
     if (!scroller) return;
     const behavior: ScrollBehavior = threadChanged ? "auto" : "smooth";
-    requestAnimationFrame(() => {
-      scroller.scrollTo({ top: scroller.scrollHeight, behavior });
-    });
+    if (threadChanged) {
+      // Double rAF: first frame lets React flush the new messages into the DOM,
+      // second frame fires after the browser has done layout so scrollHeight is final.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+        });
+      });
+    } else {
+      requestAnimationFrame(() => {
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+      });
+    }
   }, [activeThread, activeThreadPendingMessages.length, chatView, isChatPage, open]);
   const openConversationForPeer = useCallback(
     (peerHex: string | null | undefined) => {
@@ -17561,7 +17571,7 @@ export default function CashuWalletModal({
                 >
                   <BackIcon className="h-5 w-5" />
                 </button>
-                <div className={`chat-page__header-title${contactView === "list" ? " chat-page__header-title--centered" : ""}`}>
+                <div className={`chat-page__header-title${contactView === "list" || (contactView === "edit" && !contactEditDraft.id && !contactEditDraft.isProfile) ? " chat-page__header-title--centered" : ""}`}>
                   {contactView === "edit"
                     ? contactEditDraft.isProfile
                       ? "Edit My Card"
