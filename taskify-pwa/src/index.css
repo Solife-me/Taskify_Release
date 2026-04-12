@@ -6737,6 +6737,15 @@ html.light .wallet-modal__unit {
   padding: 0;
 }
 
+.wallet-modal--with-nav.wallet-modal--chat {
+  padding-bottom: calc(
+    env(safe-area-inset-bottom, 0px) +
+      var(--app-tab-pill-height) +
+      max(var(--app-tab-pill-gap), 0px) +
+      0.5rem
+  );
+}
+
 .chat-page {
   display: flex;
   flex-direction: column;
@@ -7089,12 +7098,7 @@ html.light .chat-inbox-item__actions .is-danger {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: calc(
-    env(safe-area-inset-bottom, 0px) +
-      var(--app-tab-pill-height) +
-      max(var(--app-tab-pill-gap), 0px) +
-      1rem
-  );
+  padding-bottom: 1rem;
 }
 
 .chat-page__empty {
@@ -7810,6 +7814,10 @@ html.light .chat-compose {
   padding-bottom: calc(0.7rem + env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset));
 }
 
+.wallet-modal--with-nav.wallet-modal--chat .chat-compose {
+  padding-bottom: calc(0.7rem + env(safe-area-inset-bottom, 0px));
+}
+
 .chat-compose__input {
   flex: 1;
   min-width: 0;
@@ -8130,12 +8138,7 @@ html.light .chat-file__doc-icon {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0.5rem 1rem calc(
-    env(safe-area-inset-bottom, 0px) +
-      var(--app-tab-pill-height) +
-      max(var(--app-tab-pill-gap), 0px) +
-      1rem
-  );
+  padding: 0.5rem 1rem 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -8143,12 +8146,6 @@ html.light .chat-file__doc-icon {
 
 .chat-new-message__list--detail {
   padding-top: 0.75rem;
-  padding-bottom: calc(
-    env(safe-area-inset-bottom, 0px) +
-      var(--app-tab-pill-height) +
-      max(var(--app-tab-pill-gap), 0px) +
-      1rem
-  );
 }
 
 .chat-new-message__actions {
