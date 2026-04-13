@@ -6,6 +6,7 @@ import {
   LS_DM_BLOCKED_PEERS,
   LS_DM_DELETED_EVENTS,
   LS_DM_MESSAGE_CACHE,
+  LS_DM_THREAD_READ_STATE,
   LS_DM_SYNC_META,
   LS_ECASH_OPEN_REQUESTS,
   LS_LIGHTNING_CONTACTS,
@@ -14,6 +15,9 @@ import {
   LS_PROFILE_METADATA_CACHE,
   LS_RELAY_INFO_CACHE,
   LS_SPENT_NOSTR_PAYMENTS,
+  LS_GROUP_CHATS,
+  LS_GROUP_MUTED,
+  LS_GROUP_LEFT,
 } from "../localStorageKeys";
 import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
 
@@ -84,7 +88,11 @@ export async function initializeStorageBoundaries(): Promise<void> {
       LS_DM_DELETED_EVENTS,
       LS_DM_BLOCKED_PEERS,
       LS_DM_MESSAGE_CACHE,
+      LS_DM_THREAD_READ_STATE,
       LS_DM_SYNC_META,
+      LS_GROUP_CHATS,
+      LS_GROUP_MUTED,
+      LS_GROUP_LEFT,
       PROFILE_SHARE_CACHE_KEY,
       INBOX_PROCESSED_KEY,
     ]),
