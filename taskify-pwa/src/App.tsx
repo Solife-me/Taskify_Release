@@ -5510,6 +5510,7 @@ export default function App() {
     () => calendarInvites.filter((invite) => invite.status === "pending" || invite.status === "read"),
     [calendarInvites],
   );
+  const [dmUnreadCount, setDmUnreadCount] = useState(0);
   const unreadCalendarInviteCount = useMemo(
     () => calendarInvites.filter((invite) => invite.status === "pending").length,
     [calendarInvites],
@@ -5548,7 +5549,7 @@ export default function App() {
     if (endDateLabel === dateLabel) return `${dateLabel} • ${startTimeLabel} – ${endTimeLabel}`;
     return `${dateLabel} • ${startTimeLabel} – ${endDateLabel} ${endTimeLabel}`;
   }, []);
-  const chatUnreadCount = messagesUnreadCount + unreadCalendarInviteCount;
+  const chatUnreadCount = messagesUnreadCount + unreadCalendarInviteCount + dmUnreadCount;
   const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
   const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
@@ -20621,6 +20622,7 @@ export default function App() {
             onCalendarInviteRsvp={handleCalendarInviteRsvp}
             onDismissCalendarInvite={dismissCalendarInvite}
             formatCalendarInviteWhen={formatCalendarInviteWhen}
+            onDmUnreadCountChange={setDmUnreadCount}
           />
         )}
       </Suspense>

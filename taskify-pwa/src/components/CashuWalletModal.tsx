@@ -54,9 +54,13 @@ import {
   LS_DM_BLOCKED_PEERS,
   LS_DM_DELETED_EVENTS,
   LS_DM_MESSAGE_CACHE,
+  LS_DM_THREAD_READ_STATE,
   LS_DM_SYNC_META,
   LS_PROFILE_EVENT_IDS,
   LS_PROFILE_METADATA_CACHE,
+  LS_GROUP_CHATS,
+  LS_GROUP_LEFT,
+  LS_GROUP_MUTED,
 } from "../localStorageKeys";
 import { LS_NOSTR_SK } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
@@ -64,6 +68,7 @@ import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../lib/fileStorage";
+import { mergeGroupChats, normalizeGroupChatRecord, type GroupChat } from "../lib/groupChatState";
 import { buildContactShareEnvelope, sendShareMessage, type SharedTaskPayload } from "../lib/shareInbox";
 import { normalizeNostrPubkey } from "../lib/nostr";
 import {
@@ -149,6 +154,50 @@ const AnimatedEllipsis = () => {
 
   return <span className="inline-block w-4 text-left">{dots}</span>;
 };
+
+type GroupAvatarMember = {
+  key: string;
+  label: string;
+  picture?: string;
+};
+
+function avatarInitials(value: string): string {
+  const parts = (value || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  const cp = parts[0].codePointAt(0) ?? 0;
+  const isEmoji = (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
+  if (isEmoji) return [...parts[0]][0] ?? "?";
+  if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
+  return `${[...parts[0]][0] ?? ""}${[...parts[parts.length - 1]][0] ?? ""}`.toUpperCase();
+}
+
+function GroupAvatar({
+  members,
+  className = "",
+}: {
+  members: GroupAvatarMember[];
+  className?: string;
+}) {
+  const visibleMembers = members.slice(0, Math.min(4, members.length));
+  const count = Math.max(visibleMembers.length, 1);
+  return (
+    <div className={`group-avatar group-avatar--count-${count}${className ? ` ${className}` : ""}`} aria-hidden="true">
+      {visibleMembers.map((member, index) => (
+        <div
+          key={member.key}
+          className={`group-avatar__item group-avatar__item--${index + 1}${member.picture ? " group-avatar__item--image" : ""}`}
+          title={member.label}
+        >
+          {member.picture ? (
+            <img src={member.picture} alt="" className="group-avatar__img" />
+          ) : (
+            <span className="group-avatar__initials">{avatarInitials(member.label)}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const ShareArrowIcon = (props: React.SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
@@ -1001,20 +1050,23 @@ type DecryptedNostrDm = {
 type WalletDmMessage = {
   id: string;
   eventId: string;
-  peerPubkey: string;
+  peerPubkey: string; // for DMs: peer hex; for groups: groupId
   isIncoming: boolean;
   createdAt: number;
   content: string;
   preview: string;
   attachment?: WalletDmAttachment;
+  groupId?: string; // set for group messages
+  senderPubkey?: string; // set for group messages — who sent this specific message
 };
 
 type WalletDmThread = {
-  peerPubkey: string;
+  peerPubkey: string; // for DMs: peer hex; for groups: groupId
   messages: WalletDmMessage[];
   lastCreatedAt: number;
   lastPreview: string;
   isStranger: boolean;
+  groupId?: string; // set for group threads
 };
 
 type PendingDmMessage = {
@@ -1041,6 +1093,73 @@ type DmThreadListEntry =
 type DmSyncMeta = {
   lastCompletedSyncAt: number;
 };
+
+const MAX_GROUP_MEMBERS = 17;
+
+function generateGroupId(members: string[]): string {
+  const sorted = [...new Set(members.map((m) => m.toLowerCase()))].sort();
+  const data = new TextEncoder().encode(sorted.join(","));
+  const hash = sha256(data);
+  return bytesToHex(hash);
+}
+
+function readGroupChats(): GroupChat[] {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_GROUP_CHATS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((entry) => normalizeGroupChatRecord(entry)).filter((group): group is GroupChat => !!group);
+  } catch {
+    return [];
+  }
+}
+
+function readStoredStringSet(storageKey: string): Set<string> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed
+        .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function readStoredTimestampMap(storageKey: string): Map<string, number> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const now = Date.now();
+      return new Map(
+        parsed
+          .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
+          .filter(Boolean)
+          .map((entry) => [entry, now] as const),
+      );
+    }
+    if (!parsed || typeof parsed !== "object") return new Map();
+    return new Map(
+      Object.entries(parsed)
+        .map(([key, value]) => {
+          const normalizedKey = typeof key === "string" ? key.trim().toLowerCase() : "";
+          const normalizedValue =
+            typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+          return normalizedKey && normalizedValue > 0 ? ([normalizedKey, normalizedValue] as const) : null;
+        })
+        .filter(Boolean) as Array<readonly [string, number]>,
+    );
+  } catch {
+    return new Map();
+  }
+}
 
 type PendingCalendarInvite = {
   id: string;
@@ -1878,6 +1997,8 @@ function readDmCache(): WalletDmMessage[] {
         content: entry.content,
         preview: entry.preview,
         attachment: isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" },
+        ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
+        ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
       }))
       .sort((a, b) => a.createdAt - b.createdAt)
       .slice(-400);
@@ -2193,6 +2314,7 @@ export default function CashuWalletModal({
   onCalendarInviteRsvp,
   onDismissCalendarInvite,
   formatCalendarInviteWhen,
+  onDmUnreadCountChange,
 }: {
   open: boolean;
   onClose: () => void;
@@ -2227,6 +2349,7 @@ export default function CashuWalletModal({
   onCalendarInviteRsvp?: (invite: any, status: string) => void;
   onDismissCalendarInvite?: (invite: any) => void;
   formatCalendarInviteWhen?: (invite: any) => string;
+  onDmUnreadCountChange?: (count: number) => void;
 }) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -2512,9 +2635,26 @@ export default function CashuWalletModal({
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const isContactsPage = page === "contacts";
   const isChatPage = page === "chat";
-  const [chatView, setChatView] = useState<"threads" | "conversation" | "new-message">("threads");
+  const [chatView, setChatView] = useState<
+    "threads" | "conversation" | "new-message" | "new-group-select" | "new-group-name" | "group-info" | "group-members" | "group-name-edit"
+  >("threads");
   const [chatCompose, setChatCompose] = useState("");
   const [pendingMessages, setPendingMessages] = useState<PendingDmMessage[]>([]);
+  const [groupChats, setGroupChats] = useState<GroupChat[]>(() => readGroupChats());
+  const [groupSelectMembers, setGroupSelectMembers] = useState<Set<string>>(new Set());
+  const [groupNameDraft, setGroupNameDraft] = useState("");
+  const [renameGroupDraft, setRenameGroupDraft] = useState("");
+  const [renameGroupBusy, setRenameGroupBusy] = useState(false);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const [groupMembersSearch, setGroupMembersSearch] = useState("");
+  const groupChatsRef = useRef<GroupChat[]>(groupChats);
+  useEffect(() => { groupChatsRef.current = groupChats; }, [groupChats]);
+  const dmMutedGroupsRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_GROUP_MUTED));
+  const [dmMutedGroupsVersion, setDmMutedGroupsVersion] = useState(0);
+  const dmLeftGroupsRef = useRef<Set<string>>(readStoredStringSet(LS_GROUP_LEFT));
+  const [dmLeftGroupsVersion, setDmLeftGroupsVersion] = useState(0);
+  const dmThreadReadAtRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_DM_THREAD_READ_STATE));
+  const [dmThreadReadAtVersion, setDmThreadReadAtVersion] = useState(0);
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const chatPhotoInputRef = useRef<HTMLInputElement>(null);
   const chatCameraInputRef = useRef<HTMLInputElement>(null);
@@ -2529,7 +2669,7 @@ export default function CashuWalletModal({
     threadPeer: null,
     itemCount: 0,
   });
-  const chatModeUsesContacts = isChatPage && chatView === "new-message";
+  const chatModeUsesContacts = isChatPage && (chatView === "new-message" || chatView === "new-group-select" || chatView === "new-group-name");
   const initialDmMessages = useMemo(() => readDmCache(), []);
   const initialDmPeerProfiles = useMemo(() => buildInitialDmPeerProfiles(initialDmMessages), [initialDmMessages]);
   const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => initialDmMessages);
@@ -2619,6 +2759,43 @@ export default function CashuWalletModal({
       // ignore storage failures
     }
   }, []);
+  const persistDmThreadReadState = useCallback((next: Map<string, number>) => {
+    try {
+      idbKeyValue.setItem(
+        TASKIFY_STORE_NOSTR,
+        LS_DM_THREAD_READ_STATE,
+        JSON.stringify(Object.fromEntries(Array.from(next.entries()))),
+      );
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistGroupChats = useCallback((groups: GroupChat[]) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_GROUP_CHATS, JSON.stringify(groups));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistGroupStateSet = useCallback((storageKey: string, values: Set<string>) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, storageKey, JSON.stringify(Array.from(values)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const upsertGroupChat = useCallback(
+    (group: GroupChat) => {
+      setGroupChats((prev) => {
+        const idx = prev.findIndex((g) => g.groupId === group.groupId);
+        const nextGroup = idx >= 0 ? mergeGroupChats(prev[idx], group) : mergeGroupChats(null, group);
+        const next = idx >= 0 ? [...prev.slice(0, idx), nextGroup, ...prev.slice(idx + 1)] : [...prev, nextGroup];
+        persistGroupChats(next);
+        return next;
+      });
+    },
+    [persistGroupChats],
+  );
   const persistDmSyncMeta = useCallback((meta: DmSyncMeta) => {
     try {
       idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META, JSON.stringify(meta));
@@ -3599,6 +3776,8 @@ export default function CashuWalletModal({
   const [showCustomContactFields, setShowCustomContactFields] = useState(false);
   const [contactView, setContactView] = useState<ContactViewMode>("list");
   const [activeContactId, setActiveContactId] = useState<string | "profile" | null>(null);
+  const [contactReturnView, setContactReturnView] = useState<"new-message" | "group-members">("new-message");
+  const [contactDetailOverride, setContactDetailOverride] = useState<Contact | null>(null);
   const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
   const [shareContactSource, setShareContactSource] = useState<Contact | null>(null);
   const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
@@ -3654,17 +3833,22 @@ export default function CashuWalletModal({
     setContactLookupError("");
     setContactLookupInput("");
     setShowCustomContactFields(false);
+    setContactDetailOverride(null);
+    setContactReturnView("new-message");
     setContactView("edit");
   }, [resetContactEditDraft]);
   const handleBackToContactsList = useCallback(() => {
     setContactView("list");
     setActiveContactId(null);
+    setContactDetailOverride(null);
     if (isChatPage) {
-      setChatView("new-message");
+      setChatView(contactReturnView);
     }
-  }, [isChatPage]);
+    setContactReturnView("new-message");
+  }, [contactReturnView, isChatPage]);
   const handleReturnToProfileCard = useCallback(() => {
     setActiveContactId("profile");
+    setContactDetailOverride(null);
     setContactView("detail");
     if (isChatPage) {
       setChatView("new-message");
@@ -5770,15 +5954,61 @@ export default function CashuWalletModal({
           void handler(event, { updateClock: true });
         }
       }
+      // Detect group messages: 2+ p-tag recipients in the inner rumor
+      const rumorRecipients = Array.isArray(decrypted.recipientPubkeys)
+        ? decrypted.recipientPubkeys.map((p) => p.toLowerCase())
+        : [];
+      const rumorSender = (decrypted.senderPubkey || "").toLowerCase();
+      const isGroupMessage = rumorRecipients.length >= 2;
+      let groupId: string | undefined;
+      let groupName = "";
+      if (isGroupMessage && rumorSender) {
+        const allMembers = [...new Set([rumorSender, ...rumorRecipients])];
+        groupId = generateGroupId(allMembers);
+        // Extract subject tag for group name
+        const subjectTag = Array.isArray(decrypted.tags)
+          ? decrypted.tags.find((t) => Array.isArray(t) && t[0] === "subject")
+          : null;
+        groupName = typeof subjectTag?.[1] === "string" ? subjectTag[1].trim() : "";
+        // Auto-create or update group metadata
+        const existing = groupChatsRef.current.find((g) => g.groupId === groupId);
+        if (!existing) {
+          upsertGroupChat({
+            groupId,
+            name: groupName || "Group",
+            members: [...new Set([rumorSender, ...rumorRecipients])].sort(),
+            createdAt,
+            ...(groupName ? { nameUpdatedAt: createdAt } : {}),
+          });
+        } else if (groupName) {
+          upsertGroupChat({ ...existing, name: groupName, nameUpdatedAt: createdAt });
+        }
+        // Fetch profiles for all group members
+        for (const member of [rumorSender, ...rumorRecipients]) {
+          void ensurePeerProfile(member);
+        }
+      }
+      const isGroupMetadataOnly =
+        isGroupMessage &&
+        !!groupId &&
+        !!groupName &&
+        !attachment &&
+        !decrypted.content.trim();
+      if (isGroupMetadataOnly) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+
       const message: WalletDmMessage = {
         id: crypto.randomUUID(),
         eventId: event.id,
-        peerPubkey: (peerPubkey || event.pubkey).toLowerCase(),
+        peerPubkey: isGroupMessage && groupId ? groupId : (peerPubkey || event.pubkey).toLowerCase(),
         isIncoming,
         createdAt,
         content: decrypted.content,
         preview,
         attachment: attachment ?? { type: "text" },
+        ...(isGroupMessage && groupId ? { groupId, senderPubkey: rumorSender } : {}),
       };
 
       dmProcessedEventsRef.current.add(event.id);
@@ -5803,6 +6033,7 @@ export default function CashuWalletModal({
       normalizeNostrPubkey,
       parseIncomingPaymentMessage,
       resolvePeerPubkey,
+      upsertGroupChat,
     ],
   );
   const startDmSubscription = useCallback(async () => {
@@ -6004,23 +6235,24 @@ export default function CashuWalletModal({
     const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
     displayDmMessages.forEach((msg) => {
       const preview = dmPreviewForMessage(msg);
-      const peer = msg.peerPubkey.toLowerCase();
-      const existing = threads.get(peer);
+      const threadKey = msg.groupId || msg.peerPubkey.toLowerCase();
+      const existing = threads.get(threadKey);
       const base: WalletDmThread =
         existing ??
         {
-          peerPubkey: peer,
+          peerPubkey: threadKey,
           messages: [],
           lastCreatedAt: 0,
           lastPreview: "",
-          isStranger: !contactKeys.has(peer) && (ownHex === "" || peer !== ownHex),
+          isStranger: msg.groupId ? false : !contactKeys.has(threadKey) && (ownHex === "" || threadKey !== ownHex),
+          ...(msg.groupId ? { groupId: msg.groupId } : {}),
         };
       base.messages.push(msg);
       if (msg.createdAt > base.lastCreatedAt) {
         base.lastCreatedAt = msg.createdAt;
         base.lastPreview = preview;
       }
-      threads.set(peer, base);
+      threads.set(threadKey, base);
     });
     const ordered = Array.from(threads.values()).map((thread) => ({
       ...thread,
@@ -6033,6 +6265,24 @@ export default function CashuWalletModal({
     () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
     [activeThreadPeer, dmThreads],
   );
+  const activeGroupChat = useMemo(
+    () => (activeThread?.groupId ? groupChats.find((group) => group.groupId === activeThread.groupId) ?? null : null),
+    [activeThread?.groupId, groupChats],
+  );
+  const contactByHex = useMemo(() => {
+    const map = new Map<string, Contact>();
+    contacts.forEach((contact) => {
+      const normalized = normalizeNostrPubkey(contact.npub || "");
+      if (!normalized) return;
+      const compressed = normalized.toLowerCase();
+      const raw = compressedToRawHex(normalized).toLowerCase();
+      map.set(compressed, contact);
+      map.set(raw, contact);
+    });
+    return map;
+  }, [compressedToRawHex, contacts, normalizeNostrPubkey]);
+  const activeGroupMuted = !!(activeGroupChat && dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
+  const activeGroupLeft = !!(activeGroupChat && dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
   const strangerThreads = useMemo(
     () => dmThreads.filter((thread) => thread.isStranger),
     [dmThreads],
@@ -6148,6 +6398,46 @@ export default function CashuWalletModal({
       setChatView("conversation");
       setContactView("list");
       setActiveContactId(null);
+      setContactDetailOverride(null);
+      setContactReturnView("new-message");
+      setDmSearch("");
+      return true;
+    },
+    [displayDmMessages],
+  );
+  const openConversationForGroup = useCallback(
+    (groupId: string) => {
+      const hasThread = displayDmMessages.some((msg) => msg.groupId === groupId);
+      if (!hasThread) {
+        // Create a placeholder so the thread appears immediately
+        const group = groupChatsRef.current.find((g) => g.groupId === groupId);
+        setDmMessages((prev) => {
+          if (prev.some((msg) => msg.groupId === groupId)) return prev;
+          return [
+            ...prev,
+            {
+              id: `draft-group-${groupId}`,
+              eventId: `draft-group-${groupId}`,
+              peerPubkey: groupId,
+              isIncoming: false,
+              createdAt: Math.floor(Date.now() / 1000),
+              content: "",
+              preview: "",
+              attachment: { type: "text" },
+              groupId,
+              senderPubkey: (nostrIdentityRef.current?.pubkey || "").toLowerCase(),
+            },
+          ];
+        });
+      }
+      setActiveThreadPeer(groupId);
+      setActiveGroupId(groupId);
+      setDmView("thread");
+      setChatView("conversation");
+      setContactView("list");
+      setActiveContactId(null);
+      setContactDetailOverride(null);
+      setContactReturnView("new-message");
       setDmSearch("");
       return true;
     },
@@ -6157,23 +6447,143 @@ export default function CashuWalletModal({
     if (dmView !== "thread" || activeThread) return;
     setDmView(dmListViewRef.current);
     setActiveThreadPeer(null);
-    if (isChatPage && chatView === "conversation") {
+    setActiveGroupId(null);
+    if (isChatPage && (chatView === "conversation" || chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit")) {
       setChatView("threads");
     }
   }, [activeThread, chatView, dmView, isChatPage]);
+  useEffect(() => {
+    if (activeGroupChat) return;
+    setRenameGroupBusy(false);
+    setRenameGroupDraft("");
+    setGroupMembersSearch("");
+    if (chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit") {
+      setChatView(activeThread ? "conversation" : "threads");
+    }
+  }, [activeGroupChat, activeThread, chatView]);
+  const persistMutedGroups = useCallback((next: Map<string, number>) => {
+    try {
+      idbKeyValue.setItem(
+        TASKIFY_STORE_NOSTR,
+        LS_GROUP_MUTED,
+        JSON.stringify(Object.fromEntries(Array.from(next.entries()))),
+      );
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistLeftGroups = useCallback(
+    (next: Set<string>) => persistGroupStateSet(LS_GROUP_LEFT, next),
+    [persistGroupStateSet],
+  );
+  const setGroupMutedState = useCallback(
+    (groupId: string, muted: boolean) => {
+      const key = (groupId || "").trim().toLowerCase();
+      if (!key) return;
+      const next = new Map(dmMutedGroupsRef.current);
+      if (muted) {
+        next.set(key, Date.now());
+      } else {
+        next.delete(key);
+      }
+      dmMutedGroupsRef.current = next;
+      persistMutedGroups(next);
+      setDmMutedGroupsVersion((value) => value + 1);
+    },
+    [persistMutedGroups],
+  );
+  const setGroupLeftState = useCallback(
+    (groupId: string, left: boolean) => {
+      const key = (groupId || "").trim().toLowerCase();
+      if (!key) return;
+      const next = new Set(dmLeftGroupsRef.current);
+      if (left) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      dmLeftGroupsRef.current = next;
+      persistLeftGroups(next);
+      setDmLeftGroupsVersion((value) => value + 1);
+    },
+    [persistLeftGroups],
+  );
+  const markThreadReadThrough = useCallback(
+    (threadKey: string | null | undefined, timestampSeconds: number) => {
+      const normalizedThreadKey = (threadKey || "").trim().toLowerCase();
+      const normalizedTimestamp =
+        Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? Math.floor(timestampSeconds) : 0;
+      if (!normalizedThreadKey || normalizedTimestamp <= 0) return;
+      const existing = dmThreadReadAtRef.current.get(normalizedThreadKey) ?? 0;
+      if (normalizedTimestamp <= existing) return;
+      const next = new Map(dmThreadReadAtRef.current);
+      next.set(normalizedThreadKey, normalizedTimestamp);
+      dmThreadReadAtRef.current = next;
+      persistDmThreadReadState(next);
+      setDmThreadReadAtVersion((value) => value + 1);
+    },
+    [persistDmThreadReadState],
+  );
+  const openActiveGroupInfo = useCallback(() => {
+    if (!activeThread?.groupId) return;
+    setGroupMembersSearch("");
+    setRenameGroupDraft(activeGroupChat?.name || "");
+    setChatView("group-info");
+  }, [activeGroupChat?.name, activeThread?.groupId]);
+  const handleToggleActiveGroupMute = useCallback(() => {
+    if (!activeGroupChat) return;
+    const nextMuted = !dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase());
+    setGroupMutedState(activeGroupChat.groupId, nextMuted);
+    if (!nextMuted && activeThread?.groupId === activeGroupChat.groupId) {
+      markThreadReadThrough(activeGroupChat.groupId, Math.floor(Date.now() / 1000));
+    }
+    showToast(nextMuted ? "Group muted" : "Group unmuted", 2000);
+  }, [activeGroupChat, activeThread?.groupId, markThreadReadThrough, setGroupMutedState, showToast]);
+  const handleToggleActiveGroupMembership = useCallback(() => {
+    if (!activeGroupChat) return;
+    const nextLeft = !dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase());
+    setGroupLeftState(activeGroupChat.groupId, nextLeft);
+    if (nextLeft) {
+      setAttachSheetOpen(false);
+      setChatCompose("");
+    }
+    showToast(nextLeft ? "You left the group" : "You rejoined the group", 2400);
+  }, [activeGroupChat, setGroupLeftState, showToast]);
   const threadUnreadMap = useMemo(() => {
     const map = new Map<string, number>();
     dmThreads.forEach((thread) => {
-      const count = thread.messages.reduce((acc, msg) => {
+      const unreadIds = new Set<string>();
+      const threadKey = thread.peerPubkey.toLowerCase();
+      const mutedSinceMs = thread.groupId ? dmMutedGroupsRef.current.get(thread.groupId.toLowerCase()) ?? null : null;
+      const isLeftGroup = thread.groupId ? dmLeftGroupsRef.current.has(thread.groupId.toLowerCase()) : false;
+      const readAtSeconds = dmThreadReadAtRef.current.get(threadKey) ?? 0;
+      thread.messages.forEach((msg) => {
+        if (!msg.isIncoming) return;
+        if (msg.eventId.startsWith("draft-")) return;
+        if (isLeftGroup) return;
+        if (msg.createdAt <= readAtSeconds) return;
+        if (mutedSinceMs != null && msg.createdAt * 1000 >= mutedSinceMs) return;
+        unreadIds.add(msg.eventId);
         const item = messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
         const invite = pendingCalendarInvitesByEventId.get(msg.eventId);
         const status = item?.status || invite?.status;
-        return isUnreadThreadStatus(status) ? acc + 1 : acc;
-      }, 0);
-      map.set(thread.peerPubkey, count);
+        if (status && !isUnreadThreadStatus(status)) {
+          unreadIds.delete(msg.eventId);
+        }
+      });
+      map.set(thread.peerPubkey, unreadIds.size);
     });
     return map;
-  }, [dmThreads, isUnreadThreadStatus, messageItemsByEventId, pendingCalendarInvitesByEventId, pendingMessageItemsByEventId]);
+  }, [
+    dmLeftGroupsVersion,
+    dmMutedGroupsVersion,
+    dmThreadReadAtVersion,
+    dmThreads,
+    isUnreadThreadStatus,
+    messageItemsByEventId,
+    pendingCalendarInvitesByEventId,
+    pendingMessageItemsByEventId,
+  ]);
   const strangerUnreadCount = useMemo(
     () =>
       strangerThreads.reduce((acc, thread) => acc + (threadUnreadMap.get(thread.peerPubkey) || 0), 0),
@@ -6186,16 +6596,26 @@ export default function CashuWalletModal({
       }, 0),
     [dmThreads, threadUnreadMap],
   );
+  useEffect(() => {
+    onDmUnreadCountChange?.(mainUnreadCount);
+  }, [mainUnreadCount, onDmUnreadCountChange]);
   const activeThreadBlocked = activeThread
     ? dmBlockedPeersRef.current.has(activeThread.peerPubkey.toLowerCase())
     : false;
   useEffect(() => {
     if (!activeThread) return;
+    const latestIncomingCreatedAt = activeThread.messages.reduce((latest, message) => {
+      if (!message.isIncoming || message.eventId.startsWith("draft-")) return latest;
+      return Math.max(latest, message.createdAt);
+    }, 0);
+    if (latestIncomingCreatedAt > 0) {
+      markThreadReadThrough(activeThread.peerPubkey, latestIncomingCreatedAt);
+    }
     const unreadIds = collectUnreadThreadItemEventIds(activeThread.messages, activeThread.peerPubkey);
     if (unreadIds.length) {
       onMarkMessagesRead(unreadIds);
     }
-  }, [activeThread, collectUnreadThreadItemEventIds, onMarkMessagesRead]);
+  }, [activeThread, collectUnreadThreadItemEventIds, markThreadReadThrough, onMarkMessagesRead]);
   const toggleBlockPeer = useCallback(
     (peerPubkey: string) => {
       const key = (peerPubkey || "").toLowerCase().trim();
@@ -6702,15 +7122,26 @@ export default function CashuWalletModal({
       publish: (event: NostrEvent) => Promise<void>;
       kind?: number;
       extraTags?: string[][];
+      /** For group messages: all recipient hex pubkeys (excluding sender). */
+      recipientHexes?: string[];
     }) => {
-      const { content, senderHex, recipientHex, senderSecret, publish, kind, extraTags } = options;
+      const { content, senderHex, senderSecret, publish, kind, extraTags } = options;
       if (!nip44?.v2) {
         throw new Error("NIP-44 support is required to send this message");
       }
       const normalizedSender = senderHex.toLowerCase();
-      const normalizedRecipient = recipientHex.toLowerCase();
+      const isGroupSend = Array.isArray(options.recipientHexes) && options.recipientHexes.length > 0;
+      // Support multi-recipient (group) or single-recipient (DM)
+      const allRecipients: string[] = isGroupSend
+        ? [...new Set(options.recipientHexes!.map((h) => h.toLowerCase()))].filter((h) => h !== normalizedSender)
+        : [options.recipientHex.toLowerCase()];
       const rumorKind = typeof kind === "number" ? kind : 14;
-      const combinedTags: string[][] = [["p", normalizedRecipient]];
+      // For group messages, include sender in p-tags (0xchat compatibility).
+      // 0xchat includes ALL members (including sender) as p-tags in the inner rumor
+      // and uses p-tag count to distinguish groups from DMs.
+      const combinedTags: string[][] = isGroupSend
+        ? [["p", normalizedSender], ...allRecipients.map((r) => ["p", r])]
+        : allRecipients.map((r) => ["p", r]);
       if (Array.isArray(extraTags)) {
         for (const tag of extraTags) {
           if (Array.isArray(tag) && tag.length > 0) combinedTags.push(tag);
@@ -6729,7 +7160,8 @@ export default function CashuWalletModal({
         ...rumorBase,
         id: getEventHash(rumorBase),
       } satisfies Partial<NostrEvent>;
-      const wrapRecipients = Array.from(new Set([normalizedRecipient, normalizedSender]));
+      // Gift-wrap to each recipient + self
+      const wrapRecipients = Array.from(new Set([...allRecipients, normalizedSender]));
       let selfWrapEvent: NostrEvent | null = null;
       for (const wrapRecipient of wrapRecipients) {
         const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecret), wrapRecipient);
@@ -6760,6 +7192,44 @@ export default function CashuWalletModal({
       return { selfWrapEvent };
     },
     [resolveNip17Timestamp],
+  );
+  const publishGroupSubjectUpdate = useCallback(
+    async (group: GroupChat, subject: string) => {
+      const { identity } = readNostrIdentity();
+      if (!identity) return false;
+      const senderHex = identity.pubkey.toLowerCase();
+      const groupRecipients = group.members.filter((member) => member !== senderHex);
+      if (!groupRecipients.length) return false;
+
+      const allRelays = new Set<string>();
+      for (const target of groupRecipients) {
+        try {
+          const relays = await resolveNip17Relays(target, defaultNostrRelays);
+          relays.forEach((relay) => allRelays.add(relay));
+        } catch (err) {
+          console.warn("[chat] group rename relay resolve failed", err);
+        }
+      }
+      const publishRelays = Array.from(allRelays);
+      if (!publishRelays.length) return false;
+
+      const pool = ensureNostrPool();
+      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+      const { selfWrapEvent } = await publishNip17Giftwraps({
+        content: "",
+        senderHex,
+        recipientHex: groupRecipients[0] || "",
+        senderSecret: identity.secret,
+        publish,
+        extraTags: [["subject", subject]],
+        recipientHexes: groupRecipients,
+      });
+      if (selfWrapEvent) {
+        await handleDmEvent(selfWrapEvent);
+      }
+      return true;
+    },
+    [defaultNostrRelays, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays],
   );
 
   // Resolve the active file-server entry for encrypted messenger attachments.
@@ -6800,20 +7270,29 @@ export default function CashuWalletModal({
         showToast(reason || "Add your Taskify Nostr key in Settings → Nostr.", 4000);
         return;
       }
-      const recipientHex = peerPubkey.toLowerCase();
-      if (!/^[0-9a-f]{64}$/.test(recipientHex)) {
+      const senderHex = identity.pubkey.toLowerCase();
+      // Detect group thread
+      const groupMeta = groupChatsRef.current.find((g) => g.groupId === peerPubkey);
+      const isGroup = !!groupMeta;
+      const groupRecipients = isGroup ? groupMeta.members.filter((m) => m !== senderHex) : [];
+      const recipientHex = isGroup ? groupRecipients[0] || "" : peerPubkey.toLowerCase();
+      if (!isGroup && !/^[0-9a-f]{64}$/.test(recipientHex)) {
         showToast("Recipient pubkey is invalid.", 4000);
         return;
       }
-      const senderHex = identity.pubkey.toLowerCase();
       const serverEntry = resolveMessengerServerEntry();
 
-      let publishRelays: string[] = [];
-      try {
-        publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
-      } catch (err) {
-        console.warn("[chat] file attach relay resolve failed", err);
+      const allRelays = new Set<string>();
+      const relayTargets = isGroup ? groupRecipients : [recipientHex];
+      for (const target of relayTargets) {
+        try {
+          const relays = await resolveNip17Relays(target, defaultNostrRelays);
+          relays.forEach((r) => allRelays.add(r));
+        } catch (err) {
+          console.warn("[chat] file attach relay resolve failed", err);
+        }
       }
+      const publishRelays = Array.from(allRelays);
       if (!publishRelays.length) {
         showToast("No relays available for NIP-17 inbox.", 4000);
         return;
@@ -6896,6 +7375,9 @@ export default function CashuWalletModal({
             extraTags.push(["dim", `${upload.width}x${upload.height}`]);
           }
           if (filename) extraTags.push(["filename", filename]);
+          if (isGroup && groupMeta?.name) {
+            extraTags.push(["subject", groupMeta.name]);
+          }
 
           const { selfWrapEvent } = await publishNip17Giftwraps({
             content: upload.remoteUrl,
@@ -6905,6 +7387,7 @@ export default function CashuWalletModal({
             publish,
             kind: 15,
             extraTags,
+            ...(isGroup ? { recipientHexes: groupRecipients } : {}),
           });
           if (selfWrapEvent) {
             await handleDmEvent(selfWrapEvent);
@@ -6962,6 +7445,46 @@ export default function CashuWalletModal({
       showToast,
     ],
   );
+  const openGroupNameEditor = useCallback(() => {
+    if (!activeGroupChat) return;
+    setRenameGroupDraft(activeGroupChat.name || "");
+    setChatView("group-name-edit");
+  }, [activeGroupChat]);
+  const handleRenameGroupSubmit = useCallback(() => {
+    if (!activeGroupChat) return;
+    const nextName = renameGroupDraft.trim();
+    if (!nextName) {
+      showToast("Enter a group name", 2500);
+      return;
+    }
+    const currentName = (activeGroupChat.name || "").trim();
+    if (nextName === currentName) {
+      setChatView("group-info");
+      return;
+    }
+
+    const renameTimestamp = Math.floor(Date.now() / 1000);
+    const updatedGroup = { ...activeGroupChat, name: nextName, nameUpdatedAt: renameTimestamp };
+    upsertGroupChat(updatedGroup);
+    setRenameGroupBusy(true);
+    setChatView("group-info");
+
+    void (async () => {
+      let synced = false;
+      try {
+        synced = await publishGroupSubjectUpdate(updatedGroup, nextName);
+      } catch (err) {
+        console.warn("[chat] group rename publish failed", err);
+      } finally {
+        setRenameGroupBusy(false);
+      }
+
+      showToast(
+        synced ? "Group name updated" : "Group name updated locally. It will sync on your next message.",
+        synced ? 2200 : 4200,
+      );
+    })();
+  }, [activeGroupChat, publishGroupSubjectUpdate, renameGroupDraft, setChatView, showToast, upsertGroupChat]);
 
   const applyEcashContact = useCallback(
     async (contact: Contact) => {
@@ -14333,13 +14856,7 @@ export default function CashuWalletModal({
   }
 
   const contactInitials = (value: string) => {
-    const parts = (value || "").trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return "?";
-    const cp = parts[0].codePointAt(0) ?? 0;
-    const isEmoji = (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
-    if (isEmoji) return [...parts[0]][0] ?? "?";
-    if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
-    return ([...parts[0]][0] ?? "" + ([...parts[parts.length - 1]][0] ?? "")).toUpperCase();
+    return avatarInitials(value);
   };
 
   const contactSubtitle = useCallback(
@@ -14392,17 +14909,175 @@ export default function CashuWalletModal({
     picture: profileForm.picture.trim(),
     updatedAt: profileUpdatedAt,
   };
+  const groupAvatarMembersFor = useCallback(
+    (group: GroupChat | null | undefined, thread?: WalletDmThread | null, fallbackLabel?: string): GroupAvatarMember[] => {
+      const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
+      const resolvedMembers = (group?.members || [])
+        .map((memberHex, index) => {
+          const normalizedHex = memberHex.toLowerCase();
+          const isSelf = ownHex !== "" && normalizedHex === ownHex;
+          const meta = isSelf
+            ? { label: myCardName, picture: profileCard.picture?.trim() || undefined }
+            : peerLabelFor(normalizedHex);
+          return {
+            key: normalizedHex,
+            memberHex: normalizedHex,
+            index,
+            label: meta.label,
+            picture: meta.picture?.trim() || undefined,
+          };
+        })
+        .filter((member) => !!member.key);
+      if (!resolvedMembers.length) {
+        return [
+          {
+            key: group?.groupId || fallbackLabel || "group",
+            label: fallbackLabel || group?.name || "Group",
+          },
+        ];
+      }
+      const memberMap = new Map(resolvedMembers.map((member) => [member.memberHex, member]));
+      const recentMemberHexes: string[] = [];
+      const recentSeen = new Set<string>();
+      if (thread) {
+        for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+          const message = thread.messages[index];
+          const candidateHex = ((message.isIncoming ? message.senderPubkey : ownHex) || "").toLowerCase();
+          if (!candidateHex || recentSeen.has(candidateHex) || !memberMap.has(candidateHex)) continue;
+          recentSeen.add(candidateHex);
+          recentMemberHexes.push(candidateHex);
+          if (recentMemberHexes.length >= 4) break;
+        }
+      }
+      const recentMembers = recentMemberHexes
+        .map((memberHex) => memberMap.get(memberHex))
+        .filter(Boolean);
+      const remainingMembers = resolvedMembers
+        .filter((member) => !recentSeen.has(member.memberHex))
+        .sort((left, right) => Number(Boolean(right.picture)) - Number(Boolean(left.picture)) || left.index - right.index);
+      return [...recentMembers, ...remainingMembers]
+        .slice(0, 4)
+        .map(({ key, label, picture }) => ({ key, label, picture }));
+    },
+    [myCardName, nostrIdentityInfo.identity?.pubkey, peerLabelFor, profileCard.picture],
+  );
+  const activeGroupAvatarMembers = useMemo(
+    () =>
+      activeThread?.groupId
+        ? groupAvatarMembersFor(activeGroupChat, activeThread, activeGroupChat?.name || "Group")
+        : [],
+    [activeGroupChat, activeThread, groupAvatarMembersFor],
+  );
+  const activeGroupMembers = useMemo(() => {
+    if (!activeGroupChat) return [];
+    const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
+    return activeGroupChat.members.map((memberHex, index) => {
+      const normalizedHex = memberHex.toLowerCase();
+      const isSelf = ownHex !== "" && normalizedHex === ownHex;
+      const contact = isSelf ? null : contactByHex.get(normalizedHex) || null;
+      const profile = isSelf ? null : dmPeerProfilesRef.current.get(normalizedHex);
+      const peerMeta = isSelf ? null : peerLabelFor(normalizedHex);
+      const label = isSelf ? myCardName : contact ? contactDisplayLabel(contact) : peerMeta?.label || "Contact";
+      const picture = isSelf
+        ? profileCard.picture?.trim() || undefined
+        : pickPreferredProfilePhoto(profile?.picture, contact?.picture?.trim() || peerMeta?.picture);
+      const npub = isSelf
+        ? myCardNpub || formatNpub(normalizedHex)
+        : contact?.npub?.trim() || formatNpub(normalizedHex);
+      const subtitle = (() => {
+        if (isSelf) {
+          return profileCard.nip05.trim() || formatContactUsername(profileCard.username) || shortenNpubDisplay(myCardNpub);
+        }
+        return (
+          contact?.nip05?.trim() ||
+          profile?.nip05?.trim() ||
+          formatContactUsername(contact?.username || profile?.username || "") ||
+          peerMeta?.subtitle ||
+          shortenNpubDisplay(npub, 12, 8)
+        );
+      })();
+      return {
+        id: contact?.id || `group-member-${normalizedHex}`,
+        contactId: contact?.id || null,
+        memberHex: normalizedHex,
+        isSelf,
+        label,
+        picture,
+        subtitle,
+        detailContact: {
+          id: contact?.id || `group-member-${normalizedHex}`,
+          name: isSelf ? myCardName : contact?.name || label,
+          displayName: isSelf ? profileCard.displayName || myCardName : contact?.displayName || profile?.displayName || label,
+          username: isSelf ? profileCard.username || "" : contact?.username || profile?.username || "",
+          address: isSelf ? profileCard.address || "" : contact?.address || profile?.lud16 || "",
+          npub,
+          nip05: isSelf ? profileCard.nip05 || "" : contact?.nip05 || profile?.nip05 || "",
+          about: isSelf ? profileCard.about || "" : contact?.about || profile?.about || "",
+          picture: picture || "",
+          updatedAt: isSelf ? profileUpdatedAt : contact?.updatedAt ?? null,
+        } as Contact,
+        index,
+      };
+    });
+  }, [
+    activeGroupChat,
+    contactByHex,
+    contactDisplayLabel,
+    formatContactUsername,
+    formatNpub,
+    myCardName,
+    myCardNpub,
+    nostrIdentityInfo.identity?.pubkey,
+    peerLabelFor,
+    pickPreferredProfilePhoto,
+    profileCard.about,
+    profileCard.address,
+    profileCard.displayName,
+    profileCard.nip05,
+    profileCard.picture,
+    profileCard.username,
+    profileUpdatedAt,
+    shortenNpubDisplay,
+  ]);
+  const filteredActiveGroupMembers = useMemo(() => {
+    const query = groupMembersSearch.trim().toLowerCase();
+    if (!query) return activeGroupMembers;
+    return activeGroupMembers.filter((member) =>
+      `${member.label} ${member.subtitle || ""} ${member.detailContact.npub || ""}`.toLowerCase().includes(query),
+    );
+  }, [activeGroupMembers, groupMembersSearch]);
+  const openGroupMemberDetail = useCallback(
+    (memberHex: string) => {
+      const member = activeGroupMembers.find((entry) => entry.memberHex === memberHex);
+      if (!member) return;
+      setContactReturnView("group-members");
+      setContactView("detail");
+      setDmSearch("");
+      if (member.isSelf) {
+        setActiveContactId("profile");
+        setContactDetailOverride(null);
+      } else if (member.contactId) {
+        setActiveContactId(member.contactId);
+        setContactDetailOverride(null);
+      } else {
+        setActiveContactId(null);
+        setContactDetailOverride(member.detailContact);
+      }
+      setChatView("new-message");
+    },
+    [activeGroupMembers],
+  );
 
   const activeContact =
     activeContactId && activeContactId !== "profile"
       ? contacts.find((entry) => entry.id === activeContactId) || null
       : null;
-  const detailTarget = activeContactId === "profile" ? profileCard : activeContact;
+  const detailTarget = activeContactId === "profile" ? profileCard : activeContact || contactDetailOverride;
   const detailShareValue =
     activeContactId === "profile"
       ? profileShareValue
-      : activeContact
-        ? buildContactShareValue(activeContact)
+      : detailTarget
+        ? buildContactShareValue(detailTarget as Contact)
         : null;
   const detailUsername = detailTarget ? formatContactUsername(detailTarget.username) : "";
   const buildContactFields = useCallback(
@@ -14831,12 +15506,13 @@ export default function CashuWalletModal({
   ]);
 
   const handleStartEditCurrentContact = useCallback(() => {
-    const source = activeContactId === "profile" ? profileCard : activeContact;
+    const source = activeContactId === "profile" ? profileCard : activeContact || contactDetailOverride;
+    const isExistingContact = !!activeContact && activeContactId !== "profile";
     if (!source) {
       resetContactEditDraft();
     } else {
       setContactEditDraft({
-        id: source.id === "profile" ? null : source.id,
+        id: source.id === "profile" || !isExistingContact ? null : source.id,
         name: source.name || "",
         displayName: source.displayName || "",
         username: sanitizeUsername(source.username || ""),
@@ -14856,7 +15532,7 @@ export default function CashuWalletModal({
     setContactLookupInput("");
     setShowCustomContactFields(true);
     setContactView("edit");
-  }, [activeContact, activeContactId, profileCard, resetContactEditDraft]);
+  }, [activeContact, activeContactId, contactDetailOverride, profileCard, resetContactEditDraft]);
 
     const handleCancelContactEdit = useCallback(() => {
       setContactEditError("");
@@ -14892,6 +15568,7 @@ export default function CashuWalletModal({
       );
     }, [compressedToRawHex, contactSyncMeta.publicFollows, detailTarget, normalizeNostrPubkey]);
     const detailContactCanFollow = !!detailTarget && detailIsNostrContact && !!detailTarget.npub.trim();
+    const detailCanAddContact = !!detailTarget && activeContactId !== "profile" && !activeContact;
     const handleToggleFollowDetailContact = useCallback(() => {
       if (!detailTarget) return;
       const normalized = normalizeNostrPubkey(detailTarget.npub);
@@ -14975,7 +15652,7 @@ export default function CashuWalletModal({
         <button
           className="glass-icon-button pressable"
           onClick={handleBackToContactsList}
-          aria-label="Back to contacts"
+          aria-label={contactReturnView === "group-members" ? "Back to members" : "Back to contacts"}
         >
           <BackIcon className="h-5 w-5" />
         </button>
@@ -15001,7 +15678,15 @@ export default function CashuWalletModal({
           <span className="text-xl leading-none">+</span>
         </button>
       ) : contactView === "detail" && detailTarget ? (
-        detailIsNostrContact ? (
+        detailCanAddContact ? (
+          <button
+            type="button"
+            className="contact-pill contact-pill--accent contact-pill--compact pressable"
+            onClick={handleStartEditCurrentContact}
+          >
+            Add contact
+          </button>
+        ) : detailIsNostrContact ? (
           detailContactCanFollow ? (
             <button
               type="button"
@@ -15480,7 +16165,12 @@ export default function CashuWalletModal({
                       );
                     }
                     const thread = entry.thread;
-                    const meta = peerLabelFor(thread.peerPubkey);
+                    const isGroupThread = !!thread.groupId;
+                    const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
+                    const groupAvatarMembers = isGroupThread ? groupAvatarMembersFor(groupMeta, thread, groupMeta?.name || "Group") : [];
+                    const meta = isGroupThread
+                      ? { label: groupMeta?.name || "Group", picture: undefined, subtitle: `${groupMeta?.members.length || 0} members`, verifiedNip05: null }
+                      : peerLabelFor(thread.peerPubkey);
                     const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
                     return (
                       <button
@@ -15496,8 +16186,10 @@ export default function CashuWalletModal({
                           }
                         }}
                       >
-                        <div className="wallet-messages__avatar">
-                          {meta.picture ? (
+                        <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+                          {isGroupThread ? (
+                            <GroupAvatar members={groupAvatarMembers} />
+                          ) : meta.picture ? (
                             <img
                               src={meta.picture}
                               alt={meta.label}
@@ -16382,7 +17074,12 @@ export default function CashuWalletModal({
 		                    );
 		                  }
 		                  const thread = entry.thread;
-		                  const meta = peerLabelFor(thread.peerPubkey);
+		                  const isGroupThread = !!thread.groupId;
+		                  const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
+		                  const groupAvatarMembers = isGroupThread ? groupAvatarMembersFor(groupMeta, thread, groupMeta?.name || "Group") : [];
+		                  const meta = isGroupThread
+		                    ? { label: groupMeta?.name || "Group", picture: undefined, subtitle: `${groupMeta?.members.length || 0} members`, verifiedNip05: null }
+		                    : peerLabelFor(thread.peerPubkey);
 		                  const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
 		                  return (
 		                    <button
@@ -16391,6 +17088,7 @@ export default function CashuWalletModal({
 		                      onClick={() => {
 		                        dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
 		                        setActiveThreadPeer(thread.peerPubkey);
+		                        if (isGroupThread) setActiveGroupId(thread.groupId!);
 		                        setChatView("conversation");
 		                        setDmView("thread");
 		                        const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
@@ -16399,8 +17097,10 @@ export default function CashuWalletModal({
 		                        }
 		                      }}
 		                    >
-		                      <div className="wallet-messages__avatar">
-		                        {meta.picture ? (
+		                      <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+		                        {isGroupThread ? (
+		                          <GroupAvatar members={groupAvatarMembers} />
+		                        ) : meta.picture ? (
 		                          <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
 		                        ) : (
 		                          <span>{meta.label.slice(0, 2)}</span>
@@ -16445,6 +17145,7 @@ export default function CashuWalletModal({
                   onClick={() => {
                     setChatView("threads");
                     setActiveThreadPeer(null);
+                    setActiveGroupId(null);
                     setDmView(dmListViewRef.current);
                   }}
                   aria-label="Back to threads"
@@ -16452,6 +17153,29 @@ export default function CashuWalletModal({
                   <BackIcon className="h-5 w-5" />
                 </button>
                 {(() => {
+                  // Group conversation header
+                  if (activeThread.groupId) {
+                    const groupMeta = activeGroupChat;
+                    const groupLabel = groupMeta?.name || "Group";
+                    const memberCount = groupMeta?.members.length || 0;
+                    return (
+                      <button
+                        type="button"
+                        className="chat-conversation__peer-center pressable"
+                        onClick={openActiveGroupInfo}
+                        aria-label={`Open group info for ${groupLabel}`}
+                      >
+                        <div className="chat-conversation__peer-avatar chat-conversation__peer-avatar--lg chat-conversation__peer-avatar--group">
+                          <GroupAvatar members={activeGroupAvatarMembers} />
+                        </div>
+                        <div className="chat-conversation__peer-name">{groupLabel}</div>
+                        {memberCount > 0 && (
+                          <div className="chat-conversation__peer-subtitle">{memberCount} members</div>
+                        )}
+                      </button>
+                    );
+                  }
+                  // DM conversation header
                   const ownNormalized = normalizeNostrPubkey(myCardNpub);
                   const ownHex = ownNormalized ? compressedToRawHex(ownNormalized).toLowerCase() : "";
                   const isSelf = ownHex !== "" && activeThread.peerPubkey === ownHex;
@@ -16466,7 +17190,9 @@ export default function CashuWalletModal({
                       return contactHex === activeThread.peerPubkey;
                     });
                     if (existingContact) {
+                      setContactReturnView("new-message");
                       setActiveContactId(existingContact.id);
+                      setContactDetailOverride(null);
                       setContactView("detail");
                     } else {
                       const peerMeta = getPeerProfile(activeThread.peerPubkey);
@@ -16481,10 +17207,13 @@ export default function CashuWalletModal({
                         picture: peerMeta.picture || "",
                       });
                       if (created) {
+                        setContactReturnView("new-message");
                         setActiveContactId(created.id);
+                        setContactDetailOverride(null);
                         setContactView("detail");
                       } else {
                         setActiveContactId(null);
+                        setContactDetailOverride(null);
                         setContactEditDraft({
                           id: null,
                           name: peerMeta.displayName || peerMeta.username || peerMeta.label,
@@ -16600,6 +17329,9 @@ export default function CashuWalletModal({
                     const isEvent = msg.attachment?.type === "event";
                     const isStructured = !!msg.attachment && msg.attachment.type !== "text";
                     const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}${isContact ? " chat-bubble--contact-shell" : ""}${isTask ? " chat-bubble--task-share-shell" : ""}`;
+                    const isIncomingGroupMessage = !!(activeThread.groupId && msg.isIncoming && msg.senderPubkey);
+                    const senderMeta =
+                      isIncomingGroupMessage && msg.senderPubkey ? peerLabelFor(msg.senderPubkey) : null;
                     const expanded = isDmMessageExpanded(msg.eventId);
                     const paymentState = isPayment
                       ? (() => {
@@ -16798,8 +17530,19 @@ export default function CashuWalletModal({
                           <div className="chat-date-separator">{formatDmDateSeparator(msg.createdAt)}</div>
                         )}
                         <div className={`chat-message ${msg.isIncoming ? "chat-message--in" : "chat-message--out"}`}>
-                          <div className="chat-message__body">
-                            <div className={bubbleClass}>
+                          <div className={`chat-message__body${senderMeta ? " chat-message__body--group-in" : ""}`}>
+                            {senderMeta && (
+                              <div className={`chat-message__sender-avatar${senderMeta.picture ? " chat-message__sender-avatar--image" : ""}`}>
+                                {senderMeta.picture ? (
+                                  <img src={senderMeta.picture} alt={senderMeta.label} className="contact-avatar__img" />
+                                ) : (
+                                  contactInitials(senderMeta.label)
+                                )}
+                              </div>
+                            )}
+                            <div className={`chat-message__content${senderMeta ? " chat-message__content--group-in" : ""}`}>
+                              {senderMeta && <div className="chat-message__sender-name">{senderMeta.label}</div>}
+                              <div className={bubbleClass}>
                               {isBoard && (
                                 <div className="chat-bubble__card">
                                   <div className="chat-bubble__card-title">{msg.attachment?.boardName || "Shared board"}</div>
@@ -17296,6 +18039,7 @@ export default function CashuWalletModal({
                                 />
                               )}
                             </div>
+                            </div>
                           </div>
                           <div className="chat-message__timestamp">{formatDmTime(msg.createdAt)}</div>
                         </div>
@@ -17377,61 +18121,139 @@ export default function CashuWalletModal({
               </div>
 
               {/* Compose bar */}
-              <div className="chat-compose">
-                <button
-                  type="button"
-                  className="chat-compose__attach pressable"
-                  onClick={() => setAttachSheetOpen(true)}
-                  aria-label="Attach file"
-                  title="Attach file"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-                  </svg>
-                </button>
-                <input
-                  ref={chatPhotoInputRef}
-                  type="file"
-                  accept="image/*,video/*"
-                  multiple
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files || []);
-                    e.target.value = "";
-                    if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
-                  }}
-                />
-                <input
-                  ref={chatCameraInputRef}
-                  type="file"
-                  accept="image/*,video/*"
-                  capture="environment"
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files || []);
-                    e.target.value = "";
-                    if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
-                  }}
-                />
-                <input
-                  ref={chatFileInputRef}
-                  type="file"
-                  multiple
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files || []);
-                    e.target.value = "";
-                    if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
-                  }}
-                />
-                <input
-                  className="chat-compose__input"
-                  placeholder="Message"
-                  value={chatCompose}
-                  onChange={(e) => setChatCompose(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
-                      e.preventDefault();
+              {activeThread.groupId && activeGroupLeft ? (
+                <div className="chat-group-rejoin">
+                  <div className="chat-group-rejoin__note">You left this group.</div>
+                  <button
+                    type="button"
+                    className="chat-group-rejoin__button pressable"
+                    onClick={handleToggleActiveGroupMembership}
+                  >
+                    Join Group
+                  </button>
+                </div>
+              ) : (
+                <div className="chat-compose">
+                  <button
+                    type="button"
+                    className="chat-compose__attach pressable"
+                    onClick={() => setAttachSheetOpen(true)}
+                    aria-label="Attach file"
+                    title="Attach file"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                    </svg>
+                  </button>
+                  <input
+                    ref={chatPhotoInputRef}
+                    type="file"
+                    accept="image/*,video/*"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      e.target.value = "";
+                      if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                    }}
+                  />
+                  <input
+                    ref={chatCameraInputRef}
+                    type="file"
+                    accept="image/*,video/*"
+                    capture="environment"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      e.target.value = "";
+                      if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                    }}
+                  />
+                  <input
+                    ref={chatFileInputRef}
+                    type="file"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      e.target.value = "";
+                      if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                    }}
+                  />
+                  <input
+                    className="chat-compose__input"
+                    placeholder="Message"
+                    value={chatCompose}
+                    onChange={(e) => setChatCompose(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
+                        e.preventDefault();
+                        void (async () => {
+                          const text = chatCompose.trim();
+                          if (!text) return;
+                          setChatCompose("");
+                          const pendingId = crypto.randomUUID();
+                          const pendingCreatedAt = Math.floor(Date.now() / 1000);
+                          setPendingMessages(prev => [
+                            ...prev,
+                            {
+                              id: pendingId,
+                              content: text,
+                              peerPubkey: activeThread.peerPubkey,
+                              createdAt: pendingCreatedAt,
+                              status: "sending",
+                            },
+                          ]);
+                          try {
+                            const { identity } = readNostrIdentity();
+                            if (!identity) return;
+                            const senderHex = identity.pubkey.toLowerCase();
+                            const isGroup = !!activeThread.groupId;
+                            const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === activeThread.groupId) : null;
+                            const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
+                            const recipientHex = isGroup ? groupRecipients[0] || "" : activeThread.peerPubkey.toLowerCase();
+                            // Resolve relays for all recipients (groups: merge relays for each member)
+                            const relayTargets = isGroup ? groupRecipients : [recipientHex];
+                            const allRelays = new Set<string>();
+                            for (const target of relayTargets) {
+                              const relays = await resolveNip17Relays(target, defaultNostrRelays);
+                              relays.forEach((r) => allRelays.add(r));
+                            }
+                            const publishRelays = Array.from(allRelays);
+                            if (!publishRelays.length) return;
+                            const pool = ensureNostrPool();
+                            const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                            const extraTags: string[][] = [];
+                            if (isGroup && groupMeta?.name) {
+                              extraTags.push(["subject", groupMeta.name]);
+                            }
+                            const { selfWrapEvent } = await publishNip17Giftwraps({
+                              content: text,
+                              senderHex,
+                              recipientHex,
+                              senderSecret: identity.secret,
+                              publish,
+                              ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : {}),
+                            });
+                            if (selfWrapEvent) {
+                              await handleDmEvent(selfWrapEvent);
+                            }
+                            setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
+                            setTimeout(() => setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "done" as const } : m)), 2000);
+                          } catch (err) {
+                            setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
+                            console.warn("[chat] send failed", err);
+                            setChatCompose(text);
+                          }
+                        })();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="chat-compose__send pressable"
+                    disabled={!chatCompose.trim()}
+                    onClick={() => {
                       void (async () => {
                         const text = chatCompose.trim();
                         if (!text) return;
@@ -17451,88 +18273,273 @@ export default function CashuWalletModal({
                         try {
                           const { identity } = readNostrIdentity();
                           if (!identity) return;
-                          const recipientHex = activeThread.peerPubkey.toLowerCase();
                           const senderHex = identity.pubkey.toLowerCase();
-                          const publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+                          const isGroup = !!activeThread.groupId;
+                          const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === activeThread.groupId) : null;
+                          const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
+                          const recipientHex = isGroup ? groupRecipients[0] || "" : activeThread.peerPubkey.toLowerCase();
+                          const relayTargets = isGroup ? groupRecipients : [recipientHex];
+                          const allRelays = new Set<string>();
+                          for (const target of relayTargets) {
+                            const relays = await resolveNip17Relays(target, defaultNostrRelays);
+                            relays.forEach((r) => allRelays.add(r));
+                          }
+                          const publishRelays = Array.from(allRelays);
                           if (!publishRelays.length) return;
                           const pool = ensureNostrPool();
                           const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                          const extraTags: string[][] = [];
+                          if (isGroup && groupMeta?.name) {
+                            extraTags.push(["subject", groupMeta.name]);
+                          }
                           const { selfWrapEvent } = await publishNip17Giftwraps({
                             content: text,
                             senderHex,
                             recipientHex,
                             senderSecret: identity.secret,
                             publish,
+                            ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : {}),
                           });
                           if (selfWrapEvent) {
                             await handleDmEvent(selfWrapEvent);
                           }
                           setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
-                          setTimeout(() => setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "done" as const } : m)), 2000);
+                          setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
                         } catch (err) {
                           setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
                           console.warn("[chat] send failed", err);
                           setChatCompose(text);
                         }
                       })();
+                    }}
+                    aria-label="Send message"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {chatView === "group-info" && activeThread?.groupId && activeGroupChat && (
+            <div className="chat-group-info">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => setChatView("conversation")}
+                  aria-label="Back to conversation"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">Group Info</div>
+                <div className="chat-conversation__header-spacer" aria-hidden="true" />
+              </div>
+              <div className="chat-group-info__body">
+                <div className="chat-group-info__hero">
+                  <div className="chat-group-info__member-strip" aria-hidden="true">
+                    {activeGroupMembers.slice(0, 7).map((member, index) => (
+                      <div
+                        key={member.memberHex}
+                        className={`chat-group-info__member-avatar${member.picture ? " chat-group-info__member-avatar--image" : ""}`}
+                        style={{ zIndex: activeGroupMembers.length - index }}
+                        title={member.label}
+                      >
+                        {member.picture ? (
+                          <img src={member.picture} alt={member.label} className="chat-group-info__member-avatar-img" />
+                        ) : (
+                          <span>{contactInitials(member.label)}</span>
+                        )}
+                      </div>
+                    ))}
+                    {activeGroupMembers.length > 7 && (
+                      <div className="chat-group-info__member-avatar chat-group-info__member-avatar--overflow">
+                        +{activeGroupMembers.length - 7}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="chat-group-info__view-members pressable"
+                    onClick={() => {
+                      setGroupMembersSearch("");
+                      setChatView("group-members");
+                    }}
+                  >
+                    <span>{`View All ${activeGroupMembers.length} Member${activeGroupMembers.length === 1 ? "" : "s"}`}</span>
+                    <span className="chat-group-info__row-chevron">&rsaquo;</span>
+                  </button>
+                </div>
+
+                <div className="chat-group-info__card">
+                  <button
+                    type="button"
+                    className="chat-group-info__row pressable"
+                    onClick={openGroupNameEditor}
+                  >
+                    <span className="chat-group-info__row-label">Group Name</span>
+                    <span className="chat-group-info__row-side">
+                      <span className="chat-group-info__row-value">{activeGroupChat.name || "Group"}</span>
+                      <span className="chat-group-info__row-chevron">&rsaquo;</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-group-info__row pressable"
+                    onClick={() => {
+                      setGroupMembersSearch("");
+                      setChatView("group-members");
+                    }}
+                  >
+                    <span className="chat-group-info__row-label">Members</span>
+                    <span className="chat-group-info__row-side">
+                      <span className="chat-group-info__row-value">{activeGroupMembers.length}</span>
+                      <span className="chat-group-info__row-chevron">&rsaquo;</span>
+                    </span>
+                  </button>
+                </div>
+
+                <div className="chat-group-info__card">
+                  <div className="chat-group-info__row">
+                    <span className="chat-group-info__row-label">Mute</span>
+                    <button
+                      type="button"
+                      className={`edit-toggle pressable${activeGroupMuted ? " is-on" : ""}`}
+                      onClick={handleToggleActiveGroupMute}
+                      aria-label={activeGroupMuted ? "Unmute group" : "Mute group"}
+                      aria-pressed={activeGroupMuted}
+                    >
+                      <span className="edit-toggle__thumb" />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className={`chat-group-info__leave-button pressable${activeGroupLeft ? " chat-group-info__leave-button--join" : ""}`}
+                    onClick={handleToggleActiveGroupMembership}
+                  >
+                    {activeGroupLeft ? "Join Group" : "Leave Group"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {chatView === "group-members" && activeThread?.groupId && activeGroupChat && (
+            <div className="chat-group-members">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => setChatView("group-info")}
+                  aria-label="Back to group info"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">
+                  Members ({activeGroupMembers.length})
+                </div>
+                <div className="chat-conversation__header-spacer" aria-hidden="true" />
+              </div>
+              <div className="chat-page__search">
+                <div className="chat-page__search-shell">
+                  <input
+                    className="chat-page__search-input"
+                    placeholder="Search members"
+                    value={groupMembersSearch}
+                    onChange={(event) => setGroupMembersSearch(event.target.value)}
+                  />
+                  {groupMembersSearch.length > 0 && (
+                    <button
+                      type="button"
+                      className="chat-page__search-clear pressable"
+                      aria-label="Clear search"
+                      title="Clear search"
+                      onClick={() => setGroupMembersSearch("")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="chat-group-members__list">
+                {filteredActiveGroupMembers.map((member) => (
+                  <button
+                    key={member.memberHex}
+                    type="button"
+                    className="contact-row pressable"
+                    onClick={() => openGroupMemberDetail(member.memberHex)}
+                  >
+                    <div className={`contact-avatar${member.picture ? " contact-avatar--image" : ""}`}>
+                      {member.picture ? (
+                        <img src={member.picture} alt={member.label} className="contact-avatar__img" />
+                      ) : (
+                        contactInitials(member.label)
+                      )}
+                    </div>
+                    <div className="contact-row__text">
+                      <div className="contact-row__name">{member.label}</div>
+                      {member.subtitle && (
+                        <div className="contact-row__meta">
+                          <span className="contact-row__meta-text">{truncateContactValue(member.subtitle, 32)}</span>
+                        </div>
+                      )}
+                    </div>
+                    <span className="contact-row__chevron">&rsaquo;</span>
+                  </button>
+                ))}
+                {filteredActiveGroupMembers.length === 0 && (
+                  <div className="chat-page__empty">No members match your search.</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {chatView === "group-name-edit" && activeThread?.groupId && activeGroupChat && (
+            <div className="chat-group-name-edit">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    if (renameGroupBusy) return;
+                    setChatView("group-info");
+                  }}
+                  aria-label="Back to group info"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">Edit Group Name</div>
+                <button
+                  type="button"
+                  className={`chat-page__header-action-text pressable${renameGroupBusy || !renameGroupDraft.trim() ? " chat-page__header-action-text--disabled" : ""}`}
+                  onClick={() => {
+                    if (!renameGroupBusy && renameGroupDraft.trim()) {
+                      void handleRenameGroupSubmit();
+                    }
+                  }}
+                >
+                  {renameGroupBusy ? "Saving…" : "Done"}
+                </button>
+              </div>
+              <div className="chat-group-name-edit__body">
+                <div className="chat-group-name-edit__title">Edit Group Name</div>
+                <label className="chat-new-group__label">Group Name</label>
+                <input
+                  className="chat-group-name-edit__input"
+                  value={renameGroupDraft}
+                  onChange={(event) => setRenameGroupDraft(event.target.value)}
+                  maxLength={100}
+                  autoFocus
+                  placeholder="Group Name"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && renameGroupDraft.trim() && !renameGroupBusy) {
+                      event.preventDefault();
+                      void handleRenameGroupSubmit();
                     }
                   }}
                 />
-                <button
-                  type="button"
-                  className="chat-compose__send pressable"
-                  disabled={!chatCompose.trim()}
-                  onClick={() => {
-                    void (async () => {
-                      const text = chatCompose.trim();
-                      if (!text) return;
-                      setChatCompose("");
-                      const pendingId = crypto.randomUUID();
-                      const pendingCreatedAt = Math.floor(Date.now() / 1000);
-                      setPendingMessages(prev => [
-                        ...prev,
-                        {
-                          id: pendingId,
-                          content: text,
-                          peerPubkey: activeThread.peerPubkey,
-                          createdAt: pendingCreatedAt,
-                          status: "sending",
-                        },
-                      ]);
-                      try {
-                        const { identity } = readNostrIdentity();
-                        if (!identity) return;
-                        const recipientHex = activeThread.peerPubkey.toLowerCase();
-                        const senderHex = identity.pubkey.toLowerCase();
-                        const publishRelays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
-                        if (!publishRelays.length) return;
-                        const pool = ensureNostrPool();
-                        const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
-                        const { selfWrapEvent } = await publishNip17Giftwraps({
-                          content: text,
-                          senderHex,
-                          recipientHex,
-                          senderSecret: identity.secret,
-                          publish,
-                        });
-                        if (selfWrapEvent) {
-                          await handleDmEvent(selfWrapEvent);
-                        }
-                        setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
-                        setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
-                      } catch (err) {
-                        setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
-                        console.warn("[chat] send failed", err);
-                        setChatCompose(text);
-                      }
-                    })();
-                  }}
-                  aria-label="Send message"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-                  </svg>
-                </button>
               </div>
             </div>
           )}
@@ -17552,10 +18559,16 @@ export default function CashuWalletModal({
                       return;
                     }
                     if (contactView === "detail") {
+                      if (contactReturnView === "group-members") {
+                        handleBackToContactsList();
+                        return;
+                      }
                       if (activeContactId === "profile") {
                         setChatView("threads");
                         setContactView("list");
                         setActiveContactId(null);
+                        setContactDetailOverride(null);
+                        setContactReturnView("new-message");
                         setDmSearch("");
                       } else {
                         handleBackToContactsList();
@@ -17565,9 +18578,11 @@ export default function CashuWalletModal({
                     setChatView("threads");
                     setContactView("list");
                     setActiveContactId(null);
+                    setContactDetailOverride(null);
+                    setContactReturnView("new-message");
                     setDmSearch("");
                   }}
-                  aria-label={contactView === "edit" ? (contactEditDraft.isProfile ? "Back to profile" : "Cancel") : contactView === "detail" ? (activeContactId === "profile" ? "Back to chats" : "Back to contacts") : "Back to chats"}
+                  aria-label={contactView === "edit" ? (contactEditDraft.isProfile ? "Back to profile" : "Cancel") : contactView === "detail" ? (contactReturnView === "group-members" ? "Back to members" : activeContactId === "profile" ? "Back to chats" : "Back to contacts") : "Back to chats"}
                 >
                   <BackIcon className="h-5 w-5" />
                 </button>
@@ -17606,6 +18621,14 @@ export default function CashuWalletModal({
                       title="Edit profile"
                     >
                       <PencilIcon className="h-4 w-4" />
+                    </button>
+                  ) : detailCanAddContact ? (
+                    <button
+                      type="button"
+                      className="contact-pill contact-pill--accent contact-pill--compact pressable"
+                      onClick={handleStartEditCurrentContact}
+                    >
+                      Add contact
                     </button>
                   ) : detailIsNostrContact ? (
                     detailContactCanFollow ? (
@@ -17691,6 +18714,23 @@ export default function CashuWalletModal({
                       <button
                         type="button"
                         className="chat-new-message__action pressable"
+                        onClick={() => {
+                          setGroupSelectMembers(new Set());
+                          setGroupNameDraft("");
+                          setChatView("new-group-select");
+                        }}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="7" r="4" /><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="16" y1="11" x2="22" y2="11" /></svg>
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">New Group</span>
+                          <span className="chat-new-message__action-subtitle">Create a private group chat</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
                         onClick={handleStartAddContact}
                       >
                         <span className="chat-new-message__action-icon" aria-hidden="true">
@@ -17712,7 +18752,9 @@ export default function CashuWalletModal({
                         if (hex) {
                           openConversationForPeer(hex);
                         } else {
+                          setContactReturnView("new-message");
                           setActiveContactId("profile");
+                          setContactDetailOverride(null);
                           setContactView("detail");
                         }
                       }}
@@ -17754,7 +18796,9 @@ export default function CashuWalletModal({
                               if (hex && openConversationForPeer(hex)) {
                                 return;
                               }
+                              setContactReturnView("new-message");
                               setActiveContactId(contact.id);
+                              setContactDetailOverride(null);
                               setContactView("detail");
                             }}
                           >
@@ -17940,10 +18984,7 @@ export default function CashuWalletModal({
                         <button
                           type="button"
                           className="inline-flex items-center gap-1 text-primary underline"
-                          onClick={() => {
-                            setContactView("list");
-                            setActiveContactId(null);
-                          }}
+                          onClick={handleBackToContactsList}
                         >
                           Go back
                         </button>
@@ -18138,6 +19179,249 @@ export default function CashuWalletModal({
               )}
             </div>
           )}
+
+          {/* ── New Group: Member Selection ──────────────────────────────── */}
+          {chatView === "new-group-select" && (
+            <div className="chat-new-message">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    setChatView("new-message");
+                    setGroupSelectMembers(new Set());
+                  }}
+                  aria-label="Back"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">
+                  New Group ({groupSelectMembers.size}/{MAX_GROUP_MEMBERS})
+                </div>
+                <button
+                  type="button"
+                  className={`chat-page__header-action-text pressable${groupSelectMembers.size < 2 ? " chat-page__header-action-text--disabled" : ""}`}
+                  disabled={groupSelectMembers.size < 2}
+                  onClick={() => {
+                    if (groupSelectMembers.size >= 2) {
+                      setChatView("new-group-name");
+                    }
+                  }}
+                >
+                  Next
+                </button>
+              </div>
+              <div className="chat-page__search">
+                <div className="chat-page__search-shell">
+                  <input
+                    className="chat-page__search-input"
+                    placeholder="Who would you like to add?"
+                    value={dmSearch}
+                    onChange={(event) => setDmSearch(event.target.value)}
+                  />
+                  {dmSearch.length > 0 && (
+                    <button
+                      type="button"
+                      className="chat-page__search-clear pressable"
+                      aria-label="Clear search"
+                      onClick={() => setDmSearch("")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="chat-new-message__list">
+                {(() => {
+                  const ownHex = (nostrIdentityRef.current?.pubkey || "").toLowerCase();
+                  // Group contacts by first letter
+                  const filteredContacts = sortedContacts.filter((c) => {
+                    const hex = (() => {
+                      const normalized = normalizeNostrPubkey(c.npub || "");
+                      return normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                    })();
+                    // Skip self
+                    if (hex === ownHex) return false;
+                    // Must have a valid nostr pubkey
+                    if (!hex) return false;
+                    if (!dmSearch.trim()) return true;
+                    const hay = `${c.name} ${c.displayName || ""} ${c.username || ""} ${c.npub} ${c.nip05 || ""}`.toLowerCase();
+                    return hay.includes(dmSearch.trim().toLowerCase());
+                  });
+                  // Group by first letter
+                  const groups = new Map<string, typeof filteredContacts>();
+                  filteredContacts.forEach((c) => {
+                    const label = contactDisplayLabel(c);
+                    const letter = (label[0] || "#").toUpperCase();
+                    const group = groups.get(letter) || [];
+                    group.push(c);
+                    groups.set(letter, group);
+                  });
+                  const sortedLetters = [...groups.keys()].sort();
+                  return sortedLetters.map((letter) => (
+                    <React.Fragment key={letter}>
+                      <div className="chat-new-message__section-label">{letter}</div>
+                      {groups.get(letter)!.map((contact) => {
+                        const contactLabel = contactDisplayLabel(contact);
+                        const photo = contact.picture?.trim();
+                        const normalized = normalizeNostrPubkey(contact.npub || "");
+                        const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                        const subtitle = contact.nip05 || (hex ? `${nip19.npubEncode(hex).slice(0, 12)}...${nip19.npubEncode(hex).slice(-6)}` : "");
+                        const isSelected = hex ? groupSelectMembers.has(hex) : false;
+                        return (
+                          <button
+                            key={contact.id}
+                            className={`contact-row contact-row--selectable pressable${isSelected ? " contact-row--selected" : ""}`}
+                            onClick={() => {
+                              if (!hex) return;
+                              setGroupSelectMembers((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(hex)) {
+                                  next.delete(hex);
+                                } else if (next.size < MAX_GROUP_MEMBERS - 1) {
+                                  // -1 because self is always included
+                                  next.add(hex);
+                                }
+                                return next;
+                              });
+                            }}
+                          >
+                            <div className={`contact-avatar${photo ? " contact-avatar--image" : ""}`}>
+                              {photo ? (
+                                <img src={photo} alt={contactLabel} className="contact-avatar__img" />
+                              ) : (
+                                contactInitials(contactLabel)
+                              )}
+                            </div>
+                            <div className="contact-row__text">
+                              <div className="contact-row__name">{contactLabel}</div>
+                              {subtitle && (
+                                <div className="contact-row__meta">
+                                  <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className={`contact-row__checkbox${isSelected ? " contact-row__checkbox--checked" : ""}`}>
+                              {isSelected && (
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </React.Fragment>
+                  ));
+                })()}
+                {sortedContacts.length === 0 && (
+                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
+                    No contacts yet. Add contacts first to create a group.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── New Group: Name & Create ─────────────────────────────────── */}
+          {chatView === "new-group-name" && (
+            <div className="chat-new-message">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => setChatView("new-group-select")}
+                  aria-label="Back"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">
+                  New Group ({groupSelectMembers.size + 1})
+                </div>
+                <button
+                  type="button"
+                  className={`chat-page__header-action-text pressable${!groupNameDraft.trim() ? " chat-page__header-action-text--disabled" : ""}`}
+                  disabled={!groupNameDraft.trim()}
+                  onClick={() => {
+                    const name = groupNameDraft.trim();
+                    if (!name) return;
+                    const ownHex = (nostrIdentityRef.current?.pubkey || "").toLowerCase();
+                    const allMembers = [...new Set([ownHex, ...groupSelectMembers])].filter(Boolean).sort();
+                    const groupId = generateGroupId(allMembers);
+                    const createdAt = Math.floor(Date.now() / 1000);
+                    const group: GroupChat = {
+                      groupId,
+                      name,
+                      members: allMembers,
+                      createdAt,
+                      nameUpdatedAt: createdAt,
+                    };
+                    upsertGroupChat(group);
+                    // Open the group conversation
+                    openConversationForGroup(groupId);
+                    setGroupSelectMembers(new Set());
+                    setGroupNameDraft("");
+                    setDmSearch("");
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+              <div className="chat-new-group__form">
+                <div className="chat-new-group__name-section">
+                  <label className="chat-new-group__label">Group Name</label>
+                  <input
+                    className="chat-new-group__name-input"
+                    placeholder="Please Enter a Group Name"
+                    value={groupNameDraft}
+                    onChange={(e) => setGroupNameDraft(e.target.value)}
+                    maxLength={100}
+                    autoFocus
+                  />
+                </div>
+                <div className="chat-new-group__members-section">
+                  <label className="chat-new-group__label">Members</label>
+                  {(() => {
+                    const ownHex = (nostrIdentityRef.current?.pubkey || "").toLowerCase();
+                    const memberHexes = [ownHex, ...Array.from(groupSelectMembers)].filter(Boolean);
+                    return memberHexes.map((hex) => {
+                      const isOwn = hex === ownHex;
+                      const meta = isOwn
+                        ? { label: myCardName, picture: profileCard.picture?.trim() || undefined }
+                        : peerLabelFor(hex);
+                      const npubShort = (() => {
+                        try {
+                          const full = nip19.npubEncode(hex);
+                          return `${full.slice(0, 12)}...${full.slice(-6)}`;
+                        } catch { return ""; }
+                      })();
+                      return (
+                        <div key={hex} className="contact-row">
+                          <div className={`contact-avatar${meta.picture ? " contact-avatar--image" : ""}`}>
+                            {meta.picture ? (
+                              <img src={meta.picture} alt={meta.label} className="contact-avatar__img" />
+                            ) : (
+                              contactInitials(meta.label)
+                            )}
+                          </div>
+                          <div className="contact-row__text">
+                            <div className="contact-row__name">{meta.label}</div>
+                            {npubShort && (
+                              <div className="contact-row__meta">
+                                <span className="contact-row__meta-text">{npubShort}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 
