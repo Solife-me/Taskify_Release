@@ -809,29 +809,50 @@ function extractUrlsFromText(text: string): string[] {
   return Array.from(text.matchAll(CHAT_URL_REGEX), (m) => m[0]);
 }
 
-function renderLinkedText(text: string): React.ReactNode {
+function renderFormattedText(text: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
+  const regex = /\*\*(.+?)\*\*|`([^`]+)`|https?:\/\/[^\s<>"'\]()]+/gi;
   let lastIndex = 0;
-  const regex = new RegExp(CHAT_URL_REGEX.source, "gi");
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index));
     }
-    const url = match[0];
-    parts.push(
-      <a
-        key={match.index}
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="chat-link"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {url}
-      </a>
-    );
-    lastIndex = match.index + url.length;
+    if (match[1] !== undefined) {
+      // **bold**
+      parts.push(<strong key={match.index}>{match[1]}</strong>);
+    } else if (match[2] !== undefined) {
+      // `inline code` — tap to copy
+      const codeText = match[2];
+      parts.push(
+        <code
+          key={match.index}
+          className="chat-inline-code"
+          onClick={(e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(codeText);
+          }}
+        >
+          {codeText}
+        </code>
+      );
+    } else {
+      // URL
+      const url = match[0];
+      parts.push(
+        <a
+          key={match.index}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="chat-link"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {url}
+        </a>
+      );
+    }
+    lastIndex = match.index + match[0].length;
   }
   if (lastIndex < text.length) {
     parts.push(text.slice(lastIndex));
@@ -17176,7 +17197,7 @@ export default function CashuWalletModal({
                             )}
                             {msg.attachment?.type === "text" && (
                               <>
-                                <div className="wallet-message__text">{msg.content}</div>
+                                <div className="wallet-message__text">{renderFormattedText(msg.content)}</div>
                                 <div className="wallet-message__time">
                                   {formatDmDay(msg.createdAt)} · {formatDmTime(msg.createdAt)}
                                 </div>
@@ -18386,7 +18407,7 @@ export default function CashuWalletModal({
                                 const msgUrls = extractUrlsFromText(msg.content);
                                 return (
                                   <div className="chat-bubble__card chat-bubble__card--text">
-                                    <div className="chat-bubble__text">{renderLinkedText(msg.content)}</div>
+                                    <div className="chat-bubble__text">{renderFormattedText(msg.content)}</div>
                                     {msgUrls.length > 0 && (
                                       <div className="chat-link-previews">
                                         {msgUrls.map((url) => {
@@ -18505,7 +18526,7 @@ export default function CashuWalletModal({
                               </div>
                             ) : (
                               <div className="chat-bubble__card chat-bubble__card--text">
-                                <div className="chat-bubble__text">{pm.content}</div>
+                                <div className="chat-bubble__text">{renderFormattedText(pm.content)}</div>
                               </div>
                             )}
                           </div>
