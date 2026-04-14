@@ -216,6 +216,19 @@ const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
 const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const PAYMENT_HISTORY_EVENT_ID_REGEX = /^payment-request-(?:recv|pending)-([a-f0-9]{32,})$/i;
 const CHAT_TIMESTAMP_REVEAL_WIDTH = 92;
+const CHAT_ATTACH_TRAY_MIN_HEIGHT = 248;
+const CHAT_ATTACH_TRAY_MAX_HEIGHT = 380;
+const CHAT_ATTACH_TRAY_FALLBACK_RATIO = 0.38;
+
+function measureDefaultChatAttachTrayHeight(): number {
+  if (typeof window === "undefined") return 300;
+  return Math.round(
+    Math.min(
+      CHAT_ATTACH_TRAY_MAX_HEIGHT,
+      Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, window.innerHeight * CHAT_ATTACH_TRAY_FALLBACK_RATIO),
+    ),
+  );
+}
 
 function deriveTimestampFromId(value: string): number {
   if (typeof value !== "string" || !value) return Date.now();
@@ -788,6 +801,42 @@ function extractDomain(target: string): string {
   } catch {
     return target;
   }
+}
+
+const CHAT_URL_REGEX = /https?:\/\/[^\s<>"'\]()]+/gi;
+
+function extractUrlsFromText(text: string): string[] {
+  return Array.from(text.matchAll(CHAT_URL_REGEX), (m) => m[0]);
+}
+
+function renderLinkedText(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  const regex = new RegExp(CHAT_URL_REGEX.source, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const url = match[0];
+    parts.push(
+      <a
+        key={match.index}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="chat-link"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {url}
+      </a>
+    );
+    lastIndex = match.index + url.length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts.length > 0 ? parts : text;
 }
 
 function formatLightningAddressDisplay(address: string, baseMaxLength = 32): string {
@@ -2647,6 +2696,7 @@ export default function CashuWalletModal({
   const [renameGroupBusy, setRenameGroupBusy] = useState(false);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [groupMembersSearch, setGroupMembersSearch] = useState("");
+  const [groupInfoTab, setGroupInfoTab] = useState<"info" | "photos" | "links">("info");
   const groupChatsRef = useRef<GroupChat[]>(groupChats);
   useEffect(() => { groupChatsRef.current = groupChats; }, [groupChats]);
   const dmMutedGroupsRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_GROUP_MUTED));
@@ -2655,9 +2705,11 @@ export default function CashuWalletModal({
   const [dmLeftGroupsVersion, setDmLeftGroupsVersion] = useState(0);
   const dmThreadReadAtRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_DM_THREAD_READ_STATE));
   const [dmThreadReadAtVersion, setDmThreadReadAtVersion] = useState(0);
-  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
+  const [attachTrayOpen, setAttachTrayOpen] = useState(false);
+  const [chatKeyboardHeight, setChatKeyboardHeight] = useState(0);
+  const [chatKeyboardHeightCache, setChatKeyboardHeightCache] = useState(() => measureDefaultChatAttachTrayHeight());
+  const chatComposeInputRef = useRef<HTMLInputElement>(null);
   const chatPhotoInputRef = useRef<HTMLInputElement>(null);
-  const chatCameraInputRef = useRef<HTMLInputElement>(null);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesInnerRef = useRef<HTMLDivElement>(null);
@@ -2665,6 +2717,7 @@ export default function CashuWalletModal({
   const dragTouchStartY = useRef(0);
   const dragDirectionLocked = useRef<"horizontal" | "vertical" | null>(null);
   const dmListViewRef = useRef<"list" | "strangers">("list");
+  const scrollToMessageIdRef = useRef<string | null>(null);
   const dmAutoScrollStateRef = useRef<{ threadPeer: string | null; itemCount: number }>({
     threadPeer: null,
     itemCount: 0,
@@ -2675,6 +2728,39 @@ export default function CashuWalletModal({
   const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => initialDmMessages);
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
   const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
+  useEffect(() => {
+    if (!open || !isChatPage || typeof window === "undefined") return;
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const updateKeyboardHeight = () => {
+      const layoutHeight = Math.max(window.innerHeight, document.documentElement?.clientHeight || 0);
+      const nextHeight = Math.max(0, Math.round(layoutHeight - viewport.height - viewport.offsetTop));
+      if (nextHeight > 120) {
+        setChatKeyboardHeight(nextHeight);
+        setChatKeyboardHeightCache(
+          Math.min(
+            CHAT_ATTACH_TRAY_MAX_HEIGHT,
+            Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, nextHeight),
+          ),
+        );
+      } else {
+        setChatKeyboardHeight(0);
+      }
+    };
+    updateKeyboardHeight();
+    viewport.addEventListener("resize", updateKeyboardHeight);
+    viewport.addEventListener("scroll", updateKeyboardHeight);
+    window.addEventListener("orientationchange", updateKeyboardHeight);
+    return () => {
+      viewport.removeEventListener("resize", updateKeyboardHeight);
+      viewport.removeEventListener("scroll", updateKeyboardHeight);
+      window.removeEventListener("orientationchange", updateKeyboardHeight);
+    };
+  }, [isChatPage, open]);
+  useEffect(() => {
+    if (chatView === "conversation") return;
+    setAttachTrayOpen(false);
+  }, [chatView]);
   const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dmDeletedEventsRef = useRef<Set<string>>(new Set());
   const [dmDeletedEventsVersion, setDmDeletedEventsVersion] = useState(0);
@@ -2689,6 +2775,10 @@ export default function CashuWalletModal({
   const [dmView, setDmView] = useState<"list" | "thread" | "strangers">("list");
   const [activeThreadPeer, setActiveThreadPeer] = useState<string | null>(null);
   const [dmSearch, setDmSearch] = useState("");
+  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
+  useEffect(() => {
+    setAttachTrayOpen(false);
+  }, [activeThreadPeer]);
   useEffect(() => {
     setPendingMessages([]);
   }, [activeThreadPeer]);
@@ -3776,12 +3866,27 @@ export default function CashuWalletModal({
   const [showCustomContactFields, setShowCustomContactFields] = useState(false);
   const [contactView, setContactView] = useState<ContactViewMode>("list");
   const [activeContactId, setActiveContactId] = useState<string | "profile" | null>(null);
-  const [contactReturnView, setContactReturnView] = useState<"new-message" | "group-members">("new-message");
+  const [contactReturnView, setContactReturnView] = useState<"new-message" | "group-members" | "group-info">("new-message");
   const [contactDetailOverride, setContactDetailOverride] = useState<Contact | null>(null);
   const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
+  const [shareContactPickerMode, setShareContactPickerMode] = useState<"recipient" | "chat-source">("recipient");
   const [shareContactSource, setShareContactSource] = useState<Contact | null>(null);
   const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
   const [shareContactBusy, setShareContactBusy] = useState(false);
+  useEffect(() => {
+    if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source" || chatView === "conversation") return;
+    setShareContactPickerOpen(false);
+    setShareContactPickerMode("recipient");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+  }, [chatView, shareContactPickerMode, shareContactPickerOpen]);
+  useEffect(() => {
+    if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source") return;
+    setShareContactPickerOpen(false);
+    setShareContactPickerMode("recipient");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+  }, [activeThreadPeer, shareContactPickerMode, shareContactPickerOpen]);
   const [contactEditDraft, setContactEditDraft] = useState<ContactEditDraft>({
     id: null,
     name: "",
@@ -6290,11 +6395,12 @@ export default function CashuWalletModal({
   const matchesDmThreadSearch = useCallback(
     (thread: WalletDmThread) => {
       if (!dmSearch.trim()) return true;
-      const meta = peerLabelFor(thread.peerPubkey);
-      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${thread.lastPreview} ${thread.peerPubkey}`.toLowerCase();
+      const groupName = thread.groupId ? (groupChats.find((g) => g.groupId === thread.groupId)?.name ?? "") : "";
+      const meta = thread.groupId ? { label: groupName, subtitle: undefined } : peerLabelFor(thread.peerPubkey);
+      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${groupName} ${thread.lastPreview} ${thread.peerPubkey}`.toLowerCase();
       return haystack.includes(dmSearch.trim().toLowerCase());
     },
-    [dmSearch, peerLabelFor],
+    [dmSearch, groupChats, peerLabelFor],
   );
   const dmThreadListEntries = useMemo<DmThreadListEntry[]>(() => {
     if (dmSearch.trim()) {
@@ -6325,6 +6431,21 @@ export default function CashuWalletModal({
     entries.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
     return entries;
   }, [dmSearch, dmThreads, dmView, matchesDmThreadSearch, strangerThreads]);
+  type MessageSearchResult = { thread: WalletDmThread; message: WalletDmMessage };
+  const messageSearchResults = useMemo<MessageSearchResult[]>(() => {
+    const q = dmSearch.trim().toLowerCase();
+    if (!q) return [];
+    const results: MessageSearchResult[] = [];
+    for (const thread of dmThreads) {
+      for (const msg of thread.messages) {
+        if (!msg.eventId.startsWith("draft-") && msg.content.toLowerCase().includes(q)) {
+          results.push({ thread, message: msg });
+        }
+      }
+    }
+    results.sort((a, b) => b.message.createdAt - a.message.createdAt);
+    return results;
+  }, [dmSearch, dmThreads]);
   const activeThreadPendingMessages = useMemo(
     () =>
       activeThread
@@ -6346,6 +6467,8 @@ export default function CashuWalletModal({
     const grew = nextState.itemCount > prevState.itemCount;
     dmAutoScrollStateRef.current = nextState;
     if (!threadChanged && !grew) return;
+    // Skip auto-scroll-to-bottom when we are about to scroll to a specific message
+    if (threadChanged && scrollToMessageIdRef.current) return;
     const scroller = messagesScrollRef.current;
     if (!scroller) return;
     const behavior: ScrollBehavior = threadChanged ? "auto" : "smooth";
@@ -6363,6 +6486,27 @@ export default function CashuWalletModal({
       });
     }
   }, [activeThread, activeThreadPendingMessages.length, chatView, isChatPage, open]);
+  useEffect(() => {
+    if (!scrollToMessageId || chatView !== "conversation") return;
+    scrollToMessageIdRef.current = scrollToMessageId;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const scroller = messagesScrollRef.current;
+        const el = scroller?.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(scrollToMessageId)}"]`);
+        if (el && scroller) {
+          // Scroll within the container (not viewport) to avoid breaking the fixed compose bar
+          const scrollerRect = scroller.getBoundingClientRect();
+          const elRect = el.getBoundingClientRect();
+          const targetTop = scroller.scrollTop + elRect.top - scrollerRect.top - scroller.clientHeight / 2 + elRect.height / 2;
+          scroller.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+          el.classList.add("chat-message--highlight");
+          setTimeout(() => el.classList.remove("chat-message--highlight"), 2000);
+        }
+        scrollToMessageIdRef.current = null;
+        setScrollToMessageId(null);
+      });
+    });
+  }, [scrollToMessageId, chatView, activeThread]);
   const openConversationForPeer = useCallback(
     (peerHex: string | null | undefined) => {
       // Normalise to raw 64-char hex (strip "02"/"03" prefix if present)
@@ -6528,6 +6672,7 @@ export default function CashuWalletModal({
     if (!activeThread?.groupId) return;
     setGroupMembersSearch("");
     setRenameGroupDraft(activeGroupChat?.name || "");
+    setGroupInfoTab("info");
     setChatView("group-info");
   }, [activeGroupChat?.name, activeThread?.groupId]);
   const handleToggleActiveGroupMute = useCallback(() => {
@@ -6544,7 +6689,11 @@ export default function CashuWalletModal({
     const nextLeft = !dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase());
     setGroupLeftState(activeGroupChat.groupId, nextLeft);
     if (nextLeft) {
-      setAttachSheetOpen(false);
+      setAttachTrayOpen(false);
+      setShareContactPickerOpen(false);
+      setShareContactPickerMode("recipient");
+      setShareContactSource(null);
+      setShareContactStatus(null);
       setChatCompose("");
     }
     showToast(nextLeft ? "You left the group" : "You rejoined the group", 2400);
@@ -6677,6 +6826,34 @@ export default function CashuWalletModal({
         : contactHasNpub(contact) || contact.paymentRequest.trim().length > 0,
     );
   }, [contactsContext, sortedContacts]);
+  const buildShareRelayList = useCallback(
+    (relaySource?: string[] | null) => {
+      const storedRelays = (() => {
+        try {
+          const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
+          const parsed = raw ? JSON.parse(raw) : null;
+          if (Array.isArray(parsed)) {
+            return parsed.map((relay) => (typeof relay === "string" ? relay.trim() : "")).filter(Boolean);
+          }
+        } catch {
+          // ignore
+        }
+        return [];
+      })();
+      return Array.from(
+        new Set(
+          [
+            ...(Array.isArray(relaySource) ? relaySource : []),
+            ...(storedRelays.length ? storedRelays : defaultNostrRelays),
+            ...defaultNostrRelays,
+          ]
+            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+            .filter(Boolean),
+        ),
+      );
+    },
+    [defaultNostrRelays],
+  );
   const shareRecipientOptions = useMemo(() => {
     const sourceHex = shareContactSource?.npub
       ? compressedToRawHex(
@@ -6693,15 +6870,50 @@ export default function CashuWalletModal({
       return true;
     });
   }, [compressedToRawHex, contacts, normalizeNostrPubkey, shareContactSource]);
+  const sendContactShareToPubkeys = useCallback(
+    async (sourceContact: Contact, recipientPubkeys: string[]) => {
+      const sourceNpub = formatContactNpub(sourceContact.npub);
+      if (!sourceNpub) {
+        return { ok: false as const, error: "This contact is missing a valid npub." };
+      }
+      const { identity, reason } = readNostrIdentity();
+      if (!identity) {
+        return {
+          ok: false as const,
+          error: reason || "Add your Taskify Nostr key in Settings → Nostr.",
+        };
+      }
+      const relayList = buildShareRelayList(sourceContact.relays);
+      if (!relayList.length) {
+        return { ok: false as const, error: "Add at least one relay first." };
+      }
+      const envelope = buildContactShareEnvelope({
+        type: "contact",
+        npub: sourceNpub,
+        relays: sourceContact.relays,
+        sender: {
+          npub: formatNpub(identity.pubkey),
+          name: profileForm.displayName || profileForm.username || undefined,
+        },
+      });
+      for (const recipientPubkey of recipientPubkeys) {
+        await sendShareMessage(envelope, recipientPubkey, identity.secret, relayList);
+      }
+      return { ok: true as const };
+    },
+    [
+      buildShareRelayList,
+      formatContactNpub,
+      formatNpub,
+      profileForm.displayName,
+      profileForm.username,
+      readNostrIdentity,
+    ],
+  );
   const handleShareContactToContact = useCallback(
     async (recipient: Contact) => {
       if (!shareContactSource) {
         setShareContactStatus("Select a contact to share first.");
-        return;
-      }
-      const sourceNpub = formatContactNpub(shareContactSource.npub);
-      if (!sourceNpub) {
-        setShareContactStatus("This contact is missing a valid npub.");
         return;
       }
       const normalizedRecipient = normalizeNostrPubkey(recipient.npub);
@@ -6709,57 +6921,16 @@ export default function CashuWalletModal({
         setShareContactStatus("Recipient contact is missing a valid npub.");
         return;
       }
-      const { identity, reason } = readNostrIdentity();
-      if (!identity) {
-        setShareContactStatus(reason || "Add your Taskify Nostr key in Settings → Nostr.");
-        return;
-      }
-      const storedRelays = (() => {
-        try {
-          const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
-          const parsed = raw ? JSON.parse(raw) : null;
-          if (Array.isArray(parsed)) {
-            return parsed.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean);
-          }
-        } catch {
-          // ignore
-        }
-        return [];
-      })();
-      const relaySource = Array.isArray(shareContactSource.relays)
-        ? shareContactSource.relays
-        : storedRelays.length
-          ? storedRelays
-          : defaultNostrRelays;
-      const relayList = Array.from(
-        new Set(
-          [
-            ...relaySource,
-            ...defaultNostrRelays,
-          ]
-            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
-      );
-      if (!relayList.length) {
-        setShareContactStatus("Add at least one relay first.");
-        return;
-      }
       setShareContactBusy(true);
       setShareContactStatus(null);
       try {
-        const envelope = buildContactShareEnvelope({
-          type: "contact",
-          npub: sourceNpub,
-          // Keep payload lean to avoid oversized NIP-44 plaintexts; other fields can be fetched later.
-          relays: shareContactSource.relays,
-          sender: {
-            npub: formatNpub(identity.pubkey),
-            name: profileForm.displayName || profileForm.username || undefined,
-          },
-        });
-        await sendShareMessage(envelope, normalizedRecipient, identity.secret, relayList);
+        const result = await sendContactShareToPubkeys(shareContactSource, [normalizedRecipient]);
+        if (!result.ok) {
+          setShareContactStatus(result.error || "Unable to send contact.");
+          return;
+        }
         setShareContactPickerOpen(false);
+        setShareContactPickerMode("recipient");
         setShareContactSource(null);
         showToast(`Contact sent to ${contactPrimaryName(recipient)}`, 3000);
       } catch (err: any) {
@@ -6769,14 +6940,89 @@ export default function CashuWalletModal({
       }
     },
     [
-      defaultNostrRelays,
-      formatContactNpub,
-      formatNpub,
       normalizeNostrPubkey,
-      profileForm.displayName,
-      profileForm.username,
-      readNostrIdentity,
+      sendContactShareToPubkeys,
       shareContactSource,
+      showToast,
+    ],
+  );
+  const closeAttachTray = useCallback(() => {
+    setAttachTrayOpen(false);
+  }, []);
+  const handleToggleAttachTray = useCallback(() => {
+    setShareContactPickerOpen(false);
+    setShareContactPickerMode("recipient");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+    setAttachTrayOpen((current) => {
+      const next = !current;
+      if (next) {
+        window.setTimeout(() => {
+          chatComposeInputRef.current?.blur();
+        }, 0);
+      }
+      return next;
+    });
+  }, []);
+  const handleOpenChatPhotoPicker = useCallback(() => {
+    closeAttachTray();
+    window.setTimeout(() => chatPhotoInputRef.current?.click(), 50);
+  }, [closeAttachTray]);
+  const handleOpenChatFilePicker = useCallback(() => {
+    closeAttachTray();
+    window.setTimeout(() => chatFileInputRef.current?.click(), 50);
+  }, [closeAttachTray]);
+  const handleOpenChatContactPicker = useCallback(() => {
+    closeAttachTray();
+    setShareContactPickerMode("chat-source");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+    setShareContactPickerOpen(true);
+  }, [closeAttachTray]);
+  const handleSendChatContactAttachment = useCallback(
+    async (contact: Contact) => {
+      if (!activeThread) {
+        setShareContactStatus("Open a conversation first.");
+        return;
+      }
+      const ownIdentity = readNostrIdentity().identity;
+      const recipients = activeThread.groupId && activeGroupChat
+        ? activeGroupChat.members
+            .map((member) => member.toLowerCase())
+            .filter((member) => member && member !== ownIdentity?.pubkey.toLowerCase())
+        : [activeThread.peerPubkey.toLowerCase()].filter(Boolean);
+      if (!recipients.length) {
+        setShareContactStatus("No recipients available for this conversation.");
+        return;
+      }
+      setShareContactBusy(true);
+      setShareContactStatus(null);
+      try {
+        const result = await sendContactShareToPubkeys(contact, recipients);
+        if (!result.ok) {
+          setShareContactStatus(result.error || "Unable to send contact.");
+          return;
+        }
+        setShareContactPickerOpen(false);
+        setShareContactPickerMode("recipient");
+        setShareContactSource(null);
+        showToast(
+          activeThread.groupId
+            ? `Shared ${contactPrimaryName(contact)} with ${activeGroupChat?.name || "the group"}`
+            : `Sent ${contactPrimaryName(contact)}`,
+          3000,
+        );
+      } catch (err: any) {
+        setShareContactStatus(err?.message || "Unable to send contact.");
+      } finally {
+        setShareContactBusy(false);
+      }
+    },
+    [
+      activeGroupChat,
+      activeThread,
+      readNostrIdentity,
+      sendContactShareToPubkeys,
       showToast,
     ],
   );
@@ -9401,7 +9647,7 @@ export default function CashuWalletModal({
       setNwcUrlInput(nwcConnection?.uri || "");
       setNwcBusy(false);
       setNwcFeedback("");
-      setNwcTransferAmt("");
+
       setNwcFundState("idle");
       setNwcFundMessage("");
       setNwcFundInvoice("");
@@ -12655,21 +12901,11 @@ export default function CashuWalletModal({
   }, [closeNostrPool, stopPaymentRequestSubscription]);
 
   useEffect(() => {
-    if (!open) {
-      stopDmSubscription();
-      return;
-    }
     void startDmSubscription();
     return () => {
       stopDmSubscription();
     };
-  }, [open, startDmSubscription, stopDmSubscription]);
-
-  useEffect(() => {
-    if (walletTab === "messages" && !dmSubscriptionCloseRef.current) {
-      void startDmSubscription();
-    }
-  }, [startDmSubscription, walletTab]);
+  }, [startDmSubscription, stopDmSubscription]);
 
   const normalizedSendLockPubkey = useMemo(() => {
     if (!lockSendToPubkey) return null;
@@ -14899,16 +15135,90 @@ export default function CashuWalletModal({
     myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
   const profileCard = {
     id: "profile",
+    kind: myCardNpub ? ("nostr" as const) : ("custom" as const),
     name: myCardName,
     displayName: profileForm.displayName.trim(),
     username: sanitizeUsername(profileForm.username),
     address: myCardLightning,
+    paymentRequest: "",
     npub: myCardNpub,
     nip05: profileForm.nip05.trim(),
     about: profileForm.about.trim(),
     picture: profileForm.picture.trim(),
     updatedAt: profileUpdatedAt,
   };
+  const activeConversationContact = useMemo(() => {
+    if (!activeThread || activeThread.groupId) return null;
+    const ownNpub = normalizeNostrPubkey(myCardNpub);
+    const ownHex = ownNpub ? compressedToRawHex(ownNpub).toLowerCase() : "";
+    if (ownHex && activeThread.peerPubkey === ownHex) return null;
+    const existing = contactByHex.get(activeThread.peerPubkey);
+    if (existing) return existing;
+    const peerMeta = getPeerProfile(activeThread.peerPubkey);
+    return {
+      id: `chat-peer-${activeThread.peerPubkey}`,
+      kind: "nostr",
+      name: peerMeta.displayName || peerMeta.username || peerMeta.label,
+      displayName: peerMeta.displayName || peerMeta.label,
+      username: sanitizeUsername(peerMeta.username || ""),
+      address: peerMeta.lud16 || "",
+      paymentRequest: "",
+      npub: formatNpub(activeThread.peerPubkey) || "",
+      nip05: peerMeta.nip05 || "",
+      about: peerMeta.about || "",
+      picture: peerMeta.picture || "",
+      updatedAt: Date.now(),
+    } satisfies Contact;
+  }, [
+    activeThread,
+    compressedToRawHex,
+    contactByHex,
+    formatNpub,
+    getPeerProfile,
+    myCardNpub,
+    normalizeNostrPubkey,
+    sanitizeUsername,
+  ]);
+  const handleOpenChatEcash = useCallback(() => {
+    closeAttachTray();
+    if (activeConversationContact && (contactHasNpub(activeConversationContact) || activeConversationContact.paymentRequest.trim().length > 0)) {
+      openEcashSendToContact(activeConversationContact);
+      return;
+    }
+    openEcashSendSheet();
+  }, [activeConversationContact, closeAttachTray, openEcashSendSheet, openEcashSendToContact]);
+  const handleOpenChatLightning = useCallback(() => {
+    closeAttachTray();
+    if (activeConversationContact?.address.trim()) {
+      applyLightningContact(activeConversationContact);
+      return;
+    }
+    openLightningSendSheet();
+  }, [activeConversationContact, applyLightningContact, closeAttachTray, openLightningSendSheet]);
+  const chatAttachTrayHeight = useMemo(
+    () =>
+      Math.min(
+        CHAT_ATTACH_TRAY_MAX_HEIGHT,
+        Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, chatKeyboardHeight || chatKeyboardHeightCache),
+      ),
+    [chatKeyboardHeight, chatKeyboardHeightCache],
+  );
+  const chatAttachContactOptions = useMemo(() => {
+    const options: Contact[] = [];
+    const seen = new Set<string>();
+    const addContact = (contact: Contact) => {
+      const normalizedNpub = formatContactNpub(contact.npub);
+      if (!normalizedNpub) return;
+      const normalizedHex = normalizeNostrPubkey(normalizedNpub) ?? normalizedNpub;
+      const key = normalizedHex.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({ ...contact, npub: normalizedNpub });
+    };
+    addContact(profileCard as Contact);
+    sortedContacts.forEach(addContact);
+    return options;
+  }, [formatContactNpub, normalizeNostrPubkey, profileCard, sortedContacts]);
   const groupAvatarMembersFor = useCallback(
     (group: GroupChat | null | undefined, thread?: WalletDmThread | null, fallbackLabel?: string): GroupAvatarMember[] => {
       const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
@@ -15652,7 +15962,7 @@ export default function CashuWalletModal({
         <button
           className="glass-icon-button pressable"
           onClick={handleBackToContactsList}
-          aria-label={contactReturnView === "group-members" ? "Back to members" : "Back to contacts"}
+          aria-label={contactReturnView === "group-members" ? "Back to members" : contactReturnView === "group-info" ? "Back to group info" : "Back to contacts"}
         >
           <BackIcon className="h-5 w-5" />
         </button>
@@ -16001,7 +16311,9 @@ export default function CashuWalletModal({
     ],
   );
 
-  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}${isChatPage ? " wallet-modal--chat" : ""}`;
+  const inConversation = isChatPage && chatView === "conversation";
+  const hideAppTabSwitcher = isChatPage && chatView !== "threads";
+  const walletRootClass = `wallet-modal${showBottomNav && !hideAppTabSwitcher ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}${isChatPage ? " wallet-modal--chat" : ""}${hideAppTabSwitcher ? " wallet-modal--app-nav-hidden" : ""}${inConversation ? " wallet-modal--chat-convo" : ""}`;
   const contactsPanelInline = !showTabSwitcher && isContactsPage;
   const contactsPanelOpen = contactsTabOpen || contactsPanelInline;
   const showWalletTabSwitcher = showTabSwitcher && !isContactsPage && !isChatPage;
@@ -17124,12 +17436,65 @@ export default function CashuWalletModal({
 		                    </button>
 		                  );
 		                })}
-		                {dmThreadListEntries.length === 0 && (
+		                {dmThreadListEntries.length === 0 && messageSearchResults.length === 0 && (
 		                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "3rem 1rem" }}>
 		                    {dmView === "strangers" && !dmSearch.trim()
 		                      ? "No stranger messages yet."
 		                      : "No messages yet. Start a conversation or incoming DMs will appear here."}
 		                  </div>
+		                )}
+		                {dmSearch.trim() && messageSearchResults.length > 0 && (
+		                  <>
+		                    <div className="chat-page__section-label" style={{ marginTop: "0.5rem" }}>Messages</div>
+		                    {messageSearchResults.map(({ thread, message }) => {
+		                      const isGroupThread = !!thread.groupId;
+		                      const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
+		                      const threadMeta = isGroupThread
+		                        ? { label: groupMeta?.name || "Group", picture: undefined }
+		                        : peerLabelFor(thread.peerPubkey);
+		                      const q = dmSearch.trim().toLowerCase();
+		                      const matchIdx = message.content.toLowerCase().indexOf(q);
+		                      const previewBefore = matchIdx > 0 ? message.content.slice(Math.max(0, matchIdx - 30), matchIdx) : "";
+		                      const matchText = message.content.slice(matchIdx, matchIdx + q.length);
+		                      const previewAfter = message.content.slice(matchIdx + q.length, matchIdx + q.length + 60);
+		                      return (
+		                        <button
+		                          key={`${thread.peerPubkey}-${message.eventId}`}
+		                          className="wallet-messages__thread pressable"
+		                          onClick={() => {
+		                            dmListViewRef.current = "list";
+		                            setDmSearch("");
+		                            setActiveThreadPeer(thread.peerPubkey);
+		                            if (isGroupThread) setActiveGroupId(thread.groupId!);
+		                            setChatView("conversation");
+		                            setDmView("thread");
+		                            setScrollToMessageId(message.eventId);
+		                          }}
+		                        >
+		                          <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+		                            {isGroupThread ? (
+		                              <GroupAvatar members={groupAvatarMembersFor(groupMeta, thread, threadMeta.label)} />
+		                            ) : threadMeta.picture ? (
+		                              <img src={threadMeta.picture} alt={threadMeta.label} className="wallet-messages__avatar-img" />
+		                            ) : (
+		                              <span>{threadMeta.label.slice(0, 2)}</span>
+		                            )}
+		                          </div>
+		                          <div className="wallet-messages__thread-body">
+		                            <div className="wallet-messages__thread-title">{threadMeta.label}</div>
+		                            <div className="wallet-messages__thread-preview">
+		                              {previewBefore && <span style={{ opacity: 0.7 }}>{matchIdx > 0 ? "…" : ""}{previewBefore}</span>}
+		                              <mark className="chat-msg-result__mark">{matchText}</mark>
+		                              {previewAfter && <span style={{ opacity: 0.7 }}>{previewAfter}{previewAfter.length === 60 ? "…" : ""}</span>}
+		                            </div>
+		                          </div>
+		                          <div className="wallet-messages__thread-meta">
+		                            <span className="wallet-messages__thread-date">{formatShortDate(message.createdAt)}</span>
+		                          </div>
+		                        </button>
+		                      );
+		                    })}
+		                  </>
 		                )}
 		              </div>
 
@@ -17529,7 +17894,7 @@ export default function CashuWalletModal({
                         {showDateSep && (
                           <div className="chat-date-separator">{formatDmDateSeparator(msg.createdAt)}</div>
                         )}
-                        <div className={`chat-message ${msg.isIncoming ? "chat-message--in" : "chat-message--out"}`}>
+                        <div data-msg-id={msg.eventId} className={`chat-message ${msg.isIncoming ? "chat-message--in" : "chat-message--out"}`}>
                           <div className={`chat-message__body${senderMeta ? " chat-message__body--group-in" : ""}`}>
                             {senderMeta && (
                               <div className={`chat-message__sender-avatar${senderMeta.picture ? " chat-message__sender-avatar--image" : ""}`}>
@@ -18017,11 +18382,45 @@ export default function CashuWalletModal({
                                   </div>
                                 </div>
                               )}
-                              {msg.attachment?.type === "text" && (
-                                <div className="chat-bubble__card chat-bubble__card--text">
-                                  <div className="chat-bubble__text">{msg.content}</div>
-                                </div>
-                              )}
+                              {msg.attachment?.type === "text" && (() => {
+                                const msgUrls = extractUrlsFromText(msg.content);
+                                return (
+                                  <div className="chat-bubble__card chat-bubble__card--text">
+                                    <div className="chat-bubble__text">{renderLinkedText(msg.content)}</div>
+                                    {msgUrls.length > 0 && (
+                                      <div className="chat-link-previews">
+                                        {msgUrls.map((url) => {
+                                          const domain = extractDomain(url);
+                                          const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`;
+                                          const displayUrl = url.length > 55 ? url.slice(0, 52) + "…" : url;
+                                          return (
+                                            <a
+                                              key={url}
+                                              href={url}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="chat-link-preview pressable"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              <img
+                                                src={faviconUrl}
+                                                alt=""
+                                                className="chat-link-preview__favicon"
+                                                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                              />
+                                              <div className="chat-link-preview__copy">
+                                                <div className="chat-link-preview__domain">{domain}</div>
+                                                <div className="chat-link-preview__url">{displayUrl}</div>
+                                              </div>
+                                              <span className="chat-link-preview__arrow" aria-hidden="true">↗</span>
+                                            </a>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               {msg.attachment?.type === "file" && (
                                 <MessengerFileBubble
                                   descriptor={{
@@ -18133,35 +18532,12 @@ export default function CashuWalletModal({
                   </button>
                 </div>
               ) : (
-                <div className="chat-compose">
-                  <button
-                    type="button"
-                    className="chat-compose__attach pressable"
-                    onClick={() => setAttachSheetOpen(true)}
-                    aria-label="Attach file"
-                    title="Attach file"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-                    </svg>
-                  </button>
+                <div className="chat-compose-stack">
                   <input
                     ref={chatPhotoInputRef}
                     type="file"
                     accept="image/*,video/*"
                     multiple
-                    style={{ display: "none" }}
-                    onChange={(e) => {
-                      const files = Array.from(e.target.files || []);
-                      e.target.value = "";
-                      if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
-                    }}
-                  />
-                  <input
-                    ref={chatCameraInputRef}
-                    type="file"
-                    accept="image/*,video/*"
-                    capture="environment"
                     style={{ display: "none" }}
                     onChange={(e) => {
                       const files = Array.from(e.target.files || []);
@@ -18180,14 +18556,97 @@ export default function CashuWalletModal({
                       if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
                     }}
                   />
-                  <input
-                    className="chat-compose__input"
-                    placeholder="Message"
-                    value={chatCompose}
-                    onChange={(e) => setChatCompose(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
-                        e.preventDefault();
+                  <div className="chat-compose">
+                    <button
+                      type="button"
+                      className={`chat-compose__attach chat-compose__attach--toggle pressable${attachTrayOpen ? " is-open" : ""}`}
+                      onClick={handleToggleAttachTray}
+                      aria-label={attachTrayOpen ? "Close attachments" : "Open attachments"}
+                      aria-expanded={attachTrayOpen}
+                      title={attachTrayOpen ? "Close attachments" : "Open attachments"}
+                    >
+                      <span className="chat-compose__attach-icon" aria-hidden="true">
+                        <span className="chat-compose__attach-line chat-compose__attach-line--horizontal" />
+                        <span className="chat-compose__attach-line chat-compose__attach-line--vertical" />
+                      </span>
+                    </button>
+                    <input
+                      ref={chatComposeInputRef}
+                      className="chat-compose__input"
+                      placeholder="Message"
+	                      value={chatCompose}
+	                      onFocus={() => {
+	                        setAttachTrayOpen(false);
+	                      }}
+                      onChange={(e) => setChatCompose(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
+                          e.preventDefault();
+                          void (async () => {
+                            const text = chatCompose.trim();
+                            if (!text) return;
+                            setChatCompose("");
+                            const pendingId = crypto.randomUUID();
+                            const pendingCreatedAt = Math.floor(Date.now() / 1000);
+                            setPendingMessages(prev => [
+                              ...prev,
+                              {
+                                id: pendingId,
+                                content: text,
+                                peerPubkey: activeThread.peerPubkey,
+                                createdAt: pendingCreatedAt,
+                                status: "sending",
+                              },
+                            ]);
+                            try {
+                              const { identity } = readNostrIdentity();
+                              if (!identity) return;
+                              const senderHex = identity.pubkey.toLowerCase();
+                              const isGroup = !!activeThread.groupId;
+                              const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === activeThread.groupId) : null;
+                              const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
+                              const recipientHex = isGroup ? groupRecipients[0] || "" : activeThread.peerPubkey.toLowerCase();
+                              const relayTargets = isGroup ? groupRecipients : [recipientHex];
+                              const allRelays = new Set<string>();
+                              for (const target of relayTargets) {
+                                const relays = await resolveNip17Relays(target, defaultNostrRelays);
+                                relays.forEach((r) => allRelays.add(r));
+                              }
+                              const publishRelays = Array.from(allRelays);
+                              if (!publishRelays.length) return;
+                              const pool = ensureNostrPool();
+                              const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                              const extraTags: string[][] = [];
+                              if (isGroup && groupMeta?.name) {
+                                extraTags.push(["subject", groupMeta.name]);
+                              }
+                              const { selfWrapEvent } = await publishNip17Giftwraps({
+                                content: text,
+                                senderHex,
+                                recipientHex,
+                                senderSecret: identity.secret,
+                                publish,
+                                ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : {}),
+                              });
+                              if (selfWrapEvent) {
+                                await handleDmEvent(selfWrapEvent);
+                              }
+                              setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
+                              setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
+                            } catch (err) {
+                              setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
+                              console.warn("[chat] send failed", err);
+                              setChatCompose(text);
+                            }
+                          })();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="chat-compose__send pressable"
+                      disabled={!chatCompose.trim()}
+                      onClick={() => {
                         void (async () => {
                           const text = chatCompose.trim();
                           if (!text) return;
@@ -18212,7 +18671,6 @@ export default function CashuWalletModal({
                             const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === activeThread.groupId) : null;
                             const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
                             const recipientHex = isGroup ? groupRecipients[0] || "" : activeThread.peerPubkey.toLowerCase();
-                            // Resolve relays for all recipients (groups: merge relays for each member)
                             const relayTargets = isGroup ? groupRecipients : [recipientHex];
                             const allRelays = new Set<string>();
                             for (const target of relayTargets) {
@@ -18239,191 +18697,285 @@ export default function CashuWalletModal({
                               await handleDmEvent(selfWrapEvent);
                             }
                             setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
-                            setTimeout(() => setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "done" as const } : m)), 2000);
+                            setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
                           } catch (err) {
                             setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
                             console.warn("[chat] send failed", err);
                             setChatCompose(text);
                           }
                         })();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="chat-compose__send pressable"
-                    disabled={!chatCompose.trim()}
-                    onClick={() => {
-                      void (async () => {
-                        const text = chatCompose.trim();
-                        if (!text) return;
-                        setChatCompose("");
-                        const pendingId = crypto.randomUUID();
-                        const pendingCreatedAt = Math.floor(Date.now() / 1000);
-                        setPendingMessages(prev => [
-                          ...prev,
-                          {
-                            id: pendingId,
-                            content: text,
-                            peerPubkey: activeThread.peerPubkey,
-                            createdAt: pendingCreatedAt,
-                            status: "sending",
-                          },
-                        ]);
-                        try {
-                          const { identity } = readNostrIdentity();
-                          if (!identity) return;
-                          const senderHex = identity.pubkey.toLowerCase();
-                          const isGroup = !!activeThread.groupId;
-                          const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === activeThread.groupId) : null;
-                          const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
-                          const recipientHex = isGroup ? groupRecipients[0] || "" : activeThread.peerPubkey.toLowerCase();
-                          const relayTargets = isGroup ? groupRecipients : [recipientHex];
-                          const allRelays = new Set<string>();
-                          for (const target of relayTargets) {
-                            const relays = await resolveNip17Relays(target, defaultNostrRelays);
-                            relays.forEach((r) => allRelays.add(r));
-                          }
-                          const publishRelays = Array.from(allRelays);
-                          if (!publishRelays.length) return;
-                          const pool = ensureNostrPool();
-                          const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
-                          const extraTags: string[][] = [];
-                          if (isGroup && groupMeta?.name) {
-                            extraTags.push(["subject", groupMeta.name]);
-                          }
-                          const { selfWrapEvent } = await publishNip17Giftwraps({
-                            content: text,
-                            senderHex,
-                            recipientHex,
-                            senderSecret: identity.secret,
-                            publish,
-                            ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : {}),
-                          });
-                          if (selfWrapEvent) {
-                            await handleDmEvent(selfWrapEvent);
-                          }
-                          setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
-                          setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
-                        } catch (err) {
-                          setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
-                          console.warn("[chat] send failed", err);
-                          setChatCompose(text);
-                        }
-                      })();
-                    }}
-                    aria-label="Send message"
+                      }}
+                      aria-label="Send message"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div
+                    className={`chat-compose-tray${attachTrayOpen ? " is-open" : ""}`}
+                    style={{ ["--chat-compose-tray-height" as any]: `${chatAttachTrayHeight}px` }}
+                    aria-hidden={!attachTrayOpen}
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-                    </svg>
-                  </button>
+                    <div className="chat-compose-tray__surface">
+                      <div className="chat-compose-tray__grid">
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatPhotoPicker}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3.5" y="5" width="17" height="14" rx="3" />
+                              <circle cx="8.5" cy="10" r="1.5" />
+                              <path d="m6.5 16 4.2-4.2a1.2 1.2 0 0 1 1.7 0L17.5 17" />
+                              <path d="m13.5 14 1.2-1.2a1.2 1.2 0 0 1 1.7 0l1.6 1.6" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">Photos</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatFilePicker}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M8 3.5h6l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 20V5A1.5 1.5 0 0 1 7.5 3.5z" />
+                              <path d="M14 3.5V8h4" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">File</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatContactPicker}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="8.25" r="3.25" />
+                              <path d="M5.5 19a6.5 6.5 0 0 1 13 0" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">Contact</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatEcash}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <ellipse cx="12" cy="8" rx="6.5" ry="2.75" />
+                              <path d="M5.5 8v4c0 1.52 2.9 2.75 6.5 2.75s6.5-1.23 6.5-2.75V8" />
+                              <path d="M5.5 12v4c0 1.52 2.9 2.75 6.5 2.75s6.5-1.23 6.5-2.75v-4" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">eCash</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatLightning}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M13 2 6 13h4l-1 9 9-13h-4l1-7z" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">Lightning</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
           )}
 
-          {chatView === "group-info" && activeThread?.groupId && activeGroupChat && (
-            <div className="chat-group-info">
-              <div className="chat-page__header chat-page__header--safe-area">
-                <button
-                  className="glass-icon-button pressable"
-                  onClick={() => setChatView("conversation")}
-                  aria-label="Back to conversation"
-                >
-                  <BackIcon className="h-5 w-5" />
-                </button>
-                <div className="chat-page__header-title chat-page__header-title--centered">Group Info</div>
-                <div className="chat-conversation__header-spacer" aria-hidden="true" />
-              </div>
-              <div className="chat-group-info__body">
-                <div className="chat-group-info__hero">
-                  <div className="chat-group-info__member-strip" aria-hidden="true">
-                    {activeGroupMembers.slice(0, 7).map((member, index) => (
-                      <div
-                        key={member.memberHex}
-                        className={`chat-group-info__member-avatar${member.picture ? " chat-group-info__member-avatar--image" : ""}`}
-                        style={{ zIndex: activeGroupMembers.length - index }}
-                        title={member.label}
-                      >
-                        {member.picture ? (
-                          <img src={member.picture} alt={member.label} className="chat-group-info__member-avatar-img" />
-                        ) : (
-                          <span>{contactInitials(member.label)}</span>
-                        )}
-                      </div>
-                    ))}
-                    {activeGroupMembers.length > 7 && (
-                      <div className="chat-group-info__member-avatar chat-group-info__member-avatar--overflow">
-                        +{activeGroupMembers.length - 7}
-                      </div>
-                    )}
+          {chatView === "group-info" && activeThread?.groupId && activeGroupChat && (() => {
+            const groupMediaMessages = activeThread.messages.filter(
+              (m) => m.attachment?.type === "file",
+            );
+            const URL_RE = /https?:\/\/[^\s<>"']+/g;
+            const groupLinkMessages = activeThread.messages
+              .filter((m) => !m.attachment || m.attachment.type === "text")
+              .map((m) => {
+                const urls = m.content.match(URL_RE) || [];
+                return urls.length ? { message: m, urls } : null;
+              })
+              .filter(Boolean) as { message: WalletDmMessage; urls: string[] }[];
+            return (
+              <div className="chat-group-info">
+                {/* Header */}
+                <div className="chat-page__header chat-page__header--safe-area">
+                  <button
+                    className="glass-icon-button pressable"
+                    onClick={() => setChatView("conversation")}
+                    aria-label="Back to conversation"
+                  >
+                    <BackIcon className="h-5 w-5" />
+                  </button>
+                  <div className="chat-group-info__header-avatar">
+                    <GroupAvatar members={activeGroupAvatarMembers} />
                   </div>
                   <button
                     type="button"
-                    className="chat-group-info__view-members pressable"
-                    onClick={() => {
-                      setGroupMembersSearch("");
-                      setChatView("group-members");
-                    }}
-                  >
-                    <span>{`View All ${activeGroupMembers.length} Member${activeGroupMembers.length === 1 ? "" : "s"}`}</span>
-                    <span className="chat-group-info__row-chevron">&rsaquo;</span>
-                  </button>
-                </div>
-
-                <div className="chat-group-info__card">
-                  <button
-                    type="button"
-                    className="chat-group-info__row pressable"
+                    className="chat-group-info__edit-btn pressable"
                     onClick={openGroupNameEditor}
                   >
-                    <span className="chat-group-info__row-label">Group Name</span>
-                    <span className="chat-group-info__row-side">
-                      <span className="chat-group-info__row-value">{activeGroupChat.name || "Group"}</span>
-                      <span className="chat-group-info__row-chevron">&rsaquo;</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="chat-group-info__row pressable"
-                    onClick={() => {
-                      setGroupMembersSearch("");
-                      setChatView("group-members");
-                    }}
-                  >
-                    <span className="chat-group-info__row-label">Members</span>
-                    <span className="chat-group-info__row-side">
-                      <span className="chat-group-info__row-value">{activeGroupMembers.length}</span>
-                      <span className="chat-group-info__row-chevron">&rsaquo;</span>
-                    </span>
+                    Edit
                   </button>
                 </div>
 
-                <div className="chat-group-info__card">
-                  <div className="chat-group-info__row">
-                    <span className="chat-group-info__row-label">Mute</span>
+                {/* Group name */}
+                <div className="chat-group-info__name">{activeGroupChat.name || "Group"}</div>
+
+                {/* Tab bar */}
+                <div className="chat-group-info__tab-bar">
+                  {(["info", "photos", "links"] as const).map((tab) => (
                     <button
+                      key={tab}
                       type="button"
-                      className={`edit-toggle pressable${activeGroupMuted ? " is-on" : ""}`}
-                      onClick={handleToggleActiveGroupMute}
-                      aria-label={activeGroupMuted ? "Unmute group" : "Mute group"}
-                      aria-pressed={activeGroupMuted}
+                      className={`chat-group-info__tab-btn pressable${groupInfoTab === tab ? " chat-group-info__tab-btn--active" : ""}`}
+                      onClick={() => setGroupInfoTab(tab)}
                     >
-                      <span className="edit-toggle__thumb" />
+                      {tab.charAt(0).toUpperCase() + tab.slice(1)}
                     </button>
-                  </div>
-                  <button
-                    type="button"
-                    className={`chat-group-info__leave-button pressable${activeGroupLeft ? " chat-group-info__leave-button--join" : ""}`}
-                    onClick={handleToggleActiveGroupMembership}
-                  >
-                    {activeGroupLeft ? "Join Group" : "Leave Group"}
-                  </button>
+                  ))}
+                </div>
+
+                {/* Tab content */}
+                <div className="chat-group-info__tab-body">
+                  {groupInfoTab === "info" && (
+                    <>
+                      {/* Member grid */}
+                      <div className="chat-group-info__member-grid">
+                        {activeGroupMembers.map((member) => (
+                          <button
+                            key={member.memberHex}
+                            type="button"
+                            className="chat-group-info__member-cell pressable"
+                            onClick={() => {
+                              setContactReturnView("group-info");
+                              setContactView("detail");
+                              setDmSearch("");
+                              if (member.isSelf) {
+                                setActiveContactId("profile");
+                                setContactDetailOverride(null);
+                              } else if (member.contactId) {
+                                setActiveContactId(member.contactId);
+                                setContactDetailOverride(null);
+                              } else {
+                                setActiveContactId(null);
+                                setContactDetailOverride(member.detailContact);
+                              }
+                              setChatView("new-message");
+                            }}
+                          >
+                            <div className={`chat-group-info__member-circle${member.picture ? " chat-group-info__member-circle--image" : ""}`}>
+                              {member.picture ? (
+                                <img src={member.picture} alt={member.label} className="chat-group-info__member-avatar-img" />
+                              ) : (
+                                <span>{contactInitials(member.label)}</span>
+                              )}
+                            </div>
+                            <span className="chat-group-info__member-name">{member.label.split(" ")[0]}</span>
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="chat-group-info__member-cell pressable"
+                          onClick={() => { setGroupMembersSearch(""); setChatView("group-members"); }}
+                        >
+                          <div className="chat-group-info__member-circle chat-group-info__member-circle--add">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                          </div>
+                          <span className="chat-group-info__member-name">Add</span>
+                        </button>
+                      </div>
+                      {/* Mute + leave */}
+                      <div className="chat-group-info__card" style={{ margin: "0 1rem" }}>
+                        <div className="chat-group-info__row">
+                          <span className="chat-group-info__row-label">Mute</span>
+                          <button
+                            type="button"
+                            className={`edit-toggle pressable${activeGroupMuted ? " is-on" : ""}`}
+                            onClick={handleToggleActiveGroupMute}
+                            aria-label={activeGroupMuted ? "Unmute group" : "Mute group"}
+                            aria-pressed={activeGroupMuted}
+                          >
+                            <span className="edit-toggle__thumb" />
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className={`chat-group-info__leave-button pressable${activeGroupLeft ? " chat-group-info__leave-button--join" : ""}`}
+                          onClick={handleToggleActiveGroupMembership}
+                        >
+                          {activeGroupLeft ? "Join Group" : "Leave Group"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {groupInfoTab === "photos" && (
+                    groupMediaMessages.length === 0 ? (
+                      <div className="chat-group-info__empty">No photos shared yet.</div>
+                    ) : (
+                      <div className="chat-group-info__photo-grid">
+                        {groupMediaMessages.map((msg) => {
+                          const att = msg.attachment as Extract<WalletDmAttachment, { type: "file" }>;
+                          return (
+                            <div key={msg.eventId} className="chat-group-info__photo-cell">
+                              <MessengerFileBubble
+                                descriptor={{
+                                  url: att.url,
+                                  mimeType: att.mimeType,
+                                  filename: att.filename ?? undefined,
+                                  size: att.size ?? undefined,
+                                  width: att.width ?? undefined,
+                                  height: att.height ?? undefined,
+                                  algorithm: att.algorithm,
+                                  keyHex: att.keyHex,
+                                  nonceHex: att.nonceHex,
+                                }}
+                                isIncoming={msg.isIncoming}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )
+                  )}
+
+                  {groupInfoTab === "links" && (
+                    groupLinkMessages.length === 0 ? (
+                      <div className="chat-group-info__empty">No links shared yet.</div>
+                    ) : (
+                      <div className="chat-group-info__links-grid">
+                        {groupLinkMessages.flatMap(({ message, urls }) =>
+                          urls.map((url, i) => {
+                            const domain = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+                            const pathSegments = (() => { try { return new URL(url).pathname.split("/").filter(Boolean); } catch { return []; } })();
+                            const cardTitle = pathSegments.length > 0
+                              ? decodeURIComponent(pathSegments[pathSegments.length - 1]).replace(/[-_]/g, " ").replace(/\.[^.]+$/, "")
+                              : domain;
+                            const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+                            return (
+                              <a
+                                key={`${message.eventId}-${i}`}
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="chat-group-info__link-card pressable"
+                              >
+                                <div className="chat-group-info__link-card__preview">
+                                  <img
+                                    src={faviconUrl}
+                                    alt=""
+                                    className="chat-group-info__link-card__favicon"
+                                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = "0"; }}
+                                  />
+                                </div>
+                                <div className="chat-group-info__link-card__footer">
+                                  <div className="chat-group-info__link-card__title">{cardTitle || domain}</div>
+                                  <div className="chat-group-info__link-card__domain">{domain}</div>
+                                </div>
+                              </a>
+                            );
+                          })
+                        )}
+                      </div>
+                    )
+                  )}
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {chatView === "group-members" && activeThread?.groupId && activeGroupChat && (
             <div className="chat-group-members">
@@ -18586,7 +19138,7 @@ export default function CashuWalletModal({
                 >
                   <BackIcon className="h-5 w-5" />
                 </button>
-                <div className={`chat-page__header-title${contactView === "list" || (contactView === "edit" && !contactEditDraft.id && !contactEditDraft.isProfile) ? " chat-page__header-title--centered" : ""}`}>
+                <div className="chat-page__header-title chat-page__header-title--centered">
                   {contactView === "edit"
                     ? contactEditDraft.isProfile
                       ? "Edit My Card"
@@ -18868,6 +19420,7 @@ export default function CashuWalletModal({
                                       onClick={() => {
                                         setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
                                         setShareContactStatus(null);
+                                        setShareContactPickerMode("recipient");
                                         setShareContactPickerOpen(true);
                                       }}
                                     >
@@ -18919,6 +19472,7 @@ export default function CashuWalletModal({
                                 onClick={() => {
                                   setShareContactSource(activeContact);
                                   setShareContactStatus(null);
+                                  setShareContactPickerMode("recipient");
                                   setShareContactPickerOpen(true);
                                 }}
                               >
@@ -19424,56 +19978,6 @@ export default function CashuWalletModal({
 
         </div>
       )}
-
-      <ActionSheet
-        open={attachSheetOpen}
-        onClose={() => setAttachSheetOpen(false)}
-        title="Attach"
-      >
-        <div className="wallet-section space-y-2 text-sm">
-          <button
-            className="ghost-button button-sm pressable w-full justify-between"
-            onClick={() => {
-              setAttachSheetOpen(false);
-              setTimeout(() => chatPhotoInputRef.current?.click(), 50);
-            }}
-          >
-            <span>Photo Library</span>
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <circle cx="8.5" cy="8.5" r="1.5" />
-              <polyline points="21 15 16 10 5 21" />
-            </svg>
-          </button>
-          <button
-            className="ghost-button button-sm pressable w-full justify-between"
-            onClick={() => {
-              setAttachSheetOpen(false);
-              setTimeout(() => chatCameraInputRef.current?.click(), 50);
-            }}
-          >
-            <span>Take Photo or Video</span>
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
-          </button>
-          <button
-            className="ghost-button button-sm pressable w-full justify-between"
-            onClick={() => {
-              setAttachSheetOpen(false);
-              setTimeout(() => chatFileInputRef.current?.click(), 50);
-            }}
-          >
-            <span>Choose Files</span>
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
-              <polyline points="13 2 13 9 20 9" />
-            </svg>
-          </button>
-        </div>
-      </ActionSheet>
-
       <ActionSheet
         open={receiveMode === "ecash"}
         onClose={closeReceiveEcashSheet}
@@ -20099,6 +20603,31 @@ export default function CashuWalletModal({
 	      <ActionSheet
 	        open={sendMode === "ecash"}
 	        onClose={closeEcashSendSheet}
+	        header={
+	          ecashSendView === "contact" && ecashSendRecipient ? (
+	            <>
+	              <div className="ecash-contact-sheet__sheet-title">
+	                {(() => {
+	                  const nip05 = ecashSendRecipient.nip05?.trim() || "";
+	                  const nip05Verified = nip05 && isNip05VerifiedFor(ecashSendRecipient.id, nip05, ecashSendRecipient.npub);
+	                  const label = nip05Verified ? nip05 : contactPrimaryName(ecashSendRecipient);
+	                  return `Send to ${truncateContactName(label, 34)}`;
+	                })()}
+	              </div>
+	              <div className="flex items-center gap-2 ml-auto">
+	                <button
+	                  className="ghost-button button-sm pressable"
+	                  onClick={() => openContactsFor("ecash")}
+	                >
+	                  Contacts
+	                </button>
+	                <button className="ghost-button button-sm pressable" onClick={closeEcashSendSheet}>
+	                  Close
+	                </button>
+	              </div>
+	            </>
+	          ) : undefined
+	        }
 	        title={
 	          ecashSendView === "contact" && ecashSendRecipient
 	            ? (() => {
@@ -20146,6 +20675,7 @@ export default function CashuWalletModal({
 	            </div>
 	          )
 	        }
+	        panelClassName={ecashSendView === "contact" ? "sheet-panel--compact ecash-contact-sheet" : undefined}
 	      >
         {ecashSendView === "amount" && (
           <div className="space-y-4">
@@ -20260,7 +20790,7 @@ export default function CashuWalletModal({
 	        )}
 	        {ecashSendView === "contact" && ecashSendRecipient && (
 	          <div className="space-y-4">
-	            <div className="wallet-section space-y-5">
+	            <div className="wallet-section wallet-section--compact ecash-contact-sheet__card space-y-5">
 	              <div className="space-y-2 text-left">
 	                <div className="text-[11px] uppercase tracking-wide text-secondary">Send from</div>
 	                {mintSelectionOptions.length ? (
@@ -20286,7 +20816,7 @@ export default function CashuWalletModal({
 	                        );
 	                      })}
 	                    </select>
-	                    <div className="pill-input lightning-mint-select__display">
+	                    <div className="pill-input lightning-mint-select__display ecash-contact-sheet__mint-display">
 	                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
 	                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
 	                    </div>
@@ -20298,7 +20828,7 @@ export default function CashuWalletModal({
 	              </div>
 	              <button
 	                type="button"
-	                className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
+	                className={`lightning-amount-display glass-panel ecash-contact-sheet__amount${canToggleCurrency ? " pressable" : ""}`}
 	                onClick={canToggleCurrency ? handleTogglePrimary : undefined}
 	                disabled={!canToggleCurrency}
 	              >
@@ -20310,7 +20840,7 @@ export default function CashuWalletModal({
 	                </div>
 	              </button>
 	              {sendLockError && <div className="text-[11px] text-rose-500">{sendLockError}</div>}
-	              <div className="grid grid-cols-3 gap-3">
+	              <div className="wallet-keypad-grid grid grid-cols-3 gap-3">
 	                {(primaryCurrency === "usd"
 	                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
 	                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
@@ -20320,7 +20850,7 @@ export default function CashuWalletModal({
 	                    <button
 	                      key={key}
 	                      type="button"
-	                      className="glass-panel pressable py-3 text-lg font-semibold"
+	                      className="glass-panel wallet-keypad-grid__button ecash-contact-sheet__keypad-button pressable py-3 text-lg font-semibold"
 	                      onClick={() => handleEcashAmountKeypadInput(handlerKey)}
 	                    >
 	                      {key === "clear" ? "Clear" : key}
@@ -20329,7 +20859,7 @@ export default function CashuWalletModal({
 	                })}
 	              </div>
 	              <button
-	                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
+	                className="accent-button accent-button--tall ecash-contact-sheet__submit pressable w-full text-lg font-semibold"
 	                onClick={() => {
 	                  void applyEcashContact(ecashSendRecipient);
 	                }}
@@ -20585,6 +21115,7 @@ export default function CashuWalletModal({
                         onClick={() => {
                           setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
                           setShareContactStatus(null);
+                          setShareContactPickerMode("recipient");
                           setShareContactPickerOpen(true);
                         }}
                       >
@@ -20637,6 +21168,7 @@ export default function CashuWalletModal({
                         onClick={() => {
                           setShareContactSource(activeContact);
                           setShareContactStatus(null);
+                          setShareContactPickerMode("recipient");
                           setShareContactPickerOpen(true);
                         }}
                       >
@@ -21663,6 +22195,7 @@ export default function CashuWalletModal({
                       onClick={() => {
                         setShareContactSource(scannedContact);
                         setShareContactStatus(null);
+                        setShareContactPickerMode("recipient");
                         setShareContactPickerOpen(true);
                       }}
                     >
@@ -21790,6 +22323,7 @@ export default function CashuWalletModal({
                       onClick={() => {
                         setShareContactSource(sharedContactPreviewContact);
                         setShareContactStatus(null);
+                        setShareContactPickerMode("recipient");
                         setShareContactPickerOpen(true);
                       }}
                     >
@@ -21839,48 +22373,96 @@ export default function CashuWalletModal({
         onClose={() => {
           if (shareContactBusy) return;
           setShareContactPickerOpen(false);
+          setShareContactPickerMode("recipient");
           setShareContactSource(null);
           setShareContactStatus(null);
         }}
         title="Send contact"
         stackLevel={90}
       >
-        {shareContactSource ? (
-          <div className="text-sm text-secondary mb-2">
-            Send <span className="font-semibold">{contactPrimaryName(shareContactSource)}</span> to a contact.
-          </div>
-        ) : (
-          <div className="text-sm text-secondary mb-2">Choose who to send this contact to.</div>
-        )}
-        {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
-        {shareRecipientOptions.length ? (
-          <div className="space-y-2">
-            {shareRecipientOptions.map((contact) => {
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              return (
-                <button
-                  key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
-                  disabled={shareContactBusy}
-                  onClick={() => handleShareContactToContact(contact)}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name">{label}</div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
+        {shareContactPickerMode === "chat-source" ? (
+          <>
+            <div className="text-sm text-secondary mb-2">Choose a contact card to send into this conversation.</div>
+            {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
+            {chatAttachContactOptions.length ? (
+              <div className="space-y-2">
+                {chatAttachContactOptions.map((contact) => {
+                  const label = contactPrimaryName(contact);
+                  const subtitle = formatContactNpub(contact.npub) || formatContactUsername(contact.username);
+                  const picture = contact.picture?.trim();
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      className="contact-row pressable"
+                      disabled={shareContactBusy}
+                      onClick={() => {
+                        void handleSendChatContactAttachment(contact);
+                      }}
+                    >
+                      <div className={`contact-avatar${picture ? " contact-avatar--image" : ""}`}>
+                        {picture ? (
+                          <img src={picture} alt={label} className="contact-avatar__img" />
+                        ) : (
+                          contactInitials(label)
+                        )}
                       </div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{label}</div>
+                        {subtitle ? (
+                          <div className="contact-row__meta">
+                            <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-sm text-secondary">Add a contact with a valid npub first.</div>
+            )}
+          </>
         ) : (
-          <div className="text-sm text-secondary">Add another contact with an npub to share to.</div>
+          <>
+            {shareContactSource ? (
+              <div className="text-sm text-secondary mb-2">
+                Send <span className="font-semibold">{contactPrimaryName(shareContactSource)}</span> to a contact.
+              </div>
+            ) : (
+              <div className="text-sm text-secondary mb-2">Choose who to send this contact to.</div>
+            )}
+            {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
+            {shareRecipientOptions.length ? (
+              <div className="space-y-2">
+                {shareRecipientOptions.map((contact) => {
+                  const label = contactPrimaryName(contact);
+                  const subtitle = formatContactNpub(contact.npub);
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      className="contact-row pressable"
+                      disabled={shareContactBusy}
+                      onClick={() => handleShareContactToContact(contact)}
+                    >
+                      <div className="contact-avatar">{contactInitials(label)}</div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{label}</div>
+                        {subtitle ? (
+                          <div className="contact-row__meta">
+                            <span className="contact-row__meta-text">{subtitle}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-sm text-secondary">Add another contact with an npub to share to.</div>
+            )}
+          </>
         )}
         <div className="flex gap-2 mt-3">
           <button
@@ -21889,6 +22471,7 @@ export default function CashuWalletModal({
             onClick={() => {
               if (shareContactBusy) return;
               setShareContactPickerOpen(false);
+              setShareContactPickerMode("recipient");
               setShareContactSource(null);
               setShareContactStatus(null);
             }}

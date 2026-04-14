@@ -20585,8 +20585,7 @@ export default function App() {
 
       {/* Cashu Wallet */}
       <Suspense fallback={null}>
-        {showWalletShell && (
-          <CashuWalletModal
+        <CashuWalletModal
             open={showWalletShell}
             onClose={closeWallet}
             onOpenBounties={openWalletBounties}
@@ -20624,7 +20623,6 @@ export default function App() {
             formatCalendarInviteWhen={formatCalendarInviteWhen}
             onDmUnreadCountChange={setDmUnreadCount}
           />
-        )}
       </Suspense>
 
 
