@@ -3911,6 +3911,9 @@ export default function CashuWalletModal({
   const [shareContactSource, setShareContactSource] = useState<Contact | null>(null);
   const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
   const [shareContactBusy, setShareContactBusy] = useState(false);
+  // Tracks which thread peer was active when the chat-source picker was opened,
+  // so the effect below only closes it when the user switches conversations.
+  const shareContactOpenedAtPeerRef = useRef<string | null>(null);
   useEffect(() => {
     if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source" || chatView === "conversation") return;
     setShareContactPickerOpen(false);
@@ -3920,6 +3923,8 @@ export default function CashuWalletModal({
   }, [chatView, shareContactPickerMode, shareContactPickerOpen]);
   useEffect(() => {
     if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source") return;
+    // Only close if the active thread actually changed since the picker was opened.
+    if (activeThreadPeer === shareContactOpenedAtPeerRef.current) return;
     setShareContactPickerOpen(false);
     setShareContactPickerMode("recipient");
     setShareContactSource(null);
@@ -7033,19 +7038,21 @@ export default function CashuWalletModal({
   }, []);
   const handleOpenChatPhotoPicker = useCallback(() => {
     closeAttachTray();
-    window.setTimeout(() => chatPhotoInputRef.current?.click(), 50);
+    // Wait for the 320ms tray close animation before triggering the picker.
+    window.setTimeout(() => chatPhotoInputRef.current?.click(), 350);
   }, [closeAttachTray]);
   const handleOpenChatFilePicker = useCallback(() => {
     closeAttachTray();
-    window.setTimeout(() => chatFileInputRef.current?.click(), 50);
+    window.setTimeout(() => chatFileInputRef.current?.click(), 350);
   }, [closeAttachTray]);
   const handleOpenChatContactPicker = useCallback(() => {
     closeAttachTray();
+    shareContactOpenedAtPeerRef.current = activeThreadPeer;
     setShareContactPickerMode("chat-source");
     setShareContactSource(null);
     setShareContactStatus(null);
     setShareContactPickerOpen(true);
-  }, [closeAttachTray]);
+  }, [activeThreadPeer, closeAttachTray]);
   const handleSendChatContactAttachment = useCallback(
     async (contact: Contact) => {
       if (!activeThread) {
@@ -18764,7 +18771,9 @@ export default function CashuWalletModal({
                     type="file"
                     accept="image/*,video/*"
                     multiple
-                    style={{ display: "none" }}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    style={{ position: "fixed", bottom: 0, left: 0, width: 1, height: 1, opacity: 0 }}
                     onChange={(e) => {
                       const files = Array.from(e.target.files || []);
                       e.target.value = "";
@@ -18775,7 +18784,9 @@ export default function CashuWalletModal({
                     ref={chatFileInputRef}
                     type="file"
                     multiple
-                    style={{ display: "none" }}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    style={{ position: "fixed", bottom: 0, left: 0, width: 1, height: 1, opacity: 0 }}
                     onChange={(e) => {
                       const files = Array.from(e.target.files || []);
                       e.target.value = "";

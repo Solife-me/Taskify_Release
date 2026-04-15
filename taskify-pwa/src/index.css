@@ -9154,6 +9154,7 @@ body:has(.wallet-modal--app-nav-hidden) .app-tab-switcher {
   border: 1px solid rgba(255, 255, 255, 0.14);
   color: var(--text-primary);
   font-size: 0.95rem;
+  line-height: 1.5;
   outline: none;
   resize: none;
   max-height: 6rem;
