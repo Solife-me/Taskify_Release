@@ -8665,6 +8665,453 @@ html.light .chat-bubble--in .chat-bubble__contact-avatar {
   flex-shrink: 0;
 }
 
+/* ── Reply quote block (inside message bubble) ── */
+.chat-reply-quote {
+  display: flex;
+  gap: 0.45rem;
+  margin-bottom: 0.45rem;
+  opacity: 0.75;
+}
+
+.chat-reply-quote__bar {
+  width: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.chat-reply-quote__text {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ── Reply banner above compose ── */
+.chat-reply-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem 0.45rem 0.65rem;
+  background: var(--surface-2, rgba(0,0,0,0.06));
+  border-top: 1px solid var(--border-subtle, rgba(0,0,0,0.08));
+  border-bottom: 1px solid var(--border-subtle, rgba(0,0,0,0.08));
+}
+
+.chat-reply-banner__bar {
+  width: 3px;
+  height: 2.4rem;
+  border-radius: 2px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.chat-reply-banner__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-reply-banner__label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 0.1rem;
+}
+
+.chat-reply-banner__text {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-reply-banner__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: transparent;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.chat-reply-banner__close svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.chat-reply-banner__close:active {
+  opacity: 0.3;
+}
+
+/* ── Bubble wrapper for absolute-positioned tapbacks ── */
+.chat-bubble-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+}
+
+.chat-bubble-wrap--reacted {
+  /* Chip is 1.7rem tall, positioned at top: -1rem.
+     Chip bottom lands ~0.7rem (11px) inside the bubble — within the 16px corner radius, clear of text padding. */
+  margin-top: 1.2rem;
+}
+
+/* ── Tapback (iMessage-style reaction) bubbles ── */
+.chat-tapbacks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  position: absolute;
+  top: -1rem;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+/* Incoming messages: reaction on the right */
+.chat-tapbacks--in {
+  right: -4px;
+  left: auto;
+}
+
+/* Outgoing messages: reaction on the left */
+.chat-tapbacks--out {
+  left: -4px;
+  right: auto;
+}
+
+/* Individual tapback bubble — circular pill */
+.chat-tapback {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  min-width: 1.7rem;
+  min-height: 1.7rem;
+  padding: 0.18rem 0.28rem;
+  border-radius: 999px;
+  background: var(--surface-modal, #2c2c2e);
+  border: 1.5px solid rgba(255,255,255,0.12);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  line-height: 1;
+  transition: transform 0.12s, opacity 0.12s;
+}
+
+.chat-tapback:active {
+  transform: scale(0.9);
+  opacity: 0.7;
+}
+
+.chat-tapback__emoji {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.chat-tapback__count {
+  font-size: 0.68rem;
+  font-weight: 700;
+  opacity: 0.75;
+}
+
+/* ── Reaction detail panel rows ── */
+.dm-reaction-detail__group {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding: 0.65rem 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.dm-reaction-detail__emoji {
+  font-size: 1.5rem;
+  line-height: 1;
+  flex-shrink: 0;
+  padding-top: 0.1rem;
+}
+
+.dm-reaction-detail__reactors {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.dm-reaction-detail__reactor {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.dm-reaction-detail__reactor-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.dm-reaction-detail__reactor-name {
+  font-size: 0.9rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Message action overlay ── */
+.dm-action-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0,0,0,0.35);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.dm-action-panel {
+  width: 100%;
+  max-width: 420px;
+  background: rgba(22,22,24,0.78);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  border-radius: 16px 16px 0 0;
+  border-top: 1px solid rgba(255,255,255,0.10);
+  border-left: 1px solid rgba(255,255,255,0.07);
+  border-right: 1px solid rgba(255,255,255,0.07);
+  overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.dm-action-panel__reactions {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 1rem 0.75rem 0.85rem;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.dm-action-panel__reaction {
+  font-size: 1.75rem;
+  line-height: 1;
+  padding: 0.2rem;
+  border-radius: 50%;
+  transition: transform 0.12s, opacity 0.12s;
+}
+
+.dm-action-panel__reaction:active {
+  transform: scale(0.85);
+  opacity: 0.7;
+}
+
+.dm-action-panel__list {
+  padding: 0.25rem 0;
+}
+
+.dm-action-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  width: 100%;
+  padding: 0.85rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 400;
+  text-align: left;
+  color: var(--text-primary);
+  transition: background 0.1s;
+}
+
+.dm-action-panel__item:active {
+  background: rgba(255,255,255,0.06);
+}
+
+.dm-action-panel__item-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.dm-action-panel__item--danger {
+  color: #ff453a;
+}
+
+.dm-action-panel__item--danger .dm-action-panel__item-icon {
+  opacity: 1;
+  stroke: #ff453a;
+}
+
+/* ── Info panel ── */
+.dm-info-panel {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface-modal, #1c1c1e);
+  border-radius: 16px 16px 0 0;
+  overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.dm-info-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.dm-info-panel__title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.dm-info-panel__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  opacity: 0.55;
+}
+
+.dm-info-panel__close svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.dm-info-panel__close:active {
+  opacity: 0.3;
+}
+
+.dm-info-panel__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  gap: 1rem;
+}
+
+.dm-info-panel__label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.dm-info-panel__value {
+  font-size: 0.85rem;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-info-panel__value--mono {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.78rem;
+}
+
+.dm-info-panel__value--tap {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.dm-info-panel__value--tap:active {
+  opacity: 0.6;
+}
+
+/* ── Forward panel ── */
+.dm-forward-panel {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface-modal, #1c1c1e);
+  border-radius: 16px 16px 0 0;
+  overflow: hidden;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.dm-forward-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  flex-shrink: 0;
+}
+
+.dm-forward-panel__title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.dm-forward-panel__preview {
+  padding: 0.6rem 1.25rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.04);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.dm-forward-panel__list {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dm-forward-panel__thread {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.7rem 1.25rem;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.dm-forward-panel__thread:active {
+  background: rgba(255,255,255,0.06);
+}
+
+.dm-forward-panel__thread-avatar {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 50%;
+  background: var(--surface-2, rgba(255,255,255,0.1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.dm-forward-panel__thread-name {
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
 @keyframes chat-bubble-fly-in {
   from {
     opacity: 0;

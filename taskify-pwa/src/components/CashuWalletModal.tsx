@@ -1117,6 +1117,12 @@ type DecryptedNostrDm = {
   tags?: string[][] | null;
 };
 
+type DmReaction = {
+  emoji: string;
+  senderPubkey: string;
+  reactEventId: string;
+};
+
 type WalletDmMessage = {
   id: string;
   eventId: string;
@@ -1128,6 +1134,7 @@ type WalletDmMessage = {
   attachment?: WalletDmAttachment;
   groupId?: string; // set for group messages
   senderPubkey?: string; // set for group messages — who sent this specific message
+  replyToEventId?: string; // "e" tag from inner kind-14 rumor
 };
 
 type WalletDmThread = {
@@ -2748,7 +2755,12 @@ export default function CashuWalletModal({
   const initialDmPeerProfiles = useMemo(() => buildInitialDmPeerProfiles(initialDmMessages), [initialDmMessages]);
   const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => initialDmMessages);
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
-  const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
+  const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string; msg: WalletDmMessage } | null>(null);
+  const [replyToMessage, setReplyToMessage] = useState<WalletDmMessage | null>(null);
+  const [dmReactions, setDmReactions] = useState<Map<string, DmReaction[]>>(new Map());
+  const [dmInfoMessage, setDmInfoMessage] = useState<WalletDmMessage | null>(null);
+  const [dmForwardMessage, setDmForwardMessage] = useState<WalletDmMessage | null>(null);
+  const [dmReactionDetail, setDmReactionDetail] = useState<{ eventId: string } | null>(null);
   useEffect(() => {
     if (!open || !isChatPage || typeof window === "undefined") return;
     const viewport = window.visualViewport;
@@ -3099,6 +3111,7 @@ export default function CashuWalletModal({
   useEffect(() => {
     cancelDmLongPress();
     setDmMessageActions(null);
+    setReplyToMessage(null);
   }, [activeThreadPeer, cancelDmLongPress, dmView]);
   const [receiveMode, setReceiveMode] = useState<null | "ecash" | "lightning" | "lnurlWithdraw">(null);
   const [receiveLockVisible, setReceiveLockVisible] = useState(false);
@@ -3542,7 +3555,7 @@ export default function CashuWalletModal({
           } catch {
             rumor = null;
           }
-          if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15) || typeof rumor.content !== "string") {
+          if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15 && rumor.kind !== 7) || typeof rumor.content !== "string") {
             return null;
           }
           const rumorPubkey = typeof rumor.pubkey === "string" ? rumor.pubkey.trim().toLowerCase() : "";
@@ -5884,7 +5897,31 @@ export default function CashuWalletModal({
       const identity = ensureNostrIdentity();
       if (!identity) return;
       const decrypted = await decryptNostrPaymentMessage(event, identity.pubkey, identity.secret);
-      if (!decrypted?.content) {
+      if (!decrypted) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      // Handle kind-7 emoji reactions (NIP-25 inside NIP-17 giftwrap)
+      if (decrypted.kind === 7) {
+        const tags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
+        const eTag = tags.find((t) => Array.isArray(t) && t[0] === "e");
+        const reactedToEventId = typeof eTag?.[1] === "string" ? eTag[1] : null;
+        if (reactedToEventId && decrypted.senderPubkey) {
+          const emoji = (decrypted.content || "").trim() || "❤️";
+          const sender = decrypted.senderPubkey.toLowerCase();
+          setDmReactions((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(reactedToEventId) || [];
+            const filtered = existing.filter((r) => r.senderPubkey !== sender);
+            if (emoji !== "-") filtered.push({ emoji, senderPubkey: sender, reactEventId: event.id });
+            next.set(reactedToEventId, filtered);
+            return next;
+          });
+        }
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      if (!decrypted.content) {
         dmProcessedEventsRef.current.add(event.id);
         return;
       }
@@ -6125,6 +6162,11 @@ export default function CashuWalletModal({
         return;
       }
 
+      // Extract reply-to event ID from the inner rumor's "e" tags (NIP-17 reply threading)
+      const innerTags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
+      const replyETag = innerTags.find((t) => Array.isArray(t) && t[0] === "e");
+      const replyToEventId = typeof replyETag?.[1] === "string" ? replyETag[1] : undefined;
+
       const message: WalletDmMessage = {
         id: crypto.randomUUID(),
         eventId: event.id,
@@ -6135,6 +6177,7 @@ export default function CashuWalletModal({
         preview,
         attachment: attachment ?? { type: "text" },
         ...(isGroupMessage && groupId ? { groupId, senderPubkey: rumorSender } : {}),
+        ...(replyToEventId ? { replyToEventId } : {}),
       };
 
       dmProcessedEventsRef.current.add(event.id);
@@ -7459,6 +7502,70 @@ export default function CashuWalletModal({
       return { selfWrapEvent };
     },
     [resolveNip17Timestamp],
+  );
+  const handleSendReaction = useCallback(
+    async (msg: WalletDmMessage, emoji: string) => {
+      try {
+        const { identity } = readNostrIdentity();
+        if (!identity) return;
+        const senderHex = identity.pubkey.toLowerCase();
+        const isGroup = !!msg.groupId;
+        const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === msg.groupId) : null;
+        const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
+        const recipientHex = isGroup ? groupRecipients[0] || "" : msg.peerPubkey.toLowerCase();
+        const relayTargets = isGroup ? groupRecipients : [recipientHex];
+        const allRelays = new Set<string>();
+        for (const target of relayTargets) {
+          const relays = await resolveNip17Relays(target, defaultNostrRelays);
+          relays.forEach((r) => allRelays.add(r));
+        }
+        const publishRelays = Array.from(allRelays);
+        if (!publishRelays.length) return;
+        const pool = ensureNostrPool();
+        const publish = (ev: NostrEvent) => safePublish(pool, publishRelays, ev);
+        const authorPubkey = msg.senderPubkey || (msg.isIncoming ? msg.peerPubkey : senderHex);
+        const { selfWrapEvent } = await publishNip17Giftwraps({
+          content: emoji,
+          senderHex,
+          recipientHex,
+          senderSecret: identity.secret,
+          publish,
+          kind: 7,
+          extraTags: [["e", msg.eventId], ["p", authorPubkey]],
+          ...(isGroup ? { recipientHexes: groupRecipients } : {}),
+        });
+        if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
+      } catch (err) {
+        console.warn("[chat] reaction send failed", err);
+      }
+      setDmMessageActions(null);
+    },
+    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
+  );
+  const handleForwardMessage = useCallback(
+    async (msg: WalletDmMessage, targetPeerPubkey: string) => {
+      try {
+        const { identity } = readNostrIdentity();
+        if (!identity) return;
+        const senderHex = identity.pubkey.toLowerCase();
+        const recipientHex = targetPeerPubkey.toLowerCase();
+        const relays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+        if (!relays.length) return;
+        const pool = ensureNostrPool();
+        const publish = (ev: NostrEvent) => safePublish(pool, relays, ev);
+        const { selfWrapEvent } = await publishNip17Giftwraps({
+          content: msg.content,
+          senderHex,
+          recipientHex,
+          senderSecret: identity.secret,
+          publish,
+        });
+        if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
+      } catch (err) {
+        console.warn("[chat] forward failed", err);
+      }
+    },
+    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
   );
   const publishGroupSubjectUpdate = useCallback(
     async (group: GroupChat, subject: string) => {
@@ -16770,6 +16877,7 @@ export default function CashuWalletModal({
                             ? "Token"
                             : "Message";
                     const isActionOpen = dmMessageActions?.eventId === msg.eventId;
+                    const hasReactions = (dmReactions.get(msg.eventId)?.length ?? 0) > 0;
                     const stackClass = `wallet-message__stack${msg.isIncoming ? "" : " wallet-message__stack--out"}`;
                     return (
                       <div
@@ -16777,19 +16885,20 @@ export default function CashuWalletModal({
                         className={`wallet-message ${msg.isIncoming ? "wallet-message--in" : "wallet-message--out"}`}
                       >
                         <div className={stackClass}>
+                          <div className={`chat-bubble-wrap${hasReactions ? " chat-bubble-wrap--reacted" : ""}`}>
                           <div
                             className={bubbleClass}
                             onContextMenu={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
                               cancelDmLongPress();
-                              setDmMessageActions({ eventId: msg.eventId, copyValue });
+                              setDmMessageActions({ eventId: msg.eventId, copyValue, msg });
                             }}
                             onPointerDown={(event) => {
                               if ((event.target as HTMLElement | null)?.closest("button")) return;
                               cancelDmLongPress();
                               dmLongPressTimerRef.current = window.setTimeout(() => {
-                                setDmMessageActions({ eventId: msg.eventId, copyValue });
+                                setDmMessageActions({ eventId: msg.eventId, copyValue, msg });
                               }, 420);
                             }}
                             onPointerUp={cancelDmLongPress}
@@ -17197,6 +17306,18 @@ export default function CashuWalletModal({
                             )}
                             {msg.attachment?.type === "text" && (
                               <>
+                                {msg.replyToEventId && (() => {
+                                  const replied = dmMessages.find((m) => m.eventId === msg.replyToEventId);
+                                  if (!replied) return null;
+                                  return (
+                                    <div className="chat-reply-quote">
+                                      <div className="chat-reply-quote__bar" />
+                                      <div className="chat-reply-quote__text">
+                                        {replied.content.length > 80 ? replied.content.slice(0, 80) + "…" : replied.content}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
                                 <div className="wallet-message__text">{renderFormattedText(msg.content)}</div>
                                 <div className="wallet-message__time">
                                   {formatDmDay(msg.createdAt)} · {formatDmTime(msg.createdAt)}
@@ -17204,27 +17325,32 @@ export default function CashuWalletModal({
                               </>
                             )}
                           </div>
-                          {isActionOpen && (
-                            <div className="wallet-message__actions">
-                              <button
-                                type="button"
-                                className="ghost-button button-xs pressable"
-                                onClick={() => {
-                                  void copyMessageValue(copyValue, copyLabel);
-                                  setDmMessageActions(null);
-                                }}
-                              >
-                                Copy {copyLabel.toLowerCase()}
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-xs pressable wallet-message__action-delete"
-                                onClick={() => handleDeleteDmMessage(msg.eventId)}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          )}
+                          {(() => {
+                            const msgReactions = dmReactions.get(msg.eventId);
+                            if (!msgReactions?.length) return null;
+                            const grouped = new Map<string, DmReaction[]>();
+                            for (const r of msgReactions) {
+                              const arr = grouped.get(r.emoji) || [];
+                              arr.push(r);
+                              grouped.set(r.emoji, arr);
+                            }
+                            return (
+                              <div className={`chat-tapbacks${msg.isIncoming ? " chat-tapbacks--in" : " chat-tapbacks--out"}`}>
+                                {Array.from(grouped.entries()).map(([emoji, reactions]) => (
+                                  <button
+                                    key={emoji}
+                                    type="button"
+                                    className="chat-tapback pressable"
+                                    onClick={() => setDmReactionDetail({ eventId: msg.eventId })}
+                                  >
+                                    <span className="chat-tapback__emoji">{emoji}</span>
+                                    {reactions.length > 1 && <span className="chat-tapback__count">{reactions.length}</span>}
+                                  </button>
+                                ))}
+                              </div>
+                            );
+                          })()}
+                          </div>
                         </div>
                       </div>
                     );
@@ -17909,6 +18035,7 @@ export default function CashuWalletModal({
                     const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus as WalletMessageItem["status"]);
                     const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus as WalletMessageItem["status"]);
                     const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
+                    const hasReactions = (dmReactions.get(msg.eventId)?.length ?? 0) > 0;
 
                     return (
                       <React.Fragment key={msg.eventId}>
@@ -17928,7 +18055,26 @@ export default function CashuWalletModal({
                             )}
                             <div className={`chat-message__content${senderMeta ? " chat-message__content--group-in" : ""}`}>
                               {senderMeta && <div className="chat-message__sender-name">{senderMeta.label}</div>}
-                              <div className={bubbleClass}>
+                              <div className={`chat-bubble-wrap${hasReactions ? " chat-bubble-wrap--reacted" : ""}`}>
+                              <div
+                                className={bubbleClass}
+                                onContextMenu={(ev) => {
+                                  ev.preventDefault();
+                                  ev.stopPropagation();
+                                  cancelDmLongPress();
+                                  setDmMessageActions({ eventId: msg.eventId, copyValue: buildDmCopyValue(msg, {}), msg });
+                                }}
+                                onPointerDown={(ev) => {
+                                  if ((ev.target as HTMLElement | null)?.closest("button,a")) return;
+                                  cancelDmLongPress();
+                                  dmLongPressTimerRef.current = window.setTimeout(() => {
+                                    setDmMessageActions({ eventId: msg.eventId, copyValue: buildDmCopyValue(msg, {}), msg });
+                                  }, 420);
+                                }}
+                                onPointerUp={cancelDmLongPress}
+                                onPointerLeave={cancelDmLongPress}
+                                onPointerCancel={cancelDmLongPress}
+                              >
                               {isBoard && (
                                 <div className="chat-bubble__card">
                                   <div className="chat-bubble__card-title">{msg.attachment?.boardName || "Shared board"}</div>
@@ -18405,8 +18551,17 @@ export default function CashuWalletModal({
                               )}
                               {msg.attachment?.type === "text" && (() => {
                                 const msgUrls = extractUrlsFromText(msg.content);
+                                const repliedMsg = msg.replyToEventId ? dmMessages.find((m) => m.eventId === msg.replyToEventId) : null;
                                 return (
                                   <div className="chat-bubble__card chat-bubble__card--text">
+                                    {repliedMsg && (
+                                      <div className="chat-reply-quote">
+                                        <div className="chat-reply-quote__bar" />
+                                        <div className="chat-reply-quote__text">
+                                          {repliedMsg.content.length > 80 ? repliedMsg.content.slice(0, 80) + "…" : repliedMsg.content}
+                                        </div>
+                                      </div>
+                                    )}
                                     <div className="chat-bubble__text">{renderFormattedText(msg.content)}</div>
                                     {msgUrls.length > 0 && (
                                       <div className="chat-link-previews">
@@ -18459,6 +18614,32 @@ export default function CashuWalletModal({
                                 />
                               )}
                             </div>
+                            {(() => {
+                              const msgReactions = dmReactions.get(msg.eventId);
+                              if (!msgReactions?.length) return null;
+                              const grouped = new Map<string, DmReaction[]>();
+                              for (const r of msgReactions) {
+                                const arr = grouped.get(r.emoji) || [];
+                                arr.push(r);
+                                grouped.set(r.emoji, arr);
+                              }
+                              return (
+                                <div className={`chat-tapbacks${msg.isIncoming ? " chat-tapbacks--in" : " chat-tapbacks--out"}`}>
+                                  {Array.from(grouped.entries()).map(([emoji, reactions]) => (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      className="chat-tapback pressable"
+                                      onClick={() => setDmReactionDetail({ eventId: msg.eventId })}
+                                    >
+                                      <span className="chat-tapback__emoji">{emoji}</span>
+                                      {reactions.length > 1 && <span className="chat-tapback__count">{reactions.length}</span>}
+                                    </button>
+                                  ))}
+                                </div>
+                              );
+                            })()}
+                              </div>
                             </div>
                           </div>
                           <div className="chat-message__timestamp">{formatDmTime(msg.createdAt)}</div>
@@ -18554,6 +18735,25 @@ export default function CashuWalletModal({
                 </div>
               ) : (
                 <div className="chat-compose-stack">
+                  {replyToMessage && (
+                    <div className="chat-reply-banner">
+                      <div className="chat-reply-banner__bar" />
+                      <div className="chat-reply-banner__body">
+                        <div className="chat-reply-banner__label">Reply</div>
+                        <div className="chat-reply-banner__text">
+                          {replyToMessage.content.length > 80 ? replyToMessage.content.slice(0, 80) + "…" : replyToMessage.content}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="chat-reply-banner__close pressable"
+                        aria-label="Cancel reply"
+                        onClick={() => setReplyToMessage(null)}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    </div>
+                  )}
                   <input
                     ref={chatPhotoInputRef}
                     type="file"
@@ -18603,10 +18803,12 @@ export default function CashuWalletModal({
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
                           e.preventDefault();
+                          const capturedReply = replyToMessage;
                           void (async () => {
                             const text = chatCompose.trim();
                             if (!text) return;
                             setChatCompose("");
+                            setReplyToMessage(null);
                             const pendingId = crypto.randomUUID();
                             const pendingCreatedAt = Math.floor(Date.now() / 1000);
                             setPendingMessages(prev => [
@@ -18638,8 +18840,9 @@ export default function CashuWalletModal({
                               const pool = ensureNostrPool();
                               const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
                               const extraTags: string[][] = [];
-                              if (isGroup && groupMeta?.name) {
-                                extraTags.push(["subject", groupMeta.name]);
+                              if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
+                              if (capturedReply) {
+                                extraTags.push(["e", capturedReply.eventId]);
                               }
                               const { selfWrapEvent } = await publishNip17Giftwraps({
                                 content: text,
@@ -18647,7 +18850,7 @@ export default function CashuWalletModal({
                                 recipientHex,
                                 senderSecret: identity.secret,
                                 publish,
-                                ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : {}),
+                                ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : { extraTags: capturedReply ? extraTags : undefined }),
                               });
                               if (selfWrapEvent) {
                                 await handleDmEvent(selfWrapEvent);
@@ -18668,10 +18871,12 @@ export default function CashuWalletModal({
                       className="chat-compose__send pressable"
                       disabled={!chatCompose.trim()}
                       onClick={() => {
+                        const capturedReply = replyToMessage;
                         void (async () => {
                           const text = chatCompose.trim();
                           if (!text) return;
                           setChatCompose("");
+                          setReplyToMessage(null);
                           const pendingId = crypto.randomUUID();
                           const pendingCreatedAt = Math.floor(Date.now() / 1000);
                           setPendingMessages(prev => [
@@ -18703,8 +18908,9 @@ export default function CashuWalletModal({
                             const pool = ensureNostrPool();
                             const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
                             const extraTags: string[][] = [];
-                            if (isGroup && groupMeta?.name) {
-                              extraTags.push(["subject", groupMeta.name]);
+                            if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
+                            if (capturedReply) {
+                              extraTags.push(["e", capturedReply.eventId]);
                             }
                             const { selfWrapEvent } = await publishNip17Giftwraps({
                               content: text,
@@ -18712,7 +18918,7 @@ export default function CashuWalletModal({
                               recipientHex,
                               senderSecret: identity.secret,
                               publish,
-                              ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : {}),
+                              ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : { extraTags: capturedReply ? extraTags : undefined }),
                             });
                             if (selfWrapEvent) {
                               await handleDmEvent(selfWrapEvent);
@@ -23179,6 +23385,208 @@ export default function CashuWalletModal({
           </div>
         </div>
       </ActionSheet>
+
+      {/* ── Message action overlay (long-press menu) ── */}
+      {dmMessageActions && (
+        <div
+          className="dm-action-overlay"
+          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmMessageActions(null); }}
+        >
+          <div className="dm-action-panel">
+            <div className="dm-action-panel__reactions">
+              {["❤️", "👍", "👎", "😂", "😮", "😢"].map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  className="dm-action-panel__reaction pressable"
+                  onClick={() => { void handleSendReaction(dmMessageActions.msg, emoji); setDmMessageActions(null); }}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+            <div className="dm-action-panel__list">
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { setReplyToMessage(dmMessageActions.msg); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+                Reply
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { setDmForwardMessage(dmMessageActions.msg); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 014-4h12"/></svg>
+                Forward
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { void copyMessageValue(dmMessageActions.copyValue, "Message"); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                Copy
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { setDmInfoMessage(dmMessageActions.msg); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                Info
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item dm-action-panel__item--danger pressable"
+                onClick={() => handleDeleteDmMessage(dmMessageActions.eventId)}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reaction detail sheet ── */}
+      {dmReactionDetail && (() => {
+        const reactions = dmReactions.get(dmReactionDetail.eventId) || [];
+        const grouped = new Map<string, DmReaction[]>();
+        for (const r of reactions) {
+          const arr = grouped.get(r.emoji) || [];
+          arr.push(r);
+          grouped.set(r.emoji, arr);
+        }
+        return (
+          <div
+            className="dm-action-overlay"
+            onPointerDown={(e) => { if (e.target === e.currentTarget) setDmReactionDetail(null); }}
+          >
+            <div className="dm-info-panel">
+              <div className="dm-info-panel__header">
+                <span className="dm-info-panel__title">Reactions</span>
+                <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmReactionDetail(null)}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              {Array.from(grouped.entries()).map(([emoji, reactors]) => (
+                <div key={emoji} className="dm-reaction-detail__group">
+                  <div className="dm-reaction-detail__emoji">{emoji}</div>
+                  <div className="dm-reaction-detail__reactors">
+                    {reactors.map((r) => {
+                      const rp = dmPeerProfilesRef.current.get(r.senderPubkey);
+                      const label = rp?.displayName || rp?.name || r.senderPubkey.slice(0, 12) + "…";
+                      return (
+                        <div key={r.senderPubkey} className="dm-reaction-detail__reactor">
+                          <div className="dm-reaction-detail__reactor-avatar">
+                            {rp?.picture
+                              ? <img src={rp.picture} alt={label} className="contact-avatar__img" />
+                              : contactInitials(label)}
+                          </div>
+                          <span className="dm-reaction-detail__reactor-name">{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Info modal ── */}
+      {dmInfoMessage && (
+        <div
+          className="dm-action-overlay"
+          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmInfoMessage(null); }}
+        >
+          <div className="dm-info-panel">
+            <div className="dm-info-panel__header">
+              <span className="dm-info-panel__title">Message Info</span>
+              <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmInfoMessage(null)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div className="dm-info-panel__row">
+              <span className="dm-info-panel__label">Time</span>
+              <span className="dm-info-panel__value">{new Date(dmInfoMessage.createdAt * 1000).toLocaleString()}</span>
+            </div>
+            <div className="dm-info-panel__row">
+              <span className="dm-info-panel__label">Direction</span>
+              <span className="dm-info-panel__value">{dmInfoMessage.isIncoming ? "Received" : "Sent"}</span>
+            </div>
+            <div className="dm-info-panel__row">
+              <span className="dm-info-panel__label">Event ID</span>
+              <button
+                type="button"
+                className="dm-info-panel__value dm-info-panel__value--mono dm-info-panel__value--tap pressable"
+                onClick={() => void navigator.clipboard.writeText(dmInfoMessage.eventId)}
+                title="Tap to copy"
+              >
+                {dmInfoMessage.eventId.slice(0, 20)}…
+              </button>
+            </div>
+            {dmInfoMessage.senderPubkey && (
+              <div className="dm-info-panel__row">
+                <span className="dm-info-panel__label">Sender</span>
+                <button
+                  type="button"
+                  className="dm-info-panel__value dm-info-panel__value--mono dm-info-panel__value--tap pressable"
+                  onClick={() => void navigator.clipboard.writeText(dmInfoMessage.senderPubkey!)}
+                  title="Tap to copy"
+                >
+                  {dmInfoMessage.senderPubkey.slice(0, 20)}…
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Forward modal ── */}
+      {dmForwardMessage && (
+        <div
+          className="dm-action-overlay"
+          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmForwardMessage(null); }}
+        >
+          <div className="dm-forward-panel">
+            <div className="dm-forward-panel__header">
+              <span className="dm-forward-panel__title">Forward to</span>
+              <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmForwardMessage(null)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div className="dm-forward-panel__preview">
+              {dmForwardMessage.content.length > 60 ? dmForwardMessage.content.slice(0, 60) + "…" : dmForwardMessage.content}
+            </div>
+            <div className="dm-forward-panel__list">
+              {dmThreads.filter((t) => t.peerPubkey !== dmForwardMessage.peerPubkey).map((thread) => {
+                const profile = dmPeerProfilesRef.current.get(thread.peerPubkey);
+                const label = profile?.displayName || profile?.name || thread.peerPubkey.slice(0, 12) + "…";
+                return (
+                  <button
+                    key={thread.peerPubkey}
+                    type="button"
+                    className="dm-forward-panel__thread pressable"
+                    onClick={() => { void handleForwardMessage(dmForwardMessage, thread.peerPubkey); setDmForwardMessage(null); }}
+                  >
+                    <div className="dm-forward-panel__thread-avatar">
+                      {profile?.picture
+                        ? <img src={profile.picture} alt={label} className="contact-avatar__img" />
+                        : contactInitials(label)}
+                    </div>
+                    <span className="dm-forward-panel__thread-name">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
