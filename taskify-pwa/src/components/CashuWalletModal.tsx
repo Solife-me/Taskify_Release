@@ -20833,7 +20833,7 @@ export default function CashuWalletModal({
 	        header={
 	          ecashSendView === "contact" && ecashSendRecipient ? (
 	            <>
-	              <div className="ecash-contact-sheet__sheet-title">
+	              <div className="text-sm font-semibold">
 	                {(() => {
 	                  const nip05 = ecashSendRecipient.nip05?.trim() || "";
 	                  const nip05Verified = nip05 && isNip05VerifiedFor(ecashSendRecipient.id, nip05, ecashSendRecipient.npub);
@@ -20902,7 +20902,7 @@ export default function CashuWalletModal({
 	            </div>
 	          )
 	        }
-	        panelClassName={ecashSendView === "contact" ? "sheet-panel--compact ecash-contact-sheet" : undefined}
+	        panelClassName={ecashSendView === "contact" ? "sheet-panel--compact" : undefined}
 	      >
         {ecashSendView === "amount" && (
           <div className="space-y-4">
@@ -21017,7 +21017,7 @@ export default function CashuWalletModal({
 	        )}
 	        {ecashSendView === "contact" && ecashSendRecipient && (
 	          <div className="space-y-4">
-	            <div className="wallet-section wallet-section--compact ecash-contact-sheet__card space-y-5">
+	            <div className="wallet-section wallet-section--compact space-y-3">
 	              <div className="space-y-2 text-left">
 	                <div className="text-[11px] uppercase tracking-wide text-secondary">Send from</div>
 	                {mintSelectionOptions.length ? (
@@ -21043,7 +21043,7 @@ export default function CashuWalletModal({
 	                        );
 	                      })}
 	                    </select>
-	                    <div className="pill-input lightning-mint-select__display ecash-contact-sheet__mint-display">
+	                    <div className="pill-input lightning-mint-select__display">
 	                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
 	                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
 	                    </div>
@@ -21055,7 +21055,7 @@ export default function CashuWalletModal({
 	              </div>
 	              <button
 	                type="button"
-	                className={`lightning-amount-display glass-panel ecash-contact-sheet__amount${canToggleCurrency ? " pressable" : ""}`}
+	                className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
 	                onClick={canToggleCurrency ? handleTogglePrimary : undefined}
 	                disabled={!canToggleCurrency}
 	              >
@@ -21067,7 +21067,7 @@ export default function CashuWalletModal({
 	                </div>
 	              </button>
 	              {sendLockError && <div className="text-[11px] text-rose-500">{sendLockError}</div>}
-	              <div className="wallet-keypad-grid grid grid-cols-3 gap-3">
+	              <div className="grid grid-cols-3 gap-2">
 	                {(primaryCurrency === "usd"
 	                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
 	                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
@@ -21077,7 +21077,7 @@ export default function CashuWalletModal({
 	                    <button
 	                      key={key}
 	                      type="button"
-	                      className="glass-panel wallet-keypad-grid__button ecash-contact-sheet__keypad-button pressable py-3 text-lg font-semibold"
+	                      className="glass-panel pressable py-3 text-lg font-semibold"
 	                      onClick={() => handleEcashAmountKeypadInput(handlerKey)}
 	                    >
 	                      {key === "clear" ? "Clear" : key}
@@ -21086,7 +21086,7 @@ export default function CashuWalletModal({
 	                })}
 	              </div>
 	              <button
-	                className="accent-button accent-button--tall ecash-contact-sheet__submit pressable w-full text-lg font-semibold"
+	                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
 	                onClick={() => {
 	                  void applyEcashContact(ecashSendRecipient);
 	                }}
@@ -22133,7 +22133,7 @@ export default function CashuWalletModal({
                     {lightningSendSecondaryAmountText}
                   </div>
                 </button>
-                <div className="wallet-keypad-grid grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-2">
                   {(primaryCurrency === "usd"
                     ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
                     : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
