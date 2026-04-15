@@ -2805,6 +2805,10 @@ export default function CashuWalletModal({
   const dmProcessedEventsRef = useRef<Set<string>>(new Set());
   const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
   const dmLastSyncRef = useRef<number>(readDmSyncMeta().lastCompletedSyncAt || 0);
+  const messageItemsRef = useRef<WalletMessageItem[]>(messageItems);
+  useEffect(() => {
+    messageItemsRef.current = messageItems;
+  }, [messageItems]);
   const [dmView, setDmView] = useState<"list" | "thread" | "strangers">("list");
   const [activeThreadPeer, setActiveThreadPeer] = useState<string | null>(null);
   const [dmSearch, setDmSearch] = useState("");
@@ -5943,7 +5947,7 @@ export default function CashuWalletModal({
       let attachment: WalletDmAttachment | undefined;
       let preview = truncatePreview(decrypted.content, 140);
       const share = parseShareEnvelope(decrypted.content);
-      const matchedItem = messageItems.find((item) => item.dmEventId && item.dmEventId === event.id);
+      const matchedItem = messageItemsRef.current.find((item) => item.dmEventId && item.dmEventId === event.id);
 
       // 0xchat-compatible encrypted file attachment (kind-15 rumor).
       // Inner rumor content is the plaintext URL to the encrypted blob; the crypto
@@ -6198,7 +6202,6 @@ export default function CashuWalletModal({
       decryptNostrPaymentMessage,
       ensureNostrIdentity,
       ensurePeerProfile,
-      messageItems,
       normalizeNostrPubkey,
       parseIncomingPaymentMessage,
       resolvePeerPubkey,
@@ -15283,18 +15286,19 @@ export default function CashuWalletModal({
     const existing = contactByHex.get(activeThread.peerPubkey);
     if (existing) return existing;
     const peerMeta = getPeerProfile(activeThread.peerPubkey);
+    const peerLabel = peerLabelFor(activeThread.peerPubkey);
     return {
       id: `chat-peer-${activeThread.peerPubkey}`,
       kind: "nostr",
-      name: peerMeta.displayName || peerMeta.username || peerMeta.label,
-      displayName: peerMeta.displayName || peerMeta.label,
-      username: sanitizeUsername(peerMeta.username || ""),
-      address: peerMeta.lud16 || "",
+      name: peerMeta?.displayName || peerMeta?.username || peerLabel.label,
+      displayName: peerMeta?.displayName || peerLabel.label,
+      username: sanitizeUsername(peerMeta?.username || ""),
+      address: peerMeta?.lud16 || "",
       paymentRequest: "",
       npub: formatNpub(activeThread.peerPubkey) || "",
-      nip05: peerMeta.nip05 || "",
-      about: peerMeta.about || "",
-      picture: peerMeta.picture || "",
+      nip05: peerMeta?.nip05 || "",
+      about: peerMeta?.about || "",
+      picture: peerMeta?.picture || peerLabel.picture || "",
       updatedAt: Date.now(),
     } satisfies Contact;
   }, [
@@ -15305,6 +15309,7 @@ export default function CashuWalletModal({
     getPeerProfile,
     myCardNpub,
     normalizeNostrPubkey,
+    peerLabelFor,
     sanitizeUsername,
   ]);
   const handleOpenChatEcash = useCallback(() => {
