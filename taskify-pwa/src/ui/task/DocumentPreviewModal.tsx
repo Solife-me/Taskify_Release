@@ -88,7 +88,7 @@ export function DocumentThumbnail({
   return (
     <button type="button" className="doc-thumb" onClick={onClick}>
       <div className="doc-thumb__preview">{previewNode}</div>
-      <div className="doc-thumb__footer">
+      <div className="doc-thumb__footer" style={{ display: 'none' }}>
         <span className="doc-thumb__name" title={label}>{label}</span>
         <span className="doc-thumb__kind">{doc.kind.toUpperCase()}</span>
       </div>

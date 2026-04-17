@@ -203,7 +203,7 @@ import {
 import type { WalletMessageItem } from "./types/walletMessages";
 
 // ---- UI component imports (extracted subcomponents) ----
-import { Card, getDraggedTaskId } from "./ui/task/Card";
+import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
 import { autolink, TaskTitle, stripUrlsFromText, useTaskPreview } from "./ui/task/TaskTitle";
 import { TaskMedia, UrlPreviewCard, EventTitle, EventMedia, useEventPreview } from "./ui/task/TaskMedia";
 import { DocumentThumbnail, DocumentPreviewModal } from "./ui/task/DocumentPreviewModal";
@@ -354,7 +354,7 @@ type TaskAssignee = {
   respondedAt?: number;
 };
 
-type CalendarInviteStatus = "pending" | CalendarRsvpStatus | "dismissed";
+type CalendarInviteStatus = "pending" | "read" | CalendarRsvpStatus | "dismissed";
 
 type CalendarInvite = {
   id: string;
@@ -4871,7 +4871,7 @@ function useScriptureMemory(): [ScriptureMemoryState, React.Dispatch<React.SetSt
 const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   title: string;
   header?: React.ReactNode;
-  onDropCard: (payload: { id: string; beforeId?: string }) => void;
+  onDropCard: (payload: { id: string; beforeId?: string; allIds?: string[] }) => void;
   onDropEnd?: () => void;
   onTitleClick?: () => void;
   children: React.ReactNode;
@@ -4930,7 +4930,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
             }
           }
         }
-        onDropCard({ id, beforeId });
+        const allIds = getDraggedTaskIds(e.dataTransfer) ?? undefined;
+        onDropCard({ id, beforeId, allIds });
       }
       if (onDropEnd) onDropEnd();
       dragDepthRef.current = 0;
@@ -4973,9 +4974,10 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
       {...props}
     >
       {header ?? (
-        <div
-          className={`mb-3 text-sm font-semibold tracking-wide text-secondary ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
-          onClick={onTitleClick}
+        <div className="flex items-center justify-between mb-3">
+          <div
+            className={`text-sm font-semibold tracking-wide text-secondary ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
+            onClick={onTitleClick}
           role={onTitleClick ? 'button' : undefined}
           tabIndex={onTitleClick ? 0 : undefined}
           aria-label={onTitleClick ? `Set ${title} as add target` : undefined}
@@ -4989,9 +4991,17 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
           title={onTitleClick ? 'Set as add target' : undefined}
         >
           {title}
+          </div>
+          <button 
+            type="button" 
+            className="p-1 text-secondary hover:text-primary rounded" 
+            onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }} 
+            title="Select tasks">
+            <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
+          </button>
         </div>
       )}
-      <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''}>
+      <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''} data-column-scroll={scrollable ? "" : undefined}>
         <div className="space-y-.25">{children}</div>
       </div>
       {scrollable && footer ? <div className="mt-auto flex-shrink-0 pt-2">{footer}</div> : null}
@@ -5003,6 +5013,11 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
 /* ================= App ================= */
 export default function App() {
   const { show: showToast } = useToast();
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [selectionMoveSheetOpen, setSelectionMoveSheetOpen] = useState(false);
+  const [selectionMoveStep, setSelectionMoveStep] = useState<"board" | "column">("board");
+  const [selectionMoveBoardId, setSelectionMoveBoardId] = useState<string | null>(null);
   const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
   const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
   const runtimeConfigPromiseRef = useRef<Promise<void> | null>(null);
@@ -5232,6 +5247,44 @@ export default function App() {
 
   const [tasks, setTasks] = useTasks();
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
+  const selectedItemIdSet = useMemo(() => new Set(selectedItemIds), [selectedItemIds]);
+  const selectedTasks = useMemo(() => tasks.filter((task) => selectedItemIdSet.has(task.id)), [tasks, selectedItemIdSet]);
+  const selectedEvents = useMemo(() => calendarEvents.filter((event) => selectedItemIdSet.has(event.id)), [calendarEvents, selectedItemIdSet]);
+  const selectedCount = selectedTasks.length + selectedEvents.length;
+  const clearSelection = useCallback(() => {
+    setSelectedItemIds([]);
+  }, []);
+  const exitSelectionMode = useCallback(() => {
+    setIsSelectionMode(false);
+    setSelectedItemIds([]);
+    setSelectionMoveSheetOpen(false);
+  }, []);
+  const toggleItemSelection = useCallback((id: string) => {
+    setSelectedItemIds((p) => p.includes(id) ? p.filter((i) => i !== id) : [...p, id]);
+  }, []);
+  useEffect(() => {
+    const handleToggle = () => {
+      setSelectionMoveSheetOpen(false);
+      setIsSelectionMode((p) => {
+        if (p) {
+          setSelectedItemIds([]);
+          return false;
+        }
+        setSelectedItemIds([]);
+        return true;
+      });
+    };
+    window.addEventListener('toggleSelectionMode', handleToggle);
+    return () => window.removeEventListener('toggleSelectionMode', handleToggle);
+  }, []);
+  useEffect(() => {
+    if (!isSelectionMode) return;
+    setSelectedItemIds((prev) => prev.filter((id) => tasks.some((task) => task.id === id) || calendarEvents.some((event) => event.id === id)));
+  }, [calendarEvents, isSelectionMode, tasks]);
+  useEffect(() => {
+    if (!isSelectionMode || selectedCount > 0) return;
+    setSelectionMoveSheetOpen(false);
+  }, [isSelectionMode, selectedCount]);
   const [calendarInvites, setCalendarInvites] = useState<CalendarInvite[]>(() => {
     try {
       const raw = kvStorage.getItem(LS_CALENDAR_INVITES);
@@ -5454,7 +5507,12 @@ export default function App() {
     [walletMessageItems],
   );
   const pendingCalendarInvites = useMemo(
-    () => calendarInvites.filter((invite) => invite.status === "pending"),
+    () => calendarInvites.filter((invite) => invite.status === "pending" || invite.status === "read"),
+    [calendarInvites],
+  );
+  const [dmUnreadCount, setDmUnreadCount] = useState(0);
+  const unreadCalendarInviteCount = useMemo(
+    () => calendarInvites.filter((invite) => invite.status === "pending").length,
     [calendarInvites],
   );
   const formatCalendarInviteWhen = useCallback((invite: CalendarInvite): string => {
@@ -5491,7 +5549,7 @@ export default function App() {
     if (endDateLabel === dateLabel) return `${dateLabel} • ${startTimeLabel} – ${endTimeLabel}`;
     return `${dateLabel} • ${startTimeLabel} – ${endDateLabel} ${endTimeLabel}`;
   }, []);
-  const inboxPendingCount = inboxPendingItems.length + pendingCalendarInvites.length;
+  const chatUnreadCount = messagesUnreadCount + unreadCalendarInviteCount + dmUnreadCount;
   const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
   const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
@@ -7663,7 +7721,7 @@ export default function App() {
   // header view
   const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
   const [activePage, setActivePage] = useState<
-    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "contacts" | "settings"
+    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings"
   >("boards");
   // Ref updated every render so navigation callbacks can read the gate without
   // stale-closure issues (isOnboardingActive is derived further down).
@@ -7970,8 +8028,8 @@ export default function App() {
     showSettings,
   ]);
   const showWallet = activePage === "wallet";
-  const showContacts = activePage === "contacts";
-  const showWalletShell = showWallet || showContacts;
+  const showChat = activePage === "chat";
+  const showWalletShell = showWallet || showChat;
   const walletModalPrefetchedRef = useRef(false);
   const prefetchWalletModal = useCallback(() => {
     if (walletModalPrefetchedRef.current) return;
@@ -8095,11 +8153,11 @@ export default function App() {
     }
     startTransition(() => setActivePage("boards"));
   }, [activePage, shouldReloadForNavigation]);
-  const openContactsPage = useCallback(() => {
+  const openChatPage = useCallback(() => {
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     prefetchWalletModal();
-    startTransition(() => setActivePage("contacts"));
+    startTransition(() => setActivePage("chat"));
   }, [prefetchWalletModal, shouldReloadForNavigation]);
 
   const openShareBoard = useCallback(() => {
@@ -9186,7 +9244,6 @@ export default function App() {
   const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [upcomingHover, setUpcomingHover] = useState(false);
-  const [inboxOpen, setInboxOpen] = useState(false);
   const [upcomingFilterOpen, setUpcomingFilterOpen] = useState(false);
   const [upcomingUsHolidaysEnabled, setUpcomingUsHolidaysEnabled] = useState<boolean>(() => {
     const raw = kvStorage.getItem(LS_UPCOMING_US_HOLIDAYS_ENABLED);
@@ -11470,6 +11527,10 @@ export default function App() {
     return (
       <div key={t.id} className="space-y-2">
         <Card
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(t.id)}
+                            onToggleSelect={toggleItemSelection}
+                            selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
           task={t}
           meta={locationLabel}
           trailing={revealAction}
@@ -11551,6 +11612,9 @@ export default function App() {
 	          onEdit={isUsHoliday ? undefined : () => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 	          onDragStart={isUsHoliday ? undefined : (id) => setDraggingEventId(id)}
 	          onDragEnd={handleDragEnd}
+          isSelectionMode={isSelectionMode}
+          isSelected={selectedItemIds.includes(ev.id)}
+          onToggleSelect={toggleItemSelection}
 	        />
 	      </div>
 	    );
@@ -15368,18 +15432,29 @@ export default function App() {
   const maybeInboxMessage = (id: string) => completeTask(id, { inboxAction: "maybe" });
   const declineInboxMessage = (id: string) => completeTask(id, { inboxAction: "decline" });
   const markInboxMessagesRead = (dmEventIds: string[]) => {
-    if (!dmEventIds.length) return;
+    const normalizedIds = new Set(dmEventIds.map((id) => id.trim()).filter(Boolean));
+    if (!normalizedIds.size) return;
     setTasks((prev) =>
       prev.map((task) => {
         if (task.boardId !== messagesBoardId) return task;
         const dmId = task.inboxItem?.dmEventId?.trim();
-        if (!dmId || !dmEventIds.includes(dmId)) return task;
+        const syntheticId = `wallet-message-${task.id}`;
+        if ((!dmId || !normalizedIds.has(dmId)) && !normalizedIds.has(syntheticId)) return task;
         const status = task.inboxItem?.status;
         if (status === "accepted" || status === "declined" || status === "tentative" || status === "deleted" || status === "read") return task;
         return {
           ...task,
           inboxItem: task.inboxItem ? { ...task.inboxItem, status: "read" } : task.inboxItem,
         };
+      }),
+    );
+    setCalendarInvites((prev) =>
+      prev.map((invite) => {
+        const eventId = invite.eventId?.trim();
+        const syntheticId = eventId || `calendar-invite-${invite.id}`;
+        if ((!eventId || !normalizedIds.has(eventId)) && !normalizedIds.has(syntheticId)) return invite;
+        if (invite.status !== "pending") return invite;
+        return { ...invite, status: "read" };
       }),
     );
   };
@@ -17248,6 +17323,24 @@ export default function App() {
     });
   }
 
+
+  const completeSelectedItems = useCallback(() => {
+    if (!selectedTasks.length) return;
+    selectedTasks.forEach((task) => {
+      if (!task.completed) completeTask(task.id);
+    });
+    showToast(selectedTasks.length === 1 ? "Task completed" : `${selectedTasks.length} tasks completed`);
+    exitSelectionMode();
+  }, [completeTask, exitSelectionMode, selectedTasks, showToast]);
+
+  const deleteSelectedItems = useCallback(() => {
+    if (!selectedCount) return;
+    selectedEvents.forEach((event) => deleteCalendarEvent(event.id, { skipPrompt: true }));
+    selectedTasks.forEach((task) => deleteTask(task.id, { skipPrompt: true }));
+    showToast(selectedCount === 1 ? "Item deleted" : `${selectedCount} items deleted`);
+    exitSelectionMode();
+  }, [deleteCalendarEvent, deleteTask, exitSelectionMode, selectedCount, selectedEvents, selectedTasks, showToast]);
+
   function moveTaskToBoard(id: string, boardId: string) {
     setTasks(prev => {
       const arr = [...prev];
@@ -17340,6 +17433,78 @@ export default function App() {
       return arr;
     });
   }
+
+  const moveSelectedTasksToBoard = useCallback((boardId: string) => {
+    if (!selectedTasks.length && !selectedEvents.length) return;
+    selectedTasks.forEach((task) => moveTaskToBoard(task.id, boardId));
+    if (selectedEvents.length) {
+      setCalendarEvents((prev) => prev.map((ev) => {
+        if (!selectedItemIdSet.has(ev.id)) return ev;
+        const updated: CalendarEvent = { ...ev, boardId, columnId: undefined };
+        maybePublishCalendarEvent(updated).catch(() => {});
+        return updated;
+      }));
+    }
+    const boardName = boards.find((board) => board.id === boardId)?.name || "board";
+    const totalMoved = selectedTasks.length + selectedEvents.length;
+    showToast(totalMoved === 1 ? `Item moved to ${boardName}` : `${totalMoved} items moved to ${boardName}`);
+    exitSelectionMode();
+    setSelectionMoveSheetOpen(false);
+    setSelectionMoveStep("board");
+    setSelectionMoveBoardId(null);
+  }, [boards, exitSelectionMode, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
+
+  const moveSelectedTasksToColumn = useCallback((boardId: string, columnId: string) => {
+    if (!selectedTasks.length && !selectedEvents.length) return;
+    const board = boards.find((b) => b.id === boardId);
+    const col = board && board.kind === "lists" ? board.columns.find((c) => c.id === columnId) : null;
+    const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
+    if (selectedTasks.length) {
+      selectedTasks.forEach((task) => {
+        setTasks((prev) => {
+          const idx = prev.findIndex((t) => t.id === task.id);
+          if (idx < 0) return prev;
+          const copy = [...prev];
+          const updated: Task = {
+            ...copy[idx],
+            boardId,
+            column: undefined,
+            columnId,
+            lastEditedBy: editorPubkey || copy[idx].lastEditedBy || copy[idx].createdBy,
+          };
+          copy[idx] = updated;
+          maybePublishTask(updated).catch(() => {});
+          return copy;
+        });
+      });
+    }
+    if (selectedEvents.length) {
+      setCalendarEvents((prev) => prev.map((ev) => {
+        if (!selectedItemIdSet.has(ev.id)) return ev;
+        const updated: CalendarEvent = { ...ev, boardId, columnId };
+        maybePublishCalendarEvent(updated).catch(() => {});
+        return updated;
+      }));
+    }
+    const boardName = board?.name || "board";
+    const colName = col?.name || "list";
+    const totalMoved = selectedTasks.length + selectedEvents.length;
+    showToast(totalMoved === 1 ? `Item moved to ${colName} in ${boardName}` : `${totalMoved} items moved to ${colName} in ${boardName}`);
+    exitSelectionMode();
+    setSelectionMoveSheetOpen(false);
+    setSelectionMoveStep("board");
+    setSelectionMoveBoardId(null);
+  }, [boards, exitSelectionMode, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
+
+  const selectionMoveTargets = useMemo(() => (
+    boards.filter((board) => board.kind !== "bible" && !board.archived && !board.hidden).map((board) => ({
+      id: board.id,
+      name: board.name,
+      kind: board.kind,
+      columns: board.kind === "lists" ? board.columns : [],
+      children: board.kind === "compound" ? board.children : [],
+    }))
+  ), [boards]);
 
   // Subscribe to Nostr for all shared boards
   const nostrBoardsKey = useMemo(() => {
@@ -17935,7 +18100,13 @@ export default function App() {
                                     onDrop={(e) => {
                                       if (!draggingTaskId) return;
                                       e.preventDefault();
-                                      moveTaskToBoard(draggingTaskId, b.id);
+                                      const allIds = getDraggedTaskIds(e.dataTransfer);
+                                      if (allIds && allIds.length > 1) {
+                                        allIds.forEach((taskId) => moveTaskToBoard(taskId, b.id));
+                                        if (isSelectionMode) exitSelectionMode();
+                                      } else {
+                                        moveTaskToBoard(draggingTaskId, b.id);
+                                      }
                                       handleDragEnd();
                                     }}
                                   >
@@ -18261,7 +18432,7 @@ export default function App() {
               {/* HORIZONTAL board: single row, side-scroll */}
               <div
                 ref={scrollerRef}
-                className="flex-1 min-h-0 overflow-x-auto pb-0 w-full"
+                className={`flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
                 style={{ WebkitOverflowScrolling: "touch" }} // fluid momentum scroll on iOS
               >
                 <div className="flex gap-4 min-w-max h-full items-stretch">
@@ -18271,7 +18442,11 @@ export default function App() {
                       key={day}
                       title={WD_SHORT[day]}
                     onTitleClick={() => setDayChoice(day)}
-                    onDropCard={(payload) => moveTask(payload.id, { type: "day", day }, payload.beforeId)}
+                    onDropCard={(payload) => {
+                      const ids = payload.allIds ?? [payload.id];
+                      ids.forEach((taskId) => moveTask(taskId, { type: "day", day }, taskId === payload.id ? payload.beforeId : undefined));
+                      if (isSelectionMode && payload.allIds) exitSelectionMode();
+                    }}
                     onDropEnd={handleDragEnd}
                     data-day={day}
                     scrollable
@@ -18307,12 +18482,19 @@ export default function App() {
 		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                            onDragStart={(id) => setDraggingEventId(id)}
 		                            onDragEnd={handleDragEnd}
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(ev.id)}
+                            onToggleSelect={toggleItemSelection}
 		                          />
 	                        ))}
 	                        {(byDay.get(day) || []).map((t) => (
 	                        <Card
-	                          key={t.id}
-	                          task={t}
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(t.id)}
+                            onToggleSelect={toggleItemSelection}
+                            selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
+                            key={t.id}
+                            task={t}
 	                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
                             if (!t.completed) completeTask(t.id);
@@ -18382,7 +18564,7 @@ export default function App() {
               // LISTS board (multiple custom columns) — still a horizontal row
               <div
                 ref={scrollerRef}
-                className="flex-1 min-h-0 overflow-x-auto pb-0 w-full"
+                className={`flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
                 style={{ WebkitOverflowScrolling: "touch" }}
             >
               <div className="flex gap-4 min-w-max h-full items-stretch">
@@ -18510,7 +18692,11 @@ export default function App() {
                       title={draftName}
                       header={header}
                       onTitleClick={() => focusListColumn(col.id)}
-                      onDropCard={(payload) => moveTask(payload.id, { type: "list", columnId: col.id }, payload.beforeId)}
+                      onDropCard={(payload) => {
+                        const ids = payload.allIds ?? [payload.id];
+                        ids.forEach((taskId) => moveTask(taskId, { type: "list", columnId: col.id }, taskId === payload.id ? payload.beforeId : undefined));
+                        if (isSelectionMode && payload.allIds) exitSelectionMode();
+                      }}
                       onDropEnd={handleDragEnd}
                       scrollable
                       footer={(
@@ -18545,12 +18731,19 @@ export default function App() {
 		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                          onDragStart={(id) => setDraggingEventId(id)}
 		                          onDragEnd={handleDragEnd}
+                          isSelectionMode={isSelectionMode}
+                          isSelected={selectedItemIds.includes(ev.id)}
+                          onToggleSelect={toggleItemSelection}
 		                        />
 	                      ))}
 	                      {(itemsByColumn.get(col.id) || []).map((t) => (
 	                        <Card
-	                          key={t.id}
-	                          task={t}
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(t.id)}
+                            onToggleSelect={toggleItemSelection}
+                            selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
+                            key={t.id}
+                            task={t}
                           onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
                             if (!t.completed) completeTask(t.id);
@@ -19153,30 +19346,6 @@ export default function App() {
                 <circle cx="11" cy="18" r="2" />
               </svg>
             </button>
-            <button
-              type="button"
-              className="app-header__icon-btn pressable"
-              onClick={() => setInboxOpen(true)}
-              title="Inbox"
-              aria-label={`Inbox${inboxPendingCount ? ` (${inboxPendingCount})` : ""}`}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-[18px] w-[18px]"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.8}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M4 4h16v12H4z" />
-                <path d="M4 12l4 4h8l4-4" />
-              </svg>
-              {inboxPendingCount > 0 && (
-                <span className="app-header__badge">{inboxPendingCount}</span>
-              )}
-            </button>
           </div>
         </div>
       )}
@@ -19242,7 +19411,7 @@ export default function App() {
               handleDragEnd();
             }}
           >
-            <div className="app-tab-switcher__icon app-tab-switcher__icon--badge">
+            <div className="app-tab-switcher__icon">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="app-tab-switcher__icon-svg"
@@ -19259,9 +19428,6 @@ export default function App() {
                 <path d="M4 11h16" />
                 <path d="M12 14v3l2 1" />
               </svg>
-              {inboxPendingCount > 0 && (
-                <span className="app-tab-switcher__badge">{inboxPendingCount}</span>
-              )}
             </div>
             <div className="app-tab-switcher__label">Upcoming</div>
           </button>
@@ -19297,11 +19463,11 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={`app-tab-switcher__btn pressable${activePage === "contacts" ? " app-tab-switcher__btn--active" : ""}`}
-            onClick={openContactsPage}
-            aria-label="Contacts"
+            className={`app-tab-switcher__btn pressable${activePage === "chat" ? " app-tab-switcher__btn--active" : ""}`}
+            onClick={openChatPage}
+            aria-label="Chat"
           >
-            <div className="app-tab-switcher__icon">
+            <div className="app-tab-switcher__icon app-tab-switcher__icon--badge">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="app-tab-switcher__icon-svg"
@@ -19312,11 +19478,13 @@ export default function App() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
               >
-                <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
-                <circle cx="12" cy="8" r="4" />
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
+              {chatUnreadCount > 0 && (
+                <span className="app-tab-switcher__badge">{chatUnreadCount}</span>
+              )}
             </div>
-            <div className="app-tab-switcher__label">Contacts</div>
+            <div className="app-tab-switcher__label">Chat</div>
           </button>
           <button
             type="button"
@@ -19651,149 +19819,101 @@ export default function App() {
         </div>
       </ActionSheet>
 
-      <ActionSheet open={inboxOpen} onClose={() => setInboxOpen(false)} title="Inbox">
-        {inboxPendingItems.length === 0 && pendingCalendarInvites.length === 0 ? (
-          <div className="text-sm text-secondary">No shared items.</div>
+      <ActionSheet
+        open={selectionMoveSheetOpen}
+        onClose={() => { setSelectionMoveSheetOpen(false); setSelectionMoveStep("board"); setSelectionMoveBoardId(null); }}
+        title={selectionMoveStep === "column" ? "Choose a list" : "Move selected items"}
+        stackLevel={10001}
+      >
+        {selectedCount === 0 ? (
+          <div className="text-sm text-secondary">Select one or more items to move.</div>
+        ) : selectionMoveStep === "board" ? (
+          <div className="space-y-2">
+            {selectionMoveTargets.map((board) => (
+              <button
+                key={board.id}
+                type="button"
+                className="contact-row pressable"
+                onClick={() => {
+                  if (board.kind === "lists" && board.columns.length > 1) {
+                    setSelectionMoveBoardId(board.id);
+                    setSelectionMoveStep("column");
+                  } else if (board.kind === "compound" && board.children.length > 0) {
+                    setSelectionMoveBoardId(board.id);
+                    setSelectionMoveStep("column");
+                  } else {
+                    moveSelectedTasksToBoard(board.id);
+                  }
+                }}
+              >
+                <div className="contact-row__text">
+                  <div className="contact-row__name">{board.name}</div>
+                  <div className="contact-row__meta">
+                    <span className="contact-row__meta-text capitalize">{board.kind}</span>
+                    {board.kind === "lists" && board.columns.length > 0 && (
+                      <span className="contact-row__meta-text"> · {board.columns.length} {board.columns.length === 1 ? "list" : "lists"}</span>
+                    )}
+                  </div>
+                </div>
+                {(board.kind === "lists" && board.columns.length > 1) || (board.kind === "compound" && board.children.length > 0) ? (
+                  <span className="text-secondary text-xs ml-auto shrink-0">▸</span>
+                ) : null}
+              </button>
+            ))}
+          </div>
         ) : (
-          <div className="space-y-4">
-            {pendingCalendarInvites.length > 0 && (
-              <div>
-                <div className="text-xs text-secondary mb-2">Event invites</div>
-                <ul className="space-y-2">
-                  {pendingCalendarInvites.map((invite) => {
-                    const senderName =
-                      invite.sender?.name ||
-                      invite.sender?.npub ||
-                      (invite.sender?.pubkey ? shortenNpub(toNpub(invite.sender.pubkey)) : "Someone");
-                    const whenLabel = formatCalendarInviteWhen(invite);
-                    return (
-                      <li key={invite.id} className="task-card space-y-2" data-form="stacked">
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1">
-                            <div className="text-sm font-medium leading-[1.15]">{invite.title || "Event invite"}</div>
-                            <div className="text-xs text-secondary">
-                              {whenLabel ? `${whenLabel} • ` : ""}From {senderName}
-                            </div>
-                          </div>
+          <div className="space-y-2">
+            <button
+              type="button"
+              className="ghost-button button-sm pressable mb-2"
+              onClick={() => { setSelectionMoveStep("board"); setSelectionMoveBoardId(null); }}
+            >
+              ← Back
+            </button>
+            {(() => {
+              const board = selectionMoveTargets.find((b) => b.id === selectionMoveBoardId);
+              if (!board) return null;
+              if (board.kind === "compound") {
+                return board.children.map((childId) => {
+                  const childBoard = boards.find((b) => b.id === childId);
+                  if (!childBoard || childBoard.kind !== "lists") return null;
+                  return childBoard.columns.map((col) => (
+                    <button
+                      key={`${childBoard.id}-${col.id}`}
+                      type="button"
+                      className="contact-row pressable"
+                      onClick={() => moveSelectedTasksToColumn(childBoard.id, col.id)}
+                    >
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{col.name}</div>
+                        <div className="contact-row__meta">
+                          <span className="contact-row__meta-text">{childBoard.name}</span>
                         </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            className="accent-button button-sm pressable"
-                            onClick={() => void handleCalendarInviteRsvp(invite, "accepted")}
-                          >
-                            Accept
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => void handleCalendarInviteRsvp(invite, "tentative")}
-                          >
-                            Tentative
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable text-rose-400"
-                            onClick={() => void handleCalendarInviteRsvp(invite, "declined")}
-                          >
-                            Decline
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => dismissCalendarInvite(invite)}
-                          >
-                            Dismiss
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-
-            {inboxPendingItems.length > 0 && (
-              <div>
-                <div className="text-xs text-secondary mb-2">Shared items</div>
-                <ul className="space-y-2">
-                  {inboxPendingItems.map((item) => {
-                    const senderName = item.sender?.name || item.sender?.npub || "Someone";
-                    const isTaskAssignment = item.type === "task" && isAssignedSharedTask(item.task);
-                    const typeLabel =
-                      item.type === "board"
-                        ? `Board • ${item.boardName || "Shared board"}`
-                        : item.type === "contact"
-                          ? "Contact"
-                          : isTaskAssignment
-                            ? "Task assignment"
-                            : "Task";
-                    return (
-                      <li key={item.id} className="task-card space-y-2" data-form="stacked">
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1">
-                            <div className="text-sm font-medium leading-[1.15]">{item.title}</div>
-                            <div className="text-xs text-secondary">
-                              {typeLabel} • From {senderName}
-                            </div>
-                            {item.note && (
-                              <div className="text-xs text-secondary whitespace-pre-wrap">{item.note}</div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {isTaskAssignment ? (
-                            <>
-                              <button
-                                type="button"
-                                className="accent-button button-sm pressable"
-                                onClick={() => acceptInboxMessage(item.id)}
-                              >
-                                Accept
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-sm pressable"
-                                onClick={() => maybeInboxMessage(item.id)}
-                              >
-                                Maybe
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-sm pressable text-rose-400"
-                                onClick={() => declineInboxMessage(item.id)}
-                              >
-                                Decline
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                className="accent-button button-sm pressable"
-                                onClick={() => acceptInboxMessage(item.id)}
-                              >
-                                Add
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-sm pressable text-rose-400"
-                                onClick={() => dismissInboxMessage(item.id)}
-                              >
-                                Dismiss
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
+                      </div>
+                    </button>
+                  ));
+                });
+              }
+              if (board.kind === "lists") {
+                return board.columns.map((col) => (
+                  <button
+                    key={col.id}
+                    type="button"
+                    className="contact-row pressable"
+                    onClick={() => moveSelectedTasksToColumn(board.id, col.id)}
+                  >
+                    <div className="contact-row__text">
+                      <div className="contact-row__name">{col.name}</div>
+                    </div>
+                  </button>
+                ));
+              }
+              return null;
+            })()}
           </div>
         )}
       </ActionSheet>
+
 
       {/* Drag trash can */}
       {(draggingTaskId || draggingEventId) && (
@@ -19806,12 +19926,18 @@ export default function App() {
           onDragLeave={() => setTrashHover(false)}
           onDrop={(e) => {
             e.preventDefault();
-            const taskId = getDraggedTaskId(e.dataTransfer);
-            if (taskId) {
-              deleteTask(taskId);
+            const allIds = getDraggedTaskIds(e.dataTransfer);
+            if (allIds && allIds.length > 1) {
+              allIds.forEach((id) => deleteTask(id, { skipPrompt: true }));
+              if (isSelectionMode) exitSelectionMode();
             } else {
-              const eventId = getDraggedEventId(e.dataTransfer);
-              if (eventId) deleteCalendarEvent(eventId);
+              const taskId = getDraggedTaskId(e.dataTransfer);
+              if (taskId) {
+                deleteTask(taskId);
+              } else {
+                const eventId = getDraggedEventId(e.dataTransfer);
+                if (eventId) deleteCalendarEvent(eventId);
+              }
             }
             handleDragEnd();
           }}
@@ -19829,6 +19955,70 @@ export default function App() {
               <path d="M9 3h6l1 1h5v2H3V4h5l1-1z" />
               <path d="M5 7h14l-1.5 13h-11L5 7z" />
             </svg>
+          </div>
+        </div>
+      )}
+
+      {isSelectionMode && (
+        <div
+          className="selection-bar glass-panel fixed left-1/2 z-[10000] -translate-x-1/2 w-[calc(100%-1rem)] max-w-md rounded-2xl"
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-height) + 0.25rem)" }}
+        >
+          {/* Top row: count + cancel */}
+          <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
+            <div className="text-sm font-semibold text-primary">
+              {selectedCount ? `${selectedCount} selected` : "Select items"}
+            </div>
+            <button
+              type="button"
+              className="text-xs text-secondary hover:text-primary pressable px-2 py-0.5 rounded-lg"
+              onClick={exitSelectionMode}
+            >
+              Cancel
+            </button>
+          </div>
+          {/* Action buttons row */}
+          <div className="flex items-center justify-around px-2 pb-2.5 pt-0.5">
+            <button
+              type="button"
+              className="selection-bar__action pressable"
+              onClick={clearSelection}
+              disabled={!selectedCount}
+              title="Clear selection"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              <span>Clear</span>
+            </button>
+            <button
+              type="button"
+              className="selection-bar__action pressable"
+              onClick={() => setSelectionMoveSheetOpen(true)}
+              disabled={!selectedCount}
+              title="Move"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l3 3 3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+              <span>Move</span>
+            </button>
+            <button
+              type="button"
+              className="selection-bar__action pressable"
+              onClick={completeSelectedItems}
+              disabled={!selectedTasks.some((task) => !task.completed)}
+              title="Complete"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Done</span>
+            </button>
+            <button
+              type="button"
+              className="selection-bar__action selection-bar__action--danger pressable"
+              onClick={deleteSelectedItems}
+              disabled={!selectedCount}
+              title="Delete"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M9 3h6l1 1h5v2H3V4h5l1-1z"/><path d="M5 7h14l-1.5 13h-11L5 7z"/></svg>
+              <span>Delete</span>
+            </button>
           </div>
         </div>
       )}
@@ -20395,12 +20585,11 @@ export default function App() {
 
       {/* Cashu Wallet */}
       <Suspense fallback={null}>
-        {showWalletShell && (
-          <CashuWalletModal
+        <CashuWalletModal
             open={showWalletShell}
             onClose={closeWallet}
             onOpenBounties={openWalletBounties}
-            page={showContacts ? "contacts" : "wallet"}
+            page={showChat ? "chat" : "wallet"}
             showTabSwitcher={false}
             showBottomNav
             walletConversionEnabled={settings.walletConversionEnabled}
@@ -20418,6 +20607,8 @@ export default function App() {
             contactsSyncEnabled={settings.walletContactsSyncEnabled}
             fileStorageServer={settings.fileStorageServer}
             fileServers={settings.fileServers}
+            encryptedFileStorageServer={settings.encryptedFileStorageServer}
+            encryptedFileServers={settings.encryptedFileServers}
             messageItems={walletMessageItems}
             messagesUnreadCount={messagesUnreadCount}
             onAcceptMessage={acceptInboxMessage}
@@ -20425,8 +20616,13 @@ export default function App() {
             onDeclineMessage={declineInboxMessage}
             onDismissMessage={dismissInboxMessage}
             onMarkMessagesRead={markInboxMessagesRead}
+            inboxPendingItems={inboxPendingItems}
+            pendingCalendarInvites={pendingCalendarInvites}
+            onCalendarInviteRsvp={handleCalendarInviteRsvp}
+            onDismissCalendarInvite={dismissCalendarInvite}
+            formatCalendarInviteWhen={formatCalendarInviteWhen}
+            onDmUnreadCountChange={setDmUnreadCount}
           />
-        )}
       </Suspense>
 
 

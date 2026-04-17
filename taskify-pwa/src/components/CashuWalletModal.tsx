@@ -53,8 +53,14 @@ import {
   LS_CONTACT_PROFILE_CACHE,
   LS_DM_BLOCKED_PEERS,
   LS_DM_DELETED_EVENTS,
+  LS_DM_MESSAGE_CACHE,
+  LS_DM_THREAD_READ_STATE,
+  LS_DM_SYNC_META,
   LS_PROFILE_EVENT_IDS,
   LS_PROFILE_METADATA_CACHE,
+  LS_GROUP_CHATS,
+  LS_GROUP_LEFT,
+  LS_GROUP_MUTED,
 } from "../localStorageKeys";
 import { LS_NOSTR_SK } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
@@ -62,6 +68,7 @@ import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../lib/fileStorage";
+import { mergeGroupChats, normalizeGroupChatRecord, type GroupChat } from "../lib/groupChatState";
 import { buildContactShareEnvelope, sendShareMessage, type SharedTaskPayload } from "../lib/shareInbox";
 import { normalizeNostrPubkey } from "../lib/nostr";
 import {
@@ -74,6 +81,16 @@ import { NostrSession } from "../nostr/NostrSession";
 import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePublisher";
 import { uploadAvatarToNip96, uploadAvatar } from "../nostr/Nip96Client";
 import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
+import {
+  encryptAndUploadMessengerAttachment,
+  decryptMessengerAttachment,
+  isImageMime,
+  isVideoMime,
+  isAudioMime,
+  probeImageDimensions,
+  formatByteSize,
+  MESSENGER_ATTACHMENT_ALGO,
+} from "../lib/messengerAttachmentCrypto";
 import {
   markHistoryEntrySpentRaw,
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
@@ -138,6 +155,50 @@ const AnimatedEllipsis = () => {
   return <span className="inline-block w-4 text-left">{dots}</span>;
 };
 
+type GroupAvatarMember = {
+  key: string;
+  label: string;
+  picture?: string;
+};
+
+function avatarInitials(value: string): string {
+  const parts = (value || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  const cp = parts[0].codePointAt(0) ?? 0;
+  const isEmoji = (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
+  if (isEmoji) return [...parts[0]][0] ?? "?";
+  if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
+  return `${[...parts[0]][0] ?? ""}${[...parts[parts.length - 1]][0] ?? ""}`.toUpperCase();
+}
+
+function GroupAvatar({
+  members,
+  className = "",
+}: {
+  members: GroupAvatarMember[];
+  className?: string;
+}) {
+  const visibleMembers = members.slice(0, Math.min(4, members.length));
+  const count = Math.max(visibleMembers.length, 1);
+  return (
+    <div className={`group-avatar group-avatar--count-${count}${className ? ` ${className}` : ""}`} aria-hidden="true">
+      {visibleMembers.map((member, index) => (
+        <div
+          key={member.key}
+          className={`group-avatar__item group-avatar__item--${index + 1}${member.picture ? " group-avatar__item--image" : ""}`}
+          title={member.label}
+        >
+          {member.picture ? (
+            <img src={member.picture} alt="" className="group-avatar__img" />
+          ) : (
+            <span className="group-avatar__initials">{avatarInitials(member.label)}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const ShareArrowIcon = (props: React.SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
     <path d="M14.5 6.5 9 10.5l5.5 4" />
@@ -154,6 +215,20 @@ const HISTORY_ID_TIMESTAMP_REGEX = /(\d{10,})/;
 const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
 const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const PAYMENT_HISTORY_EVENT_ID_REGEX = /^payment-request-(?:recv|pending)-([a-f0-9]{32,})$/i;
+const CHAT_TIMESTAMP_REVEAL_WIDTH = 92;
+const CHAT_ATTACH_TRAY_MIN_HEIGHT = 248;
+const CHAT_ATTACH_TRAY_MAX_HEIGHT = 380;
+const CHAT_ATTACH_TRAY_FALLBACK_RATIO = 0.38;
+
+function measureDefaultChatAttachTrayHeight(): number {
+  if (typeof window === "undefined") return 300;
+  return Math.round(
+    Math.min(
+      CHAT_ATTACH_TRAY_MAX_HEIGHT,
+      Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, window.innerHeight * CHAT_ATTACH_TRAY_FALLBACK_RATIO),
+    ),
+  );
+}
 
 function deriveTimestampFromId(value: string): number {
   if (typeof value !== "string" || !value) return Date.now();
@@ -276,6 +351,14 @@ function getWalletMessageStatusLabel(
     if (type === "task") return "Responded: declined";
     return "Declined";
   }
+  return null;
+}
+
+function getCalendarInviteStatusLabel(status?: string | null): string | null {
+  if (status === "accepted") return "Event added";
+  if (status === "tentative") return "Responded: maybe";
+  if (status === "declined") return "Responded: declined";
+  if (status === "dismissed") return "Dismissed";
   return null;
 }
 
@@ -605,6 +688,14 @@ function isDataUrl(value: string): boolean {
   return /^data:image\//i.test(value.trim());
 }
 
+function pickPreferredProfilePhoto(...candidates: Array<string | null | undefined>): string | undefined {
+  const normalized = candidates
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  if (!normalized.length) return undefined;
+  return normalized.find((value) => isDataUrl(value)) || normalized[0];
+}
+
 function shouldCacheProfilePhoto(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
 }
@@ -710,6 +801,63 @@ function extractDomain(target: string): string {
   } catch {
     return target;
   }
+}
+
+const CHAT_URL_REGEX = /https?:\/\/[^\s<>"'\]()]+/gi;
+
+function extractUrlsFromText(text: string): string[] {
+  return Array.from(text.matchAll(CHAT_URL_REGEX), (m) => m[0]);
+}
+
+function renderFormattedText(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  const regex = /\*\*(.+?)\*\*|`([^`]+)`|https?:\/\/[^\s<>"'\]()]+/gi;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    if (match[1] !== undefined) {
+      // **bold**
+      parts.push(<strong key={match.index}>{match[1]}</strong>);
+    } else if (match[2] !== undefined) {
+      // `inline code` — tap to copy
+      const codeText = match[2];
+      parts.push(
+        <code
+          key={match.index}
+          className="chat-inline-code"
+          onClick={(e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(codeText);
+          }}
+        >
+          {codeText}
+        </code>
+      );
+    } else {
+      // URL
+      const url = match[0];
+      parts.push(
+        <a
+          key={match.index}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="chat-link"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {url}
+        </a>
+      );
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts.length > 0 ? parts : text;
 }
 
 function formatLightningAddressDisplay(address: string, baseMaxLength = 32): string {
@@ -932,7 +1080,31 @@ type WalletDmAttachment =
       taskId?: string | null;
       status?: string | null;
     }
+  | {
+      type: "event";
+      title?: string | null;
+      start?: string | null;
+      end?: string | null;
+      whenLabel?: string | null;
+      inviteId?: string | null;
+      status?: string | null;
+      canonical?: string | null;
+      view?: string | null;
+    }
   | { type: "payment"; amountSat?: number | null; detail?: string | null; raw?: string | null }
+  | {
+      type: "file";
+      url: string;
+      mimeType: string;
+      filename?: string | null;
+      size?: number | null;
+      width?: number | null;
+      height?: number | null;
+      algorithm: string;
+      keyHex: string;
+      nonceHex: string;
+      sha256?: string | null;
+    }
   | { type: "text" };
 
 type DecryptedNostrDm = {
@@ -940,25 +1112,157 @@ type DecryptedNostrDm = {
   senderPubkey?: string | null;
   recipientPubkey?: string | null;
   recipientPubkeys?: string[] | null;
+  createdAt?: number | null;
+  kind?: number | null;
+  tags?: string[][] | null;
+  /** The inner rumor's event ID (NIP-17 canonical message ID for cross-client compat) */
+  rumorId?: string | null;
+};
+
+type DmReaction = {
+  emoji: string;
+  senderPubkey: string;
+  reactEventId: string;
 };
 
 type WalletDmMessage = {
   id: string;
   eventId: string;
-  peerPubkey: string;
+  /** The inner NIP-17 rumor event ID — canonical cross-client identifier for reactions/replies */
+  rumorEventId?: string;
+  peerPubkey: string; // for DMs: peer hex; for groups: groupId
   isIncoming: boolean;
   createdAt: number;
   content: string;
   preview: string;
   attachment?: WalletDmAttachment;
+  groupId?: string; // set for group messages
+  senderPubkey?: string; // set for group messages — who sent this specific message
+  replyToEventId?: string; // "e" tag from inner kind-14 rumor
 };
 
 type WalletDmThread = {
-  peerPubkey: string;
+  peerPubkey: string; // for DMs: peer hex; for groups: groupId
   messages: WalletDmMessage[];
   lastCreatedAt: number;
   lastPreview: string;
   isStranger: boolean;
+  groupId?: string; // set for group threads
+};
+
+type PendingDmMessage = {
+  id: string;
+  content: string;
+  peerPubkey: string;
+  createdAt: number;
+  status: "sending" | "sent" | "done" | "failed";
+  // File-attachment pending state (in-flight encrypt + upload + giftwrap)
+  file?: {
+    filename: string;
+    mimeType: string;
+    size: number;
+    previewUrl?: string; // object URL for local preview of in-flight image
+    progress: number; // 0..1
+    phase: "encrypting" | "uploading" | "sending";
+  } | null;
+};
+
+type DmThreadListEntry =
+  | { kind: "thread"; thread: WalletDmThread; lastCreatedAt: number }
+  | { kind: "strangers"; lastCreatedAt: number; lastPreview: string };
+
+type DmSyncMeta = {
+  lastCompletedSyncAt: number;
+};
+
+const MAX_GROUP_MEMBERS = 17;
+
+function generateGroupId(members: string[]): string {
+  const sorted = [...new Set(members.map((m) => m.toLowerCase()))].sort();
+  const data = new TextEncoder().encode(sorted.join(","));
+  const hash = sha256(data);
+  return bytesToHex(hash);
+}
+
+function readGroupChats(): GroupChat[] {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_GROUP_CHATS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((entry) => normalizeGroupChatRecord(entry)).filter((group): group is GroupChat => !!group);
+  } catch {
+    return [];
+  }
+}
+
+function readStoredStringSet(storageKey: string): Set<string> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed
+        .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function readStoredTimestampMap(storageKey: string): Map<string, number> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const now = Date.now();
+      return new Map(
+        parsed
+          .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
+          .filter(Boolean)
+          .map((entry) => [entry, now] as const),
+      );
+    }
+    if (!parsed || typeof parsed !== "object") return new Map();
+    return new Map(
+      Object.entries(parsed)
+        .map(([key, value]) => {
+          const normalizedKey = typeof key === "string" ? key.trim().toLowerCase() : "";
+          const normalizedValue =
+            typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+          return normalizedKey && normalizedValue > 0 ? ([normalizedKey, normalizedValue] as const) : null;
+        })
+        .filter(Boolean) as Array<readonly [string, number]>,
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+type PendingCalendarInvite = {
+  id: string;
+  source: "dm" | "nostr";
+  eventId: string;
+  canonical: string;
+  view: string;
+  eventKey: string;
+  inviteToken: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  relays?: string[];
+  sender?: { pubkey?: string; name?: string; npub?: string };
+  receivedAt: string;
+  status: string;
+};
+
+type SharedContactPreview = {
+  contact: Contact;
+  itemId?: string | null;
+  status?: WalletMessageItem["status"] | "dismissed" | null;
 };
 
 type ContactViewMode = "list" | "detail" | "edit";
@@ -1707,10 +2011,141 @@ function formatDmTime(tsSeconds: number): string {
   return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+function formatDmDateSeparator(tsSeconds: number): string {
+  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
+  const date = new Date(tsSeconds * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((today.getTime() - msgDay.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  const sameYear = date.getFullYear() === now.getFullYear();
+  if (sameYear) return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 function truncatePreview(value: string, limit = 72): string {
   const trimmed = (value || "").trim();
   if (trimmed.length <= limit) return trimmed;
   return `${trimmed.slice(0, limit)}…`;
+}
+
+function isWalletDmAttachment(value: unknown): value is WalletDmAttachment {
+  if (!value || typeof value !== "object") return false;
+  const type = (value as { type?: unknown }).type;
+  return typeof type === "string";
+}
+
+function isWalletDmMessage(value: unknown): value is WalletDmMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<WalletDmMessage>;
+  return (
+    typeof candidate.eventId === "string" &&
+    typeof candidate.peerPubkey === "string" &&
+    typeof candidate.isIncoming === "boolean" &&
+    typeof candidate.createdAt === "number" &&
+    typeof candidate.content === "string" &&
+    typeof candidate.preview === "string"
+  );
+}
+
+function isResolvedPendingDm(pending: PendingDmMessage, messages: WalletDmMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      !message.isIncoming &&
+      message.peerPubkey === pending.peerPubkey &&
+      message.content === pending.content &&
+      Math.abs(message.createdAt - pending.createdAt) < 15,
+  );
+}
+
+function readDmCache(): WalletDmMessage[] {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(isWalletDmMessage)
+      .map((entry) => ({
+        id: entry.id || entry.eventId,
+        eventId: entry.eventId,
+        peerPubkey: entry.peerPubkey.toLowerCase(),
+        isIncoming: entry.isIncoming,
+        createdAt: entry.createdAt,
+        content: entry.content,
+        preview: entry.preview,
+        attachment: isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" },
+        ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
+        ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
+      }))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-400);
+  } catch {
+    return [];
+  }
+}
+
+function readDmSyncMeta(): DmSyncMeta {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META);
+    if (!raw) return { lastCompletedSyncAt: 0 };
+    const parsed = JSON.parse(raw) as Partial<DmSyncMeta> | null;
+    const value = typeof parsed?.lastCompletedSyncAt === "number" ? parsed.lastCompletedSyncAt : 0;
+    return { lastCompletedSyncAt: Number.isFinite(value) ? value : 0 };
+  } catch {
+    return { lastCompletedSyncAt: 0 };
+  }
+}
+
+function parseDateLikeToUnixSeconds(value: string | null | undefined, fallback = Math.floor(Date.now() / 1000)): number {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  const parsed = new Date(value);
+  const millis = parsed.getTime();
+  if (Number.isNaN(millis) || millis <= 0) return fallback;
+  return Math.floor(millis / 1000);
+}
+
+function normalizeDmPeerHex(value: string | null | undefined): string | null {
+  const normalized = normalizeNostrPubkey(value || "");
+  const candidate = (normalized || value || "").trim();
+  if (!candidate) return null;
+  if (/^(02|03)[0-9a-fA-F]{64}$/.test(candidate)) return candidate.slice(-64).toLowerCase();
+  if (/^0x[0-9a-fA-F]{64}$/.test(candidate)) return candidate.slice(-64).toLowerCase();
+  if (/^[0-9a-fA-F]{64}$/.test(candidate)) return candidate.toLowerCase();
+  return candidate.toLowerCase();
+}
+
+function cachedContactProfileToDmProfile(entry: CachedContactProfile): ContactProfile {
+  return {
+    ...entry.profile,
+    picture: pickPreferredProfilePhoto(entry.pictureDataUrl, entry.profile.picture),
+  };
+}
+
+function buildInitialDmPeerProfiles(messages: WalletDmMessage[]): Map<string, ContactProfile> {
+  const cachedProfiles = loadContactProfileCache();
+  const next = new Map<string, ContactProfile>();
+  messages.forEach((message) => {
+    const peerHex = normalizeDmPeerHex(message.peerPubkey);
+    if (!peerHex || next.has(peerHex)) return;
+    const cached = cachedProfiles[peerHex];
+    if (!cached?.profile) return;
+    next.set(peerHex, cachedContactProfileToDmProfile(cached));
+  });
+  return next;
+}
+
+function buildWalletMessageSyntheticEventId(item: WalletMessageItem): string {
+  const dmEventId = item.dmEventId?.trim();
+  return dmEventId || `wallet-message-${item.id}`;
+}
+
+function buildCalendarInviteSyntheticEventId(invite: PendingCalendarInvite): string {
+  const eventId = invite.eventId?.trim();
+  return eventId || `calendar-invite-${invite.id}`;
 }
 
 function shortenNpubDisplay(npub: string | null | undefined, lead = 8, tail = 6): string {
@@ -1727,6 +2162,206 @@ function tryParseJson<T = any>(value: string | null | undefined): T | null {
   } catch {
     return null;
   }
+}
+
+type MessengerFileDescriptor = {
+  url: string;
+  mimeType: string;
+  filename?: string | null;
+  size?: number | null;
+  width?: number | null;
+  height?: number | null;
+  algorithm: string;
+  keyHex: string;
+  nonceHex: string;
+};
+
+const CHAT_FILE_PICKER_ACCEPT = "application/*,text/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.json,.csv,.zip,.7z,.tar,.gz,.rtf";
+
+function MessengerFileBubble({
+  descriptor,
+  isIncoming,
+}: {
+  descriptor: MessengerFileDescriptor;
+  isIncoming: boolean;
+}) {
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ready"; objectUrl: string; blob: Blob }
+    | { kind: "error"; message: string }
+  >(() => ({ kind: "idle" }));
+  const mimeLc = (descriptor.mimeType || "").toLowerCase();
+  const isImage = isImageMime(mimeLc);
+  const isVideo = isVideoMime(mimeLc);
+  const isAudio = isAudioMime(mimeLc);
+  const filename = descriptor.filename || "attachment";
+  const sizeLabel = formatByteSize(descriptor.size ?? 0);
+
+  const loadDescriptor = useCallback(async () => {
+    setState({ kind: "loading" });
+    try {
+      const result = await decryptMessengerAttachment({
+        url: descriptor.url,
+        mimeType: descriptor.mimeType,
+        keyHex: descriptor.keyHex,
+        nonceHex: descriptor.nonceHex,
+        algorithm: descriptor.algorithm,
+      });
+      setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
+    } catch (err: any) {
+      setState({ kind: "error", message: err?.message || "Failed to decrypt attachment" });
+    }
+  }, [descriptor.url, descriptor.mimeType, descriptor.keyHex, descriptor.nonceHex, descriptor.algorithm]);
+
+  // Auto-load media attachments (images, video, audio) so they render inline.
+  useEffect(() => {
+    if (isImage || isVideo || isAudio) {
+      void loadDescriptor();
+    }
+  }, [isImage, isVideo, isAudio, loadDescriptor]);
+
+  const handleDownload = useCallback(async () => {
+    let url: string | null = null;
+    if (state.kind === "ready") {
+      url = state.objectUrl;
+    } else {
+      try {
+        const result = await decryptMessengerAttachment({
+          url: descriptor.url,
+          mimeType: descriptor.mimeType,
+          keyHex: descriptor.keyHex,
+          nonceHex: descriptor.nonceHex,
+          algorithm: descriptor.algorithm,
+        });
+        url = result.objectUrl;
+        setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
+      } catch (err: any) {
+        setState({ kind: "error", message: err?.message || "Failed to decrypt attachment" });
+        return;
+      }
+    }
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [state, descriptor, filename]);
+
+  const aspectStyle = (() => {
+    const w = descriptor.width ?? 0;
+    const h = descriptor.height ?? 0;
+    if (w > 0 && h > 0) return { aspectRatio: `${w} / ${h}` } as React.CSSProperties;
+    return undefined;
+  })();
+
+  if (isImage) {
+    return (
+      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--image${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+        <div className="chat-file__image-frame" style={aspectStyle}>
+          {state.kind === "ready" ? (
+            <img src={state.objectUrl} alt={filename} className="chat-file__image" />
+          ) : state.kind === "error" ? (
+            <div className="chat-file__error">
+              <span>{state.message}</span>
+              <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="chat-file__loading">
+              <div className="chat-sending-spinner" />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (isVideo) {
+    return (
+      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--video${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+        <div className="chat-file__video-frame" style={aspectStyle}>
+          {state.kind === "ready" ? (
+            <video src={state.objectUrl} controls className="chat-file__video" />
+          ) : state.kind === "error" ? (
+            <div className="chat-file__error">
+              <span>{state.message}</span>
+              <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="chat-file__loading">
+              <div className="chat-sending-spinner" />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (isAudio) {
+    return (
+      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--audio${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+        {state.kind === "ready" ? (
+          <audio src={state.objectUrl} controls className="chat-file__audio" />
+        ) : state.kind === "error" ? (
+          <div className="chat-file__error">
+            <span>{state.message}</span>
+            <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="chat-file__loading">
+            <div className="chat-sending-spinner" />
+          </div>
+        )}
+        <div className="chat-file__meta">
+          <div className="chat-file__name" title={filename}>{filename}</div>
+          {sizeLabel && <div className="chat-file__size">{sizeLabel}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--doc${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
+      <button
+        type="button"
+        className="chat-file__doc pressable"
+        onClick={handleDownload}
+        disabled={state.kind === "loading"}
+      >
+        <div className="chat-file__doc-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
+            <polyline points="13 2 13 9 20 9" />
+          </svg>
+        </div>
+        <div className="chat-file__doc-body">
+          <div className="chat-file__name" title={filename}>{filename}</div>
+          <div className="chat-file__size">
+            {state.kind === "loading"
+              ? "Decrypting…"
+              : state.kind === "error"
+                ? state.message
+                : sizeLabel || "Download"}
+          </div>
+        </div>
+        <div className="chat-file__doc-action">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </div>
+      </button>
+    </div>
+  );
 }
 
 export default function CashuWalletModal({
@@ -1749,17 +2384,25 @@ export default function CashuWalletModal({
   contactsSyncEnabled,
   fileStorageServer,
   fileServers,
+  encryptedFileStorageServer,
+  encryptedFileServers,
   messageItems,
   onAcceptMessage,
   onMaybeMessage,
   onDeclineMessage,
   onDismissMessage,
   onMarkMessagesRead,
+  inboxPendingItems,
+  pendingCalendarInvites,
+  onCalendarInviteRsvp,
+  onDismissCalendarInvite,
+  formatCalendarInviteWhen,
+  onDmUnreadCountChange,
 }: {
   open: boolean;
   onClose: () => void;
   onOpenBounties?: () => void;
-  page?: "wallet" | "contacts";
+  page?: "wallet" | "contacts" | "chat";
   showTabSwitcher?: boolean;
   showBottomNav?: boolean;
   walletConversionEnabled: boolean;
@@ -1775,6 +2418,8 @@ export default function CashuWalletModal({
   contactsSyncEnabled: boolean;
   fileStorageServer: string;
   fileServers?: string;
+  encryptedFileStorageServer?: string;
+  encryptedFileServers?: string;
   messageItems: WalletMessageItem[];
   messagesUnreadCount: number;
   onAcceptMessage: (id: string) => void;
@@ -1782,6 +2427,12 @@ export default function CashuWalletModal({
   onDeclineMessage: (id: string) => void;
   onDismissMessage: (id: string) => void;
   onMarkMessagesRead: (dmEventIds: string[]) => void;
+  inboxPendingItems?: WalletMessageItem[];
+  pendingCalendarInvites?: PendingCalendarInvite[];
+  onCalendarInviteRsvp?: (invite: any, status: string) => void;
+  onDismissCalendarInvite?: (invite: any) => void;
+  formatCalendarInviteWhen?: (invite: any) => string;
+  onDmUnreadCountChange?: (count: number) => void;
 }) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -2063,32 +2714,136 @@ export default function CashuWalletModal({
     | { type: "paymentRequest"; request: string };
   const [pendingScan, setPendingScan] = useState<PendingScan | null>(null);
   const [scannedContact, setScannedContact] = useState<Contact | null>(null);
+  const [sharedContactPreview, setSharedContactPreview] = useState<SharedContactPreview | null>(null);
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const isContactsPage = page === "contacts";
-  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>([]);
+  const isChatPage = page === "chat";
+  const [chatView, setChatView] = useState<
+    "threads" | "conversation" | "new-message" | "new-group-select" | "new-group-name" | "group-info" | "group-members" | "group-name-edit"
+  >("threads");
+  const [chatCompose, setChatCompose] = useState("");
+  const [pendingMessages, setPendingMessages] = useState<PendingDmMessage[]>([]);
+  const [groupChats, setGroupChats] = useState<GroupChat[]>(() => readGroupChats());
+  const [groupSelectMembers, setGroupSelectMembers] = useState<Set<string>>(new Set());
+  const [groupNameDraft, setGroupNameDraft] = useState("");
+  const [renameGroupDraft, setRenameGroupDraft] = useState("");
+  const [renameGroupBusy, setRenameGroupBusy] = useState(false);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const [groupMembersSearch, setGroupMembersSearch] = useState("");
+  const [groupInfoTab, setGroupInfoTab] = useState<"info" | "photos" | "links">("info");
+  const groupChatsRef = useRef<GroupChat[]>(groupChats);
+  useEffect(() => { groupChatsRef.current = groupChats; }, [groupChats]);
+  const dmMutedGroupsRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_GROUP_MUTED));
+  const [dmMutedGroupsVersion, setDmMutedGroupsVersion] = useState(0);
+  const dmLeftGroupsRef = useRef<Set<string>>(readStoredStringSet(LS_GROUP_LEFT));
+  const [dmLeftGroupsVersion, setDmLeftGroupsVersion] = useState(0);
+  const dmThreadReadAtRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_DM_THREAD_READ_STATE));
+  const [dmThreadReadAtVersion, setDmThreadReadAtVersion] = useState(0);
+  const [attachTrayOpen, setAttachTrayOpen] = useState(false);
+  const [chatKeyboardHeight, setChatKeyboardHeight] = useState(0);
+  const [chatKeyboardHeightCache, setChatKeyboardHeightCache] = useState(() => measureDefaultChatAttachTrayHeight());
+  const chatComposeInputRef = useRef<HTMLInputElement>(null);
+  const chatPhotoInputRef = useRef<HTMLInputElement>(null);
+  const chatFileInputRef = useRef<HTMLInputElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const messagesInnerRef = useRef<HTMLDivElement>(null);
+  const dragTouchStartX = useRef(0);
+  const dragTouchStartY = useRef(0);
+  const dragDirectionLocked = useRef<"horizontal" | "vertical" | null>(null);
+  const dmListViewRef = useRef<"list" | "strangers">("list");
+  const scrollToMessageIdRef = useRef<string | null>(null);
+  const dmAutoScrollStateRef = useRef<{ threadPeer: string | null; itemCount: number }>({
+    threadPeer: null,
+    itemCount: 0,
+  });
+  const chatModeUsesContacts = isChatPage && (chatView === "new-message" || chatView === "new-group-select" || chatView === "new-group-name");
+  const initialDmMessages = useMemo(() => readDmCache(), []);
+  const initialDmPeerProfiles = useMemo(() => buildInitialDmPeerProfiles(initialDmMessages), [initialDmMessages]);
+  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => initialDmMessages);
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
-  const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
+  const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string; msg: WalletDmMessage } | null>(null);
+  const [replyToMessage, setReplyToMessage] = useState<WalletDmMessage | null>(null);
+  const [dmReactions, setDmReactions] = useState<Map<string, DmReaction[]>>(new Map());
+  const [dmInfoMessage, setDmInfoMessage] = useState<WalletDmMessage | null>(null);
+  const [dmForwardMessage, setDmForwardMessage] = useState<WalletDmMessage | null>(null);
+  const [dmReactionDetail, setDmReactionDetail] = useState<{ eventId: string } | null>(null);
+  useEffect(() => {
+    if (!open || !isChatPage || typeof window === "undefined") return;
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const updateKeyboardHeight = () => {
+      const layoutHeight = Math.max(window.innerHeight, document.documentElement?.clientHeight || 0);
+      const nextHeight = Math.max(0, Math.round(layoutHeight - viewport.height - viewport.offsetTop));
+      if (nextHeight > 120) {
+        setChatKeyboardHeight(nextHeight);
+        setChatKeyboardHeightCache(
+          Math.min(
+            CHAT_ATTACH_TRAY_MAX_HEIGHT,
+            Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, nextHeight),
+          ),
+        );
+      } else {
+        setChatKeyboardHeight(0);
+      }
+    };
+    updateKeyboardHeight();
+    viewport.addEventListener("resize", updateKeyboardHeight);
+    viewport.addEventListener("scroll", updateKeyboardHeight);
+    window.addEventListener("orientationchange", updateKeyboardHeight);
+    return () => {
+      viewport.removeEventListener("resize", updateKeyboardHeight);
+      viewport.removeEventListener("scroll", updateKeyboardHeight);
+      window.removeEventListener("orientationchange", updateKeyboardHeight);
+    };
+  }, [isChatPage, open]);
+  useEffect(() => {
+    if (chatView === "conversation") return;
+    setAttachTrayOpen(false);
+  }, [chatView]);
   const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dmDeletedEventsRef = useRef<Set<string>>(new Set());
   const [dmDeletedEventsVersion, setDmDeletedEventsVersion] = useState(0);
   const dmBlockedPeersRef = useRef<Set<string>>(new Set());
   const [, setDmBlockedPeersVersion] = useState(0);
-  const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(new Map());
+  const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(initialDmPeerProfiles);
   const dmPeerProfileLoadingRef = useRef<Set<string>>(new Set());
   const [, setDmPeerProfilesVersion] = useState(0);
   const dmProcessedEventsRef = useRef<Set<string>>(new Set());
   const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
-  const dmLastSyncRef = useRef<number>(0);
+  const dmLastSyncRef = useRef<number>(readDmSyncMeta().lastCompletedSyncAt || 0);
+  const messageItemsRef = useRef<WalletMessageItem[]>(messageItems);
+  useEffect(() => {
+    messageItemsRef.current = messageItems;
+  }, [messageItems]);
   const [dmView, setDmView] = useState<"list" | "thread" | "strangers">("list");
   const [activeThreadPeer, setActiveThreadPeer] = useState<string | null>(null);
   const [dmSearch, setDmSearch] = useState("");
-  const [showStrangersOnly, setShowStrangersOnly] = useState(false);
+  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
   useEffect(() => {
-    if (showTabSwitcher || isContactsPage) return;
+    setAttachTrayOpen(false);
+  }, [activeThreadPeer]);
+  useEffect(() => {
+    setPendingMessages([]);
+  }, [activeThreadPeer]);
+  const visiblePendingMessages = useMemo(
+    () => pendingMessages.filter((message) => !isResolvedPendingDm(message, dmMessages)),
+    [dmMessages, pendingMessages],
+  );
+  // Remove optimistic pending bubbles from state once the real outgoing DM is present.
+  useEffect(() => {
+    setPendingMessages(prev =>
+      {
+        const next = prev.filter((message) => !isResolvedPendingDm(message, dmMessages));
+        return next.length === prev.length ? prev : next;
+      },
+    );
+  }, [dmMessages]);
+  useEffect(() => {
+    if (showTabSwitcher || isContactsPage || isChatPage) return;
     if (walletTab !== "wallet") {
       setWalletTab("wallet");
     }
-  }, [isContactsPage, showTabSwitcher, walletTab]);
+  }, [isChatPage, isContactsPage, showTabSwitcher, walletTab]);
   const toggleDmMessageExpanded = useCallback((eventId: string) => {
     setDmExpandedMessages((prev) => {
       const next = new Set(prev);
@@ -2130,6 +2885,126 @@ export default function CashuWalletModal({
       // ignore storage failures
     }
   }, []);
+  const persistDmMessages = useCallback((messages: WalletDmMessage[]) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages.slice(-400)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistDmThreadReadState = useCallback((next: Map<string, number>) => {
+    try {
+      idbKeyValue.setItem(
+        TASKIFY_STORE_NOSTR,
+        LS_DM_THREAD_READ_STATE,
+        JSON.stringify(Object.fromEntries(Array.from(next.entries()))),
+      );
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistGroupChats = useCallback((groups: GroupChat[]) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_GROUP_CHATS, JSON.stringify(groups));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistGroupStateSet = useCallback((storageKey: string, values: Set<string>) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, storageKey, JSON.stringify(Array.from(values)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const upsertGroupChat = useCallback(
+    (group: GroupChat) => {
+      setGroupChats((prev) => {
+        const idx = prev.findIndex((g) => g.groupId === group.groupId);
+        const nextGroup = idx >= 0 ? mergeGroupChats(prev[idx], group) : mergeGroupChats(null, group);
+        const next = idx >= 0 ? [...prev.slice(0, idx), nextGroup, ...prev.slice(idx + 1)] : [...prev, nextGroup];
+        persistGroupChats(next);
+        return next;
+      });
+    },
+    [persistGroupChats],
+  );
+  const persistDmSyncMeta = useCallback((meta: DmSyncMeta) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META, JSON.stringify(meta));
+      dmLastSyncRef.current = meta.lastCompletedSyncAt || 0;
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistDmPeerProfileCache = useCallback(
+    (peerHex: string, profile: ContactProfile, updatedAt: number, pictureDataUrl?: string) => {
+      const normalizedPeerHex = normalizeDmPeerHex(peerHex);
+      if (!normalizedPeerHex) return;
+      const cache = loadContactProfileCache();
+      const existing = cache[normalizedPeerHex];
+      const existingUpdatedAt = existing?.updatedAt ?? 0;
+      const incomingUpdatedAt =
+        Number.isFinite(updatedAt) && updatedAt > 0 ? Math.floor(updatedAt) : existingUpdatedAt;
+      const preferIncoming = incomingUpdatedAt >= existingUpdatedAt;
+      const mergeString = (incoming?: string, current?: string) => {
+        const incomingValue = typeof incoming === "string" ? incoming.trim() : "";
+        const currentValue = typeof current === "string" ? current.trim() : "";
+        return preferIncoming ? incomingValue || currentValue || undefined : currentValue || incomingValue || undefined;
+      };
+      const normalizeRelays = (value?: string[]) =>
+        Array.isArray(value) && value.length
+          ? Array.from(
+              new Set(
+                value
+                  .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+                  .filter(Boolean),
+              ),
+            )
+          : undefined;
+      const incomingPictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
+      const existingPictureUrl = typeof existing?.profile.picture === "string" ? existing.profile.picture.trim() : "";
+      const nextPictureDataUrl =
+        (pictureDataUrl && isDataUrl(pictureDataUrl) ? pictureDataUrl.trim() : "") ||
+        (existing?.pictureDataUrl && incomingPictureUrl && incomingPictureUrl === existingPictureUrl
+          ? existing.pictureDataUrl
+          : undefined);
+      const nextEntry = normalizeCachedContactProfile({
+        profile: {
+          username: mergeString(profile.username, existing?.profile.username),
+          displayName: mergeString(profile.displayName, existing?.profile.displayName),
+          about: mergeString(profile.about, existing?.profile.about),
+          picture: mergeString(profile.picture, existing?.profile.picture),
+          lud16: mergeString(profile.lud16, existing?.profile.lud16),
+          nip05: mergeString(profile.nip05, existing?.profile.nip05),
+          paymentRequest: mergeString(profile.paymentRequest, existing?.profile.paymentRequest),
+          creq: mergeString(profile.creq, existing?.profile.creq),
+          relays: preferIncoming
+            ? normalizeRelays(profile.relays) || normalizeRelays(existing?.profile.relays)
+            : normalizeRelays(existing?.profile.relays) || normalizeRelays(profile.relays),
+        },
+        updatedAt: Math.max(existingUpdatedAt, incomingUpdatedAt),
+        pictureDataUrl: nextPictureDataUrl,
+      });
+      if (!nextEntry) return;
+      cache[normalizedPeerHex] = nextEntry;
+      persistContactProfileCache(cache);
+    },
+    [],
+  );
+  useEffect(() => {
+    persistDmMessages(dmMessages);
+  }, [dmMessages, persistDmMessages]);
+
+  useEffect(() => {
+    if (!isChatPage || !open || chatView !== "threads") return;
+    if (dmMessages.length > 0) return;
+    const cached = readDmCache();
+    if (cached.length > 0) {
+      setDmMessages(cached);
+    }
+  }, [chatView, dmMessages.length, isChatPage, open]);
+
   useEffect(() => {
     try {
       const rawDeleted = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_DELETED_EVENTS);
@@ -2246,6 +3121,7 @@ export default function CashuWalletModal({
   useEffect(() => {
     cancelDmLongPress();
     setDmMessageActions(null);
+    setReplyToMessage(null);
   }, [activeThreadPeer, cancelDmLongPress, dmView]);
   const [receiveMode, setReceiveMode] = useState<null | "ecash" | "lightning" | "lnurlWithdraw">(null);
   const [receiveLockVisible, setReceiveLockVisible] = useState(false);
@@ -2646,7 +3522,16 @@ export default function CashuWalletModal({
             }
           }
 
-          return { content, senderPubkey: event.pubkey, recipientPubkey, recipientPubkeys };
+          return {
+            content,
+            senderPubkey: event.pubkey,
+            recipientPubkey,
+            recipientPubkeys,
+            createdAt:
+              typeof event.created_at === "number" && Number.isFinite(event.created_at) && event.created_at > 0
+                ? Math.floor(event.created_at)
+                : null,
+          };
         }
         if (event.kind === 1059 && nip44?.v2) {
           if (PAYMENT_REQUEST_DEBUG) {
@@ -2680,7 +3565,7 @@ export default function CashuWalletModal({
           } catch {
             rumor = null;
           }
-          if (!rumor || rumor.kind !== 14 || typeof rumor.content !== "string") {
+          if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15 && rumor.kind !== 7) || typeof rumor.content !== "string") {
             return null;
           }
           const rumorPubkey = typeof rumor.pubkey === "string" ? rumor.pubkey.trim().toLowerCase() : "";
@@ -2702,11 +3587,25 @@ export default function CashuWalletModal({
             }
             return null;
           }
+          const rumorCreatedAt =
+            typeof rumor.created_at === "number" && Number.isFinite(rumor.created_at) && rumor.created_at > 0
+              ? Math.floor(rumor.created_at)
+              : null;
+          // The inner rumor's id is the canonical cross-client message identifier (NIP-17).
+          // It is the same for all recipients of the same message, unlike the outer giftwrap id.
+          const rumorId =
+            typeof (rumor as any).id === "string" && /^[0-9a-f]{64}$/i.test((rumor as any).id)
+              ? ((rumor as any).id as string)
+              : null;
           return {
             content: rumor.content,
             senderPubkey,
             recipientPubkey: rumorRecipients[0] ?? null,
             recipientPubkeys: rumorRecipients,
+            createdAt: rumorCreatedAt,
+            kind: typeof rumor.kind === "number" ? rumor.kind : null,
+            tags: Array.isArray(rumor.tags) ? (rumor.tags as string[][]) : null,
+            rumorId,
           };
         }
       } catch (err) {
@@ -2737,30 +3636,45 @@ export default function CashuWalletModal({
 
   const resolvePeerPubkey = useCallback(
     (event: NostrEvent, identityPubkey: string, senderPubkey?: string | null, recipientPubkey?: string | null): string => {
+      // Always return raw 64-char hex (no "02"/"03" prefix) so peerPubkey is consistent
+      // with the format used in openConversationForPeer.
+      const toRaw = (v: string | null | undefined): string | null => {
+        if (!v) return null;
+        const lc = v.toLowerCase();
+        if (/^(02|03)[0-9a-f]{64}$/.test(lc)) return lc.slice(2);
+        if (/^[0-9a-f]{64}$/.test(lc)) return lc;
+        return null;
+      };
+
       const normalizedIdentity = normalizeNostrPubkey(identityPubkey) ?? identityPubkey;
       const normalizedSender = senderPubkey ? normalizeNostrPubkey(senderPubkey) ?? senderPubkey : null;
       const normalizedRecipient = recipientPubkey ? normalizeNostrPubkey(recipientPubkey) ?? recipientPubkey : null;
 
-      if (normalizedSender && normalizedSender !== normalizedIdentity) {
-        return normalizedSender;
-      }
+      // Normal outgoing: sender is identity, recipient is someone else → peer is recipient
       if (normalizedRecipient && normalizedRecipient !== normalizedIdentity) {
-        return normalizedRecipient;
+        return toRaw(normalizedRecipient) ?? normalizedRecipient;
+      }
+      // Normal incoming: sender is someone else → peer is sender
+      if (normalizedSender && normalizedSender !== normalizedIdentity) {
+        return toRaw(normalizedSender) ?? normalizedSender;
+      }
+      // Self-send (NIP-17 note-to-self): both sender and recipient equal identity.
+      // Do NOT fall through to event.pubkey (that's the ephemeral giftwrap key).
+      if (normalizedSender === normalizedIdentity && normalizedRecipient === normalizedIdentity) {
+        return toRaw(identityPubkey) ?? identityPubkey.toLowerCase();
       }
 
-      const normalizedAuthor = normalizeNostrPubkey(event.pubkey) ?? event.pubkey;
-      if (normalizedAuthor !== normalizedIdentity) {
-        return normalizedAuthor;
-      }
+      // Fallback: use giftwrap's p-tag recipient if it differs from identity
       const pTag = Array.isArray(event.tags)
         ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
         : null;
       const peer = pTag?.[1];
       const normalizedPeer = peer ? normalizeNostrPubkey(peer) ?? peer : null;
       if (normalizedPeer && normalizedPeer !== normalizedIdentity) {
-        return normalizedPeer;
+        return toRaw(normalizedPeer) ?? normalizedPeer;
       }
-      return normalizedSender || normalizedAuthor;
+
+      return toRaw(normalizedSender) ?? toRaw(identityPubkey) ?? identityPubkey.toLowerCase();
     },
     [normalizeNostrPubkey],
   );
@@ -3003,10 +3917,32 @@ export default function CashuWalletModal({
   const [showCustomContactFields, setShowCustomContactFields] = useState(false);
   const [contactView, setContactView] = useState<ContactViewMode>("list");
   const [activeContactId, setActiveContactId] = useState<string | "profile" | null>(null);
+  const [contactReturnView, setContactReturnView] = useState<"new-message" | "group-members" | "group-info">("new-message");
+  const [contactDetailOverride, setContactDetailOverride] = useState<Contact | null>(null);
   const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
+  const [shareContactPickerMode, setShareContactPickerMode] = useState<"recipient" | "chat-source">("recipient");
   const [shareContactSource, setShareContactSource] = useState<Contact | null>(null);
   const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
   const [shareContactBusy, setShareContactBusy] = useState(false);
+  // Tracks which thread peer was active when the chat-source picker was opened,
+  // so the effect below only closes it when the user switches conversations.
+  const shareContactOpenedAtPeerRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source" || chatView === "conversation") return;
+    setShareContactPickerOpen(false);
+    setShareContactPickerMode("recipient");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+  }, [chatView, shareContactPickerMode, shareContactPickerOpen]);
+  useEffect(() => {
+    if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source") return;
+    // Only close if the active thread actually changed since the picker was opened.
+    if (activeThreadPeer === shareContactOpenedAtPeerRef.current) return;
+    setShareContactPickerOpen(false);
+    setShareContactPickerMode("recipient");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+  }, [activeThreadPeer, shareContactPickerMode, shareContactPickerOpen]);
   const [contactEditDraft, setContactEditDraft] = useState<ContactEditDraft>({
     id: null,
     name: "",
@@ -3058,12 +3994,27 @@ export default function CashuWalletModal({
     setContactLookupError("");
     setContactLookupInput("");
     setShowCustomContactFields(false);
+    setContactDetailOverride(null);
+    setContactReturnView("new-message");
     setContactView("edit");
   }, [resetContactEditDraft]);
   const handleBackToContactsList = useCallback(() => {
     setContactView("list");
     setActiveContactId(null);
-  }, []);
+    setContactDetailOverride(null);
+    if (isChatPage) {
+      setChatView(contactReturnView);
+    }
+    setContactReturnView("new-message");
+  }, [contactReturnView, isChatPage]);
+  const handleReturnToProfileCard = useCallback(() => {
+    setActiveContactId("profile");
+    setContactDetailOverride(null);
+    setContactView("detail");
+    if (isChatPage) {
+      setChatView("new-message");
+    }
+  }, [isChatPage]);
   const contactsPublishQueuedRef = useRef(false);
   const [contactsContext, setContactsContext] = useState<"lightning" | "ecash" | null>(null);
   const contactsContextRef = useRef<"lightning" | "ecash" | null>(null);
@@ -4616,6 +5567,170 @@ export default function CashuWalletModal({
     });
     return map;
   }, [messageItems]);
+  const pendingMessageItemsByEventId = useMemo(() => {
+    const map = new Map<string, WalletMessageItem>();
+    (inboxPendingItems || []).forEach((item) => {
+      map.set(buildWalletMessageSyntheticEventId(item), item);
+    });
+    return map;
+  }, [inboxPendingItems]);
+  const pendingCalendarInvitesByEventId = useMemo(() => {
+    const map = new Map<string, PendingCalendarInvite>();
+    (pendingCalendarInvites || []).forEach((invite) => {
+      map.set(buildCalendarInviteSyntheticEventId(invite), invite);
+    });
+    return map;
+  }, [pendingCalendarInvites]);
+  const isUnreadThreadStatus = useCallback((status?: string | null) => {
+    if (!status) return false;
+    return (
+      status !== "accepted" &&
+      status !== "deleted" &&
+      status !== "dismissed" &&
+      status !== "declined" &&
+      status !== "tentative" &&
+      status !== "read"
+    );
+  }, []);
+  const collectUnreadThreadItemEventIds = useCallback(
+    (messages: WalletDmMessage[], peerPubkey?: string | null) => {
+      const unreadIds = new Set<string>();
+      messages.forEach((message) => {
+        const item = messageItemsByEventId.get(message.eventId) || pendingMessageItemsByEventId.get(message.eventId);
+        if (isUnreadThreadStatus(item?.status)) {
+          unreadIds.add(message.eventId);
+        }
+        const invite = pendingCalendarInvitesByEventId.get(message.eventId);
+        if (isUnreadThreadStatus(invite?.status)) {
+          unreadIds.add(message.eventId);
+        }
+      });
+      const normalizedPeer = normalizeDmPeerHex(peerPubkey || messages[0]?.peerPubkey || "");
+      if (normalizedPeer) {
+        (inboxPendingItems || []).forEach((item) => {
+          if (!isUnreadThreadStatus(item.status)) return;
+          const itemPeer = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
+          if (itemPeer !== normalizedPeer) return;
+          unreadIds.add(buildWalletMessageSyntheticEventId(item));
+        });
+        (pendingCalendarInvites || []).forEach((invite) => {
+          if (!isUnreadThreadStatus(invite.status)) return;
+          const invitePeer = normalizeDmPeerHex(invite.sender?.pubkey || invite.sender?.npub);
+          if (invitePeer !== normalizedPeer) return;
+          unreadIds.add(buildCalendarInviteSyntheticEventId(invite));
+        });
+      }
+      return Array.from(unreadIds);
+    },
+    [
+      inboxPendingItems,
+      isUnreadThreadStatus,
+      messageItemsByEventId,
+      pendingCalendarInvites,
+      pendingCalendarInvitesByEventId,
+      pendingMessageItemsByEventId,
+    ],
+  );
+  const syntheticDmMessages = useMemo(() => {
+    const existingEventIds = new Set(dmMessages.map((message) => message.eventId));
+    const messages: WalletDmMessage[] = [];
+    (inboxPendingItems || []).forEach((item) => {
+      const eventId = buildWalletMessageSyntheticEventId(item);
+      if (existingEventIds.has(eventId)) return;
+      const peerHex = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
+      if (!peerHex) return;
+      const title = item.title?.trim() || item.task?.title?.trim() || item.boardName?.trim() || "Shared item";
+      const createdAt = parseDateLikeToUnixSeconds(item.receivedAt);
+      const preview =
+        item.type === "board"
+          ? `Shared board: ${item.boardName || title}`
+          : item.type === "contact"
+            ? `Shared contact: ${item.contact?.name || item.contact?.displayName || title}`
+            : item.type === "task"
+              ? `Shared task: ${title}`
+              : title;
+      const attachment: WalletDmAttachment =
+        item.type === "board"
+          ? {
+              type: "board",
+              boardName: item.boardName || title,
+              boardId: item.boardId,
+              taskId: item.id,
+              status: item.status ?? null,
+            }
+          : item.type === "contact"
+            ? {
+                type: "contact",
+                contactName: item.contact?.name || item.contact?.displayName || title,
+                displayName: item.contact?.displayName,
+                username: item.contact?.username,
+                npub: item.contact?.npub,
+                nip05: item.contact?.nip05,
+                address: item.contact?.address,
+                picture: item.contact?.picture,
+                taskId: item.id,
+                status: item.status ?? null,
+              }
+            : item.type === "task"
+              ? {
+                  type: "task",
+                  task: item.task || null,
+                  taskId: item.id,
+                  status: item.status ?? null,
+                }
+              : { type: "text" };
+      messages.push({
+        id: eventId,
+        eventId,
+        peerPubkey: peerHex,
+        isIncoming: true,
+        createdAt,
+        content: item.note?.trim() || title,
+        preview,
+        attachment,
+      });
+    });
+    (pendingCalendarInvites || []).forEach((invite) => {
+      const eventId = buildCalendarInviteSyntheticEventId(invite);
+      if (existingEventIds.has(eventId)) return;
+      const peerHex = normalizeDmPeerHex(invite.sender?.pubkey || invite.sender?.npub);
+      if (!peerHex) return;
+      const whenLabel = formatCalendarInviteWhen ? formatCalendarInviteWhen(invite) : "";
+      const title = invite.title?.trim() || "Event invite";
+      messages.push({
+        id: eventId,
+        eventId,
+        peerPubkey: peerHex,
+        isIncoming: true,
+        createdAt: parseDateLikeToUnixSeconds(invite.receivedAt || invite.start),
+        content: invite.view?.trim() || invite.canonical?.trim() || title,
+        preview: whenLabel ? `Event invite: ${title} · ${whenLabel}` : `Event invite: ${title}`,
+        attachment: {
+          type: "event",
+          title,
+          start: invite.start,
+          end: invite.end,
+          whenLabel,
+          inviteId: invite.id,
+          status: invite.status,
+          canonical: invite.canonical,
+          view: invite.view,
+        },
+      });
+    });
+    messages.sort((a, b) => a.createdAt - b.createdAt);
+    return messages;
+  }, [dmMessages, formatCalendarInviteWhen, inboxPendingItems, pendingCalendarInvites]);
+  const displayDmMessages = useMemo(() => {
+    const merged = new Map<string, WalletDmMessage>();
+    syntheticDmMessages.forEach((message) => {
+      merged.set(message.eventId, message);
+    });
+    dmMessages.forEach((message) => {
+      merged.set(message.eventId, message);
+    });
+    return Array.from(merged.values()).sort((a, b) => a.createdAt - b.createdAt);
+  }, [dmMessages, syntheticDmMessages]);
   const paymentHistoryByEventId = useMemo(() => {
     const map = new Map<string, HistoryItem>();
     history.forEach((entry) => {
@@ -4671,20 +5786,28 @@ export default function CashuWalletModal({
       if (!normalized) return null;
       const peerHex = compressedToRawHex(normalized).toLowerCase();
       if (dmPeerProfilesRef.current.has(peerHex)) return dmPeerProfilesRef.current.get(peerHex)!;
-      const contactEntry = contacts.find((c) => {
+      const cachedProfiles = loadContactProfileCache();
+      const cached = cachedProfiles[peerHex];
+      const cachedProfile = cached?.profile ? cachedContactProfileToDmProfile(cached) : null;
+      const contactEntry = contactsRef.current.find((c) => {
         const cn = normalizeNostrPubkey(c.npub || "");
         if (!cn) return false;
         return compressedToRawHex(cn).toLowerCase() === peerHex;
       });
       if (contactEntry) {
         dmPeerProfilesRef.current.set(peerHex, {
-          username: contactEntry.username || contactEntry.name,
+          username: contactEntry.username || contactEntry.name || cachedProfile?.username,
           displayName: contactDisplayLabel(contactEntry),
           lud16: contactEntry.address || undefined,
           paymentRequest: contactEntry.paymentRequest || undefined,
-          nip05: contactEntry.nip05 || undefined,
-          picture: contactEntry.picture || undefined,
-          about: contactEntry.about || undefined,
+          nip05: contactEntry.nip05 || cachedProfile?.nip05 || undefined,
+          picture: pickPreferredProfilePhoto(cached?.pictureDataUrl, contactEntry.picture, cachedProfile?.picture),
+          about: contactEntry.about || cachedProfile?.about || undefined,
+          creq: cachedProfile?.creq,
+          relays:
+            Array.isArray(contactEntry.relays) && contactEntry.relays.length
+              ? contactEntry.relays
+              : cachedProfile?.relays,
         });
         setDmPeerProfilesVersion((v) => v + 1);
         if (contactEntry.nip05) {
@@ -4697,20 +5820,18 @@ export default function CashuWalletModal({
         }
         return dmPeerProfilesRef.current.get(peerHex)!;
       }
-      const cachedProfiles = loadContactProfileCache();
-      const cached = cachedProfiles[peerHex];
-      if (cached?.profile) {
-        dmPeerProfilesRef.current.set(peerHex, cached.profile);
+      if (cachedProfile) {
+        dmPeerProfilesRef.current.set(peerHex, cachedProfile);
         setDmPeerProfilesVersion((v) => v + 1);
-        if (cached.profile.nip05) {
+        if (cachedProfile.nip05) {
           ensureNip05VerificationRef.current?.(
             `dm-${peerHex}`,
-            cached.profile.nip05,
+            cachedProfile.nip05,
             pubkey,
             cached.updatedAt ?? null,
           );
         }
-        return cached.profile;
+        return cachedProfile;
       }
       if (dmPeerProfileLoadingRef.current.has(peerHex)) return null;
       dmPeerProfileLoadingRef.current.add(peerHex);
@@ -4724,17 +5845,43 @@ export default function CashuWalletModal({
           : null;
         if (profileEvent?.content) {
           const profile = parseProfileContent(profileEvent.content);
-          dmPeerProfilesRef.current.set(peerHex, profile);
+          const updatedAt = (profileEvent.created_at || 0) * 1000;
+          const pictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
+          const cachedPictureUrl = typeof cached?.profile.picture === "string" ? cached.profile.picture.trim() : "";
+          const immediatePicture = pickPreferredProfilePhoto(
+            pictureUrl && cached?.pictureDataUrl && pictureUrl === cachedPictureUrl ? cached.pictureDataUrl : undefined,
+            profile.picture,
+          );
+          const displayProfile: ContactProfile = {
+            ...profile,
+            picture: immediatePicture,
+          };
+          dmPeerProfilesRef.current.set(peerHex, displayProfile);
           setDmPeerProfilesVersion((v) => v + 1);
+          persistDmPeerProfileCache(
+            peerHex,
+            profile,
+            updatedAt,
+            immediatePicture && isDataUrl(immediatePicture) ? immediatePicture : undefined,
+          );
+          if (!immediatePicture && pictureUrl && shouldCacheProfilePhoto(pictureUrl)) {
+            void fetchProfilePhotoDataUrl(pictureUrl).then((dataUrl) => {
+              if (!dataUrl) return;
+              const current = dmPeerProfilesRef.current.get(peerHex) || profile;
+              dmPeerProfilesRef.current.set(peerHex, { ...current, picture: dataUrl });
+              setDmPeerProfilesVersion((v) => v + 1);
+              persistDmPeerProfileCache(peerHex, profile, updatedAt, dataUrl);
+            });
+          }
           if (profile.nip05) {
             ensureNip05VerificationRef.current?.(
               `dm-${peerHex}`,
               profile.nip05,
               pubkey,
-              (profileEvent.created_at || 0) * 1000,
+              updatedAt,
             );
           }
-          return profile;
+          return displayProfile;
         }
       } catch (err) {
         console.warn("Failed to load DM peer profile", err);
@@ -4745,10 +5892,10 @@ export default function CashuWalletModal({
     },
     [
       compressedToRawHex,
-      contacts,
       defaultNostrRelays,
       normalizeNostrPubkey,
       parseProfileContent,
+      persistDmPeerProfileCache,
     ],
   );
   const getPeerProfile = useCallback(
@@ -4771,7 +5918,31 @@ export default function CashuWalletModal({
       const identity = ensureNostrIdentity();
       if (!identity) return;
       const decrypted = await decryptNostrPaymentMessage(event, identity.pubkey, identity.secret);
-      if (!decrypted?.content) {
+      if (!decrypted) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      // Handle kind-7 emoji reactions (NIP-25 inside NIP-17 giftwrap)
+      if (decrypted.kind === 7) {
+        const tags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
+        const eTag = tags.find((t) => Array.isArray(t) && t[0] === "e");
+        const reactedToEventId = typeof eTag?.[1] === "string" ? eTag[1] : null;
+        if (reactedToEventId && decrypted.senderPubkey) {
+          const emoji = (decrypted.content || "").trim() || "❤️";
+          const sender = decrypted.senderPubkey.toLowerCase();
+          setDmReactions((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(reactedToEventId) || [];
+            const filtered = existing.filter((r) => r.senderPubkey !== sender);
+            if (emoji !== "-") filtered.push({ emoji, senderPubkey: sender, reactEventId: event.id });
+            next.set(reactedToEventId, filtered);
+            return next;
+          });
+        }
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      if (!decrypted.content) {
         dmProcessedEventsRef.current.add(event.id);
         return;
       }
@@ -4793,9 +5964,78 @@ export default function CashuWalletModal({
       let attachment: WalletDmAttachment | undefined;
       let preview = truncatePreview(decrypted.content, 140);
       const share = parseShareEnvelope(decrypted.content);
-      const matchedItem = messageItems.find((item) => item.dmEventId && item.dmEventId === event.id);
+      const matchedItem = messageItemsRef.current.find((item) => item.dmEventId && item.dmEventId === event.id);
 
-      if (share && share.item.type === "board") {
+      // 0xchat-compatible encrypted file attachment (kind-15 rumor).
+      // Inner rumor content is the plaintext URL to the encrypted blob; the crypto
+      // parameters live in dedicated tags per nostr-dart nip_017.dart:69-72.
+      const fileAttachment = (() => {
+        if (decrypted.kind !== 15) return null;
+        const tags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
+        let mimeType: string | null = null;
+        let algorithm: string | null = null;
+        let keyHex: string | null = null;
+        let nonceHex: string | null = null;
+        let sha256Tag: string | null = null;
+        let sizeTag: number | null = null;
+        let widthTag: number | null = null;
+        let heightTag: number | null = null;
+        let filenameTag: string | null = null;
+        for (const tag of tags) {
+          if (!Array.isArray(tag) || typeof tag[0] !== "string") continue;
+          const name = tag[0];
+          const value = typeof tag[1] === "string" ? tag[1] : "";
+          if (name === "file-type" && value) mimeType = value;
+          else if (name === "encryption-algorithm" && value) algorithm = value;
+          else if (name === "decryption-key" && value) keyHex = value;
+          else if (name === "decryption-nonce" && value) nonceHex = value;
+          else if (name === "x" && value) sha256Tag = value;
+          else if (name === "size" && value) {
+            const n = Number(value);
+            if (Number.isFinite(n) && n > 0) sizeTag = n;
+          } else if (name === "dim" && value) {
+            const parts = value.split(/x/i);
+            const w = Number(parts[0]);
+            const h = Number(parts[1]);
+            if (Number.isFinite(w) && w > 0) widthTag = w;
+            if (Number.isFinite(h) && h > 0) heightTag = h;
+          } else if (name === "filename" && value) filenameTag = value;
+        }
+        const url = (decrypted.content || "").trim();
+        if (!url || !keyHex || !nonceHex || !algorithm) return null;
+        if (!/^https?:\/\//i.test(url)) return null;
+        return {
+          type: "file" as const,
+          url,
+          mimeType: mimeType || "application/octet-stream",
+          filename: filenameTag,
+          size: sizeTag,
+          width: widthTag,
+          height: heightTag,
+          algorithm,
+          keyHex,
+          nonceHex,
+          sha256: sha256Tag,
+        };
+      })();
+
+      if (fileAttachment) {
+        attachment = fileAttachment;
+        const label = fileAttachment.filename || (isImageMime(fileAttachment.mimeType)
+          ? "Photo"
+          : isVideoMime(fileAttachment.mimeType)
+            ? "Video"
+            : isAudioMime(fileAttachment.mimeType)
+              ? "Audio"
+              : "File");
+        preview = isImageMime(fileAttachment.mimeType)
+          ? `📷 ${label}`
+          : isVideoMime(fileAttachment.mimeType)
+            ? `🎬 ${label}`
+            : isAudioMime(fileAttachment.mimeType)
+              ? `🎵 ${label}`
+              : `📎 ${label}`;
+      } else if (share && share.item.type === "board") {
         attachment = {
           type: "board",
           boardName: share.item.boardName || "Shared board",
@@ -4878,7 +6118,14 @@ export default function CashuWalletModal({
         }
       }
 
-      const createdAt = Number(event.created_at) || Math.floor(Date.now() / 1000);
+      const createdAt =
+        (typeof decrypted.createdAt === "number" && Number.isFinite(decrypted.createdAt) && decrypted.createdAt > 0
+          ? Math.floor(decrypted.createdAt)
+          : 0) ||
+        (typeof event.created_at === "number" && Number.isFinite(event.created_at) && event.created_at > 0
+          ? Math.floor(event.created_at)
+          : 0) ||
+        Math.floor(Date.now() / 1000);
       const normalizedSender = decrypted.senderPubkey
         ? normalizeNostrPubkey(decrypted.senderPubkey) ?? decrypted.senderPubkey
         : null;
@@ -4891,21 +6138,82 @@ export default function CashuWalletModal({
           void handler(event, { updateClock: true });
         }
       }
+      // Detect group messages: 2+ p-tag recipients in the inner rumor
+      const rumorRecipients = Array.isArray(decrypted.recipientPubkeys)
+        ? decrypted.recipientPubkeys.map((p) => p.toLowerCase())
+        : [];
+      const rumorSender = (decrypted.senderPubkey || "").toLowerCase();
+      const isGroupMessage = rumorRecipients.length >= 2;
+      let groupId: string | undefined;
+      let groupName = "";
+      if (isGroupMessage && rumorSender) {
+        const allMembers = [...new Set([rumorSender, ...rumorRecipients])];
+        groupId = generateGroupId(allMembers);
+        // Extract subject tag for group name
+        const subjectTag = Array.isArray(decrypted.tags)
+          ? decrypted.tags.find((t) => Array.isArray(t) && t[0] === "subject")
+          : null;
+        groupName = typeof subjectTag?.[1] === "string" ? subjectTag[1].trim() : "";
+        // Auto-create or update group metadata
+        const existing = groupChatsRef.current.find((g) => g.groupId === groupId);
+        if (!existing) {
+          upsertGroupChat({
+            groupId,
+            name: groupName || "Group",
+            members: [...new Set([rumorSender, ...rumorRecipients])].sort(),
+            createdAt,
+            ...(groupName ? { nameUpdatedAt: createdAt } : {}),
+          });
+        } else if (groupName) {
+          upsertGroupChat({ ...existing, name: groupName, nameUpdatedAt: createdAt });
+        }
+        // Fetch profiles for all group members
+        for (const member of [rumorSender, ...rumorRecipients]) {
+          void ensurePeerProfile(member);
+        }
+      }
+      const isGroupMetadataOnly =
+        isGroupMessage &&
+        !!groupId &&
+        !!groupName &&
+        !attachment &&
+        !decrypted.content.trim();
+      if (isGroupMetadataOnly) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+
+      // Extract reply-to event ID from the inner rumor's "e" tags (NIP-17 reply threading)
+      const innerTags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
+      const replyETag = innerTags.find((t) => Array.isArray(t) && t[0] === "e");
+      const replyToEventId = typeof replyETag?.[1] === "string" ? replyETag[1] : undefined;
+
       const message: WalletDmMessage = {
         id: crypto.randomUUID(),
         eventId: event.id,
-        peerPubkey: (peerPubkey || event.pubkey).toLowerCase(),
+        // rumorEventId is the inner rumor's canonical ID — used for cross-client reactions/replies.
+        // The outer giftwrap id (event.id) differs per recipient; the rumor id is the same for all.
+        ...(decrypted.rumorId ? { rumorEventId: decrypted.rumorId } : {}),
+        peerPubkey: isGroupMessage && groupId ? groupId : (peerPubkey || event.pubkey).toLowerCase(),
         isIncoming,
         createdAt,
         content: decrypted.content,
         preview,
         attachment: attachment ?? { type: "text" },
+        ...(isGroupMessage && groupId ? { groupId, senderPubkey: rumorSender } : {}),
+        ...(replyToEventId ? { replyToEventId } : {}),
       };
 
       dmProcessedEventsRef.current.add(event.id);
       setDmMessages((prev) => {
-        if (prev.some((m) => m.eventId === event.id)) return prev;
-        const next = [...prev, message].sort((a, b) => a.createdAt - b.createdAt);
+        const existingIndex = prev.findIndex((m) => m.eventId === event.id);
+        const next =
+          existingIndex >= 0
+            ? prev.map((entry, index) =>
+                index === existingIndex ? { ...message, id: entry.id || message.id } : entry,
+              )
+            : [...prev, message];
+        next.sort((a, b) => a.createdAt - b.createdAt);
         if (next.length > 400) next.shift();
         return next;
       });
@@ -4914,10 +6222,10 @@ export default function CashuWalletModal({
       decryptNostrPaymentMessage,
       ensureNostrIdentity,
       ensurePeerProfile,
-      messageItems,
       normalizeNostrPubkey,
       parseIncomingPaymentMessage,
       resolvePeerPubkey,
+      upsertGroupChat,
     ],
   );
   const startDmSubscription = useCallback(async () => {
@@ -4927,7 +6235,11 @@ export default function CashuWalletModal({
     const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
     if (!relays.length) return;
     const now = Math.floor(Date.now() / 1000);
-    const since = Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
+    const lastCompletedSyncAt = Math.floor(dmLastSyncRef.current / 1000);
+    // NIP-17 giftwraps use random past timestamps (up to 2 days back per spec).
+    // Look back 3 days before last sync to ensure all events with jittered timestamps are caught.
+    const incrementalSince = lastCompletedSyncAt > 0 ? Math.max(0, lastCompletedSyncAt - 3 * 24 * 60 * 60) : 0;
+    const since = incrementalSince > 0 ? incrementalSince : Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
     try {
       const session = await NostrSession.init(relays);
       const filters = [
@@ -4955,11 +6267,13 @@ export default function CashuWalletModal({
       for (const ev of ordered) {
         await handleDmEvent(ev as NostrEvent);
       }
-      dmLastSyncRef.current = Date.now();
+      const completedAt = Date.now();
+      dmLastSyncRef.current = completedAt;
+      persistDmSyncMeta({ lastCompletedSyncAt: completedAt });
     } catch (err) {
       console.warn("Failed to sync DMs", err);
     }
-  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, stopDmSubscription]);
+  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, persistDmSyncMeta, stopDmSubscription]);
   const contactIndex = useMemo(() => {
     const map = new Map<
       string,
@@ -4999,7 +6313,7 @@ export default function CashuWalletModal({
         shortenNpubDisplay(npub) ||
         peerHex.slice(0, 10);
       const subtitle = verifiedNip05 || profile?.username || undefined;
-      const picture = contact?.picture || (profile?.picture || "").trim() || undefined;
+      const picture = pickPreferredProfilePhoto(profile?.picture, contact?.picture);
       return { label, subtitle, picture, verifiedNip05 };
     },
     [contactIndex, formatNpubDisplay],
@@ -5023,7 +6337,7 @@ export default function CashuWalletModal({
         (profile?.username && profile.username.trim()) ||
         (npubDisplay ? shortenNpubDisplay(npubDisplay, 10, 6) : hex?.slice(0, 12) || "Contact");
       const subtitle = verifiedNip05 || profile?.username || (npubDisplay || undefined);
-      const picture = (profile?.picture || fallbackPicture || "").trim() || undefined;
+      const picture = pickPreferredProfilePhoto(profile?.picture, fallbackPicture);
       return {
         label,
         subtitle,
@@ -5034,10 +6348,64 @@ export default function CashuWalletModal({
     },
     [compressedToRawHex, formatNpubDisplay, normalizeNostrPubkey],
   );
+  const buildSharedContactPreview = useCallback(
+    (
+      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
+      item?: WalletMessageItem | null,
+    ): SharedContactPreview | null => {
+      const attachmentNpub = attachment?.npub || item?.contact?.npub || "";
+      const normalizedNpub = normalizeNostrPubkey(attachmentNpub);
+      const contactHex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
+      const profile = contactHex ? dmPeerProfilesRef.current.get(contactHex) : undefined;
+      const normalized = normalizeContact({
+        id: item?.id ? `shared-contact-${item.id}` : makeContactId(),
+        kind: attachmentNpub ? "nostr" : "custom",
+        name:
+          item?.contact?.name ||
+          attachment?.contactName ||
+          attachment?.displayName ||
+          profile?.displayName ||
+          attachment?.username ||
+          profile?.username ||
+          "",
+        displayName: attachment?.displayName || item?.contact?.displayName || profile?.displayName || "",
+        username: attachment?.username || item?.contact?.username || profile?.username || "",
+        address: attachment?.address || item?.contact?.address || profile?.lud16 || "",
+        npub: attachmentNpub,
+        nip05: attachment?.nip05 || item?.contact?.nip05 || profile?.nip05 || "",
+        about: profile?.about || "",
+        picture: pickPreferredProfilePhoto(profile?.picture, attachment?.picture || item?.contact?.picture || null),
+        source: "sync",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      if (!normalized) return null;
+      return {
+        contact: normalized,
+        itemId: item?.id ?? attachment?.taskId ?? null,
+        status: item?.status ?? attachment?.status ?? null,
+      };
+    },
+    [compressedToRawHex, makeContactId, normalizeContact, normalizeNostrPubkey],
+  );
+  const openSharedContactPreview = useCallback(
+    (
+      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
+      item?: WalletMessageItem | null,
+    ) => {
+      const preview = buildSharedContactPreview(attachment, item);
+      if (!preview) {
+        showToast("Unable to open shared contact", 2200);
+        return;
+      }
+      setSharedContactPreview(preview);
+    },
+    [buildSharedContactPreview, showToast],
+  );
   useEffect(() => {
-    if (!dmMessages.length) return;
+    if (!displayDmMessages.length) return;
     const targets = new Set<string>();
-    dmMessages.forEach((msg) => {
+    displayDmMessages.forEach((msg) => {
       if (msg.peerPubkey) {
         const normalized = normalizeNostrPubkey(msg.peerPubkey);
         if (normalized) targets.add(normalized);
@@ -5050,30 +6418,33 @@ export default function CashuWalletModal({
     targets.forEach((pubkey) => {
       void ensurePeerProfile(pubkey);
     });
-  }, [dmMessages, ensurePeerProfile]);
+  }, [displayDmMessages, ensurePeerProfile]);
   const dmThreads = useMemo(() => {
-    if (!dmMessages.length) return [] as WalletDmThread[];
+    if (!displayDmMessages.length) return [] as WalletDmThread[];
     const threads = new Map<string, WalletDmThread>();
     const contactKeys = new Set(Array.from(contactIndex.keys()));
-    dmMessages.forEach((msg) => {
+    // Use reactive identity pubkey (falls back to ref) so self-chat is never a stranger
+    const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
+    displayDmMessages.forEach((msg) => {
       const preview = dmPreviewForMessage(msg);
-      const peer = msg.peerPubkey.toLowerCase();
-      const existing = threads.get(peer);
+      const threadKey = msg.groupId || msg.peerPubkey.toLowerCase();
+      const existing = threads.get(threadKey);
       const base: WalletDmThread =
         existing ??
         {
-          peerPubkey: peer,
+          peerPubkey: threadKey,
           messages: [],
           lastCreatedAt: 0,
           lastPreview: "",
-          isStranger: !contactKeys.has(peer),
+          isStranger: msg.groupId ? false : !contactKeys.has(threadKey) && (ownHex === "" || threadKey !== ownHex),
+          ...(msg.groupId ? { groupId: msg.groupId } : {}),
         };
       base.messages.push(msg);
       if (msg.createdAt > base.lastCreatedAt) {
         base.lastCreatedAt = msg.createdAt;
         base.lastPreview = preview;
       }
-      threads.set(peer, base);
+      threads.set(threadKey, base);
     });
     const ordered = Array.from(threads.values()).map((thread) => ({
       ...thread,
@@ -5081,64 +6452,406 @@ export default function CashuWalletModal({
     }));
     ordered.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
     return ordered;
-  }, [contactIndex, dmMessages, dmPreviewForMessage]);
+  }, [contactIndex, displayDmMessages, dmPreviewForMessage, nostrIdentityInfo]);
   const activeThread = useMemo(
     () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
     [activeThreadPeer, dmThreads],
   );
-  useEffect(() => {
-    if (dmView === "thread" && !activeThread) {
-      setDmView("list");
-      setActiveThreadPeer(null);
+  const activeGroupChat = useMemo(
+    () => (activeThread?.groupId ? groupChats.find((group) => group.groupId === activeThread.groupId) ?? null : null),
+    [activeThread?.groupId, groupChats],
+  );
+  const contactByHex = useMemo(() => {
+    const map = new Map<string, Contact>();
+    contacts.forEach((contact) => {
+      const normalized = normalizeNostrPubkey(contact.npub || "");
+      if (!normalized) return;
+      const compressed = normalized.toLowerCase();
+      const raw = compressedToRawHex(normalized).toLowerCase();
+      map.set(compressed, contact);
+      map.set(raw, contact);
+    });
+    return map;
+  }, [compressedToRawHex, contacts, normalizeNostrPubkey]);
+  const activeGroupMuted = !!(activeGroupChat && dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
+  const activeGroupLeft = !!(activeGroupChat && dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
+  const strangerThreads = useMemo(
+    () => dmThreads.filter((thread) => thread.isStranger),
+    [dmThreads],
+  );
+  const matchesDmThreadSearch = useCallback(
+    (thread: WalletDmThread) => {
+      if (!dmSearch.trim()) return true;
+      const groupName = thread.groupId ? (groupChats.find((g) => g.groupId === thread.groupId)?.name ?? "") : "";
+      const meta = thread.groupId ? { label: groupName, subtitle: undefined } : peerLabelFor(thread.peerPubkey);
+      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${groupName} ${thread.lastPreview} ${thread.peerPubkey}`.toLowerCase();
+      return haystack.includes(dmSearch.trim().toLowerCase());
+    },
+    [dmSearch, groupChats, peerLabelFor],
+  );
+  const dmThreadListEntries = useMemo<DmThreadListEntry[]>(() => {
+    if (dmSearch.trim()) {
+      return dmThreads
+        .filter(matchesDmThreadSearch)
+        .map((thread) => ({ kind: "thread" as const, thread, lastCreatedAt: thread.lastCreatedAt }));
     }
-  }, [activeThread, dmView]);
+    if (dmView === "strangers") {
+      return strangerThreads.map((thread) => ({
+        kind: "thread" as const,
+        thread,
+        lastCreatedAt: thread.lastCreatedAt,
+      }));
+    }
+    const entries: DmThreadListEntry[] = dmThreads
+      .filter((thread) => !thread.isStranger)
+      .map((thread) => ({ kind: "thread", thread, lastCreatedAt: thread.lastCreatedAt }));
+    if (strangerThreads.length) {
+      const latestStrangerThread = strangerThreads.reduce((latest, thread) =>
+        thread.lastCreatedAt > latest.lastCreatedAt ? thread : latest,
+      );
+      entries.push({
+        kind: "strangers",
+        lastCreatedAt: latestStrangerThread.lastCreatedAt,
+        lastPreview: latestStrangerThread.lastPreview || "New requests",
+      });
+    }
+    entries.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
+    return entries;
+  }, [dmSearch, dmThreads, dmView, matchesDmThreadSearch, strangerThreads]);
+  type MessageSearchResult = { thread: WalletDmThread; message: WalletDmMessage };
+  const messageSearchResults = useMemo<MessageSearchResult[]>(() => {
+    const q = dmSearch.trim().toLowerCase();
+    if (!q) return [];
+    const results: MessageSearchResult[] = [];
+    for (const thread of dmThreads) {
+      for (const msg of thread.messages) {
+        if (!msg.eventId.startsWith("draft-") && msg.content.toLowerCase().includes(q)) {
+          results.push({ thread, message: msg });
+        }
+      }
+    }
+    results.sort((a, b) => b.message.createdAt - a.message.createdAt);
+    return results;
+  }, [dmSearch, dmThreads]);
+  const activeThreadPendingMessages = useMemo(
+    () =>
+      activeThread
+        ? visiblePendingMessages.filter((message) => message.peerPubkey === activeThread.peerPubkey)
+        : [],
+    [activeThread, visiblePendingMessages],
+  );
+  useEffect(() => {
+    if (!open || !isChatPage || chatView !== "conversation" || !activeThread) {
+      dmAutoScrollStateRef.current = { threadPeer: activeThread?.peerPubkey ?? null, itemCount: 0 };
+      return;
+    }
+    const nextState = {
+      threadPeer: activeThread.peerPubkey,
+      itemCount: activeThread.messages.length + activeThreadPendingMessages.length,
+    };
+    const prevState = dmAutoScrollStateRef.current;
+    const threadChanged = prevState.threadPeer !== nextState.threadPeer;
+    const grew = nextState.itemCount > prevState.itemCount;
+    dmAutoScrollStateRef.current = nextState;
+    if (!threadChanged && !grew) return;
+    // Skip auto-scroll-to-bottom when we are about to scroll to a specific message
+    if (threadChanged && scrollToMessageIdRef.current) return;
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    const behavior: ScrollBehavior = threadChanged ? "auto" : "smooth";
+    if (threadChanged) {
+      // Double rAF: first frame lets React flush the new messages into the DOM,
+      // second frame fires after the browser has done layout so scrollHeight is final.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+        });
+      });
+    } else {
+      requestAnimationFrame(() => {
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+      });
+    }
+  }, [activeThread, activeThreadPendingMessages.length, chatView, isChatPage, open]);
+  useEffect(() => {
+    if (!scrollToMessageId || chatView !== "conversation") return;
+    scrollToMessageIdRef.current = scrollToMessageId;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const scroller = messagesScrollRef.current;
+        const el = scroller?.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(scrollToMessageId)}"]`);
+        if (el && scroller) {
+          // Scroll within the container (not viewport) to avoid breaking the fixed compose bar
+          const scrollerRect = scroller.getBoundingClientRect();
+          const elRect = el.getBoundingClientRect();
+          const targetTop = scroller.scrollTop + elRect.top - scrollerRect.top - scroller.clientHeight / 2 + elRect.height / 2;
+          scroller.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+          el.classList.add("chat-message--highlight");
+          setTimeout(() => el.classList.remove("chat-message--highlight"), 2000);
+        }
+        scrollToMessageIdRef.current = null;
+        setScrollToMessageId(null);
+      });
+    });
+  }, [scrollToMessageId, chatView, activeThread]);
+  const openConversationForPeer = useCallback(
+    (peerHex: string | null | undefined) => {
+      // Normalise to raw 64-char hex (strip "02"/"03" prefix if present)
+      const raw = (peerHex || "").trim().toLowerCase();
+      const normalizedPeer = /^(02|03)[0-9a-f]{64}$/.test(raw) ? raw.slice(2) : raw;
+      if (!normalizedPeer) return false;
+      // Match regardless of whether stored peerPubkey uses raw or compressed form
+      const peerMatches = (mp: string) => {
+        const lc = mp.toLowerCase();
+        return lc === normalizedPeer || lc === `02${normalizedPeer}` || lc === `03${normalizedPeer}`;
+      };
+      const hasThread = displayDmMessages.some((message) => peerMatches(message.peerPubkey));
+      if (!hasThread) {
+        setDmMessages((prev) => {
+          if (prev.some((message) => peerMatches(message.peerPubkey))) return prev;
+          return [
+            ...prev,
+            {
+              id: `draft-${normalizedPeer}`,
+              eventId: `draft-${normalizedPeer}`,
+              peerPubkey: normalizedPeer,
+              isIncoming: false,
+              createdAt: Math.floor(Date.now() / 1000),
+              content: "",
+              preview: "",
+              attachment: { type: "text" },
+            },
+          ];
+        });
+      }
+      setActiveThreadPeer(normalizedPeer);
+      setDmView("thread");
+      setChatView("conversation");
+      setContactView("list");
+      setActiveContactId(null);
+      setContactDetailOverride(null);
+      setContactReturnView("new-message");
+      setDmSearch("");
+      return true;
+    },
+    [displayDmMessages],
+  );
+  const openConversationForGroup = useCallback(
+    (groupId: string) => {
+      const hasThread = displayDmMessages.some((msg) => msg.groupId === groupId);
+      if (!hasThread) {
+        // Create a placeholder so the thread appears immediately
+        const group = groupChatsRef.current.find((g) => g.groupId === groupId);
+        setDmMessages((prev) => {
+          if (prev.some((msg) => msg.groupId === groupId)) return prev;
+          return [
+            ...prev,
+            {
+              id: `draft-group-${groupId}`,
+              eventId: `draft-group-${groupId}`,
+              peerPubkey: groupId,
+              isIncoming: false,
+              createdAt: Math.floor(Date.now() / 1000),
+              content: "",
+              preview: "",
+              attachment: { type: "text" },
+              groupId,
+              senderPubkey: (nostrIdentityRef.current?.pubkey || "").toLowerCase(),
+            },
+          ];
+        });
+      }
+      setActiveThreadPeer(groupId);
+      setActiveGroupId(groupId);
+      setDmView("thread");
+      setChatView("conversation");
+      setContactView("list");
+      setActiveContactId(null);
+      setContactDetailOverride(null);
+      setContactReturnView("new-message");
+      setDmSearch("");
+      return true;
+    },
+    [displayDmMessages],
+  );
+  useEffect(() => {
+    if (dmView !== "thread" || activeThread) return;
+    setDmView(dmListViewRef.current);
+    setActiveThreadPeer(null);
+    setActiveGroupId(null);
+    if (isChatPage && (chatView === "conversation" || chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit")) {
+      setChatView("threads");
+    }
+  }, [activeThread, chatView, dmView, isChatPage]);
+  useEffect(() => {
+    if (activeGroupChat) return;
+    setRenameGroupBusy(false);
+    setRenameGroupDraft("");
+    setGroupMembersSearch("");
+    if (chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit") {
+      setChatView(activeThread ? "conversation" : "threads");
+    }
+  }, [activeGroupChat, activeThread, chatView]);
+  const persistMutedGroups = useCallback((next: Map<string, number>) => {
+    try {
+      idbKeyValue.setItem(
+        TASKIFY_STORE_NOSTR,
+        LS_GROUP_MUTED,
+        JSON.stringify(Object.fromEntries(Array.from(next.entries()))),
+      );
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistLeftGroups = useCallback(
+    (next: Set<string>) => persistGroupStateSet(LS_GROUP_LEFT, next),
+    [persistGroupStateSet],
+  );
+  const setGroupMutedState = useCallback(
+    (groupId: string, muted: boolean) => {
+      const key = (groupId || "").trim().toLowerCase();
+      if (!key) return;
+      const next = new Map(dmMutedGroupsRef.current);
+      if (muted) {
+        next.set(key, Date.now());
+      } else {
+        next.delete(key);
+      }
+      dmMutedGroupsRef.current = next;
+      persistMutedGroups(next);
+      setDmMutedGroupsVersion((value) => value + 1);
+    },
+    [persistMutedGroups],
+  );
+  const setGroupLeftState = useCallback(
+    (groupId: string, left: boolean) => {
+      const key = (groupId || "").trim().toLowerCase();
+      if (!key) return;
+      const next = new Set(dmLeftGroupsRef.current);
+      if (left) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      dmLeftGroupsRef.current = next;
+      persistLeftGroups(next);
+      setDmLeftGroupsVersion((value) => value + 1);
+    },
+    [persistLeftGroups],
+  );
+  const markThreadReadThrough = useCallback(
+    (threadKey: string | null | undefined, timestampSeconds: number) => {
+      const normalizedThreadKey = (threadKey || "").trim().toLowerCase();
+      const normalizedTimestamp =
+        Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? Math.floor(timestampSeconds) : 0;
+      if (!normalizedThreadKey || normalizedTimestamp <= 0) return;
+      const existing = dmThreadReadAtRef.current.get(normalizedThreadKey) ?? 0;
+      if (normalizedTimestamp <= existing) return;
+      const next = new Map(dmThreadReadAtRef.current);
+      next.set(normalizedThreadKey, normalizedTimestamp);
+      dmThreadReadAtRef.current = next;
+      persistDmThreadReadState(next);
+      setDmThreadReadAtVersion((value) => value + 1);
+    },
+    [persistDmThreadReadState],
+  );
+  const openActiveGroupInfo = useCallback(() => {
+    if (!activeThread?.groupId) return;
+    setGroupMembersSearch("");
+    setRenameGroupDraft(activeGroupChat?.name || "");
+    setGroupInfoTab("info");
+    setChatView("group-info");
+  }, [activeGroupChat?.name, activeThread?.groupId]);
+  const handleToggleActiveGroupMute = useCallback(() => {
+    if (!activeGroupChat) return;
+    const nextMuted = !dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase());
+    setGroupMutedState(activeGroupChat.groupId, nextMuted);
+    if (!nextMuted && activeThread?.groupId === activeGroupChat.groupId) {
+      markThreadReadThrough(activeGroupChat.groupId, Math.floor(Date.now() / 1000));
+    }
+    showToast(nextMuted ? "Group muted" : "Group unmuted", 2000);
+  }, [activeGroupChat, activeThread?.groupId, markThreadReadThrough, setGroupMutedState, showToast]);
+  const handleToggleActiveGroupMembership = useCallback(() => {
+    if (!activeGroupChat) return;
+    const nextLeft = !dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase());
+    setGroupLeftState(activeGroupChat.groupId, nextLeft);
+    if (nextLeft) {
+      setAttachTrayOpen(false);
+      setShareContactPickerOpen(false);
+      setShareContactPickerMode("recipient");
+      setShareContactSource(null);
+      setShareContactStatus(null);
+      setChatCompose("");
+    }
+    showToast(nextLeft ? "You left the group" : "You rejoined the group", 2400);
+  }, [activeGroupChat, setGroupLeftState, showToast]);
   const threadUnreadMap = useMemo(() => {
     const map = new Map<string, number>();
     dmThreads.forEach((thread) => {
-      const count = thread.messages.reduce((acc, msg) => {
-        const item = messageItemsByEventId.get(msg.eventId);
-        if (!item) return acc;
-        const status = item.status;
-        if (status === "accepted" || status === "deleted" || status === "read") return acc;
-        return acc + 1;
-      }, 0);
-      map.set(thread.peerPubkey, count);
+      const unreadIds = new Set<string>();
+      const threadKey = thread.peerPubkey.toLowerCase();
+      const mutedSinceMs = thread.groupId ? dmMutedGroupsRef.current.get(thread.groupId.toLowerCase()) ?? null : null;
+      const isLeftGroup = thread.groupId ? dmLeftGroupsRef.current.has(thread.groupId.toLowerCase()) : false;
+      const readAtSeconds = dmThreadReadAtRef.current.get(threadKey) ?? 0;
+      thread.messages.forEach((msg) => {
+        if (!msg.isIncoming) return;
+        if (msg.eventId.startsWith("draft-")) return;
+        if (isLeftGroup) return;
+        if (msg.createdAt <= readAtSeconds) return;
+        if (mutedSinceMs != null && msg.createdAt * 1000 >= mutedSinceMs) return;
+        unreadIds.add(msg.eventId);
+        const item = messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
+        const invite = pendingCalendarInvitesByEventId.get(msg.eventId);
+        const status = item?.status || invite?.status;
+        if (status && !isUnreadThreadStatus(status)) {
+          unreadIds.delete(msg.eventId);
+        }
+      });
+      map.set(thread.peerPubkey, unreadIds.size);
     });
     return map;
-  }, [dmThreads, messageItemsByEventId]);
+  }, [
+    dmLeftGroupsVersion,
+    dmMutedGroupsVersion,
+    dmThreadReadAtVersion,
+    dmThreads,
+    isUnreadThreadStatus,
+    messageItemsByEventId,
+    pendingCalendarInvitesByEventId,
+    pendingMessageItemsByEventId,
+  ]);
   const strangerUnreadCount = useMemo(
     () =>
-      dmThreads.reduce((acc, thread) => {
-        if (!thread.isStranger) return acc;
-        return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
-      }, 0),
-    [dmThreads, threadUnreadMap],
+      strangerThreads.reduce((acc, thread) => acc + (threadUnreadMap.get(thread.peerPubkey) || 0), 0),
+    [strangerThreads, threadUnreadMap],
   );
   const mainUnreadCount = useMemo(
     () =>
       dmThreads.reduce((acc, thread) => {
-        if (thread.isStranger) return acc;
         return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
       }, 0),
     [dmThreads, threadUnreadMap],
   );
+  useEffect(() => {
+    onDmUnreadCountChange?.(mainUnreadCount);
+  }, [mainUnreadCount, onDmUnreadCountChange]);
   const activeThreadBlocked = activeThread
     ? dmBlockedPeersRef.current.has(activeThread.peerPubkey.toLowerCase())
     : false;
   useEffect(() => {
     if (!activeThread) return;
-    const unreadIds = activeThread.messages
-      .map((m) => m.eventId)
-      .filter((id) => {
-        const item = messageItemsByEventId.get(id);
-        if (!item) return false;
-        const status = item.status;
-        return status !== "accepted" && status !== "deleted" && status !== "read";
-      });
+    const latestIncomingCreatedAt = activeThread.messages.reduce((latest, message) => {
+      if (!message.isIncoming || message.eventId.startsWith("draft-")) return latest;
+      return Math.max(latest, message.createdAt);
+    }, 0);
+    if (latestIncomingCreatedAt > 0) {
+      markThreadReadThrough(activeThread.peerPubkey, latestIncomingCreatedAt);
+    }
+    const unreadIds = collectUnreadThreadItemEventIds(activeThread.messages, activeThread.peerPubkey);
     if (unreadIds.length) {
       onMarkMessagesRead(unreadIds);
     }
-  }, [activeThread, messageItemsByEventId, onMarkMessagesRead]);
+  }, [activeThread, collectUnreadThreadItemEventIds, markThreadReadThrough, onMarkMessagesRead]);
   const toggleBlockPeer = useCallback(
     (peerPubkey: string) => {
       const key = (peerPubkey || "").toLowerCase().trim();
@@ -5200,6 +6913,34 @@ export default function CashuWalletModal({
         : contactHasNpub(contact) || contact.paymentRequest.trim().length > 0,
     );
   }, [contactsContext, sortedContacts]);
+  const buildShareRelayList = useCallback(
+    (relaySource?: string[] | null) => {
+      const storedRelays = (() => {
+        try {
+          const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
+          const parsed = raw ? JSON.parse(raw) : null;
+          if (Array.isArray(parsed)) {
+            return parsed.map((relay) => (typeof relay === "string" ? relay.trim() : "")).filter(Boolean);
+          }
+        } catch {
+          // ignore
+        }
+        return [];
+      })();
+      return Array.from(
+        new Set(
+          [
+            ...(Array.isArray(relaySource) ? relaySource : []),
+            ...(storedRelays.length ? storedRelays : defaultNostrRelays),
+            ...defaultNostrRelays,
+          ]
+            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+            .filter(Boolean),
+        ),
+      );
+    },
+    [defaultNostrRelays],
+  );
   const shareRecipientOptions = useMemo(() => {
     const sourceHex = shareContactSource?.npub
       ? compressedToRawHex(
@@ -5216,15 +6957,50 @@ export default function CashuWalletModal({
       return true;
     });
   }, [compressedToRawHex, contacts, normalizeNostrPubkey, shareContactSource]);
+  const sendContactShareToPubkeys = useCallback(
+    async (sourceContact: Contact, recipientPubkeys: string[]) => {
+      const sourceNpub = formatContactNpub(sourceContact.npub);
+      if (!sourceNpub) {
+        return { ok: false as const, error: "This contact is missing a valid npub." };
+      }
+      const { identity, reason } = readNostrIdentity();
+      if (!identity) {
+        return {
+          ok: false as const,
+          error: reason || "Add your Taskify Nostr key in Settings → Nostr.",
+        };
+      }
+      const relayList = buildShareRelayList(sourceContact.relays);
+      if (!relayList.length) {
+        return { ok: false as const, error: "Add at least one relay first." };
+      }
+      const envelope = buildContactShareEnvelope({
+        type: "contact",
+        npub: sourceNpub,
+        relays: sourceContact.relays,
+        sender: {
+          npub: formatNpub(identity.pubkey),
+          name: profileForm.displayName || profileForm.username || undefined,
+        },
+      });
+      for (const recipientPubkey of recipientPubkeys) {
+        await sendShareMessage(envelope, recipientPubkey, identity.secret, relayList);
+      }
+      return { ok: true as const };
+    },
+    [
+      buildShareRelayList,
+      formatContactNpub,
+      formatNpub,
+      profileForm.displayName,
+      profileForm.username,
+      readNostrIdentity,
+    ],
+  );
   const handleShareContactToContact = useCallback(
     async (recipient: Contact) => {
       if (!shareContactSource) {
         setShareContactStatus("Select a contact to share first.");
-        return;
-      }
-      const sourceNpub = formatContactNpub(shareContactSource.npub);
-      if (!sourceNpub) {
-        setShareContactStatus("This contact is missing a valid npub.");
         return;
       }
       const normalizedRecipient = normalizeNostrPubkey(recipient.npub);
@@ -5232,57 +7008,16 @@ export default function CashuWalletModal({
         setShareContactStatus("Recipient contact is missing a valid npub.");
         return;
       }
-      const { identity, reason } = readNostrIdentity();
-      if (!identity) {
-        setShareContactStatus(reason || "Add your Taskify Nostr key in Settings → Nostr.");
-        return;
-      }
-      const storedRelays = (() => {
-        try {
-          const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
-          const parsed = raw ? JSON.parse(raw) : null;
-          if (Array.isArray(parsed)) {
-            return parsed.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean);
-          }
-        } catch {
-          // ignore
-        }
-        return [];
-      })();
-      const relaySource = Array.isArray(shareContactSource.relays)
-        ? shareContactSource.relays
-        : storedRelays.length
-          ? storedRelays
-          : defaultNostrRelays;
-      const relayList = Array.from(
-        new Set(
-          [
-            ...relaySource,
-            ...defaultNostrRelays,
-          ]
-            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
-      );
-      if (!relayList.length) {
-        setShareContactStatus("Add at least one relay first.");
-        return;
-      }
       setShareContactBusy(true);
       setShareContactStatus(null);
       try {
-        const envelope = buildContactShareEnvelope({
-          type: "contact",
-          npub: sourceNpub,
-          // Keep payload lean to avoid oversized NIP-44 plaintexts; other fields can be fetched later.
-          relays: shareContactSource.relays,
-          sender: {
-            npub: formatNpub(identity.pubkey),
-            name: profileForm.displayName || profileForm.username || undefined,
-          },
-        });
-        await sendShareMessage(envelope, normalizedRecipient, identity.secret, relayList);
+        const result = await sendContactShareToPubkeys(shareContactSource, [normalizedRecipient]);
+        if (!result.ok) {
+          setShareContactStatus(result.error || "Unable to send contact.");
+          return;
+        }
         setShareContactPickerOpen(false);
+        setShareContactPickerMode("recipient");
         setShareContactSource(null);
         showToast(`Contact sent to ${contactPrimaryName(recipient)}`, 3000);
       } catch (err: any) {
@@ -5292,14 +7027,88 @@ export default function CashuWalletModal({
       }
     },
     [
-      defaultNostrRelays,
-      formatContactNpub,
-      formatNpub,
       normalizeNostrPubkey,
-      profileForm.displayName,
-      profileForm.username,
-      readNostrIdentity,
+      sendContactShareToPubkeys,
       shareContactSource,
+      showToast,
+    ],
+  );
+  const closeAttachTray = useCallback(() => {
+    setAttachTrayOpen(false);
+  }, []);
+  const handleToggleAttachTray = useCallback(() => {
+    setShareContactPickerOpen(false);
+    setShareContactPickerMode("recipient");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+    setAttachTrayOpen((current) => {
+      const next = !current;
+      if (next) {
+        window.setTimeout(() => {
+          chatComposeInputRef.current?.blur();
+        }, 0);
+      }
+      return next;
+    });
+  }, []);
+  const handleOpenChatPhotoPicker = useCallback(() => {
+    chatPhotoInputRef.current?.click();
+  }, []);
+  const handleOpenChatFilePicker = useCallback(() => {
+    chatFileInputRef.current?.click();
+  }, []);
+  const handleOpenChatContactPicker = useCallback(() => {
+    closeAttachTray();
+    shareContactOpenedAtPeerRef.current = activeThreadPeer;
+    setShareContactPickerMode("chat-source");
+    setShareContactSource(null);
+    setShareContactStatus(null);
+    setShareContactPickerOpen(true);
+  }, [activeThreadPeer, closeAttachTray]);
+  const handleSendChatContactAttachment = useCallback(
+    async (contact: Contact) => {
+      if (!activeThread) {
+        setShareContactStatus("Open a conversation first.");
+        return;
+      }
+      const ownIdentity = readNostrIdentity().identity;
+      const recipients = activeThread.groupId && activeGroupChat
+        ? activeGroupChat.members
+            .map((member) => member.toLowerCase())
+            .filter((member) => member && member !== ownIdentity?.pubkey.toLowerCase())
+        : [activeThread.peerPubkey.toLowerCase()].filter(Boolean);
+      if (!recipients.length) {
+        setShareContactStatus("No recipients available for this conversation.");
+        return;
+      }
+      setShareContactBusy(true);
+      setShareContactStatus(null);
+      try {
+        const result = await sendContactShareToPubkeys(contact, recipients);
+        if (!result.ok) {
+          setShareContactStatus(result.error || "Unable to send contact.");
+          return;
+        }
+        setShareContactPickerOpen(false);
+        setShareContactPickerMode("recipient");
+        setShareContactSource(null);
+        showToast(
+          activeThread.groupId
+            ? `Shared ${contactPrimaryName(contact)} with ${activeGroupChat?.name || "the group"}`
+            : `Sent ${contactPrimaryName(contact)}`,
+          3000,
+        );
+      } catch (err: any) {
+        setShareContactStatus(err?.message || "Unable to send contact.");
+      } finally {
+        setShareContactBusy(false);
+      }
+    },
+    [
+      activeGroupChat,
+      activeThread,
+      readNostrIdentity,
+      sendContactShareToPubkeys,
       showToast,
     ],
   );
@@ -5643,25 +7452,49 @@ export default function CashuWalletModal({
       recipientHex: string;
       senderSecret: string;
       publish: (event: NostrEvent) => Promise<void>;
+      kind?: number;
+      extraTags?: string[][];
+      /** For group messages: all recipient hex pubkeys (excluding sender). */
+      recipientHexes?: string[];
     }) => {
-      const { content, senderHex, recipientHex, senderSecret, publish } = options;
+      const { content, senderHex, senderSecret, publish, kind, extraTags } = options;
       if (!nip44?.v2) {
         throw new Error("NIP-44 support is required to send this message");
       }
       const normalizedSender = senderHex.toLowerCase();
-      const normalizedRecipient = recipientHex.toLowerCase();
+      const isGroupSend = Array.isArray(options.recipientHexes) && options.recipientHexes.length > 0;
+      // Support multi-recipient (group) or single-recipient (DM)
+      const allRecipients: string[] = isGroupSend
+        ? [...new Set(options.recipientHexes!.map((h) => h.toLowerCase()))].filter((h) => h !== normalizedSender)
+        : [options.recipientHex.toLowerCase()];
+      const rumorKind = typeof kind === "number" ? kind : 14;
+      // For group messages, include sender in p-tags (0xchat compatibility).
+      // 0xchat includes ALL members (including sender) as p-tags in the inner rumor
+      // and uses p-tag count to distinguish groups from DMs.
+      const combinedTags: string[][] = isGroupSend
+        ? [["p", normalizedSender], ...allRecipients.map((r) => ["p", r])]
+        : allRecipients.map((r) => ["p", r]);
+      if (Array.isArray(extraTags)) {
+        for (const tag of extraTags) {
+          if (Array.isArray(tag) && tag.length > 0) combinedTags.push(tag);
+        }
+      }
+      // The inner kind:14/15 rumor carries the canonical DM timestamp.
+      const rumorCreatedAt = Math.floor(Date.now() / 1000);
       const rumorBase = {
-        kind: 14,
+        kind: rumorKind,
         content,
-        tags: [["p", normalizedRecipient]] as string[][],
-        created_at: resolveNip17Timestamp(),
+        tags: combinedTags,
+        created_at: rumorCreatedAt,
         pubkey: normalizedSender,
       };
       const rumor = {
         ...rumorBase,
         id: getEventHash(rumorBase),
       } satisfies Partial<NostrEvent>;
-      const wrapRecipients = Array.from(new Set([normalizedRecipient, normalizedSender]));
+      // Gift-wrap to each recipient + self
+      const wrapRecipients = Array.from(new Set([...allRecipients, normalizedSender]));
+      let selfWrapEvent: NostrEvent | null = null;
       for (const wrapRecipient of wrapRecipients) {
         const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecret), wrapRecipient);
         const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
@@ -5683,10 +7516,392 @@ export default function CashuWalletModal({
         };
         const wrapEvent = finalizeEvent(wrapTemplate, wrapKey.bytes);
         await publish(wrapEvent);
+        // Track the self-addressed wrap so callers can immediately process it locally
+        if (wrapRecipient === normalizedSender) {
+          selfWrapEvent = wrapEvent as NostrEvent;
+        }
       }
+      return { selfWrapEvent };
     },
     [resolveNip17Timestamp],
   );
+  const handleSendReaction = useCallback(
+    async (msg: WalletDmMessage, emoji: string) => {
+      try {
+        const { identity } = readNostrIdentity();
+        if (!identity) return;
+        const senderHex = identity.pubkey.toLowerCase();
+
+        // Optimistic update: immediately show the reaction on the sender's side.
+        // Key by rumorEventId (the canonical NIP-17 inner event ID) so it matches
+        // the key used when the self-wrap is later processed by handleDmEvent.
+        const reactionKey = msg.rumorEventId || msg.eventId;
+        const tempEventId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        setDmReactions((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(reactionKey) || [];
+          const filtered = existing.filter((r) => r.senderPubkey !== senderHex);
+          if (emoji !== "-") filtered.push({ emoji, senderPubkey: senderHex, reactEventId: tempEventId });
+          next.set(reactionKey, filtered);
+          return next;
+        });
+
+        // Close the action panel immediately
+        setDmMessageActions(null);
+
+        // Now publish the reaction (for the recipient to see)
+        const isGroup = !!msg.groupId;
+        const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === msg.groupId) : null;
+        const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
+        const recipientHex = isGroup ? groupRecipients[0] || "" : msg.peerPubkey.toLowerCase();
+        const relayTargets = isGroup ? groupRecipients : [recipientHex];
+        const allRelays = new Set<string>();
+        for (const target of relayTargets) {
+          const relays = await resolveNip17Relays(target, defaultNostrRelays);
+          relays.forEach((r) => allRelays.add(r));
+        }
+        const publishRelays = Array.from(allRelays);
+        if (!publishRelays.length) return;
+        const pool = ensureNostrPool();
+        const publish = (ev: NostrEvent) => safePublish(pool, publishRelays, ev);
+        const authorPubkey = msg.senderPubkey || (msg.isIncoming ? msg.peerPubkey : senderHex);
+        const { selfWrapEvent } = await publishNip17Giftwraps({
+          content: emoji,
+          senderHex,
+          recipientHex,
+          senderSecret: identity.secret,
+          publish,
+          kind: 7,
+          // Use rumorEventId (inner NIP-17 rumor ID) so other clients (0xchat, etc.) can match
+          // the reaction to the correct message. The outer giftwrap id is ephemeral and differs
+          // per recipient, so it cannot be used as the canonical message reference.
+          extraTags: [["e", msg.rumorEventId || msg.eventId], ["p", authorPubkey]],
+          ...(isGroup ? { recipientHexes: groupRecipients } : {}),
+        });
+        if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
+      } catch (err) {
+        console.warn("[chat] reaction send failed", err);
+      }
+    },
+    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
+  );
+  const handleForwardMessage = useCallback(
+    async (msg: WalletDmMessage, targetPeerPubkey: string) => {
+      try {
+        const { identity } = readNostrIdentity();
+        if (!identity) return;
+        const senderHex = identity.pubkey.toLowerCase();
+        const recipientHex = targetPeerPubkey.toLowerCase();
+        const relays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+        if (!relays.length) return;
+        const pool = ensureNostrPool();
+        const publish = (ev: NostrEvent) => safePublish(pool, relays, ev);
+        const { selfWrapEvent } = await publishNip17Giftwraps({
+          content: msg.content,
+          senderHex,
+          recipientHex,
+          senderSecret: identity.secret,
+          publish,
+        });
+        if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
+      } catch (err) {
+        console.warn("[chat] forward failed", err);
+      }
+    },
+    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
+  );
+  const publishGroupSubjectUpdate = useCallback(
+    async (group: GroupChat, subject: string) => {
+      const { identity } = readNostrIdentity();
+      if (!identity) return false;
+      const senderHex = identity.pubkey.toLowerCase();
+      const groupRecipients = group.members.filter((member) => member !== senderHex);
+      if (!groupRecipients.length) return false;
+
+      const allRelays = new Set<string>();
+      for (const target of groupRecipients) {
+        try {
+          const relays = await resolveNip17Relays(target, defaultNostrRelays);
+          relays.forEach((relay) => allRelays.add(relay));
+        } catch (err) {
+          console.warn("[chat] group rename relay resolve failed", err);
+        }
+      }
+      const publishRelays = Array.from(allRelays);
+      if (!publishRelays.length) return false;
+
+      const pool = ensureNostrPool();
+      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+      const { selfWrapEvent } = await publishNip17Giftwraps({
+        content: "",
+        senderHex,
+        recipientHex: groupRecipients[0] || "",
+        senderSecret: identity.secret,
+        publish,
+        extraTags: [["subject", subject]],
+        recipientHexes: groupRecipients,
+      });
+      if (selfWrapEvent) {
+        await handleDmEvent(selfWrapEvent);
+      }
+      return true;
+    },
+    [defaultNostrRelays, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays],
+  );
+
+  // Resolve the active file-server entry for encrypted messenger attachments.
+  // Mirrors the task EditModal selection pattern so the user's Settings choice
+  // (originless / blossom / NIP-96) is honored.
+  // Encrypted messenger attachments must go to the ENCRYPTED file server
+  // (same one the task EditModal uses). nostr.build (the default public
+  // server) content-sniffs uploads and returns 500 on opaque ciphertext.
+  // Fall back to the public server only if no encrypted server is set.
+  const resolveMessengerServerEntry = useCallback((): FileServerEntry => {
+    const primaryUrl = encryptedFileStorageServer || fileStorageServer;
+    const primaryServersRaw = encryptedFileServers || fileServers;
+    const servers = parseFileServers(primaryServersRaw);
+    const match = findServerEntry(servers, primaryUrl);
+    if (match) return match;
+    // If we have servers but no URL match, infer the type from the URL.
+    const inferredType: FileServerType = /originless/i.test(primaryUrl)
+      ? "originless"
+      : /blossom/i.test(primaryUrl)
+        ? "blossom"
+        : "nip96";
+    return {
+      url: primaryUrl || DEFAULT_FILE_STORAGE_SERVER,
+      type: inferredType,
+    };
+  }, [encryptedFileServers, encryptedFileStorageServer, fileServers, fileStorageServer]);
+
+  // Send one or more encrypted file attachments as 0xchat-compatible kind-15
+  // gift wraps. Each file produces a separate gift-wrap event (matching how
+  // 0xchat sends multi-file batches) and a separate pending bubble so the user
+  // sees per-file progress.
+  const sendMessengerFileAttachments = useCallback(
+    async (files: File[], peerPubkey: string) => {
+      const trimmedFiles = files.filter((file) => file && file.size > 0);
+      if (!trimmedFiles.length) return;
+      const { identity, reason } = readNostrIdentity();
+      if (!identity) {
+        showToast(reason || "Add your Taskify Nostr key in Settings → Nostr.", 4000);
+        return;
+      }
+      const senderHex = identity.pubkey.toLowerCase();
+      // Detect group thread
+      const groupMeta = groupChatsRef.current.find((g) => g.groupId === peerPubkey);
+      const isGroup = !!groupMeta;
+      const groupRecipients = isGroup ? groupMeta.members.filter((m) => m !== senderHex) : [];
+      const recipientHex = isGroup ? groupRecipients[0] || "" : peerPubkey.toLowerCase();
+      if (!isGroup && !/^[0-9a-f]{64}$/.test(recipientHex)) {
+        showToast("Recipient pubkey is invalid.", 4000);
+        return;
+      }
+      const serverEntry = resolveMessengerServerEntry();
+
+      const allRelays = new Set<string>();
+      const relayTargets = isGroup ? groupRecipients : [recipientHex];
+      for (const target of relayTargets) {
+        try {
+          const relays = await resolveNip17Relays(target, defaultNostrRelays);
+          relays.forEach((r) => allRelays.add(r));
+        } catch (err) {
+          console.warn("[chat] file attach relay resolve failed", err);
+        }
+      }
+      const publishRelays = Array.from(allRelays);
+      if (!publishRelays.length) {
+        showToast("No relays available for NIP-17 inbox.", 4000);
+        return;
+      }
+      const pool = ensureNostrPool();
+      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+
+      for (const file of trimmedFiles) {
+        const pendingId = crypto.randomUUID();
+        const pendingCreatedAt = Math.floor(Date.now() / 1000);
+        const mimeType = file.type || "application/octet-stream";
+        const filename = file.name || "attachment";
+        const previewUrl = isImageMime(mimeType) ? URL.createObjectURL(file) : undefined;
+
+        setPendingMessages((prev) => [
+          ...prev,
+          {
+            id: pendingId,
+            content: "",
+            peerPubkey: recipientHex,
+            createdAt: pendingCreatedAt,
+            status: "sending",
+            file: {
+              filename,
+              mimeType,
+              size: file.size,
+              previewUrl,
+              progress: 0,
+              phase: "encrypting",
+            },
+          },
+        ]);
+
+        const updatePending = (patch: Partial<PendingDmMessage["file"]> & { status?: PendingDmMessage["status"] }) => {
+          setPendingMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== pendingId) return m;
+              const nextStatus = patch.status ?? m.status;
+              const nextFile = m.file
+                ? { ...m.file, ...patch, status: undefined as any }
+                : m.file;
+              if (nextFile) delete (nextFile as any).status;
+              return { ...m, status: nextStatus, file: nextFile };
+            }),
+          );
+        };
+
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          // Probe image dimensions from the plaintext blob before we lose it.
+          const dims = isImageMime(mimeType) ? await probeImageDimensions(file) : null;
+
+          updatePending({ phase: "uploading", progress: 0 });
+
+          const upload = await encryptAndUploadMessengerAttachment({
+            data: bytes,
+            mimeType,
+            filename,
+            serverEntry,
+            nostrSkHex: identity.secret,
+            onProgress: (progress) => updatePending({ progress }),
+            width: dims?.width,
+            height: dims?.height,
+          });
+
+          updatePending({ phase: "sending", progress: 1 });
+
+          // 0xchat-compatible kind-15 rumor tags
+          // (see nostr-dart lib/src/nips/nip_017.dart:69-72)
+          const extraTags: string[][] = [
+            ["file-type", upload.mimeType],
+            ["encryption-algorithm", MESSENGER_ATTACHMENT_ALGO],
+            ["decryption-key", upload.keyHex],
+            ["decryption-nonce", upload.nonceHex],
+          ];
+          // Bonus metadata tags (ignored by 0xchat, useful for our own UI)
+          if (upload.sha256) extraTags.push(["x", upload.sha256]);
+          if (upload.size > 0) extraTags.push(["size", String(upload.size)]);
+          if (upload.width && upload.height) {
+            extraTags.push(["dim", `${upload.width}x${upload.height}`]);
+          }
+          if (filename) extraTags.push(["filename", filename]);
+          if (isGroup && groupMeta?.name) {
+            extraTags.push(["subject", groupMeta.name]);
+          }
+
+          const { selfWrapEvent } = await publishNip17Giftwraps({
+            content: upload.remoteUrl,
+            senderHex,
+            recipientHex,
+            senderSecret: identity.secret,
+            publish,
+            kind: 15,
+            extraTags,
+            ...(isGroup ? { recipientHexes: groupRecipients } : {}),
+          });
+          if (selfWrapEvent) {
+            await handleDmEvent(selfWrapEvent);
+          }
+
+          // Mark sent, then drop the pending entry after a short delay
+          // (the real message from the self-wrap will already be in dmMessages).
+          updatePending({ status: "sent" });
+          setTimeout(() => {
+            setPendingMessages((prev) =>
+              prev.filter((m) => {
+                if (m.id !== pendingId) return true;
+                if (m.file?.previewUrl) URL.revokeObjectURL(m.file.previewUrl);
+                return false;
+              }),
+            );
+          }, 1500);
+        } catch (err: any) {
+          console.warn("[chat] file attach send failed", err);
+          // Detect the nostr.build "won't accept opaque ciphertext" failure
+          // pattern and show an actionable hint instead of the raw server
+          // message. nostr.build scans uploads for valid media and rejects
+          // encrypted blobs at ingest — users need an originless/blossom
+          // server for encrypted attachments.
+          const rawMsg = String(err?.message || "");
+          const serverUrl = (serverEntry?.url || "").toLowerCase();
+          const looksLikeNip96ContentScan =
+            serverEntry?.type === "nip96" &&
+            (/server error, please try again later/i.test(rawMsg) ||
+              /upload failed \(5\d\d\)/i.test(rawMsg));
+          const friendlyMessage = looksLikeNip96ContentScan
+            ? `${serverUrl.replace(/^https?:\/\//, "") || "This NIP-96 server"} rejected the encrypted file. NIP-96 hosts (like nostr.build) scan uploads for valid media and block opaque ciphertext. Switch your encrypted file server to an originless or blossom host in Settings → Storage.`
+            : rawMsg || "Failed to send attachment.";
+          showToast(friendlyMessage, 6000);
+          setPendingMessages((prev) =>
+            prev.filter((m) => {
+              if (m.id !== pendingId) return true;
+              if (m.file?.previewUrl) URL.revokeObjectURL(m.file.previewUrl);
+              return false;
+            }),
+          );
+        }
+      }
+    },
+    [
+      defaultNostrRelays,
+      ensureNostrPool,
+      handleDmEvent,
+      publishNip17Giftwraps,
+      readNostrIdentity,
+      resolveMessengerServerEntry,
+      resolveNip17Relays,
+      safePublish,
+      setPendingMessages,
+      showToast,
+    ],
+  );
+  const openGroupNameEditor = useCallback(() => {
+    if (!activeGroupChat) return;
+    setRenameGroupDraft(activeGroupChat.name || "");
+    setChatView("group-name-edit");
+  }, [activeGroupChat]);
+  const handleRenameGroupSubmit = useCallback(() => {
+    if (!activeGroupChat) return;
+    const nextName = renameGroupDraft.trim();
+    if (!nextName) {
+      showToast("Enter a group name", 2500);
+      return;
+    }
+    const currentName = (activeGroupChat.name || "").trim();
+    if (nextName === currentName) {
+      setChatView("group-info");
+      return;
+    }
+
+    const renameTimestamp = Math.floor(Date.now() / 1000);
+    const updatedGroup = { ...activeGroupChat, name: nextName, nameUpdatedAt: renameTimestamp };
+    upsertGroupChat(updatedGroup);
+    setRenameGroupBusy(true);
+    setChatView("group-info");
+
+    void (async () => {
+      let synced = false;
+      try {
+        synced = await publishGroupSubjectUpdate(updatedGroup, nextName);
+      } catch (err) {
+        console.warn("[chat] group rename publish failed", err);
+      } finally {
+        setRenameGroupBusy(false);
+      }
+
+      showToast(
+        synced ? "Group name updated" : "Group name updated locally. It will sync on your next message.",
+        synced ? 2200 : 4200,
+      );
+    })();
+  }, [activeGroupChat, publishGroupSubjectUpdate, renameGroupDraft, setChatView, showToast, upsertGroupChat]);
 
   const applyEcashContact = useCallback(
     async (contact: Contact) => {
@@ -7603,7 +9818,7 @@ export default function CashuWalletModal({
       setNwcUrlInput(nwcConnection?.uri || "");
       setNwcBusy(false);
       setNwcFeedback("");
-      setNwcTransferAmt("");
+
       setNwcFundState("idle");
       setNwcFundMessage("");
       setNwcFundInvoice("");
@@ -10104,7 +12319,6 @@ export default function CashuWalletModal({
   }, [contactsSyncEnabled, nostrMissingReason, migrateNip51ContactsIfNeeded]);
 
   useEffect(() => {
-    if (!contactsTabOpen) return;
     if (!contactsSyncEnabled) return;
     if (!contactsPublishQueuedRef.current) return;
     const timer = window.setTimeout(() => {
@@ -10113,10 +12327,10 @@ export default function CashuWalletModal({
       }
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [contactsSyncEnabled, contactsTabOpen, publishContactsToNostr]);
+  }, [contactsSyncEnabled, contacts, contactSyncMeta.fingerprint, publishContactsToNostr]);
 
   useEffect(() => {
-    if (!contactsTabOpen && !contactsOpen) {
+    if (!contactsTabOpen && !contactsOpen && !chatModeUsesContacts) {
       contactProfilesRefreshedRef.current = false;
       return;
     }
@@ -10128,7 +12342,7 @@ export default function CashuWalletModal({
         void syncContactsFromNostr({ silent: true });
       }
     }
-  }, [contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
+  }, [chatModeUsesContacts, contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
 
   useEffect(() => {
     if (contactsTabOpen) return;
@@ -10858,21 +13072,11 @@ export default function CashuWalletModal({
   }, [closeNostrPool, stopPaymentRequestSubscription]);
 
   useEffect(() => {
-    if (!open) {
-      stopDmSubscription();
-      return;
-    }
     void startDmSubscription();
     return () => {
       stopDmSubscription();
     };
-  }, [open, startDmSubscription, stopDmSubscription]);
-
-  useEffect(() => {
-    if (walletTab === "messages" && !dmSubscriptionCloseRef.current) {
-      void startDmSubscription();
-    }
-  }, [startDmSubscription, walletTab]);
+  }, [startDmSubscription, stopDmSubscription]);
 
   const normalizedSendLockPubkey = useMemo(() => {
     if (!lockSendToPubkey) return null;
@@ -13059,13 +15263,7 @@ export default function CashuWalletModal({
   }
 
   const contactInitials = (value: string) => {
-    const parts = (value || "").trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return "?";
-    const cp = parts[0].codePointAt(0) ?? 0;
-    const isEmoji = (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
-    if (isEmoji) return [...parts[0]][0] ?? "?";
-    if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
-    return ([...parts[0]][0] ?? "" + ([...parts[parts.length - 1]][0] ?? "")).toUpperCase();
+    return avatarInitials(value);
   };
 
   const contactSubtitle = useCallback(
@@ -13108,27 +15306,261 @@ export default function CashuWalletModal({
     myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
   const profileCard = {
     id: "profile",
+    kind: myCardNpub ? ("nostr" as const) : ("custom" as const),
     name: myCardName,
     displayName: profileForm.displayName.trim(),
     username: sanitizeUsername(profileForm.username),
     address: myCardLightning,
+    paymentRequest: "",
     npub: myCardNpub,
     nip05: profileForm.nip05.trim(),
     about: profileForm.about.trim(),
     picture: profileForm.picture.trim(),
     updatedAt: profileUpdatedAt,
   };
+  const activeConversationContact = useMemo(() => {
+    if (!activeThread || activeThread.groupId) return null;
+    const ownNpub = normalizeNostrPubkey(myCardNpub);
+    const ownHex = ownNpub ? compressedToRawHex(ownNpub).toLowerCase() : "";
+    if (ownHex && activeThread.peerPubkey === ownHex) return null;
+    const existing = contactByHex.get(activeThread.peerPubkey);
+    if (existing) return existing;
+    const peerMeta = getPeerProfile(activeThread.peerPubkey);
+    const peerLabel = peerLabelFor(activeThread.peerPubkey);
+    return {
+      id: `chat-peer-${activeThread.peerPubkey}`,
+      kind: "nostr",
+      name: peerMeta?.displayName || peerMeta?.username || peerLabel.label,
+      displayName: peerMeta?.displayName || peerLabel.label,
+      username: sanitizeUsername(peerMeta?.username || ""),
+      address: peerMeta?.lud16 || "",
+      paymentRequest: "",
+      npub: formatNpub(activeThread.peerPubkey) || "",
+      nip05: peerMeta?.nip05 || "",
+      about: peerMeta?.about || "",
+      picture: peerMeta?.picture || peerLabel.picture || "",
+      updatedAt: Date.now(),
+    } satisfies Contact;
+  }, [
+    activeThread,
+    compressedToRawHex,
+    contactByHex,
+    formatNpub,
+    getPeerProfile,
+    myCardNpub,
+    normalizeNostrPubkey,
+    peerLabelFor,
+    sanitizeUsername,
+  ]);
+  const handleOpenChatEcash = useCallback(() => {
+    closeAttachTray();
+    if (activeConversationContact && (contactHasNpub(activeConversationContact) || activeConversationContact.paymentRequest.trim().length > 0)) {
+      openEcashSendToContact(activeConversationContact);
+      return;
+    }
+    openEcashSendSheet();
+  }, [activeConversationContact, closeAttachTray, openEcashSendSheet, openEcashSendToContact]);
+  const handleOpenChatLightning = useCallback(() => {
+    closeAttachTray();
+    if (activeConversationContact?.address.trim()) {
+      applyLightningContact(activeConversationContact);
+      return;
+    }
+    openLightningSendSheet();
+  }, [activeConversationContact, applyLightningContact, closeAttachTray, openLightningSendSheet]);
+  const chatAttachTrayHeight = useMemo(
+    () =>
+      Math.min(
+        CHAT_ATTACH_TRAY_MAX_HEIGHT,
+        Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, chatKeyboardHeight || chatKeyboardHeightCache),
+      ),
+    [chatKeyboardHeight, chatKeyboardHeightCache],
+  );
+  const chatAttachContactOptions = useMemo(() => {
+    const options: Contact[] = [];
+    const seen = new Set<string>();
+    const addContact = (contact: Contact) => {
+      const normalizedNpub = formatContactNpub(contact.npub);
+      if (!normalizedNpub) return;
+      const normalizedHex = normalizeNostrPubkey(normalizedNpub) ?? normalizedNpub;
+      const key = normalizedHex.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({ ...contact, npub: normalizedNpub });
+    };
+    addContact(profileCard as Contact);
+    sortedContacts.forEach(addContact);
+    return options;
+  }, [formatContactNpub, normalizeNostrPubkey, profileCard, sortedContacts]);
+  const groupAvatarMembersFor = useCallback(
+    (group: GroupChat | null | undefined, thread?: WalletDmThread | null, fallbackLabel?: string): GroupAvatarMember[] => {
+      const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
+      const resolvedMembers = (group?.members || [])
+        .map((memberHex, index) => {
+          const normalizedHex = memberHex.toLowerCase();
+          const isSelf = ownHex !== "" && normalizedHex === ownHex;
+          const meta = isSelf
+            ? { label: myCardName, picture: profileCard.picture?.trim() || undefined }
+            : peerLabelFor(normalizedHex);
+          return {
+            key: normalizedHex,
+            memberHex: normalizedHex,
+            index,
+            label: meta.label,
+            picture: meta.picture?.trim() || undefined,
+          };
+        })
+        .filter((member) => !!member.key);
+      if (!resolvedMembers.length) {
+        return [
+          {
+            key: group?.groupId || fallbackLabel || "group",
+            label: fallbackLabel || group?.name || "Group",
+          },
+        ];
+      }
+      const memberMap = new Map(resolvedMembers.map((member) => [member.memberHex, member]));
+      const recentMemberHexes: string[] = [];
+      const recentSeen = new Set<string>();
+      if (thread) {
+        for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+          const message = thread.messages[index];
+          const candidateHex = ((message.isIncoming ? message.senderPubkey : ownHex) || "").toLowerCase();
+          if (!candidateHex || recentSeen.has(candidateHex) || !memberMap.has(candidateHex)) continue;
+          recentSeen.add(candidateHex);
+          recentMemberHexes.push(candidateHex);
+          if (recentMemberHexes.length >= 4) break;
+        }
+      }
+      const recentMembers = recentMemberHexes
+        .map((memberHex) => memberMap.get(memberHex))
+        .filter(Boolean);
+      const remainingMembers = resolvedMembers
+        .filter((member) => !recentSeen.has(member.memberHex))
+        .sort((left, right) => Number(Boolean(right.picture)) - Number(Boolean(left.picture)) || left.index - right.index);
+      return [...recentMembers, ...remainingMembers]
+        .slice(0, 4)
+        .map(({ key, label, picture }) => ({ key, label, picture }));
+    },
+    [myCardName, nostrIdentityInfo.identity?.pubkey, peerLabelFor, profileCard.picture],
+  );
+  const activeGroupAvatarMembers = useMemo(
+    () =>
+      activeThread?.groupId
+        ? groupAvatarMembersFor(activeGroupChat, activeThread, activeGroupChat?.name || "Group")
+        : [],
+    [activeGroupChat, activeThread, groupAvatarMembersFor],
+  );
+  const activeGroupMembers = useMemo(() => {
+    if (!activeGroupChat) return [];
+    const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
+    return activeGroupChat.members.map((memberHex, index) => {
+      const normalizedHex = memberHex.toLowerCase();
+      const isSelf = ownHex !== "" && normalizedHex === ownHex;
+      const contact = isSelf ? null : contactByHex.get(normalizedHex) || null;
+      const profile = isSelf ? null : dmPeerProfilesRef.current.get(normalizedHex);
+      const peerMeta = isSelf ? null : peerLabelFor(normalizedHex);
+      const label = isSelf ? myCardName : contact ? contactDisplayLabel(contact) : peerMeta?.label || "Contact";
+      const picture = isSelf
+        ? profileCard.picture?.trim() || undefined
+        : pickPreferredProfilePhoto(profile?.picture, contact?.picture?.trim() || peerMeta?.picture);
+      const npub = isSelf
+        ? myCardNpub || formatNpub(normalizedHex)
+        : contact?.npub?.trim() || formatNpub(normalizedHex);
+      const subtitle = (() => {
+        if (isSelf) {
+          return profileCard.nip05.trim() || formatContactUsername(profileCard.username) || shortenNpubDisplay(myCardNpub);
+        }
+        return (
+          contact?.nip05?.trim() ||
+          profile?.nip05?.trim() ||
+          formatContactUsername(contact?.username || profile?.username || "") ||
+          peerMeta?.subtitle ||
+          shortenNpubDisplay(npub, 12, 8)
+        );
+      })();
+      return {
+        id: contact?.id || `group-member-${normalizedHex}`,
+        contactId: contact?.id || null,
+        memberHex: normalizedHex,
+        isSelf,
+        label,
+        picture,
+        subtitle,
+        detailContact: {
+          id: contact?.id || `group-member-${normalizedHex}`,
+          name: isSelf ? myCardName : contact?.name || label,
+          displayName: isSelf ? profileCard.displayName || myCardName : contact?.displayName || profile?.displayName || label,
+          username: isSelf ? profileCard.username || "" : contact?.username || profile?.username || "",
+          address: isSelf ? profileCard.address || "" : contact?.address || profile?.lud16 || "",
+          npub,
+          nip05: isSelf ? profileCard.nip05 || "" : contact?.nip05 || profile?.nip05 || "",
+          about: isSelf ? profileCard.about || "" : contact?.about || profile?.about || "",
+          picture: picture || "",
+          updatedAt: isSelf ? profileUpdatedAt : contact?.updatedAt ?? null,
+        } as Contact,
+        index,
+      };
+    });
+  }, [
+    activeGroupChat,
+    contactByHex,
+    contactDisplayLabel,
+    formatContactUsername,
+    formatNpub,
+    myCardName,
+    myCardNpub,
+    nostrIdentityInfo.identity?.pubkey,
+    peerLabelFor,
+    pickPreferredProfilePhoto,
+    profileCard.about,
+    profileCard.address,
+    profileCard.displayName,
+    profileCard.nip05,
+    profileCard.picture,
+    profileCard.username,
+    profileUpdatedAt,
+    shortenNpubDisplay,
+  ]);
+  const filteredActiveGroupMembers = useMemo(() => {
+    const query = groupMembersSearch.trim().toLowerCase();
+    if (!query) return activeGroupMembers;
+    return activeGroupMembers.filter((member) =>
+      `${member.label} ${member.subtitle || ""} ${member.detailContact.npub || ""}`.toLowerCase().includes(query),
+    );
+  }, [activeGroupMembers, groupMembersSearch]);
+  const openGroupMemberDetail = useCallback(
+    (memberHex: string) => {
+      const member = activeGroupMembers.find((entry) => entry.memberHex === memberHex);
+      if (!member) return;
+      setContactReturnView("group-members");
+      setContactView("detail");
+      setDmSearch("");
+      if (member.isSelf) {
+        setActiveContactId("profile");
+        setContactDetailOverride(null);
+      } else if (member.contactId) {
+        setActiveContactId(member.contactId);
+        setContactDetailOverride(null);
+      } else {
+        setActiveContactId(null);
+        setContactDetailOverride(member.detailContact);
+      }
+      setChatView("new-message");
+    },
+    [activeGroupMembers],
+  );
 
   const activeContact =
     activeContactId && activeContactId !== "profile"
       ? contacts.find((entry) => entry.id === activeContactId) || null
       : null;
-  const detailTarget = activeContactId === "profile" ? profileCard : activeContact;
+  const detailTarget = activeContactId === "profile" ? profileCard : activeContact || contactDetailOverride;
   const detailShareValue =
     activeContactId === "profile"
       ? profileShareValue
-      : activeContact
-        ? buildContactShareValue(activeContact)
+      : detailTarget
+        ? buildContactShareValue(detailTarget as Contact)
         : null;
   const detailUsername = detailTarget ? formatContactUsername(detailTarget.username) : "";
   const buildContactFields = useCallback(
@@ -13308,6 +15740,56 @@ export default function CashuWalletModal({
         scannedContact.updatedAt ?? null,
       );
     }, [ensureNip05Verification, scannedContact]);
+    const sharedContactPreviewContact = sharedContactPreview?.contact ?? null;
+    const sharedContactPreviewTitle = sharedContactPreviewContact ? contactPrimaryName(sharedContactPreviewContact) : "Contact";
+    const sharedContactPreviewUsername = sharedContactPreviewContact
+      ? formatContactUsername(sharedContactPreviewContact.username)
+      : "";
+    const sharedContactPreviewShareValue = sharedContactPreviewContact
+      ? buildContactShareValue(sharedContactPreviewContact)
+      : null;
+    const sharedContactPreviewFields = buildContactFields(sharedContactPreviewContact);
+    const sharedContactPreviewNip05Verified = sharedContactPreviewContact
+      ? isNip05VerifiedFor(
+          sharedContactPreviewContact.id,
+          sharedContactPreviewContact.nip05,
+          sharedContactPreviewContact.npub,
+        )
+      : false;
+    const sharedContactPreviewSaved = useMemo(() => {
+      if (!sharedContactPreviewContact) return false;
+      const normalizedTarget = normalizeNostrPubkey(sharedContactPreviewContact.npub || "");
+      const targetHex = normalizedTarget ? compressedToRawHex(normalizedTarget).toLowerCase() : null;
+      return contacts.some((contact) => {
+        if (contact.id === sharedContactPreviewContact.id) return true;
+        if (targetHex) {
+          const normalizedContact = normalizeNostrPubkey(contact.npub || "");
+          const contactHex = normalizedContact ? compressedToRawHex(normalizedContact).toLowerCase() : null;
+          if (contactHex && contactHex === targetHex) return true;
+        }
+        return false;
+      });
+    }, [compressedToRawHex, contacts, normalizeNostrPubkey, sharedContactPreviewContact]);
+    const sharedContactPreviewCanShare =
+      !!sharedContactPreviewContact && contactHasNpub(sharedContactPreviewContact);
+    const sharedContactPreviewCanAccept =
+      !!sharedContactPreview &&
+      sharedContactPreview.status !== "accepted" &&
+      sharedContactPreview.status !== "deleted" &&
+      sharedContactPreview.status !== "dismissed";
+    useEffect(() => {
+      if (!sharedContactPreviewContact?.id) return;
+      ensureNip05Verification(
+        sharedContactPreviewContact.id,
+        sharedContactPreviewContact.nip05,
+        sharedContactPreviewContact.npub,
+        sharedContactPreviewContact.updatedAt ?? null,
+      );
+    }, [ensureNip05Verification, sharedContactPreviewContact]);
+    useEffect(() => {
+      if (open && isChatPage && chatView === "conversation") return;
+      setSharedContactPreview(null);
+    }, [chatView, isChatPage, open]);
 
     const handleSaveScannedContact = useCallback(() => {
       if (!scannedContact || scannedContactSaved) return;
@@ -13328,6 +15810,48 @@ export default function CashuWalletModal({
       publishContactsToNostr,
       scannedContact,
       scannedContactSaved,
+      showToast,
+      upsertContact,
+    ]);
+    const handleSaveSharedContactPreview = useCallback(() => {
+      if (!sharedContactPreview) return;
+      let nextContact = sharedContactPreview.contact;
+      if (!sharedContactPreviewSaved) {
+        const saved = upsertContact({
+          ...sharedContactPreview.contact,
+          source: sharedContactPreview.contact.source ?? "sync",
+        });
+        if (!saved) {
+          showToast("Unable to add contact", 2500);
+          return;
+        }
+        nextContact = saved;
+        contactsPublishQueuedRef.current = true;
+        if (contactsSyncEnabled) {
+          void publishContactsToNostr({ silent: true });
+        }
+      }
+      if (sharedContactPreview.itemId && sharedContactPreviewCanAccept) {
+        onAcceptMessage(sharedContactPreview.itemId);
+      }
+      setSharedContactPreview((current) =>
+        current
+          ? {
+              ...current,
+              contact: nextContact,
+              status: sharedContactPreviewCanAccept ? "accepted" : current.status,
+            }
+          : current,
+      );
+      showToast("Contact added", 2000);
+    }, [
+      contactsPublishQueuedRef,
+      contactsSyncEnabled,
+      onAcceptMessage,
+      publishContactsToNostr,
+      sharedContactPreview,
+      sharedContactPreviewCanAccept,
+      sharedContactPreviewSaved,
       showToast,
       upsertContact,
     ]);
@@ -13405,6 +15929,26 @@ export default function CashuWalletModal({
         )}
       </div>
     ) : null;
+    const sharedContactPreviewHeader = sharedContactPreview ? (
+      <div className="contacts-sheet-header contacts-sheet-header--detail">
+        <button
+          className="glass-icon-button pressable"
+          onClick={() => setSharedContactPreview(null)}
+          aria-label="Close shared contact"
+        >
+          <CloseIcon className="h-4 w-4" />
+        </button>
+        <div className="contacts-header-spacer" aria-hidden="true" />
+        <button
+          type="button"
+          className="contact-pill contact-pill--accent contact-pill--compact contact-pill--wrap pressable"
+          onClick={handleSaveSharedContactPreview}
+          disabled={sharedContactPreviewSaved && !sharedContactPreviewCanAccept}
+        >
+          {sharedContactPreviewSaved && !sharedContactPreviewCanAccept ? "In contacts" : "Add to contacts"}
+        </button>
+      </div>
+    ) : null;
 
   useEffect(() => {
     const candidates: { id: string; nip05: string; npub: string; updatedAt?: number | null }[] = [];
@@ -13445,12 +15989,13 @@ export default function CashuWalletModal({
   ]);
 
   const handleStartEditCurrentContact = useCallback(() => {
-    const source = activeContactId === "profile" ? profileCard : activeContact;
+    const source = activeContactId === "profile" ? profileCard : activeContact || contactDetailOverride;
+    const isExistingContact = !!activeContact && activeContactId !== "profile";
     if (!source) {
       resetContactEditDraft();
     } else {
       setContactEditDraft({
-        id: source.id === "profile" ? null : source.id,
+        id: source.id === "profile" || !isExistingContact ? null : source.id,
         name: source.name || "",
         displayName: source.displayName || "",
         username: sanitizeUsername(source.username || ""),
@@ -13470,14 +16015,18 @@ export default function CashuWalletModal({
     setContactLookupInput("");
     setShowCustomContactFields(true);
     setContactView("edit");
-  }, [activeContact, activeContactId, profileCard, resetContactEditDraft]);
+  }, [activeContact, activeContactId, contactDetailOverride, profileCard, resetContactEditDraft]);
 
     const handleCancelContactEdit = useCallback(() => {
       setContactEditError("");
       setContactLookupError("");
       setShowCustomContactFields(false);
+      if (contactEditDraft.isProfile) {
+        handleReturnToProfileCard();
+        return;
+      }
       setContactView(detailTarget ? "detail" : "list");
-    }, [detailTarget]);
+    }, [contactEditDraft.isProfile, detailTarget, handleReturnToProfileCard]);
 
     const detailTitle = detailTarget ? contactPrimaryName(detailTarget) : "Contact";
     const detailIsNostrContact = useMemo(() => {
@@ -13502,6 +16051,7 @@ export default function CashuWalletModal({
       );
     }, [compressedToRawHex, contactSyncMeta.publicFollows, detailTarget, normalizeNostrPubkey]);
     const detailContactCanFollow = !!detailTarget && detailIsNostrContact && !!detailTarget.npub.trim();
+    const detailCanAddContact = !!detailTarget && activeContactId !== "profile" && !activeContact;
     const handleToggleFollowDetailContact = useCallback(() => {
       if (!detailTarget) return;
       const normalized = normalizeNostrPubkey(detailTarget.npub);
@@ -13585,7 +16135,7 @@ export default function CashuWalletModal({
         <button
           className="glass-icon-button pressable"
           onClick={handleBackToContactsList}
-          aria-label="Back to contacts"
+          aria-label={contactReturnView === "group-members" ? "Back to members" : contactReturnView === "group-info" ? "Back to group info" : "Back to contacts"}
         >
           <BackIcon className="h-5 w-5" />
         </button>
@@ -13611,7 +16161,15 @@ export default function CashuWalletModal({
           <span className="text-xl leading-none">+</span>
         </button>
       ) : contactView === "detail" && detailTarget ? (
-        detailIsNostrContact ? (
+        detailCanAddContact ? (
+          <button
+            type="button"
+            className="contact-pill contact-pill--accent contact-pill--compact pressable"
+            onClick={handleStartEditCurrentContact}
+          >
+            Add contact
+          </button>
+        ) : detailIsNostrContact ? (
           detailContactCanFollow ? (
             <button
               type="button"
@@ -13926,16 +16484,18 @@ export default function CashuWalletModal({
     ],
   );
 
-  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}`;
+  const inConversation = isChatPage && chatView === "conversation";
+  const hideAppTabSwitcher = isChatPage && chatView !== "threads";
+  const walletRootClass = `wallet-modal${showBottomNav && !hideAppTabSwitcher ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}${isChatPage ? " wallet-modal--chat" : ""}${hideAppTabSwitcher ? " wallet-modal--app-nav-hidden" : ""}${inConversation ? " wallet-modal--chat-convo" : ""}`;
   const contactsPanelInline = !showTabSwitcher && isContactsPage;
   const contactsPanelOpen = contactsTabOpen || contactsPanelInline;
-  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage;
+  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage && !isChatPage;
 
   if (!open) return null;
 
   return (
     <div className={walletRootClass}>
-      {!isContactsPage && (
+      {!isContactsPage && !isChatPage && (
         <>
           <div className="wallet-modal__header">
             <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
@@ -14017,123 +16577,133 @@ export default function CashuWalletModal({
             {walletTab === "messages" && (
               <div className="wallet-messages">
             <div className="wallet-messages__search">
-              <input
-                className="wallet-messages__search-input"
-                placeholder="Search"
-                value={dmSearch}
-                onChange={(event) => setDmSearch(event.target.value)}
-              />
+              <div className="chat-page__search-shell">
+                <input
+                  className="wallet-messages__search-input"
+                  placeholder="Search"
+                  value={dmSearch}
+                  onChange={(event) => setDmSearch(event.target.value)}
+                />
+                {dmSearch.length > 0 && (
+                  <button
+                    type="button"
+                    className="chat-page__search-clear pressable"
+                    aria-label="Clear search"
+                    title="Clear search"
+                    onClick={() => setDmSearch("")}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 6 6 18" />
+                      <path d="m6 6 12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </div>
             <div className="wallet-messages__body">
-              {dmView === "list" && (
+              {(dmView === "list" || dmView === "strangers") && (
                 <div className="wallet-messages__list space-y-2">
-                {showStrangersOnly && (
-                  <button
-                    className="wallet-messages__thread pressable"
-                    onClick={() => {
-                      setShowStrangersOnly(false);
-                    }}
-                  >
-                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">⇠</div>
-                    <div className="wallet-messages__thread-body">
-                      <div className="wallet-messages__thread-title">Back to everyone</div>
-                      <div className="wallet-messages__thread-preview">View all conversations</div>
-                    </div>
-                  </button>
-                )}
-                {!showStrangersOnly && dmThreads.some((t) => t.isStranger) && (
-                  <button
-                    className="wallet-messages__thread wallet-messages__thread--stranger pressable"
-                    onClick={() => {
-                      setShowStrangersOnly(true);
-                      setActiveThreadPeer(null);
-                    }}
-                  >
-                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">◎</div>
-                    <div className="wallet-messages__thread-body">
-                      <div className="wallet-messages__thread-title">
-                        Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
+                  {dmView === "strangers" && !dmSearch.trim() && (
+                    <button
+                      className="wallet-messages__thread pressable"
+                      onClick={() => {
+                        dmListViewRef.current = "list";
+                        setDmView("list");
+                        setActiveThreadPeer(null);
+                      }}
+                    >
+                      <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&larr;</div>
+                      <div className="wallet-messages__thread-body">
+                        <div className="wallet-messages__thread-title">Back to everyone</div>
+                        <div className="wallet-messages__thread-preview">View all conversations</div>
                       </div>
-                      <div className="wallet-messages__thread-preview">
-                        {dmThreads.find((t) => t.isStranger)?.lastPreview || "New requests"}
-                      </div>
-                    </div>
-                    <div className="wallet-messages__thread-meta">
-                      <span className="wallet-messages__thread-date">
-                        {dmThreads.find((t) => t.isStranger)
-                          ? formatShortDate(dmThreads.find((t) => t.isStranger)!.lastCreatedAt)
-                          : ""}
-                      </span>
-                    </div>
-                  </button>
-                )}
-                {(showStrangersOnly
-                  ? dmThreads.filter((t) => t.isStranger)
-                  : dmThreads.filter((t) => {
-                      if (!dmSearch.trim()) return !t.isStranger;
-                      const meta = peerLabelFor(t.peerPubkey);
-                      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${t.lastPreview} ${t.peerPubkey}`.toLowerCase();
-                      return haystack.includes(dmSearch.trim().toLowerCase());
-                    })
-                ).map((thread) => (
-                  <button
-                    key={thread.peerPubkey}
-                    className="wallet-messages__thread pressable"
-                    onClick={() => {
-                      setActiveThreadPeer(thread.peerPubkey);
-                      setDmView("thread");
-                      const unreadIds = thread.messages
-                        .map((m) => m.eventId)
-                        .filter((id) => {
-                          const item = messageItemsByEventId.get(id);
-                          if (!item) return false;
-                          const status = item.status;
-                          return status !== "accepted" && status !== "deleted" && status !== "read";
-                        });
-                      if (unreadIds.length) {
-                        onMarkMessagesRead(unreadIds);
-                      }
-                    }}
-                  >
-                    {(() => {
-                      const meta = peerLabelFor(thread.peerPubkey);
-                      const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+                    </button>
+                  )}
+                  {dmThreadListEntries.map((entry) => {
+                    if (entry.kind === "strangers") {
                       return (
-                        <>
-                          <div className="wallet-messages__avatar">
-                            {meta.picture ? (
-                              <img
-                                src={meta.picture}
-                                alt={meta.label}
-                                className="wallet-messages__avatar-img"
-                              />
-                            ) : (
-                              <span>{meta.label.slice(0, 2)}</span>
-                            )}
-                          </div>
+                        <button
+                          key="wallet-strangers-group"
+                          className="wallet-messages__thread wallet-messages__thread--stranger pressable"
+                          onClick={() => {
+                            dmListViewRef.current = "strangers";
+                            setDmView("strangers");
+                            setActiveThreadPeer(null);
+                          }}
+                        >
+                          <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&#9678;</div>
                           <div className="wallet-messages__thread-body">
                             <div className="wallet-messages__thread-title">
-                              {meta.label}
-                              {unreadCount > 0 ? ` (${unreadCount})` : ""}
+                              Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
                             </div>
-                            {meta.subtitle && (
-                              <div className="wallet-messages__thread-subtitle">{meta.subtitle}</div>
-                            )}
-                            <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+                            <div className="wallet-messages__thread-preview">{entry.lastPreview}</div>
                           </div>
                           <div className="wallet-messages__thread-meta">
                             <span className="wallet-messages__thread-date">
-                              {formatShortDate(thread.lastCreatedAt)}
+                              {formatShortDate(entry.lastCreatedAt)}
                             </span>
+                            {strangerUnreadCount > 0 && (
+                              <span className="chat-unread-badge">{strangerUnreadCount}</span>
+                            )}
                           </div>
-                        </>
+                        </button>
                       );
-                    })()}
-                  </button>
-                ))}
-                {dmThreads.length === 0 && (
+                    }
+                    const thread = entry.thread;
+                    const isGroupThread = !!thread.groupId;
+                    const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
+                    const groupAvatarMembers = isGroupThread ? groupAvatarMembersFor(groupMeta, thread, groupMeta?.name || "Group") : [];
+                    const meta = isGroupThread
+                      ? { label: groupMeta?.name || "Group", picture: undefined, subtitle: `${groupMeta?.members.length || 0} members`, verifiedNip05: null }
+                      : peerLabelFor(thread.peerPubkey);
+                    const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+                    return (
+                      <button
+                        key={thread.peerPubkey}
+                        className="wallet-messages__thread pressable"
+                        onClick={() => {
+                          dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
+                          setActiveThreadPeer(thread.peerPubkey);
+                          setDmView("thread");
+                          const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
+                          if (unreadIds.length) {
+                            onMarkMessagesRead(unreadIds);
+                          }
+                        }}
+                      >
+                        <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+                          {isGroupThread ? (
+                            <GroupAvatar members={groupAvatarMembers} />
+                          ) : meta.picture ? (
+                            <img
+                              src={meta.picture}
+                              alt={meta.label}
+                              className="wallet-messages__avatar-img"
+                            />
+                          ) : (
+                            <span>{meta.label.slice(0, 2)}</span>
+                          )}
+                        </div>
+                        <div className="wallet-messages__thread-body">
+                          <div className="wallet-messages__thread-title">
+                            {meta.label}
+                          </div>
+                          <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+                        </div>
+                        <div className="wallet-messages__thread-meta">
+                          <span className="wallet-messages__thread-date">
+                            {formatShortDate(thread.lastCreatedAt)}
+                          </span>
+                          {unreadCount > 0 && <span className="chat-unread-badge">{unreadCount}</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                {dmThreadListEntries.length === 0 && (
                   <div className="wallet-messages__empty text-secondary text-sm text-center">
-                    No messages yet. Incoming DMs will appear here.
+                    {dmView === "strangers" && !dmSearch.trim()
+                      ? "No stranger messages yet."
+                      : "No messages yet. Incoming DMs will appear here."}
                   </div>
                 )}
                 </div>
@@ -14141,26 +16711,23 @@ export default function CashuWalletModal({
               {dmView === "thread" && activeThread && (
                 <div className="wallet-messages__thread-view">
                 <div className="wallet-messages__thread-header">
-                  <button
-                    className="glass-icon-button pressable"
-                    onClick={() => {
-                      setDmView(showStrangersOnly ? "list" : "list");
-                      setActiveThreadPeer(null);
-                    }}
-                  >
+	                  <button
+	                    className="glass-icon-button pressable"
+	                    onClick={() => {
+	                      setDmView(dmListViewRef.current);
+	                      setActiveThreadPeer(null);
+	                    }}
+	                  >
                     <BackIcon className="h-4 w-4" />
                   </button>
-                  {(() => {
-                    const meta = peerLabelFor(activeThread.peerPubkey);
-                    return (
-                      <div className="wallet-messages__thread-title">
-                        <div className="wallet-messages__thread-title-text">{meta.label}</div>
-                        {meta.subtitle && (
-                          <div className="wallet-messages__thread-subtitle">{meta.subtitle}</div>
-                        )}
-                      </div>
-                    );
-                  })()}
+	                  {(() => {
+	                    const meta = peerLabelFor(activeThread.peerPubkey);
+	                    return (
+	                      <div className="wallet-messages__thread-title">
+	                        <div className="wallet-messages__thread-title-text">{meta.label}</div>
+	                      </div>
+	                    );
+	                  })()}
                   <span className="wallet-messages__thread-date">
                     {formatDmDay(activeThread.lastCreatedAt)}
                   </span>
@@ -14185,11 +16752,14 @@ export default function CashuWalletModal({
                 )}
                 <div className="wallet-messages__thread-messages">
                   {activeThread.messages.map((msg) => {
-                    const matchedItem = messageItemsByEventId.get(msg.eventId);
+                    const matchedItem =
+                      messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
+                    const matchedInvite = pendingCalendarInvitesByEventId.get(msg.eventId);
                     const isPayment = msg.attachment?.type === "payment";
                     const isContact = msg.attachment?.type === "contact";
                     const isBoard = msg.attachment?.type === "board";
                     const isTask = msg.attachment?.type === "task";
+                    const isEvent = msg.attachment?.type === "event";
                     const isStructured = !!msg.attachment && msg.attachment.type !== "text";
                     const bubbleClass = `wallet-message__bubble${isStructured ? " wallet-message__bubble--card" : ""}`;
                     const expanded = isDmMessageExpanded(msg.eventId);
@@ -14285,6 +16855,29 @@ export default function CashuWalletModal({
                           .filter((title): title is string => !!title)
                       : [];
                     const isTaskAssignment = !!(taskAttachment?.assignment || matchedItem?.task?.assignment);
+                    const eventAttachment = isEvent ? msg.attachment : null;
+                    const eventReferenceSeconds =
+                      eventAttachment?.start ? parseDateLikeToUnixSeconds(eventAttachment.start, msg.createdAt) : msg.createdAt;
+                    const eventDayLabel = (() => {
+                      const date = new Date(eventReferenceSeconds * 1000);
+                      const day = date.getDate();
+                      if (!Number.isFinite(day)) return cardDayLabel;
+                      return `${day}`.padStart(2, "0");
+                    })();
+                    const eventCardDate = formatShortDate(eventReferenceSeconds);
+                    const eventWhenLabel =
+                      eventAttachment?.whenLabel ||
+                      (matchedInvite && formatCalendarInviteWhen ? formatCalendarInviteWhen(matchedInvite) : "") ||
+                      "Event invite";
+                    const eventTitle = eventAttachment?.title || matchedInvite?.title || "Event invite";
+                    const eventCopyValue =
+                      (
+                        eventAttachment?.view ||
+                        matchedInvite?.view ||
+                        eventAttachment?.canonical ||
+                        matchedInvite?.canonical ||
+                        [eventTitle, eventWhenLabel].filter(Boolean).join("\n")
+                      ).trim() || eventTitle;
                     const cardTime = `${formatDmDay(paymentCreatedSeconds)} · ${formatDmTime(paymentCreatedSeconds)}`;
                     const paymentAmountLabel =
                       paymentHistoryEntry?.amountSat != null
@@ -14294,15 +16887,17 @@ export default function CashuWalletModal({
                           : null;
                     const paymentStatusLabel = paymentStatusInfo?.label;
                     const paymentSummary = paymentHistoryEntry?.summary;
-                    const actionStatus = matchedItem?.status;
+                    const actionStatus = matchedItem?.status || matchedInvite?.status;
                     const showActionButtons =
                       actionStatus !== "accepted" &&
                       actionStatus !== "declined" &&
                       actionStatus !== "tentative" &&
-                      actionStatus !== "deleted";
+                      actionStatus !== "deleted" &&
+                      actionStatus !== "dismissed";
                     const boardStatusLabel = getWalletMessageStatusLabel("board", actionStatus);
                     const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus);
                     const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus);
+                    const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
                     const copyValue = buildDmCopyValue(msg, {
                       paymentToken,
                       boardId: isBoard
@@ -14326,6 +16921,7 @@ export default function CashuWalletModal({
                             ? "Token"
                             : "Message";
                     const isActionOpen = dmMessageActions?.eventId === msg.eventId;
+                    const hasReactions = (dmReactions.get(msg.rumorEventId || msg.eventId)?.length ?? 0) > 0;
                     const stackClass = `wallet-message__stack${msg.isIncoming ? "" : " wallet-message__stack--out"}`;
                     return (
                       <div
@@ -14333,19 +16929,20 @@ export default function CashuWalletModal({
                         className={`wallet-message ${msg.isIncoming ? "wallet-message--in" : "wallet-message--out"}`}
                       >
                         <div className={stackClass}>
+                          <div className={`chat-bubble-wrap${hasReactions ? " chat-bubble-wrap--reacted" : ""}`}>
                           <div
                             className={bubbleClass}
                             onContextMenu={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
                               cancelDmLongPress();
-                              setDmMessageActions({ eventId: msg.eventId, copyValue });
+                              setDmMessageActions({ eventId: msg.eventId, copyValue, msg });
                             }}
                             onPointerDown={(event) => {
                               if ((event.target as HTMLElement | null)?.closest("button")) return;
                               cancelDmLongPress();
                               dmLongPressTimerRef.current = window.setTimeout(() => {
-                                setDmMessageActions({ eventId: msg.eventId, copyValue });
+                                setDmMessageActions({ eventId: msg.eventId, copyValue, msg });
                               }, 420);
                             }}
                             onPointerUp={cancelDmLongPress}
@@ -14608,6 +17205,15 @@ export default function CashuWalletModal({
                                               className="ghost-button button-sm pressable"
                                               onClick={(event) => {
                                                 event.stopPropagation();
+                                                void copyMessageValue(copyValue, "Task");
+                                              }}
+                                            >
+                                              Copy
+                                            </button>
+                                            <button
+                                              className="ghost-button button-sm pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
                                                 if (matchedItem) onDismissMessage(matchedItem.id);
                                               }}
                                               disabled={!matchedItem}
@@ -14624,6 +17230,44 @@ export default function CashuWalletModal({
                                     )}
                                   </>
                                 )}
+                              </div>
+                            )}
+                            {isEvent && (
+                              <div className="wallet-message__card wallet-message__card--inline">
+                                <div className="wallet-message__card-icon">{eventDayLabel}</div>
+                                <div className="wallet-message__card-body">
+                                  <div className="wallet-message__card-title">{eventTitle}</div>
+                                  <div className="wallet-message__card-subtitle">{eventWhenLabel}</div>
+                                  {showActionButtons ? (
+                                    <div className="wallet-message__card-actions">
+                                      <button
+                                        className="accent-button button-sm pressable"
+                                        onClick={() => matchedInvite && onCalendarInviteRsvp?.(matchedInvite, "accepted")}
+                                        disabled={!matchedInvite}
+                                      >
+                                        Add event
+                                      </button>
+                                      <button
+                                        className="ghost-button button-sm pressable"
+                                        onClick={() => void copyMessageValue(eventCopyValue, "Event")}
+                                      >
+                                        Copy
+                                      </button>
+                                      <button
+                                        className="ghost-button button-sm pressable"
+                                        onClick={() => matchedInvite && onDismissCalendarInvite?.(matchedInvite)}
+                                        disabled={!matchedInvite}
+                                      >
+                                        Dismiss
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    eventStatusLabel && (
+                                      <div className="wallet-message__card-status">{eventStatusLabel}</div>
+                                    )
+                                  )}
+                                </div>
+                                <div className="wallet-message__card-meta">{eventCardDate}</div>
                               </div>
                             )}
                             {isPayment && (
@@ -14706,34 +17350,52 @@ export default function CashuWalletModal({
                             )}
                             {msg.attachment?.type === "text" && (
                               <>
-                                <div className="wallet-message__text">{msg.content}</div>
+                                {msg.replyToEventId && (() => {
+                                  const replied = dmMessages.find((m) => m.eventId === msg.replyToEventId);
+                                  if (!replied) return null;
+                                  return (
+                                    <div className="chat-reply-quote">
+                                      <div className="chat-reply-quote__bar" />
+                                      <div className="chat-reply-quote__text">
+                                        {replied.content.length > 80 ? replied.content.slice(0, 80) + "…" : replied.content}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                                <div className="wallet-message__text">{renderFormattedText(msg.content)}</div>
                                 <div className="wallet-message__time">
                                   {formatDmDay(msg.createdAt)} · {formatDmTime(msg.createdAt)}
                                 </div>
                               </>
                             )}
                           </div>
-                          {isActionOpen && (
-                            <div className="wallet-message__actions">
-                              <button
-                                type="button"
-                                className="ghost-button button-xs pressable"
-                                onClick={() => {
-                                  void copyMessageValue(copyValue, copyLabel);
-                                  setDmMessageActions(null);
-                                }}
-                              >
-                                Copy {copyLabel.toLowerCase()}
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button button-xs pressable wallet-message__action-delete"
-                                onClick={() => handleDeleteDmMessage(msg.eventId)}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          )}
+                          {(() => {
+                            const reactionKey = msg.rumorEventId || msg.eventId;
+                            const msgReactions = dmReactions.get(reactionKey);
+                            if (!msgReactions?.length) return null;
+                            const grouped = new Map<string, DmReaction[]>();
+                            for (const r of msgReactions) {
+                              const arr = grouped.get(r.emoji) || [];
+                              arr.push(r);
+                              grouped.set(r.emoji, arr);
+                            }
+                            return (
+                              <div className={`chat-tapbacks${msg.isIncoming ? " chat-tapbacks--in" : " chat-tapbacks--out"}`}>
+                                {Array.from(grouped.entries()).map(([emoji, reactions]) => (
+                                  <button
+                                    key={emoji}
+                                    type="button"
+                                    className="chat-tapback pressable"
+                                    onClick={() => setDmReactionDetail({ eventId: reactionKey })}
+                                  >
+                                    <span className="chat-tapback__emoji">{emoji}</span>
+                                    {reactions.length > 1 && <span className="chat-tapback__count">{reactions.length}</span>}
+                                  </button>
+                                ))}
+                              </div>
+                            );
+                          })()}
+                          </div>
                         </div>
                       </div>
                     );
@@ -14804,6 +17466,2801 @@ export default function CashuWalletModal({
         </>
       )}
 
+      {/* ── Chat Page ─────────────────────────────────────────────────── */}
+      {isChatPage && (
+        <div className="chat-page">
+          {chatView === "threads" && (
+            <div className="chat-page__threads">
+              {/* Header */}
+              <div className={`chat-page__header chat-page__header--safe-area${contactView !== "list" ? " chat-page__header--compact" : ""}`}>
+                <button
+                  type="button"
+                  className={`contact-avatar pressable${profileCard.picture?.trim() ? " contact-avatar--image contact-avatar--profile" : " contact-avatar--profile"}`}
+                  onClick={() => {
+                    setActiveContactId("profile");
+                    setContactView("detail");
+                    setChatView("new-message");
+                  }}
+                  aria-label="Open profile"
+                >
+                  {profileCard.picture?.trim() ? (
+                    <img src={profileCard.picture.trim()} alt={myCardName} className="contact-avatar__img" />
+                  ) : (
+                    contactInitials(myCardName)
+                  )}
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">Chat</div>
+                <button
+                  type="button"
+                  className="glass-icon-button glass-icon-button--accent pressable"
+                  onClick={() => setChatView("new-message")}
+                  title="New message"
+                  aria-label="New message"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Search */}
+              <div className="chat-page__search">
+                <div className="chat-page__search-shell">
+                  <input
+                    className="chat-page__search-input"
+                    placeholder="Search"
+                    value={dmSearch}
+                    onChange={(event) => setDmSearch(event.target.value)}
+                  />
+                  {dmSearch.length > 0 && (
+                    <button
+                      type="button"
+                      className="chat-page__search-clear pressable"
+                      aria-label="Clear search"
+                      title="Clear search"
+                      onClick={() => setDmSearch("")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+		              {/* Thread list */}
+		              <div className="chat-page__thread-list">
+		                {dmView === "strangers" && !dmSearch.trim() && (
+		                  <button
+		                    className="wallet-messages__thread pressable"
+		                    onClick={() => {
+		                      dmListViewRef.current = "list";
+		                      setDmView("list");
+		                      setActiveThreadPeer(null);
+		                    }}
+		                  >
+		                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&larr;</div>
+		                    <div className="wallet-messages__thread-body">
+		                      <div className="wallet-messages__thread-title">Back to everyone</div>
+		                      <div className="wallet-messages__thread-preview">View all conversations</div>
+		                    </div>
+		                  </button>
+		                )}
+		                {dmThreadListEntries.map((entry) => {
+		                  if (entry.kind === "strangers") {
+		                    return (
+		                      <button
+		                        key="strangers-group"
+		                        className="wallet-messages__thread wallet-messages__thread--stranger pressable"
+		                        onClick={() => {
+		                          dmListViewRef.current = "strangers";
+		                          setDmView("strangers");
+		                          setActiveThreadPeer(null);
+		                        }}
+		                      >
+		                        <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&#9678;</div>
+		                        <div className="wallet-messages__thread-body">
+		                          <div className="wallet-messages__thread-title">
+		                            Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
+		                          </div>
+		                          <div className="wallet-messages__thread-preview">{entry.lastPreview}</div>
+		                        </div>
+		                        <div className="wallet-messages__thread-meta">
+		                          <span className="wallet-messages__thread-date">
+		                            {formatShortDate(entry.lastCreatedAt)}
+		                          </span>
+		                          {strangerUnreadCount > 0 && (
+		                            <span className="chat-unread-badge">{strangerUnreadCount}</span>
+		                          )}
+		                        </div>
+		                      </button>
+		                    );
+		                  }
+		                  const thread = entry.thread;
+		                  const isGroupThread = !!thread.groupId;
+		                  const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
+		                  const groupAvatarMembers = isGroupThread ? groupAvatarMembersFor(groupMeta, thread, groupMeta?.name || "Group") : [];
+		                  const meta = isGroupThread
+		                    ? { label: groupMeta?.name || "Group", picture: undefined, subtitle: `${groupMeta?.members.length || 0} members`, verifiedNip05: null }
+		                    : peerLabelFor(thread.peerPubkey);
+		                  const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+		                  return (
+		                    <button
+		                      key={thread.peerPubkey}
+		                      className="wallet-messages__thread pressable"
+		                      onClick={() => {
+		                        dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
+		                        setActiveThreadPeer(thread.peerPubkey);
+		                        if (isGroupThread) setActiveGroupId(thread.groupId!);
+		                        setChatView("conversation");
+		                        setDmView("thread");
+		                        const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
+		                        if (unreadIds.length) {
+		                          onMarkMessagesRead(unreadIds);
+		                        }
+		                      }}
+		                    >
+		                      <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+		                        {isGroupThread ? (
+		                          <GroupAvatar members={groupAvatarMembers} />
+		                        ) : meta.picture ? (
+		                          <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
+		                        ) : (
+		                          <span>{meta.label.slice(0, 2)}</span>
+		                        )}
+		                      </div>
+		                      <div className="wallet-messages__thread-body">
+		                        <div className="wallet-messages__thread-title">
+		                          {meta.label}
+		                        </div>
+		                        <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+		                      </div>
+		                      <div className="wallet-messages__thread-meta">
+		                        <span className="wallet-messages__thread-date">
+		                          {formatShortDate(thread.lastCreatedAt)}
+		                        </span>
+		                        {unreadCount > 0 && (
+		                          <span className="chat-unread-badge">{unreadCount}</span>
+		                        )}
+		                      </div>
+		                    </button>
+		                  );
+		                })}
+		                {dmThreadListEntries.length === 0 && messageSearchResults.length === 0 && (
+		                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "3rem 1rem" }}>
+		                    {dmView === "strangers" && !dmSearch.trim()
+		                      ? "No stranger messages yet."
+		                      : "No messages yet. Start a conversation or incoming DMs will appear here."}
+		                  </div>
+		                )}
+		                {dmSearch.trim() && messageSearchResults.length > 0 && (
+		                  <>
+		                    <div className="chat-page__section-label" style={{ marginTop: "0.5rem" }}>Messages</div>
+		                    {messageSearchResults.map(({ thread, message }) => {
+		                      const isGroupThread = !!thread.groupId;
+		                      const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
+		                      const threadMeta = isGroupThread
+		                        ? { label: groupMeta?.name || "Group", picture: undefined }
+		                        : peerLabelFor(thread.peerPubkey);
+		                      const q = dmSearch.trim().toLowerCase();
+		                      const matchIdx = message.content.toLowerCase().indexOf(q);
+		                      const previewBefore = matchIdx > 0 ? message.content.slice(Math.max(0, matchIdx - 30), matchIdx) : "";
+		                      const matchText = message.content.slice(matchIdx, matchIdx + q.length);
+		                      const previewAfter = message.content.slice(matchIdx + q.length, matchIdx + q.length + 60);
+		                      return (
+		                        <button
+		                          key={`${thread.peerPubkey}-${message.eventId}`}
+		                          className="wallet-messages__thread pressable"
+		                          onClick={() => {
+		                            dmListViewRef.current = "list";
+		                            setDmSearch("");
+		                            setActiveThreadPeer(thread.peerPubkey);
+		                            if (isGroupThread) setActiveGroupId(thread.groupId!);
+		                            setChatView("conversation");
+		                            setDmView("thread");
+		                            setScrollToMessageId(message.eventId);
+		                          }}
+		                        >
+		                          <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+		                            {isGroupThread ? (
+		                              <GroupAvatar members={groupAvatarMembersFor(groupMeta, thread, threadMeta.label)} />
+		                            ) : threadMeta.picture ? (
+		                              <img src={threadMeta.picture} alt={threadMeta.label} className="wallet-messages__avatar-img" />
+		                            ) : (
+		                              <span>{threadMeta.label.slice(0, 2)}</span>
+		                            )}
+		                          </div>
+		                          <div className="wallet-messages__thread-body">
+		                            <div className="wallet-messages__thread-title">{threadMeta.label}</div>
+		                            <div className="wallet-messages__thread-preview">
+		                              {previewBefore && <span style={{ opacity: 0.7 }}>{matchIdx > 0 ? "…" : ""}{previewBefore}</span>}
+		                              <mark className="chat-msg-result__mark">{matchText}</mark>
+		                              {previewAfter && <span style={{ opacity: 0.7 }}>{previewAfter}{previewAfter.length === 60 ? "…" : ""}</span>}
+		                            </div>
+		                          </div>
+		                          <div className="wallet-messages__thread-meta">
+		                            <span className="wallet-messages__thread-date">{formatShortDate(message.createdAt)}</span>
+		                          </div>
+		                        </button>
+		                      );
+		                    })}
+		                  </>
+		                )}
+		              </div>
+
+            </div>
+          )}
+
+          {chatView === "conversation" && activeThread && (
+            <div className="chat-conversation">
+              {/* Conversation header */}
+              <div className="chat-conversation__header">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    setChatView("threads");
+                    setActiveThreadPeer(null);
+                    setActiveGroupId(null);
+                    setDmView(dmListViewRef.current);
+                  }}
+                  aria-label="Back to threads"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                {(() => {
+                  // Group conversation header
+                  if (activeThread.groupId) {
+                    const groupMeta = activeGroupChat;
+                    const groupLabel = groupMeta?.name || "Group";
+                    const memberCount = groupMeta?.members.length || 0;
+                    return (
+                      <button
+                        type="button"
+                        className="chat-conversation__peer-center pressable"
+                        onClick={openActiveGroupInfo}
+                        aria-label={`Open group info for ${groupLabel}`}
+                      >
+                        <div className="chat-conversation__peer-avatar chat-conversation__peer-avatar--lg chat-conversation__peer-avatar--group">
+                          <GroupAvatar members={activeGroupAvatarMembers} />
+                        </div>
+                        <div className="chat-conversation__peer-name">{groupLabel}</div>
+                        {memberCount > 0 && (
+                          <div className="chat-conversation__peer-subtitle">{memberCount} members</div>
+                        )}
+                      </button>
+                    );
+                  }
+                  // DM conversation header
+                  const ownNormalized = normalizeNostrPubkey(myCardNpub);
+                  const ownHex = ownNormalized ? compressedToRawHex(ownNormalized).toLowerCase() : "";
+                  const isSelf = ownHex !== "" && activeThread.peerPubkey === ownHex;
+                  const meta = isSelf
+                    ? { label: myCardName, picture: profileCard.picture?.trim() || undefined, subtitle: undefined, verifiedNip05: null }
+                    : peerLabelFor(activeThread.peerPubkey);
+                  const openContact = () => {
+                    if (isSelf) return;
+                    const existingContact = contacts.find((contact) => {
+                      const normalized = normalizeNostrPubkey(contact.npub || "");
+                      const contactHex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                      return contactHex === activeThread.peerPubkey;
+                    });
+                    if (existingContact) {
+                      setContactReturnView("new-message");
+                      setActiveContactId(existingContact.id);
+                      setContactDetailOverride(null);
+                      setContactView("detail");
+                    } else {
+                      const peerMeta = getPeerProfile(activeThread.peerPubkey);
+                      const created = upsertContact({
+                        npub: formatNpub(activeThread.peerPubkey) || "",
+                        name: peerMeta.displayName || peerMeta.username || peerMeta.label,
+                        displayName: peerMeta.displayName || peerMeta.label,
+                        username: sanitizeUsername(peerMeta.username || ""),
+                        address: peerMeta.lud16 || "",
+                        nip05: peerMeta.nip05 || "",
+                        about: peerMeta.about || "",
+                        picture: peerMeta.picture || "",
+                      });
+                      if (created) {
+                        setContactReturnView("new-message");
+                        setActiveContactId(created.id);
+                        setContactDetailOverride(null);
+                        setContactView("detail");
+                      } else {
+                        setActiveContactId(null);
+                        setContactDetailOverride(null);
+                        setContactEditDraft({
+                          id: null,
+                          name: peerMeta.displayName || peerMeta.username || peerMeta.label,
+                          displayName: peerMeta.displayName || peerMeta.label,
+                          username: sanitizeUsername(peerMeta.username || ""),
+                          address: peerMeta.lud16 || "",
+                          npub: formatNpub(activeThread.peerPubkey) || "",
+                          nip05: peerMeta.nip05 || "",
+                          about: peerMeta.about || "",
+                          picture: peerMeta.picture || "",
+                          isProfile: false,
+                        });
+                        setContactView("edit");
+                      }
+                    }
+                    setChatView("new-message");
+                  };
+                  return (
+                    <button
+                      type="button"
+                      className={`chat-conversation__peer-center${isSelf ? "" : " pressable"}`}
+                      onClick={openContact}
+                      aria-label={isSelf ? "My notes" : `Open contact card for ${meta.label}`}
+                    >
+                      <div className="chat-conversation__peer-avatar chat-conversation__peer-avatar--lg">
+                        {meta.picture ? (
+                          <img src={meta.picture} alt={meta.label} />
+                        ) : (
+                          <span>{meta.label.slice(0, 2)}</span>
+                        )}
+                      </div>
+                      <div className="chat-conversation__peer-name">{meta.label}</div>
+                    </button>
+                  );
+                })()}
+                <div className="chat-conversation__header-spacer" />
+              </div>
+
+              {/* Stranger actions */}
+              {activeThread.isStranger && (() => {
+                const ownNormalized = normalizeNostrPubkey(myCardNpub);
+                const ownHex = ownNormalized ? compressedToRawHex(ownNormalized).toLowerCase() : "";
+                return ownHex === "" || activeThread.peerPubkey !== ownHex;
+              })() && (
+                <div className="chat-conversation__stranger-bar">
+                  <button
+                    type="button"
+                    className="ghost-button button-xs pressable"
+                    onClick={() => toggleBlockPeer(activeThread.peerPubkey)}
+                  >
+                    {dmBlockedPeersRef.current.has(activeThread.peerPubkey) ? "Unblock" : "Block"}
+                  </button>
+                  <button
+                    type="button"
+                    className="accent-button button-xs pressable"
+                    onClick={() => handleAddPeerToContacts(activeThread.peerPubkey)}
+                  >
+                    Add to contacts
+                  </button>
+                </div>
+              )}
+
+              {/* Messages */}
+              <div
+                ref={messagesScrollRef}
+                className="chat-conversation__messages"
+                style={{ ["--chat-timestamp-reveal-width" as any]: `${CHAT_TIMESTAMP_REVEAL_WIDTH}px` }}
+                onTouchStart={(e) => {
+                  dragTouchStartX.current = e.touches[0].clientX;
+                  dragTouchStartY.current = e.touches[0].clientY;
+                  dragDirectionLocked.current = null;
+                  if (messagesInnerRef.current) {
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-duration", "0ms");
+                  }
+                }}
+                onTouchMove={(e) => {
+                  const dx = dragTouchStartX.current - e.touches[0].clientX;
+                  const dy = Math.abs(e.touches[0].clientY - dragTouchStartY.current);
+                  if (!dragDirectionLocked.current) {
+                    if (Math.abs(dx) > dy + 4) dragDirectionLocked.current = "horizontal";
+                    else if (dy > Math.abs(dx) + 4) dragDirectionLocked.current = "vertical";
+                  }
+                  if (dragDirectionLocked.current !== "horizontal") return;
+                  const offset = Math.max(0, Math.min(CHAT_TIMESTAMP_REVEAL_WIDTH, dx));
+                  if (messagesInnerRef.current) {
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-offset", `${offset}px`);
+                  }
+                }}
+                onTouchEnd={() => {
+                  dragDirectionLocked.current = null;
+                  if (messagesInnerRef.current) {
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-duration", "300ms");
+                    messagesInnerRef.current.style.setProperty("--chat-timestamp-reveal-offset", "0px");
+                  }
+                }}
+              >
+                <div ref={messagesInnerRef} className="chat-messages-inner">
+                  {activeThread.messages.filter((msg) => !msg.eventId.startsWith("draft-")).map((msg, idx, arr) => {
+                    const prevMsg = idx > 0 ? arr[idx - 1] : null;
+                    const prevDay = prevMsg ? new Date(prevMsg.createdAt * 1000) : null;
+                    const msgDay = new Date(msg.createdAt * 1000);
+                    const showDateSep = !prevDay ||
+                      prevDay.getFullYear() !== msgDay.getFullYear() ||
+                      prevDay.getMonth() !== msgDay.getMonth() ||
+                      prevDay.getDate() !== msgDay.getDate();
+                    const matchedItem =
+                      messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
+                    const matchedInvite = pendingCalendarInvitesByEventId.get(msg.eventId);
+                    const isPayment = msg.attachment?.type === "payment";
+                    const isContact = msg.attachment?.type === "contact";
+                    const isBoard = msg.attachment?.type === "board";
+                    const isTask = msg.attachment?.type === "task";
+                    const isEvent = msg.attachment?.type === "event";
+                    const isStructured = !!msg.attachment && msg.attachment.type !== "text";
+                    const bubbleClass = `chat-bubble${msg.isIncoming ? " chat-bubble--in" : " chat-bubble--out"}${isStructured ? " chat-bubble--card" : ""}${isContact ? " chat-bubble--contact-shell" : ""}${isTask ? " chat-bubble--task-share-shell" : ""}`;
+                    const isIncomingGroupMessage = !!(activeThread.groupId && msg.isIncoming && msg.senderPubkey);
+                    const senderMeta =
+                      isIncomingGroupMessage && msg.senderPubkey ? peerLabelFor(msg.senderPubkey) : null;
+                    const expanded = isDmMessageExpanded(msg.eventId);
+                    const paymentState = isPayment
+                      ? (() => {
+                          const historyEntry = paymentHistoryByEventId.get(msg.eventId.toLowerCase()) || null;
+                          const paymentCreatedAtMs = historyEntry?.createdAt || msg.createdAt * 1000;
+                          const paymentDetails = selectIncomingPaymentFromPayload(
+                            tryParseJson<PaymentRequestPayload>(msg.attachment?.raw ?? null) ??
+                              tryParseJson<PaymentRequestPayload>(msg.content) ??
+                              msg.attachment?.raw ??
+                              msg.content,
+                          );
+                          const paymentAmount =
+                            historyEntry?.amountSat ??
+                            paymentDetails?.amount ??
+                            (typeof msg.attachment?.amountSat === "number" ? msg.attachment.amountSat : null);
+                          const paymentUnit =
+                            paymentDetails?.unit && typeof paymentDetails.unit === "string"
+                              ? paymentDetails.unit.toLowerCase()
+                              : "sat";
+                          const paymentMintRaw =
+                            paymentDetails?.mint && typeof paymentDetails.mint === "string"
+                              ? normalizeMintUrl(paymentDetails.mint)
+                              : null;
+                          const paymentMintLabel = historyEntry
+                            ? resolveMintDisplay(historyEntry)
+                            : paymentMintRaw;
+                          const paymentDetailValue =
+                            historyEntry?.detail ||
+                            (paymentDetails?.token as string | undefined) ||
+                            (typeof msg.attachment?.raw === "string" ? msg.attachment.raw : "") ||
+                            "";
+                          const resolvedType =
+                            historyEntry?.type ??
+                            (historyEntry?.detailKind === "invoice"
+                              ? "lightning"
+                              : paymentDetailValue
+                                ? "ecash"
+                                : undefined);
+                          const typeLabel =
+                            resolvedType === "lightning"
+                              ? "Lightning"
+                              : resolvedType === "ecash"
+                                ? "Ecash"
+                                : "Payment";
+                          const timeLabel = formatRelativeTime(paymentCreatedAtMs);
+                          const amountLabel = historyEntry
+                            ? formatHistoryAmount(historyEntry)
+                            : paymentAmount != null
+                              ? `${msg.isIncoming ? "+" : "−"}${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                              : null;
+                          const fiatValue =
+                            historyEntry?.fiatValueUsd != null
+                              ? historyEntry.fiatValueUsd
+                              : walletConversionEnabled && paymentAmount != null
+                                ? captureFiatValueUsd(Math.max(0, Math.floor(paymentAmount)))
+                                : null;
+                          const fiatLabel =
+                            walletConversionEnabled && fiatValue != null ? formatUsdAmount(fiatValue) : null;
+                          const statusInfo = historyEntry
+                            ? deriveHistoryStatus(historyEntry)
+                            : {
+                                label: msg.isIncoming ? "Received" : "Paid",
+                                tone: (msg.isIncoming ? "success" : undefined) as "success" | undefined,
+                              };
+                          const detailKind =
+                            historyEntry?.detailKind ||
+                            (paymentDetailValue && isCashuTokenDetail(paymentDetailValue, "token") ? "token" : undefined);
+                          const detailIsToken = isCashuTokenDetail(paymentDetailValue || undefined, detailKind);
+                          const detailLabel = detailIsToken
+                            ? "Cashu token"
+                            : detailKind === "invoice"
+                              ? "Lightning invoice"
+                              : undefined;
+                          const copyLabel = detailIsToken
+                            ? "Copy token"
+                            : detailKind === "invoice"
+                              ? "Copy invoice"
+                              : "Copy detail";
+                          const pendingAction =
+                            historyEntry && historyEntry.pendingTokenId && historyEntry.pendingStatus !== "redeemed"
+                              ? {
+                                  ariaLabel: "Redeem saved token",
+                                  handler: () => handleRedeemPendingHistoryItem(historyEntry),
+                                  busy: historyRedeemStates[historyEntry.id]?.status === "pending",
+                                  status: historyRedeemStates[historyEntry.id],
+                                }
+                              : historyEntry && historyEntry.mintQuote
+                                ? {
+                                    ariaLabel: "Refresh invoice",
+                                    handler: () => handleCheckHistoryMintQuote(historyEntry),
+                                    busy: historyMintQuoteStates[historyEntry.id]?.status === "pending",
+                                    status: historyMintQuoteStates[historyEntry.id],
+                                  }
+                                : historyEntry && historyEntry.tokenState && historyEntry.tokenState.lastState !== "SPENT"
+                                  ? {
+                                      ariaLabel: "Check token state",
+                                      handler: () => performTokenStateCheck(historyEntry),
+                                      busy: historyCheckStates[historyEntry.id]?.status === "pending",
+                                      status: historyCheckStates[historyEntry.id],
+                                    }
+                                  : null;
+                          return {
+                            historyEntry,
+                            paymentCreatedAtMs,
+                            typeLabel,
+                            timeLabel,
+                            amountLabel,
+                            fiatLabel,
+                            mintLabel: paymentMintLabel,
+                            statusInfo,
+                            detailValue: paymentDetailValue,
+                            detailLabel,
+                            detailIsToken,
+                            copyLabel,
+                            pendingAction,
+                            summary:
+                              historyEntry?.summary ||
+                              msg.attachment?.detail ||
+                              (paymentMintLabel ? `${statusInfo.label} ${paymentMintLabel}` : null),
+                            amountSatLabel:
+                              paymentAmount != null ? `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} sat` : "—",
+                            createdLabel: new Date(paymentCreatedAtMs).toLocaleString(),
+                            showRedeemButton: !!(historyEntry?.pendingTokenId && historyEntry.pendingStatus !== "redeemed"),
+                            canMarkTokenSpent: !!historyEntry?.tokenState && historyEntry.tokenState.lastState !== "SPENT",
+                          };
+                        })()
+                      : null;
+                    const contactAttachment = isContact ? msg.attachment : null;
+                    const contactMeta = contactAttachment
+                      ? sharedContactMetaFor(
+                          contactAttachment.npub,
+                          contactAttachment.contactName ||
+                            contactAttachment.displayName ||
+                            contactAttachment.username ||
+                            matchedItem?.contact?.displayName ||
+                            matchedItem?.contact?.name ||
+                            matchedItem?.title,
+                          contactAttachment.picture || matchedItem?.contact?.picture || null,
+                        )
+                      : null;
+                    const taskAttachment = isTask ? msg.attachment?.task || matchedItem?.task || null : null;
+                    const taskDueSeconds = taskAttachment?.dueISO
+                      ? Math.floor(new Date(taskAttachment.dueISO).getTime() / 1000)
+                      : null;
+                    const taskHasDue = !!(taskDueSeconds && Number.isFinite(taskDueSeconds) && taskDueSeconds > 0);
+                    const taskDayLabel = taskHasDue
+                      ? `${new Date((taskDueSeconds as number) * 1000).getDate()}`.padStart(2, "0")
+                      : `${new Date(msg.createdAt * 1000).getDate()}`.padStart(2, "0");
+                    const taskCardDate = taskHasDue ? formatShortDate(taskDueSeconds as number) : formatShortDate(msg.createdAt);
+                    const taskDueLabel = taskHasDue
+                      ? `Due ${formatDmDay(taskDueSeconds as number)}${
+                          taskAttachment?.dueTimeEnabled ? ` · ${formatDmTime(taskDueSeconds as number)}` : ""
+                        }`
+                      : "Shared task";
+                    const taskSubtasks = Array.isArray(taskAttachment?.subtasks)
+                      ? taskAttachment.subtasks
+                          .map((subtask) => subtask.title?.trim())
+                          .filter((title): title is string => !!title)
+                      : [];
+                    const isTaskAssignment = !!(taskAttachment?.assignment || matchedItem?.task?.assignment);
+                    const taskCopyValue = isTask
+                      ? buildDmCopyValue(msg, { taskPayload: taskAttachment || matchedItem?.task || null })
+                      : "";
+                    const eventAttachment = isEvent ? msg.attachment : null;
+                    const eventReferenceSeconds =
+                      eventAttachment?.start ? parseDateLikeToUnixSeconds(eventAttachment.start, msg.createdAt) : msg.createdAt;
+                    const eventDayLabel = `${new Date(eventReferenceSeconds * 1000).getDate()}`.padStart(2, "0");
+                    const eventCardDate = formatShortDate(eventReferenceSeconds);
+                    const eventWhenLabel =
+                      eventAttachment?.whenLabel ||
+                      (matchedInvite && formatCalendarInviteWhen ? formatCalendarInviteWhen(matchedInvite) : "") ||
+                      "Event invite";
+                    const eventTitle = eventAttachment?.title || matchedInvite?.title || "Event invite";
+                    const eventCopyValue =
+                      (
+                        eventAttachment?.view ||
+                        matchedInvite?.view ||
+                        eventAttachment?.canonical ||
+                        matchedInvite?.canonical ||
+                        [eventTitle, eventWhenLabel].filter(Boolean).join("\n")
+                      ).trim() || eventTitle;
+                    const actionStatus = matchedItem?.status || matchedInvite?.status;
+                    const showActionButtons =
+                      actionStatus !== "accepted" &&
+                      actionStatus !== "declined" &&
+                      actionStatus !== "tentative" &&
+                      actionStatus !== "deleted" &&
+                      actionStatus !== "dismissed";
+                    const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus as WalletMessageItem["status"]);
+                    const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus as WalletMessageItem["status"]);
+                    const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
+                    const hasReactions = (dmReactions.get(msg.rumorEventId || msg.eventId)?.length ?? 0) > 0;
+
+                    return (
+                      <React.Fragment key={msg.eventId}>
+                        {showDateSep && (
+                          <div className="chat-date-separator">{formatDmDateSeparator(msg.createdAt)}</div>
+                        )}
+                        <div data-msg-id={msg.eventId} className={`chat-message ${msg.isIncoming ? "chat-message--in" : "chat-message--out"}`}>
+                          <div className={`chat-message__body${senderMeta ? " chat-message__body--group-in" : ""}`}>
+                            {senderMeta && (
+                              <div className={`chat-message__sender-avatar${senderMeta.picture ? " chat-message__sender-avatar--image" : ""}`}>
+                                {senderMeta.picture ? (
+                                  <img src={senderMeta.picture} alt={senderMeta.label} className="contact-avatar__img" />
+                                ) : (
+                                  contactInitials(senderMeta.label)
+                                )}
+                              </div>
+                            )}
+                            <div className={`chat-message__content${senderMeta ? " chat-message__content--group-in" : ""}`}>
+                              {senderMeta && <div className="chat-message__sender-name">{senderMeta.label}</div>}
+                              <div className={`chat-bubble-wrap${hasReactions ? " chat-bubble-wrap--reacted" : ""}`}>
+                              <div
+                                className={bubbleClass}
+                                onContextMenu={(ev) => {
+                                  ev.preventDefault();
+                                  ev.stopPropagation();
+                                  cancelDmLongPress();
+                                  setDmMessageActions({ eventId: msg.eventId, copyValue: buildDmCopyValue(msg, {}), msg });
+                                }}
+                                onPointerDown={(ev) => {
+                                  if ((ev.target as HTMLElement | null)?.closest("button,a")) return;
+                                  cancelDmLongPress();
+                                  dmLongPressTimerRef.current = window.setTimeout(() => {
+                                    setDmMessageActions({ eventId: msg.eventId, copyValue: buildDmCopyValue(msg, {}), msg });
+                                  }, 420);
+                                }}
+                                onPointerUp={cancelDmLongPress}
+                                onPointerLeave={cancelDmLongPress}
+                                onPointerCancel={cancelDmLongPress}
+                              >
+                              {isBoard && (
+                                <div className="chat-bubble__card">
+                                  <div className="chat-bubble__card-title">{msg.attachment?.boardName || "Shared board"}</div>
+                                  <div className="chat-bubble__card-meta">Add this board to your workspace</div>
+                                  {showActionButtons && (
+                                    <div className="chat-bubble__card-actions">
+                                      <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add board</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                    </div>
+                                  )}
+                                  {!showActionButtons && actionStatus && (
+                                    <div className="chat-bubble__card-status">{actionStatus}</div>
+                                  )}
+                                </div>
+                              )}
+                              {isContact && (() => {
+                                const contactName =
+                                  contactMeta?.label ||
+                                  contactAttachment?.contactName ||
+                                  contactAttachment?.displayName ||
+                                  contactAttachment?.username ||
+                                  "Contact";
+                                const contactSubtitle = contactMeta?.subtitle || "Shared contact";
+                                return (
+                                  <div className="chat-bubble__card chat-bubble__card--contact-preview">
+                                    <button
+                                      type="button"
+                                      className="chat-bubble__contact-preview pressable"
+                                      onClick={() => openSharedContactPreview(contactAttachment, matchedItem)}
+                                    >
+                                      <div className="chat-bubble__contact-avatar">
+                                        {contactMeta?.picture ? (
+                                          <img src={contactMeta.picture} alt={contactName} className="contact-avatar__img" />
+                                        ) : (
+                                          contactInitials(contactName)
+                                        )}
+                                      </div>
+                                      <div className="chat-bubble__contact-copy">
+                                        <div className="chat-bubble__contact-name">{contactName}</div>
+                                        <div className="chat-bubble__contact-subtitle">
+                                          <span>{contactSubtitle}</span>
+                                          {contactMeta?.verifiedNip05 && (
+                                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                                          )}
+                                        </div>
+                                      </div>
+                                      <span className="chat-bubble__contact-chevron" aria-hidden="true">›</span>
+                                    </button>
+                                    {!showActionButtons && contactStatusLabel && (
+                                      <div className="chat-bubble__card-status">{contactStatusLabel}</div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {isTask && (() => {
+                                const taskMetaLabel = isTaskAssignment
+                                  ? "Task assignment"
+                                  : taskHasDue
+                                    ? taskDueLabel
+                                    : "";
+                                const taskHasBoardDetail = !!taskAttachment?.note?.trim() || taskSubtasks.length > 0;
+                                return (
+                                  <div className="chat-bubble__task-share">
+                                    <div className="task-card" data-form={taskHasBoardDetail ? "stacked" : "pill"}>
+                                      <div className="flex items-start gap-3">
+                                        <div
+                                          className="icon-button flex-shrink-0 chat-bubble__task-check"
+                                          style={{ ["--icon-size" as any]: "1.85rem" }}
+                                          aria-hidden="true"
+                                        />
+                                        <div className="flex-1 min-w-0 space-y-1">
+                                          <div className="task-card__title">{taskAttachment?.title || "Shared task"}</div>
+                                          {taskMetaLabel && <div className="task-card__meta">{taskMetaLabel}</div>}
+                                        </div>
+                                      </div>
+                                      {taskAttachment?.note && (
+                                        <div
+                                          className="task-card__details text-xs text-secondary break-words"
+                                          style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+                                        >
+                                          {taskAttachment.note}
+                                        </div>
+                                      )}
+                                      {taskSubtasks.length > 0 && (
+                                        <ul className="task-card__details mt-2 space-y-1.5 text-xs text-secondary">
+                                          {taskSubtasks.slice(0, 6).map((title) => (
+                                            <li key={title} className="subtask-row">
+                                              <input type="checkbox" checked={false} readOnly disabled className="subtask-row__checkbox" />
+                                              <span className="subtask-row__text text-secondary">{title}</span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      )}
+                                    </div>
+                                    {showActionButtons && (
+                                      <div className="chat-bubble__task-action-bar">
+                                        {isTaskAssignment ? (
+                                          <>
+                                            <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Accept</button>
+                                            <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onMaybeMessage(matchedItem.id)}>Maybe</button>
+                                            <button type="button" className="ghost-button button-xs pressable text-rose-400" onClick={() => matchedItem && onDeclineMessage(matchedItem.id)}>Decline</button>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add task</button>
+                                            <button type="button" className="ghost-button button-xs pressable" onClick={() => void copyMessageValue(taskCopyValue, "Task")}>Copy</button>
+                                            <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+                                    {!showActionButtons && taskStatusLabel && (
+                                      <div className="chat-bubble__task-status">{taskStatusLabel}</div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {isEvent && (
+                                <div className="chat-bubble__card chat-bubble__card--structured">
+                                  <div className="chat-bubble__card-shell">
+                                    <div className="wallet-message__card-icon">{eventDayLabel}</div>
+                                    <div className="wallet-message__card-body">
+                                      <div className="wallet-message__card-title">{eventTitle}</div>
+                                      <div className="wallet-message__card-subtitle">{eventWhenLabel}</div>
+                                    </div>
+                                    <div className="wallet-message__card-meta">{eventCardDate}</div>
+                                  </div>
+                                  {showActionButtons && (
+                                    <div className="wallet-message__card-actions">
+                                      <button type="button" className="accent-button button-xs pressable" onClick={() => matchedInvite && onCalendarInviteRsvp?.(matchedInvite, "accepted")}>Add event</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => void copyMessageValue(eventCopyValue, "Event")}>Copy</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedInvite && onDismissCalendarInvite?.(matchedInvite)}>Dismiss</button>
+                                    </div>
+                                  )}
+                                  {!showActionButtons && eventStatusLabel && (
+                                    <div className="chat-bubble__card-status">{eventStatusLabel}</div>
+                                  )}
+                                </div>
+                              )}
+                              {isPayment && (
+                                <div className="chat-bubble__payment-history">
+                                  <div className={`wallet-history__item${expanded ? " wallet-history__item--open" : ""}`}>
+                                    <button
+                                      type="button"
+                                      className="wallet-history__summary pressable"
+                                      onClick={() => toggleDmMessageExpanded(msg.eventId)}
+                                      aria-expanded={expanded}
+                                      aria-label="Toggle payment details"
+                                    >
+                                      <div className="wallet-history__icon" aria-hidden="true">
+                                        {paymentState?.typeLabel === "Lightning" ? (
+                                          <LightningGlyph className="wallet-history__glyph" />
+                                        ) : (
+                                          <EcashGlyph className="wallet-history__glyph" />
+                                        )}
+                                      </div>
+                                      <div className="wallet-history__body">
+                                        <div className="wallet-history__title-row">
+                                          <span className="wallet-history__type">{paymentState?.typeLabel || "Payment"}</span>
+                                        </div>
+                                        <div className="wallet-history__meta-row">
+                                          <span
+                                            className={`wallet-history__status${
+                                              paymentState?.statusInfo?.tone ? ` wallet-history__status--${paymentState.statusInfo.tone}` : ""
+                                            }`}
+                                          >
+                                            {paymentState?.statusInfo?.label || "Received"}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="wallet-history__value">
+                                        {paymentState?.amountLabel && (
+                                          <span
+                                            className={`wallet-history__amount wallet-history__amount--${
+                                              msg.isIncoming ? "in" : "out"
+                                            }`}
+                                          >
+                                            {paymentState.amountLabel}
+                                          </span>
+                                        )}
+                                        {paymentState?.fiatLabel && (
+                                          <span className="wallet-history__fiat">{paymentState.fiatLabel}</span>
+                                        )}
+                                        {paymentState?.pendingAction && (
+                                          <button
+                                            type="button"
+                                            className="wallet-history__refresh"
+                                            disabled={paymentState.pendingAction.busy}
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              paymentState.pendingAction?.handler();
+                                            }}
+                                            aria-label={paymentState.pendingAction.ariaLabel}
+                                          >
+                                            ↻
+                                          </button>
+                                        )}
+                                      </div>
+                                    </button>
+                                    {expanded && paymentState && (
+                                      <div className="wallet-history__details">
+                                        {paymentState.detailLabel && paymentState.detailValue && (
+                                          <QrCodeCard
+                                            className="wallet-history__qr"
+                                            value={paymentState.detailValue}
+                                            label={paymentState.detailLabel}
+                                            copyLabel={paymentState.copyLabel}
+                                            size={220}
+                                            enableNut16Animation={paymentState.detailIsToken}
+                                          />
+                                        )}
+                                        <div className="wallet-history__details-grid">
+                                          <div className="wallet-history__metric">
+                                            <span>Amount</span>
+                                            <span className="wallet-history__metric-value">
+                                              {paymentState.amountSatLabel}
+                                            </span>
+                                          </div>
+                                          {paymentState.fiatLabel && (
+                                            <div className="wallet-history__metric">
+                                              <span>Fiat</span>
+                                              <span className="wallet-history__metric-value">{paymentState.fiatLabel}</span>
+                                            </div>
+                                          )}
+                                          <div className="wallet-history__metric">
+                                            <span>Status</span>
+                                            <span className="wallet-history__metric-value">
+                                              {paymentState.statusInfo.label}
+                                            </span>
+                                          </div>
+                                          <div className="wallet-history__metric">
+                                            <span>{msg.isIncoming ? "Time received" : "Time sent"}</span>
+                                            <span className="wallet-history__metric-value">
+                                              {paymentState.createdLabel}
+                                            </span>
+                                          </div>
+                                          {paymentState.mintLabel && (
+                                            <div className="wallet-history__metric">
+                                              <span>Mint</span>
+                                              <span className="wallet-history__metric-value">{paymentState.mintLabel}</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                        {paymentState.summary && (
+                                          <div className="wallet-history__detail-note">
+                                            {paymentState.summary}
+                                            {paymentState.historyEntry?.relatedTaskTitle && (
+                                              <div className="wallet-history__detail-task">
+                                                Task: {paymentState.historyEntry.relatedTaskTitle}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                        {paymentState.pendingAction?.status?.message && (
+                                          <div
+                                            className={`wallet-history__helper${
+                                              paymentState.pendingAction.status.status === "error"
+                                                ? " wallet-history__helper--error"
+                                                : paymentState.pendingAction.status.status === "success"
+                                                  ? " wallet-history__helper--success"
+                                                  : ""
+                                            }`}
+                                          >
+                                            {paymentState.pendingAction.status.message}
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry?.pendingTokenId &&
+                                          paymentState.showRedeemButton && (
+                                            <div className="wallet-history__section">
+                                              <div className="wallet-history__section-content">
+                                                <button
+                                                  className="accent-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    handleRedeemPendingHistoryItem(paymentState.historyEntry!);
+                                                  }}
+                                                  disabled={historyRedeemStates[paymentState.historyEntry.id]?.status === "pending"}
+                                                >
+                                                  Redeem
+                                                </button>
+                                                {historyRedeemStates[paymentState.historyEntry.id]?.message && (
+                                                  <div
+                                                    className={`wallet-history__helper${
+                                                      historyRedeemStates[paymentState.historyEntry.id]?.status === "error"
+                                                        ? " wallet-history__helper--error"
+                                                        : historyRedeemStates[paymentState.historyEntry.id]?.status === "success"
+                                                          ? " wallet-history__helper--success"
+                                                          : ""
+                                                    }`}
+                                                  >
+                                                    {historyRedeemStates[paymentState.historyEntry.id]?.message}
+                                                  </div>
+                                                )}
+                                              </div>
+                                              {paymentState.historyEntry.pendingTokenMint && (
+                                                <div className="wallet-history__helper">
+                                                  Saved mint: {paymentState.historyEntry.pendingTokenMint}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        {paymentState.historyEntry?.tokenState && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Token state</div>
+                                            <div className="wallet-history__section-content space-y-2 text-xs text-secondary">
+                                              <div className="text-tertiary break-all">
+                                                Mint: {paymentState.historyEntry.tokenState.mintUrl}
+                                              </div>
+                                              <div className="flex flex-wrap gap-2 items-center">
+                                                <button
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    performTokenStateCheck(paymentState.historyEntry!);
+                                                  }}
+                                                  disabled={historyCheckStates[paymentState.historyEntry.id]?.status === "pending"}
+                                                >
+                                                  Check token state
+                                                </button>
+                                                {historyCheckStates[paymentState.historyEntry.id]?.status === "pending" && <span>Checking…</span>}
+                                                {historyCheckStates[paymentState.historyEntry.id]?.status === "success" &&
+                                                  historyCheckStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-accent">
+                                                      {historyCheckStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                                {historyCheckStates[paymentState.historyEntry.id]?.status === "error" &&
+                                                  historyCheckStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-rose-400">
+                                                      {historyCheckStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                              </div>
+                                              {typeof paymentState.historyEntry.tokenState.lastCheckedAt === "number" && (
+                                                <div className="text-tertiary">
+                                                  Last checked: {new Date(paymentState.historyEntry.tokenState.lastCheckedAt).toLocaleString()}
+                                                </div>
+                                              )}
+                                              {paymentState.historyEntry.tokenState.lastWitnesses &&
+                                                Object.keys(paymentState.historyEntry.tokenState.lastWitnesses).length > 0 && (
+                                                  <div className="space-y-1">
+                                                    <div className="text-tertiary">Witness data</div>
+                                                    {Object.entries(paymentState.historyEntry.tokenState.lastWitnesses).map(([y, witness]) => (
+                                                      <div key={y} className="break-all">
+                                                        <div className="text-tertiary">Y: {y}</div>
+                                                        <div>{witness}</div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry?.mintQuote && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Invoice</div>
+                                            <div className="wallet-history__section-content space-y-1 text-xs text-secondary">
+                                              {paymentState.historyEntry.mintQuote.mintUrl && (
+                                                <div className="text-tertiary break-all">
+                                                  Mint: {paymentState.historyEntry.mintQuote.mintUrl}
+                                                </div>
+                                              )}
+                                              <div className="text-tertiary">
+                                                Amount: {paymentState.historyEntry.mintQuote.amount} sats
+                                              </div>
+                                              <div className="flex flex-wrap gap-2 items-center">
+                                                <button
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    handleCheckHistoryMintQuote(paymentState.historyEntry!);
+                                                  }}
+                                                  disabled={historyMintQuoteStates[paymentState.historyEntry.id]?.status === "pending"}
+                                                >
+                                                  Check invoice
+                                                </button>
+                                                {historyMintQuoteStates[paymentState.historyEntry.id]?.status === "pending" && <span>Checking…</span>}
+                                                {historyMintQuoteStates[paymentState.historyEntry.id]?.status === "success" &&
+                                                  historyMintQuoteStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-accent">
+                                                      {historyMintQuoteStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                                {historyMintQuoteStates[paymentState.historyEntry.id]?.status === "error" &&
+                                                  historyMintQuoteStates[paymentState.historyEntry.id]?.message && (
+                                                    <span className="text-rose-400">
+                                                      {historyMintQuoteStates[paymentState.historyEntry.id]?.message}
+                                                    </span>
+                                                  )}
+                                              </div>
+                                              {paymentState.historyEntry.mintQuote.createdAt && (
+                                                <div className="text-tertiary">
+                                                  Created: {new Date(paymentState.historyEntry.mintQuote.createdAt).toLocaleString()}
+                                                </div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry?.revertToken && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Revert</div>
+                                            <div className="wallet-history__section-content flex flex-wrap gap-2 items-center text-xs text-secondary">
+                                              <button
+                                                className="accent-button button-sm pressable"
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  handleRevertHistoryToken(paymentState.historyEntry!);
+                                                }}
+                                                disabled={historyRevertState[paymentState.historyEntry.id]?.status === "pending"}
+                                              >
+                                                Revert token
+                                              </button>
+                                              {historyRevertState[paymentState.historyEntry.id]?.status === "pending" && <span>Redeeming…</span>}
+                                              {historyRevertState[paymentState.historyEntry.id]?.status === "success" &&
+                                                historyRevertState[paymentState.historyEntry.id]?.message && (
+                                                  <span className="text-accent">
+                                                    {historyRevertState[paymentState.historyEntry.id]?.message}
+                                                  </span>
+                                                )}
+                                              {historyRevertState[paymentState.historyEntry.id]?.status === "error" &&
+                                                historyRevertState[paymentState.historyEntry.id]?.message && (
+                                                  <span className="text-rose-400">
+                                                    {historyRevertState[paymentState.historyEntry.id]?.message}
+                                                  </span>
+                                                )}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {paymentState.historyEntry && (
+                                          <div className="wallet-history__section space-y-2">
+                                            <div className="wallet-history__section-title">Actions</div>
+                                            <div className="wallet-history__section-content flex flex-wrap gap-2 items-center text-xs text-secondary">
+                                              {paymentState.canMarkTokenSpent && (
+                                                <button
+                                                  type="button"
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    handleMarkHistoryTokenSpent(paymentState.historyEntry!);
+                                                  }}
+                                                >
+                                                  Mark token spent
+                                                </button>
+                                              )}
+                                              <button
+                                                type="button"
+                                                className="ghost-button button-sm pressable"
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  handleDeleteHistoryEntry(paymentState.historyEntry!);
+                                                }}
+                                              >
+                                                Delete entry
+                                              </button>
+                                              {paymentState.detailValue && !paymentState.detailLabel && (
+                                                <button
+                                                  type="button"
+                                                  className="ghost-button button-sm pressable"
+                                                  onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    void copyMessageValue(paymentState.detailValue, "Payment detail");
+                                                  }}
+                                                >
+                                                  Copy detail
+                                                </button>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                              {msg.attachment?.type === "text" && (() => {
+                                const msgUrls = extractUrlsFromText(msg.content);
+                                const repliedMsg = msg.replyToEventId ? dmMessages.find((m) => m.eventId === msg.replyToEventId) : null;
+                                return (
+                                  <div className="chat-bubble__card chat-bubble__card--text">
+                                    {repliedMsg && (
+                                      <div className="chat-reply-quote">
+                                        <div className="chat-reply-quote__bar" />
+                                        <div className="chat-reply-quote__text">
+                                          {repliedMsg.content.length > 80 ? repliedMsg.content.slice(0, 80) + "…" : repliedMsg.content}
+                                        </div>
+                                      </div>
+                                    )}
+                                    <div className="chat-bubble__text">{renderFormattedText(msg.content)}</div>
+                                    {msgUrls.length > 0 && (
+                                      <div className="chat-link-previews">
+                                        {msgUrls.map((url) => {
+                                          const domain = extractDomain(url);
+                                          const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`;
+                                          const displayUrl = url.length > 55 ? url.slice(0, 52) + "…" : url;
+                                          return (
+                                            <a
+                                              key={url}
+                                              href={url}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="chat-link-preview pressable"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              <img
+                                                src={faviconUrl}
+                                                alt=""
+                                                className="chat-link-preview__favicon"
+                                                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                              />
+                                              <div className="chat-link-preview__copy">
+                                                <div className="chat-link-preview__domain">{domain}</div>
+                                                <div className="chat-link-preview__url">{displayUrl}</div>
+                                              </div>
+                                              <span className="chat-link-preview__arrow" aria-hidden="true">↗</span>
+                                            </a>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {msg.attachment?.type === "file" && (
+                                <MessengerFileBubble
+                                  descriptor={{
+                                    url: msg.attachment.url,
+                                    mimeType: msg.attachment.mimeType,
+                                    filename: msg.attachment.filename,
+                                    size: msg.attachment.size,
+                                    width: msg.attachment.width,
+                                    height: msg.attachment.height,
+                                    algorithm: msg.attachment.algorithm,
+                                    keyHex: msg.attachment.keyHex,
+                                    nonceHex: msg.attachment.nonceHex,
+                                  }}
+                                  isIncoming={msg.isIncoming}
+                                />
+                              )}
+                            </div>
+                            {(() => {
+                              const reactionKey = msg.rumorEventId || msg.eventId;
+                              const msgReactions = dmReactions.get(reactionKey);
+                              if (!msgReactions?.length) return null;
+                              const grouped = new Map<string, DmReaction[]>();
+                              for (const r of msgReactions) {
+                                const arr = grouped.get(r.emoji) || [];
+                                arr.push(r);
+                                grouped.set(r.emoji, arr);
+                              }
+                              return (
+                                <div className={`chat-tapbacks${msg.isIncoming ? " chat-tapbacks--in" : " chat-tapbacks--out"}`}>
+                                  {Array.from(grouped.entries()).map(([emoji, reactions]) => (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      className="chat-tapback pressable"
+                                      onClick={() => setDmReactionDetail({ eventId: reactionKey })}
+                                    >
+                                      <span className="chat-tapback__emoji">{emoji}</span>
+                                      {reactions.length > 1 && <span className="chat-tapback__count">{reactions.length}</span>}
+                                    </button>
+                                  ))}
+                                </div>
+                              );
+                            })()}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="chat-message__timestamp">{formatDmTime(msg.createdAt)}</div>
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+                  {/* Pending messages */}
+                  {visiblePendingMessages.map((pm) => (
+                    <div key={pm.id} className="chat-message chat-message--out">
+                      <div className="chat-message__body">
+                        <div className="chat-message__bubble-wrap">
+                          <div className="chat-bubble chat-bubble--out chat-bubble--pending">
+                            {pm.file ? (
+                              <div className={`chat-bubble__card chat-bubble__card--file${isImageMime(pm.file.mimeType) ? " chat-bubble__card--image" : isVideoMime(pm.file.mimeType) ? " chat-bubble__card--video" : isAudioMime(pm.file.mimeType) ? " chat-bubble__card--audio" : " chat-bubble__card--doc"} chat-bubble__card--pending`}>
+                                {pm.file.previewUrl && isImageMime(pm.file.mimeType) ? (
+                                  <div className="chat-file__image-frame">
+                                    <img
+                                      src={pm.file.previewUrl}
+                                      alt={pm.file.filename}
+                                      className="chat-file__image chat-file__image--pending"
+                                    />
+                                    <div className="chat-file__progress-overlay">
+                                      <div className="chat-file__progress-label">
+                                        {pm.file.phase === "encrypting"
+                                          ? "Encrypting…"
+                                          : pm.file.phase === "uploading"
+                                            ? `Uploading ${Math.round((pm.file.progress || 0) * 100)}%`
+                                            : "Sending…"}
+                                      </div>
+                                      <div className="chat-file__progress-track">
+                                        <div
+                                          className="chat-file__progress-bar"
+                                          style={{ width: `${Math.round((pm.file.progress || 0) * 100)}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="chat-file__doc chat-file__doc--pending">
+                                    <div className="chat-file__doc-icon">
+                                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
+                                        <polyline points="13 2 13 9 20 9" />
+                                      </svg>
+                                    </div>
+                                    <div className="chat-file__doc-body">
+                                      <div className="chat-file__name" title={pm.file.filename}>{pm.file.filename}</div>
+                                      <div className="chat-file__size">
+                                        {pm.file.phase === "encrypting"
+                                          ? "Encrypting…"
+                                          : pm.file.phase === "uploading"
+                                            ? `Uploading ${Math.round((pm.file.progress || 0) * 100)}%`
+                                            : "Sending…"}
+                                      </div>
+                                      <div className="chat-file__progress-track chat-file__progress-track--doc">
+                                        <div
+                                          className="chat-file__progress-bar"
+                                          style={{ width: `${Math.round((pm.file.progress || 0) * 100)}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="chat-bubble__card chat-bubble__card--text">
+                                <div className="chat-bubble__text">{renderFormattedText(pm.content)}</div>
+                              </div>
+                            )}
+                          </div>
+                          {pm.status === "sending" && <div className="chat-sending-spinner" />}
+                          {pm.status === "sent" && <div className="chat-sending-check" key={`check-${pm.id}`}>✓</div>}
+                        </div>
+                      </div>
+                      <div className="chat-message__timestamp">{formatDmTime(pm.createdAt)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Compose bar */}
+              {activeThread.groupId && activeGroupLeft ? (
+                <div className="chat-group-rejoin">
+                  <div className="chat-group-rejoin__note">You left this group.</div>
+                  <button
+                    type="button"
+                    className="chat-group-rejoin__button pressable"
+                    onClick={handleToggleActiveGroupMembership}
+                  >
+                    Join Group
+                  </button>
+                </div>
+              ) : (
+                <div className="chat-compose-stack">
+                  {replyToMessage && (
+                    <div className="chat-reply-banner">
+                      <div className="chat-reply-banner__bar" />
+                      <div className="chat-reply-banner__body">
+                        <div className="chat-reply-banner__label">Reply</div>
+                        <div className="chat-reply-banner__text">
+                          {replyToMessage.content.length > 80 ? replyToMessage.content.slice(0, 80) + "…" : replyToMessage.content}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="chat-reply-banner__close pressable"
+                        aria-label="Cancel reply"
+                        onClick={() => setReplyToMessage(null)}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    </div>
+                  )}
+                  <input
+                    ref={chatPhotoInputRef}
+                    type="file"
+                    accept="image/*,video/*"
+                    multiple
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    style={{ position: "fixed", bottom: 0, left: 0, width: 1, height: 1, opacity: 0 }}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      e.target.value = "";
+                      if (files.length) {
+                        closeAttachTray();
+                        void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                      }
+                    }}
+                  />
+                  <input
+                    ref={chatFileInputRef}
+                    type="file"
+                    accept={CHAT_FILE_PICKER_ACCEPT}
+                    multiple
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    style={{ position: "fixed", bottom: 0, left: 0, width: 1, height: 1, opacity: 0 }}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      e.target.value = "";
+                      if (files.length) {
+                        closeAttachTray();
+                        void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                      }
+                    }}
+                  />
+                  <div className="chat-compose">
+                    <button
+                      type="button"
+                      className={`chat-compose__attach chat-compose__attach--toggle pressable${attachTrayOpen ? " is-open" : ""}`}
+                      onClick={handleToggleAttachTray}
+                      aria-label={attachTrayOpen ? "Close attachments" : "Open attachments"}
+                      aria-expanded={attachTrayOpen}
+                      title={attachTrayOpen ? "Close attachments" : "Open attachments"}
+                    >
+                      <span className="chat-compose__attach-icon" aria-hidden="true">
+                        <span className="chat-compose__attach-line chat-compose__attach-line--horizontal" />
+                        <span className="chat-compose__attach-line chat-compose__attach-line--vertical" />
+                      </span>
+                    </button>
+                    <input
+                      ref={chatComposeInputRef}
+                      className="chat-compose__input"
+                      placeholder="Message"
+	                      value={chatCompose}
+	                      onFocus={() => {
+	                        setAttachTrayOpen(false);
+	                      }}
+                      onChange={(e) => setChatCompose(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey && chatCompose.trim()) {
+                          e.preventDefault();
+                          const capturedReply = replyToMessage;
+                          void (async () => {
+                            const text = chatCompose.trim();
+                            if (!text) return;
+                            setChatCompose("");
+                            setReplyToMessage(null);
+                            const pendingId = crypto.randomUUID();
+                            const pendingCreatedAt = Math.floor(Date.now() / 1000);
+                            setPendingMessages(prev => [
+                              ...prev,
+                              {
+                                id: pendingId,
+                                content: text,
+                                peerPubkey: activeThread.peerPubkey,
+                                createdAt: pendingCreatedAt,
+                                status: "sending",
+                              },
+                            ]);
+                            try {
+                              const { identity } = readNostrIdentity();
+                              if (!identity) return;
+                              const senderHex = identity.pubkey.toLowerCase();
+                              const isGroup = !!activeThread.groupId;
+                              const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === activeThread.groupId) : null;
+                              const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
+                              const recipientHex = isGroup ? groupRecipients[0] || "" : activeThread.peerPubkey.toLowerCase();
+                              const relayTargets = isGroup ? groupRecipients : [recipientHex];
+                              const allRelays = new Set<string>();
+                              for (const target of relayTargets) {
+                                const relays = await resolveNip17Relays(target, defaultNostrRelays);
+                                relays.forEach((r) => allRelays.add(r));
+                              }
+                              const publishRelays = Array.from(allRelays);
+                              if (!publishRelays.length) return;
+                              const pool = ensureNostrPool();
+                              const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                              const extraTags: string[][] = [];
+                              if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
+                              if (capturedReply) {
+                                extraTags.push(["e", capturedReply.eventId]);
+                              }
+                              const { selfWrapEvent } = await publishNip17Giftwraps({
+                                content: text,
+                                senderHex,
+                                recipientHex,
+                                senderSecret: identity.secret,
+                                publish,
+                                ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : { extraTags: capturedReply ? extraTags : undefined }),
+                              });
+                              if (selfWrapEvent) {
+                                await handleDmEvent(selfWrapEvent);
+                              }
+                              setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
+                              setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
+                            } catch (err) {
+                              setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
+                              console.warn("[chat] send failed", err);
+                              setChatCompose(text);
+                            }
+                          })();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="chat-compose__send pressable"
+                      disabled={!chatCompose.trim()}
+                      onClick={() => {
+                        const capturedReply = replyToMessage;
+                        void (async () => {
+                          const text = chatCompose.trim();
+                          if (!text) return;
+                          setChatCompose("");
+                          setReplyToMessage(null);
+                          const pendingId = crypto.randomUUID();
+                          const pendingCreatedAt = Math.floor(Date.now() / 1000);
+                          setPendingMessages(prev => [
+                            ...prev,
+                            {
+                              id: pendingId,
+                              content: text,
+                              peerPubkey: activeThread.peerPubkey,
+                              createdAt: pendingCreatedAt,
+                              status: "sending",
+                            },
+                          ]);
+                          try {
+                            const { identity } = readNostrIdentity();
+                            if (!identity) return;
+                            const senderHex = identity.pubkey.toLowerCase();
+                            const isGroup = !!activeThread.groupId;
+                            const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === activeThread.groupId) : null;
+                            const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
+                            const recipientHex = isGroup ? groupRecipients[0] || "" : activeThread.peerPubkey.toLowerCase();
+                            const relayTargets = isGroup ? groupRecipients : [recipientHex];
+                            const allRelays = new Set<string>();
+                            for (const target of relayTargets) {
+                              const relays = await resolveNip17Relays(target, defaultNostrRelays);
+                              relays.forEach((r) => allRelays.add(r));
+                            }
+                            const publishRelays = Array.from(allRelays);
+                            if (!publishRelays.length) return;
+                            const pool = ensureNostrPool();
+                            const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                            const extraTags: string[][] = [];
+                            if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
+                            if (capturedReply) {
+                              extraTags.push(["e", capturedReply.eventId]);
+                            }
+                            const { selfWrapEvent } = await publishNip17Giftwraps({
+                              content: text,
+                              senderHex,
+                              recipientHex,
+                              senderSecret: identity.secret,
+                              publish,
+                              ...(isGroup ? { recipientHexes: groupRecipients, extraTags } : { extraTags: capturedReply ? extraTags : undefined }),
+                            });
+                            if (selfWrapEvent) {
+                              await handleDmEvent(selfWrapEvent);
+                            }
+                            setPendingMessages(prev => prev.map(m => m.id === pendingId ? { ...m, status: "sent" as const } : m));
+                            setTimeout(() => setPendingMessages(prev => prev.filter(m => m.id !== pendingId)), 2000);
+                          } catch (err) {
+                            setPendingMessages(prev => prev.filter(m => m.id !== pendingId));
+                            console.warn("[chat] send failed", err);
+                            setChatCompose(text);
+                          }
+                        })();
+                      }}
+                      aria-label="Send message"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div
+                    className={`chat-compose-tray${attachTrayOpen ? " is-open" : ""}`}
+                    style={{ ["--chat-compose-tray-height" as any]: `${chatAttachTrayHeight}px` }}
+                    aria-hidden={!attachTrayOpen}
+                  >
+                    <div className="chat-compose-tray__surface">
+                      <div className="chat-compose-tray__grid">
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatPhotoPicker}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3.5" y="5" width="17" height="14" rx="3" />
+                              <circle cx="8.5" cy="10" r="1.5" />
+                              <path d="m6.5 16 4.2-4.2a1.2 1.2 0 0 1 1.7 0L17.5 17" />
+                              <path d="m13.5 14 1.2-1.2a1.2 1.2 0 0 1 1.7 0l1.6 1.6" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">Photos</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatFilePicker}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M8 3.5h6l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 20V5A1.5 1.5 0 0 1 7.5 3.5z" />
+                              <path d="M14 3.5V8h4" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">File</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatContactPicker}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="8.25" r="3.25" />
+                              <path d="M5.5 19a6.5 6.5 0 0 1 13 0" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">Contact</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatEcash}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <ellipse cx="12" cy="8" rx="6.5" ry="2.75" />
+                              <path d="M5.5 8v4c0 1.52 2.9 2.75 6.5 2.75s6.5-1.23 6.5-2.75V8" />
+                              <path d="M5.5 12v4c0 1.52 2.9 2.75 6.5 2.75s6.5-1.23 6.5-2.75v-4" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">eCash</span>
+                        </button>
+                        <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatLightning}>
+                          <span className="chat-compose-tray__action-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M13 2 6 13h4l-1 9 9-13h-4l1-7z" />
+                            </svg>
+                          </span>
+                          <span className="chat-compose-tray__action-label">Lightning</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {chatView === "group-info" && activeThread?.groupId && activeGroupChat && (() => {
+            const groupMediaMessages = activeThread.messages.filter(
+              (m) => m.attachment?.type === "file",
+            );
+            const URL_RE = /https?:\/\/[^\s<>"']+/g;
+            const groupLinkMessages = activeThread.messages
+              .filter((m) => !m.attachment || m.attachment.type === "text")
+              .map((m) => {
+                const urls = m.content.match(URL_RE) || [];
+                return urls.length ? { message: m, urls } : null;
+              })
+              .filter(Boolean) as { message: WalletDmMessage; urls: string[] }[];
+            return (
+              <div className="chat-group-info">
+                {/* Header */}
+                <div className="chat-page__header chat-page__header--safe-area">
+                  <button
+                    className="glass-icon-button pressable"
+                    onClick={() => setChatView("conversation")}
+                    aria-label="Back to conversation"
+                  >
+                    <BackIcon className="h-5 w-5" />
+                  </button>
+                  <div className="chat-group-info__header-avatar">
+                    <GroupAvatar members={activeGroupAvatarMembers} />
+                  </div>
+                  <button
+                    type="button"
+                    className="chat-group-info__edit-btn pressable"
+                    onClick={openGroupNameEditor}
+                  >
+                    Edit
+                  </button>
+                </div>
+
+                {/* Group name */}
+                <div className="chat-group-info__name">{activeGroupChat.name || "Group"}</div>
+
+                {/* Tab bar */}
+                <div className="chat-group-info__tab-bar">
+                  {(["info", "photos", "links"] as const).map((tab) => (
+                    <button
+                      key={tab}
+                      type="button"
+                      className={`chat-group-info__tab-btn pressable${groupInfoTab === tab ? " chat-group-info__tab-btn--active" : ""}`}
+                      onClick={() => setGroupInfoTab(tab)}
+                    >
+                      {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Tab content */}
+                <div className="chat-group-info__tab-body">
+                  {groupInfoTab === "info" && (
+                    <>
+                      {/* Member grid */}
+                      <div className="chat-group-info__member-grid">
+                        {activeGroupMembers.map((member) => (
+                          <button
+                            key={member.memberHex}
+                            type="button"
+                            className="chat-group-info__member-cell pressable"
+                            onClick={() => {
+                              setContactReturnView("group-info");
+                              setContactView("detail");
+                              setDmSearch("");
+                              if (member.isSelf) {
+                                setActiveContactId("profile");
+                                setContactDetailOverride(null);
+                              } else if (member.contactId) {
+                                setActiveContactId(member.contactId);
+                                setContactDetailOverride(null);
+                              } else {
+                                setActiveContactId(null);
+                                setContactDetailOverride(member.detailContact);
+                              }
+                              setChatView("new-message");
+                            }}
+                          >
+                            <div className={`chat-group-info__member-circle${member.picture ? " chat-group-info__member-circle--image" : ""}`}>
+                              {member.picture ? (
+                                <img src={member.picture} alt={member.label} className="chat-group-info__member-avatar-img" />
+                              ) : (
+                                <span>{contactInitials(member.label)}</span>
+                              )}
+                            </div>
+                            <span className="chat-group-info__member-name">{member.label.split(" ")[0]}</span>
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="chat-group-info__member-cell pressable"
+                          onClick={() => { setGroupMembersSearch(""); setChatView("group-members"); }}
+                        >
+                          <div className="chat-group-info__member-circle chat-group-info__member-circle--add">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                          </div>
+                          <span className="chat-group-info__member-name">Add</span>
+                        </button>
+                      </div>
+                      {/* Mute + leave */}
+                      <div className="chat-group-info__card" style={{ margin: "0 1rem" }}>
+                        <div className="chat-group-info__row">
+                          <span className="chat-group-info__row-label">Mute</span>
+                          <button
+                            type="button"
+                            className={`edit-toggle pressable${activeGroupMuted ? " is-on" : ""}`}
+                            onClick={handleToggleActiveGroupMute}
+                            aria-label={activeGroupMuted ? "Unmute group" : "Mute group"}
+                            aria-pressed={activeGroupMuted}
+                          >
+                            <span className="edit-toggle__thumb" />
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className={`chat-group-info__leave-button pressable${activeGroupLeft ? " chat-group-info__leave-button--join" : ""}`}
+                          onClick={handleToggleActiveGroupMembership}
+                        >
+                          {activeGroupLeft ? "Join Group" : "Leave Group"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {groupInfoTab === "photos" && (
+                    groupMediaMessages.length === 0 ? (
+                      <div className="chat-group-info__empty">No photos shared yet.</div>
+                    ) : (
+                      <div className="chat-group-info__photo-grid">
+                        {groupMediaMessages.map((msg) => {
+                          const att = msg.attachment as Extract<WalletDmAttachment, { type: "file" }>;
+                          return (
+                            <div key={msg.eventId} className="chat-group-info__photo-cell">
+                              <MessengerFileBubble
+                                descriptor={{
+                                  url: att.url,
+                                  mimeType: att.mimeType,
+                                  filename: att.filename ?? undefined,
+                                  size: att.size ?? undefined,
+                                  width: att.width ?? undefined,
+                                  height: att.height ?? undefined,
+                                  algorithm: att.algorithm,
+                                  keyHex: att.keyHex,
+                                  nonceHex: att.nonceHex,
+                                }}
+                                isIncoming={msg.isIncoming}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )
+                  )}
+
+                  {groupInfoTab === "links" && (
+                    groupLinkMessages.length === 0 ? (
+                      <div className="chat-group-info__empty">No links shared yet.</div>
+                    ) : (
+                      <div className="chat-group-info__links-grid">
+                        {groupLinkMessages.flatMap(({ message, urls }) =>
+                          urls.map((url, i) => {
+                            const domain = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+                            const pathSegments = (() => { try { return new URL(url).pathname.split("/").filter(Boolean); } catch { return []; } })();
+                            const cardTitle = pathSegments.length > 0
+                              ? decodeURIComponent(pathSegments[pathSegments.length - 1]).replace(/[-_]/g, " ").replace(/\.[^.]+$/, "")
+                              : domain;
+                            const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+                            return (
+                              <a
+                                key={`${message.eventId}-${i}`}
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="chat-group-info__link-card pressable"
+                              >
+                                <div className="chat-group-info__link-card__preview">
+                                  <img
+                                    src={faviconUrl}
+                                    alt=""
+                                    className="chat-group-info__link-card__favicon"
+                                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = "0"; }}
+                                  />
+                                </div>
+                                <div className="chat-group-info__link-card__footer">
+                                  <div className="chat-group-info__link-card__title">{cardTitle || domain}</div>
+                                  <div className="chat-group-info__link-card__domain">{domain}</div>
+                                </div>
+                              </a>
+                            );
+                          })
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {chatView === "group-members" && activeThread?.groupId && activeGroupChat && (
+            <div className="chat-group-members">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => setChatView("group-info")}
+                  aria-label="Back to group info"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">
+                  Members ({activeGroupMembers.length})
+                </div>
+                <div className="chat-conversation__header-spacer" aria-hidden="true" />
+              </div>
+              <div className="chat-page__search">
+                <div className="chat-page__search-shell">
+                  <input
+                    className="chat-page__search-input"
+                    placeholder="Search members"
+                    value={groupMembersSearch}
+                    onChange={(event) => setGroupMembersSearch(event.target.value)}
+                  />
+                  {groupMembersSearch.length > 0 && (
+                    <button
+                      type="button"
+                      className="chat-page__search-clear pressable"
+                      aria-label="Clear search"
+                      title="Clear search"
+                      onClick={() => setGroupMembersSearch("")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="chat-group-members__list">
+                {filteredActiveGroupMembers.map((member) => (
+                  <button
+                    key={member.memberHex}
+                    type="button"
+                    className="contact-row pressable"
+                    onClick={() => openGroupMemberDetail(member.memberHex)}
+                  >
+                    <div className={`contact-avatar${member.picture ? " contact-avatar--image" : ""}`}>
+                      {member.picture ? (
+                        <img src={member.picture} alt={member.label} className="contact-avatar__img" />
+                      ) : (
+                        contactInitials(member.label)
+                      )}
+                    </div>
+                    <div className="contact-row__text">
+                      <div className="contact-row__name">{member.label}</div>
+                      {member.subtitle && (
+                        <div className="contact-row__meta">
+                          <span className="contact-row__meta-text">{truncateContactValue(member.subtitle, 32)}</span>
+                        </div>
+                      )}
+                    </div>
+                    <span className="contact-row__chevron">&rsaquo;</span>
+                  </button>
+                ))}
+                {filteredActiveGroupMembers.length === 0 && (
+                  <div className="chat-page__empty">No members match your search.</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {chatView === "group-name-edit" && activeThread?.groupId && activeGroupChat && (
+            <div className="chat-group-name-edit">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    if (renameGroupBusy) return;
+                    setChatView("group-info");
+                  }}
+                  aria-label="Back to group info"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">Edit Group Name</div>
+                <button
+                  type="button"
+                  className={`chat-page__header-action-text pressable${renameGroupBusy || !renameGroupDraft.trim() ? " chat-page__header-action-text--disabled" : ""}`}
+                  onClick={() => {
+                    if (!renameGroupBusy && renameGroupDraft.trim()) {
+                      void handleRenameGroupSubmit();
+                    }
+                  }}
+                >
+                  {renameGroupBusy ? "Saving…" : "Done"}
+                </button>
+              </div>
+              <div className="chat-group-name-edit__body">
+                <div className="chat-group-name-edit__title">Edit Group Name</div>
+                <label className="chat-new-group__label">Group Name</label>
+                <input
+                  className="chat-group-name-edit__input"
+                  value={renameGroupDraft}
+                  onChange={(event) => setRenameGroupDraft(event.target.value)}
+                  maxLength={100}
+                  autoFocus
+                  placeholder="Group Name"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && renameGroupDraft.trim() && !renameGroupBusy) {
+                      event.preventDefault();
+                      void handleRenameGroupSubmit();
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {chatView === "new-message" && (
+            <div className="chat-new-message">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    if (contactView === "edit") {
+                      if (contactEditDraft.isProfile) {
+                        handleReturnToProfileCard();
+                      } else {
+                        handleCancelContactEdit();
+                      }
+                      return;
+                    }
+                    if (contactView === "detail") {
+                      if (contactReturnView === "group-members") {
+                        handleBackToContactsList();
+                        return;
+                      }
+                      if (activeContactId === "profile") {
+                        setChatView("threads");
+                        setContactView("list");
+                        setActiveContactId(null);
+                        setContactDetailOverride(null);
+                        setContactReturnView("new-message");
+                        setDmSearch("");
+                      } else {
+                        handleBackToContactsList();
+                      }
+                      return;
+                    }
+                    setChatView("threads");
+                    setContactView("list");
+                    setActiveContactId(null);
+                    setContactDetailOverride(null);
+                    setContactReturnView("new-message");
+                    setDmSearch("");
+                  }}
+                  aria-label={contactView === "edit" ? (contactEditDraft.isProfile ? "Back to profile" : "Cancel") : contactView === "detail" ? (contactReturnView === "group-members" ? "Back to members" : activeContactId === "profile" ? "Back to chats" : "Back to contacts") : "Back to chats"}
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">
+                  {contactView === "edit"
+                    ? contactEditDraft.isProfile
+                      ? "Edit My Card"
+                      : contactEditDraft.id
+                        ? "Edit Contact"
+                        : "New Contact"
+                    : contactView === "detail"
+                      ? activeContactId === "profile"
+                        ? "My Profile"
+                        : "Contact"
+                      : "New Message"}
+                </div>
+                {contactView === "list" ? (
+                  <button
+                    type="button"
+                    className="glass-icon-button glass-icon-button--accent pressable"
+                    onClick={handleStartAddContact}
+                    title="Add contact"
+                    aria-label="Add contact"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                  </button>
+                ) : contactView === "detail" ? (
+                  activeContactId === "profile" ? (
+                    <button
+                      className="glass-icon-button glass-icon-button--accent pressable"
+                      onClick={handleStartEditCurrentContact}
+                      aria-label="Edit profile"
+                      title="Edit profile"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                    </button>
+                  ) : detailCanAddContact ? (
+                    <button
+                      type="button"
+                      className="contact-pill contact-pill--accent contact-pill--compact pressable"
+                      onClick={handleStartEditCurrentContact}
+                    >
+                      Add contact
+                    </button>
+                  ) : detailIsNostrContact ? (
+                    detailContactCanFollow ? (
+                      <button
+                        type="button"
+                        className="contact-pill contact-pill--accent contact-pill--compact pressable"
+                        onClick={handleToggleFollowDetailContact}
+                      >
+                        {detailContactFollowed ? "Unfollow" : "Follow"}
+                      </button>
+                    ) : (
+                      <div className="contacts-header-spacer" aria-hidden="true" />
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      className="glass-icon-button glass-icon-button--accent pressable"
+                      onClick={handleStartEditCurrentContact}
+                      aria-label="Edit contact"
+                      title="Edit contact"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                    </button>
+                  )
+                ) : (
+                  <button
+                    type="button"
+                    className="glass-icon-button glass-icon-button--accent pressable"
+                    aria-label={contactEditDraft.isProfile ? "Save profile" : "Save contact"}
+                    onClick={() => {
+                      void handleContactEditSubmit();
+                    }}
+                    disabled={contactsPublishState === "publishing" || profileStatus === "publishing" || profilePhotoBusy}
+                  >
+                    <CheckIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              {contactView === "list" && (
+                <>
+                  <div className="chat-page__search">
+                    <div className="chat-page__search-shell">
+                      <input
+                        className="chat-page__search-input"
+                        placeholder="Search contacts"
+                        value={dmSearch}
+                        onChange={(event) => setDmSearch(event.target.value)}
+                      />
+                      {dmSearch.length > 0 && (
+                        <button
+                          type="button"
+                          className="chat-page__search-clear pressable"
+                          aria-label="Clear search"
+                          title="Clear search"
+                          onClick={() => setDmSearch("")}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 6 6 18" />
+                            <path d="m6 6 12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="chat-new-message__list">
+                    <div className="chat-new-message__actions">
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
+                        onClick={() => {
+                          setScannerMessage("");
+                          setShowScanner(true);
+                        }}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="16" y="3" width="5" height="5" rx="1" /><rect x="3" y="16" width="5" height="5" rx="1" /><path d="M10 4h2" /><path d="M10 8h4" /><path d="M4 10v2" /><path d="M8 10v4" /><path d="M10 10h2" /><path d="M14 10v2" /><path d="M16 10h2" /><path d="M20 10v4" /><path d="M10 14h4" /><path d="M16 14h2" /><path d="M10 18v2" /><path d="M14 16v5" /><path d="M18 18h3" /></svg>
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">Scan QR</span>
+                          <span className="chat-new-message__action-subtitle">Add a contact or start a chat from a code</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
+                        onClick={() => {
+                          setGroupSelectMembers(new Set());
+                          setGroupNameDraft("");
+                          setChatView("new-group-select");
+                        }}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="7" r="4" /><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="16" y1="11" x2="22" y2="11" /></svg>
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">New Group</span>
+                          <span className="chat-new-message__action-subtitle">Create a private group chat</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-new-message__action pressable"
+                        onClick={handleStartAddContact}
+                      >
+                        <span className="chat-new-message__action-icon" aria-hidden="true">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                        </span>
+                        <span className="chat-new-message__action-copy">
+                          <span className="chat-new-message__action-title">Add contact</span>
+                          <span className="chat-new-message__action-subtitle">Create a contact card manually</span>
+                        </span>
+                      </button>
+                    </div>
+                    <div className="chat-new-message__section-label">Contacts</div>
+                    <button
+                      type="button"
+                      className="contact-row contact-row--profile pressable"
+                      onClick={() => {
+                        const normalized = normalizeNostrPubkey(myCardNpub);
+                        const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                        if (hex) {
+                          openConversationForPeer(hex);
+                        } else {
+                          setContactReturnView("new-message");
+                          setActiveContactId("profile");
+                          setContactDetailOverride(null);
+                          setContactView("detail");
+                        }
+                      }}
+                    >
+                      <div className={`contact-avatar${profileCard.picture?.trim() ? " contact-avatar--image" : ""}`}>
+                        {profileCard.picture?.trim() ? (
+                          <img src={profileCard.picture.trim()} alt={myCardName} className="contact-avatar__img" />
+                        ) : (
+                          contactInitials(myCardName)
+                        )}
+                      </div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{myCardName}</div>
+                        {myCardSubtitle && (
+                          <div className="contact-row__meta">
+                            <span className="contact-row__meta-text">{myCardSubtitle}</span>
+                          </div>
+                        )}
+                      </div>
+                      <span className="contact-row__chevron">&rsaquo;</span>
+                    </button>
+                    {sortedContacts
+                      .filter((c) => {
+                        if (!dmSearch.trim()) return true;
+                        const hay = `${c.name} ${c.displayName || ""} ${c.username || ""} ${c.npub} ${c.nip05 || ""}`.toLowerCase();
+                        return hay.includes(dmSearch.trim().toLowerCase());
+                      })
+                      .map((contact) => {
+                        const contactLabel = contactDisplayLabel(contact);
+                        const photo = contact.picture?.trim();
+                        const subtitle = contact.nip05 || contact.npub || contact.address || "";
+                        return (
+                          <button
+                            key={contact.id}
+                            className="contact-row pressable"
+                            onClick={() => {
+                              const normalized = normalizeNostrPubkey(contact.npub || "");
+                              const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                              if (hex && openConversationForPeer(hex)) {
+                                return;
+                              }
+                              setContactReturnView("new-message");
+                              setActiveContactId(contact.id);
+                              setContactDetailOverride(null);
+                              setContactView("detail");
+                            }}
+                          >
+                            <div className={`contact-avatar${photo ? " contact-avatar--image" : ""}`}>
+                              {photo ? (
+                                <img src={photo} alt={contactLabel} className="contact-avatar__img" />
+                              ) : (
+                                contactInitials(contactLabel)
+                              )}
+                            </div>
+                            <div className="contact-row__text">
+                              <div className="contact-row__name">{contactLabel}</div>
+                              {subtitle && (
+                                <div className="contact-row__meta">
+                                  <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
+                                </div>
+                              )}
+                            </div>
+                            <span className="contact-row__chevron">&rsaquo;</span>
+                          </button>
+                        );
+                      })}
+                    {sortedContacts.length === 0 && (
+                      <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
+                        No contacts yet. Add one or scan a QR to start chatting.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              {contactView !== "list" && (
+                <div className="chat-new-message__list chat-new-message__list--detail">
+                  <div ref={contactsPanelRef} className="contacts-shell" aria-busy={contactSyncState.status === "loading" || contactsPublishState === "publishing"}>
+                    {contactView === "detail" && detailTarget && (
+                      <div className="contact-detail-view">
+                        <div className="contact-hero">
+                          <div className="contact-hero__center">
+                            <div className="contact-qr-wrapper">
+                              {detailShareValue ? (
+                                <QrCodeCard
+                                  className="contact-qr-card"
+                                  value={detailShareValue}
+                                  label={detailTitle}
+                                  size={200}
+                                  flat
+                                  hideLabel
+                                  hideCopyButton
+                                />
+                              ) : (
+                                <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
+                              )}
+                            </div>
+                            <div className={`contact-heading${detailTarget.picture ? "" : " contact-heading--text-only"}`}>
+                              {detailTarget.picture && (
+                                <img src={detailTarget.picture} alt={detailTitle} className="contact-portrait" />
+                              )}
+                              <div className="contact-heading__text">
+                                <div className="flex items-center gap-2">
+                                  <div className="contact-name-lg" title={detailTitle}>
+                                    {truncateContactName(detailTitle, 34)}
+                                  </div>
+                                  {activeContactId === "profile" && profileCard.npub && (
+                                    <button
+                                      type="button"
+                                      className="contact-pill contact-pill--circle pressable"
+                                      title="Share your npub"
+                                      onClick={() => {
+                                        setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
+                                        setShareContactStatus(null);
+                                        setShareContactPickerMode("recipient");
+                                        setShareContactPickerOpen(true);
+                                      }}
+                                    >
+                                      <ShareArrowIcon className="contact-pill__icon" />
+                                    </button>
+                                  )}
+                                </div>
+                                {detailUsername && (
+                                  <div className="contact-username" title={detailUsername}>
+                                    {truncateContactValue(detailUsername, 33)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {activeContact && (detailHasLightning || detailCanShare) && (
+                          <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
+                            {detailHasLightning && (
+                              <button
+                                type="button"
+                                className="contact-pill pressable"
+                                onClick={() => {
+                                  applyLightningContact(activeContact);
+                                  setContactsTabOpen(false);
+                                }}
+                              >
+                                Pay lightning
+                              </button>
+                            )}
+                            {detailCanShare && (
+                              <button
+                                type="button"
+                                className="contact-pill pressable"
+                                onClick={() => {
+                                  openEcashSendToContact(activeContact);
+                                  setContactsTabOpen(false);
+                                }}
+                              >
+                                Pay eCash
+                              </button>
+                            )}
+                            {detailCanShare && (
+                              <button
+                                type="button"
+                                className="contact-pill contact-pill--circle pressable"
+                                title="Share contact"
+                                onClick={() => {
+                                  setShareContactSource(activeContact);
+                                  setShareContactStatus(null);
+                                  setShareContactPickerMode("recipient");
+                                  setShareContactPickerOpen(true);
+                                }}
+                              >
+                                <ShareArrowIcon className="contact-pill__icon" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="contact-fields">
+                          {detailFields.length ? (
+                            detailFields.map((field) => {
+                              const isNip05Field = field.key === "nip05";
+                              return (
+                                <div key={field.key} className="contact-field">
+                                  <div className="contact-field__label">{field.label}</div>
+                                  <button
+                                    type="button"
+                                    className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
+                                      isNip05Field ? " contact-field__value--nip05" : ""
+                                    }`}
+                                    onClick={() => handleCopyContactField(field.value, field.label)}
+                                    title={field.value}
+                                  >
+                                    <span className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}>
+                                      {field.multiline ? field.value : truncateContactValue(field.value, 36)}
+                                    </span>
+                                    {isNip05Field && detailNip05Verified && (
+                                      <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                                    )}
+                                  </button>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
+                          )}
+                        </div>
+
+                        {activeContact && (
+                          <div className="contact-actions-row">
+                            <button
+                              type="button"
+                              className="contact-pill contact-pill--danger pressable"
+                              onClick={() => {
+                                if (window.confirm("Remove this contact?")) {
+                                  handleDeleteContact(activeContact.id);
+                                  setContactView("list");
+                                  setActiveContactId(null);
+                                }
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {contactView === "detail" && !detailTarget && (
+                      <div className="contact-empty text-secondary">
+                        Contact not found.{" "}
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-primary underline"
+                          onClick={handleBackToContactsList}
+                        >
+                          Go back
+                        </button>
+                      </div>
+                    )}
+
+                    {contactView === "edit" &&
+            (() => {
+              const profilePhoto = contactEditDraft.picture.trim();
+              const profileInitials =
+                contactEditDraft.displayName ||
+                contactEditDraft.name ||
+                contactEditDraft.username ||
+                myCardName;
+              const showContactFields = contactEditDraft.isProfile || showCustomContactFields;
+
+              return (
+                <form
+                  id="contact-edit-form"
+                  className="contact-edit-view"
+                  onSubmit={(event) => event.preventDefault()}
+                >
+                  {contactEditDraft.isProfile ? (
+                    <div className="contact-photo-card">
+                      <div className="contact-photo-title">Profile photo</div>
+                      <div className="contact-photo-body">
+                        <div
+                          className={
+                            profilePhoto
+                              ? "contact-avatar contact-avatar--image contact-avatar--xl"
+                              : "contact-avatar contact-avatar--xl"
+                          }
+                        >
+                          {profilePhoto ? (
+                            <img src={profilePhoto} alt={profileInitials} className="contact-avatar__img" />
+                          ) : (
+                            contactInitials(profileInitials)
+                          )}
+                        </div>
+                        <div className="contact-photo-actions">
+                          <button
+                            type="button"
+                            className="accent-button pressable contact-photo-upload"
+                            onClick={() => {
+                              setProfilePhotoError("");
+                              profilePhotoInputRef.current?.click();
+                            }}
+                            disabled={profilePhotoBusy}
+                          >
+                            {profilePhotoBusy ? "Processing…" : profilePhoto ? "Replace photo" : "Upload photo"}
+                          </button>
+                          {profilePhoto && (
+                            <button
+                              type="button"
+                              className="ghost-button button-sm pressable contact-photo-remove"
+                              onClick={handleClearProfilePhoto}
+                              disabled={profilePhotoBusy}
+                            >
+                              Remove photo
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          ref={profilePhotoInputRef}
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          onChange={handleProfilePhotoChange}
+                        />
+                        {profilePhotoError && <div className="contact-error">{profilePhotoError}</div>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="contact-import-card">
+                      <div className="contact-import-title">Import from npub / NIP-05</div>
+                      <div className="contact-import-actions contact-import-actions--top">
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-import-scan"
+                          onClick={() => {
+                            setShowScanner(true);
+                          }}
+                        >
+                          Scan QR
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-custom-toggle"
+                          onClick={() => setShowCustomContactFields((prev) => !prev)}
+                        >
+                          {showCustomContactFields ? "Hide custom fields" : "Custom contact"}
+                        </button>
+                        {publicFollowOptions.length > 0 && (
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable contact-import-follow"
+                            onClick={() => setPublicFollowPickerOpen(true)}
+                          >
+                            Pick from follows
+                          </button>
+                        )}
+                      </div>
+                      <div className="contact-import-row">
+                        <input
+                          className="contact-edit-input contact-import-input"
+                          placeholder="npub1… or name@example.com"
+                          value={contactLookupInput}
+                          onChange={(e) => setContactLookupInput(e.target.value)}
+                          autoComplete="off"
+                        />
+                        <button
+                          type="button"
+                          className="accent-button pressable contact-import-button"
+                          onClick={async () => {
+                            await handleContactImportAction();
+                          }}
+                          disabled={contactLookupBusy}
+                        >
+                          {contactLookupBusy ? "…" : contactLookupInput.trim() ? "Import" : "Paste"}
+                        </button>
+                      </div>
+                      {contactLookupError && <div className="contact-error">{contactLookupError}</div>}
+                    </div>
+                  )}
+
+                  {showContactFields && (
+                    <div className="contact-edit-grid">
+                      {!contactEditDraft.isProfile && (
+                        <input
+                          className="contact-edit-input"
+                          placeholder="Nickname"
+                          value={contactEditDraft.name}
+                          onChange={(e) => setContactEditDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        />
+                      )}
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Display name"
+                        value={contactEditDraft.displayName}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, displayName: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Username"
+                        value={contactEditDraft.username}
+                        onChange={(e) => {
+                          const sanitized = sanitizeUsername(e.target.value);
+                          setContactEditDraft((prev) => ({ ...prev, username: sanitized }));
+                        }}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Lightning address"
+                        autoComplete="off"
+                        value={contactEditDraft.address}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, address: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="npub or hex pubkey"
+                        autoComplete="off"
+                        value={contactEditDraft.npub}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, npub: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="NIP-05 (name@example.com)"
+                        autoComplete="off"
+                        value={contactEditDraft.nip05}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, nip05: e.target.value }))}
+                      />
+                      <textarea
+                        className="contact-edit-input contact-edit-textarea"
+                        rows={3}
+                        placeholder="About"
+                        value={contactEditDraft.about}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, about: e.target.value }))}
+                      />
+                    </div>
+                  )}
+
+                  <div className="contact-edit-note text-secondary">
+                    Saving publishes your updates to Nostr (contacts stay encrypted).
+                  </div>
+
+                  {contactEditError && <div className="contact-error">{contactEditError}</div>}
+                </form>
+              );
+            })()}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── New Group: Member Selection ──────────────────────────────── */}
+          {chatView === "new-group-select" && (
+            <div className="chat-new-message">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => {
+                    setChatView("new-message");
+                    setGroupSelectMembers(new Set());
+                  }}
+                  aria-label="Back"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">
+                  New Group ({groupSelectMembers.size}/{MAX_GROUP_MEMBERS})
+                </div>
+                <button
+                  type="button"
+                  className={`chat-page__header-action-text pressable${groupSelectMembers.size < 2 ? " chat-page__header-action-text--disabled" : ""}`}
+                  disabled={groupSelectMembers.size < 2}
+                  onClick={() => {
+                    if (groupSelectMembers.size >= 2) {
+                      setChatView("new-group-name");
+                    }
+                  }}
+                >
+                  Next
+                </button>
+              </div>
+              <div className="chat-page__search">
+                <div className="chat-page__search-shell">
+                  <input
+                    className="chat-page__search-input"
+                    placeholder="Who would you like to add?"
+                    value={dmSearch}
+                    onChange={(event) => setDmSearch(event.target.value)}
+                  />
+                  {dmSearch.length > 0 && (
+                    <button
+                      type="button"
+                      className="chat-page__search-clear pressable"
+                      aria-label="Clear search"
+                      onClick={() => setDmSearch("")}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="chat-new-message__list">
+                {(() => {
+                  const ownHex = (nostrIdentityRef.current?.pubkey || "").toLowerCase();
+                  // Group contacts by first letter
+                  const filteredContacts = sortedContacts.filter((c) => {
+                    const hex = (() => {
+                      const normalized = normalizeNostrPubkey(c.npub || "");
+                      return normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                    })();
+                    // Skip self
+                    if (hex === ownHex) return false;
+                    // Must have a valid nostr pubkey
+                    if (!hex) return false;
+                    if (!dmSearch.trim()) return true;
+                    const hay = `${c.name} ${c.displayName || ""} ${c.username || ""} ${c.npub} ${c.nip05 || ""}`.toLowerCase();
+                    return hay.includes(dmSearch.trim().toLowerCase());
+                  });
+                  // Group by first letter
+                  const groups = new Map<string, typeof filteredContacts>();
+                  filteredContacts.forEach((c) => {
+                    const label = contactDisplayLabel(c);
+                    const letter = (label[0] || "#").toUpperCase();
+                    const group = groups.get(letter) || [];
+                    group.push(c);
+                    groups.set(letter, group);
+                  });
+                  const sortedLetters = [...groups.keys()].sort();
+                  return sortedLetters.map((letter) => (
+                    <React.Fragment key={letter}>
+                      <div className="chat-new-message__section-label">{letter}</div>
+                      {groups.get(letter)!.map((contact) => {
+                        const contactLabel = contactDisplayLabel(contact);
+                        const photo = contact.picture?.trim();
+                        const normalized = normalizeNostrPubkey(contact.npub || "");
+                        const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : "";
+                        const subtitle = contact.nip05 || (hex ? `${nip19.npubEncode(hex).slice(0, 12)}...${nip19.npubEncode(hex).slice(-6)}` : "");
+                        const isSelected = hex ? groupSelectMembers.has(hex) : false;
+                        return (
+                          <button
+                            key={contact.id}
+                            className={`contact-row contact-row--selectable pressable${isSelected ? " contact-row--selected" : ""}`}
+                            onClick={() => {
+                              if (!hex) return;
+                              setGroupSelectMembers((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(hex)) {
+                                  next.delete(hex);
+                                } else if (next.size < MAX_GROUP_MEMBERS - 1) {
+                                  // -1 because self is always included
+                                  next.add(hex);
+                                }
+                                return next;
+                              });
+                            }}
+                          >
+                            <div className={`contact-avatar${photo ? " contact-avatar--image" : ""}`}>
+                              {photo ? (
+                                <img src={photo} alt={contactLabel} className="contact-avatar__img" />
+                              ) : (
+                                contactInitials(contactLabel)
+                              )}
+                            </div>
+                            <div className="contact-row__text">
+                              <div className="contact-row__name">{contactLabel}</div>
+                              {subtitle && (
+                                <div className="contact-row__meta">
+                                  <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className={`contact-row__checkbox${isSelected ? " contact-row__checkbox--checked" : ""}`}>
+                              {isSelected && (
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </React.Fragment>
+                  ));
+                })()}
+                {sortedContacts.length === 0 && (
+                  <div className="wallet-messages__empty text-secondary text-sm text-center" style={{ padding: "2rem 1rem" }}>
+                    No contacts yet. Add contacts first to create a group.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── New Group: Name & Create ─────────────────────────────────── */}
+          {chatView === "new-group-name" && (
+            <div className="chat-new-message">
+              <div className="chat-page__header chat-page__header--safe-area">
+                <button
+                  className="glass-icon-button pressable"
+                  onClick={() => setChatView("new-group-select")}
+                  aria-label="Back"
+                >
+                  <BackIcon className="h-5 w-5" />
+                </button>
+                <div className="chat-page__header-title chat-page__header-title--centered">
+                  New Group ({groupSelectMembers.size + 1})
+                </div>
+                <button
+                  type="button"
+                  className={`chat-page__header-action-text pressable${!groupNameDraft.trim() ? " chat-page__header-action-text--disabled" : ""}`}
+                  disabled={!groupNameDraft.trim()}
+                  onClick={() => {
+                    const name = groupNameDraft.trim();
+                    if (!name) return;
+                    const ownHex = (nostrIdentityRef.current?.pubkey || "").toLowerCase();
+                    const allMembers = [...new Set([ownHex, ...groupSelectMembers])].filter(Boolean).sort();
+                    const groupId = generateGroupId(allMembers);
+                    const createdAt = Math.floor(Date.now() / 1000);
+                    const group: GroupChat = {
+                      groupId,
+                      name,
+                      members: allMembers,
+                      createdAt,
+                      nameUpdatedAt: createdAt,
+                    };
+                    upsertGroupChat(group);
+                    // Open the group conversation
+                    openConversationForGroup(groupId);
+                    setGroupSelectMembers(new Set());
+                    setGroupNameDraft("");
+                    setDmSearch("");
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+              <div className="chat-new-group__form">
+                <div className="chat-new-group__name-section">
+                  <label className="chat-new-group__label">Group Name</label>
+                  <input
+                    className="chat-new-group__name-input"
+                    placeholder="Please Enter a Group Name"
+                    value={groupNameDraft}
+                    onChange={(e) => setGroupNameDraft(e.target.value)}
+                    maxLength={100}
+                    autoFocus
+                  />
+                </div>
+                <div className="chat-new-group__members-section">
+                  <label className="chat-new-group__label">Members</label>
+                  {(() => {
+                    const ownHex = (nostrIdentityRef.current?.pubkey || "").toLowerCase();
+                    const memberHexes = [ownHex, ...Array.from(groupSelectMembers)].filter(Boolean);
+                    return memberHexes.map((hex) => {
+                      const isOwn = hex === ownHex;
+                      const meta = isOwn
+                        ? { label: myCardName, picture: profileCard.picture?.trim() || undefined }
+                        : peerLabelFor(hex);
+                      const npubShort = (() => {
+                        try {
+                          const full = nip19.npubEncode(hex);
+                          return `${full.slice(0, 12)}...${full.slice(-6)}`;
+                        } catch { return ""; }
+                      })();
+                      return (
+                        <div key={hex} className="contact-row">
+                          <div className={`contact-avatar${meta.picture ? " contact-avatar--image" : ""}`}>
+                            {meta.picture ? (
+                              <img src={meta.picture} alt={meta.label} className="contact-avatar__img" />
+                            ) : (
+                              contactInitials(meta.label)
+                            )}
+                          </div>
+                          <div className="contact-row__text">
+                            <div className="contact-row__name">{meta.label}</div>
+                            {npubShort && (
+                              <div className="contact-row__meta">
+                                <span className="contact-row__meta-text">{npubShort}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
       <ActionSheet
         open={receiveMode === "ecash"}
         onClose={closeReceiveEcashSheet}
@@ -15429,6 +20886,31 @@ export default function CashuWalletModal({
 	      <ActionSheet
 	        open={sendMode === "ecash"}
 	        onClose={closeEcashSendSheet}
+	        header={
+	          ecashSendView === "contact" && ecashSendRecipient ? (
+	            <>
+	              <div className="text-sm font-semibold">
+	                {(() => {
+	                  const nip05 = ecashSendRecipient.nip05?.trim() || "";
+	                  const nip05Verified = nip05 && isNip05VerifiedFor(ecashSendRecipient.id, nip05, ecashSendRecipient.npub);
+	                  const label = nip05Verified ? nip05 : contactPrimaryName(ecashSendRecipient);
+	                  return `Send to ${truncateContactName(label, 34)}`;
+	                })()}
+	              </div>
+	              <div className="flex items-center gap-2 ml-auto">
+	                <button
+	                  className="ghost-button button-sm pressable"
+	                  onClick={() => openContactsFor("ecash")}
+	                >
+	                  Contacts
+	                </button>
+	                <button className="ghost-button button-sm pressable" onClick={closeEcashSendSheet}>
+	                  Close
+	                </button>
+	              </div>
+	            </>
+	          ) : undefined
+	        }
 	        title={
 	          ecashSendView === "contact" && ecashSendRecipient
 	            ? (() => {
@@ -15476,6 +20958,7 @@ export default function CashuWalletModal({
 	            </div>
 	          )
 	        }
+	        panelClassName={ecashSendView === "contact" ? "sheet-panel--compact" : undefined}
 	      >
         {ecashSendView === "amount" && (
           <div className="space-y-4">
@@ -15590,7 +21073,7 @@ export default function CashuWalletModal({
 	        )}
 	        {ecashSendView === "contact" && ecashSendRecipient && (
 	          <div className="space-y-4">
-	            <div className="wallet-section space-y-5">
+	            <div className="wallet-section wallet-section--compact space-y-3">
 	              <div className="space-y-2 text-left">
 	                <div className="text-[11px] uppercase tracking-wide text-secondary">Send from</div>
 	                {mintSelectionOptions.length ? (
@@ -15640,7 +21123,7 @@ export default function CashuWalletModal({
 	                </div>
 	              </button>
 	              {sendLockError && <div className="text-[11px] text-rose-500">{sendLockError}</div>}
-	              <div className="grid grid-cols-3 gap-3">
+	              <div className="grid grid-cols-3 gap-2">
 	                {(primaryCurrency === "usd"
 	                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
 	                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
@@ -15915,6 +21398,7 @@ export default function CashuWalletModal({
                         onClick={() => {
                           setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
                           setShareContactStatus(null);
+                          setShareContactPickerMode("recipient");
                           setShareContactPickerOpen(true);
                         }}
                       >
@@ -15967,6 +21451,7 @@ export default function CashuWalletModal({
                         onClick={() => {
                           setShareContactSource(activeContact);
                           setShareContactStatus(null);
+                          setShareContactPickerMode("recipient");
                           setShareContactPickerOpen(true);
                         }}
                       >
@@ -16704,7 +22189,7 @@ export default function CashuWalletModal({
                     {lightningSendSecondaryAmountText}
                   </div>
                 </button>
-                <div className="wallet-keypad-grid grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-2">
                   {(primaryCurrency === "usd"
                     ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
                     : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
@@ -16993,6 +22478,7 @@ export default function CashuWalletModal({
                       onClick={() => {
                         setShareContactSource(scannedContact);
                         setShareContactStatus(null);
+                        setShareContactPickerMode("recipient");
                         setShareContactPickerOpen(true);
                       }}
                     >
@@ -17037,53 +22523,229 @@ export default function CashuWalletModal({
           )}
         </ActionSheet>
 
+        <ActionSheet
+          open={!!sharedContactPreview}
+          onClose={() => setSharedContactPreview(null)}
+          header={sharedContactPreviewHeader}
+          stackLevel={76}
+        >
+          {sharedContactPreviewContact && (
+            <div className="contact-detail-view">
+              <div className="contact-hero">
+                <div className="contact-hero__center">
+                  <div className="contact-qr-wrapper">
+                    {sharedContactPreviewShareValue ? (
+                      <QrCodeCard
+                        className="contact-qr-card"
+                        value={sharedContactPreviewShareValue}
+                        label={sharedContactPreviewTitle}
+                        size={200}
+                        flat
+                        hideLabel
+                        hideCopyButton
+                      />
+                    ) : (
+                      <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
+                    )}
+                  </div>
+                  <div
+                    className={`contact-heading${sharedContactPreviewContact.picture ? "" : " contact-heading--text-only"}`}
+                  >
+                    {sharedContactPreviewContact.picture && (
+                      <img
+                        src={sharedContactPreviewContact.picture}
+                        alt={sharedContactPreviewTitle}
+                        className="contact-portrait"
+                      />
+                    )}
+                    <div className="contact-heading__text">
+                      <div className="contact-name-lg" title={sharedContactPreviewTitle}>
+                        {truncateContactName(sharedContactPreviewTitle, 34)}
+                      </div>
+                      {sharedContactPreviewUsername && (
+                        <div className="contact-username" title={sharedContactPreviewUsername}>
+                          {truncateContactValue(sharedContactPreviewUsername, 33)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {(contactHasLightning(sharedContactPreviewContact) || sharedContactPreviewCanShare) && (
+                <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
+                  {contactHasLightning(sharedContactPreviewContact) && (
+                    <button
+                      type="button"
+                      className="contact-pill pressable"
+                      onClick={() => {
+                        applyLightningContact(sharedContactPreviewContact);
+                        setSharedContactPreview(null);
+                      }}
+                    >
+                      Pay lightning
+                    </button>
+                  )}
+                  {sharedContactPreviewCanShare && (
+                    <button
+                      type="button"
+                      className="contact-pill pressable"
+                      onClick={() => {
+                        openEcashSendToContact(sharedContactPreviewContact);
+                        setSharedContactPreview(null);
+                      }}
+                    >
+                      Pay eCash
+                    </button>
+                  )}
+                  {sharedContactPreviewCanShare && (
+                    <button
+                      type="button"
+                      className="contact-pill contact-pill--circle pressable"
+                      title="Share contact"
+                      onClick={() => {
+                        setShareContactSource(sharedContactPreviewContact);
+                        setShareContactStatus(null);
+                        setShareContactPickerMode("recipient");
+                        setShareContactPickerOpen(true);
+                      }}
+                    >
+                      <ShareArrowIcon className="contact-pill__icon" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="contact-fields">
+                {sharedContactPreviewFields.length ? (
+                  sharedContactPreviewFields.map((field) => {
+                    const isNip05Field = field.key === "nip05";
+                    return (
+                      <div key={field.key} className="contact-field">
+                        <div className="contact-field__label">{field.label}</div>
+                        <button
+                          type="button"
+                          className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
+                            isNip05Field ? " contact-field__value--nip05" : ""
+                          }`}
+                          onClick={() => handleCopyContactField(field.value, field.label)}
+                          title={field.value}
+                        >
+                          <span
+                            className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}
+                          >
+                            {field.multiline ? field.value : truncateContactValue(field.value, 36)}
+                          </span>
+                          {isNip05Field && sharedContactPreviewNip05Verified && (
+                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </ActionSheet>
+
       <ActionSheet
         open={shareContactPickerOpen}
         onClose={() => {
           if (shareContactBusy) return;
           setShareContactPickerOpen(false);
+          setShareContactPickerMode("recipient");
           setShareContactSource(null);
           setShareContactStatus(null);
         }}
         title="Send contact"
         stackLevel={90}
       >
-        {shareContactSource ? (
-          <div className="text-sm text-secondary mb-2">
-            Send <span className="font-semibold">{contactPrimaryName(shareContactSource)}</span> to a contact.
-          </div>
-        ) : (
-          <div className="text-sm text-secondary mb-2">Choose who to send this contact to.</div>
-        )}
-        {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
-        {shareRecipientOptions.length ? (
-          <div className="space-y-2">
-            {shareRecipientOptions.map((contact) => {
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              return (
-                <button
-                  key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
-                  disabled={shareContactBusy}
-                  onClick={() => handleShareContactToContact(contact)}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name">{label}</div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
+        {shareContactPickerMode === "chat-source" ? (
+          <>
+            <div className="text-sm text-secondary mb-2">Choose a contact card to send into this conversation.</div>
+            {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
+            {chatAttachContactOptions.length ? (
+              <div className="space-y-2">
+                {chatAttachContactOptions.map((contact) => {
+                  const label = contactPrimaryName(contact);
+                  const subtitle = formatContactNpub(contact.npub) || formatContactUsername(contact.username);
+                  const picture = contact.picture?.trim();
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      className="contact-row pressable"
+                      disabled={shareContactBusy}
+                      onClick={() => {
+                        void handleSendChatContactAttachment(contact);
+                      }}
+                    >
+                      <div className={`contact-avatar${picture ? " contact-avatar--image" : ""}`}>
+                        {picture ? (
+                          <img src={picture} alt={label} className="contact-avatar__img" />
+                        ) : (
+                          contactInitials(label)
+                        )}
                       </div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{label}</div>
+                        {subtitle ? (
+                          <div className="contact-row__meta">
+                            <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-sm text-secondary">Add a contact with a valid npub first.</div>
+            )}
+          </>
         ) : (
-          <div className="text-sm text-secondary">Add another contact with an npub to share to.</div>
+          <>
+            {shareContactSource ? (
+              <div className="text-sm text-secondary mb-2">
+                Send <span className="font-semibold">{contactPrimaryName(shareContactSource)}</span> to a contact.
+              </div>
+            ) : (
+              <div className="text-sm text-secondary mb-2">Choose who to send this contact to.</div>
+            )}
+            {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
+            {shareRecipientOptions.length ? (
+              <div className="space-y-2">
+                {shareRecipientOptions.map((contact) => {
+                  const label = contactPrimaryName(contact);
+                  const subtitle = formatContactNpub(contact.npub);
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      className="contact-row pressable"
+                      disabled={shareContactBusy}
+                      onClick={() => handleShareContactToContact(contact)}
+                    >
+                      <div className="contact-avatar">{contactInitials(label)}</div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{label}</div>
+                        {subtitle ? (
+                          <div className="contact-row__meta">
+                            <span className="contact-row__meta-text">{subtitle}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-sm text-secondary">Add another contact with an npub to share to.</div>
+            )}
+          </>
         )}
         <div className="flex gap-2 mt-3">
           <button
@@ -17092,6 +22754,7 @@ export default function CashuWalletModal({
             onClick={() => {
               if (shareContactBusy) return;
               setShareContactPickerOpen(false);
+              setShareContactPickerMode("recipient");
               setShareContactSource(null);
               setShareContactStatus(null);
             }}
@@ -17778,6 +23441,208 @@ export default function CashuWalletModal({
           </div>
         </div>
       </ActionSheet>
+
+      {/* ── Message action overlay (long-press menu) ── */}
+      {dmMessageActions && (
+        <div
+          className="dm-action-overlay"
+          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmMessageActions(null); }}
+        >
+          <div className="dm-action-panel">
+            <div className="dm-action-panel__reactions">
+              {["❤️", "👍", "👎", "😂", "😮", "😢"].map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  className="dm-action-panel__reaction pressable"
+                  onClick={() => { void handleSendReaction(dmMessageActions.msg, emoji); setDmMessageActions(null); }}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+            <div className="dm-action-panel__list">
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { setReplyToMessage(dmMessageActions.msg); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+                Reply
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { setDmForwardMessage(dmMessageActions.msg); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 014-4h12"/></svg>
+                Forward
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { void copyMessageValue(dmMessageActions.copyValue, "Message"); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                Copy
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item pressable"
+                onClick={() => { setDmInfoMessage(dmMessageActions.msg); setDmMessageActions(null); }}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                Info
+              </button>
+              <button
+                type="button"
+                className="dm-action-panel__item dm-action-panel__item--danger pressable"
+                onClick={() => handleDeleteDmMessage(dmMessageActions.eventId)}
+              >
+                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reaction detail sheet ── */}
+      {dmReactionDetail && (() => {
+        const reactions = dmReactions.get(dmReactionDetail.eventId) || [];
+        const grouped = new Map<string, DmReaction[]>();
+        for (const r of reactions) {
+          const arr = grouped.get(r.emoji) || [];
+          arr.push(r);
+          grouped.set(r.emoji, arr);
+        }
+        return (
+          <div
+            className="dm-action-overlay"
+            onPointerDown={(e) => { if (e.target === e.currentTarget) setDmReactionDetail(null); }}
+          >
+            <div className="dm-info-panel">
+              <div className="dm-info-panel__header">
+                <span className="dm-info-panel__title">Reactions</span>
+                <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmReactionDetail(null)}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              {Array.from(grouped.entries()).map(([emoji, reactors]) => (
+                <div key={emoji} className="dm-reaction-detail__group">
+                  <div className="dm-reaction-detail__emoji">{emoji}</div>
+                  <div className="dm-reaction-detail__reactors">
+                    {reactors.map((r) => {
+                      const rp = dmPeerProfilesRef.current.get(r.senderPubkey);
+                      const label = rp?.displayName || rp?.name || r.senderPubkey.slice(0, 12) + "…";
+                      return (
+                        <div key={r.senderPubkey} className="dm-reaction-detail__reactor">
+                          <div className="dm-reaction-detail__reactor-avatar">
+                            {rp?.picture
+                              ? <img src={rp.picture} alt={label} className="contact-avatar__img" />
+                              : contactInitials(label)}
+                          </div>
+                          <span className="dm-reaction-detail__reactor-name">{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Info modal ── */}
+      {dmInfoMessage && (
+        <div
+          className="dm-action-overlay"
+          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmInfoMessage(null); }}
+        >
+          <div className="dm-info-panel">
+            <div className="dm-info-panel__header">
+              <span className="dm-info-panel__title">Message Info</span>
+              <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmInfoMessage(null)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div className="dm-info-panel__row">
+              <span className="dm-info-panel__label">Time</span>
+              <span className="dm-info-panel__value">{new Date(dmInfoMessage.createdAt * 1000).toLocaleString()}</span>
+            </div>
+            <div className="dm-info-panel__row">
+              <span className="dm-info-panel__label">Direction</span>
+              <span className="dm-info-panel__value">{dmInfoMessage.isIncoming ? "Received" : "Sent"}</span>
+            </div>
+            <div className="dm-info-panel__row">
+              <span className="dm-info-panel__label">Event ID</span>
+              <button
+                type="button"
+                className="dm-info-panel__value dm-info-panel__value--mono dm-info-panel__value--tap pressable"
+                onClick={() => void navigator.clipboard.writeText(dmInfoMessage.eventId)}
+                title="Tap to copy"
+              >
+                {dmInfoMessage.eventId.slice(0, 20)}…
+              </button>
+            </div>
+            {dmInfoMessage.senderPubkey && (
+              <div className="dm-info-panel__row">
+                <span className="dm-info-panel__label">Sender</span>
+                <button
+                  type="button"
+                  className="dm-info-panel__value dm-info-panel__value--mono dm-info-panel__value--tap pressable"
+                  onClick={() => void navigator.clipboard.writeText(dmInfoMessage.senderPubkey!)}
+                  title="Tap to copy"
+                >
+                  {dmInfoMessage.senderPubkey.slice(0, 20)}…
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Forward modal ── */}
+      {dmForwardMessage && (
+        <div
+          className="dm-action-overlay"
+          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmForwardMessage(null); }}
+        >
+          <div className="dm-forward-panel">
+            <div className="dm-forward-panel__header">
+              <span className="dm-forward-panel__title">Forward to</span>
+              <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmForwardMessage(null)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div className="dm-forward-panel__preview">
+              {dmForwardMessage.content.length > 60 ? dmForwardMessage.content.slice(0, 60) + "…" : dmForwardMessage.content}
+            </div>
+            <div className="dm-forward-panel__list">
+              {dmThreads.filter((t) => t.peerPubkey !== dmForwardMessage.peerPubkey).map((thread) => {
+                const profile = dmPeerProfilesRef.current.get(thread.peerPubkey);
+                const label = profile?.displayName || profile?.name || thread.peerPubkey.slice(0, 12) + "…";
+                return (
+                  <button
+                    key={thread.peerPubkey}
+                    type="button"
+                    className="dm-forward-panel__thread pressable"
+                    onClick={() => { void handleForwardMessage(dmForwardMessage, thread.peerPubkey); setDmForwardMessage(null); }}
+                  >
+                    <div className="dm-forward-panel__thread-avatar">
+                      {profile?.picture
+                        ? <img src={profile.picture} alt={label} className="contact-avatar__img" />
+                        : contactInitials(label)}
+                    </div>
+                    <span className="dm-forward-panel__thread-name">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
