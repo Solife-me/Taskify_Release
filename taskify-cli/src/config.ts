@@ -26,6 +26,7 @@ export type BoardEntry = {
   sortMode?: "manual" | "due" | "priority" | "created" | "alpha";
   sortDirection?: "asc" | "desc";
   eventKeys?: Record<string, string>;
+  syncedAt?: number;
 };
 
 export type Contact = {
