@@ -1115,6 +1115,8 @@ type DecryptedNostrDm = {
   createdAt?: number | null;
   kind?: number | null;
   tags?: string[][] | null;
+  /** The inner rumor's event ID (NIP-17 canonical message ID for cross-client compat) */
+  rumorId?: string | null;
 };
 
 type DmReaction = {
@@ -1126,6 +1128,8 @@ type DmReaction = {
 type WalletDmMessage = {
   id: string;
   eventId: string;
+  /** The inner NIP-17 rumor event ID — canonical cross-client identifier for reactions/replies */
+  rumorEventId?: string;
   peerPubkey: string; // for DMs: peer hex; for groups: groupId
   isIncoming: boolean;
   createdAt: number;
@@ -3585,6 +3589,12 @@ export default function CashuWalletModal({
             typeof rumor.created_at === "number" && Number.isFinite(rumor.created_at) && rumor.created_at > 0
               ? Math.floor(rumor.created_at)
               : null;
+          // The inner rumor's id is the canonical cross-client message identifier (NIP-17).
+          // It is the same for all recipients of the same message, unlike the outer giftwrap id.
+          const rumorId =
+            typeof (rumor as any).id === "string" && /^[0-9a-f]{64}$/i.test((rumor as any).id)
+              ? ((rumor as any).id as string)
+              : null;
           return {
             content: rumor.content,
             senderPubkey,
@@ -3593,6 +3603,7 @@ export default function CashuWalletModal({
             createdAt: rumorCreatedAt,
             kind: typeof rumor.kind === "number" ? rumor.kind : null,
             tags: Array.isArray(rumor.tags) ? (rumor.tags as string[][]) : null,
+            rumorId,
           };
         }
       } catch (err) {
@@ -5776,7 +5787,7 @@ export default function CashuWalletModal({
       const cachedProfiles = loadContactProfileCache();
       const cached = cachedProfiles[peerHex];
       const cachedProfile = cached?.profile ? cachedContactProfileToDmProfile(cached) : null;
-      const contactEntry = contacts.find((c) => {
+      const contactEntry = contactsRef.current.find((c) => {
         const cn = normalizeNostrPubkey(c.npub || "");
         if (!cn) return false;
         return compressedToRawHex(cn).toLowerCase() === peerHex;
@@ -5879,7 +5890,6 @@ export default function CashuWalletModal({
     },
     [
       compressedToRawHex,
-      contacts,
       defaultNostrRelays,
       normalizeNostrPubkey,
       parseProfileContent,
@@ -6179,6 +6189,9 @@ export default function CashuWalletModal({
       const message: WalletDmMessage = {
         id: crypto.randomUUID(),
         eventId: event.id,
+        // rumorEventId is the inner rumor's canonical ID — used for cross-client reactions/replies.
+        // The outer giftwrap id (event.id) differs per recipient; the rumor id is the same for all.
+        ...(decrypted.rumorId ? { rumorEventId: decrypted.rumorId } : {}),
         peerPubkey: isGroupMessage && groupId ? groupId : (peerPubkey || event.pubkey).toLowerCase(),
         isIncoming,
         createdAt,
@@ -7519,6 +7532,25 @@ export default function CashuWalletModal({
         const { identity } = readNostrIdentity();
         if (!identity) return;
         const senderHex = identity.pubkey.toLowerCase();
+
+        // Optimistic update: immediately show the reaction on the sender's side.
+        // Key by rumorEventId (the canonical NIP-17 inner event ID) so it matches
+        // the key used when the self-wrap is later processed by handleDmEvent.
+        const reactionKey = msg.rumorEventId || msg.eventId;
+        const tempEventId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        setDmReactions((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(reactionKey) || [];
+          const filtered = existing.filter((r) => r.senderPubkey !== senderHex);
+          if (emoji !== "-") filtered.push({ emoji, senderPubkey: senderHex, reactEventId: tempEventId });
+          next.set(reactionKey, filtered);
+          return next;
+        });
+
+        // Close the action panel immediately
+        setDmMessageActions(null);
+
+        // Now publish the reaction (for the recipient to see)
         const isGroup = !!msg.groupId;
         const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === msg.groupId) : null;
         const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
@@ -7541,14 +7573,16 @@ export default function CashuWalletModal({
           senderSecret: identity.secret,
           publish,
           kind: 7,
-          extraTags: [["e", msg.eventId], ["p", authorPubkey]],
+          // Use rumorEventId (inner NIP-17 rumor ID) so other clients (0xchat, etc.) can match
+          // the reaction to the correct message. The outer giftwrap id is ephemeral and differs
+          // per recipient, so it cannot be used as the canonical message reference.
+          extraTags: [["e", msg.rumorEventId || msg.eventId], ["p", authorPubkey]],
           ...(isGroup ? { recipientHexes: groupRecipients } : {}),
         });
         if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
       } catch (err) {
         console.warn("[chat] reaction send failed", err);
       }
-      setDmMessageActions(null);
     },
     [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
   );
@@ -16654,7 +16688,6 @@ export default function CashuWalletModal({
                         <div className="wallet-messages__thread-body">
                           <div className="wallet-messages__thread-title">
                             {meta.label}
-                            {unreadCount > 0 ? ` (${unreadCount})` : ""}
                           </div>
                           <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
                         </div>
@@ -16889,7 +16922,7 @@ export default function CashuWalletModal({
                             ? "Token"
                             : "Message";
                     const isActionOpen = dmMessageActions?.eventId === msg.eventId;
-                    const hasReactions = (dmReactions.get(msg.eventId)?.length ?? 0) > 0;
+                    const hasReactions = (dmReactions.get(msg.rumorEventId || msg.eventId)?.length ?? 0) > 0;
                     const stackClass = `wallet-message__stack${msg.isIncoming ? "" : " wallet-message__stack--out"}`;
                     return (
                       <div
@@ -17338,7 +17371,8 @@ export default function CashuWalletModal({
                             )}
                           </div>
                           {(() => {
-                            const msgReactions = dmReactions.get(msg.eventId);
+                            const reactionKey = msg.rumorEventId || msg.eventId;
+                            const msgReactions = dmReactions.get(reactionKey);
                             if (!msgReactions?.length) return null;
                             const grouped = new Map<string, DmReaction[]>();
                             for (const r of msgReactions) {
@@ -17353,7 +17387,7 @@ export default function CashuWalletModal({
                                     key={emoji}
                                     type="button"
                                     className="chat-tapback pressable"
-                                    onClick={() => setDmReactionDetail({ eventId: msg.eventId })}
+                                    onClick={() => setDmReactionDetail({ eventId: reactionKey })}
                                   >
                                     <span className="chat-tapback__emoji">{emoji}</span>
                                     {reactions.length > 1 && <span className="chat-tapback__count">{reactions.length}</span>}
@@ -17580,7 +17614,6 @@ export default function CashuWalletModal({
 		                      <div className="wallet-messages__thread-body">
 		                        <div className="wallet-messages__thread-title">
 		                          {meta.label}
-		                          {unreadCount > 0 ? ` (${unreadCount})` : ""}
 		                        </div>
 		                        <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
 		                      </div>
@@ -18047,7 +18080,7 @@ export default function CashuWalletModal({
                     const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus as WalletMessageItem["status"]);
                     const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus as WalletMessageItem["status"]);
                     const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
-                    const hasReactions = (dmReactions.get(msg.eventId)?.length ?? 0) > 0;
+                    const hasReactions = (dmReactions.get(msg.rumorEventId || msg.eventId)?.length ?? 0) > 0;
 
                     return (
                       <React.Fragment key={msg.eventId}>
@@ -18627,7 +18660,8 @@ export default function CashuWalletModal({
                               )}
                             </div>
                             {(() => {
-                              const msgReactions = dmReactions.get(msg.eventId);
+                              const reactionKey = msg.rumorEventId || msg.eventId;
+                              const msgReactions = dmReactions.get(reactionKey);
                               if (!msgReactions?.length) return null;
                               const grouped = new Map<string, DmReaction[]>();
                               for (const r of msgReactions) {
@@ -18642,7 +18676,7 @@ export default function CashuWalletModal({
                                       key={emoji}
                                       type="button"
                                       className="chat-tapback pressable"
-                                      onClick={() => setDmReactionDetail({ eventId: msg.eventId })}
+                                      onClick={() => setDmReactionDetail({ eventId: reactionKey })}
                                     >
                                       <span className="chat-tapback__emoji">{emoji}</span>
                                       {reactions.length > 1 && <span className="chat-tapback__count">{reactions.length}</span>}
