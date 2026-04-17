@@ -2176,6 +2176,8 @@ type MessengerFileDescriptor = {
   nonceHex: string;
 };
 
+const CHAT_FILE_PICKER_ACCEPT = "application/*,text/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.json,.csv,.zip,.7z,.tar,.gz,.rtf";
+
 function MessengerFileBubble({
   descriptor,
   isIncoming,
@@ -7050,14 +7052,11 @@ export default function CashuWalletModal({
     });
   }, []);
   const handleOpenChatPhotoPicker = useCallback(() => {
-    closeAttachTray();
-    // Wait for the 320ms tray close animation before triggering the picker.
-    window.setTimeout(() => chatPhotoInputRef.current?.click(), 350);
-  }, [closeAttachTray]);
+    chatPhotoInputRef.current?.click();
+  }, []);
   const handleOpenChatFilePicker = useCallback(() => {
-    closeAttachTray();
-    window.setTimeout(() => chatFileInputRef.current?.click(), 350);
-  }, [closeAttachTray]);
+    chatFileInputRef.current?.click();
+  }, []);
   const handleOpenChatContactPicker = useCallback(() => {
     closeAttachTray();
     shareContactOpenedAtPeerRef.current = activeThreadPeer;
@@ -18811,12 +18810,16 @@ export default function CashuWalletModal({
                     onChange={(e) => {
                       const files = Array.from(e.target.files || []);
                       e.target.value = "";
-                      if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                      if (files.length) {
+                        closeAttachTray();
+                        void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                      }
                     }}
                   />
                   <input
                     ref={chatFileInputRef}
                     type="file"
+                    accept={CHAT_FILE_PICKER_ACCEPT}
                     multiple
                     tabIndex={-1}
                     aria-hidden="true"
@@ -18824,7 +18827,10 @@ export default function CashuWalletModal({
                     onChange={(e) => {
                       const files = Array.from(e.target.files || []);
                       e.target.value = "";
-                      if (files.length) void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                      if (files.length) {
+                        closeAttachTray();
+                        void sendMessengerFileAttachments(files, activeThread.peerPubkey);
+                      }
                     }}
                   />
                   <div className="chat-compose">
