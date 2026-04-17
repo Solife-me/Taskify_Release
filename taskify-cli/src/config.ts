@@ -48,6 +48,7 @@ export type ProfileConfig = {
   nsec?: string;
   relays: string[];
   defaultBoard: string;
+  defaultColumn?: string;
   trustedNpubs: string[];
   securityMode: "moderate" | "strict" | "off";
   securityEnabled: boolean;
@@ -105,6 +106,7 @@ function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
     processedInboxRumorIds: partial.processedInboxRumorIds ?? [],
     trustedNpubs: partial.trustedNpubs ?? [],
     boards: partial.boards ?? [],
+    defaultColumn: partial.defaultColumn,
     contacts: partial.contacts ?? [],
     fileStorageServer: partial.fileStorageServer ?? DEFAULT_PUBLIC_FILE_STORAGE_SERVER,
     encryptedFileStorageServer: partial.encryptedFileStorageServer ?? DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
@@ -186,6 +188,7 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     contacts: cfg.contacts,
     fileStorageServer: cfg.fileStorageServer,
     encryptedFileStorageServer: cfg.encryptedFileStorageServer,
+    defaultColumn: cfg.defaultColumn,
     agent: cfg.agent,
   };
   const stored: StoredConfig = {

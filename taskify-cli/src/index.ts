@@ -394,6 +394,37 @@ boardCmd
   });
 
 boardCmd
+  .command("column-default <board> <columnIdOrName>")
+  .description("Set the default column for new tasks on a board")
+  .action(async (boardArg: string, colArg: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const entry = resolveBoardReference(config.boards, boardArg);
+    if (!entry) {
+      console.error(chalk.red(`Board not found: "${boardArg}"`));
+      process.exit(1);
+    }
+    // Resolve column name to ID if needed
+    let colId = colArg;
+    if (entry.columns) {
+      const matched = entry.columns.find(c => c.id === colArg || c.name.toLowerCase() === colArg.toLowerCase());
+      if (matched) colId = matched.id;
+      else {
+        console.error(chalk.red(`Column "${colArg}" not found in board "${entry.name}"`));
+        process.exit(1);
+      }
+    }
+    const profileCfg = config.profiles?.[config.activeProfile];
+    if (!profileCfg) {
+      console.error(chalk.red("No active profile found."));
+      process.exit(1);
+    }
+    (profileCfg as any).defaultColumn = colId;
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Default column for "${entry.name}": ${colId}`));
+    process.exit(0);
+  });
+
+boardCmd
   .command("columns [board]")
   .description("Show cached columns/lists for a board (or all boards)")
   .option("--json", "Output as JSON")
