@@ -262,8 +262,15 @@ boardCmd
     // (happens when a board was joined without a --name or metadata wasn't fetched).
     // This ensures agents always see human-readable names without a manual board sync step.
     const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+    const STALE_SYNC_MS = 24 * 60 * 60 * 1000; // 24h TTL for non-stale boards
     const stale = config.boards.filter(
-      (b) => UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8),
+      (b) => {
+        // UUID-named boards are always stale
+        if (UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8)) return true;
+        // Non-UUID boards: re-sync if last sync was >24h ago (or never synced)
+        if (!b.syncedAt) return true;
+        return Date.now() - b.syncedAt > STALE_SYNC_MS;
+      },
     );
 
     if (stale.length > 0) {
@@ -276,6 +283,7 @@ boardCmd
             if (meta.name) b.name = meta.name;
             if (meta.kind) b.kind = meta.kind;
             if (meta.columns) b.columns = meta.columns;
+            b.syncedAt = Date.now();
           } catch { /* non-fatal — show whatever name we have */ }
         }
         await runtime.disconnect();
@@ -307,7 +315,7 @@ boardCmd
       process.exit(0);
     }
     const name = opts.name ?? boardId.slice(0, 8);
-    const entry: { id: string; name: string; relays?: string[] } = { id: boardId, name };
+    const entry: { id: string; name: string; relays?: string[]; syncedAt?: number } = { id: boardId, name, syncedAt: Date.now() };
     if (opts.relay) {
       entry.relays = [opts.relay];
     }
@@ -382,6 +390,37 @@ boardCmd
     }
     await saveConfig(config);
     console.log(chalk.green(`✓ Left board ${boardId}`));
+    process.exit(0);
+  });
+
+boardCmd
+  .command("column-default <board> <columnIdOrName>")
+  .description("Set the default column for new tasks on a board")
+  .action(async (boardArg: string, colArg: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const entry = resolveBoardReference(config.boards, boardArg);
+    if (!entry) {
+      console.error(chalk.red(`Board not found: "${boardArg}"`));
+      process.exit(1);
+    }
+    // Resolve column name to ID if needed
+    let colId = colArg;
+    if (entry.columns) {
+      const matched = entry.columns.find(c => c.id === colArg || c.name.toLowerCase() === colArg.toLowerCase());
+      if (matched) colId = matched.id;
+      else {
+        console.error(chalk.red(`Column "${colArg}" not found in board "${entry.name}"`));
+        process.exit(1);
+      }
+    }
+    const profileCfg = config.profiles?.[config.activeProfile];
+    if (!profileCfg) {
+      console.error(chalk.red("No active profile found."));
+      process.exit(1);
+    }
+    (profileCfg as any).defaultColumn = colId;
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Default column for "${entry.name}": ${colId}`));
     process.exit(0);
   });
 

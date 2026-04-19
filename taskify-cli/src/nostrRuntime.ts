@@ -1260,7 +1260,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (input.columnId !== undefined) {
         colId = input.columnId;
       } else if (entry.kind === "lists" && Array.isArray(entry.columns) && entry.columns.length > 0) {
-        colId = entry.columns[0].id;
+        // Prefer the profile's defaultColumn, or fall back to first column
+        const profileCfg = config.profiles?.[config.activeProfile] ?? {};
+        const defaultCol = (profileCfg as any).defaultColumn as string | undefined;
+        colId = defaultCol
+          ? (entry.columns.find(c => c.id === defaultCol || c.name.toLowerCase() === defaultCol.toLowerCase())?.id ?? entry.columns[0].id)
+          : entry.columns[0].id;
       } else if (entry.kind === "week") {
         colId = "day";
       }
