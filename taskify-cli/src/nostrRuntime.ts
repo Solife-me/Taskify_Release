@@ -434,6 +434,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
   let connected = false;
 
   async function ensureConnected(): Promise<void> {
+    // If NDK's pool already knows relays are disconnected, reset our flag and let NDK
+    // handle the reconnect.  Without this, stale pools from system sleep/wake or
+    // transient network blips can leave the gateway in a "connected but actually offline"
+    // state, causing queries to time out and fall back to stale cache.
+    let stats: { disconnected: number } | null = null;
+    try { stats = ndk.pool.stats(); } catch { /* pool may not be ready yet */ }
+    if (stats && stats.disconnected > 0) {
+      connected = false;
+    }
     if (!connected) {
       await Promise.race([
         ndk.connect(),
@@ -449,6 +458,19 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       connected = true;
     }
   }
+
+  // Listen for relay disconnections and reset our wrapper's connected flag so that the
+  // next ensureConnected() call triggers a fresh connection handshake.  NDK's own pool
+  // has reconnection logic but the wrapper's `connected` flag masks it once set.
+  ndk.pool.on("relay:disconnect", () => {
+    const stats = ndk.pool.stats();
+    if (stats.disconnected > 0) {
+      connected = false;
+      process.stderr.write(
+        "⚠ Relay connection dropped — will reconnect on next query\n",
+      );
+    }
+  });
 
   async function fetchBoardEvents(boardId: string, taskId?: string, since?: number): Promise<Set<NDKEvent>> {
     const bTag = boardTagHash(boardId);
