@@ -395,7 +395,7 @@ boardCmd
 
 boardCmd
   .command("column-default <board> <columnIdOrName>")
-  .description("Set the default column for new tasks on a board")
+  .description("Set the default column for new tasks on the active profile")
   .action(async (boardArg: string, colArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const entry = resolveBoardReference(config.boards, boardArg);
@@ -413,59 +413,109 @@ boardCmd
         process.exit(1);
       }
     }
+    // Store on the active profile (local only)
+    const profileCfg = config.profiles?.[config.activeProfile];
+    if (profileCfg) {
+      profileCfg.defaultColumn = colId;
+    }
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Default column for profile "${config.activeProfile}" → "${entry.name}": ${colId}`));
+    process.exit(0);
+  });
+
+boardCmd
+  .command("default <boardIdOrName>")
+  .description("Set a board as the default for new tasks")
+  .option("--clear", "Clear the default board")
+  .action(async (boardArg: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (opts.clear) {
+      // Clear defaultBoard reference on all boards (set to empty list or remove defaultBoard setting)
+      const profileCfg = config.profiles?.[config.activeProfile];
+      if (profileCfg) delete (profileCfg as any).defaultBoard;
+      await saveConfig(config);
+      console.log(chalk.green("✓ Default board cleared — you'll be prompted to select one when needed"));
+      process.exit(0);
+    }
+    const entry = resolveBoardReference(config.boards, boardArg);
+    if (!entry) {
+      console.error(chalk.red(`Board not found: "${boardArg}"`));
+      process.exit(1);
+    }
+    // Store as profile-level defaultBoard so add/list commands auto-resolve to this board
+    const profileCfg = config.profiles?.[config.activeProfile];
+    if (profileCfg) {
+      (profileCfg as any).defaultBoard = entry.id;
+    }
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Default board set to "${entry.name}" (${entry.id})`));
+    process.exit(0);
+  });
+
+boardCmd
+  .command("defaults")
+  .description("Show all defaults for the active profile (boards, columns)")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const profileCfg = config.profiles?.[config.activeProfile];
     if (!profileCfg) {
       console.error(chalk.red("No active profile found."));
       process.exit(1);
     }
-    (profileCfg as any).defaultColumn = colId;
-    await saveConfig(config);
-    console.log(chalk.green(`✓ Default column for "${entry.name}": ${colId}`));
-    process.exit(0);
-  });
 
-boardCmd
-  .command("columns [board]")
-  .description("Show cached columns/lists for a board (or all boards)")
-  .option("--json", "Output as JSON")
-  .action(async (boardArg: string | undefined, opts) => {
-    const config = await loadConfig(program.opts().profile as string | undefined);
-    if (config.boards.length === 0) {
-      console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-      process.exit(0);
-    }
+    // Resolve default board name
+    const defaultBoardId = profileCfg.defaultBoard;
+    const defaultBoard = defaultBoardId ? config.boards.find(b => b.id === defaultBoardId) : undefined;
 
-    const boards = boardArg
-      ? (() => {
-          const entry = resolveBoardReference(config.boards, boardArg);
-          if (!entry) {
-            console.error(chalk.red(`Board not found: "${boardArg}"`));
-            process.exit(1);
-          }
-          return [entry];
-        })()
-      : config.boards;
-
-    if (opts.json) {
-      renderJson(boards.map((b) => ({
-        id: b.id,
-        name: b.name,
-        kind: b.kind ?? "unknown",
-        columns: b.columns ?? [],
-      })));
-      process.exit(0);
-    }
-
-    for (const b of boards) {
-      const kindStr = b.kind ? ` (${b.kind})` : "";
-      console.log(chalk.bold(`${b.name}${kindStr}:`));
-      if (!b.columns || b.columns.length === 0) {
-        console.log(chalk.dim(`  — no columns/lists cached (run: taskify board sync)`));
-      } else {
-        for (const col of b.columns) {
-          console.log(`  ${chalk.bold(col.name)}  ${chalk.dim(col.id.slice(0, 8))}`);
+    // Resolve default column name (if set on profile)
+    const defaultColumnId = profileCfg.defaultColumn;
+    let defaultColumnName: string | undefined;
+    let defaultColumnBoard: string | undefined;
+    if (defaultColumnId) {
+      // Find which board this column belongs to
+      for (const board of config.boards) {
+        const col = board.columns?.find(c => c.id === defaultColumnId);
+        if (col) {
+          defaultColumnName = col.name;
+          defaultColumnBoard = board.name;
+          break;
         }
       }
+    }
+
+    if (opts.json) {
+      renderJson({
+        activeProfile: config.activeProfile,
+        defaultBoard: defaultBoardId ? { id: defaultBoardId, name: defaultBoard?.name } : null,
+        defaultColumn: defaultColumnId ? {
+          board: defaultColumnBoard,
+          id: defaultColumnId,
+          name: defaultColumnName,
+        } : null,
+      });
+      process.exit(0);
+    }
+
+    console.log(chalk.bold(`Active profile: ${config.activeProfile}`));
+    console.log("");
+
+    if (defaultBoardId) {
+      console.log(chalk.cyan(`Default board: ${defaultBoard?.name ?? "(unresolved)"}`));
+      console.log(`  → New tasks will go to: ${defaultBoard?.id ?? "(unresolved)"}`);
+    } else {
+      console.log(chalk.yellow("Default board: (none — you'll be prompted to select one when needed)"));
+    }
+
+    console.log("");
+    if (defaultColumnId) {
+      console.log(chalk.cyan(`Default column: ${defaultColumnName ?? "(unresolved)"}`));
+      console.log(`  → Column ID: ${defaultColumnId}`);
+      console.log(`  → In board: ${defaultColumnBoard ?? "(unresolved)"}`);
+      console.log(chalk.dim("  → Used as fallback when no --column is specified."));
+    } else {
+      console.log(chalk.yellow("Default column: (none set — you'll be prompted to select one when needed)"));
+      console.log(chalk.dim("  Use: taskify board column-default <board> <column>"));
     }
     process.exit(0);
   });
@@ -1554,13 +1604,22 @@ program
       process.exit(1);
     }
 
-    // Resolve --column
+    // Resolve --column (use board-level defaultColumn as fallback)
     let resolvedColumnId: string | undefined;
     let resolvedColumnName: string | undefined;
     if (opts.column) {
       const col = resolveColumnOrExit(boardEntry, opts.column);
       resolvedColumnId = col.id;
       resolvedColumnName = col.name;
+    } else if (boardEntry.defaultColumn) {
+      // No explicit --column — use board-level default
+      try {
+        const col = resolveColumnOrExit(boardEntry, boardEntry.defaultColumn);
+        resolvedColumnId = col.id;
+        resolvedColumnName = col.name;
+      } catch {
+        // defaultColumn is stale — ignore, just don't set one
+      }
     }
 
     const runtime = initRuntime(config);
