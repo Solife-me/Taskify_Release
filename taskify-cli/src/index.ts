@@ -281,7 +281,7 @@ boardCmd
           try {
             const meta = await runtime.syncBoard(b.id);
             if (meta.name) b.name = meta.name;
-            if (meta.kind) b.kind = meta.kind;
+            if (meta.kind) b.kind = meta.kind as BoardEntry["kind"];
             if (meta.columns) b.columns = meta.columns;
             b.syncedAt = Date.now();
           } catch { /* non-fatal — show whatever name we have */ }
@@ -800,7 +800,7 @@ program
           try {
             const meta = await runtime.syncBoard(b.id);
             if (meta.name) b.name = meta.name;
-            if (meta.kind) b.kind = meta.kind;
+            if (meta.kind) b.kind = meta.kind as BoardEntry["kind"];
             if (meta.columns) b.columns = meta.columns;
           } catch { /* non-fatal */ }
         }
@@ -1611,15 +1611,6 @@ program
       const col = resolveColumnOrExit(boardEntry, opts.column);
       resolvedColumnId = col.id;
       resolvedColumnName = col.name;
-    } else if (boardEntry.defaultColumn) {
-      // No explicit --column — use board-level default
-      try {
-        const col = resolveColumnOrExit(boardEntry, boardEntry.defaultColumn);
-        resolvedColumnId = col.id;
-        resolvedColumnName = col.name;
-      } catch {
-        // defaultColumn is stale — ignore, just don't set one
-      }
     }
 
     const runtime = initRuntime(config);
