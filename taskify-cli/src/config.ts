@@ -48,7 +48,10 @@ export type ProfileConfig = {
   nsec?: string;
   relays: string[];
   defaultBoard: string;
+  /** @deprecated Use defaultList instead */
   defaultColumn?: string;
+  /** "boardName listName" — the "home list" (column) for this profile */
+  defaultList?: string;
   trustedNpubs: string[];
   securityMode: "moderate" | "strict" | "off";
   securityEnabled: boolean;
@@ -107,6 +110,7 @@ function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
     trustedNpubs: partial.trustedNpubs ?? [],
     boards: partial.boards ?? [],
     defaultColumn: partial.defaultColumn,
+    defaultList: partial.defaultList,
     contacts: partial.contacts ?? [],
     fileStorageServer: partial.fileStorageServer ?? DEFAULT_PUBLIC_FILE_STORAGE_SERVER,
     encryptedFileStorageServer: partial.encryptedFileStorageServer ?? DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
@@ -179,6 +183,8 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     nsec: cfg.nsec,
     relays: cfg.relays,
     defaultBoard: cfg.defaultBoard,
+    defaultColumn: cfg.defaultColumn,
+    defaultList: cfg.defaultList,
     trustedNpubs: cfg.trustedNpubs,
     securityMode: cfg.securityMode,
     securityEnabled: cfg.securityEnabled,
@@ -188,7 +194,6 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     contacts: cfg.contacts,
     fileStorageServer: cfg.fileStorageServer,
     encryptedFileStorageServer: cfg.encryptedFileStorageServer,
-    defaultColumn: cfg.defaultColumn,
     agent: cfg.agent,
   };
   const stored: StoredConfig = {
