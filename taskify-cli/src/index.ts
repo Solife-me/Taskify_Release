@@ -521,6 +521,73 @@ boardCmd
   });
 
 boardCmd
+  .command("overview [board]")
+  .description("Display board column counts (tasks per column)")
+  .option("--json", "Output as JSON")
+  .action(async (boardArg: string | undefined, opts: { json?: boolean }) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const entry = resolveBoardReference(config.boards, boardArg ?? config.defaultBoard);
+    if (!entry) {
+      const hint = config.boards.length > 0
+        ? `Known boards: ${config.boards.map(b => b.name).join(', ')}`
+        : 'No boards configured. Use: taskify board join <id> --name <name>';
+      console.error(chalk.red(`Board not found: "${boardArg ?? config.defaultBoard}". ${hint}`));
+      process.exit(1);
+    }
+
+    // Sync columns from Nostr if needed
+    const runtime = initRuntime(config);
+    const syncedAt = entry.syncedAt ?? 0;
+    const THIRTY_MIN_MS = 30 * 60 * 1000;
+    if (!entry.columns || Date.now() - syncedAt > THIRTY_MIN_MS) {
+      try {
+        await runtime.syncBoard(entry.id);
+      } catch { /* non-fatal */ }
+    }
+
+    // Get fresh board data from runtime
+    let boardColumns = entry.columns || [];
+    try {
+      const fresh = await runtime.syncBoard(entry.id);
+      if (fresh.columns && fresh.columns.length > 0) {
+        boardColumns = fresh.columns;
+      }
+    } catch { /* use cached */ }
+
+    // Fetch all tasks to count per column (batch to avoid many relay calls)
+    const allTasks = await runtime.listTasks({ boardId: entry.id, status: "any" });
+
+    if (opts.json) {
+      const overview: Record<string, { open: number; total: number }> = {};
+      for (const col of boardColumns) {
+        const colTasks = allTasks.filter((t) => t.column === col.id);
+        overview[col.name] = {
+          open: colTasks.filter((t) => !t.completed).length,
+          total: colTasks.length,
+        };
+      }
+      renderJson({ boardName: entry.name, overview });
+      await runtime.disconnect();
+      process.exit(0);
+    }
+
+    console.log(chalk.bold(`Board: ${entry.name}`));
+    console.log(chalk.dim(`  ID: ${entry.id}`));
+    const nameLen = Math.max(20, ...boardColumns.map(c => c.name.length));
+
+    for (const col of boardColumns) {
+      const colTasks = allTasks.filter((t) => t.column === col.id);
+      const open = colTasks.filter((t) => !t.completed).length;
+      const total = colTasks.length;
+      const openDim = chalk.dim(`${String(open).padStart(5)} open`);
+      const totalDim = chalk.dim(`${String(total).padStart(5)} total`);
+      console.log(`  ${chalk.bold(col.name.padEnd(nameLen))}  ${openDim}  ${totalDim}`);
+    }
+    await runtime.disconnect();
+    process.exit(0);
+  });
+
+boardCmd
   .command("children <board>")
   .description("List children of a compound board")
   .action(async (boardArg: string) => {
@@ -1321,13 +1388,14 @@ function resolveColumnOrExit(
 // ---- list ----
 program
   .command("list")
-  .description("List tasks")
+  .description("List tasks (use --all to see full board)")
   .option("--board <id|name>", "Filter by board (UUID or name)")
   .option("--status <status>", "Filter: open (default), done, or any", "open")
   .option("--column <id|name>", "Filter by column id or name (use day names for week boards)")
   .option("--refresh", "Bypass cache and fetch live from relay")
   .option("--no-cache", "Do not fall back to stale cache if relay returns empty")
   .option("--json", "Output as JSON")
+  .option("--all", "Show all columns on the board")
   .action(async (opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
@@ -1335,23 +1403,154 @@ program
     try {
       let columnId: string | undefined;
       let columnName: string | undefined;
-      const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
-      const resolvedBoardEntry = resolvedBoardId
-        ? config.boards.find((b) => b.id === resolvedBoardId)
-        : undefined;
+      let resolvedBoardId: string | undefined;
+      let boardEntry: BoardEntry | undefined;
 
+      // Resolve board
+      if (opts.board) {
+        resolvedBoardId = await resolveBoardId(opts.board, config);
+        boardEntry = config.boards.find((b) => b.id === resolvedBoardId);
+      } else if (config.boards.length === 1) {
+        resolvedBoardId = config.boards[0].id;
+        boardEntry = config.boards[0];
+      } else if (config.defaultBoard) {
+        // Try to resolve defaultBoard
+        const defaultEntry = resolveBoardReference(config.boards, config.defaultBoard);
+        if (defaultEntry) {
+          resolvedBoardId = defaultEntry.id;
+          boardEntry = defaultEntry;
+        }
+      }
+
+      // Priority: explicit --column > --all > defaultList > interactive
       if (opts.column) {
-        // Column requires a single board to be resolvable
+        // Option A: explicit --column override (highest priority)
         const singleBoardId = resolvedBoardId
           ?? (config.boards.length === 1 ? config.boards[0].id : undefined);
         if (!singleBoardId) {
           console.error(chalk.red("--column requires --board when multiple boards are configured"));
           process.exit(1);
         }
-        const boardEntry = config.boards.find((b) => b.id === singleBoardId)!;
-        const resolved = resolveColumnOrExit(boardEntry, opts.column);
+        const be = config.boards.find((b) => b.id === singleBoardId)!;
+        const resolved = resolveColumnOrExit(be, opts.column);
         columnId = resolved.id;
         columnName = resolved.name;
+      } else if (opts.all) {
+        // Option B: --all flag → no column filter
+        // resolvedBoardId stays as-is, no columnId set
+      } else if (config.defaultList) {
+        // Option C: use defaultList from profile config
+        const parts = config.defaultList.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          const listBoardName = parts[0];
+          const listName = parts.slice(1).join(" ");
+          // Resolve the board
+          if (!resolvedBoardId || !boardEntry) {
+            const match = resolveBoardReference(config.boards, listBoardName);
+            if (match) {
+              resolvedBoardId = match.id;
+              boardEntry = match;
+            }
+          }
+          if (!boardEntry) {
+            console.error(chalk.red(`Could not resolve board "${listBoardName}" from defaultList.`));
+            process.exit(1);
+          }
+          if (!config.boards.some(b => b.id === boardEntry!.id)) {
+            console.error(chalk.red(`Board "${boardEntry!.name}" not found in local config.`));
+            process.exit(1);
+          }
+          // Sync columns if needed
+          const syncedAt = boardEntry.syncedAt ?? 0;
+          if (!boardEntry.columns || Date.now() - syncedAt > 30 * 60 * 1000) {
+            try {
+              await runtime.syncBoard(boardEntry.id);
+              // Refresh boardEntry from config after sync
+              boardEntry = config.boards.find(b => b.id === boardEntry!.id) ?? boardEntry;
+            } catch { /* non-fatal */ }
+          }
+          const resolved = resolveBoardColumn(boardEntry, listName);
+          if (resolved.ok) {
+            columnId = resolved.column.id;
+            columnName = resolved.column.name;
+          } else {
+            console.error(chalk.red(`Column "${listName}" not found on "${boardEntry.name}".`));
+            console.error(chalk.dim(`Available columns: ${formatAvailableColumns(boardEntry.columns || [])}`));
+            process.exit(1);
+          }
+        }
+      } else if (boardEntry) {
+        // Option D: interactive selector
+        // Ensure columns are available
+        let columns = boardEntry.columns;
+        const syncedAt = boardEntry.syncedAt ?? 0;
+        if (!columns || Date.now() - syncedAt > 30 * 60 * 1000) {
+          try {
+            await runtime.syncBoard(boardEntry.id);
+            boardEntry = config.boards.find(b => b.id === boardEntry!.id) ?? boardEntry;
+            columns = boardEntry.columns;
+          } catch { /* use whatever we have */ }
+        }
+
+        // Quick fetch task counts per column for display
+        const tempColCounts: { id: string; name: string; openCount: number; totalCount: number }[] = [];
+        const sampleTasks = await runtime.listTasks({ boardId: boardEntry.id, status: "any" });
+
+        if (columns && columns.length > 0) {
+          for (const col of columns) {
+            const colTasks = sampleTasks.filter(t => t.column === col.id);
+            tempColCounts.push({
+              id: col.id,
+              name: col.name,
+              openCount: colTasks.filter(t => !t.completed).length,
+              totalCount: colTasks.length,
+            });
+          }
+
+          console.log(`\nAvailable columns on ${chalk.bold(boardEntry.name)}:`);
+          tempColCounts.forEach((c, i) => {
+            console.log(`  ${chalk.cyan(`${i + 1}.`)} ${chalk.bold(c.name.padEnd(18))}`
+              + ` ${chalk.dim(`open: ${String(c.openCount).padStart(3)}  total: ${String(c.totalCount).padStart(3)}`)}`);
+          });
+          console.log(`  ${chalk.cyan(`${tempColCounts.length + 1}.`)} all (show entire board)`);
+
+          // Interactive prompt
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          try {
+            const answer: string = await new Promise((resolve) => {
+              rl.question(chalk.dim("Select column (number, name, or 'all'): "), (ans) => resolve(ans.trim()));
+            });
+
+            if (answer.toLowerCase() === "all") {
+              // All columns — no columnId
+            } else {
+              const num = parseInt(answer, 10);
+              if (!isNaN(num) && num >= 1 && num <= tempColCounts.length) {
+                const selected = tempColCounts[num - 1];
+                columnId = selected.id;
+                columnName = selected.name;
+              } else {
+                // Try matching by name
+                const match = tempColCounts.find(c => c.name.toLowerCase() === answer.toLowerCase());
+                if (match) {
+                  columnId = match.id;
+                  columnName = match.name;
+                } else {
+                  console.error(chalk.red(`Could not resolve column "${answer}".`));
+                  process.exit(1);
+                }
+              }
+            }
+          } finally {
+            rl.close();
+          }
+        } else {
+          // No columns cached — use defaultBoard's raw approach
+          // Fetch all tasks on the default board
+          if (resolvedBoardId) {
+            // no column filter
+          }
+        }
       }
 
       const tasks = await runtime.listTasks({
@@ -1367,7 +1566,7 @@ program
         if (tasks.length === 0) {
           console.log(chalk.dim("No tasks found."));
         } else {
-          renderTable(tasks, config.trustedNpubs, columnName, resolvedBoardEntry?.columns);
+          renderTable(tasks, config.trustedNpubs, columnName, boardEntry?.columns);
         }
       }
     } catch (err) {
@@ -2367,6 +2566,58 @@ configSet
     config.encryptedFileStorageServer = url.trim();
     await saveConfig(config);
     console.log(chalk.green(`✓ Encrypted file server set to ${config.encryptedFileStorageServer}`));
+    process.exit(0);
+  });
+
+// default-list: set the default board + column for this profile
+configSet
+  .command("default-list <board> <list>")
+  .description("Set default board + list for this profile")
+  .action(async (board: string, list: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const resolvedBoard = resolveBoardReference(config.boards, board);
+    if (!resolvedBoard) {
+      const hint = config.boards.length > 0
+        ? `Known boards: ${config.boards.map(b => b.name).join(', ')}`
+        : 'No boards configured yet.';
+      console.error(chalk.red(`Board not found: "${board}". ${hint}`));
+      process.exit(1);
+    }
+    // Validate list name against board columns
+    const runtime = initRuntime(config);
+    const syncedAt = resolvedBoard.syncedAt ?? 0;
+    const THIRTY_MIN_MS = 30 * 60 * 1000;
+    if (!resolvedBoard.columns || Date.now() - syncedAt > THIRTY_MIN_MS) {
+      try {
+        await runtime.syncBoard(resolvedBoard.id);
+      } catch { // non-fatal
+      }
+    }
+    // Check columns
+    let colFound = false;
+    if (resolvedBoard.columns) {
+      const match = resolvedBoard.columns.find(
+        c => c.name.toLowerCase() === list.toLowerCase(),
+      );
+      if (match) colFound = true;
+    }
+    // Still save even if column not found yet — it may be added later
+    if (!colFound && resolvedBoard.columns && resolvedBoard.columns.length > 0) {
+      console.warn(
+        chalk.yellow(`  Warning: column "${list}" not found on "${resolvedBoard.name}". `
+          + `Saved anyway. Use "taskify board sync" to update columns.`),
+      );
+    }
+    const profileCfg = config.profiles?.[config.activeProfile];
+    if (!profileCfg) {
+      console.error(chalk.red("No active profile found."));
+      process.exit(1);
+    }
+    profileCfg.defaultList = `${board} ${list}`;
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Default list set: "${resolvedBoard.name}" → ${list}`));
+    console.log(chalk.dim(`  In this profile, "taskify list" will now show the "${list}" column.`));
+    await runtime.disconnect();
     process.exit(0);
   });
 
