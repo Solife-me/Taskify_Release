@@ -28,9 +28,11 @@ function inferServerType(url: string): "nip96" | "originless" | "blossom" {
 async function uploadBlobToOriginless(serverUrl: string, bytes: Uint8Array, filename: string, mimeType: string): Promise<string> {
   const base = serverUrl.replace(/\/+$/, "");
   const uploadUrl = `${base}/upload`;
+  const payload = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const blobPart: ArrayBuffer = payload.buffer as ArrayBuffer;
   const attempts: RequestInit[] = [
-    { method: "POST", body: (() => { const form = new FormData(); form.append("file", new Blob([bytes], { type: mimeType || "application/octet-stream" }), filename); return form; })() },
-    { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Blob([bytes], { type: "application/octet-stream" }) },
+    { method: "POST", body: (() => { const form = new FormData(); form.append("file", new Blob([blobPart], { type: mimeType || "application/octet-stream" }), filename); return form; })() },
+    { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Blob([blobPart], { type: "application/octet-stream" }) },
   ];
   let lastErr: unknown = null;
   for (const init of attempts) {

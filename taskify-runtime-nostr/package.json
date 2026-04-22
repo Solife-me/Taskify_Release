@@ -4,14 +4,16 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "pretest": "npm run build",
     "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
   "dependencies": {
-    "@noble/hashes": "^1.4.0",
+    "@noble/hashes": "^1.8.0",
     "@nostr-dev-kit/ndk": "^2.18.1",
     "nostr-tools": "^2.16.2"
   },
