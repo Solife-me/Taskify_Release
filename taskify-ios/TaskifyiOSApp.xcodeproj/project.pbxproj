@@ -8,13 +8,15 @@
 
 /* Begin PBXBuildFile section */
 		A00000000000000000000101 /* Sources/TaskifyApp/TaskifyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000201 /* Sources/TaskifyApp/TaskifyApp.swift */; };
+		A00000000000000000000102 /* Sources/TaskifyApp/PWAWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* Sources/TaskifyApp/PWAWebView.swift */; };
 		A00000000000000000000120 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000601 /* TaskifyCore */; };
 		A00000000000000000000130 /* Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000230 /* Resources/Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A00000000000000000000201 /* Sources/TaskifyApp/TaskifyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/TaskifyApp.swift; sourceTree = SOURCE_ROOT; };
-		A00000000000000000000220 /* Taskify.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Taskify.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000202 /* Sources/TaskifyApp/PWAWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/PWAWebView.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000220 /* taskifyapp */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = taskifyapp; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000230 /* Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -43,6 +45,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000201 /* Sources/TaskifyApp/TaskifyApp.swift */,
+				A00000000000000000000202 /* Sources/TaskifyApp/PWAWebView.swift */,
 				A00000000000000000000404 /* TaskifyApp/Theme */,
 				A00000000000000000000405 /* TaskifyApp/ViewModels */,
 				A00000000000000000000406 /* TaskifyApp/Views */,
@@ -90,9 +93,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A00000000000000000000501 /* Taskify */ = {
+		A00000000000000000000501 /* TaskifyApp */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A00000000000000000000801 /* Build configuration list for PBXNativeTarget "Taskify" */;
+			buildConfigurationList = A00000000000000000000801 /* Build configuration list for PBXNativeTarget "TaskifyApp" */;
 			buildPhases = (
 				A00000000000000000000302 /* Sources */,
 				A00000000000000000000301 /* Frameworks */,
@@ -102,12 +105,12 @@
 			);
 			dependencies = (
 			);
-			name = Taskify;
+			name = TaskifyApp;
 			packageProductDependencies = (
 				A00000000000000000000601 /* TaskifyCore */,
 			);
-			productName = Taskify;
-			productReference = A00000000000000000000220 /* Taskify.app */;
+			productName = TaskifyApp;
+			productReference = A00000000000000000000220 /* taskifyapp */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -164,6 +167,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000101 /* Sources/TaskifyApp/TaskifyApp.swift in Sources */,
+				A00000000000000000000102 /* Sources/TaskifyApp/PWAWebView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -186,7 +190,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -219,7 +223,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

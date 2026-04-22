@@ -15,9 +15,37 @@ import Foundation
 
 public actor RelayPool {
 
-    // MARK: Dependencies injected at init
+    // MARK: Default relays (static/shared)
 
-    private let relayURLs: [String]
+    public static let defaultRelays: [String] = [
+        "wss://relay.nostr.org",
+        "wss://nos.lol",
+        "wss://relay.damus.io",
+        "wss://relayable.org",
+        "wss://purplepag.es",
+    ]
+
+    // MARK: Static API (shared pool for app bootstrap)
+
+    private static let sharedPool = RelayPool(relayURLs: [])
+
+    public static func addRelay(_ url: URL) async {
+        await withCheckedContinuation { continuation in
+            Task {
+                await sharedPool.addRelay(url)
+                continuation.resume()
+            }
+        }
+    }
+
+    public static func addRelay(_ url: String) async {
+        guard let urlObj = URL(string: url) else { return }
+        await addRelay(urlObj)
+    }
+
+    // MARK: Instance state
+
+    private var relayURLs: [String]
 
     // MARK: State
 
@@ -39,6 +67,16 @@ public actor RelayPool {
             connections[url] = conn
             await conn.connect()
         }
+    }
+
+    /// Dynamically add a relay to the pool and connect to it (instance method).
+    public func addRelay(_ url: URL) {
+        let urlString = url.absoluteString
+        guard !relayURLs.contains(urlString), connections[urlString] == nil else { return }
+        relayURLs.append(urlString)
+        let conn = RelayConnection(url: urlString, pool: self)
+        connections[urlString] = conn
+        Task { await conn.connect() }
     }
 
     public func disconnect() async {
