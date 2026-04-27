@@ -48,7 +48,9 @@ function isDeleted(e: RelayBatchEntry): e is DeletionMarker {
 function flushRelayBatch(
   relayBatch: Map<string, RelayBatchEntry>,
   currentTasks: Task[],
-  /** Optional per-task clock fallback when _nostrAt is absent on the entry */
+  /** Optional per-task clock fallback. Acts as the in-session tombstone for
+   *  deleted tasks AND the freshness floor for locally-edited tasks whose
+   *  in-state `_nostrAt` is stale relative to a still-in-flight publish. */
   taskClock?: Map<string, number>,
 ): Task[] {
   const merged = new Map(currentTasks.map((t) => [`${t.boardId}::${t.id}`, t]));
@@ -56,9 +58,13 @@ function flushRelayBatch(
     const taskId = key.split("::")[1];
     const incomingNostrAt = isDeleted(entry)
       ? entry._nostrAt
-      : (entry._nostrAt ?? 0);
-    const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? taskClock?.get(taskId) ?? 0;
-    if (incomingNostrAt < existingNostrAt) continue; // IDB is newer — skip
+      : (entry._nostrAt ?? taskClock?.get(taskId) ?? 0);
+    const existingTask = merged.get(key) as Task | undefined;
+    const existingNostrAt = Math.max(
+      existingTask?._nostrAt ?? 0,
+      taskClock?.get(taskId) ?? 0,
+    );
+    if (incomingNostrAt < existingNostrAt) continue; // IDB/in-session edit is newer — skip
     if (isDeleted(entry)) merged.delete(key);
     else merged.set(key, entry as Task);
   }
@@ -242,6 +248,78 @@ test("newer CREATE(T=300) DOES appear after DELETE(T=200) — task was re-opened
 
   expect(result.length).toBe(1);
   expect(result[0]._nostrAt).toBe(300);
+});
+
+// Regression: a locally-edited task's _nostrAt is stale until the publish
+// round-trips. The taskClock is advanced optimistically by maybePublishTask,
+// so flushRelayBatch must compare against max(_nostrAt, taskClock) on the
+// existing side, otherwise a stale relay copy at the same _nostrAt as before
+// the edit would overwrite the local change (the "move reverts" bug).
+test("local edit protected from stale relay copy when taskClock has advanced", () => {
+  // User moved task on board → maybePublishTask advanced taskClock to T=500.
+  // Local task in state still carries the pre-edit _nostrAt = 200 (live path
+  // hasn't seen the round-trip yet, or the relay never round-tripped).
+  const idbTasks: Task[] = [makeTask("t1", "board1", 200, { title: "Edited locally" })];
+  const taskClock = new Map([["t1", 500]]); // optimistic clock from maybePublishTask
+
+  // A re-subscribed relay returns the OLD pre-edit copy (T=200).
+  const relayBatch = new Map<string, RelayBatchEntry>([
+    ["board1::t1", makeTask("t1", "board1", 200, { title: "Stale pre-edit copy" })],
+  ]);
+
+  const result = flushRelayBatch(relayBatch, idbTasks, taskClock);
+
+  expect(result.length).toBe(1);
+  expect(result[0].title).toBe("Edited locally");
+});
+
+// Regression: persistent tombstone hydrates the in-memory taskClock on startup
+// so a stale CREATE event from a slow relay cannot resurrect a task whose
+// deletion publish never reached that relay (e.g., offline at time of delete).
+//
+// Setup mirrors the production wiring:
+//   1. App reload — local IDB tasks do not contain the deleted task.
+//   2. nostrIdxRef.taskClock is seeded from LS_TASK_TOMBSTONES at startup.
+//   3. Subscription returns the OLD pre-deletion CREATE event from the relay.
+test("persistent tombstone (loaded into taskClock) blocks resurrection on reload", () => {
+  // Local IDB has NO task — deletion was applied before reload.
+  const idbTasks: Task[] = [];
+
+  // Tombstone from the previous session, hydrated into taskClock at startup.
+  const taskClock = new Map([["deleted-task", 800]]); // deletion was at T=800
+
+  // The relay never received the deletion publish (failed/offline) — only the
+  // original CREATE at T=300 is available, and the cursor lookback brings it
+  // into the next session's sync window.
+  const relayBatch = new Map<string, RelayBatchEntry>([
+    ["board1::deleted-task", makeTask("deleted-task", "board1", 300)],
+  ]);
+
+  const result = flushRelayBatch(relayBatch, idbTasks, taskClock);
+
+  // 300 < 800 → stale CREATE rejected; deletion remains sticky.
+  expect(result.length).toBe(0);
+});
+
+// Regression: undo-after-delete must not be re-deleted by the lingering
+// tombstone. The undo's optimistic publish advances taskClock above the
+// tombstone, and the local IDB task's _nostrAt mirrors the new clock —
+// existingNostrAt (max of the two) ends up newer than the stale relay copy.
+test("undo-after-delete is preserved when undo's optimistic _nostrAt > tombstone", () => {
+  // After undo + maybePublishTask: local task carries new optimistic _nostrAt = 1200.
+  const idbTasks: Task[] = [makeTask("t1", "board1", 1200, { title: "Restored by undo" })];
+  // Tombstone from the prior delete still lives in taskClock at T=800.
+  const taskClock = new Map([["t1", 800]]);
+
+  // Relay returns the original pre-delete CREATE.
+  const relayBatch = new Map<string, RelayBatchEntry>([
+    ["board1::t1", makeTask("t1", "board1", 300, { title: "Stale relay copy" })],
+  ]);
+
+  const result = flushRelayBatch(relayBatch, idbTasks, taskClock);
+
+  expect(result.length).toBe(1);
+  expect(result[0].title).toBe("Restored by undo");
 });
 
 // ---------------------------------------------------------------------------

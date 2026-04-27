@@ -29,6 +29,7 @@ const BOARDS_KEY = "taskify_boards_v2";
 const EVENTS_KEY = "taskify_calendar_events_v1";
 const EXTERNAL_EVENTS_KEY = "taskify_calendar_external_events_v1";
 const BOARD_SYNC_CURSORS_KEY = "taskify_board_sync_cursors_v1";
+const TASK_TOMBSTONES_KEY = "taskify_task_tombstones_v1";
 
 const CASHU_PROOFS_KEY = "cashu_proofs_v1";
 const CASHU_ACTIVE_MINT_KEY = "cashu_active_mint_v1";
@@ -61,6 +62,7 @@ export async function initializeStorageBoundaries(): Promise<void> {
       LS_BACKGROUND_IMAGE,
 
       BOARD_SYNC_CURSORS_KEY, // relay sync cursors — must preload so repeat opens skip limit:500
+      TASK_TOMBSTONES_KEY, // persistent deletion tombstones — must preload so first sync hydrates clock
     ]),
     idbKeyValue.initStore(TASKIFY_STORE_WALLET, [
       CASHU_PROOFS_KEY,
