@@ -1661,6 +1661,15 @@ function isSameLocalDate(aMs: number, bMs: number): boolean {
 const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
+// Persistent task-deletion tombstones, keyed by board tag → task id → unix-secs
+// of the deletion. Survives reloads so a stale CREATE event from a slow/unaware
+// relay cannot resurrect a task whose deletion publish never reached the relay
+// (e.g., offline, network failure, app killed before debounce flush).
+const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
+// Cap per board to bound storage growth. Older tombstones are evicted by
+// timestamp — the most recent N deletions are always retained, which is what
+// matters for protecting against stale relay re-creates.
+const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
 const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
 const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
@@ -6371,7 +6380,98 @@ export default function App() {
     legacySeen: boolean;
     migrationAttempted: boolean;
   };
-  const nostrIdxRef = useRef<NostrIndex>({ boardMeta: new Map(), taskClock: new Map(), calendarClock: new Map() });
+  const nostrIdxRef = useRef<NostrIndex>(((): NostrIndex => {
+    const idx: NostrIndex = { boardMeta: new Map(), taskClock: new Map(), calendarClock: new Map() };
+    // Seed taskClock from persisted deletion tombstones. This ensures a stale
+    // CREATE event from a slow relay cannot resurrect a task we previously
+    // deleted, even after a page reload (in-session protection sits in
+    // tombstonesRef / publishTaskDeleted; this is the post-reload fallback).
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, Record<string, number>>;
+        if (parsed && typeof parsed === "object") {
+          for (const [bTag, entries] of Object.entries(parsed)) {
+            if (!entries || typeof entries !== "object") continue;
+            const m = new Map<string, number>();
+            for (const [taskId, at] of Object.entries(entries)) {
+              if (typeof at === "number" && at > 0) m.set(taskId, at);
+            }
+            if (m.size) idx.taskClock.set(bTag, m);
+          }
+        }
+      }
+    } catch {
+      // ignore — tombstone loss only weakens reload protection, not correctness in-session
+    }
+    return idx;
+  })());
+  // In-memory mirror of persisted tombstones. Kept separately from taskClock
+  // because taskClock also accumulates entries for live tasks during sync,
+  // which we don't want to persist (would grow unbounded).
+  const tombstonesRef = useRef<Map<string, Map<string, number>>>(((): Map<string, Map<string, number>> => {
+    const out = new Map<string, Map<string, number>>();
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES);
+      if (!raw) return out;
+      const parsed = JSON.parse(raw) as Record<string, Record<string, number>>;
+      if (!parsed || typeof parsed !== "object") return out;
+      for (const [bTag, entries] of Object.entries(parsed)) {
+        if (!entries || typeof entries !== "object") continue;
+        const m = new Map<string, number>();
+        for (const [taskId, at] of Object.entries(entries)) {
+          if (typeof at === "number" && at > 0) m.set(taskId, at);
+        }
+        if (m.size) out.set(bTag, m);
+      }
+    } catch {
+      // ignore
+    }
+    return out;
+  })());
+  const tombstonesPersistScheduledRef = useRef(false);
+  const flushTombstonesPersist = useCallback(() => {
+    try {
+      const obj: Record<string, Record<string, number>> = {};
+      for (const [tag, entries] of tombstonesRef.current) {
+        if (!entries.size) continue;
+        const sub: Record<string, number> = {};
+        for (const [tid, ts] of entries) sub[tid] = ts;
+        obj[tag] = sub;
+      }
+      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES, JSON.stringify(obj));
+    } catch (err) {
+      console.warn("[tombstones] failed to persist", err);
+    }
+  }, []);
+  const recordTaskTombstone = useCallback((bTag: string, taskId: string, at: number) => {
+    if (!bTag || !taskId || !Number.isFinite(at) || at <= 0) return;
+    let m = tombstonesRef.current.get(bTag);
+    if (!m) { m = new Map(); tombstonesRef.current.set(bTag, m); }
+    const existing = m.get(taskId);
+    if (existing !== undefined && existing >= at) return; // already have a newer or equal tombstone
+    m.set(taskId, at);
+    // Cap per-board entries by keeping the most recent N by timestamp.
+    if (m.size > TASK_TOMBSTONES_PER_BOARD_MAX) {
+      const trimmed = new Map(
+        Array.from(m.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, TASK_TOMBSTONES_PER_BOARD_MAX),
+      );
+      tombstonesRef.current.set(bTag, trimmed);
+    }
+    // Coalesce same-tick writes (e.g., bulk "clear completed") into one IDB
+    // write via a microtask. The in-memory map is updated synchronously, so
+    // any code path that reads tombstonesRef in this tick still sees the new
+    // entry. The IDB write happens at the end of the current microtask queue.
+    if (!tombstonesPersistScheduledRef.current) {
+      tombstonesPersistScheduledRef.current = true;
+      Promise.resolve().then(() => {
+        tombstonesPersistScheduledRef.current = false;
+        flushTombstonesPersist();
+      });
+    }
+  }, [flushTombstonesPersist]);
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
@@ -6380,14 +6480,19 @@ export default function App() {
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
   // In-memory cursor: tracks the highest created_at seen per board tag this session.
   // Persisted to IDB after EOSE so subsequent opens only fetch new events.
-  const boardSyncCursorsRef = useRef<Record<string, number>>(() => {
+  // NOTE: useRef does NOT lazy-initialize like useState. The previous
+  // `useRef(() => {...})` form stored the function as the value, so persisted
+  // cursors were never loaded — every reload fell back to a 30-day refetch
+  // which heavily inflated the window for stale CREATE events to revert
+  // locally-deleted tasks. The IIFE form below actually invokes the loader.
+  const boardSyncCursorsRef = useRef<Record<string, number>>(((): Record<string, number> => {
     try {
       const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
     }
-  });
+  })());
   // Per-relay batch accumulator. Events from each relay are collected here until
   // that relay fires EOSE. On EOSE the relay's batch is clock-protected-merged into
   // the task state and IDB data is shown immediately (no blocking spinner).
@@ -12259,6 +12364,11 @@ export default function App() {
       nostrIdxRef.current.taskClock.set(bTag, new Map());
     }
     nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, optimisticAt);
+    // Persist a tombstone NOW — before any await — so a reload between this
+    // point and a successful relay publish still keeps the deletion sticky.
+    // Without this, a failed/in-flight publish followed by reload would let
+    // the original CREATE event from the relay re-add the task on next sync.
+    recordTaskTombstone(bTag, t.id, optimisticAt);
     pendingNostrTasksRef.current.add(pendingKey);
     const boardKeys = await deriveBoardNostrKeys(boardId);
     try {
@@ -12293,6 +12403,10 @@ export default function App() {
         nostrIdxRef.current.taskClock.set(bTag, new Map());
       }
       nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+      // Bump the tombstone to the actual relay-confirmed timestamp so any
+      // post-reload comparisons use the same clock value the relay will
+      // report when it round-trips this deletion.
+      recordTaskTombstone(bTag, t.id, createdAt);
     } finally {
       pendingNostrTasksRef.current.delete(pendingKey);
     }
@@ -13464,6 +13578,7 @@ export default function App() {
           longestStreak: newLongest,
           subtasks: mergedSubs,
           assignees: mergedAssignees,
+          _nostrAt: ev.created_at,
         };
         return dedupeRecurringInstances(copy);
       } else {
@@ -13503,6 +13618,7 @@ export default function App() {
             longestStreak: longest,
             subtasks: subs,
             assignees,
+            _nostrAt: ev.created_at,
           },
         ]);
       }
@@ -17545,6 +17661,10 @@ export default function App() {
 
     // Clock-protected merge: apply a relay's batch into current task state.
     // Only updates tasks where the relay has newer data than what's already in state.
+    // The bTagClock fallback acts as an in-session tombstone: when a task is locally
+    // deleted (or being published with a fresh optimistic clock), `merged` no longer
+    // has a `_nostrAt` to compare against, so without the clock fallback a stale
+    // CREATE event from a slow relay would re-add the task.
     const flushRelayBatch = (bTag: string, relayBatch: Map<string, RelayBatchEntry>) => {
       if (!relayBatch.size) return;
       const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
@@ -17553,8 +17673,12 @@ export default function App() {
         for (const [key, entry] of relayBatch) {
           const taskId = key.split('::')[1];
           const incomingNostrAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? bTagClock?.get(taskId) ?? 0;
-          const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? 0;
-          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay has newer data
+          const existingTask = merged.get(key) as Task | undefined;
+          const existingNostrAt = Math.max(
+            existingTask?._nostrAt ?? 0,
+            bTagClock?.get(taskId) ?? 0,
+          );
+          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay/local edit has newer data
           if ('_deleted' in entry) merged.delete(key);
           else merged.set(key, entry as Task);
         }
@@ -17575,8 +17699,25 @@ export default function App() {
       const boardId = board.id;
       // Only verify tasks that came from the relay previously (_nostrAt > 0).
       // Local-only tasks (no _nostrAt) are not expected to be on the relay.
+      //
+      // Two extra guards prevent newly-created/edited tasks from being deleted
+      // during the relay's verification probe:
+      //   1. Skip tasks currently mid-publish — relay has not received the event yet.
+      //   2. Skip tasks whose _nostrAt is very recent (optimistic stamp from
+      //      maybePublishTask). The stamp may have been set seconds ago and the
+      //      relay might not have propagated the event to the verify subscription
+      //      yet, especially during rapid sequential adds.
+      const VERIFY_RECENT_GRACE_SECS = 60;
+      const nowSecs = Math.floor(Date.now() / 1000);
       const unseenIds = tasksRef.current
-        .filter((t) => t.boardId === boardId && typeof t._nostrAt === "number" && t._nostrAt > 0 && !seenIds.has(t.id))
+        .filter((t) => {
+          if (t.boardId !== boardId) return false;
+          if (typeof t._nostrAt !== "number" || t._nostrAt <= 0) return false;
+          if (seenIds.has(t.id)) return false;
+          if (pendingNostrTasksRef.current.has(`${bTag}::${t.id}`)) return false;
+          if (nowSecs - t._nostrAt < VERIFY_RECENT_GRACE_SECS) return false;
+          return true;
+        })
         .map((t) => t.id);
       seenBoardTasksRef.current.delete(bTag);
       if (!unseenIds.length) return;

@@ -11,6 +11,77 @@ import {
 // A minimal valid secp256k1 private key (scalar = 1)
 const VALID_SIGNER = hexToBytes("0000000000000000000000000000000000000000000000000000000000000001");
 
+// ── XMLHttpRequest mock for Blossom uploads ────────────────────────────────
+// Blossom uploads go through xhrRequest in Nip96Client, which uses
+// XMLHttpRequest directly. The Node test environment doesn't provide one,
+// so we install a minimal mock that captures the request and lets the test
+// inject a response. This replaces the previous tests that incorrectly
+// mocked global fetch (Blossom hasn't used fetch since the xhr migration).
+type CapturedXhrCall = {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+};
+
+class MockXhr {
+  static lastCall: CapturedXhrCall | null = null;
+  static respondStatus = 200;
+  static respondText = "{}";
+
+  upload: { onprogress: ((event: { loaded: number; total: number; lengthComputable: boolean }) => void) | null } = { onprogress: null };
+  responseType = "";
+  status = 0;
+  responseText = "";
+  responseURL = "";
+  response: unknown = "";
+  onload: (() => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  onabort: (() => void) | null = null;
+  onloadend: (() => void) | null = null;
+
+  private headers: Record<string, string> = {};
+  private capturedMethod = "";
+  private capturedUrl = "";
+
+  open(method: string, url: string, _async: boolean): void {
+    this.capturedMethod = method;
+    this.capturedUrl = url;
+  }
+
+  setRequestHeader(name: string, value: string): void {
+    this.headers[name] = value;
+  }
+
+  send(body: unknown): void {
+    MockXhr.lastCall = {
+      method: this.capturedMethod,
+      url: this.capturedUrl,
+      headers: { ...this.headers },
+      body,
+    };
+    this.status = MockXhr.respondStatus;
+    this.responseText = MockXhr.respondText;
+    this.response = MockXhr.respondText;
+    this.responseURL = this.capturedUrl;
+    queueMicrotask(() => {
+      this.onload?.();
+      this.onloadend?.();
+    });
+  }
+
+  abort(): void {
+    this.onabort?.();
+  }
+}
+
+function installXhrMock(): void {
+  MockXhr.lastCall = null;
+  MockXhr.respondStatus = 200;
+  MockXhr.respondText = "{}";
+  vi.stubGlobal("XMLHttpRequest", MockXhr as unknown as typeof XMLHttpRequest);
+}
+
 // ── parseFileServers / serializeFileServers roundtrip ──────────────────────
 
 describe("parseFileServers / serializeFileServers", () => {
@@ -139,24 +210,24 @@ describe("uploadAvatar dispatcher", () => {
   });
 
   test("routes blossom type to PUT /upload", async () => {
+    installXhrMock();
+    MockXhr.respondText = JSON.stringify({
+      url: "https://blossom.band/abc123.jpg",
+      sha256: "abc",
+      size: 4,
+      type: "image/jpeg",
+      uploaded: 0,
+    });
+
     const { uploadAvatar } = await import("./Nip96Client");
     const entry: FileServerEntry = { url: "https://blossom.band", type: "blossom" };
     const file = new Blob(["test"], { type: "image/jpeg" });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ url: "https://blossom.band/abc123.jpg", sha256: "abc", size: 4, type: "image/jpeg", uploaded: 0 }),
-        { status: 200 },
-      ),
-    );
-
     const result = await uploadAvatar({ serverEntry: entry, file, signer: VALID_SIGNER });
     expect(result.url).toBe("https://blossom.band/abc123.jpg");
     expect(result.nip94).toBeNull();
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "https://blossom.band/upload",
-      expect.objectContaining({ method: "PUT" }),
-    );
+    expect(MockXhr.lastCall?.method).toBe("PUT");
+    expect(MockXhr.lastCall?.url).toBe("https://blossom.band/upload");
   });
 
   test("routes originless type to POST /upload with no auth", async () => {
@@ -200,20 +271,21 @@ describe("Blossom auth header generation", () => {
   });
 
   test("uploadAvatarToBlossom sends kind 24242 Authorization header with base64url encoding", async () => {
+    installXhrMock();
+    MockXhr.respondText = JSON.stringify({
+      url: "https://blossom.band/file.jpg",
+      sha256: "abc",
+      size: 5,
+      type: "image/jpeg",
+      uploaded: 0,
+    });
+
     const { uploadAvatarToBlossom } = await import("./Nip96Client");
     const file = new Blob(["hello"], { type: "image/jpeg" });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ url: "https://blossom.band/file.jpg", sha256: "abc", size: 5, type: "image/jpeg", uploaded: 0 }),
-        { status: 200 },
-      ),
-    );
-
     await uploadAvatarToBlossom({ serverUrl: "https://blossom.band", file, signer: VALID_SIGNER });
 
-    const callArgs = fetchSpy.mock.calls[0][1] as RequestInit;
-    const authHeader = (callArgs.headers as Record<string, string>)?.["Authorization"] ?? "";
+    const authHeader = MockXhr.lastCall?.headers["Authorization"] ?? "";
     expect(authHeader).toMatch(/^Nostr /);
 
     // Extract base64url payload
@@ -279,12 +351,30 @@ describe("uploadAvatarToOriginless", () => {
     ).rejects.toThrow("Service unavailable");
   });
 
-  test("throws if response has no url field", async () => {
+  test("falls back to {server}/ipfs/{cid} when response only has a cid", async () => {
+    // Some originless servers omit a top-level url and only return the cid.
+    // The client constructs a gateway URL from {serverUrl}/ipfs/{cid}.
     const { uploadAvatarToOriginless } = await import("./Nip96Client");
     const file = new Blob(["data"], { type: "image/png" });
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ cid: "QmTest" }), { status: 200 }),
+    );
+
+    const result = await uploadAvatarToOriginless({
+      serverUrl: "https://originless.besoeasy.com",
+      file,
+    });
+    expect(result.url).toBe("https://originless.besoeasy.com/ipfs/QmTest");
+    expect(result.nip94).toBeNull();
+  });
+
+  test("throws if response has no url, cid, path, or other resolvable field", async () => {
+    const { uploadAvatarToOriginless } = await import("./Nip96Client");
+    const file = new Blob(["data"], { type: "image/png" });
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
     );
 
     await expect(
