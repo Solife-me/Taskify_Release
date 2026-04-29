@@ -4883,6 +4883,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   onDropCard: (payload: { id: string; beforeId?: string; allIds?: string[] }) => void;
   onDropEnd?: () => void;
   onTitleClick?: () => void;
+  onPrint?: () => void;
+  onSelectAll?: () => void;
   children: React.ReactNode;
   footer?: React.ReactNode;
   scrollable?: boolean;
@@ -4893,6 +4895,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
     onDropCard,
     onDropEnd,
     onTitleClick,
+    onPrint,
+    onSelectAll,
     children,
     footer,
     scrollable,
@@ -4903,7 +4907,29 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
 ) => {
   const innerRef = useRef<HTMLDivElement | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const dragDepthRef = useRef(0);
+
+  useEffect(() => {
+    if (!actionMenuOpen) return;
+    const onDocPointerDown = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as Node | null;
+      if (!target || !actionMenuRef.current) return;
+      if (!actionMenuRef.current.contains(target)) setActionMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setActionMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDocPointerDown);
+    document.addEventListener("touchstart", onDocPointerDown, { passive: true });
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocPointerDown);
+      document.removeEventListener("touchstart", onDocPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [actionMenuOpen]);
   const setRef = useCallback((el: HTMLDivElement | null) => {
     innerRef.current = el;
     if (!forwardedRef) return;
@@ -5001,13 +5027,76 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
         >
           {title}
           </div>
-          <button 
-            type="button" 
-            className="p-1 text-secondary hover:text-primary rounded" 
-            onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }} 
-            title="Select tasks">
-            <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
-          </button>
+          {(onPrint || onSelectAll) ? (
+            <div ref={actionMenuRef} className="relative">
+              <button
+                type="button"
+                className="p-1 text-secondary hover:text-primary rounded"
+                onClick={(e) => { e.stopPropagation(); setActionMenuOpen((o) => !o); }}
+                title="List actions"
+                aria-haspopup="menu"
+                aria-expanded={actionMenuOpen}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
+              </button>
+              {actionMenuOpen && (
+                <div
+                  role="menu"
+                  className="surface-panel absolute right-0 top-full mt-1 z-20 min-w-[170px] py-1 text-sm overflow-hidden"
+                >
+                  {onPrint && (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      className="w-full text-left px-3 py-2 text-primary hover:bg-white/10 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActionMenuOpen(false);
+                        onPrint();
+                      }}
+                    >
+                      Print list
+                    </button>
+                  )}
+                  {onSelectAll ? (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      className="w-full text-left px-3 py-2 text-primary hover:bg-white/10 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActionMenuOpen(false);
+                        onSelectAll();
+                      }}
+                    >
+                      Select all in list
+                    </button>
+                  ) : (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      className="w-full text-left px-3 py-2 text-primary hover:bg-white/10 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActionMenuOpen(false);
+                        window.dispatchEvent(new CustomEvent('toggleSelectionMode'));
+                      }}
+                    >
+                      Select tasks
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="p-1 text-secondary hover:text-primary rounded"
+              onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }}
+              title="Select tasks">
+              <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
+            </button>
+          )}
         </div>
       )}
       <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''} data-column-scroll={scrollable ? "" : undefined}>
@@ -10610,13 +10699,19 @@ export default function App() {
     return m;
   }, [calendarEventsForBoard, currentBoard, listColumns, listColumnSources, settings.weekStart]);
 
-  const buildBoardPrintTasks = useCallback((): BoardPrintTask[] => {
+  const buildBoardPrintTasks = useCallback((options?: { onlyTaskIds?: ReadonlySet<string> }): BoardPrintTask[] => {
     if (!currentBoard) return [];
     const titleForTask = (task: Task) => {
       const labelSource = task.title || (task.images?.length ? "Image" : task.documents?.[0]?.name || "");
       return labelSource.trim() || "Task";
     };
-    const visible = tasksForBoard.filter((task) => !task.completed && isVisibleNow(task));
+    const onlyIds = options?.onlyTaskIds;
+    const visible = tasksForBoard.filter((task) => {
+      if (task.completed) return false;
+      if (!isVisibleNow(task)) return false;
+      if (onlyIds && !onlyIds.has(task.id)) return false;
+      return true;
+    });
     if (visible.length === 0) return [];
 
     if (currentBoard.kind === "week") {
@@ -10703,6 +10798,65 @@ export default function App() {
     persistBoardPrintJob(job);
     setBoardPrintOpen(true);
   }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, showToast]);
+
+  const handleOpenListColumnPrint = useCallback((columnId: string) => {
+    if (!currentBoard) return;
+    const column = listColumns.find((c) => c.id === columnId);
+    if (!column) return;
+    const bucket = itemsByColumn.get(columnId) ?? [];
+    const ids = new Set(bucket.filter((t) => !t.completed).map((t) => t.id));
+    const tasks = buildBoardPrintTasks({ onlyTaskIds: ids });
+    if (!tasks.length) {
+      showToast("No tasks in this list to print.", 2500);
+      return;
+    }
+    closeShareBoard();
+    const job: BoardPrintJob = {
+      id: crypto.randomUUID(),
+      boardId: currentBoard.id,
+      boardName: `${currentBoard.name || "Board"} – ${column.name}`,
+      printedAtISO: new Date().toISOString(),
+      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
+      paperSize: boardPrintJob?.paperSize ?? "letter",
+      tasks,
+    };
+    setBoardPrintJob(job);
+    setBoardPrintOpen(true);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, itemsByColumn, listColumns, showToast]);
+
+  const handleSelectAllInListColumn = useCallback((columnId: string) => {
+    const bucket = itemsByColumn.get(columnId) ?? [];
+    const ids = bucket.filter((task) => !task.completed).map((task) => task.id);
+    if (!ids.length) {
+      showToast("This list has no tasks to select.", 2500);
+      return;
+    }
+    setIsSelectionMode(true);
+    setSelectedItemIds((prev) => Array.from(new Set([...prev, ...ids])));
+  }, [itemsByColumn, showToast]);
+
+  const handlePrintSelectedTasks = useCallback(() => {
+    if (!currentBoard) return;
+    if (!selectedItemIds.length) return;
+    const filter = new Set(selectedItemIds);
+    const tasks = buildBoardPrintTasks({ onlyTaskIds: filter });
+    if (!tasks.length) {
+      showToast("No printable tasks selected.", 2500);
+      return;
+    }
+    closeShareBoard();
+    const job: BoardPrintJob = {
+      id: crypto.randomUUID(),
+      boardId: currentBoard.id,
+      boardName: `${currentBoard.name || "Board"} – Selected`,
+      printedAtISO: new Date().toISOString(),
+      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
+      paperSize: boardPrintJob?.paperSize ?? "letter",
+      tasks,
+    };
+    setBoardPrintJob(job);
+    setBoardPrintOpen(true);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, selectedItemIds, showToast]);
 
   const handleBoardPaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
     setBoardPrintJob((prev) => {
@@ -18839,6 +18993,8 @@ export default function App() {
                         if (isSelectionMode && payload.allIds) exitSelectionMode();
                       }}
                       onDropEnd={handleDragEnd}
+                      onPrint={() => handleOpenListColumnPrint(col.id)}
+                      onSelectAll={() => handleSelectAllInListColumn(col.id)}
                       scrollable
                       footer={(
                         <form
@@ -20149,6 +20305,16 @@ export default function App() {
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               <span>Done</span>
+            </button>
+            <button
+              type="button"
+              className="selection-bar__action pressable"
+              onClick={handlePrintSelectedTasks}
+              disabled={!selectedTasks.some((task) => !task.completed)}
+              title="Print selected"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              <span>Print</span>
             </button>
             <button
               type="button"
