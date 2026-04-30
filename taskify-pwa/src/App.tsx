@@ -10705,40 +10705,38 @@ export default function App() {
       const labelSource = task.title || (task.images?.length ? "Image" : task.documents?.[0]?.name || "");
       return labelSource.trim() || "Task";
     };
+    const titleForEvent = (ev: CalendarEvent) => (ev.title || "").trim() || "Event";
     const onlyIds = options?.onlyTaskIds;
-    const visible = tasksForBoard.filter((task) => {
+    const includeId = (id: string) => !onlyIds || onlyIds.has(id);
+    const visibleTasks = tasksForBoard.filter((task) => {
       if (task.completed) return false;
       if (!isVisibleNow(task)) return false;
-      if (onlyIds && !onlyIds.has(task.id)) return false;
-      return true;
+      return includeId(task.id);
     });
-    if (visible.length === 0) return [];
 
     if (currentBoard.kind === "week") {
       const dayOrder = Array.from({ length: 7 }, (_, i) => ((settings.weekStart + i) % 7) as Weekday);
-      const dayMap = new Map<Weekday, Task[]>();
-      visible.forEach((task) => {
+      const taskByDay = new Map<Weekday, Task[]>();
+      visibleTasks.forEach((task) => {
         const day = taskWeekday(task) ?? (new Date().getDay() as Weekday);
-        const list = dayMap.get(day) ?? [];
+        const list = taskByDay.get(day) ?? [];
         list.push(task);
-        dayMap.set(day, list);
+        taskByDay.set(day, list);
       });
 
       const output: BoardPrintTask[] = [];
-      const pushGroup = (label: string, groupTasks: Task[]) => {
-        groupTasks
-          .slice()
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          .forEach((task) => {
-            output.push({ id: task.id, title: titleForTask(task), label });
-          });
-      };
-
       dayOrder.forEach((day) => {
-        const groupTasks = dayMap.get(day);
-        if (groupTasks && groupTasks.length) {
-          pushGroup(WD_SHORT[day], groupTasks);
-        }
+        const label = WD_SHORT[day];
+        const dayTasks = (taskByDay.get(day) ?? [])
+          .slice()
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        dayTasks.forEach((task) => {
+          output.push({ id: task.id, title: titleForTask(task), label });
+        });
+        const dayEvents = (calendarByDay.get(day) ?? []).filter((ev) => includeId(ev.id));
+        dayEvents.forEach((ev) => {
+          output.push({ id: ev.id, title: titleForEvent(ev), label });
+        });
       });
       return output;
     }
@@ -10746,7 +10744,7 @@ export default function App() {
     if (isListLikeBoard(currentBoard)) {
       const columnTaskMap = new Map<string, Task[]>();
       listColumns.forEach((col) => columnTaskMap.set(col.id, []));
-      for (const task of visible) {
+      for (const task of visibleTasks) {
         if (!task.columnId) continue;
         let columnKey = task.columnId;
         if (currentBoard.kind === "compound") {
@@ -10762,20 +10760,26 @@ export default function App() {
 
       const output: BoardPrintTask[] = [];
       listColumns.forEach((col) => {
-        const bucket = columnTaskMap.get(col.id);
-        if (!bucket || bucket.length === 0) return;
-        bucket
+        const taskBucket = (columnTaskMap.get(col.id) ?? [])
           .slice()
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          .forEach((task) => {
-            output.push({ id: task.id, title: titleForTask(task), label: col.name });
-          });
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        taskBucket.forEach((task) => {
+          output.push({ id: task.id, title: titleForTask(task), label: col.name });
+        });
+        const eventBucket = (calendarItemsByColumn.get(col.id) ?? []).filter((ev) => includeId(ev.id));
+        eventBucket.forEach((ev) => {
+          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name });
+        });
       });
       return output;
     }
 
-    return visible.map((task) => ({ id: task.id, title: titleForTask(task) }));
-  }, [currentBoard, listColumns, listColumnSources, settings.weekStart, tasksForBoard]);
+    const tasksOutput = visibleTasks.map((task) => ({ id: task.id, title: titleForTask(task) }));
+    const eventsOutput = calendarEventsForBoard
+      .filter((ev) => includeId(ev.id))
+      .map((ev) => ({ id: ev.id, title: titleForEvent(ev) }));
+    return [...tasksOutput, ...eventsOutput];
+  }, [calendarByDay, calendarEventsForBoard, calendarItemsByColumn, currentBoard, listColumns, listColumnSources, settings.weekStart, tasksForBoard]);
 
   const handleOpenBoardPrint = useCallback(() => {
     if (!currentBoard) return;
@@ -10803,11 +10807,15 @@ export default function App() {
     if (!currentBoard) return;
     const column = listColumns.find((c) => c.id === columnId);
     if (!column) return;
-    const bucket = itemsByColumn.get(columnId) ?? [];
-    const ids = new Set(bucket.filter((t) => !t.completed).map((t) => t.id));
+    const taskBucket = itemsByColumn.get(columnId) ?? [];
+    const eventBucket = calendarItemsByColumn.get(columnId) ?? [];
+    const ids = new Set<string>([
+      ...taskBucket.filter((t) => !t.completed).map((t) => t.id),
+      ...eventBucket.map((ev) => ev.id),
+    ]);
     const tasks = buildBoardPrintTasks({ onlyTaskIds: ids });
     if (!tasks.length) {
-      showToast("No tasks in this list to print.", 2500);
+      showToast("Nothing in this list to print.", 2500);
       return;
     }
     closeShareBoard();
@@ -10822,18 +10830,55 @@ export default function App() {
     };
     setBoardPrintJob(job);
     setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, itemsByColumn, listColumns, showToast]);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, calendarItemsByColumn, closeShareBoard, currentBoard, itemsByColumn, listColumns, showToast]);
 
   const handleSelectAllInListColumn = useCallback((columnId: string) => {
-    const bucket = itemsByColumn.get(columnId) ?? [];
-    const ids = bucket.filter((task) => !task.completed).map((task) => task.id);
+    const taskIds = (itemsByColumn.get(columnId) ?? []).filter((t) => !t.completed).map((t) => t.id);
+    const eventIds = (calendarItemsByColumn.get(columnId) ?? []).map((ev) => ev.id);
+    const ids = [...taskIds, ...eventIds];
     if (!ids.length) {
-      showToast("This list has no tasks to select.", 2500);
+      showToast("This list has nothing to select.", 2500);
       return;
     }
     setIsSelectionMode(true);
     setSelectedItemIds((prev) => Array.from(new Set([...prev, ...ids])));
-  }, [itemsByColumn, showToast]);
+  }, [calendarItemsByColumn, itemsByColumn, showToast]);
+
+  const handleOpenWeekDayPrint = useCallback((day: Weekday) => {
+    if (!currentBoard) return;
+    const taskIds = (byDay.get(day) ?? []).filter((t) => !t.completed).map((t) => t.id);
+    const eventIds = (calendarByDay.get(day) ?? []).map((ev) => ev.id);
+    const ids = new Set<string>([...taskIds, ...eventIds]);
+    const tasks = buildBoardPrintTasks({ onlyTaskIds: ids });
+    if (!tasks.length) {
+      showToast("Nothing on this day to print.", 2500);
+      return;
+    }
+    closeShareBoard();
+    const job: BoardPrintJob = {
+      id: crypto.randomUUID(),
+      boardId: currentBoard.id,
+      boardName: `${currentBoard.name || "Board"} – ${WD_SHORT[day]}`,
+      printedAtISO: new Date().toISOString(),
+      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
+      paperSize: boardPrintJob?.paperSize ?? "letter",
+      tasks,
+    };
+    setBoardPrintJob(job);
+    setBoardPrintOpen(true);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, byDay, calendarByDay, closeShareBoard, currentBoard, showToast]);
+
+  const handleSelectAllInWeekDay = useCallback((day: Weekday) => {
+    const taskIds = (byDay.get(day) ?? []).filter((t) => !t.completed).map((t) => t.id);
+    const eventIds = (calendarByDay.get(day) ?? []).map((ev) => ev.id);
+    const ids = [...taskIds, ...eventIds];
+    if (!ids.length) {
+      showToast("This day has nothing to select.", 2500);
+      return;
+    }
+    setIsSelectionMode(true);
+    setSelectedItemIds((prev) => Array.from(new Set([...prev, ...ids])));
+  }, [byDay, calendarByDay, showToast]);
 
   const handlePrintSelectedTasks = useCallback(() => {
     if (!currentBoard) return;
@@ -18743,6 +18788,8 @@ export default function App() {
                       if (isSelectionMode && payload.allIds) exitSelectionMode();
                     }}
                     onDropEnd={handleDragEnd}
+                    onPrint={() => handleOpenWeekDayPrint(day)}
+                    onSelectAll={() => handleSelectAllInWeekDay(day)}
                     data-day={day}
                     scrollable
                     footer={(
@@ -20310,7 +20357,7 @@ export default function App() {
               type="button"
               className="selection-bar__action pressable"
               onClick={handlePrintSelectedTasks}
-              disabled={!selectedTasks.some((task) => !task.completed)}
+              disabled={!selectedEvents.length && !selectedTasks.some((task) => !task.completed)}
               title="Print selected"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
