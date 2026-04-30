@@ -4883,8 +4883,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   onDropCard: (payload: { id: string; beforeId?: string; allIds?: string[] }) => void;
   onDropEnd?: () => void;
   onTitleClick?: () => void;
-  onPrint?: () => void;
   onSelectAll?: () => void;
+  selectionState?: "none" | "some" | "all";
   children: React.ReactNode;
   footer?: React.ReactNode;
   scrollable?: boolean;
@@ -4895,8 +4895,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
     onDropCard,
     onDropEnd,
     onTitleClick,
-    onPrint,
     onSelectAll,
+    selectionState,
     children,
     footer,
     scrollable,
@@ -4907,29 +4907,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
 ) => {
   const innerRef = useRef<HTMLDivElement | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const dragDepthRef = useRef(0);
 
-  useEffect(() => {
-    if (!actionMenuOpen) return;
-    const onDocPointerDown = (e: MouseEvent | TouchEvent) => {
-      const target = e.target as Node | null;
-      if (!target || !actionMenuRef.current) return;
-      if (!actionMenuRef.current.contains(target)) setActionMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setActionMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDocPointerDown);
-    document.addEventListener("touchstart", onDocPointerDown, { passive: true });
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocPointerDown);
-      document.removeEventListener("touchstart", onDocPointerDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [actionMenuOpen]);
   const setRef = useCallback((el: HTMLDivElement | null) => {
     innerRef.current = el;
     if (!forwardedRef) return;
@@ -5009,94 +4988,52 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
       {...props}
     >
       {header ?? (
-        <div className="flex items-center justify-between mb-3">
-          <div
-            className={`text-sm font-semibold tracking-wide text-secondary ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
-            onClick={onTitleClick}
-          role={onTitleClick ? 'button' : undefined}
-          tabIndex={onTitleClick ? 0 : undefined}
-          aria-label={onTitleClick ? `Set ${title} as add target` : undefined}
-          onKeyDown={(e) => {
-            if (!onTitleClick) return;
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onTitleClick();
-            }
-          }}
-          title={onTitleClick ? 'Set as add target' : undefined}
-        >
-          {title}
-          </div>
-          {(onPrint || onSelectAll) ? (
-            <div ref={actionMenuRef} className="relative">
+        <div className="flex items-center justify-between mb-3 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {selectionState && onSelectAll && (
               <button
                 type="button"
-                className="p-1 text-secondary hover:text-primary rounded"
-                onClick={(e) => { e.stopPropagation(); setActionMenuOpen((o) => !o); }}
-                title="List actions"
-                aria-haspopup="menu"
-                aria-expanded={actionMenuOpen}
+                role="checkbox"
+                aria-checked={selectionState === "all"}
+                aria-label={selectionState === "all" ? `Deselect all in ${title}` : `Select all in ${title}`}
+                onClick={(e) => { e.stopPropagation(); onSelectAll(); }}
+                className="flex items-center justify-center shrink-0"
+                title={selectionState === "all" ? "Deselect all in list" : "Select all in list"}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
-              </button>
-              {actionMenuOpen && (
-                <div
-                  role="menu"
-                  className="surface-panel absolute right-0 top-full mt-1 z-20 min-w-[170px] py-1 text-sm overflow-hidden"
-                >
-                  {onPrint && (
-                    <button
-                      role="menuitem"
-                      type="button"
-                      className="w-full text-left px-3 py-2 text-primary hover:bg-white/10 transition-colors"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActionMenuOpen(false);
-                        onPrint();
-                      }}
-                    >
-                      Print list
-                    </button>
-                  )}
-                  {onSelectAll ? (
-                    <button
-                      role="menuitem"
-                      type="button"
-                      className="w-full text-left px-3 py-2 text-primary hover:bg-white/10 transition-colors"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActionMenuOpen(false);
-                        onSelectAll();
-                      }}
-                    >
-                      Select all in list
-                    </button>
-                  ) : (
-                    <button
-                      role="menuitem"
-                      type="button"
-                      className="w-full text-left px-3 py-2 text-primary hover:bg-white/10 transition-colors"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActionMenuOpen(false);
-                        window.dispatchEvent(new CustomEvent('toggleSelectionMode'));
-                      }}
-                    >
-                      Select tasks
-                    </button>
-                  )}
+                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${selectionState === "all" ? "bg-[var(--accent)] border-[var(--accent)]" : "border-[var(--secondary)]"}`}>
+                  {selectionState === "all" ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  ) : selectionState === "some" ? (
+                    <div className="w-2 h-2 rounded-full bg-[var(--secondary)]" />
+                  ) : null}
                 </div>
-              )}
+              </button>
+            )}
+            <div
+              className={`text-sm font-semibold tracking-wide text-secondary truncate ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
+              onClick={onTitleClick}
+              role={onTitleClick ? 'button' : undefined}
+              tabIndex={onTitleClick ? 0 : undefined}
+              aria-label={onTitleClick ? `Set ${title} as add target` : undefined}
+              onKeyDown={(e) => {
+                if (!onTitleClick) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onTitleClick();
+                }
+              }}
+              title={onTitleClick ? 'Set as add target' : undefined}
+            >
+              {title}
             </div>
-          ) : (
-            <button
-              type="button"
-              className="p-1 text-secondary hover:text-primary rounded"
-              onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }}
-              title="Select tasks">
-              <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
-            </button>
-          )}
+          </div>
+          <button
+            type="button"
+            className="p-1 text-secondary hover:text-primary rounded shrink-0"
+            onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }}
+            title="Select tasks">
+            <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
+          </button>
         </div>
       )}
       <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''} data-column-scroll={scrollable ? "" : undefined}>
@@ -10803,82 +10740,39 @@ export default function App() {
     setBoardPrintOpen(true);
   }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, showToast]);
 
-  const handleOpenListColumnPrint = useCallback((columnId: string) => {
-    if (!currentBoard) return;
-    const column = listColumns.find((c) => c.id === columnId);
-    if (!column) return;
-    const taskBucket = itemsByColumn.get(columnId) ?? [];
-    const eventBucket = calendarItemsByColumn.get(columnId) ?? [];
-    const ids = new Set<string>([
-      ...taskBucket.filter((t) => !t.completed).map((t) => t.id),
-      ...eventBucket.map((ev) => ev.id),
-    ]);
-    const tasks = buildBoardPrintTasks({ onlyTaskIds: ids });
-    if (!tasks.length) {
-      showToast("Nothing in this list to print.", 2500);
-      return;
-    }
-    closeShareBoard();
-    const job: BoardPrintJob = {
-      id: crypto.randomUUID(),
-      boardId: currentBoard.id,
-      boardName: `${currentBoard.name || "Board"} – ${column.name}`,
-      printedAtISO: new Date().toISOString(),
-      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
-      paperSize: boardPrintJob?.paperSize ?? "letter",
-      tasks,
-    };
-    setBoardPrintJob(job);
-    setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, calendarItemsByColumn, closeShareBoard, currentBoard, itemsByColumn, listColumns, showToast]);
-
-  const handleSelectAllInListColumn = useCallback((columnId: string) => {
+  const listColumnGroupIds = useCallback((columnId: string): string[] => {
     const taskIds = (itemsByColumn.get(columnId) ?? []).filter((t) => !t.completed).map((t) => t.id);
     const eventIds = (calendarItemsByColumn.get(columnId) ?? []).map((ev) => ev.id);
-    const ids = [...taskIds, ...eventIds];
-    if (!ids.length) {
-      showToast("This list has nothing to select.", 2500);
-      return;
-    }
-    setIsSelectionMode(true);
-    setSelectedItemIds((prev) => Array.from(new Set([...prev, ...ids])));
-  }, [calendarItemsByColumn, itemsByColumn, showToast]);
+    return [...taskIds, ...eventIds];
+  }, [calendarItemsByColumn, itemsByColumn]);
 
-  const handleOpenWeekDayPrint = useCallback((day: Weekday) => {
-    if (!currentBoard) return;
+  const weekDayGroupIds = useCallback((day: Weekday): string[] => {
     const taskIds = (byDay.get(day) ?? []).filter((t) => !t.completed).map((t) => t.id);
     const eventIds = (calendarByDay.get(day) ?? []).map((ev) => ev.id);
-    const ids = new Set<string>([...taskIds, ...eventIds]);
-    const tasks = buildBoardPrintTasks({ onlyTaskIds: ids });
-    if (!tasks.length) {
-      showToast("Nothing on this day to print.", 2500);
-      return;
-    }
-    closeShareBoard();
-    const job: BoardPrintJob = {
-      id: crypto.randomUUID(),
-      boardId: currentBoard.id,
-      boardName: `${currentBoard.name || "Board"} – ${WD_SHORT[day]}`,
-      printedAtISO: new Date().toISOString(),
-      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
-      paperSize: boardPrintJob?.paperSize ?? "letter",
-      tasks,
-    };
-    setBoardPrintJob(job);
-    setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, byDay, calendarByDay, closeShareBoard, currentBoard, showToast]);
+    return [...taskIds, ...eventIds];
+  }, [byDay, calendarByDay]);
 
-  const handleSelectAllInWeekDay = useCallback((day: Weekday) => {
-    const taskIds = (byDay.get(day) ?? []).filter((t) => !t.completed).map((t) => t.id);
-    const eventIds = (calendarByDay.get(day) ?? []).map((ev) => ev.id);
-    const ids = [...taskIds, ...eventIds];
-    if (!ids.length) {
-      showToast("This day has nothing to select.", 2500);
-      return;
+  const groupSelectionState = useCallback((ids: string[]): "none" | "some" | "all" => {
+    if (!ids.length) return "none";
+    let selected = 0;
+    for (const id of ids) {
+      if (selectedItemIdSet.has(id)) selected += 1;
     }
-    setIsSelectionMode(true);
-    setSelectedItemIds((prev) => Array.from(new Set([...prev, ...ids])));
-  }, [byDay, calendarByDay, showToast]);
+    if (selected === 0) return "none";
+    if (selected === ids.length) return "all";
+    return "some";
+  }, [selectedItemIdSet]);
+
+  const toggleGroupSelection = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const allSelected = ids.every((id) => selectedItemIdSet.has(id));
+    if (allSelected) {
+      const idSet = new Set(ids);
+      setSelectedItemIds((prev) => prev.filter((id) => !idSet.has(id)));
+    } else {
+      setSelectedItemIds((prev) => Array.from(new Set([...prev, ...ids])));
+    }
+  }, [selectedItemIdSet]);
 
   const handlePrintSelectedTasks = useCallback(() => {
     if (!currentBoard) return;
