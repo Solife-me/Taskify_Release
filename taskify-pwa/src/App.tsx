@@ -18682,8 +18682,8 @@ export default function App() {
                       if (isSelectionMode && payload.allIds) exitSelectionMode();
                     }}
                     onDropEnd={handleDragEnd}
-                    onPrint={() => handleOpenWeekDayPrint(day)}
-                    onSelectAll={() => handleSelectAllInWeekDay(day)}
+                    onSelectAll={isSelectionMode ? () => toggleGroupSelection(weekDayGroupIds(day)) : undefined}
+                    selectionState={isSelectionMode ? groupSelectionState(weekDayGroupIds(day)) : undefined}
                     data-day={day}
                     scrollable
                     footer={(
@@ -18934,8 +18934,8 @@ export default function App() {
                         if (isSelectionMode && payload.allIds) exitSelectionMode();
                       }}
                       onDropEnd={handleDragEnd}
-                      onPrint={() => handleOpenListColumnPrint(col.id)}
-                      onSelectAll={() => handleSelectAllInListColumn(col.id)}
+                      onSelectAll={isSelectionMode ? () => toggleGroupSelection(listColumnGroupIds(col.id)) : undefined}
+                      selectionState={isSelectionMode ? groupSelectionState(listColumnGroupIds(col.id)) : undefined}
                       scrollable
                       footer={(
                         <form

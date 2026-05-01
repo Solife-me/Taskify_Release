@@ -51,11 +51,13 @@ import {
   LS_NIP51_CONTACTS_MIGRATED,
   LS_CONTACT_NIP05_CACHE,
   LS_CONTACT_PROFILE_CACHE,
+  LS_DM_ARCHIVED_THREADS,
   LS_DM_BLOCKED_PEERS,
   LS_DM_DELETED_EVENTS,
   LS_DM_MESSAGE_CACHE,
   LS_DM_THREAD_READ_STATE,
   LS_DM_SYNC_META,
+  LS_DM_TEMP_DELETED_EVENTS,
   LS_PROFILE_EVENT_IDS,
   LS_PROFILE_METADATA_CACHE,
   LS_GROUP_CHATS,
@@ -199,6 +201,218 @@ function GroupAvatar({
   );
 }
 
+function SwipeableDmThreadRow({
+  children,
+  onArchive,
+  onDelete,
+}: {
+  children: React.ReactNode;
+  onArchive: () => void;
+  onDelete: () => void;
+}) {
+  const [offset, setOffset] = useState(0);
+  const [transitionEnabled, setTransitionEnabled] = useState(true);
+  const [dismissing, setDismissing] = useState<"archive" | "delete" | null>(null);
+  const offsetRef = useRef(0);
+  const suppressClickRef = useRef(false);
+  const suppressClickTimerRef = useRef<number | null>(null);
+  const gestureRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startOffset: number;
+    locked: "horizontal" | "vertical" | null;
+    dragged: boolean;
+  } | null>(null);
+  useEffect(() => {
+    return () => {
+      if (suppressClickTimerRef.current != null) {
+        window.clearTimeout(suppressClickTimerRef.current);
+      }
+    };
+  }, []);
+  const setRowOffset = useCallback((next: number) => {
+    const bounded = Math.max(-DM_THREAD_SWIPE_ACTION_WIDTH, Math.min(0, Math.round(next)));
+    offsetRef.current = bounded;
+    setOffset(bounded);
+  }, []);
+  const close = useCallback(() => {
+    setTransitionEnabled(true);
+    setRowOffset(0);
+  }, [setRowOffset]);
+  const open = useCallback(() => {
+    setTransitionEnabled(true);
+    setRowOffset(-DM_THREAD_SWIPE_ACTION_WIDTH);
+  }, [setRowOffset]);
+  const revealRatio = Math.min(1, Math.abs(offset) / DM_THREAD_SWIPE_ACTION_WIDTH);
+  const startSwipeGesture = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    gestureRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startOffset: offsetRef.current,
+      locked: null,
+      dragged: false,
+    };
+    setTransitionEnabled(false);
+  }, []);
+  const moveSwipeGesture = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      const gesture = gestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      const dx = event.clientX - gesture.startX;
+      const dy = event.clientY - gesture.startY;
+      if (!gesture.locked) {
+        if (Math.abs(dx) > Math.abs(dy) + 5) gesture.locked = "horizontal";
+        else if (Math.abs(dy) > Math.abs(dx) + 5) gesture.locked = "vertical";
+      }
+      if (gesture.locked !== "horizontal") return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      if (Math.abs(dx) > 6) gesture.dragged = true;
+      setRowOffset(gesture.startOffset + dx);
+    },
+    [setRowOffset],
+  );
+  const endSwipeGesture = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      const gesture = gestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      gestureRef.current = null;
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+      setTransitionEnabled(true);
+      if (!gesture.dragged) return;
+      suppressClickRef.current = true;
+      if (suppressClickTimerRef.current != null) {
+        window.clearTimeout(suppressClickTimerRef.current);
+      }
+      suppressClickTimerRef.current = window.setTimeout(() => {
+        suppressClickRef.current = false;
+        suppressClickTimerRef.current = null;
+      }, 0);
+      if (gesture.locked === "horizontal" && offsetRef.current < -DM_THREAD_SWIPE_ACTION_WIDTH * 0.35) {
+        open();
+      } else if (gesture.locked === "horizontal") {
+        close();
+      }
+    },
+    [close, open],
+  );
+  const cancelSwipeGesture = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      const gesture = gestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      gestureRef.current = null;
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+      close();
+    },
+    [close],
+  );
+  const suppressDraggedClick = useCallback((event: React.SyntheticEvent) => {
+    if (!suppressClickRef.current) return false;
+    suppressClickRef.current = false;
+    if (suppressClickTimerRef.current != null) {
+      window.clearTimeout(suppressClickTimerRef.current);
+      suppressClickTimerRef.current = null;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }, []);
+  const runThreadAction = useCallback(
+    (action: "archive" | "delete", handler: () => void) => {
+      setTransitionEnabled(true);
+      setRowOffset(-DM_THREAD_SWIPE_ACTION_WIDTH);
+      setDismissing(action);
+      window.setTimeout(handler, 180);
+    },
+    [setRowOffset],
+  );
+
+  return (
+    <div
+      className={`chat-thread-swipe${offset !== 0 ? " is-open" : ""}${dismissing ? " is-dismissing" : ""}`}
+      onPointerDown={startSwipeGesture}
+      onPointerMove={moveSwipeGesture}
+      onPointerUp={endSwipeGesture}
+      onPointerCancel={cancelSwipeGesture}
+    >
+      <div
+        className="chat-thread-swipe__actions"
+        aria-hidden={offset === 0}
+        style={{
+          opacity: revealRatio,
+          pointerEvents: offset === 0 ? "none" : "auto",
+        }}
+      >
+        <button
+          type="button"
+          className="chat-thread-swipe__action chat-thread-swipe__action--archive pressable"
+          onClick={(event) => {
+            if (suppressDraggedClick(event)) return;
+            event.stopPropagation();
+            runThreadAction("archive", onArchive);
+          }}
+          disabled={!!dismissing}
+          tabIndex={offset === 0 || dismissing ? -1 : 0}
+          aria-label="Archive thread"
+          title="Archive"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="4" rx="1" />
+            <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" />
+            <path d="M10 12h4" />
+          </svg>
+          <span>Archive</span>
+        </button>
+        <button
+          type="button"
+          className="chat-thread-swipe__action chat-thread-swipe__action--delete pressable"
+          onClick={(event) => {
+            if (suppressDraggedClick(event)) return;
+            event.stopPropagation();
+            runThreadAction("delete", onDelete);
+          }}
+          disabled={!!dismissing}
+          tabIndex={offset === 0 || dismissing ? -1 : 0}
+          aria-label="Delete thread"
+          title="Delete"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M9 3h6l1 1h5v2H3V4h5l1-1z" />
+            <path d="M5 7h14l-1.5 13h-11L5 7z" />
+          </svg>
+          <span>Delete</span>
+        </button>
+      </div>
+      <div
+        className="chat-thread-swipe__content"
+        style={{
+          transform: `translateX(${offset}px)`,
+          transition: transitionEnabled ? "transform 180ms ease" : "none",
+        }}
+        onClickCapture={(event) => {
+          if (suppressDraggedClick(event)) {
+            return;
+          }
+          if (offsetRef.current !== 0) {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+          }
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const ShareArrowIcon = (props: React.SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
     <path d="M14.5 6.5 9 10.5l5.5 4" />
@@ -216,6 +430,8 @@ const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
 const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const PAYMENT_HISTORY_EVENT_ID_REGEX = /^payment-request-(?:recv|pending)-([a-f0-9]{32,})$/i;
 const CHAT_TIMESTAMP_REVEAL_WIDTH = 92;
+const DM_THREAD_DELETE_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+const DM_THREAD_SWIPE_ACTION_WIDTH = 168;
 const CHAT_ATTACH_TRAY_MIN_HEIGHT = 248;
 const CHAT_ATTACH_TRAY_MAX_HEIGHT = 380;
 const CHAT_ATTACH_TRAY_FALLBACK_RATIO = 0.38;
@@ -1240,6 +1456,36 @@ function readStoredTimestampMap(storageKey: string): Map<string, number> {
   } catch {
     return new Map();
   }
+}
+
+function readStoredExpiryMap(storageKey: string): Map<string, number> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Map();
+    const now = Date.now();
+    return new Map(
+      Object.entries(parsed)
+        .map(([key, value]) => {
+          const normalizedKey = typeof key === "string" ? key.trim() : "";
+          const expiresAt =
+            typeof value === "number" && Number.isFinite(value) && value > now ? Math.floor(value) : 0;
+          return normalizedKey && expiresAt > 0 ? ([normalizedKey, expiresAt] as const) : null;
+        })
+        .filter(Boolean) as Array<readonly [string, number]>,
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function dmThreadKeyForMessage(message: Pick<WalletDmMessage, "peerPubkey" | "groupId"> | null | undefined): string {
+  return ((message?.groupId || message?.peerPubkey || "") as string).trim().toLowerCase();
+}
+
+function dmThreadKeyForThread(thread: Pick<WalletDmThread, "peerPubkey" | "groupId"> | null | undefined): string {
+  return ((thread?.groupId || thread?.peerPubkey || "") as string).trim().toLowerCase();
 }
 
 type PendingCalendarInvite = {
@@ -2803,6 +3049,10 @@ export default function CashuWalletModal({
   const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dmDeletedEventsRef = useRef<Set<string>>(new Set());
   const [dmDeletedEventsVersion, setDmDeletedEventsVersion] = useState(0);
+  const dmTempDeletedEventsRef = useRef<Map<string, number>>(readStoredExpiryMap(LS_DM_TEMP_DELETED_EVENTS));
+  const [dmTempDeletedEventsVersion, setDmTempDeletedEventsVersion] = useState(0);
+  const dmArchivedThreadsRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_DM_ARCHIVED_THREADS));
+  const [dmArchivedThreadsVersion, setDmArchivedThreadsVersion] = useState(0);
   const dmBlockedPeersRef = useRef<Set<string>>(new Set());
   const [, setDmBlockedPeersVersion] = useState(0);
   const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(initialDmPeerProfiles);
@@ -2878,6 +3128,31 @@ export default function CashuWalletModal({
       // ignore storage failures
     }
   }, []);
+  const persistTempDeletedDmEvents = useCallback((events: Map<string, number>) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_TEMP_DELETED_EVENTS, JSON.stringify(Object.fromEntries(events)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistArchivedDmThreads = useCallback((threads: Map<string, number>) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_ARCHIVED_THREADS, JSON.stringify(Object.fromEntries(threads)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const pruneTempDeletedDmEvents = useCallback(() => {
+    const now = Date.now();
+    const next = new Map(
+      Array.from(dmTempDeletedEventsRef.current.entries()).filter(([, expiresAt]) => expiresAt > now),
+    );
+    if (next.size === dmTempDeletedEventsRef.current.size) return false;
+    dmTempDeletedEventsRef.current = next;
+    persistTempDeletedDmEvents(next);
+    setDmTempDeletedEventsVersion((v) => v + 1);
+    return true;
+  }, [persistTempDeletedDmEvents]);
   const persistBlockedPeers = useCallback((peers: Set<string>) => {
     try {
       idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_BLOCKED_PEERS, JSON.stringify(Array.from(peers)));
@@ -2937,6 +3212,13 @@ export default function CashuWalletModal({
       // ignore storage failures
     }
   }, []);
+  useEffect(() => {
+    pruneTempDeletedDmEvents();
+    const timer = window.setInterval(() => {
+      pruneTempDeletedDmEvents();
+    }, 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [pruneTempDeletedDmEvents]);
   const persistDmPeerProfileCache = useCallback(
     (peerHex: string, profile: ContactProfile, updatedAt: number, pictureDataUrl?: string) => {
       const normalizedPeerHex = normalizeDmPeerHex(peerHex);
@@ -3045,6 +3327,10 @@ export default function CashuWalletModal({
         removed.add(msg.eventId);
         return false;
       }
+      if ((dmTempDeletedEventsRef.current.get(msg.eventId) ?? 0) > Date.now()) {
+        removed.add(msg.eventId);
+        return false;
+      }
       return true;
     });
     if (!removed.size && filtered.length === dmMessages.length) return;
@@ -3056,7 +3342,7 @@ export default function CashuWalletModal({
         return next;
       });
     }
-  }, [dmDeletedEventsVersion, dmMessages]);
+  }, [dmDeletedEventsVersion, dmMessages, dmTempDeletedEventsVersion]);
   const buildDmCopyValue = useCallback(
     (
       msg: WalletDmMessage,
@@ -5632,11 +5918,16 @@ export default function CashuWalletModal({
     ],
   );
   const syntheticDmMessages = useMemo(() => {
+    void dmDeletedEventsVersion;
+    void dmTempDeletedEventsVersion;
+    const isSuppressedEventId = (eventId: string) =>
+      dmDeletedEventsRef.current.has(eventId) || (dmTempDeletedEventsRef.current.get(eventId) ?? 0) > Date.now();
     const existingEventIds = new Set(dmMessages.map((message) => message.eventId));
     const messages: WalletDmMessage[] = [];
     (inboxPendingItems || []).forEach((item) => {
       const eventId = buildWalletMessageSyntheticEventId(item);
       if (existingEventIds.has(eventId)) return;
+      if (isSuppressedEventId(eventId)) return;
       const peerHex = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
       if (!peerHex) return;
       const title = item.title?.trim() || item.task?.title?.trim() || item.boardName?.trim() || "Shared item";
@@ -5693,6 +5984,7 @@ export default function CashuWalletModal({
     (pendingCalendarInvites || []).forEach((invite) => {
       const eventId = buildCalendarInviteSyntheticEventId(invite);
       if (existingEventIds.has(eventId)) return;
+      if (isSuppressedEventId(eventId)) return;
       const peerHex = normalizeDmPeerHex(invite.sender?.pubkey || invite.sender?.npub);
       if (!peerHex) return;
       const whenLabel = formatCalendarInviteWhen ? formatCalendarInviteWhen(invite) : "";
@@ -5720,17 +6012,33 @@ export default function CashuWalletModal({
     });
     messages.sort((a, b) => a.createdAt - b.createdAt);
     return messages;
-  }, [dmMessages, formatCalendarInviteWhen, inboxPendingItems, pendingCalendarInvites]);
+  }, [
+    dmDeletedEventsVersion,
+    dmMessages,
+    dmTempDeletedEventsVersion,
+    formatCalendarInviteWhen,
+    inboxPendingItems,
+    pendingCalendarInvites,
+  ]);
   const displayDmMessages = useMemo(() => {
+    void dmDeletedEventsVersion;
+    void dmTempDeletedEventsVersion;
     const merged = new Map<string, WalletDmMessage>();
     syntheticDmMessages.forEach((message) => {
       merged.set(message.eventId, message);
     });
     dmMessages.forEach((message) => {
+      if (dmDeletedEventsRef.current.has(message.eventId)) return;
+      if ((dmTempDeletedEventsRef.current.get(message.eventId) ?? 0) > Date.now()) return;
       merged.set(message.eventId, message);
     });
     return Array.from(merged.values()).sort((a, b) => a.createdAt - b.createdAt);
-  }, [dmMessages, syntheticDmMessages]);
+  }, [
+    dmDeletedEventsVersion,
+    dmMessages,
+    dmTempDeletedEventsVersion,
+    syntheticDmMessages,
+  ]);
   const paymentHistoryByEventId = useMemo(() => {
     const map = new Map<string, HistoryItem>();
     history.forEach((entry) => {
@@ -5915,10 +6223,29 @@ export default function CashuWalletModal({
         dmProcessedEventsRef.current.add(event.id);
         return;
       }
+      const tempDeletedExpiresAt = dmTempDeletedEventsRef.current.get(event.id) ?? 0;
+      if (tempDeletedExpiresAt > Date.now()) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      if (tempDeletedExpiresAt > 0) {
+        const nextTempDeleted = new Map(dmTempDeletedEventsRef.current);
+        nextTempDeleted.delete(event.id);
+        dmTempDeletedEventsRef.current = nextTempDeleted;
+        persistTempDeletedDmEvents(nextTempDeleted);
+        setDmTempDeletedEventsVersion((v) => v + 1);
+      }
       const identity = ensureNostrIdentity();
       if (!identity) return;
       const decrypted = await decryptNostrPaymentMessage(event, identity.pubkey, identity.secret);
       if (!decrypted) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      const tempDeletedRumorExpiresAt = decrypted.rumorId
+        ? dmTempDeletedEventsRef.current.get(decrypted.rumorId) ?? 0
+        : 0;
+      if (tempDeletedRumorExpiresAt > Date.now()) {
         dmProcessedEventsRef.current.add(event.id);
         return;
       }
@@ -6224,6 +6551,7 @@ export default function CashuWalletModal({
       ensurePeerProfile,
       normalizeNostrPubkey,
       parseIncomingPaymentMessage,
+      persistTempDeletedDmEvents,
       resolvePeerPubkey,
       upsertGroupChat,
     ],
@@ -6461,6 +6789,44 @@ export default function CashuWalletModal({
     () => (activeThread?.groupId ? groupChats.find((group) => group.groupId === activeThread.groupId) ?? null : null),
     [activeThread?.groupId, groupChats],
   );
+  const isArchivedDmThread = useCallback(
+    (thread: WalletDmThread) => {
+      void dmArchivedThreadsVersion;
+      const key = dmThreadKeyForThread(thread);
+      const archivedAt = key ? dmArchivedThreadsRef.current.get(key) ?? 0 : 0;
+      if (archivedAt <= 0) return false;
+      return !thread.messages.some(
+        (message) => !message.eventId.startsWith("draft-") && message.createdAt * 1000 > archivedAt,
+      );
+    },
+    [dmArchivedThreadsVersion],
+  );
+  const visibleDmThreads = useMemo(
+    () => dmThreads.filter((thread) => !isArchivedDmThread(thread)),
+    [dmThreads, isArchivedDmThread],
+  );
+  useEffect(() => {
+    if (!dmArchivedThreadsRef.current.size) return;
+    const next = new Map(dmArchivedThreadsRef.current);
+    let changed = false;
+    dmThreads.forEach((thread) => {
+      const key = dmThreadKeyForThread(thread);
+      if (!key) return;
+      const archivedAt = next.get(key) ?? 0;
+      if (archivedAt <= 0) return;
+      const hasNewerMessage = thread.messages.some(
+        (message) => !message.eventId.startsWith("draft-") && message.createdAt * 1000 > archivedAt,
+      );
+      if (hasNewerMessage) {
+        next.delete(key);
+        changed = true;
+      }
+    });
+    if (!changed) return;
+    dmArchivedThreadsRef.current = next;
+    persistArchivedDmThreads(next);
+    setDmArchivedThreadsVersion((value) => value + 1);
+  }, [dmThreads, persistArchivedDmThreads]);
   const contactByHex = useMemo(() => {
     const map = new Map<string, Contact>();
     contacts.forEach((contact) => {
@@ -6476,8 +6842,8 @@ export default function CashuWalletModal({
   const activeGroupMuted = !!(activeGroupChat && dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
   const activeGroupLeft = !!(activeGroupChat && dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
   const strangerThreads = useMemo(
-    () => dmThreads.filter((thread) => thread.isStranger),
-    [dmThreads],
+    () => visibleDmThreads.filter((thread) => thread.isStranger),
+    [visibleDmThreads],
   );
   const matchesDmThreadSearch = useCallback(
     (thread: WalletDmThread) => {
@@ -6491,7 +6857,7 @@ export default function CashuWalletModal({
   );
   const dmThreadListEntries = useMemo<DmThreadListEntry[]>(() => {
     if (dmSearch.trim()) {
-      return dmThreads
+      return visibleDmThreads
         .filter(matchesDmThreadSearch)
         .map((thread) => ({ kind: "thread" as const, thread, lastCreatedAt: thread.lastCreatedAt }));
     }
@@ -6502,7 +6868,7 @@ export default function CashuWalletModal({
         lastCreatedAt: thread.lastCreatedAt,
       }));
     }
-    const entries: DmThreadListEntry[] = dmThreads
+    const entries: DmThreadListEntry[] = visibleDmThreads
       .filter((thread) => !thread.isStranger)
       .map((thread) => ({ kind: "thread", thread, lastCreatedAt: thread.lastCreatedAt }));
     if (strangerThreads.length) {
@@ -6517,13 +6883,13 @@ export default function CashuWalletModal({
     }
     entries.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
     return entries;
-  }, [dmSearch, dmThreads, dmView, matchesDmThreadSearch, strangerThreads]);
+  }, [dmSearch, dmView, matchesDmThreadSearch, strangerThreads, visibleDmThreads]);
   type MessageSearchResult = { thread: WalletDmThread; message: WalletDmMessage };
   const messageSearchResults = useMemo<MessageSearchResult[]>(() => {
     const q = dmSearch.trim().toLowerCase();
     if (!q) return [];
     const results: MessageSearchResult[] = [];
-    for (const thread of dmThreads) {
+    for (const thread of visibleDmThreads) {
       for (const msg of thread.messages) {
         if (!msg.eventId.startsWith("draft-") && msg.content.toLowerCase().includes(q)) {
           results.push({ thread, message: msg });
@@ -6532,7 +6898,7 @@ export default function CashuWalletModal({
     }
     results.sort((a, b) => b.message.createdAt - a.message.createdAt);
     return results;
-  }, [dmSearch, dmThreads]);
+  }, [dmSearch, visibleDmThreads]);
   const activeThreadPendingMessages = useMemo(
     () =>
       activeThread
@@ -6755,6 +7121,107 @@ export default function CashuWalletModal({
     },
     [persistDmThreadReadState],
   );
+  const closeThreadIfActive = useCallback(
+    (thread: WalletDmThread) => {
+      if (activeThreadPeer !== thread.peerPubkey) return;
+      setActiveThreadPeer(null);
+      setActiveGroupId(null);
+      setDmView(dmListViewRef.current);
+      if (isChatPage) {
+        setChatView("threads");
+      }
+    },
+    [activeThreadPeer, isChatPage],
+  );
+  const clearArchivedDmThread = useCallback(
+    (threadKey: string) => {
+      const key = threadKey.trim().toLowerCase();
+      if (!key || !dmArchivedThreadsRef.current.has(key)) return;
+      const next = new Map(dmArchivedThreadsRef.current);
+      next.delete(key);
+      dmArchivedThreadsRef.current = next;
+      persistArchivedDmThreads(next);
+      setDmArchivedThreadsVersion((value) => value + 1);
+    },
+    [persistArchivedDmThreads],
+  );
+  const handleArchiveDmThread = useCallback(
+    (thread: WalletDmThread) => {
+      const key = dmThreadKeyForThread(thread);
+      if (!key) return;
+      const next = new Map(dmArchivedThreadsRef.current);
+      next.set(key, Date.now());
+      dmArchivedThreadsRef.current = next;
+      persistArchivedDmThreads(next);
+      setDmArchivedThreadsVersion((value) => value + 1);
+      const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
+      if (unreadIds.length) {
+        onMarkMessagesRead(unreadIds);
+      }
+      markThreadReadThrough(thread.peerPubkey, Math.floor(Date.now() / 1000));
+      closeThreadIfActive(thread);
+      showToast("Thread archived", 1800);
+    },
+    [
+      closeThreadIfActive,
+      collectUnreadThreadItemEventIds,
+      markThreadReadThrough,
+      onMarkMessagesRead,
+      persistArchivedDmThreads,
+      showToast,
+    ],
+  );
+  const handleDeleteDmThread = useCallback(
+    (thread: WalletDmThread) => {
+      const key = dmThreadKeyForThread(thread);
+      if (!key) return;
+      const now = Date.now();
+      const cutoffMs = now - DM_THREAD_DELETE_CACHE_TTL_MS;
+      const expiresAt = now + DM_THREAD_DELETE_CACHE_TTL_MS;
+      const nextTempDeleted = new Map(
+        Array.from(dmTempDeletedEventsRef.current.entries()).filter(([, expiry]) => expiry > now),
+      );
+      thread.messages.forEach((message) => {
+        if (message.eventId.startsWith("draft-")) return;
+        if (message.createdAt * 1000 < cutoffMs) return;
+        nextTempDeleted.set(message.eventId, expiresAt);
+        if (message.rumorEventId) {
+          nextTempDeleted.set(message.rumorEventId, expiresAt);
+        }
+        dmProcessedEventsRef.current.add(message.eventId);
+      });
+      dmTempDeletedEventsRef.current = nextTempDeleted;
+      persistTempDeletedDmEvents(nextTempDeleted);
+      setDmTempDeletedEventsVersion((value) => value + 1);
+      clearArchivedDmThread(key);
+      const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
+      if (unreadIds.length) {
+        onMarkMessagesRead(unreadIds);
+      }
+      setDmMessages((prev) => prev.filter((message) => dmThreadKeyForMessage(message) !== key));
+      setPendingMessages((prev) =>
+        prev.filter((message) => message.peerPubkey.trim().toLowerCase() !== thread.peerPubkey.toLowerCase()),
+      );
+      setDmExpandedMessages((prev) => {
+        const eventIds = new Set(thread.messages.map((message) => message.eventId));
+        if (!eventIds.size) return prev;
+        const next = new Set(prev);
+        eventIds.forEach((eventId) => next.delete(eventId));
+        return next;
+      });
+      setDmMessageActions((prev) => (prev && thread.messages.some((message) => message.eventId === prev.eventId) ? null : prev));
+      closeThreadIfActive(thread);
+      showToast("Thread deleted", 1800);
+    },
+    [
+      clearArchivedDmThread,
+      closeThreadIfActive,
+      collectUnreadThreadItemEventIds,
+      onMarkMessagesRead,
+      persistTempDeletedDmEvents,
+      showToast,
+    ],
+  );
   const openActiveGroupInfo = useCallback(() => {
     if (!activeThread?.groupId) return;
     setGroupMembersSearch("");
@@ -6827,10 +7294,10 @@ export default function CashuWalletModal({
   );
   const mainUnreadCount = useMemo(
     () =>
-      dmThreads.reduce((acc, thread) => {
+      visibleDmThreads.reduce((acc, thread) => {
         return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
       }, 0),
-    [dmThreads, threadUnreadMap],
+    [threadUnreadMap, visibleDmThreads],
   );
   useEffect(() => {
     onDmUnreadCountChange?.(mainUnreadCount);
@@ -16658,45 +17125,50 @@ export default function CashuWalletModal({
                       : peerLabelFor(thread.peerPubkey);
                     const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
                     return (
-                      <button
+                      <SwipeableDmThreadRow
                         key={thread.peerPubkey}
-                        className="wallet-messages__thread pressable"
-                        onClick={() => {
-                          dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
-                          setActiveThreadPeer(thread.peerPubkey);
-                          setDmView("thread");
-                          const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
-                          if (unreadIds.length) {
-                            onMarkMessagesRead(unreadIds);
-                          }
-                        }}
+                        onArchive={() => handleArchiveDmThread(thread)}
+                        onDelete={() => handleDeleteDmThread(thread)}
                       >
-                        <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
-                          {isGroupThread ? (
-                            <GroupAvatar members={groupAvatarMembers} />
-                          ) : meta.picture ? (
-                            <img
-                              src={meta.picture}
-                              alt={meta.label}
-                              className="wallet-messages__avatar-img"
-                            />
-                          ) : (
-                            <span>{meta.label.slice(0, 2)}</span>
-                          )}
-                        </div>
-                        <div className="wallet-messages__thread-body">
-                          <div className="wallet-messages__thread-title">
-                            {meta.label}
+                        <button
+                          className="wallet-messages__thread pressable"
+                          onClick={() => {
+                            dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
+                            setActiveThreadPeer(thread.peerPubkey);
+                            setDmView("thread");
+                            const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
+                            if (unreadIds.length) {
+                              onMarkMessagesRead(unreadIds);
+                            }
+                          }}
+                        >
+                          <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+                            {isGroupThread ? (
+                              <GroupAvatar members={groupAvatarMembers} />
+                            ) : meta.picture ? (
+                              <img
+                                src={meta.picture}
+                                alt={meta.label}
+                                className="wallet-messages__avatar-img"
+                              />
+                            ) : (
+                              <span>{meta.label.slice(0, 2)}</span>
+                            )}
                           </div>
-                          <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
-                        </div>
-                        <div className="wallet-messages__thread-meta">
-                          <span className="wallet-messages__thread-date">
-                            {formatShortDate(thread.lastCreatedAt)}
-                          </span>
-                          {unreadCount > 0 && <span className="chat-unread-badge">{unreadCount}</span>}
-                        </div>
-                      </button>
+                          <div className="wallet-messages__thread-body">
+                            <div className="wallet-messages__thread-title">
+                              {meta.label}
+                            </div>
+                            <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+                          </div>
+                          <div className="wallet-messages__thread-meta">
+                            <span className="wallet-messages__thread-date">
+                              {formatShortDate(thread.lastCreatedAt)}
+                            </span>
+                            {unreadCount > 0 && <span className="chat-unread-badge">{unreadCount}</span>}
+                          </div>
+                        </button>
+                      </SwipeableDmThreadRow>
                     );
                   })}
                 {dmThreadListEntries.length === 0 && (
@@ -17586,45 +18058,50 @@ export default function CashuWalletModal({
 		                    : peerLabelFor(thread.peerPubkey);
 		                  const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
 		                  return (
-		                    <button
+		                    <SwipeableDmThreadRow
 		                      key={thread.peerPubkey}
-		                      className="wallet-messages__thread pressable"
-		                      onClick={() => {
-		                        dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
-		                        setActiveThreadPeer(thread.peerPubkey);
-		                        if (isGroupThread) setActiveGroupId(thread.groupId!);
-		                        setChatView("conversation");
-		                        setDmView("thread");
-		                        const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
-		                        if (unreadIds.length) {
-		                          onMarkMessagesRead(unreadIds);
-		                        }
-		                      }}
+		                      onArchive={() => handleArchiveDmThread(thread)}
+		                      onDelete={() => handleDeleteDmThread(thread)}
 		                    >
-		                      <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
-		                        {isGroupThread ? (
-		                          <GroupAvatar members={groupAvatarMembers} />
-		                        ) : meta.picture ? (
-		                          <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
-		                        ) : (
-		                          <span>{meta.label.slice(0, 2)}</span>
-		                        )}
-		                      </div>
-		                      <div className="wallet-messages__thread-body">
-		                        <div className="wallet-messages__thread-title">
-		                          {meta.label}
+		                      <button
+		                        className="wallet-messages__thread pressable"
+		                        onClick={() => {
+		                          dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
+		                          setActiveThreadPeer(thread.peerPubkey);
+		                          if (isGroupThread) setActiveGroupId(thread.groupId!);
+		                          setChatView("conversation");
+		                          setDmView("thread");
+		                          const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
+		                          if (unreadIds.length) {
+		                            onMarkMessagesRead(unreadIds);
+		                          }
+		                        }}
+		                      >
+		                        <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
+		                          {isGroupThread ? (
+		                            <GroupAvatar members={groupAvatarMembers} />
+		                          ) : meta.picture ? (
+		                            <img src={meta.picture} alt={meta.label} className="wallet-messages__avatar-img" />
+		                          ) : (
+		                            <span>{meta.label.slice(0, 2)}</span>
+		                          )}
 		                        </div>
-		                        <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
-		                      </div>
-		                      <div className="wallet-messages__thread-meta">
-		                        <span className="wallet-messages__thread-date">
-		                          {formatShortDate(thread.lastCreatedAt)}
-		                        </span>
-		                        {unreadCount > 0 && (
-		                          <span className="chat-unread-badge">{unreadCount}</span>
-		                        )}
-		                      </div>
-		                    </button>
+		                        <div className="wallet-messages__thread-body">
+		                          <div className="wallet-messages__thread-title">
+		                            {meta.label}
+		                          </div>
+		                          <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+		                        </div>
+		                        <div className="wallet-messages__thread-meta">
+		                          <span className="wallet-messages__thread-date">
+		                            {formatShortDate(thread.lastCreatedAt)}
+		                          </span>
+		                          {unreadCount > 0 && (
+		                            <span className="chat-unread-badge">{unreadCount}</span>
+		                          )}
+		                        </div>
+		                      </button>
+		                    </SwipeableDmThreadRow>
 		                  );
 		                })}
 		                {dmThreadListEntries.length === 0 && messageSearchResults.length === 0 && (
