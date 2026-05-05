@@ -3,11 +3,13 @@ import {
   LS_CONTACT_NIP05_CACHE,
   LS_CONTACT_PROFILE_CACHE,
   LS_NIP51_CONTACTS_MIGRATED,
+  LS_DM_ARCHIVED_THREADS,
   LS_DM_BLOCKED_PEERS,
   LS_DM_DELETED_EVENTS,
   LS_DM_MESSAGE_CACHE,
   LS_DM_THREAD_READ_STATE,
   LS_DM_SYNC_META,
+  LS_DM_TEMP_DELETED_EVENTS,
   LS_ECASH_OPEN_REQUESTS,
   LS_LIGHTNING_CONTACTS,
   LS_MINT_BACKUP_CACHE,
@@ -29,6 +31,7 @@ const BOARDS_KEY = "taskify_boards_v2";
 const EVENTS_KEY = "taskify_calendar_events_v1";
 const EXTERNAL_EVENTS_KEY = "taskify_calendar_external_events_v1";
 const BOARD_SYNC_CURSORS_KEY = "taskify_board_sync_cursors_v1";
+const TASK_TOMBSTONES_KEY = "taskify_task_tombstones_v1";
 
 const CASHU_PROOFS_KEY = "cashu_proofs_v1";
 const CASHU_ACTIVE_MINT_KEY = "cashu_active_mint_v1";
@@ -61,6 +64,7 @@ export async function initializeStorageBoundaries(): Promise<void> {
       LS_BACKGROUND_IMAGE,
 
       BOARD_SYNC_CURSORS_KEY, // relay sync cursors — must preload so repeat opens skip limit:500
+      TASK_TOMBSTONES_KEY, // persistent deletion tombstones — must preload so first sync hydrates clock
     ]),
     idbKeyValue.initStore(TASKIFY_STORE_WALLET, [
       CASHU_PROOFS_KEY,
@@ -86,6 +90,8 @@ export async function initializeStorageBoundaries(): Promise<void> {
       LS_CONTACT_PROFILE_CACHE,
       LS_PROFILE_EVENT_IDS,
       LS_DM_DELETED_EVENTS,
+      LS_DM_TEMP_DELETED_EVENTS,
+      LS_DM_ARCHIVED_THREADS,
       LS_DM_BLOCKED_PEERS,
       LS_DM_MESSAGE_CACHE,
       LS_DM_THREAD_READ_STATE,

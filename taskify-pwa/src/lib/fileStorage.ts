@@ -70,7 +70,7 @@ export function serializeFileServers(servers: FileServerEntry[]): string {
   return JSON.stringify(servers.map((entry) => ({ url: normalizeFileServerUrl(entry.url) || entry.url, type: entry.type, ...(entry.label ? { label: entry.label } : {}) })));
 }
 
-export function findServerEntry(servers: FileServerEntry[], url: string): FileServerEntry | null {
+export function findServerEntry(servers: FileServerEntry[], url: string): FileServerEntry | undefined {
   const normalized = normalizeFileServerUrl(url) || url;
-  return servers.find((entry) => (normalizeFileServerUrl(entry.url) || entry.url) === normalized) || null;
+  return servers.find((entry) => (normalizeFileServerUrl(entry.url) || entry.url) === normalized);
 }

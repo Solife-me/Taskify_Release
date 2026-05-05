@@ -2886,6 +2886,73 @@ html.light .wallet-balance-card {
   text-align: left;
 }
 
+.chat-thread-swipe {
+  position: relative;
+  width: 100%;
+  max-height: 7.5rem;
+  overflow: hidden;
+  border-radius: 14px;
+  opacity: 1;
+  transform: translateX(0);
+  transition: max-height 180ms ease, opacity 180ms ease, transform 180ms ease;
+}
+
+.chat-thread-swipe.is-dismissing {
+  max-height: 0;
+  opacity: 0;
+  transform: translateX(-1.5rem);
+}
+
+.chat-thread-swipe__content {
+  position: relative;
+  z-index: 2;
+  touch-action: pan-y;
+  will-change: transform;
+}
+
+.chat-thread-swipe__actions {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: inherit;
+  background: rgba(12, 14, 20, 0.32);
+  z-index: 3;
+  transition: opacity 160ms ease;
+}
+
+.chat-thread-swipe__action {
+  width: 5.25rem;
+  border: 0;
+  color: #fff;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.chat-thread-swipe__action svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.chat-thread-swipe__action--archive {
+  background: rgba(91, 110, 130, 0.92);
+}
+
+.chat-thread-swipe__action--delete {
+  background: rgba(214, 55, 74, 0.95);
+}
+
+html.light .chat-thread-swipe__actions {
+  background: rgba(15, 23, 42, 0.08);
+}
+
 .wallet-messages__thread--stranger {
   background: linear-gradient(90deg, rgba(123, 97, 255, 0.25), rgba(255, 255, 255, 0.06));
 }

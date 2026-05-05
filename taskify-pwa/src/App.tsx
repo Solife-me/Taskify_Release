@@ -1661,6 +1661,15 @@ function isSameLocalDate(aMs: number, bMs: number): boolean {
 const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
+// Persistent task-deletion tombstones, keyed by board tag → task id → unix-secs
+// of the deletion. Survives reloads so a stale CREATE event from a slow/unaware
+// relay cannot resurrect a task whose deletion publish never reached the relay
+// (e.g., offline, network failure, app killed before debounce flush).
+const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
+// Cap per board to bound storage growth. Older tombstones are evicted by
+// timestamp — the most recent N deletions are always retained, which is what
+// matters for protecting against stale relay re-creates.
+const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
 const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
 const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
@@ -4874,6 +4883,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   onDropCard: (payload: { id: string; beforeId?: string; allIds?: string[] }) => void;
   onDropEnd?: () => void;
   onTitleClick?: () => void;
+  onSelectAll?: () => void;
+  selectionState?: "none" | "some" | "all";
   children: React.ReactNode;
   footer?: React.ReactNode;
   scrollable?: boolean;
@@ -4884,6 +4895,8 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
     onDropCard,
     onDropEnd,
     onTitleClick,
+    onSelectAll,
+    selectionState,
     children,
     footer,
     scrollable,
@@ -4895,6 +4908,7 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   const innerRef = useRef<HTMLDivElement | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
+
   const setRef = useCallback((el: HTMLDivElement | null) => {
     innerRef.current = el;
     if (!forwardedRef) return;
@@ -4974,28 +4988,49 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
       {...props}
     >
       {header ?? (
-        <div className="flex items-center justify-between mb-3">
-          <div
-            className={`text-sm font-semibold tracking-wide text-secondary ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
-            onClick={onTitleClick}
-          role={onTitleClick ? 'button' : undefined}
-          tabIndex={onTitleClick ? 0 : undefined}
-          aria-label={onTitleClick ? `Set ${title} as add target` : undefined}
-          onKeyDown={(e) => {
-            if (!onTitleClick) return;
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onTitleClick();
-            }
-          }}
-          title={onTitleClick ? 'Set as add target' : undefined}
-        >
-          {title}
+        <div className="flex items-center justify-between mb-3 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {selectionState && onSelectAll && (
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={selectionState === "all"}
+                aria-label={selectionState === "all" ? `Deselect all in ${title}` : `Select all in ${title}`}
+                onClick={(e) => { e.stopPropagation(); onSelectAll(); }}
+                className="flex items-center justify-center shrink-0"
+                title={selectionState === "all" ? "Deselect all in list" : "Select all in list"}
+              >
+                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${selectionState === "all" ? "bg-[var(--accent)] border-[var(--accent)]" : "border-[var(--secondary)]"}`}>
+                  {selectionState === "all" ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  ) : selectionState === "some" ? (
+                    <div className="w-2 h-2 rounded-full bg-[var(--secondary)]" />
+                  ) : null}
+                </div>
+              </button>
+            )}
+            <div
+              className={`text-sm font-semibold tracking-wide text-secondary truncate ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
+              onClick={onTitleClick}
+              role={onTitleClick ? 'button' : undefined}
+              tabIndex={onTitleClick ? 0 : undefined}
+              aria-label={onTitleClick ? `Set ${title} as add target` : undefined}
+              onKeyDown={(e) => {
+                if (!onTitleClick) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onTitleClick();
+                }
+              }}
+              title={onTitleClick ? 'Set as add target' : undefined}
+            >
+              {title}
+            </div>
           </div>
-          <button 
-            type="button" 
-            className="p-1 text-secondary hover:text-primary rounded" 
-            onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }} 
+          <button
+            type="button"
+            className="p-1 text-secondary hover:text-primary rounded shrink-0"
+            onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }}
             title="Select tasks">
             <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
           </button>
@@ -6371,7 +6406,98 @@ export default function App() {
     legacySeen: boolean;
     migrationAttempted: boolean;
   };
-  const nostrIdxRef = useRef<NostrIndex>({ boardMeta: new Map(), taskClock: new Map(), calendarClock: new Map() });
+  const nostrIdxRef = useRef<NostrIndex>(((): NostrIndex => {
+    const idx: NostrIndex = { boardMeta: new Map(), taskClock: new Map(), calendarClock: new Map() };
+    // Seed taskClock from persisted deletion tombstones. This ensures a stale
+    // CREATE event from a slow relay cannot resurrect a task we previously
+    // deleted, even after a page reload (in-session protection sits in
+    // tombstonesRef / publishTaskDeleted; this is the post-reload fallback).
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, Record<string, number>>;
+        if (parsed && typeof parsed === "object") {
+          for (const [bTag, entries] of Object.entries(parsed)) {
+            if (!entries || typeof entries !== "object") continue;
+            const m = new Map<string, number>();
+            for (const [taskId, at] of Object.entries(entries)) {
+              if (typeof at === "number" && at > 0) m.set(taskId, at);
+            }
+            if (m.size) idx.taskClock.set(bTag, m);
+          }
+        }
+      }
+    } catch {
+      // ignore — tombstone loss only weakens reload protection, not correctness in-session
+    }
+    return idx;
+  })());
+  // In-memory mirror of persisted tombstones. Kept separately from taskClock
+  // because taskClock also accumulates entries for live tasks during sync,
+  // which we don't want to persist (would grow unbounded).
+  const tombstonesRef = useRef<Map<string, Map<string, number>>>(((): Map<string, Map<string, number>> => {
+    const out = new Map<string, Map<string, number>>();
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES);
+      if (!raw) return out;
+      const parsed = JSON.parse(raw) as Record<string, Record<string, number>>;
+      if (!parsed || typeof parsed !== "object") return out;
+      for (const [bTag, entries] of Object.entries(parsed)) {
+        if (!entries || typeof entries !== "object") continue;
+        const m = new Map<string, number>();
+        for (const [taskId, at] of Object.entries(entries)) {
+          if (typeof at === "number" && at > 0) m.set(taskId, at);
+        }
+        if (m.size) out.set(bTag, m);
+      }
+    } catch {
+      // ignore
+    }
+    return out;
+  })());
+  const tombstonesPersistScheduledRef = useRef(false);
+  const flushTombstonesPersist = useCallback(() => {
+    try {
+      const obj: Record<string, Record<string, number>> = {};
+      for (const [tag, entries] of tombstonesRef.current) {
+        if (!entries.size) continue;
+        const sub: Record<string, number> = {};
+        for (const [tid, ts] of entries) sub[tid] = ts;
+        obj[tag] = sub;
+      }
+      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES, JSON.stringify(obj));
+    } catch (err) {
+      console.warn("[tombstones] failed to persist", err);
+    }
+  }, []);
+  const recordTaskTombstone = useCallback((bTag: string, taskId: string, at: number) => {
+    if (!bTag || !taskId || !Number.isFinite(at) || at <= 0) return;
+    let m = tombstonesRef.current.get(bTag);
+    if (!m) { m = new Map(); tombstonesRef.current.set(bTag, m); }
+    const existing = m.get(taskId);
+    if (existing !== undefined && existing >= at) return; // already have a newer or equal tombstone
+    m.set(taskId, at);
+    // Cap per-board entries by keeping the most recent N by timestamp.
+    if (m.size > TASK_TOMBSTONES_PER_BOARD_MAX) {
+      const trimmed = new Map(
+        Array.from(m.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, TASK_TOMBSTONES_PER_BOARD_MAX),
+      );
+      tombstonesRef.current.set(bTag, trimmed);
+    }
+    // Coalesce same-tick writes (e.g., bulk "clear completed") into one IDB
+    // write via a microtask. The in-memory map is updated synchronously, so
+    // any code path that reads tombstonesRef in this tick still sees the new
+    // entry. The IDB write happens at the end of the current microtask queue.
+    if (!tombstonesPersistScheduledRef.current) {
+      tombstonesPersistScheduledRef.current = true;
+      Promise.resolve().then(() => {
+        tombstonesPersistScheduledRef.current = false;
+        flushTombstonesPersist();
+      });
+    }
+  }, [flushTombstonesPersist]);
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
@@ -6380,14 +6506,19 @@ export default function App() {
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
   // In-memory cursor: tracks the highest created_at seen per board tag this session.
   // Persisted to IDB after EOSE so subsequent opens only fetch new events.
-  const boardSyncCursorsRef = useRef<Record<string, number>>(() => {
+  // NOTE: useRef does NOT lazy-initialize like useState. The previous
+  // `useRef(() => {...})` form stored the function as the value, so persisted
+  // cursors were never loaded — every reload fell back to a 30-day refetch
+  // which heavily inflated the window for stale CREATE events to revert
+  // locally-deleted tasks. The IIFE form below actually invokes the loader.
+  const boardSyncCursorsRef = useRef<Record<string, number>>(((): Record<string, number> => {
     try {
       const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
     }
-  });
+  })());
   // Per-relay batch accumulator. Events from each relay are collected here until
   // that relay fires EOSE. On EOSE the relay's batch is clock-protected-merged into
   // the task state and IDB data is shown immediately (no blocking spinner).
@@ -10505,40 +10636,44 @@ export default function App() {
     return m;
   }, [calendarEventsForBoard, currentBoard, listColumns, listColumnSources, settings.weekStart]);
 
-  const buildBoardPrintTasks = useCallback((): BoardPrintTask[] => {
+  const buildBoardPrintTasks = useCallback((options?: { onlyTaskIds?: ReadonlySet<string> }): BoardPrintTask[] => {
     if (!currentBoard) return [];
     const titleForTask = (task: Task) => {
       const labelSource = task.title || (task.images?.length ? "Image" : task.documents?.[0]?.name || "");
       return labelSource.trim() || "Task";
     };
-    const visible = tasksForBoard.filter((task) => !task.completed && isVisibleNow(task));
-    if (visible.length === 0) return [];
+    const titleForEvent = (ev: CalendarEvent) => (ev.title || "").trim() || "Event";
+    const onlyIds = options?.onlyTaskIds;
+    const includeId = (id: string) => !onlyIds || onlyIds.has(id);
+    const visibleTasks = tasksForBoard.filter((task) => {
+      if (task.completed) return false;
+      if (!isVisibleNow(task)) return false;
+      return includeId(task.id);
+    });
 
     if (currentBoard.kind === "week") {
       const dayOrder = Array.from({ length: 7 }, (_, i) => ((settings.weekStart + i) % 7) as Weekday);
-      const dayMap = new Map<Weekday, Task[]>();
-      visible.forEach((task) => {
+      const taskByDay = new Map<Weekday, Task[]>();
+      visibleTasks.forEach((task) => {
         const day = taskWeekday(task) ?? (new Date().getDay() as Weekday);
-        const list = dayMap.get(day) ?? [];
+        const list = taskByDay.get(day) ?? [];
         list.push(task);
-        dayMap.set(day, list);
+        taskByDay.set(day, list);
       });
 
       const output: BoardPrintTask[] = [];
-      const pushGroup = (label: string, groupTasks: Task[]) => {
-        groupTasks
-          .slice()
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          .forEach((task) => {
-            output.push({ id: task.id, title: titleForTask(task), label });
-          });
-      };
-
       dayOrder.forEach((day) => {
-        const groupTasks = dayMap.get(day);
-        if (groupTasks && groupTasks.length) {
-          pushGroup(WD_SHORT[day], groupTasks);
-        }
+        const label = WD_SHORT[day];
+        const dayTasks = (taskByDay.get(day) ?? [])
+          .slice()
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        dayTasks.forEach((task) => {
+          output.push({ id: task.id, title: titleForTask(task), label });
+        });
+        const dayEvents = (calendarByDay.get(day) ?? []).filter((ev) => includeId(ev.id));
+        dayEvents.forEach((ev) => {
+          output.push({ id: ev.id, title: titleForEvent(ev), label });
+        });
       });
       return output;
     }
@@ -10546,7 +10681,7 @@ export default function App() {
     if (isListLikeBoard(currentBoard)) {
       const columnTaskMap = new Map<string, Task[]>();
       listColumns.forEach((col) => columnTaskMap.set(col.id, []));
-      for (const task of visible) {
+      for (const task of visibleTasks) {
         if (!task.columnId) continue;
         let columnKey = task.columnId;
         if (currentBoard.kind === "compound") {
@@ -10562,20 +10697,26 @@ export default function App() {
 
       const output: BoardPrintTask[] = [];
       listColumns.forEach((col) => {
-        const bucket = columnTaskMap.get(col.id);
-        if (!bucket || bucket.length === 0) return;
-        bucket
+        const taskBucket = (columnTaskMap.get(col.id) ?? [])
           .slice()
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          .forEach((task) => {
-            output.push({ id: task.id, title: titleForTask(task), label: col.name });
-          });
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        taskBucket.forEach((task) => {
+          output.push({ id: task.id, title: titleForTask(task), label: col.name });
+        });
+        const eventBucket = (calendarItemsByColumn.get(col.id) ?? []).filter((ev) => includeId(ev.id));
+        eventBucket.forEach((ev) => {
+          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name });
+        });
       });
       return output;
     }
 
-    return visible.map((task) => ({ id: task.id, title: titleForTask(task) }));
-  }, [currentBoard, listColumns, listColumnSources, settings.weekStart, tasksForBoard]);
+    const tasksOutput = visibleTasks.map((task) => ({ id: task.id, title: titleForTask(task) }));
+    const eventsOutput = calendarEventsForBoard
+      .filter((ev) => includeId(ev.id))
+      .map((ev) => ({ id: ev.id, title: titleForEvent(ev) }));
+    return [...tasksOutput, ...eventsOutput];
+  }, [calendarByDay, calendarEventsForBoard, calendarItemsByColumn, currentBoard, listColumns, listColumnSources, settings.weekStart, tasksForBoard]);
 
   const handleOpenBoardPrint = useCallback(() => {
     if (!currentBoard) return;
@@ -10598,6 +10739,63 @@ export default function App() {
     persistBoardPrintJob(job);
     setBoardPrintOpen(true);
   }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, showToast]);
+
+  const listColumnGroupIds = useCallback((columnId: string): string[] => {
+    const taskIds = (itemsByColumn.get(columnId) ?? []).filter((t) => !t.completed).map((t) => t.id);
+    const eventIds = (calendarItemsByColumn.get(columnId) ?? []).map((ev) => ev.id);
+    return [...taskIds, ...eventIds];
+  }, [calendarItemsByColumn, itemsByColumn]);
+
+  const weekDayGroupIds = useCallback((day: Weekday): string[] => {
+    const taskIds = (byDay.get(day) ?? []).filter((t) => !t.completed).map((t) => t.id);
+    const eventIds = (calendarByDay.get(day) ?? []).map((ev) => ev.id);
+    return [...taskIds, ...eventIds];
+  }, [byDay, calendarByDay]);
+
+  const groupSelectionState = useCallback((ids: string[]): "none" | "some" | "all" => {
+    if (!ids.length) return "none";
+    let selected = 0;
+    for (const id of ids) {
+      if (selectedItemIdSet.has(id)) selected += 1;
+    }
+    if (selected === 0) return "none";
+    if (selected === ids.length) return "all";
+    return "some";
+  }, [selectedItemIdSet]);
+
+  const toggleGroupSelection = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const allSelected = ids.every((id) => selectedItemIdSet.has(id));
+    if (allSelected) {
+      const idSet = new Set(ids);
+      setSelectedItemIds((prev) => prev.filter((id) => !idSet.has(id)));
+    } else {
+      setSelectedItemIds((prev) => Array.from(new Set([...prev, ...ids])));
+    }
+  }, [selectedItemIdSet]);
+
+  const handlePrintSelectedTasks = useCallback(() => {
+    if (!currentBoard) return;
+    if (!selectedItemIds.length) return;
+    const filter = new Set(selectedItemIds);
+    const tasks = buildBoardPrintTasks({ onlyTaskIds: filter });
+    if (!tasks.length) {
+      showToast("No printable tasks selected.", 2500);
+      return;
+    }
+    closeShareBoard();
+    const job: BoardPrintJob = {
+      id: crypto.randomUUID(),
+      boardId: currentBoard.id,
+      boardName: `${currentBoard.name || "Board"} – Selected`,
+      printedAtISO: new Date().toISOString(),
+      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
+      paperSize: boardPrintJob?.paperSize ?? "letter",
+      tasks,
+    };
+    setBoardPrintJob(job);
+    setBoardPrintOpen(true);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, selectedItemIds, showToast]);
 
   const handleBoardPaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
     setBoardPrintJob((prev) => {
@@ -12259,6 +12457,11 @@ export default function App() {
       nostrIdxRef.current.taskClock.set(bTag, new Map());
     }
     nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, optimisticAt);
+    // Persist a tombstone NOW — before any await — so a reload between this
+    // point and a successful relay publish still keeps the deletion sticky.
+    // Without this, a failed/in-flight publish followed by reload would let
+    // the original CREATE event from the relay re-add the task on next sync.
+    recordTaskTombstone(bTag, t.id, optimisticAt);
     pendingNostrTasksRef.current.add(pendingKey);
     const boardKeys = await deriveBoardNostrKeys(boardId);
     try {
@@ -12293,6 +12496,10 @@ export default function App() {
         nostrIdxRef.current.taskClock.set(bTag, new Map());
       }
       nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+      // Bump the tombstone to the actual relay-confirmed timestamp so any
+      // post-reload comparisons use the same clock value the relay will
+      // report when it round-trips this deletion.
+      recordTaskTombstone(bTag, t.id, createdAt);
     } finally {
       pendingNostrTasksRef.current.delete(pendingKey);
     }
@@ -13464,6 +13671,7 @@ export default function App() {
           longestStreak: newLongest,
           subtasks: mergedSubs,
           assignees: mergedAssignees,
+          _nostrAt: ev.created_at,
         };
         return dedupeRecurringInstances(copy);
       } else {
@@ -13503,6 +13711,7 @@ export default function App() {
             longestStreak: longest,
             subtasks: subs,
             assignees,
+            _nostrAt: ev.created_at,
           },
         ]);
       }
@@ -17545,6 +17754,10 @@ export default function App() {
 
     // Clock-protected merge: apply a relay's batch into current task state.
     // Only updates tasks where the relay has newer data than what's already in state.
+    // The bTagClock fallback acts as an in-session tombstone: when a task is locally
+    // deleted (or being published with a fresh optimistic clock), `merged` no longer
+    // has a `_nostrAt` to compare against, so without the clock fallback a stale
+    // CREATE event from a slow relay would re-add the task.
     const flushRelayBatch = (bTag: string, relayBatch: Map<string, RelayBatchEntry>) => {
       if (!relayBatch.size) return;
       const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
@@ -17553,8 +17766,12 @@ export default function App() {
         for (const [key, entry] of relayBatch) {
           const taskId = key.split('::')[1];
           const incomingNostrAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? bTagClock?.get(taskId) ?? 0;
-          const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? 0;
-          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay has newer data
+          const existingTask = merged.get(key) as Task | undefined;
+          const existingNostrAt = Math.max(
+            existingTask?._nostrAt ?? 0,
+            bTagClock?.get(taskId) ?? 0,
+          );
+          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay/local edit has newer data
           if ('_deleted' in entry) merged.delete(key);
           else merged.set(key, entry as Task);
         }
@@ -17575,8 +17792,25 @@ export default function App() {
       const boardId = board.id;
       // Only verify tasks that came from the relay previously (_nostrAt > 0).
       // Local-only tasks (no _nostrAt) are not expected to be on the relay.
+      //
+      // Two extra guards prevent newly-created/edited tasks from being deleted
+      // during the relay's verification probe:
+      //   1. Skip tasks currently mid-publish — relay has not received the event yet.
+      //   2. Skip tasks whose _nostrAt is very recent (optimistic stamp from
+      //      maybePublishTask). The stamp may have been set seconds ago and the
+      //      relay might not have propagated the event to the verify subscription
+      //      yet, especially during rapid sequential adds.
+      const VERIFY_RECENT_GRACE_SECS = 60;
+      const nowSecs = Math.floor(Date.now() / 1000);
       const unseenIds = tasksRef.current
-        .filter((t) => t.boardId === boardId && typeof t._nostrAt === "number" && t._nostrAt > 0 && !seenIds.has(t.id))
+        .filter((t) => {
+          if (t.boardId !== boardId) return false;
+          if (typeof t._nostrAt !== "number" || t._nostrAt <= 0) return false;
+          if (seenIds.has(t.id)) return false;
+          if (pendingNostrTasksRef.current.has(`${bTag}::${t.id}`)) return false;
+          if (nowSecs - t._nostrAt < VERIFY_RECENT_GRACE_SECS) return false;
+          return true;
+        })
         .map((t) => t.id);
       seenBoardTasksRef.current.delete(bTag);
       if (!unseenIds.length) return;
@@ -18448,6 +18682,8 @@ export default function App() {
                       if (isSelectionMode && payload.allIds) exitSelectionMode();
                     }}
                     onDropEnd={handleDragEnd}
+                    onSelectAll={isSelectionMode ? () => toggleGroupSelection(weekDayGroupIds(day)) : undefined}
+                    selectionState={isSelectionMode ? groupSelectionState(weekDayGroupIds(day)) : undefined}
                     data-day={day}
                     scrollable
                     footer={(
@@ -18698,6 +18934,8 @@ export default function App() {
                         if (isSelectionMode && payload.allIds) exitSelectionMode();
                       }}
                       onDropEnd={handleDragEnd}
+                      onSelectAll={isSelectionMode ? () => toggleGroupSelection(listColumnGroupIds(col.id)) : undefined}
+                      selectionState={isSelectionMode ? groupSelectionState(listColumnGroupIds(col.id)) : undefined}
                       scrollable
                       footer={(
                         <form
@@ -20008,6 +20246,16 @@ export default function App() {
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               <span>Done</span>
+            </button>
+            <button
+              type="button"
+              className="selection-bar__action pressable"
+              onClick={handlePrintSelectedTasks}
+              disabled={!selectedEvents.length && !selectedTasks.some((task) => !task.completed)}
+              title="Print selected"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              <span>Print</span>
             </button>
             <button
               type="button"

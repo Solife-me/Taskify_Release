@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme
+   LastUpgradeVersion = "1800"
+   version = "1.7">
+   <LaunchAction
+      target = "A00000000000000000000501"
+      bundleIdentifier = "solife.me.Taskify"
+      buildConfiguration = "A00000000000000000000700"
+      selectedDebuggerLauncher = "Xcode.IDEDebuggingSolution.LaunchAction.GDBLauncher"
+      selectedLauncher = "Xcode.IDEDebuggingSolution.LaunchAction.GDBLauncher"
+      launchStyle = "0"
+      useCustomNamingStyle = "0">
+   </LaunchAction>
+   <TestAction
+      buildConfiguration = "A00000000000000000000700"
+      testedTargets = (
+      )>
+   </TestAction>
+   <ProfileAction
+      target = "A00000000000000000000501"
+      buildConfiguration = "A00000000000000000000701"
+      shouldUseLaunchSchemeArgsEnv = "1"
+      savedToolIdentifier = ""
+      useCustomNamingStyle = "0">
+   </ProfileAction>
+   <AnalyseAction
+      buildConfiguration = "A00000000000000000000710">
+   </AnalyseAction>
+   <ReleaseAction
+      buildConfiguration = "A00000000000000000000701"
+      shouldValidateIntegration = "0">
+   </ReleaseAction>
+   <BundleSpecificActionExtender>
+   </BundleSpecificActionExtender>
+</Scheme>
