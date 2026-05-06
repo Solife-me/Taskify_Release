@@ -15790,10 +15790,20 @@ export default function CashuWalletModal({
     const ownNpub = normalizeNostrPubkey(myCardNpub);
     const ownHex = ownNpub ? compressedToRawHex(ownNpub).toLowerCase() : "";
     if (ownHex && activeThread.peerPubkey === ownHex) return null;
-    const existing = contactByHex.get(activeThread.peerPubkey);
-    if (existing) return existing;
     const peerMeta = getPeerProfile(activeThread.peerPubkey);
     const peerLabel = peerLabelFor(activeThread.peerPubkey);
+    const existing = contactByHex.get(activeThread.peerPubkey);
+    if (existing) {
+      return {
+        ...existing,
+        address: existing.address.trim() || peerMeta?.lud16?.trim() || "",
+        nip05: existing.nip05?.trim() || peerMeta?.nip05?.trim() || "",
+        displayName: existing.displayName?.trim() || peerMeta?.displayName?.trim() || "",
+        username: existing.username?.trim() || peerMeta?.username?.trim() || "",
+        about: existing.about?.trim() || peerMeta?.about?.trim() || "",
+        picture: existing.picture?.trim() || peerMeta?.picture?.trim() || peerLabel.picture?.trim() || "",
+      } satisfies Contact;
+    }
     return {
       id: `chat-peer-${activeThread.peerPubkey}`,
       kind: "nostr",
