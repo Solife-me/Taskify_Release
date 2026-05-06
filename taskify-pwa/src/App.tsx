@@ -20870,6 +20870,7 @@ export default function App() {
             onDismissCalendarInvite={dismissCalendarInvite}
             formatCalendarInviteWhen={formatCalendarInviteWhen}
             onDmUnreadCountChange={setDmUnreadCount}
+            chatMessageRetention={settings.chatMessageRetention}
           />
       </Suspense>
 

@@ -133,6 +133,7 @@ import {
   type MintBackupPayload,
 } from "../wallet/mintBackup";
 import type { WalletMessageItem } from "../types/walletMessages";
+import { chatRetentionCutoffMs } from "../domains/tasks/settingsTypes";
 
 type ScanResult = QrScannerLib.ScanResult;
 
@@ -2327,8 +2328,7 @@ function readDmCache(): WalletDmMessage[] {
         ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
         ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
       }))
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(-400);
+      .sort((a, b) => a.createdAt - b.createdAt);
   } catch {
     return [];
   }
@@ -2644,6 +2644,7 @@ export default function CashuWalletModal({
   onDismissCalendarInvite,
   formatCalendarInviteWhen,
   onDmUnreadCountChange,
+  chatMessageRetention = "forever",
 }: {
   open: boolean;
   onClose: () => void;
@@ -2679,6 +2680,7 @@ export default function CashuWalletModal({
   onDismissCalendarInvite?: (invite: any) => void;
   formatCalendarInviteWhen?: (invite: any) => string;
   onDmUnreadCountChange?: (count: number) => void;
+  chatMessageRetention?: string;
 }) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -3162,7 +3164,7 @@ export default function CashuWalletModal({
   }, []);
   const persistDmMessages = useCallback((messages: WalletDmMessage[]) => {
     try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages.slice(-400)));
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages));
     } catch {
       // ignore storage failures
     }
@@ -3219,6 +3221,26 @@ export default function CashuWalletModal({
     }, 60 * 60 * 1000);
     return () => window.clearInterval(timer);
   }, [pruneTempDeletedDmEvents]);
+
+  useEffect(() => {
+    const cutoff = chatRetentionCutoffMs(chatMessageRetention as any);
+    if (cutoff == null) return;
+    setDmMessages((prev) => {
+      const next = prev.filter((m) => m.createdAt * 1000 >= cutoff);
+      if (next.length === prev.length) return prev;
+      persistDmMessages(next);
+      return next;
+    });
+  }, [chatMessageRetention, persistDmMessages]);
+
+  useEffect(() => {
+    const handler = () => {
+      setDmMessages([]);
+      persistDmMessages([]);
+    };
+    window.addEventListener("taskify:clear-chat-history", handler);
+    return () => window.removeEventListener("taskify:clear-chat-history", handler);
+  }, [persistDmMessages]);
   const persistDmPeerProfileCache = useCallback(
     (peerHex: string, profile: ContactProfile, updatedAt: number, pictureDataUrl?: string) => {
       const normalizedPeerHex = normalizeDmPeerHex(peerHex);

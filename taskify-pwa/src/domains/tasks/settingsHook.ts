@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { Settings } from "./settingsTypes";
+import type { Settings, ChatMessageRetention } from "./settingsTypes";
 import type { Weekday } from "./taskTypes";
 import type { FastingRemindersMode } from "./settingsTypes";
+import { CHAT_RETENTION_OPTIONS } from "./settingsTypes";
 import { kvStorage } from "../../storage/kvStorage";
 import { LS_SETTINGS, LS_BACKGROUND_IMAGE } from "../storageKeys";
 import { LS_MINT_BACKUP_ENABLED } from "../../localStorageKeys";
@@ -97,6 +98,12 @@ function useSettings() {
         ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
+
+      const validRetentionIds = new Set(CHAT_RETENTION_OPTIONS.map((o) => o.id));
+      const rawRetention = typeof parsed?.chatMessageRetention === "string" ? parsed.chatMessageRetention : "";
+      const chatMessageRetention: ChatMessageRetention = validRetentionIds.has(rawRetention as ChatMessageRetention)
+        ? (rawRetention as ChatMessageRetention)
+        : "forever";
 
       const pushRaw = parsed?.pushNotifications;
       const inferredPlatform = detectPushPlatformFromNavigator();
@@ -200,6 +207,7 @@ function useSettings() {
         nostrBackupEnabled,
         nostrBackupMetadataEnabled,
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
+        chatMessageRetention,
 
       };
     } catch {
@@ -245,6 +253,7 @@ function useSettings() {
         fastingRemindersWeekday: 1,
         fastingRemindersRandomSeed: crypto.randomUUID(),
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES },
+        chatMessageRetention: "forever",
       };
     }
   });

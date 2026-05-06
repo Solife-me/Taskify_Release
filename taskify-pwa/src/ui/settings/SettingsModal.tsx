@@ -33,6 +33,7 @@ import { PushSection } from "./PushSection";
 import { NostrSection } from "./NostrSection";
 import { BackupSection } from "./BackupSection";
 import { GoogleCalendarSection } from "./GoogleCalendarSection";
+import { ChatSection } from "./ChatSection";
 import type { GcalCalendar, GcalConnectionStatus } from "../../hooks/useGoogleCalendar";
 import { ManageBoardModal } from "./ManageBoardModal";
 
@@ -377,6 +378,12 @@ export function SettingsModal({
           defaultRelays={defaultRelays}
           onReloadNeeded={onReloadNeeded}
           onResetWalletTokenTracking={onResetWalletTokenTracking}
+        />
+
+        {/* Chat */}
+        <ChatSection
+          settings={settings}
+          setSettings={setSettings}
         />
 
         {/* Bible */}
