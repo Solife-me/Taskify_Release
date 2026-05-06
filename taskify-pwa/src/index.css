@@ -2875,6 +2875,7 @@ html.light .wallet-balance-card {
 
 .wallet-messages__thread {
   width: 100%;
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 0.75rem;
@@ -2889,6 +2890,7 @@ html.light .wallet-balance-card {
 .chat-thread-swipe {
   position: relative;
   width: 100%;
+  flex-shrink: 0;
   max-height: 7.5rem;
   overflow: hidden;
   border-radius: 14px;
