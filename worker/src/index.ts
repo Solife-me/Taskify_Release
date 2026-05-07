@@ -157,6 +157,7 @@ interface D1Database {
 const JSON_HEADERS = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Origin": "*",
+  "Cache-Control": "no-store",
 };
 
 const MINUTE_MS = 60_000;

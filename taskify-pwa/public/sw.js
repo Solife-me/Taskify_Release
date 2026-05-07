@@ -12,7 +12,7 @@ self.addEventListener('activate', (event) => {
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v6`;
+const CACHE = `${CACHE_PREFIX}v7`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
@@ -24,6 +24,11 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   if (shouldBypassRelayTraffic(event.request)) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
+  if (shouldBypassApi(event.request)) {
     event.respondWith(fetch(event.request));
     return;
   }
@@ -311,6 +316,16 @@ self.addEventListener('message', (event) => {
 });
 
 const relayHostCache = new Map();
+
+function shouldBypassApi(request) {
+  try {
+    const url = new URL(request.url);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    return url.pathname.startsWith('/api/');
+  } catch {
+    return false;
+  }
+}
 
 function shouldBypassRelayTraffic(request) {
   try {
