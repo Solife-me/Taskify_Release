@@ -14850,7 +14850,18 @@ export default function App() {
     for (const ft of finalTasks) {
       if (!ft.title?.trim()) continue;
       const nextOrder = nextOrderForBoard(targetBoardId, [...tasks, ...newTasks], settings.newTaskPosition);
-      const hasExplicitVoiceDue = typeof ft.dueISO === "string" && !!ft.dueISO.trim();
+      const rawVoiceDue = typeof ft.dueISO === "string" ? ft.dueISO.trim() : "";
+      const hasExplicitVoiceDue = !!rawVoiceDue;
+      // Worker emits "YYYY-MM-DD" when the user gave a date but no clock
+      // time, and a full ISO datetime when they did. Detect via the date-only
+      // shape so we can suppress the time portion in the saved task.
+      const dateOnlyParts = parseDateKey(rawVoiceDue);
+      const hasExplicitVoiceTime = hasExplicitVoiceDue && !dateOnlyParts;
+      const normalizedVoiceDue = !hasExplicitVoiceDue
+        ? undefined
+        : dateOnlyParts
+          ? new Date(dateOnlyParts.year, dateOnlyParts.month - 1, dateOnlyParts.day).toISOString()
+          : new Date(rawVoiceDue).toISOString();
       const task: Task = {
         id: crypto.randomUUID(),
         boardId: ft.boardId ?? targetBoardId,
@@ -14858,9 +14869,9 @@ export default function App() {
         lastEditedBy: nostrPK || undefined,
         title: ft.title.trim(),
         createdAt: Date.now(),
-        dueISO: ft.dueISO ?? dueISOBase,
-        dueDateEnabled: !!(ft.dueISO || currentBoard.kind === "week"),
-        dueTimeEnabled: hasExplicitVoiceDue,
+        dueISO: normalizedVoiceDue ?? dueISOBase,
+        dueDateEnabled: !!(normalizedVoiceDue || currentBoard.kind === "week"),
+        dueTimeEnabled: hasExplicitVoiceTime,
         completed: false,
         order: nextOrder,
       };

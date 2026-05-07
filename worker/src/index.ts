@@ -3547,8 +3547,11 @@ Return ONLY JSON with exact shape:
 Rules:
 - Return one finalized output item for every input candidate id.
 - Fill all fields for each item.
-- If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
-- Use dueISO null only when there is truly no parseable date/time intent.
+- dueISO format depends on whether the user explicitly stated a clock time of day:
+    * If the user stated a clock time (e.g. "2 PM", "14:00", "noon", "midnight", "at 8", "in the morning at 9"), dueISO MUST be a full ISO-8601 UTC datetime like "2026-03-25T14:00:00.000Z".
+    * If the user gave only a date (e.g. "tomorrow", "Friday", "next week", "tonight", "this evening", "later", "soon"), dueISO MUST be a date-only string like "2026-03-25" (YYYY-MM-DD, with NO "T" component).
+    * Use dueISO null only when there is truly no parseable date/time intent.
+- The date-only format signals that the user did not specify a time of day. Do NOT include a placeholder time in such cases.
 - Priority defaults to null.
 - Only set priority to 1/2/3 when the user language clearly implies urgency/importance.
 - Do NOT infer priority from normal planning language.
