@@ -5,6 +5,7 @@ import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } 
 import { PublishCoordinator, type PublishResult } from "./PublishCoordinator.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
+import type { NostrOutboxStore } from "./NostrOutbox.js";
 export type RelayInfoCacheLike = {
     prime: (relayUrl: string, loader: (nip11Url: string) => Promise<unknown>) => Promise<{
         info?: unknown;
@@ -45,6 +46,7 @@ export type RuntimeNostrSessionDeps<TWalletClient> = {
         subscriptions: SubscriptionManager;
         resolveRelaySet: (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
     }) => TWalletClient;
+    outboxStore?: NostrOutboxStore;
     isDev?: boolean;
 };
 export declare class RuntimeNostrSession<TWalletClient = unknown> {
@@ -76,6 +78,7 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
     publishRaw(event: NostrEvent, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult>;
     fetchEvents(filters: NDKFilter[], relayUrls?: string[], timeoutMs?: number, eoseGraceMs?: number, inactivityMs?: number): Promise<NostrEvent[]>;
     private setupRelayHooks;
+    private drainOutbox;
     private primeRelayInfo;
     private scheduleRelayConnect;
     private logDebugSummary;

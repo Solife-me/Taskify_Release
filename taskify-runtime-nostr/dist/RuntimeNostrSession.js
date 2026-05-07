@@ -32,7 +32,7 @@ export class RuntimeNostrSession {
         this.cache = new EventCache();
         this.cursors = new CursorStore();
         const relayResolver = this.buildRelaySet.bind(this);
-        this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache);
+        this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, { outboxStore: deps.outboxStore });
         this.subscriptions = new SubscriptionManager(this.ndk, this.cursors, relayResolver, this.cache, this.resolveRelayLimit.bind(this));
         this.boardKeys = new BoardKeyManager();
         this.walletClient = deps.createWalletClient({ ndk: this.ndk, publisher: this.publisher, subscriptions: this.subscriptions, resolveRelaySet: relayResolver });
@@ -55,6 +55,7 @@ export class RuntimeNostrSession {
         this.initialized = true;
     }
     async shutdown() {
+        this.publisher.shutdown();
         this.subscriptions.shutdown();
         try {
             await this.ndk.pool?.disconnect?.();
@@ -204,9 +205,13 @@ export class RuntimeNostrSession {
         this.ndk.pool.on("relay:connect", (relay) => {
             this.relayHealth.markSuccess(relay.url);
             this.authManager.reset(relay.url);
+            this.drainOutbox("relay:connect");
             this.logDebugSummary();
         });
-        this.ndk.pool.on("relay:ready", (relay) => this.relayHealth.markSuccess(relay.url));
+        this.ndk.pool.on("relay:ready", (relay) => {
+            this.relayHealth.markSuccess(relay.url);
+            this.drainOutbox("relay:ready");
+        });
         this.ndk.pool.on("relay:disconnect", (relay) => {
             this.relayHealth.markFailure(relay.url, { reason: "disconnect" });
             this.authManager.reset(relay.url);
@@ -215,6 +220,13 @@ export class RuntimeNostrSession {
         this.ndk.pool.on("relay:authed", (relay) => {
             this.authManager.markAuthed(relay);
             this.relayHealth.markSuccess(relay.url);
+            this.drainOutbox("relay:authed");
+        });
+    }
+    drainOutbox(reason) {
+        void this.publisher.drainOutbox({ force: true }).catch((err) => {
+            if (this.isDev)
+                console.debug("[nostr] outbox drain failed", reason, err);
         });
     }
     primeRelayInfo(relayUrl) {

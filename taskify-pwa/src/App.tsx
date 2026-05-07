@@ -184,6 +184,7 @@ import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import { publishFileServerPreference } from "./nostr/ProfilePublisher";
+import { nostrOutboxStore } from "./nostr/NostrOutboxStore";
 import { EcashGlyph } from "./components/EcashGlyph";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
 
@@ -6232,6 +6233,28 @@ export default function App() {
     NostrSession.init(relays).catch((err) => {
       console.warn("Failed to initialize Nostr session", err);
     });
+  }, [defaultRelays]);
+  const [pendingNostrOutboxCount, setPendingNostrOutboxCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    nostrOutboxStore.getPendingCount().then((count) => {
+      if (!cancelled) setPendingNostrOutboxCount(count);
+    });
+    const unsubscribe = nostrOutboxStore.subscribe((count) => {
+      if (!cancelled) setPendingNostrOutboxCount(count);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+  const retryNostrOutbox = useCallback(() => {
+    const relays = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
+    NostrSession.init(relays)
+      .then((session) => session.publisher.drainOutbox({ force: true }))
+      .catch((err) => {
+        console.warn("Failed to retry pending Nostr sync", err);
+      });
   }, [defaultRelays]);
   const [nostrBackupState, setNostrBackupState] = useState<NostrBackupState>(() => loadNostrBackupState());
   const nostrBackupStateRef = useRef<NostrBackupState>(nostrBackupState);
@@ -18600,6 +18623,21 @@ export default function App() {
             )}
             {activePage === "settings" && <div className="app-header__title">Settings</div>}
           </header>
+        )}
+
+        {pendingNostrOutboxCount > 0 && (
+          <button
+            type="button"
+            className="nostr-outbox-banner pressable"
+            onClick={retryNostrOutbox}
+            title="Retry pending Nostr sync"
+            aria-label={`${pendingNostrOutboxCount} ${pendingNostrOutboxCount === 1 ? "change" : "changes"} pending sync`}
+          >
+            <span className="nostr-outbox-banner__dot" aria-hidden="true" />
+            <span>
+              {pendingNostrOutboxCount} {pendingNostrOutboxCount === 1 ? "change" : "changes"} pending sync
+            </span>
+          </button>
         )}
 
         {/* Animation overlay for fly effects (coins, etc.) */}

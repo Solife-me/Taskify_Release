@@ -438,6 +438,42 @@ html.light .glass-panel::after {
   width: 100%;
 }
 
+.nostr-outbox-banner {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  max-width: min(100%, 22rem);
+  min-height: 2rem;
+  margin: 0.15rem auto 0.45rem;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  border-radius: var(--radius-pill);
+  background: rgba(120, 53, 15, 0.24);
+  color: #f8d49a;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+}
+
+.nostr-outbox-banner__dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #f59e0b;
+  box-shadow: 0 0 0 0.2rem rgba(245, 158, 11, 0.14);
+}
+
+html.light .nostr-outbox-banner {
+  background: rgba(255, 247, 237, 0.96);
+  border-color: rgba(217, 119, 6, 0.34);
+  color: #92400e;
+}
+
 .app-header__filter-button {
   display: inline-flex;
   align-items: center;

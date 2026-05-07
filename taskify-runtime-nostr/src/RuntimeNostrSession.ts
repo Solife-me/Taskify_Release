@@ -5,6 +5,7 @@ import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } 
 import { PublishCoordinator, type PublishResult } from "./PublishCoordinator.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
+import type { NostrOutboxStore } from "./NostrOutbox.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 
 export type RelayInfoCacheLike = {
@@ -40,6 +41,7 @@ export type RuntimeNostrSessionDeps<TWalletClient> = {
     subscriptions: SubscriptionManager;
     resolveRelaySet: (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
   }) => TWalletClient;
+  outboxStore?: NostrOutboxStore;
   isDev?: boolean;
 };
 
@@ -74,7 +76,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     this.cache = new EventCache();
     this.cursors = new CursorStore();
     const relayResolver = this.buildRelaySet.bind(this);
-    this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache);
+    this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, { outboxStore: deps.outboxStore });
     this.subscriptions = new SubscriptionManager(this.ndk, this.cursors, relayResolver, this.cache, this.resolveRelayLimit.bind(this));
     this.boardKeys = new BoardKeyManager();
     this.walletClient = deps.createWalletClient({ ndk: this.ndk, publisher: this.publisher, subscriptions: this.subscriptions, resolveRelaySet: relayResolver });
@@ -99,6 +101,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async shutdown(): Promise<void> {
+    this.publisher.shutdown();
     this.subscriptions.shutdown();
     try {
       await (this.ndk.pool as any)?.disconnect?.();
@@ -239,9 +242,13 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     this.ndk.pool.on("relay:connect", (relay: NDKRelay) => {
       this.relayHealth.markSuccess(relay.url);
       this.authManager.reset(relay.url);
+      this.drainOutbox("relay:connect");
       this.logDebugSummary();
     });
-    this.ndk.pool.on("relay:ready", (relay: NDKRelay) => this.relayHealth.markSuccess(relay.url));
+    this.ndk.pool.on("relay:ready", (relay: NDKRelay) => {
+      this.relayHealth.markSuccess(relay.url);
+      this.drainOutbox("relay:ready");
+    });
     this.ndk.pool.on("relay:disconnect", (relay: NDKRelay) => {
       this.relayHealth.markFailure(relay.url, { reason: "disconnect" });
       this.authManager.reset(relay.url);
@@ -250,6 +257,13 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     this.ndk.pool.on("relay:authed", (relay: NDKRelay) => {
       this.authManager.markAuthed(relay);
       this.relayHealth.markSuccess(relay.url);
+      this.drainOutbox("relay:authed");
+    });
+  }
+
+  private drainOutbox(reason: string): void {
+    void this.publisher.drainOutbox({ force: true }).catch((err) => {
+      if (this.isDev) console.debug("[nostr] outbox drain failed", reason, err);
     });
   }
 

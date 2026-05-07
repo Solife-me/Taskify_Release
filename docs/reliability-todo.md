@@ -49,7 +49,7 @@ Key call sites in [App.tsx](../taskify-pwa/src/App.tsx) currently applying event
 
 ---
 
-### 4. Add a durable Nostr outbox (~1–2 days) — biggest reliability win
+### 4. Add a durable Nostr outbox (~1–2 days) ✅ biggest reliability win
 
 **Problem.** Local edits persist to IDB, but failed publishes do not. There are **22+ call sites** of the pattern:
 
@@ -69,6 +69,8 @@ maybePublishTask(updated).catch(() => {});
 Coordinate with [PublishCoordinator.ts](../taskify-runtime-nostr/src/PublishCoordinator.ts) (line 72 `publishNow`, line 107 `publish`) — that's the right boundary for outbox integration since it already debounces replaceable events.
 
 **Acceptance.** Airplane-mode test: edit 5 tasks offline, kill the tab, reopen with airplane mode off → relay receives all 5 events; outbox is empty.
+
+**Completed.** Added the runtime outbox boundary in `PublishCoordinator`, a PWA IndexedDB `mutations` store, retry drains on startup/online/foreground/relay reconnect, and a pending-sync indicator.
 
 ---
 
