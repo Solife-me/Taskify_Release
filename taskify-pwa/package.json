@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/agent/agentDispatcher.test.ts src/nostr/startupStability.test.ts src/onboarding/onboardingGating.test.ts",
+    "test": "vitest run",
     "test:lint": "npm run lint"
   },
   "dependencies": {
@@ -52,6 +52,7 @@
     "tailwindcss": "^3.4.14",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.39.1",
-    "vite": "^7.1.2"
+    "vite": "^7.1.2",
+    "vitest": "^4.1.5"
   }
 }
