@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { TaskDocument, TaskDocumentPreview } from "../../lib/documents";
 import { createDocumentFromDataUrl, documentAssetCacheKey, loadDocumentPreview } from "../../lib/documents";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
+import { sanitizeHtml } from "../../lib/sanitize";
 import { PdfViewer } from "./viewers/PdfViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
 import { VideoViewer } from "./viewers/VideoViewer";
@@ -78,7 +79,7 @@ export function DocumentThumbnail({
   if (preview?.type === "image") {
     previewNode = <img src={preview.data} alt="" className="doc-thumb__image" />;
   } else if (preview?.type === "html") {
-    previewNode = <div className="doc-thumb__html" dangerouslySetInnerHTML={{ __html: preview.data }} />;
+    previewNode = <div className="doc-thumb__html" dangerouslySetInnerHTML={{ __html: sanitizeHtml(preview.data) }} />;
   } else if (preview?.type === "text") {
     previewNode = <pre className="doc-thumb__text">{preview.data.split(/\n+/).slice(0, 6).join("\n")}</pre>;
   } else {
