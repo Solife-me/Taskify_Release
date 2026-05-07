@@ -1,3 +1,4 @@
+import { verifyEvent } from "nostr-tools";
 import { normalizeRelayUrls } from "./relayUrls.js";
 const MAX_SEEN_IDS = 4096;
 const FLUSH_BATCH_SIZE = 64;
@@ -142,6 +143,24 @@ export class SubscriptionManager {
                 return;
             if (state.seenIds.has(raw.id))
                 return;
+            // NDK's built-in verification is probabilistic per relay (validation
+            // ratio drops as relays prove trustworthy) and in async mode events
+            // emit to subscribers before verification settles — so forged events
+            // can reach handlers. Verifying here is deterministic and synchronous.
+            let signatureValid = false;
+            try {
+                signatureValid = verifyEvent(raw);
+            }
+            catch {
+                signatureValid = false;
+            }
+            if (!signatureValid) {
+                try {
+                    console.warn("[nostr] dropping event with invalid signature", raw.id, "from", evt.relay?.url);
+                }
+                catch { }
+                return;
+            }
             state.seenIds.add(raw.id);
             if (state.seenIds.size > MAX_SEEN_IDS) {
                 const [oldest] = state.seenIds;
