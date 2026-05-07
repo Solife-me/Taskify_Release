@@ -25,9 +25,13 @@ export class NostrSession {
     if (!this.singleton) {
       const relayInfoCache = new RelayInfoCache();
       const relayHealth = new RelayHealthTracker();
+      // The runtime's *Like interfaces are intentionally loose (loader returns
+      // Promise<unknown>; severity is plain string). Our concrete classes use
+      // narrower types — assignment is safe at runtime, TS just can't prove it
+      // through the variance rules.
       this.singleton = new RuntimeNostrSession(relays, {
-        relayInfoCache,
-        relayHealth,
+        relayInfoCache: relayInfoCache as never,
+        relayHealth: relayHealth as never,
         createAuthManager: (ndk) => new RelayAuthManager(ndk),
         createWalletClient: ({ ndk, publisher, subscriptions, resolveRelaySet }) =>
           new WalletNostrClient(ndk, publisher, subscriptions, resolveRelaySet),

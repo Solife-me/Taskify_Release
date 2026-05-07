@@ -1,4 +1,3 @@
-import React from "react";
 import { sanitizeHtml } from "../../../lib/sanitize";
 
 export function SpreadsheetViewer({ html }: { html: string }) {

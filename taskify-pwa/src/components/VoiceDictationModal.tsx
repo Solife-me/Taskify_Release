@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVoiceSession, isSpeechRecognitionSupported } from "../nostr/useVoiceSession";
 import type { FinalTask, TaskCandidate } from "../nostr/useVoiceSession";
 

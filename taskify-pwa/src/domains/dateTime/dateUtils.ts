@@ -282,7 +282,7 @@ export function getWheelNearestIndex(column: HTMLDivElement | null, totalOptions
 }
 
 export function scheduleWheelSnap(
-  columnRef: React.RefObject<HTMLDivElement>,
+  columnRef: React.RefObject<HTMLDivElement | null>,
   snapRef: React.MutableRefObject<number | null>,
   targetIndex: number,
   onCommit?: () => void,

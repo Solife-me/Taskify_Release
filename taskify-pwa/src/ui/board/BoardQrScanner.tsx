@@ -77,6 +77,7 @@ export function BoardQrScanner({
     let cancelled = false;
 
     async function start() {
+      if (!video) return;
       try {
         clearError();
         const scanner = new QrScannerLib(

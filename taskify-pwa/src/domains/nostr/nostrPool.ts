@@ -26,8 +26,8 @@ export type NostrPool = {
   subscribe: (
     relays: string[],
     filters: any[],
-    onEvent: (ev: NostrEvent, from: string) => void,
-    onEose?: (from: string) => void
+    onEvent: (ev: NostrEvent, from?: string) => void,
+    onEose?: (from?: string) => void
   ) => () => void;
   subscribeMany: (
     relays: string[],

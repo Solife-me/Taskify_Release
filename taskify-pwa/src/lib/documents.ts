@@ -173,7 +173,7 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
     if (!name || (!dataUrl && !remoteUrl)) continue;
     const kindInput = typeof (entry as any).kind === "string" ? (entry as any).kind.toLowerCase() : "";
     const mime = typeof (entry as any).mimeType === "string" ? (entry as any).mimeType : "";
-    const kind = (["pdf", "doc", "docx", "xls", "xlsx"] as const).includes(kindInput as TaskDocumentKind)
+    const kind = (["pdf", "doc", "docx", "xls", "xlsx"] as readonly string[]).includes(kindInput)
       ? (kindInput as TaskDocumentKind)
       : inferKind(name, mime);
     if (!kind) continue;
@@ -561,7 +561,7 @@ function generateDocBinary(buffer: ArrayBuffer): { previewText?: string; fullTex
 
 async function generateSpreadsheetMarkup(
   buffer: ArrayBuffer,
-  kind: TaskDocumentKind
+  _kind: TaskDocumentKind
 ): Promise<{ previewHtml?: string; fullHtml?: string }> {
   try {
     const workbook = XLSX.read(buffer, { type: "array", cellStyles: true, cellHTML: true, cellNF: true });

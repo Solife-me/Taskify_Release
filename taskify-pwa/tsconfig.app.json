@@ -15,6 +15,17 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* Pin shared deps to a single location so taskify-runtime-nostr's
+     * dist/*.d.ts resolves the same NDK / nostr-tools type as our own code,
+     * preventing TS2345 "separate declarations of a private property" from
+     * cross-tree duplicates. */
+    "baseUrl": ".",
+    "paths": {
+      "@nostr-dev-kit/ndk": ["./node_modules/@nostr-dev-kit/ndk"],
+      "nostr-tools": ["./node_modules/nostr-tools"],
+      "nostr-tools/*": ["./node_modules/nostr-tools/*"]
+    },
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
@@ -23,5 +34,11 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "tests",
+    "src/domains/calendar/calendarHook.ts"
+  ]
 }

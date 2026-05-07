@@ -1,3 +1,5 @@
+import type { Task, Board, CalendarEvent } from "taskify-core";
+
 export {
   TASK_PRIORITY_MARKS,
   isExternalCalendarEvent,

@@ -193,8 +193,8 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
-    if ("proofs" in cashuData && cashuData.proofs !== undefined) {
-      saveProofStore(cashuData.proofs);
+    if ("proofs" in cashuData && cashuData.proofs && typeof cashuData.proofs === "object") {
+      saveProofStore(cashuData.proofs as Parameters<typeof saveProofStore>[0]);
     }
     if ("activeMint" in cashuData) {
       setActiveMint(cashuData.activeMint || null);

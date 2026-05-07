@@ -1,16 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { hexToBytes } from "@noble/hashes/utils";
 import { nip44 } from "nostr-tools";
-import {
-  TASKIFY_CALENDAR_EVENT_KIND,
-  TASKIFY_CALENDAR_VIEW_KIND,
-  TASKIFY_CALENDAR_RSVP_KIND,
-  calendarAddress,
-  parseCalendarAddress,
-  parseCalendarCanonicalPayload,
-  parseCalendarViewPayload,
-  parseCalendarRsvpPayload,
-} from "taskify-core";
 
 export {
   TASKIFY_CALENDAR_EVENT_KIND,

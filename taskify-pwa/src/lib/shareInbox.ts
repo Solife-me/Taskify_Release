@@ -2,7 +2,6 @@ import { secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { finalizeEvent, getEventHash, getPublicKey, nip19, nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
 
-import { normalizeNostrPubkey } from "./nostr";
 import {
   buildBoardShareEnvelope as buildBoardShareEnvelopeCore,
   buildContactShareEnvelope as buildContactShareEnvelopeCore,
@@ -17,15 +16,20 @@ import {
   type SharedCalendarEventInvitePayload,
   type SharedTaskAssignmentResponsePayload,
   normalizeRelayList,
-  normalizeCalendarAddress,
 } from "taskify-core";
-import { TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND } from "./privateCalendar";
 import { NostrSession } from "../nostr/NostrSession";
 import { kvStorage } from "../storage/kvStorage";
 
+export type {
+  ShareEnvelope,
+  SharedBoardPayload,
+  SharedContactPayload,
+  SharedTaskPayload,
+  SharedCalendarEventInvitePayload,
+  SharedTaskAssignmentResponsePayload,
+};
 
 const SHARE_ENVELOPE_EMBED_MARKER = "Taskify-Share:";
-const SHARE_ENVELOPE_EMBED_REGEX = /(?:^|\n)Taskify-Share:\s*([A-Za-z0-9_-]+)\s*(?:\n|$)/m;
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -35,30 +39,9 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(base64: string): Uint8Array | null {
-  try {
-    const binary = atob(base64);
-    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  } catch {
-    return null;
-  }
-}
-
 function encodeBase64UrlUtf8(value: string): string {
   const base64 = bytesToBase64(new TextEncoder().encode(value));
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function decodeBase64UrlUtf8(value: string): string | null {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-  const bytes = base64ToBytes(padded);
-  if (!bytes) return null;
-  try {
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
 }
 
 function formatTaskAssignmentPriority(priority: number | undefined): string | null {
@@ -163,20 +146,6 @@ export function buildCalendarEventInviteEnvelope(
 
 export function parseShareEnvelope(raw: string): ShareEnvelope | null {
   return parseShareEnvelopeCore(raw);
-}
-
-function sanitizeSender(sender: any): ShareEnvelope["sender"] {
-  if (!sender || typeof sender !== "object") return undefined;
-  const npub = typeof sender.npub === "string" && sender.npub.trim() ? sender.npub.trim() : undefined;
-  const name = typeof sender.name === "string" && sender.name.trim() ? sender.name.trim() : undefined;
-  if (!npub && !name) return undefined;
-  return { npub, name };
-}
-
-function normalizeContactNpub(value: string): string | null {
-  const normalized = normalizeNostrPubkey(value);
-  if (normalized) return normalized;
-  return value.startsWith("npub") ? value : null;
 }
 
 function toRawHexPubkey(value: string): string | null {

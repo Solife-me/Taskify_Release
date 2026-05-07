@@ -10,18 +10,6 @@ import { DocumentThumbnail } from "./DocumentPreviewModal";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
-function ResolvedTaskImage({ src, boardId }: { src: string; boardId?: string }) {
-  const [resolvedSrc, setResolvedSrc] = useState(src);
-  useEffect(() => {
-    let cancelled = false;
-    if (!src || src.startsWith("data:")) { setResolvedSrc(src); return; }
-    if (!boardId) { setResolvedSrc(src); return; }
-    decryptAttachment({ boardId, url: src, mimeType: "image/jpeg" }).then((next) => { if (!cancelled) setResolvedSrc(next); }).catch(() => { if (!cancelled) setResolvedSrc(src); });
-    return () => { cancelled = true; };
-  }, [src, boardId]);
-  return <img src={resolvedSrc} className="max-h-40 w-full rounded-2xl object-contain" />;
-}
-
 export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
   const [imageFailed, setImageFailed] = useState(false);
   const hasImage = Boolean(preview.image && !imageFailed);
@@ -200,7 +188,7 @@ export function TaskMedia({
       ) : null}
       {hasDocuments ? (
         <div className="space-y-2">
-          {task.documents!.map((doc) => (
+          {(task.documents as unknown as TaskDocument[]).map((doc) => (
             <DocumentThumbnail
               key={doc.id}
               document={doc}
@@ -269,7 +257,7 @@ export function EventMedia({
       )}
       {hasDocuments ? (
         <div className="space-y-2">
-          {event.documents!.map((doc) => (
+          {(event.documents as unknown as TaskDocument[]).map((doc) => (
             <DocumentThumbnail
               key={doc.id}
               document={doc}
