@@ -6531,11 +6531,6 @@ export default function App() {
   // Map<bTag, Set<relayUrl>>
   const pendingRelaysByBoardRef = useRef<Map<string, Set<string>>>(new Map());
 
-  // Track task IDs seen per board during initial sync. After EOSE, local tasks
-  // with _nostrAt that were NOT seen are verified via a targeted fetch — if the
-  // relay no longer has them they were deleted while this client was offline.
-  const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
-
   // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
   // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
   // LIVE_BATCH_MS before a single setTasks is called. This prevents slow-relay events
@@ -13414,9 +13409,6 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
-    // Record this task as seen during sync for post-EOSE stale-task verification.
-    if (!seenBoardTasksRef.current.has(bTag)) seenBoardTasksRef.current.set(bTag, new Set());
-    seenBoardTasksRef.current.get(bTag)!.add(taskId);
     // Advance the in-memory cursor for this board so we know the high-water mark.
     // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
     // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
@@ -17779,67 +17771,6 @@ export default function App() {
       });
     };
 
-    // After EOSE, verify local tasks that the relay didn't mention. These may
-    // have been deleted while this client was offline or before a backup was taken.
-    // A targeted fetch by task ID (no `since`) lets the relay confirm whether
-    // each task still exists. Tasks the relay doesn't know about are removed.
-    const verifyUnseenTasks = (bTag: string, boardRelays: string[]) => {
-      const seenIds = seenBoardTasksRef.current.get(bTag) ?? new Set<string>();
-      const board = boardsRef.current.find(
-        (b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag
-      );
-      if (!board) { seenBoardTasksRef.current.delete(bTag); return; }
-      const boardId = board.id;
-      // Only verify tasks that came from the relay previously (_nostrAt > 0).
-      // Local-only tasks (no _nostrAt) are not expected to be on the relay.
-      //
-      // Two extra guards prevent newly-created/edited tasks from being deleted
-      // during the relay's verification probe:
-      //   1. Skip tasks currently mid-publish — relay has not received the event yet.
-      //   2. Skip tasks whose _nostrAt is very recent (optimistic stamp from
-      //      maybePublishTask). The stamp may have been set seconds ago and the
-      //      relay might not have propagated the event to the verify subscription
-      //      yet, especially during rapid sequential adds.
-      const VERIFY_RECENT_GRACE_SECS = 60;
-      const nowSecs = Math.floor(Date.now() / 1000);
-      const unseenIds = tasksRef.current
-        .filter((t) => {
-          if (t.boardId !== boardId) return false;
-          if (typeof t._nostrAt !== "number" || t._nostrAt <= 0) return false;
-          if (seenIds.has(t.id)) return false;
-          if (pendingNostrTasksRef.current.has(`${bTag}::${t.id}`)) return false;
-          if (nowSecs - t._nostrAt < VERIFY_RECENT_GRACE_SECS) return false;
-          return true;
-        })
-        .map((t) => t.id);
-      seenBoardTasksRef.current.delete(bTag);
-      if (!unseenIds.length) return;
-      const verifySeen = new Set<string>();
-      const verifyUnsub = pool.subscribe(boardRelays, [
-        { kinds: [30301], "#b": [bTag], "#d": unseenIds },
-      ], (ev, evRelay) => {
-        const tId = tagValue(ev, "d");
-        if (tId) verifySeen.add(tId);
-        (ev as any).__relay = evRelay;
-        enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
-      }, () => {
-        verifyUnsub();
-        // Tasks not returned by the relay were deleted or purged — remove locally.
-        const toRemove = unseenIds.filter((id) => !verifySeen.has(id));
-        if (toRemove.length) {
-          const removeSet = new Set(toRemove);
-          setTasks((prev) => {
-            const next = prev.filter(
-              (t) => !(t.boardId === boardId && removeSet.has(t.id))
-            );
-            return next.length === prev.length ? prev : dedupeRecurringInstances(next);
-          });
-        }
-      });
-      // Safety timeout for the verification subscription.
-      setTimeout(() => { try { verifyUnsub(); } catch { /* already closed */ } }, 15000);
-    };
-
     for (const it of parsed) {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
@@ -17870,8 +17801,6 @@ export default function App() {
         markNostrBoardInitialSyncComplete(it.id);
         try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
         setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-        // Verify tasks the relay didn't mention — they may have been deleted offline.
-        setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
       }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
       syncTimeoutByBoard.set(it.id, timeoutId);
 
@@ -17923,8 +17852,6 @@ export default function App() {
           markNostrBoardInitialSyncComplete(it.id);
           try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-          // Verify tasks the relay didn't mention — they may have been deleted offline.
-          setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
           return;
         }
 
@@ -17950,8 +17877,6 @@ export default function App() {
           markNostrBoardInitialSyncComplete(it.id);
           try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-          // Verify tasks the relay didn't mention — they may have been deleted offline.
-          setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
         }
       });
       unsubs.push(unsub);
