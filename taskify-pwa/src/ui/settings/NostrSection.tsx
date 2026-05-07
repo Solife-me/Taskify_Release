@@ -1,8 +1,7 @@
 // @ts-nocheck
 import React, { useState, useMemo } from "react";
 import { nip19 } from "nostr-tools";
-import { kvStorage } from "../../storage/kvStorage";
-import { LS_NOSTR_SK } from "../../nostrKeys";
+import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import { FileServersSection } from "./FileServersSection";
 import { toNsec } from "../../domains/nostr/nostrKeyUtils";
@@ -59,7 +58,7 @@ export function NostrSection({
           className="ghost-button button-sm pressable"
           onClick={async ()=>{
             try {
-              const sk = kvStorage.getItem(LS_NOSTR_SK) || "";
+              const sk = nostrSkSync();
               if (!sk) return;
               await navigator.clipboard?.writeText(toNsec(sk));
             } catch {}
@@ -113,7 +112,7 @@ export function NostrSection({
                 className="ghost-button button-sm pressable"
                 onClick={async ()=>{
                   try {
-                    const sk = kvStorage.getItem(LS_NOSTR_SK) || "";
+                    const sk = nostrSkSync();
                     if (!sk) return;
                     await navigator.clipboard?.writeText(toNsec(sk));
                   } catch {}

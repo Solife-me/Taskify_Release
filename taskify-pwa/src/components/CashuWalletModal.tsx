@@ -64,7 +64,7 @@ import {
   LS_GROUP_LEFT,
   LS_GROUP_MUTED,
 } from "../localStorageKeys";
-import { LS_NOSTR_SK } from "../nostrKeys";
+import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
 import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -3591,7 +3591,7 @@ export default function CashuWalletModal({
   }, []);
 
   const readNostrIdentity = useCallback((): { identity: NostrIdentity | null; reason: string | null } => {
-    const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
+    const raw = nostrSkSync().trim();
     if (!raw) {
       return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
     }
@@ -5445,7 +5445,7 @@ export default function CashuWalletModal({
   const [npubCashClaimMessage, setNpubCashClaimMessage] = useState("");
   const deriveDefaultLightningAddress = useCallback(() => {
     if (npubCashIdentity?.address) return npubCashIdentity.address;
-    const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
+    const storedSk = nostrSkSync();
     if (!storedSk) return "";
     try {
       const identity = deriveNpubCashIdentity(storedSk);
@@ -9590,7 +9590,7 @@ export default function CashuWalletModal({
       if (!npubCashLightningAddressEnabled) return;
       if (npubCashClaimingRef.current) return;
       const auto = options?.auto === true;
-      const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
+      const storedSk = nostrSkSync();
       if (!storedSk) {
         setNpubCashIdentity(null);
         const message = "Add your Taskify Nostr key in Settings → Nostr to use npub.cash.";
@@ -10196,7 +10196,7 @@ export default function CashuWalletModal({
       setNpubCashIdentityError(null);
       return;
     }
-    const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
+    const storedSk = nostrSkSync();
     if (!storedSk) {
       setNpubCashIdentity(null);
       setNpubCashIdentityError("Add your Taskify Nostr key in Settings → Nostr to use npub.cash.");

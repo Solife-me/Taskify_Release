@@ -197,10 +197,9 @@ export function SettingsModal({
   }, []);
 
   const readNostrSecret = useCallback((): string | null => {
-    const { kvStorage } = require("../../storage/kvStorage");
-    const { LS_NOSTR_SK } = require("../../nostrKeys");
     try {
-      const raw = kvStorage.getItem(LS_NOSTR_SK);
+      const { getSkSync } = require("../../lib/nostrSkStore");
+      const raw = getSkSync();
       if (raw && /^[0-9a-fA-F]{64}$/.test(raw.trim())) {
         return raw.trim().toLowerCase();
       }

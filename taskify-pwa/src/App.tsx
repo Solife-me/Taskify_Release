@@ -52,6 +52,7 @@ import {
   LS_CONTACT_NIP05_CACHE,
 } from "./localStorageKeys";
 import { kvStorage } from "./storage/kvStorage";
+import { getSkSync as nostrSkSync, setSk as nostrSkSet } from "./lib/nostrSkStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./storage/taskifyDb";
 import {
@@ -59,7 +60,6 @@ import {
   LS_NOSTR_BIBLE_TRACKER_SYNC_STATE,
   LS_NOSTR_RELAYS,
   LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
-  LS_NOSTR_SK,
 } from "./nostrKeys";
 import {
   loadStore as loadProofStore,
@@ -1812,7 +1812,7 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
     idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
-    kvStorage.setItem(LS_NOSTR_SK, data.nostrSk);
+    void nostrSkSet(data.nostrSk);
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
@@ -2182,7 +2182,7 @@ function b64decode(s: string): Uint8Array {
 }
 async function deriveAesKeyFromLocalSk(): Promise<CryptoKey> {
   // Derive a stable AES key from local Nostr SK: AES-GCM 256 with SHA-256(sk || label)
-  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
+  const skHex = nostrSkSync();
   if (!skHex || !/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   const label = new TextEncoder().encode("taskify-ecash-v1");
   const raw = concatBytes(hexToBytes(skHex), label);
@@ -2206,7 +2206,7 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
 
 // NIP-04 encryption for recipient
 async function encryptEcashTokenForRecipient(recipientHex: string, plain: string): Promise<{ alg: "nip04"; data: string }> {
-  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
+  const skHex = nostrSkSync();
   if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   if (!/^[0-9a-fA-F]{64}$/.test(recipientHex)) throw new Error("Invalid recipient pubkey");
   const data = await nip04.encrypt(skHex, recipientHex, plain);
@@ -2214,7 +2214,7 @@ async function encryptEcashTokenForRecipient(recipientHex: string, plain: string
 }
 
 async function decryptEcashTokenForRecipient(senderHex: string, enc: { alg: "nip04"; data: string }): Promise<string> {
-  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
+  const skHex = nostrSkSync();
   if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   if (!/^[0-9a-fA-F]{64}$/.test(senderHex)) throw new Error("Invalid sender pubkey");
   return await nip04.decrypt(skHex, senderHex, enc.data);
@@ -6205,7 +6205,7 @@ export default function App() {
   const pool = useMemo(() => createNostrPool(), []);
   const initialStoredNostrSecretHex = useMemo(() => {
     try {
-      const existing = kvStorage.getItem(LS_NOSTR_SK);
+      const existing = nostrSkSync();
       if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
         return existing.toLowerCase();
       }
@@ -6335,7 +6335,7 @@ export default function App() {
     setNostrSK(sk);
     const pk = getPublicKey(sk);
     setNostrPK(pk);
-    try { kvStorage.setItem(LS_NOSTR_SK, skHex); } catch {}
+    void nostrSkSet(skHex);
     return toNsec(skHex);
   }, []);
 
@@ -6347,7 +6347,7 @@ export default function App() {
       setNostrSK(sk);
       const pk = getPublicKey(sk);
       setNostrPK(pk);
-      try { kvStorage.setItem(LS_NOSTR_SK, normalized); } catch {}
+      void nostrSkSet(normalized);
       return true;
     } catch {
       if (!options?.silent) {
@@ -8450,7 +8450,7 @@ export default function App() {
 
   const onboardingNeedsKeySelection = useMemo(() => {
     try {
-      const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
+      const raw = nostrSkSync().trim();
       return !/^[0-9a-fA-F]{64}$/.test(raw);
     } catch {
       return true;

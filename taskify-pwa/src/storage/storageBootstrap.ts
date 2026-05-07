@@ -25,6 +25,7 @@ import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
 
 import { getTaskifyDb, TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./taskifyDb";
 import { idbKeyValue } from "./idbKeyValue";
+import { init as initNostrSkStore } from "../lib/nostrSkStore";
 
 const TASKS_KEY = "taskify_tasks_v5";
 const BOARDS_KEY = "taskify_boards_v2";
@@ -56,6 +57,12 @@ export async function initializeStorageBoundaries(): Promise<void> {
 
   // Preload keys needed during initial render.
   await Promise.all([
+    // Decrypt the local Nostr SK (or migrate v1 plaintext → v2 ciphertext on
+    // first run). Must complete before App renders so the synchronous useMemo
+    // in App.tsx that seeds nostrSK state sees the right value.
+    initNostrSkStore().catch((err) => {
+      console.warn("nostrSkStore init failed", err);
+    }),
     idbKeyValue.initStore(TASKIFY_STORE_TASKS, [
       TASKS_KEY,
       BOARDS_KEY,

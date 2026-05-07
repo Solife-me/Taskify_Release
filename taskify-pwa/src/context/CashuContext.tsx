@@ -15,12 +15,11 @@ import {
   setActiveMint as persistActiveMint,
   type PendingTokenEntry,
 } from "../wallet/storage";
-import { LS_NOSTR_SK } from "../nostrKeys";
+import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
 import { useP2PK } from "./P2PKContext";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
 import { decodeBolt11Amount } from "../wallet/lightning";
 import { getWalletSeedBytes } from "../wallet/seed";
-import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 
@@ -333,7 +332,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         }
       }
       try {
-        const raw = kvStorage.getItem(LS_NOSTR_SK) || "";
+        const raw = nostrSkSync();
         const trimmed = raw.trim();
         if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
           const derived = deriveCompressedPubkeyFromSecret(trimmed);

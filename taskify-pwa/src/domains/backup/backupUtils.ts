@@ -14,7 +14,8 @@ import {
   LS_SCRIPTURE_MEMORY,
   LS_BACKGROUND_IMAGE,
 } from "../storageKeys";
-import { LS_NOSTR_RELAYS, LS_NOSTR_SK } from "../../nostrKeys";
+import { LS_NOSTR_RELAYS } from "../../nostrKeys";
+import { setSk as nostrSkSet } from "../../lib/nostrSkStore";
 import { LS_LIGHTNING_CONTACTS, LS_BTC_USD_PRICE_CACHE, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
 import {
   saveStore as saveProofStore,
@@ -189,7 +190,7 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
     idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
-    kvStorage.setItem(LS_NOSTR_SK, data.nostrSk);
+    void nostrSkSet(data.nostrSk);
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
