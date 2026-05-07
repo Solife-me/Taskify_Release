@@ -24,6 +24,11 @@ import { getTaskifyDb, TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 import { LS_NOSTR_SK as LS_NOSTR_SK_V1 } from "../nostrKeys";
 
 export const LS_NOSTR_SK_V2 = "taskify_nostr_sk_v2";
+/** Set to "1" the first time we migrate v1 plaintext → v2 ciphertext, so the
+ *  app can show a one-time "back up your nsec" prompt. Cleared by
+ *  `acknowledgeBackupNotice()` when the user dismisses the prompt. Never set
+ *  for fresh installs (no v1 existed). */
+export const LS_NOSTR_SK_BACKUP_PENDING = "taskify_nostr_sk_backup_pending";
 const WRAPPING_KEY_IDB_KEY = "sk_wrapping_key";
 
 let cached: string = "";
@@ -124,6 +129,10 @@ export async function init(): Promise<void> {
         const cipher = await encryptSk(v1, key);
         kvStorage.setItem(LS_NOSTR_SK_V2, cipher);
         kvStorage.removeItem(LS_NOSTR_SK_V1);
+        // Flag for the one-time "back up your nsec" prompt. The user is now
+        // in the v2-only state where losing the IDB wrapping key without a
+        // separate nsec backup means losing access to the identity.
+        kvStorage.setItem(LS_NOSTR_SK_BACKUP_PENDING, "1");
         cached = v1;
         loaded = true;
         return;
@@ -188,8 +197,20 @@ export async function setSk(skHex: string): Promise<void> {
 export async function clearSk(): Promise<void> {
   kvStorage.removeItem(LS_NOSTR_SK_V1);
   kvStorage.removeItem(LS_NOSTR_SK_V2);
+  kvStorage.removeItem(LS_NOSTR_SK_BACKUP_PENDING);
   cached = "";
   loaded = true;
+}
+
+/** Whether the one-time "back up your nsec" prompt should be shown. True only
+ *  after a v1→v2 migration has just run and the user hasn't acknowledged. */
+export function isBackupNoticePending(): boolean {
+  return kvStorage.getItem(LS_NOSTR_SK_BACKUP_PENDING) === "1";
+}
+
+/** Mark the backup prompt as dismissed; the banner never shows again. */
+export function acknowledgeBackupNotice(): void {
+  kvStorage.removeItem(LS_NOSTR_SK_BACKUP_PENDING);
 }
 
 /** Test-only: reset module state. Does not touch storage. */

@@ -52,7 +52,12 @@ import {
   LS_CONTACT_NIP05_CACHE,
 } from "./localStorageKeys";
 import { kvStorage } from "./storage/kvStorage";
-import { getSkSync as nostrSkSync, setSk as nostrSkSet } from "./lib/nostrSkStore";
+import {
+  getSkSync as nostrSkSync,
+  setSk as nostrSkSet,
+  isBackupNoticePending as nostrSkBackupNoticePending,
+  acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
+} from "./lib/nostrSkStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./storage/taskifyDb";
 import {
@@ -6256,6 +6261,21 @@ export default function App() {
         console.warn("Failed to retry pending Nostr sync", err);
       });
   }, [defaultRelays]);
+
+  // One-time prompt after the v1→v2 SK migration. Shown once per device and
+  // dismissed permanently when the user copies their nsec or taps "Got it".
+  const [showSkBackupNotice, setShowSkBackupNotice] = useState(() => nostrSkBackupNoticePending());
+  const dismissSkBackupNotice = useCallback(() => {
+    nostrSkAcknowledgeBackupNotice();
+    setShowSkBackupNotice(false);
+  }, []);
+  const copyNsecAndDismiss = useCallback(async () => {
+    try {
+      const sk = nostrSkSync();
+      if (sk) await navigator.clipboard?.writeText(toNsec(sk));
+    } catch {}
+    dismissSkBackupNotice();
+  }, [dismissSkBackupNotice]);
   const [nostrBackupState, setNostrBackupState] = useState<NostrBackupState>(() => loadNostrBackupState());
   const nostrBackupStateRef = useRef<NostrBackupState>(nostrBackupState);
   useEffect(() => { nostrBackupStateRef.current = nostrBackupState; }, [nostrBackupState]);
@@ -18638,6 +18658,25 @@ export default function App() {
               {pendingNostrOutboxCount} {pendingNostrOutboxCount === 1 ? "change" : "changes"} pending sync
             </span>
           </button>
+        )}
+
+        {showSkBackupNotice && (
+          <div className="sk-backup-banner" role="alert">
+            <div className="sk-backup-banner__body">
+              <span className="sk-backup-banner__dot" aria-hidden="true" />
+              <span>
+                Your Nostr key is now encrypted on this device. Save your <strong>nsec</strong> somewhere safe so you can recover your account if this device is lost.
+              </span>
+            </div>
+            <div className="sk-backup-banner__actions">
+              <button type="button" className="sk-backup-banner__primary pressable" onClick={copyNsecAndDismiss}>
+                Copy nsec
+              </button>
+              <button type="button" className="sk-backup-banner__secondary pressable" onClick={dismissSkBackupNotice}>
+                Got it
+              </button>
+            </div>
+          </div>
         )}
 
         {/* Animation overlay for fly effects (coins, etc.) */}

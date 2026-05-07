@@ -23,10 +23,13 @@ vi.mock("../storage/taskifyDb", async () => {
 
 import {
   __resetForTests,
+  acknowledgeBackupNotice,
   clearSk,
   getSkSync,
   init,
+  isBackupNoticePending,
   isLoaded,
+  LS_NOSTR_SK_BACKUP_PENDING,
   LS_NOSTR_SK_V2,
   setSk,
 } from "./nostrSkStore";
@@ -40,12 +43,14 @@ beforeEach(() => {
   idbValues.clear();
   kvStorage.removeItem(LS_NOSTR_SK_V1);
   kvStorage.removeItem(LS_NOSTR_SK_V2);
+  kvStorage.removeItem(LS_NOSTR_SK_BACKUP_PENDING);
   __resetForTests();
 });
 afterEach(() => {
   idbValues.clear();
   kvStorage.removeItem(LS_NOSTR_SK_V1);
   kvStorage.removeItem(LS_NOSTR_SK_V2);
+  kvStorage.removeItem(LS_NOSTR_SK_BACKUP_PENDING);
 });
 
 describe("nostrSkStore", () => {
@@ -132,5 +137,50 @@ describe("nostrSkStore", () => {
     await setSk("");
     expect(getSkSync()).toBe("");
     expect(kvStorage.getItem(LS_NOSTR_SK_V2)).toBeNull();
+  });
+
+  test("v1→v2 migration sets the backup-notice flag", async () => {
+    expect(isBackupNoticePending()).toBe(false);
+    kvStorage.setItem(LS_NOSTR_SK_V1, SAMPLE_SK);
+    await init();
+    expect(isBackupNoticePending()).toBe(true);
+  });
+
+  test("fresh install does NOT set the backup-notice flag", async () => {
+    expect(isBackupNoticePending()).toBe(false);
+    await init();
+    await setSk(SAMPLE_SK);
+    expect(isBackupNoticePending()).toBe(false);
+  });
+
+  test("returning user with existing v2 does NOT set the backup-notice flag", async () => {
+    // Seed a v2 ciphertext from a prior session
+    await init();
+    await setSk(SAMPLE_SK);
+    expect(isBackupNoticePending()).toBe(false);
+    // Simulate fresh app load
+    __resetForTests();
+    await init();
+    expect(isBackupNoticePending()).toBe(false);
+  });
+
+  test("acknowledgeBackupNotice clears the flag permanently", async () => {
+    kvStorage.setItem(LS_NOSTR_SK_V1, SAMPLE_SK);
+    await init();
+    expect(isBackupNoticePending()).toBe(true);
+    acknowledgeBackupNotice();
+    expect(isBackupNoticePending()).toBe(false);
+    // A subsequent init() does not re-flag (no v1 left to migrate)
+    __resetForTests();
+    await init();
+    expect(isBackupNoticePending()).toBe(false);
+  });
+
+  test("clearSk also clears the backup-notice flag", async () => {
+    kvStorage.setItem(LS_NOSTR_SK_V1, SAMPLE_SK);
+    await init();
+    expect(isBackupNoticePending()).toBe(true);
+    await clearSk();
+    expect(isBackupNoticePending()).toBe(false);
   });
 });
