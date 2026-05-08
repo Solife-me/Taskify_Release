@@ -55,6 +55,12 @@ import {
   isBackupNoticePending as nostrSkBackupNoticePending,
   acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
 } from "./lib/nostrSkStore";
+import {
+  taskEntityStore,
+  boardEntityStore,
+  calendarEventEntityStore,
+  externalCalendarEventEntityStore,
+} from "./storage/entityStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./storage/taskifyDb";
 import {
@@ -1745,21 +1751,21 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
     }
   }
   idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(cursors));
-  if ("tasks" in data && data.tasks !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
+  // Per-entity v3 stores are the source of truth post-migration. Wholesale
+  // replace each so an existing user's local data is dropped in favour of
+  // the backup contents. (The page reloads after restore — flush() is awaited
+  // by the caller so writes are durable before reload.)
+  if ("tasks" in data && Array.isArray(data.tasks)) {
+    taskEntityStore.replaceAll(data.tasks as { id: string }[]);
   }
-  if ("calendarEvents" in data && data.calendarEvents !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(data.calendarEvents));
+  if ("calendarEvents" in data && Array.isArray(data.calendarEvents)) {
+    calendarEventEntityStore.replaceAll(data.calendarEvents as { id: string }[]);
   }
-  if ("externalCalendarEvents" in data && data.externalCalendarEvents !== undefined) {
-    idbKeyValue.setItem(
-      TASKIFY_STORE_TASKS,
-      LS_EXTERNAL_CALENDAR_EVENTS,
-      JSON.stringify(data.externalCalendarEvents),
-    );
+  if ("externalCalendarEvents" in data && Array.isArray(data.externalCalendarEvents)) {
+    externalCalendarEventEntityStore.replaceAll(data.externalCalendarEvents as { id: string }[]);
   }
-  if ("boards" in data && data.boards !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(data.boards));
+  if ("boards" in data && Array.isArray(data.boards)) {
+    boardEntityStore.replaceAll(data.boards as { id: string }[]);
   }
   if ("settings" in data && data.settings !== undefined) {
     kvStorage.setItem(LS_SETTINGS, JSON.stringify(data.settings));
@@ -4370,9 +4376,23 @@ function migrateBoards(stored: any): Board[] | null {
 
 function useBoards() {
   const [boards, setBoards] = useState<Board[]>(() => {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS);
-    if (raw) {
-      const migrated = migrateBoards(JSON.parse(raw));
+    // Prefer the v3 per-entity store; fall back to the legacy blob if the
+    // entity store is empty (e.g. migration didn't run because the blob was
+    // also empty).
+    let rawArray: unknown[] | null = null;
+    if (boardEntityStore.size() > 0) {
+      rawArray = boardEntityStore.getAll();
+    } else {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) rawArray = parsed;
+        } catch {}
+      }
+    }
+    if (rawArray) {
+      const migrated = migrateBoards(rawArray);
       if (migrated && migrated.length) return migrated;
     }
     // default: one shared Week board for fresh installs
@@ -4389,14 +4409,15 @@ function useBoards() {
   const boardsFirstRun = useRef(true);
   useEffect(() => {
     if (boardsFirstRun.current) { boardsFirstRun.current = false; return; }
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(boards));
+    boardEntityStore.syncWith(boards);
   }, [boards]);
   return [boards, setBoards] as const;
 }
 
 function useTasks() {
   const [tasks, setTasks] = useState<Task[]>(() => {
-    const loadStored = (): any[] => {
+    // Prefer the v3 per-entity store; fall back to legacy blob otherwise.
+    const loadFromBlob = (): any[] => {
       try {
         const current = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS);
         if (current) {
@@ -4407,7 +4428,9 @@ function useTasks() {
       return [];
     };
 
-    const rawTasks = loadStored();
+    const rawTasks: any[] = taskEntityStore.size() > 0
+      ? taskEntityStore.getAll()
+      : loadFromBlob();
     const orderMap = new Map<string, number>();
     const createdAtFallback = Date.now();
     const normalized = rawTasks
@@ -4510,23 +4533,12 @@ function useTasks() {
     return dedupeRecurringInstances(normalized);
   });
   const tasksFirstRun = useRef(true);
-  // Keep a ref so the debounce callback always serializes the latest tasks value.
-  const tasksForSaveRef = useRef(tasks);
-  tasksForSaveRef.current = tasks;
-  const tasksSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (tasksFirstRun.current) { tasksFirstRun.current = false; return; }
-    // Debounce the heavy JSON.stringify so it runs AFTER the browser has painted
-    // and GC has had a chance to run. Without this, a large batch flush triggers
-    // a render + JSON.stringify(1000 tasks) back-to-back, spiking memory on mobile.
-    if (tasksSaveTimerRef.current) clearTimeout(tasksSaveTimerRef.current);
-    tasksSaveTimerRef.current = setTimeout(() => {
-      try {
-        idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasksForSaveRef.current));
-      } catch (err) {
-        console.error('Failed to save tasks', err);
-      }
-    }, 500);
+    // Diff-based per-entity write: only changed rows hit IDB, regardless of
+    // how many tasks the user has. Replaces the prior 500ms-debounced
+    // JSON.stringify(all-tasks) which spiked memory on mobile.
+    taskEntityStore.syncWith(tasks);
   }, [tasks]);
   return [tasks, setTasks] as const;
 }
@@ -4590,8 +4602,13 @@ function useCalendarEvents() {
       }
     };
 
-    const rawEvents = loadStored(LS_CALENDAR_EVENTS);
-    const rawExternalEvents = loadStored(LS_EXTERNAL_CALENDAR_EVENTS);
+    // Prefer v3 per-entity stores; fall back to legacy blobs otherwise.
+    const rawEvents: any[] = calendarEventEntityStore.size() > 0
+      ? calendarEventEntityStore.getAll()
+      : loadStored(LS_CALENDAR_EVENTS);
+    const rawExternalEvents: any[] = externalCalendarEventEntityStore.size() > 0
+      ? externalCalendarEventEntityStore.getAll()
+      : loadStored(LS_EXTERNAL_CALENDAR_EVENTS);
     const orderMap = new Map<string, number>();
     const todayKey = (() => {
       const now = new Date();
@@ -4799,8 +4816,8 @@ function useCalendarEvents() {
     try {
       const boardEvents = events.filter((event) => !event.external);
       const externalEvents = events.filter((event) => event.external);
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(boardEvents));
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS, JSON.stringify(externalEvents));
+      calendarEventEntityStore.syncWith(boardEvents);
+      externalCalendarEventEntityStore.syncWith(externalEvents);
     } catch (err) {
       console.error("Failed to save calendar events", err);
     }
@@ -8475,11 +8492,24 @@ export default function App() {
   const handleOnboardingRestoreFromBackupFile = useCallback(async (file: File) => {
     const parsed = parseBackupJsonPayload(await file.text());
     applyBackupDataToStorage(parsed);
+    // Ensure the v3 entity-store writes land before the page reloads.
+    await Promise.all([
+      taskEntityStore.flush(),
+      boardEntityStore.flush(),
+      calendarEventEntityStore.flush(),
+      externalCalendarEventEntityStore.flush(),
+    ]);
     completeOnboardingWithReload();
   }, [completeOnboardingWithReload]);
   const handleOnboardingRestoreFromCloud = useCallback(async (value: string) => {
     const parsed = await loadCloudBackupPayload(workerBaseUrl, value);
     applyBackupDataToStorage(parsed);
+    await Promise.all([
+      taskEntityStore.flush(),
+      boardEntityStore.flush(),
+      calendarEventEntityStore.flush(),
+      externalCalendarEventEntityStore.flush(),
+    ]);
     completeOnboardingWithReload();
   }, [completeOnboardingWithReload, workerBaseUrl]);
   const handleOnboardingEnableNotifications = async () => {

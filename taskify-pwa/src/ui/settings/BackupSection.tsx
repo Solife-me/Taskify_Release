@@ -7,6 +7,12 @@ import { LS_LIGHTNING_CONTACTS, LS_CONTACTS_SYNC_META } from "../../localStorage
 import { LS_NOSTR_RELAYS } from "../../nostrKeys";
 import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
 import {
+  taskEntityStore,
+  boardEntityStore,
+  calendarEventEntityStore,
+  externalCalendarEventEntityStore,
+} from "../../storage/entityStore";
+import {
   loadStore as loadProofStore,
   getActiveMint,
   getMintList,
@@ -71,13 +77,26 @@ export function BackupSection({
     const settingsData = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
     const bgImage = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BACKGROUND_IMAGE);
     if (bgImage) settingsData.backgroundImage = bgImage;
+    // Pull tasks/boards/calendar events from the v3 per-entity stores (the
+    // post-migration source of truth). Fall back to the legacy blobs only if
+    // the entity store is empty (pre-migration boot or fresh install).
+    const tasksFromEntity = taskEntityStore.size() > 0
+      ? taskEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS) || "[]");
+    const calendarFromEntity = calendarEventEntityStore.size() > 0
+      ? calendarEventEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS) || "[]");
+    const externalCalendarFromEntity = externalCalendarEventEntityStore.size() > 0
+      ? externalCalendarEventEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS) || "[]");
+    const boardsFromEntity = boardEntityStore.size() > 0
+      ? boardEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS) || "[]");
     return {
-      tasks: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS) || "[]"),
-      calendarEvents: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS) || "[]"),
-      externalCalendarEvents: JSON.parse(
-        idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS) || "[]",
-      ),
-      boards: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS) || "[]"),
+      tasks: tasksFromEntity,
+      calendarEvents: calendarFromEntity,
+      externalCalendarEvents: externalCalendarFromEntity,
+      boards: boardsFromEntity,
       settings: settingsData,
       scriptureMemory: JSON.parse(kvStorage.getItem(LS_SCRIPTURE_MEMORY) || "{}"),
       bibleTracker: bibleTrackerRaw ? JSON.parse(bibleTrackerRaw) : null,
@@ -143,8 +162,15 @@ export function BackupSection({
     return now;
   }, [collectBackupData, workerBaseUrl]);
 
-  const applyBackupData = useCallback((data: Partial<TaskifyBackupPayload>) => {
+  const applyBackupData = useCallback(async (data: Partial<TaskifyBackupPayload>) => {
     applyBackupDataToStorage(data);
+    // Wait for v3 entity-store writes to durably land before reload.
+    await Promise.all([
+      taskEntityStore.flush(),
+      boardEntityStore.flush(),
+      calendarEventEntityStore.flush(),
+      externalCalendarEventEntityStore.flush(),
+    ]);
     onReloadNeeded();
   }, [onReloadNeeded]);
 

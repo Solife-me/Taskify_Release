@@ -26,6 +26,12 @@ import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
 import { getTaskifyDb, TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./taskifyDb";
 import { idbKeyValue } from "./idbKeyValue";
 import { init as initNostrSkStore } from "../lib/nostrSkStore";
+import {
+  taskEntityStore,
+  boardEntityStore,
+  calendarEventEntityStore,
+  externalCalendarEventEntityStore,
+} from "./entityStore";
 
 const TASKS_KEY = "taskify_tasks_v5";
 const BOARDS_KEY = "taskify_boards_v2";
@@ -63,6 +69,12 @@ export async function initializeStorageBoundaries(): Promise<void> {
     initNostrSkStore().catch((err) => {
       console.warn("nostrSkStore init failed", err);
     }),
+    // Per-entity v3 stores. Loaded into memory so the synchronous `useState`
+    // initializers in App.tsx see populated data on first render.
+    taskEntityStore.load(),
+    boardEntityStore.load(),
+    calendarEventEntityStore.load(),
+    externalCalendarEventEntityStore.load(),
     idbKeyValue.initStore(TASKIFY_STORE_TASKS, [
       TASKS_KEY,
       BOARDS_KEY,
@@ -110,4 +122,17 @@ export async function initializeStorageBoundaries(): Promise<void> {
       INBOX_PROCESSED_KEY,
     ]),
   ]);
+
+  // One-time migration from legacy single-blob storage to per-entity rows.
+  // Idempotent — only runs when the v3 store is empty AND a legacy blob exists.
+  await Promise.all([
+    taskEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, TASKS_KEY)),
+    boardEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, BOARDS_KEY)),
+    calendarEventEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, EVENTS_KEY)),
+    externalCalendarEventEntityStore.migrateFromBlob(
+      idbKeyValue.getItem(TASKIFY_STORE_TASKS, EXTERNAL_EVENTS_KEY),
+    ),
+  ]).catch((err) => {
+    console.warn("entity store migration failed", err);
+  });
 }

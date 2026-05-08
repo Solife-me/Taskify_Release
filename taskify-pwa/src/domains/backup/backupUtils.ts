@@ -5,10 +5,6 @@ import { idbKeyValue } from "../../storage/idbKeyValue";
 import { kvStorage } from "../../storage/kvStorage";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET, TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import {
-  LS_TASKS,
-  LS_CALENDAR_EVENTS,
-  LS_EXTERNAL_CALENDAR_EVENTS,
-  LS_BOARDS,
   LS_SETTINGS,
   LS_BIBLE_TRACKER,
   LS_SCRIPTURE_MEMORY,
@@ -16,6 +12,12 @@ import {
 } from "../storageKeys";
 import { LS_NOSTR_RELAYS } from "../../nostrKeys";
 import { setSk as nostrSkSet } from "../../lib/nostrSkStore";
+import {
+  taskEntityStore,
+  boardEntityStore,
+  calendarEventEntityStore,
+  externalCalendarEventEntityStore,
+} from "../../storage/entityStore";
 import { LS_LIGHTNING_CONTACTS, LS_BTC_USD_PRICE_CACHE, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
 import {
   saveStore as saveProofStore,
@@ -146,21 +148,20 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
-  if ("tasks" in data && data.tasks !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
+  // Wholesale-replace each per-entity v3 store; the legacy blobs are
+  // deprecated post-migration. Caller must `flush()` each store before
+  // reloading the page so writes are durable.
+  if ("tasks" in data && Array.isArray(data.tasks)) {
+    taskEntityStore.replaceAll(data.tasks as { id: string }[]);
   }
-  if ("calendarEvents" in data && data.calendarEvents !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(data.calendarEvents));
+  if ("calendarEvents" in data && Array.isArray(data.calendarEvents)) {
+    calendarEventEntityStore.replaceAll(data.calendarEvents as { id: string }[]);
   }
-  if ("externalCalendarEvents" in data && data.externalCalendarEvents !== undefined) {
-    idbKeyValue.setItem(
-      TASKIFY_STORE_TASKS,
-      LS_EXTERNAL_CALENDAR_EVENTS,
-      JSON.stringify(data.externalCalendarEvents),
-    );
+  if ("externalCalendarEvents" in data && Array.isArray(data.externalCalendarEvents)) {
+    externalCalendarEventEntityStore.replaceAll(data.externalCalendarEvents as { id: string }[]);
   }
-  if ("boards" in data && data.boards !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(data.boards));
+  if ("boards" in data && Array.isArray(data.boards)) {
+    boardEntityStore.replaceAll(data.boards as { id: string }[]);
   }
   if ("settings" in data && data.settings !== undefined) {
     // Extract backgroundImage from settings and store separately in IndexedDB
