@@ -15,7 +15,6 @@ import type {
   CalendarEventParticipant,
   Board,
   Recurrence,
-  ListLikeBoard,
 } from "../../domains/tasks/taskTypes";
 import { isListLikeBoard } from "../../domains/tasks/taskTypes";
 import type { TaskDocument } from "../../lib/documents";

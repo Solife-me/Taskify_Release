@@ -267,8 +267,8 @@ interface SpeechRecognition extends EventTarget {
   abort(): void;
 }
 
-declare const webkitSpeechRecognition: new () => SpeechRecognition;
-declare const SpeechRecognition: new () => SpeechRecognition;
+// Both `SpeechRecognition` and `webkitSpeechRecognition` are accessed via
+// `(window as any)` below, so no ambient declaration is needed.
 
 export function isSpeechRecognitionSupported(): boolean {
   return (

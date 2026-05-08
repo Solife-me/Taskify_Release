@@ -15,7 +15,7 @@
  *     before the async subscribe promise resolves.
  *  7. Handler errors are isolated — one bad handler doesn't kill others.
  */
-import { test, describe, expect } from "vitest";
+import { test, expect } from "vitest";
 
 
 // ---------------------------------------------------------------------------

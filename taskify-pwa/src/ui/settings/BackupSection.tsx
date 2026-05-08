@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { kvStorage } from "../../storage/kvStorage";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "../../storage/taskifyDb";

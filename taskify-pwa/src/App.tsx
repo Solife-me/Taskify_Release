@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Proof } from "@cashu/cashu-ts";
 import { createPortal } from "react-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
@@ -10,8 +9,6 @@ import {
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   normalizeRelayListSorted,
-  parseBoardSharePayload,
-  normalizeNip05,
   compressedToRawHex,
   contactInitials,
   contactVerifiedNip05 as contactVerifiedNip05Core,
@@ -67,38 +64,20 @@ import {
   LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
 } from "./nostrKeys";
 import {
-  loadStore as loadProofStore,
   saveStore as saveProofStore,
-  getActiveMint,
   setActiveMint,
-  getMintList,
-  addMintToList,
   replaceMintList,
-  listPendingTokens,
   replacePendingTokens,
   type PendingTokenEntry,
 } from "./wallet/storage";
 import {
   getWalletSeedMnemonic,
-  getWalletSeedBackupJson,
   getWalletSeedBackup,
-  getWalletCountersByMint,
-  incrementWalletCounter,
-  regenerateWalletSeed,
   type WalletSeedBackupPayload,
   restoreWalletSeedBackup,
 } from "./wallet/seed";
-import {
-  createMintBackupTemplate,
-  decryptMintBackupPayload,
-  deriveMintBackupKeys,
-  loadMintBackupCache,
-  MINT_BACKUP_CLIENT_TAG,
-  MINT_BACKUP_D_TAG,
-  MINT_BACKUP_KIND,
-  persistMintBackupCache,
-  type MintBackupPayload,
-} from "./wallet/mintBackup";
+
+
 import {
   decryptNostrBackupPayload,
   encryptNostrBackupPayload,
@@ -118,16 +97,12 @@ import {
 } from "./nostrAppState";
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
-import { useP2PK, type P2PKKey } from "./context/P2PKContext";
-import { AccentPalette, BackgroundImageError, normalizeAccentPalette, normalizeAccentPaletteList, prepareBackgroundImage } from "./theme/palette";
-import { extractFirstUrl, isUrlLike, useUrlPreview, type UrlPreviewData } from "./lib/urlPreview";
+import { AccentPalette, normalizeAccentPalette, normalizeAccentPaletteList } from "./theme/palette";
 import {
   createDocumentAttachment,
   ensureDocumentPreview,
-  loadDocumentPreview,
   isSupportedDocumentFile,
   normalizeDocumentList,
-  type TaskDocumentPreview,
   type TaskDocument,
 } from "./lib/documents";
 import { normalizeNostrPubkey } from "./lib/nostr";
@@ -177,20 +152,14 @@ import {
   contactHasNpub,
   saveContactsToStorage,
 } from "./lib/contacts";
-import { COINBASE_SPOT_PRICE_URL } from "./lib/pricing";
-import {
-  markHistoryEntrySpentRaw,
-  MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
-  type HistoryEntryRaw,
-} from "./lib/walletHistory";
+
+
 import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
-import { publishFileServerPreference } from "./nostr/ProfilePublisher";
 import { nostrOutboxStore } from "./nostr/NostrOutboxStore";
-import { EcashGlyph } from "./components/EcashGlyph";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
 
 import {
@@ -210,9 +179,9 @@ import type { WalletMessageItem } from "./types/walletMessages";
 
 // ---- UI component imports (extracted subcomponents) ----
 import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
-import { autolink, TaskTitle, stripUrlsFromText, useTaskPreview } from "./ui/task/TaskTitle";
-import { TaskMedia, UrlPreviewCard, EventTitle, EventMedia, useEventPreview } from "./ui/task/TaskMedia";
-import { DocumentThumbnail, DocumentPreviewModal } from "./ui/task/DocumentPreviewModal";
+import { TaskTitle } from "./ui/task/TaskTitle";
+import { TaskMedia } from "./ui/task/TaskMedia";
+import { DocumentPreviewModal } from "./ui/task/DocumentPreviewModal";
 import { EventCard, getDraggedEventId } from "./ui/calendar/EventCard";
 import { EditModal } from "./ui/task/EditModal";
 import EventEditModal from "./ui/calendar/EventEditModal";
@@ -220,12 +189,6 @@ import { AddBoardModal } from "./ui/board/AddBoardModal";
 import { SettingsModal } from "./ui/board/SettingsModal";
 
 import { Modal } from "./ui/Modal";
-import { CustomReminderSheet } from "./ui/reminders/CustomReminderSheet";
-import { RecurrencePicker, RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "./ui/recurrence/RecurrencePicker";
-import { BoardQrScanner } from "./ui/board/BoardQrScanner";
-import { BountyAttachSheet, normalizeMintUrlLite, formatMintLabel, sumMintProofs } from "./ui/bounty/BountyAttachSheet";
-import { LockToNpubSheet } from "./ui/bounty/LockToNpubSheet";
-import { TimeZoneSheet } from "./ui/reminders/TimeZoneSheet";
 
 import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 

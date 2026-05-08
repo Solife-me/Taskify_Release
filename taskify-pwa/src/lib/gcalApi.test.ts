@@ -1,6 +1,6 @@
 // Tests for gcalApi helpers and useGoogleCalendar hook logic
 // Run with: npm test (vitest)
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { signGcalHeaders } from "./gcalApi";
 import { schnorr } from "@noble/curves/secp256k1";
 import { sha256 } from "@noble/hashes/sha256";

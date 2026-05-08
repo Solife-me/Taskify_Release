@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import type { Board, Task, Weekday } from "../../domains/tasks/taskTypes";
+import type { Board, Task } from "../../domains/tasks/taskTypes";
 import { compoundChildMatchesBoard } from "../../domains/tasks/boardUtils";
 import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";

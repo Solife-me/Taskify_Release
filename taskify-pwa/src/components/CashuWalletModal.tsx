@@ -81,7 +81,7 @@ import {
 import { SessionPool } from "../nostr/SessionPool";
 import { NostrSession } from "../nostr/NostrSession";
 import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePublisher";
-import { uploadAvatarToNip96, uploadAvatar } from "../nostr/Nip96Client";
+import { uploadAvatar } from "../nostr/Nip96Client";
 import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
 import {
   encryptAndUploadMessengerAttachment,

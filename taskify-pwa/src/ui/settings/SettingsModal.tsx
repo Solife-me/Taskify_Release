@@ -5,6 +5,7 @@ import {
   LS_LIGHTNING_CONTACTS,
 } from "../../localStorageKeys";
 import { normalizeNostrPubkey } from "../../lib/nostr";
+import { getSkSync } from "../../lib/nostrSkStore";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import {
   buildBoardShareEnvelope,
@@ -198,7 +199,6 @@ export function SettingsModal({
 
   const readNostrSecret = useCallback((): string | null => {
     try {
-      const { getSkSync } = require("../../lib/nostrSkStore");
       const raw = getSkSync();
       if (raw && /^[0-9a-fA-F]{64}$/.test(raw.trim())) {
         return raw.trim().toLowerCase();

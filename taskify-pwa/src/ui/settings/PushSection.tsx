@@ -1,7 +1,6 @@
 // @ts-nocheck
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback } from "react";
 import type { PushPlatform, PushPreferences } from "../../domains/tasks/settingsTypes";
-import { DEFAULT_PUSH_PREFERENCES } from "../../domains/tasks/settingsHook";
 
 export function PushSection({
   pushPrefs,
