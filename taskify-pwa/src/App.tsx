@@ -9,7 +9,6 @@ import {
   DEFAULT_DATE_REMINDER_TIME,
   MS_PER_DAY,
   TASK_PRIORITY_MARKS,
-  buildReminderOptions,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   normalizeRelayListSorted,
@@ -146,8 +145,6 @@ import { normalizeNostrPubkey } from "./lib/nostr";
 import type {
   ScriptureMemoryEntry,
   ScriptureMemoryState,
-  ScriptureMemoryFrequency,
-  ScriptureMemorySort,
 } from "./domains/scripture/scriptureTypes";
 import {
   SCRIPTURE_MEMORY_FREQUENCIES,
@@ -164,6 +161,7 @@ import {
   chooseNextScriptureEntry,
 } from "./domains/scripture/scriptureUtils";
 import {
+  DEFAULT_BOARD_SORT_DIRECTION,
   PINNED_BOUNTY_LIST_KEY,
   normalizeTaskPriority,
   normalizeTaskCreatedAt,
@@ -189,9 +187,9 @@ import type {
   PublishTaskFn,
   ScriptureMemoryUpdate,
 } from "./domains/tasks/taskTypes";
-import { detectPushPlatformFromNavigator } from "./domains/push/pushUtils";
+import { detectPushPlatformFromNavigator, type PushPlatform } from "./domains/push/pushUtils";
+import { type ReminderPreset } from "./domains/dateTime/reminderUtils";
 import {
-  ACCENT_CHOICES,
   type FastingRemindersMode,
   type PushPreferences,
   type Settings,
@@ -249,6 +247,7 @@ import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSync";
 import { useCalendarEventManagement } from "./nostr/useCalendarEventManagement";
+import { useNostrSubscriptions, type CalendarViewSubscriptionTarget } from "./nostr/useNostrSubscriptions";
 import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
 
@@ -3959,7 +3958,6 @@ export default function App() {
     } catch {}
   }, [calendarInvites]);
   const [editing, setEditing] = useState<EditingState | null>(null);
-  const calendarViewSubCloserRef = useRef<null | (() => void)>(null);
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
   const [shareBoardModalOpen, setShareBoardModalOpen] = useState(false);
   const [shareBoardTargetId, setShareBoardTargetId] = useState<string | null>(null);
@@ -5181,7 +5179,6 @@ export default function App() {
     }
   }, []);
   const inboxPoolRef = useRef<SessionPool | null>(null);
-  const inboxSubCloserRef = useRef<(() => void) | null>(null);
   const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
 
   // ── Google Calendar integration ──────────────────────────────────────────
@@ -5670,107 +5667,15 @@ export default function App() {
       sendInboxDeletion,
     ],
   );
-  useEffect(() => {
-    if (!nostrPK || !nostrSkHex) return;
-    if (!inboxRelays.length) return;
-    const pool = ensureInboxPool();
-    const since = Math.max(0, Math.floor(Date.now() / 1000) - SHARE_DM_LOOKBACK_SECONDS);
-    let cancelled = false;
-    const subscription = pool.subscribeMany(
-      inboxRelays,
-      { kinds: [4, 1059], "#p": [nostrPK], since },
-      {
-        onevent: (ev) => {
-          if (cancelled) return;
-          void handleIncomingShareEvent(ev as NostrEvent);
-        },
-      },
-    );
-    inboxSubCloserRef.current = () => {
-      try {
-        subscription.close("taskify-shares");
-      } catch {}
-    };
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(inboxRelays, [
-            { kinds: [4, 1059], "#p": [nostrPK], since },
-          ]);
-          if (!cancelled && Array.isArray(events)) {
-            events.forEach((ev: any) => {
-              void handleIncomingShareEvent(ev as NostrEvent);
-            });
-          }
-        }
-      } catch (err) {
-        console.warn("Shared inbox fetch failed", err);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (inboxSubCloserRef.current) {
-        try {
-          inboxSubCloserRef.current();
-        } catch {}
-        inboxSubCloserRef.current = null;
-      }
-    };
-  }, [ensureInboxPool, handleIncomingShareEvent, inboxRelays, nostrPK, nostrSkHex]);
 
   const tagValue = useCallback((ev: NostrEvent, name: string): string | undefined => {
     const t = ev.tags.find((x) => x[0] === name);
     return t ? t[1] : undefined;
   }, []);
 
-  useEffect(() => {
-    if (calendarViewSubCloserRef.current) {
-      try {
-        calendarViewSubCloserRef.current();
-      } catch {}
-      calendarViewSubCloserRef.current = null;
-    }
-    const targets = calendarEvents.filter(
-      (event) => !!event.readOnly && !!event.viewAddress && !!event.eventKey,
-    );
-    if (!targets.length) return;
-
-    const viewLookup = new Map<string, { eventId: string; eventKey: string }>();
-    const authors = new Set<string>();
-    const dTags = new Set<string>();
-    const relaySet = new Set<string>();
-    targets.forEach((event) => {
-      const addr = parseCalendarAddress(event.viewAddress || "");
-      if (!addr || addr.kind !== TASKIFY_CALENDAR_VIEW_KIND) return;
-      const viewAddress = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, addr.pubkey, addr.d);
-      viewLookup.set(viewAddress, { eventId: event.id, eventKey: event.eventKey! });
-      authors.add(addr.pubkey);
-      dTags.add(addr.d);
-      (event.inviteRelays ?? []).forEach((relay) => relaySet.add(relay));
-    });
-    if (!viewLookup.size || !authors.size || !dTags.size) return;
-
-    const relayCandidates = [
-      ...Array.from(relaySet),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
-    if (!relays.length) return;
-
-    let cancelled = false;
-    const applyViewEvent = async (ev: NostrEvent) => {
-      if (cancelled || ev.kind !== TASKIFY_CALENDAR_VIEW_KIND) return;
-      const dTag = tagValue(ev, "d");
-      if (!dTag) return;
-      const viewAddress = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, ev.pubkey, dTag);
-      const target = viewLookup.get(viewAddress);
-      if (!target) return;
-      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-      const last = calendarViewClockRef.current.get(viewAddress) || 0;
-      if (createdAt < last) return;
-      calendarViewClockRef.current.set(viewAddress, createdAt);
+  const applyCalendarViewSubscriptionEvent = useCallback(
+    async (ev: NostrEvent, target: CalendarViewSubscriptionTarget) => {
+      const viewAddress = target.viewAddress;
       let payload: ReturnType<typeof parseCalendarViewPayload> | null = null;
       try {
         const raw = await decryptCalendarPayloadWithEventKey(ev.content, target.eventKey);
@@ -5840,48 +5745,9 @@ export default function App() {
         copy[idx] = updated;
         return copy;
       });
-    };
-
-    const subscription = pool.subscribeMany(
-      relays,
-      { kinds: [TASKIFY_CALENDAR_VIEW_KIND], authors: Array.from(authors), "#d": Array.from(dTags) },
-      {
-        onevent: (ev) => {
-          if (cancelled) return;
-          void applyViewEvent(ev as NostrEvent);
-        },
-      },
-    );
-    calendarViewSubCloserRef.current = () => {
-      try {
-        subscription.close("taskify-calendar-views");
-      } catch {}
-    };
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(relays, [
-            { kinds: [TASKIFY_CALENDAR_VIEW_KIND], authors: Array.from(authors), "#d": Array.from(dTags) },
-          ]);
-          if (!cancelled && Array.isArray(events)) {
-            events.forEach((evt: any) => void applyViewEvent(evt as NostrEvent));
-          }
-        }
-      } catch (err) {
-        console.warn("Event view fetch failed", err);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (calendarViewSubCloserRef.current) {
-        try {
-          calendarViewSubCloserRef.current();
-        } catch {}
-        calendarViewSubCloserRef.current = null;
-      }
-    };
-  }, [calendarEvents, defaultRelays, inboxRelays, pool, setCalendarEvents, tagValue]);
+    },
+    [setCalendarEvents],
+  );
 
   const nostrApplyQueue = useRef<Promise<void>>(Promise.resolve());
   const enqueueNostrApply = useCallback((fn: () => Promise<void>) => {
@@ -6491,97 +6357,73 @@ export default function App() {
     enqueueNostrScriptureMemoryPublish().catch(() => {});
   }, [enqueueNostrScriptureMemoryPublish, nostrPK, settings.nostrBackupEnabled, showSettings]);
 
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK || showSettings || nostrBackupHold) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    pool.setRelays(relays);
-    const since = nostrBackupStateRef.current.lastTimestamp || undefined;
-    const filters = [
-      {
-        kinds: [NOSTR_APP_BACKUP_KIND],
-        authors: [nostrPK],
-        "#d": [NOSTR_APP_BACKUP_D_TAG],
-        ...(since ? { since } : {}),
-        limit: 5,
-      },
-    ];
-    const unsub = pool.subscribe(relays, filters, (ev) => {
-      handleIncomingNostrBackupEvent(ev).catch((err) => {
-        if ((import.meta as any)?.env?.DEV) console.warn("[nostr] backup event handling failed", err);
-      });
-    });
-    return () => {
-      try { unsub(); } catch {}
-    };
-  }, [defaultRelays, handleIncomingNostrBackupEvent, normalizeRelayList, nostrBackupHold, nostrPK, pool, settings.nostrBackupEnabled, showSettings]);
+  const handleNostrBibleTrackerSubscriptionEvent = useCallback(
+    (event: NostrEvent) => enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(event)),
+    [applyNostrBibleTrackerSyncEvent, enqueueNostrApply],
+  );
 
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK || showSettings) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    pool.setRelays(relays);
-    const since = nostrBibleTrackerStateRef.current.lastTimestamp || undefined;
-    const filters = [
-      {
-        kinds: [NOSTR_APP_STATE_KIND],
-        authors: [nostrPK],
-        "#d": [NOSTR_BIBLE_TRACKER_D_TAG],
-        ...(since ? { since } : {}),
-        limit: 5,
-      },
-    ];
-    const unsub = pool.subscribe(relays, filters, (ev) => {
-      enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(ev)).catch(() => {});
-    });
-    return () => {
-      try { unsub(); } catch {}
-    };
-  }, [
-    applyNostrBibleTrackerSyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrPK,
-    pool,
-    settings.nostrBackupEnabled,
-    showSettings,
-  ]);
+  const handleNostrScriptureMemorySubscriptionEvent = useCallback(
+    (event: NostrEvent) => enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(event)),
+    [applyNostrScriptureMemorySyncEvent, enqueueNostrApply],
+  );
 
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK || showSettings) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    pool.setRelays(relays);
-    const since = nostrScriptureMemoryStateRef.current.lastTimestamp || undefined;
-    const filters = [
-      {
-        kinds: [NOSTR_APP_STATE_KIND],
-        authors: [nostrPK],
-        "#d": [NOSTR_SCRIPTURE_MEMORY_D_TAG],
-        ...(since ? { since } : {}),
-        limit: 5,
-      },
-    ];
-    const unsub = pool.subscribe(relays, filters, (ev) => {
-      enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(ev)).catch(() => {});
-    });
-    return () => {
-      try { unsub(); } catch {}
-    };
-  }, [
-    applyNostrScriptureMemorySyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrPK,
-    pool,
-    settings.nostrBackupEnabled,
-    showSettings,
-  ]);
+  useNostrSubscriptions({
+    sharedInbox: {
+      enabled: true,
+      ensurePool: ensureInboxPool,
+      handleEvent: handleIncomingShareEvent,
+      lookbackSeconds: SHARE_DM_LOOKBACK_SECONDS,
+      nostrPK,
+      nostrSkHex,
+      relays: inboxRelays,
+    },
+    calendarViews: {
+      enabled: true,
+      clockRef: calendarViewClockRef,
+      defaultRelays,
+      events: calendarEvents,
+      handleEvent: applyCalendarViewSubscriptionEvent,
+      inboxRelays,
+      pool,
+    },
+    appBackup: {
+      enabled: settings.nostrBackupEnabled,
+      blocked: showSettings || nostrBackupHold,
+      author: nostrPK,
+      defaultRelays,
+      dTag: NOSTR_APP_BACKUP_D_TAG,
+      errorLogPrefix: "[nostr] backup event handling failed",
+      kind: NOSTR_APP_BACKUP_KIND,
+      normalizeRelayList,
+      onEvent: handleIncomingNostrBackupEvent,
+      pool,
+      stateRef: nostrBackupStateRef,
+    },
+    bibleTracker: {
+      enabled: settings.nostrBackupEnabled,
+      blocked: showSettings,
+      author: nostrPK,
+      defaultRelays,
+      dTag: NOSTR_BIBLE_TRACKER_D_TAG,
+      kind: NOSTR_APP_STATE_KIND,
+      normalizeRelayList,
+      onEvent: handleNostrBibleTrackerSubscriptionEvent,
+      pool,
+      stateRef: nostrBibleTrackerStateRef,
+    },
+    scriptureMemory: {
+      enabled: settings.nostrBackupEnabled,
+      blocked: showSettings,
+      author: nostrPK,
+      defaultRelays,
+      dTag: NOSTR_SCRIPTURE_MEMORY_D_TAG,
+      kind: NOSTR_APP_STATE_KIND,
+      normalizeRelayList,
+      onEvent: handleNostrScriptureMemorySubscriptionEvent,
+      pool,
+      stateRef: nostrScriptureMemoryStateRef,
+    },
+  });
 
   useEffect(() => {
     if (showSettings) {

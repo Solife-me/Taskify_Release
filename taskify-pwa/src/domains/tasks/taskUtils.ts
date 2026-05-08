@@ -26,7 +26,7 @@ export function normalizeTaskPriority(value: unknown): TaskPriority | undefined 
 export type BoardSortMode = "manual" | "due" | "priority" | "created" | "alpha";
 export type BoardSortDirection = "asc" | "desc";
 
-const DEFAULT_BOARD_SORT_DIRECTION: Record<BoardSortMode, BoardSortDirection> = {
+export const DEFAULT_BOARD_SORT_DIRECTION: Record<BoardSortMode, BoardSortDirection> = {
   manual: "asc",
   due: "asc",
   priority: "desc",
@@ -34,7 +34,7 @@ const DEFAULT_BOARD_SORT_DIRECTION: Record<BoardSortMode, BoardSortDirection> = 
   alpha: "asc",
 };
 
-const BOARD_SORT_MODE_IDS = new Set<BoardSortMode>(["manual", "due", "priority", "created", "alpha"]);
+export const BOARD_SORT_MODE_IDS = new Set<BoardSortMode>(["manual", "due", "priority", "created", "alpha"]);
 
 export function normalizeBoardSortState(value: unknown): { mode: BoardSortMode; direction: BoardSortDirection } | null {
   const modeRaw = typeof (value as any)?.mode === "string" ? (value as any).mode : "";

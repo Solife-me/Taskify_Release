@@ -149,6 +149,8 @@ Commit local mutations + outbox row in one IDB transaction. Migrate from existin
 
 **Acceptance.** Task save no longer touches all tasks; mutating one task results in a single small IDB write.
 
+**Completed.** Built a generic `EntityStore<T>` in [src/storage/entityStore.ts](../taskify-pwa/src/storage/entityStore.ts) with diff-based reference-equality persistence. Four new IDB object stores (`tasks_v2`, `boards_v2`, `calendarEvents_v2`, `externalCalendarEvents_v2`) at DB version 3. Idempotent migration from legacy blobs runs once at boot in `storageBootstrap`. Backup-restore uses `replaceAll` + `flush` to ensure writes settle before page reload. Dropped the 500ms debounced `JSON.stringify(allTasks)` save in App.tsx — mutating one task now produces one tiny IDB write regardless of total count.
+
 ---
 
 ### 10. Extract Nostr / sync logic from App.tsx (~3–5 days, incremental)
@@ -166,6 +168,24 @@ Commit local mutations + outbox row in one IDB transaction. Migrate from existin
 Each extract should ship as its own PR with no UI change.
 
 **Acceptance.** App.tsx shrinks below 15k lines after pass 1, below 10k after pass 3. Remove `@ts-nocheck` from App.tsx as a final step.
+
+**Progress.** App.tsx down from **21,137 → ~18,948 lines** (−2,189, −10.4%) across multiple passes:
+
+- ✅ **Pass 0 — type/helper dedup**: deleted ~30 byte-for-byte-identical duplicates of helpers that already existed in `domains/scripture/scriptureUtils`, `domains/tasks/taskUtils`, etc. Replaced with imports. (−471 lines)
+- ✅ **Pass 1 — initial hook extraction** ([4f0c660](../taskify-pwa/src/App.tsx)): −512 lines.
+- ✅ **Passes 3–5 — major hook extractions** ([67c4eb6](../taskify-pwa/src/App.tsx)): −1,704 lines. Created:
+  - [src/nostr/useTaskPersistence.ts](../taskify-pwa/src/nostr/useTaskPersistence.ts) — IDB writes + outbox integration (89 lines)
+  - [src/nostr/useBoardSync.ts](../taskify-pwa/src/nostr/useBoardSync.ts) — 30300/30301 event handling + cursors (392 lines)
+  - [src/nostr/useCalendarEventManagement.ts](../taskify-pwa/src/nostr/useCalendarEventManagement.ts) — RSVP + calendar state (390 lines)
+  - Plus settingsHook.ts refactor (−172/+172)
+- ✅ **Subscriptions extraction**: [src/nostr/useNostrSubscriptions.ts](../taskify-pwa/src/nostr/useNostrSubscriptions.ts) (309 lines, additional ~232 lines reduction in App.tsx)
+
+**Regression caught after Codex's passes**: `DEFAULT_BOARD_SORT_DIRECTION` reference in App.tsx wasn't satisfied by any import (the constant was deleted but 11 call sites remained). `@ts-nocheck` on App.tsx hid this from `tsc`; only the runtime React error revealed it. Fix: exported `DEFAULT_BOARD_SORT_DIRECTION` and `BOARD_SORT_MODE_IDS` from [`taskUtils.ts`](../taskify-pwa/src/domains/tasks/taskUtils.ts) and added the import. Also imported `PushPlatform` and `ReminderPreset` types from their domain modules to clean up two stale type-only references. **Lesson:** future App.tsx-extraction passes need a runtime smoke test (the dev server `bootstrapApp` path) since `tsc --noEmit` is silent under `@ts-nocheck`.
+
+**Remaining for #10:**
+- `useSettingsSync` — already started in [`settingsHook.ts`](../taskify-pwa/src/domains/tasks/settingsHook.ts) refactor; finish the migration.
+- Type-duplication audit: many `Task`, `Board`, `CalendarEvent` type references in App.tsx are still local and not imported from `taskify-core` (108 dangling type references remain, but they're erased at runtime under `@ts-nocheck` so no crash — these become real errors only when `@ts-nocheck` is removed).
+- Final step: remove `@ts-nocheck` from App.tsx, fix the resulting ~100+ tsc errors (mostly type imports and a few real bugs).
 
 ---
 
