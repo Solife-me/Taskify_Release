@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
+ 
 // @ts-nocheck
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -112,6 +112,45 @@ import {
   type TaskDocument,
 } from "./lib/documents";
 import { normalizeNostrPubkey } from "./lib/nostr";
+import type {
+  ScriptureMemoryEntry,
+  ScriptureMemoryState,
+  ScriptureMemoryFrequency,
+  ScriptureMemorySort,
+} from "./domains/scripture/scriptureTypes";
+import {
+  SCRIPTURE_MEMORY_FREQUENCIES,
+  SCRIPTURE_MEMORY_SORTS,
+  updateScriptureMemoryState,
+  markScriptureEntryReviewed,
+  scheduleScriptureEntry,
+  sanitizeScriptureMemoryState,
+  formatScriptureReference,
+  formatDueInLabel,
+  computeScriptureStats,
+  scriptureFrequencyToRecurrence,
+  recurrencesEqual,
+  chooseNextScriptureEntry,
+} from "./domains/scripture/scriptureUtils";
+import {
+  PINNED_BOUNTY_LIST_KEY,
+  normalizeTaskPriority,
+  normalizeTaskCreatedAt,
+  normalizeBoardSortState,
+  taskHasBountyList,
+  withTaskAddedToBountyList,
+  withTaskRemovedFromBountyList,
+  isRecoverableBountyTask,
+  normalizeBounty,
+  normalizeTaskBounty,
+  ensureXOnlyHex,
+  pubkeysEqual,
+  bountyStateLabel,
+  mergeLongestStreak,
+  normalizeHiddenForRecurring,
+  recurringInstanceId,
+  dedupeRecurringInstances,
+} from "./domains/tasks/taskUtils";
 import {
   buildNostrBackupSnapshot as buildNostrBackupSnapshotDomain,
   mergeBackupBoards,
@@ -644,27 +683,6 @@ const TASK_PRIORITY_MARKS: Record<TaskPriority, string> = {
   3: "!!!",
 };
 
-function normalizeTaskPriority(value: unknown): TaskPriority | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const rounded = Math.round(value);
-    if (rounded === 1 || rounded === 2 || rounded === 3) return rounded as TaskPriority;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!") {
-      return trimmed.length as TaskPriority;
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (parsed === 1 || parsed === 2 || parsed === 3) return parsed as TaskPriority;
-  }
-  return undefined;
-}
-
-function normalizeTaskCreatedAt(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  return undefined;
-}
-
 function taskPriorityMarks(priority: TaskPriority | undefined): string {
   return priority ? TASK_PRIORITY_MARKS[priority] : "";
 }
@@ -673,162 +691,10 @@ type BoardSortMode = "manual" | "due" | "priority" | "created" | "alpha";
 type BoardSortDirection = "asc" | "desc";
 type UpcomingBoardGrouping = "mixed" | "grouped";
 
-const DEFAULT_BOARD_SORT_DIRECTION: Record<BoardSortMode, BoardSortDirection> = {
-  manual: "asc",
-  due: "asc",
-  priority: "desc",
-  created: "desc",
-  alpha: "asc",
-};
-
-const BOARD_SORT_MODE_IDS = new Set<BoardSortMode>(["manual", "due", "priority", "created", "alpha"]);
-
-function normalizeBoardSortState(value: unknown): { mode: BoardSortMode; direction: BoardSortDirection } | null {
-  const modeRaw = typeof (value as any)?.mode === "string" ? (value as any).mode : "";
-  if (!BOARD_SORT_MODE_IDS.has(modeRaw as BoardSortMode)) return null;
-  const mode = modeRaw as BoardSortMode;
-  const directionRaw = typeof (value as any)?.direction === "string" ? (value as any).direction : "";
-  const direction: BoardSortDirection =
-    directionRaw === "asc" || directionRaw === "desc" ? (directionRaw as BoardSortDirection) : DEFAULT_BOARD_SORT_DIRECTION[mode];
-  return { mode, direction };
-}
-
-const PINNED_BOUNTY_LIST_KEY = "taskify::pinned";
 const LS_MESSAGES_BOARD_ID = "taskify_messages_board_id_v1";
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
 const MESSAGES_COLUMN_ID = "messages-shared";
 const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
-
-function taskHasBountyList(task: Task, key: string | null | undefined): boolean {
-  if (!key) return false;
-  if (!Array.isArray(task.bountyLists)) return false;
-  return task.bountyLists.includes(key);
-}
-
-function withTaskAddedToBountyList(task: Task, key: string | null): Task {
-  if (!key) return task;
-  if (taskHasBountyList(task, key)) return task;
-  const nextLists = Array.isArray(task.bountyLists) ? [...task.bountyLists, key] : [key];
-  return { ...task, bountyLists: nextLists };
-}
-
-function withTaskRemovedFromBountyList(task: Task, key: string | null): Task {
-  if (!key || !Array.isArray(task.bountyLists)) return task;
-  if (!task.bountyLists.includes(key)) return task;
-  const filtered = task.bountyLists.filter((value) => value !== key);
-  if (filtered.length === 0) {
-    const clone = { ...task };
-    delete clone.bountyLists;
-    return clone;
-  }
-  return { ...task, bountyLists: filtered };
-}
-
-function isRecoverableBountyTask(task: Task): boolean {
-  return !!task.bounty && typeof task.bountyDeletedAt === "string" && task.bountyDeletedAt.trim().length > 0;
-}
-
-function normalizeBounty(bounty?: Task["bounty"] | null): Task["bounty"] | undefined {
-  if (!bounty) return undefined;
-  const normalized: Task["bounty"] = { ...bounty };
-  const owner = ensureXOnlyHex(normalized.owner);
-  if (owner) normalized.owner = owner; else delete normalized.owner;
-  const sender = ensureXOnlyHex(normalized.sender);
-  if (sender) normalized.sender = sender; else delete normalized.sender;
-  const receiver = ensureXOnlyHex(normalized.receiver);
-  if (receiver) normalized.receiver = receiver; else delete normalized.receiver;
-  const token = typeof normalized.token === "string" ? normalized.token : "";
-  const hasToken = token.trim().length > 0;
-  const hasCipher = normalized.enc !== undefined && normalized.enc !== null;
-
-  if (normalized.state === "claimed" || normalized.state === "revoked") {
-    return normalized;
-  }
-
-  if (hasToken && !hasCipher) {
-    normalized.state = "unlocked";
-    if (!normalized.lock || normalized.lock === "unknown") {
-      normalized.lock = "none";
-    }
-  } else if (hasCipher && !hasToken) {
-    normalized.state = "locked";
-  } else if (hasToken && hasCipher) {
-    normalized.state = "unlocked";
-  } else {
-    normalized.state = "locked";
-  }
-
-  return normalized;
-}
-
-function normalizeTaskBounty(task: Task): Task {
-  if (!Object.prototype.hasOwnProperty.call(task, "bounty")) {
-    return task;
-  }
-  const clone: Task = { ...task };
-  const bounty = (clone as any).bounty as Task["bounty"] | undefined;
-  if (!bounty) {
-    delete (clone as any).bounty;
-    return clone;
-  }
-  const normalized = normalizeBounty(bounty);
-  if (!normalized) {
-    delete (clone as any).bounty;
-    return clone;
-  }
-  clone.bounty = normalized;
-  return clone;
-}
-
-function toXOnlyHex(value?: string | null): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim().toLowerCase();
-  const hex = trimmed.startsWith("0x") ? trimmed.slice(2) : trimmed;
-  if (/^(02|03)[0-9a-f]{64}$/.test(hex)) {
-    return hex.slice(-64);
-  }
-  if (/^[0-9a-f]{64}$/.test(hex)) {
-    return hex;
-  }
-  return null;
-}
-
-function ensureXOnlyHex(value?: string | null): string | undefined {
-  const normalized = toXOnlyHex(value);
-  return normalized ?? undefined;
-}
-
-function pubkeysEqual(a?: string | null, b?: string | null): boolean {
-  const ax = toXOnlyHex(a);
-  const bx = toXOnlyHex(b);
-  return !!(ax && bx && ax === bx);
-}
-
-function bountyStateLabel(bounty: Task["bounty"]): string {
-  if (
-    bounty.state === "locked" &&
-    bounty.lock === "p2pk" &&
-    bounty.receiver &&
-    typeof window !== "undefined" &&
-    pubkeysEqual(bounty.receiver, (window as any).nostrPK)
-  ) {
-    return "ready to redeem";
-  }
-  return bounty.state;
-}
-
-function mergeLongestStreak(task: Task, streak: number | undefined): number | undefined {
-  const previous =
-    typeof task.longestStreak === "number"
-      ? task.longestStreak
-      : typeof task.streak === "number"
-        ? task.streak
-        : undefined;
-  if (typeof streak === "number") {
-    return previous === undefined ? streak : Math.max(previous, streak);
-  }
-  return previous;
-}
 
 type BuiltinReminderPreset = "0h" | "5m" | "15m" | "30m" | "1h" | "1d" | "1w" | "0d";
 type CustomReminderPreset = `custom-${number}`;
@@ -919,52 +785,9 @@ const LS_SCRIPTURE_MEMORY = "taskify_scripture_memory_v1";
 const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
 const FASTING_REMINDER_SERIES_ID = "fasting-reminder";
 
-type ScriptureMemoryFrequency = "daily" | "every2d" | "twiceWeek" | "weekly";
-type ScriptureMemorySort = "canonical" | "oldest" | "newest" | "needsReview";
 type FastingRemindersMode = "weekday" | "random";
 
-type ScriptureMemoryEntry = {
-  id: string;
-  bookId: string;
-  chapter: number;
-  startVerse: number | null;
-  endVerse: number | null;
-  addedAtISO: string;
-  lastReviewISO?: string;
-  scheduledAtISO?: string;
-  stage: number;
-  totalReviews: number;
-};
-
-type ScriptureMemoryState = {
-  entries: ScriptureMemoryEntry[];
-  lastReviewISO?: string;
-};
-
 const MS_PER_DAY = 86400000;
-
-const MAX_SCRIPTURE_STAGE = 8;
-const SCRIPTURE_STAGE_GROWTH = 1.8;
-const SCRIPTURE_INTERVAL_CAP_DAYS = 180;
-
-const SCRIPTURE_MEMORY_FREQUENCIES: Array<{
-  id: ScriptureMemoryFrequency;
-  label: string;
-  days: number;
-  description: string;
-}> = [
-  { id: "daily", label: "Daily", days: 1, description: "Creates a review task every day." },
-  { id: "every2d", label: "Every 2 days", days: 2, description: "Review roughly three to four times per week." },
-  { id: "twiceWeek", label: "Twice per week", days: 3, description: "Focus on scripture memory a couple times per week." },
-  { id: "weekly", label: "Weekly", days: 7, description: "Schedule one scripture memory task each week." },
-];
-
-const SCRIPTURE_MEMORY_SORTS: Array<{ id: ScriptureMemorySort; label: string }> = [
-  { id: "canonical", label: "Canonical order" },
-  { id: "oldest", label: "Oldest added" },
-  { id: "newest", label: "Newest added" },
-  { id: "needsReview", label: "Needs review" },
-];
 
 const CUSTOM_REMINDER_PATTERN = /^custom-(-?\d{1,8})$/;
 const MIN_CUSTOM_REMINDER_MINUTES = -99_999_999;
@@ -1106,219 +929,6 @@ function normalizeIsoTimestamp(value: unknown): string | undefined {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return undefined;
   return date.toISOString();
-}
-
-function latestScriptureReviewISO(entries: ScriptureMemoryEntry[]): string | undefined {
-  let latestTime = Number.NEGATIVE_INFINITY;
-  let latestISO: string | undefined;
-  for (const entry of entries) {
-    if (!entry.lastReviewISO) continue;
-    const time = new Date(entry.lastReviewISO).getTime();
-    if (!Number.isFinite(time)) continue;
-    if (time > latestTime) {
-      latestTime = time;
-      latestISO = new Date(time).toISOString();
-    }
-  }
-  return Number.isFinite(latestTime) && latestTime > Number.NEGATIVE_INFINITY ? latestISO : undefined;
-}
-
-function updateScriptureMemoryState(
-  prev: ScriptureMemoryState,
-  entries: ScriptureMemoryEntry[],
-  overrideLastReview?: string
-): ScriptureMemoryState {
-  const next: ScriptureMemoryState = { ...prev, entries };
-  const normalizedOverride = normalizeIsoTimestamp(overrideLastReview);
-  if (normalizedOverride) {
-    next.lastReviewISO = normalizedOverride;
-  } else {
-    next.lastReviewISO = latestScriptureReviewISO(entries);
-  }
-  if (!next.lastReviewISO) {
-    delete (next as { lastReviewISO?: string }).lastReviewISO;
-  }
-  return next;
-}
-
-function markScriptureEntryReviewed(
-  prev: ScriptureMemoryState,
-  entryId: string,
-  completedAtISO: string,
-  stageBefore?: number | null,
-): ScriptureMemoryState {
-  let changed = false;
-  const entries = prev.entries.map((entry) => {
-    if (entry.id !== entryId) return entry;
-    changed = true;
-    const baseStage = typeof stageBefore === "number" ? stageBefore : entry.stage ?? 0;
-    const nextStage = Math.min(MAX_SCRIPTURE_STAGE, Math.max(0, baseStage + 1));
-    return {
-      ...entry,
-      stage: nextStage,
-      totalReviews: (entry.totalReviews ?? 0) + 1,
-      lastReviewISO: completedAtISO,
-      scheduledAtISO: undefined,
-    };
-  });
-  if (!changed) return prev;
-  return updateScriptureMemoryState(prev, entries, completedAtISO);
-}
-
-function scheduleScriptureEntry(
-  prev: ScriptureMemoryState,
-  entryId: string,
-  scheduledAtISO: string
-): ScriptureMemoryState {
-  let changed = false;
-  const entries = prev.entries.map((entry) => {
-    if (entry.id !== entryId) return entry;
-    changed = true;
-    return { ...entry, scheduledAtISO };
-  });
-  if (!changed) return prev;
-  return updateScriptureMemoryState(prev, entries, prev.lastReviewISO);
-}
-
-function sanitizeScriptureMemoryState(raw: any): ScriptureMemoryState {
-  const now = new Date().toISOString();
-  if (!raw || typeof raw !== "object") {
-    return { entries: [] };
-  }
-  const entries: ScriptureMemoryEntry[] = Array.isArray((raw as any).entries)
-    ? (raw as any).entries
-        .map((entry: any) => {
-          const bookId = typeof entry?.bookId === "string" ? entry.bookId : "";
-          const chapter = Number(entry?.chapter);
-          if (!bookId || Number.isNaN(chapter) || chapter <= 0) return null;
-          const chapterCount = getBibleBookChapterCount(bookId);
-          if (!chapterCount || chapter > chapterCount) return null;
-          const verseCount = getBibleChapterVerseCount(bookId, chapter);
-          if (!verseCount) return null;
-          let startVerse = Number(entry?.startVerse);
-          if (!Number.isFinite(startVerse) || startVerse <= 0) startVerse = 1;
-          let endVerse = Number(entry?.endVerse);
-          if (!Number.isFinite(endVerse) || endVerse <= 0) endVerse = startVerse;
-          startVerse = Math.max(1, Math.min(verseCount, Math.floor(startVerse)));
-          endVerse = Math.max(startVerse, Math.min(verseCount, Math.floor(endVerse)));
-          const addedAtISO = typeof entry?.addedAtISO === "string" && entry.addedAtISO ? entry.addedAtISO : now;
-          const lastReviewISO = typeof entry?.lastReviewISO === "string" && entry.lastReviewISO ? entry.lastReviewISO : undefined;
-          const scheduledAtISO = typeof entry?.scheduledAtISO === "string" && entry.scheduledAtISO
-            ? entry.scheduledAtISO
-            : undefined;
-          const stageRaw = Number(entry?.stage);
-          const stage = Number.isFinite(stageRaw) && stageRaw >= 0 ? Math.min(Math.floor(stageRaw), MAX_SCRIPTURE_STAGE) : 0;
-          const totalReviewsRaw = Number(entry?.totalReviews);
-          const totalReviews = Number.isFinite(totalReviewsRaw) && totalReviewsRaw > 0 ? Math.floor(totalReviewsRaw) : 0;
-          const id = typeof entry?.id === "string" && entry.id ? entry.id : crypto.randomUUID();
-          return {
-            id,
-            bookId,
-            chapter,
-            startVerse,
-            endVerse,
-            addedAtISO,
-            lastReviewISO,
-            scheduledAtISO,
-            stage,
-            totalReviews,
-          } as ScriptureMemoryEntry;
-        })
-        .filter((entry): entry is ScriptureMemoryEntry => !!entry)
-    : [];
-  const state = updateScriptureMemoryState({ entries }, entries);
-  const persistedLastReview = normalizeIsoTimestamp((raw as any)?.lastReviewISO);
-  if (persistedLastReview) {
-    state.lastReviewISO = persistedLastReview;
-  }
-  return state;
-}
-
-function formatScriptureReference(entry: ScriptureMemoryEntry): string {
-  const book = getBibleBookTitle(entry.bookId) ?? entry.bookId;
-  const verseStart = entry.startVerse ?? null;
-  const verseEnd = entry.endVerse ?? null;
-  if (verseStart && verseEnd && verseStart !== verseEnd) {
-    return `${book} ${entry.chapter}:${verseStart}-${verseEnd}`;
-  }
-  if (verseStart) {
-    return `${book} ${entry.chapter}:${verseStart}`;
-  }
-  return `${book} ${entry.chapter}`;
-}
-
-function formatDueInLabel(dueInDays: number): string {
-  if (!Number.isFinite(dueInDays)) return "Due now";
-  if (Math.abs(dueInDays) < 0.5) return "Due now";
-  const rounded = Math.round(dueInDays);
-  if (rounded === 0) return "Due now";
-  const abs = Math.abs(rounded);
-  const unit = abs === 1 ? "day" : "days";
-  if (rounded > 0) return `Due in ${abs} ${unit}`;
-  return `Overdue by ${abs} ${unit}`;
-}
-
-function computeScriptureIntervalDays(entry: ScriptureMemoryEntry, baseDays: number, totalEntries: number): number {
-  const entryCountFactor = Math.max(1, Math.log2(totalEntries + 1));
-  const normalizedBase = Math.max(0.5, baseDays / entryCountFactor);
-  const stageFactor = Math.pow(SCRIPTURE_STAGE_GROWTH, Math.max(0, entry.stage || 0));
-  const interval = normalizedBase * stageFactor;
-  return Math.min(interval, SCRIPTURE_INTERVAL_CAP_DAYS);
-}
-
-function computeScriptureStats(
-  entry: ScriptureMemoryEntry,
-  baseDays: number,
-  totalEntries: number,
-  now: Date
-): {
-  intervalDays: number;
-  daysSinceReview: number;
-  score: number;
-  dueInDays: number;
-  dueNow: boolean;
-} {
-  const intervalDays = computeScriptureIntervalDays(entry, baseDays, totalEntries);
-  const lastReview = entry.lastReviewISO ? new Date(entry.lastReviewISO) : null;
-  let daysSinceReview = lastReview ? (now.getTime() - lastReview.getTime()) / 86400000 : Infinity;
-  if (!Number.isFinite(daysSinceReview)) daysSinceReview = Infinity;
-  const score = !lastReview ? Number.POSITIVE_INFINITY : daysSinceReview / Math.max(intervalDays, 0.5);
-  const dueInDays = !lastReview ? 0 : intervalDays - daysSinceReview;
-  const dueNow = !lastReview || daysSinceReview >= intervalDays * 0.95;
-  return { intervalDays, daysSinceReview, score, dueInDays, dueNow };
-}
-
-function scriptureFrequencyToRecurrence(baseDays: number): Recurrence {
-  const normalized = Math.max(1, Math.round(baseDays));
-  if (normalized <= 1) return { type: "daily" };
-  return { type: "every", n: normalized, unit: "day" };
-}
-
-function recurrencesEqual(a: Recurrence | undefined, b: Recurrence | undefined): boolean {
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function chooseNextScriptureEntry(
-  entries: ScriptureMemoryEntry[],
-  baseDays: number,
-  now: Date
-): { entry: ScriptureMemoryEntry; stats: ReturnType<typeof computeScriptureStats> } | null {
-  if (!entries.length) return null;
-  const total = entries.length;
-  let best: { entry: ScriptureMemoryEntry; stats: ReturnType<typeof computeScriptureStats> } | null = null;
-  for (const entry of entries) {
-    const stats = computeScriptureStats(entry, baseDays, total, now);
-    if (!entry.lastReviewISO) {
-      return { entry, stats };
-    }
-    if (!best || stats.score > best.stats.score) {
-      best = { entry, stats };
-    }
-  }
-  if (!best) return null;
-  return best;
 }
 
 const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
@@ -3765,87 +3375,6 @@ function hiddenUntilForNext(
   }
   const sow = startOfWeek(nextMidnight, weekStart);
   return sow.toISOString();
-}
-
-function normalizeHiddenForRecurring(task: Task): Task {
-  if (!task.hiddenUntilISO || !task.recurrence || !revealsOnDueDate(task.recurrence)) {
-    return task;
-  }
-  const dueMidnight = startOfDay(new Date(task.dueISO));
-  const hiddenMidnight = startOfDay(new Date(task.hiddenUntilISO));
-  if (Number.isNaN(dueMidnight.getTime()) || Number.isNaN(hiddenMidnight.getTime())) return task;
-  const today = startOfDay(new Date());
-  if (dueMidnight.getTime() > today.getTime() && hiddenMidnight.getTime() < dueMidnight.getTime()) {
-    return { ...task, hiddenUntilISO: dueMidnight.toISOString() };
-  }
-  return task;
-}
-
-function recurrenceSeriesKey(task: Task): string | null {
-  if (!task.recurrence) return null;
-  if (task.seriesId) return `series:${task.boardId}:${task.seriesId}`;
-  const recurrence = JSON.stringify(task.recurrence);
-  return `sig:${task.boardId}::${task.title}::${task.note || ""}::${recurrence}`;
-}
-
-function recurringInstanceId(seriesId: string, dueISO: string, rule?: Recurrence, timeZone?: string): string {
-  const datePart = isoDatePart(dueISO, timeZone);
-  const timePart =
-    rule && rule.type === "every" && rule.unit === "hour"
-      ? isoTimePartUtc(dueISO)
-      : "";
-  const suffix = timePart ? `${datePart}T${timePart}` : datePart;
-  return `recurrence:${seriesId}:${suffix}`;
-}
-
-function recurringOccurrenceKey(task: Task): string | null {
-  if (!task.recurrence || !isFrequentRecurrence(task.recurrence)) return null;
-  const seriesKey = recurrenceSeriesKey(task);
-  if (!seriesKey) return null;
-  const datePart = isoDatePart(task.dueISO, task.dueTimeZone);
-  return `${seriesKey}::${datePart}`;
-}
-
-function pickRecurringDuplicate(a: Task, b: Task): Task {
-  const aCompleted = !!a.completed;
-  const bCompleted = !!b.completed;
-  if (aCompleted !== bCompleted) return aCompleted ? a : b;
-  const aCompletedAt = a.completedAt ? Date.parse(a.completedAt) : 0;
-  const bCompletedAt = b.completedAt ? Date.parse(b.completedAt) : 0;
-  if (aCompletedAt !== bCompletedAt) return aCompletedAt >= bCompletedAt ? a : b;
-  const aIsBase = !!(a.seriesId && a.id === a.seriesId);
-  const bIsBase = !!(b.seriesId && b.id === b.seriesId);
-  if (aIsBase !== bIsBase) return aIsBase ? a : b;
-  const aOrder = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
-  const bOrder = typeof b.order === "number" ? b.order : Number.POSITIVE_INFINITY;
-  if (aOrder !== bOrder) return aOrder < bOrder ? a : b;
-  return a.id.localeCompare(b.id) <= 0 ? a : b;
-}
-
-function dedupeRecurringInstances(tasks: Task[]): Task[] {
-  const out: Task[] = [];
-  const indexByKey = new Map<string, number>();
-  let changed = false;
-  for (const task of tasks) {
-    const key = recurringOccurrenceKey(task);
-    if (!key) {
-      out.push(task);
-      continue;
-    }
-    const existingIndex = indexByKey.get(key);
-    if (existingIndex === undefined) {
-      indexByKey.set(key, out.length);
-      out.push(task);
-      continue;
-    }
-    const existing = out[existingIndex];
-    const winner = pickRecurringDuplicate(existing, task);
-    if (winner !== existing) {
-      out[existingIndex] = winner;
-    }
-    changed = true;
-  }
-  return changed ? out : tasks;
 }
 
 /* ================= Storage hooks ================= */

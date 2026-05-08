@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
+ 
 // @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bech32 } from "bech32";
