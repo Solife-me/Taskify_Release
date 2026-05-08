@@ -1,26 +1,38 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import type { Settings } from "./settingsTypes";
-import type { Weekday } from "./taskTypes";
-import type { FastingRemindersMode } from "./settingsTypes";
-import { kvStorage } from "../../storage/kvStorage";
-import { LS_SETTINGS, LS_BACKGROUND_IMAGE } from "../storageKeys";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
+  DEFAULT_FILE_SERVERS,
+  DEFAULT_FILE_STORAGE_SERVER,
+  findServerEntry,
+  normalizeFileServerUrl,
+  parseFileServers,
+  serializeFileServers,
+} from "../../lib/fileStorage";
 import { LS_MINT_BACKUP_ENABLED } from "../../localStorageKeys";
-import { idbKeyValue } from "../../storage/idbKeyValue";
-import { TASKIFY_STORE_TASKS } from "../../storage/taskifyDb";
-import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
-import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../../lib/fileStorage";
 import { detectPushPlatformFromNavigator, INFERRED_PUSH_PLATFORM } from "../push/pushUtils";
-import type { PushPreferences } from "../push/pushUtils";
 import { SCRIPTURE_MEMORY_FREQUENCIES, SCRIPTURE_MEMORY_SORTS } from "../scripture/scriptureUtils";
 import type { ScriptureMemoryFrequency, ScriptureMemorySort } from "../scripture/scriptureTypes";
+import { LS_SETTINGS } from "../storageKeys";
+import { kvStorage } from "../../storage/kvStorage";
+import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
+import type { FastingRemindersMode, PushPreferences, Settings } from "./settingsTypes";
+import type { Weekday } from "./taskTypes";
 
-const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
+export const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
   enabled: false,
   platform: INFERRED_PUSH_PLATFORM,
-  permission: (typeof Notification !== 'undefined' ? Notification.permission : 'default') as NotificationPermission,
+  permission: (typeof Notification !== "undefined" ? Notification.permission : "default") as NotificationPermission,
 };
 
-function useSettings() {
+function defaultPublicFileServers(): string {
+  return serializeFileServers(DEFAULT_FILE_SERVERS.filter((server) => server.type !== "originless") || DEFAULT_FILE_SERVERS);
+}
+
+function defaultEncryptedFileServers(): string {
+  return serializeFileServers(DEFAULT_FILE_SERVERS.filter((server) => server.type === "originless"));
+}
+
+export function useSettingsSync() {
   const [settings, setSettingsRaw] = useState<Settings>(() => {
     try {
       const parsed = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
@@ -35,14 +47,7 @@ function useSettings() {
           startBoardByDay[day as Weekday] = value;
         }
       }
-      // Read backgroundImage from IndexedDB first, fall back to localStorage settings for migration
-      const bgFromIdb = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BACKGROUND_IMAGE);
-      const bgFromSettings = typeof parsed?.backgroundImage === "string" ? parsed.backgroundImage : null;
-      const backgroundImage = bgFromIdb ?? bgFromSettings;
-      // One-time migration: copy from localStorage to IndexedDB
-      if (backgroundImage && !bgFromIdb) {
-        idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BACKGROUND_IMAGE, backgroundImage);
-      }
+      const backgroundImage = typeof parsed?.backgroundImage === "string" ? parsed.backgroundImage : null;
       let backgroundAccents = normalizeAccentPaletteList(parsed?.backgroundAccents) ?? null;
       let backgroundAccentIndex = typeof parsed?.backgroundAccentIndex === "number" ? parsed.backgroundAccentIndex : null;
       let backgroundAccent = normalizeAccentPalette(parsed?.backgroundAccent) ?? null;
@@ -97,7 +102,6 @@ function useSettings() {
         ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
-
       const pushRaw = parsed?.pushNotifications;
       const inferredPlatform = detectPushPlatformFromNavigator();
       const storedPlatform = pushRaw?.platform === "android"
@@ -108,26 +112,26 @@ function useSettings() {
       const pushPreferences: PushPreferences = {
         enabled: pushRaw?.enabled === true,
         platform: storedPlatform,
-        deviceId: typeof pushRaw?.deviceId === 'string' ? pushRaw.deviceId : undefined,
-        subscriptionId: typeof pushRaw?.subscriptionId === 'string' ? pushRaw.subscriptionId : undefined,
+        deviceId: typeof pushRaw?.deviceId === "string" ? pushRaw.deviceId : undefined,
+        subscriptionId: typeof pushRaw?.subscriptionId === "string" ? pushRaw.subscriptionId : undefined,
         permission:
-          pushRaw?.permission === 'granted' || pushRaw?.permission === 'denied'
+          pushRaw?.permission === "granted" || pushRaw?.permission === "denied"
             ? pushRaw.permission
             : DEFAULT_PUSH_PREFERENCES.permission,
       };
-      const validScriptureFrequencyIds = new Set(SCRIPTURE_MEMORY_FREQUENCIES.map(opt => opt.id));
-      const rawScriptureFrequency = typeof parsed?.scriptureMemoryFrequency === 'string'
+      const validScriptureFrequencyIds = new Set(SCRIPTURE_MEMORY_FREQUENCIES.map((opt) => opt.id));
+      const rawScriptureFrequency = typeof parsed?.scriptureMemoryFrequency === "string"
         ? parsed.scriptureMemoryFrequency
-        : '';
+        : "";
       const scriptureMemoryFrequency: ScriptureMemoryFrequency = validScriptureFrequencyIds.has(rawScriptureFrequency as ScriptureMemoryFrequency)
         ? (rawScriptureFrequency as ScriptureMemoryFrequency)
-        : 'daily';
-      const validScriptureSortIds = new Set(SCRIPTURE_MEMORY_SORTS.map(opt => opt.id));
-      const rawScriptureSort = typeof parsed?.scriptureMemorySort === 'string' ? parsed.scriptureMemorySort : '';
+        : "daily";
+      const validScriptureSortIds = new Set(SCRIPTURE_MEMORY_SORTS.map((opt) => opt.id));
+      const rawScriptureSort = typeof parsed?.scriptureMemorySort === "string" ? parsed.scriptureMemorySort : "";
       const scriptureMemorySort: ScriptureMemorySort = validScriptureSortIds.has(rawScriptureSort as ScriptureMemorySort)
         ? (rawScriptureSort as ScriptureMemorySort)
-        : 'needsReview';
-      const scriptureMemoryBoardId = typeof parsed?.scriptureMemoryBoardId === 'string' && parsed.scriptureMemoryBoardId
+        : "needsReview";
+      const scriptureMemoryBoardId = typeof parsed?.scriptureMemoryBoardId === "string" && parsed.scriptureMemoryBoardId
         ? parsed.scriptureMemoryBoardId
         : null;
       const scriptureMemoryEnabled = parsed?.scriptureMemoryEnabled === true;
@@ -193,6 +197,12 @@ function useSettings() {
         walletContactsSyncEnabled,
         fileStorageServer,
         encryptedFileStorageServer,
+        fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
+          ? parsed.fileServers.trim()
+          : defaultPublicFileServers(),
+        encryptedFileServers: typeof parsed?.encryptedFileServers === "string" && parsed.encryptedFileServers.trim()
+          ? parsed.encryptedFileServers.trim()
+          : defaultEncryptedFileServers(),
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -200,7 +210,6 @@ function useSettings() {
         nostrBackupEnabled,
         nostrBackupMetadataEnabled,
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
-
       };
     } catch {
       return {
@@ -229,12 +238,13 @@ function useSettings() {
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
         encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
+        fileServers: defaultPublicFileServers(),
+        encryptedFileServers: defaultEncryptedFileServers(),
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
         cloudBackupsEnabled: false,
         nostrBackupEnabled: true,
         nostrBackupMetadataEnabled: true,
-
         scriptureMemoryEnabled: false,
         scriptureMemoryBoardId: null,
         scriptureMemoryFrequency: "daily",
@@ -248,18 +258,27 @@ function useSettings() {
       };
     }
   });
+
   const setSettings = useCallback((s: Partial<Settings>) => {
-    setSettingsRaw(prev => {
+    setSettingsRaw((prev) => {
       const next = { ...prev, ...s };
       if (s.pushNotifications) {
         next.pushNotifications = { ...prev.pushNotifications, ...DEFAULT_PUSH_PREFERENCES, ...s.pushNotifications };
         const detectedPlatform = detectPushPlatformFromNavigator();
-        next.pushNotifications.platform = next.pushNotifications.platform === 'android'
-          ? 'android'
+        next.pushNotifications.platform = next.pushNotifications.platform === "android"
+          ? "android"
           : detectedPlatform;
       }
+      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
+        const servers = parseFileServers(s.fileServers);
+        const currentSelected = normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+        const entry = findServerEntry(servers, currentSelected);
+        if (!entry && servers.length > 0) {
+          next.fileStorageServer = normalizeFileServerUrl(servers[0].url) || DEFAULT_FILE_STORAGE_SERVER;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(s, "fileStorageServer")) {
-        const rawServer = (s as any).fileStorageServer;
+        const rawServer = s.fileStorageServer;
         const normalizedServer =
           typeof rawServer === "string" && rawServer.trim()
             ? normalizeFileServerUrl(rawServer) || DEFAULT_FILE_STORAGE_SERVER
@@ -272,7 +291,7 @@ function useSettings() {
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
       }
       if (Object.prototype.hasOwnProperty.call(s, "encryptedFileStorageServer")) {
-        const rawServer = (s as any).encryptedFileStorageServer;
+        const rawServer = s.encryptedFileStorageServer;
         const normalizedServer =
           typeof rawServer === "string" && rawServer.trim()
             ? normalizeFileServerUrl(rawServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER
@@ -283,6 +302,22 @@ function useSettings() {
       } else {
         next.encryptedFileStorageServer =
           normalizeFileServerUrl(next.encryptedFileStorageServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
+        const rawServers = s.fileServers;
+        next.fileServers = typeof rawServers === "string" && rawServers.trim()
+          ? rawServers.trim()
+          : defaultPublicFileServers();
+      } else if (!next.fileServers) {
+        next.fileServers = defaultPublicFileServers();
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileServers")) {
+        const rawServers = s.encryptedFileServers;
+        next.encryptedFileServers = typeof rawServers === "string" && rawServers.trim()
+          ? rawServers.trim()
+          : defaultEncryptedFileServers();
+      } else if (!next.encryptedFileServers) {
+        next.encryptedFileServers = defaultEncryptedFileServers();
       }
       if (!next.backgroundImage) {
         next.backgroundImage = null;
@@ -333,26 +368,25 @@ function useSettings() {
       }
       next.nostrBackupEnabled = next.nostrBackupEnabled !== false;
       next.nostrBackupMetadataEnabled = next.nostrBackupEnabled;
-
       if (!next.bibleTrackerEnabled) {
         next.bibleTrackerEnabled = false;
         next.scriptureMemoryEnabled = false;
         next.scriptureMemoryBoardId = null;
       }
-      if (typeof next.scriptureMemoryBoardId !== 'string' || !next.scriptureMemoryBoardId) {
+      if (typeof next.scriptureMemoryBoardId !== "string" || !next.scriptureMemoryBoardId) {
         next.scriptureMemoryBoardId = next.scriptureMemoryBoardId ? String(next.scriptureMemoryBoardId) : null;
-        if (next.scriptureMemoryBoardId === '') next.scriptureMemoryBoardId = null;
+        if (next.scriptureMemoryBoardId === "") next.scriptureMemoryBoardId = null;
       }
-      if (!SCRIPTURE_MEMORY_FREQUENCIES.some(opt => opt.id === next.scriptureMemoryFrequency)) {
-        next.scriptureMemoryFrequency = 'daily';
+      if (!SCRIPTURE_MEMORY_FREQUENCIES.some((opt) => opt.id === next.scriptureMemoryFrequency)) {
+        next.scriptureMemoryFrequency = "daily";
       }
-      if (!SCRIPTURE_MEMORY_SORTS.some(opt => opt.id === next.scriptureMemorySort)) {
-        next.scriptureMemorySort = 'needsReview';
+      if (!SCRIPTURE_MEMORY_SORTS.some((opt) => opt.id === next.scriptureMemorySort)) {
+        next.scriptureMemorySort = "needsReview";
       }
       if (next.scriptureMemoryEnabled !== true) {
         next.scriptureMemoryEnabled = false;
       }
-      if (typeof next.scriptureMemoryBoardId === 'undefined') {
+      if (typeof next.scriptureMemoryBoardId === "undefined") {
         next.scriptureMemoryBoardId = null;
       }
       if (next.fastingRemindersEnabled !== true) {
@@ -382,45 +416,17 @@ function useSettings() {
       return next;
     });
   }, []);
-  // Keep a ref to latest settings for the flush-on-unmount cleanup
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
 
-  // Debounced settings persistence — strips backgroundImage (stored separately in IndexedDB)
+  const settingsFirstRun = useRef(true);
   useEffect(() => {
-    const timer = setTimeout(() => {
-      const { backgroundImage: _bg, ...rest } = settingsRef.current;
-      kvStorage.setItem(LS_SETTINGS, JSON.stringify(rest));
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [settings]);
-
-  // Flush settings to localStorage on unmount to prevent data loss
-  useEffect(() => {
-    return () => {
-      const { backgroundImage: _bg, ...rest } = settingsRef.current;
-      kvStorage.setItem(LS_SETTINGS, JSON.stringify(rest));
-    };
-  }, []);
-
-  // Persist backgroundImage to IndexedDB separately (only when it changes)
-  const prevBgRef = useRef<string | null | undefined>(undefined);
-  useEffect(() => {
-    // Skip the initial render — migration is handled in the useState initializer
-    if (prevBgRef.current === undefined) {
-      prevBgRef.current = settings.backgroundImage;
+    if (settingsFirstRun.current) {
+      settingsFirstRun.current = false;
       return;
     }
-    if (settings.backgroundImage === prevBgRef.current) return;
-    prevBgRef.current = settings.backgroundImage;
-    if (settings.backgroundImage) {
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BACKGROUND_IMAGE, settings.backgroundImage);
-    } else {
-      idbKeyValue.removeItem(TASKIFY_STORE_TASKS, LS_BACKGROUND_IMAGE);
-    }
-  }, [settings.backgroundImage]);
+    kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
+  }, [settings]);
 
   return [settings, setSettings] as const;
 }
 
-export { useSettings, DEFAULT_PUSH_PREFERENCES };
+export const useSettings = useSettingsSync;

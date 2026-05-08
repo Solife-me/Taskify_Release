@@ -6,13 +6,44 @@ import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
 import {
+  DEFAULT_DATE_REMINDER_TIME,
+  MS_PER_DAY,
+  TASK_PRIORITY_MARKS,
+  buildReminderOptions,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   normalizeRelayListSorted,
   compressedToRawHex,
   contactInitials,
   contactVerifiedNip05 as contactVerifiedNip05Core,
+  isExternalCalendarEvent,
+  isListLikeBoard,
   normalizeTaskAssignmentStatus,
+  normalizeReminderTime,
+  reminderPresetToMinutes,
+  sanitizeReminderList,
+  type Board,
+  type BoardSortDirection,
+  type BoardSortMode,
+  type CalendarEvent,
+  type CalendarEventBase,
+  type CalendarEventParticipant,
+  type DateCalendarEvent,
+  type EditingState,
+  type InboxItem,
+  type InboxItemStatus,
+  type InboxSender,
+  type ListColumn,
+  type Nip05CheckState,
+  type Recurrence,
+  type Subtask,
+  type Task,
+  type TaskAssignee,
+  type TaskAssigneeStatus,
+  type TaskPriority,
+  type TimeCalendarEvent,
+  type UpcomingBoardGrouping,
+  type Weekday,
 } from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
@@ -103,7 +134,7 @@ import {
 } from "./nostrAppState";
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
-import { AccentPalette, normalizeAccentPalette, normalizeAccentPaletteList } from "./theme/palette";
+import { AccentPalette } from "./theme/palette";
 import {
   createDocumentAttachment,
   ensureDocumentPreview,
@@ -151,6 +182,21 @@ import {
   recurringInstanceId,
   dedupeRecurringInstances,
 } from "./domains/tasks/taskUtils";
+import type {
+  CompleteTaskFn,
+  CompleteTaskResult,
+  PublishCalendarEventFn,
+  PublishTaskFn,
+  ScriptureMemoryUpdate,
+} from "./domains/tasks/taskTypes";
+import { detectPushPlatformFromNavigator } from "./domains/push/pushUtils";
+import {
+  ACCENT_CHOICES,
+  type FastingRemindersMode,
+  type PushPreferences,
+  type Settings,
+} from "./domains/tasks/settingsTypes";
+import { DEFAULT_PUSH_PREFERENCES, useSettings } from "./domains/tasks/settingsHook";
 import {
   buildNostrBackupSnapshot as buildNostrBackupSnapshotDomain,
   mergeBackupBoards,
@@ -174,12 +220,9 @@ import {
   encryptCalendarPayloadWithEventKey,
   decryptCalendarPayloadWithEventKey,
   encryptCalendarRsvpPayload,
-  decryptCalendarRsvpPayload,
-  decryptCalendarRsvpPayloadForAttendee,
   deriveBoardRsvpToken,
   parseCalendarCanonicalPayload,
   parseCalendarViewPayload,
-  parseCalendarRsvpPayload,
   type CalendarRsvpFb,
   type CalendarRsvpStatus,
 } from "./lib/privateCalendar";
@@ -199,12 +242,14 @@ import {
 } from "./lib/contacts";
 
 
-import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
+import { parseFileServers, findServerEntry } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
-import { nostrOutboxStore } from "./nostr/NostrOutboxStore";
+import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSync";
+import { useCalendarEventManagement } from "./nostr/useCalendarEventManagement";
+import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
 
 import {
@@ -249,7 +294,6 @@ const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 type ScanResult = QrScannerLib.ScanResult;
 
 /* ================= Types ================= */
-type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
 type DayChoice = Weekday | string; // string = custom list columnId
 const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
@@ -282,19 +326,6 @@ const MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
 const MERIDIEMS = ["AM", "PM"] as const;
 type Meridiem = (typeof MERIDIEMS)[number];
 
-type Recurrence =
-  | { type: "none"; untilISO?: string }
-  | { type: "daily"; untilISO?: string }
-  | { type: "weekly"; days: Weekday[]; untilISO?: string }
-  | { type: "every"; n: number; unit: "hour" | "day" | "week"; untilISO?: string }
-  | { type: "monthlyDay"; day: number; interval?: number; untilISO?: string };
-
-type Subtask = {
-  id: string;
-  title: string;
-  completed?: boolean;
-};
-
 type LockRecipientSelection = {
   value: string;
   label: string;
@@ -307,65 +338,6 @@ type QuickLockOption = {
   value: string;
   label: string;
   contactId?: string;
-};
-
-type Nip05CheckState = {
-  status: "pending" | "valid" | "invalid";
-  nip05: string;
-  npub: string;
-  checkedAt: number;
-  contactUpdatedAt?: number | null;
-};
-
-type InboxSender = {
-  pubkey: string;
-  name?: string;
-  npub?: string;
-};
-
-type InboxItemStatus =
-  | "pending"
-  | "accepted"
-  | "declined"
-  | "tentative"
-  | "deleted"
-  | "read";
-
-type InboxItem =
-  | {
-      type: "board";
-      boardId: string;
-      boardName?: string;
-      relays?: string[];
-      sender: InboxSender;
-      receivedAt: string;
-      status?: InboxItemStatus;
-      dmEventId?: string;
-    }
-  | {
-      type: "contact";
-      contact: SharedContactPayload;
-      sender: InboxSender;
-      receivedAt: string;
-      status?: InboxItemStatus;
-      dmEventId?: string;
-    }
-  | {
-      type: "task";
-      task: SharedTaskPayload;
-      sender: InboxSender;
-      receivedAt: string;
-      status?: InboxItemStatus;
-      dmEventId?: string;
-    };
-
-type TaskAssigneeStatus = "pending" | "accepted" | "declined" | "tentative";
-
-type TaskAssignee = {
-  pubkey: string;
-  relay?: string;
-  status?: TaskAssigneeStatus;
-  respondedAt?: number;
 };
 
 type CalendarInviteStatus = "pending" | "read" | CalendarRsvpStatus | "dismissed";
@@ -385,15 +357,6 @@ type CalendarInvite = {
   sender?: InboxSender;
   receivedAt: string;
   status: CalendarInviteStatus;
-};
-
-type CalendarRsvpEnvelope = {
-  eventId: string;
-  authorPubkey: string;
-  createdAt: number;
-  status: CalendarRsvpStatus;
-  fb?: CalendarRsvpFb;
-  inviteToken?: string;
 };
 
 function normalizeNostrPubkeyHex(value: string | null | undefined): string | null {
@@ -536,393 +499,19 @@ function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-type TaskPriority = 1 | 2 | 3;
-
-type Task = {
-  id: string;
-  boardId: string;
-  createdBy?: string;             // nostr pubkey of task creator
-  lastEditedBy?: string;          // nostr pubkey of latest task editor
-  createdAt?: number;             // unix ms timestamp (local)
-  updatedAt?: string;             // iso timestamp of latest local edit when known
-  _nostrAt?: number;              // unix seconds of the Nostr event that last wrote this task (not persisted to IDB in old data)
-  title: string;
-  priority?: TaskPriority;        // 1-3 exclamation marks
-  note?: string;
-  images?: string[];              // base64 data URLs for pasted images
-  documents?: TaskDocument[];     // supported document attachments
-  dueISO: string;                 // for week board day grouping
-  dueDateEnabled?: boolean;       // whether the due date is active
-  completed?: boolean;
-  completedAt?: string;
-  completedBy?: string;           // nostr pubkey of user who marked complete
-  recurrence?: Recurrence;
-  // Week board columns:
-  column?: "day";
-  // Custom boards (multi-list):
-  columnId?: string;
-  hiddenUntilISO?: string;        // controls visibility (appear at/after this date)
-  order?: number;                 // order within the board for manual reordering
-  streak?: number;                // consecutive completion count
-  longestStreak?: number;         // highest recorded streak for the series
-  seriesId?: string;              // identifier for a recurring series
-  subtasks?: Subtask[];           // optional list of subtasks
-  assignees?: TaskAssignee[];     // optional assignment list with response states
-  bounty?: {
-    id: string;                   // bounty id (uuid)
-    token: string;                // cashu token string (locked or unlocked)
-    amount?: number;              // optional, sats
-    mint?: string;                // optional hint
-    lock?: "p2pk" | "htlc" | "none" | "unknown";
-    owner?: string;               // hex pubkey of task creator (who can unlock)
-    sender?: string;              // hex pubkey of funder (who can revoke)
-    receiver?: string;            // hex pubkey of intended recipient (who can decrypt nip04)
-    state: "locked" | "unlocked" | "revoked" | "claimed";
-    updatedAt: string;            // iso
-    enc?:
-      | {                         // optional encrypted form (hidden until funder reveals)
-          alg: "aes-gcm-256";
-          iv: string;            // base64
-          ct: string;            // base64
-        }
-      | {
-          alg: "nip04";         // encrypted to receiver's nostr pubkey (nip04 format)
-          data: string;          // ciphertext returned by nip04.encrypt
-      }
-      | null;
-  };
-  dueTimeEnabled?: boolean;       // whether a specific due time is set
-  dueTimeZone?: string;           // IANA time zone for due time (defaults to device zone)
-  reminders?: ReminderPreset[];   // preset reminder offsets before due time
-  reminderTime?: string;          // HH:mm reminder clock used when due time is not set
-  scriptureMemoryId?: string;     // reference to scripture memory entry when auto-created
-  scriptureMemoryStage?: number;  // stage at time of scheduling (for undo)
-  scriptureMemoryPrevReviewISO?: string | null; // previous review timestamp snapshot
-  scriptureMemoryScheduledAt?: string; // when this memory task was generated
-  bountyLists?: string[];         // local-only set of bounty list keys the task belongs to
-  bountyDeletedAt?: string;       // local-only marker for recoverable bounty-task deletes
-  inboxItem?: InboxItem;          // shared inbox metadata (boards/contacts/tasks)
-};
-
-type CalendarEventParticipant = {
-  pubkey: string;
-  relay?: string;
-  role?: string;
-};
-
-type CalendarEventBase = {
-  id: string;                     // stable event identifier
-  boardId: string;
-  createdBy?: string;             // nostr pubkey of event creator
-  lastEditedBy?: string;          // nostr pubkey of latest event editor
-  columnId?: string;              // list boards only
-  order?: number;                 // manual ordering within board/column
-  title: string;
-  summary?: string;
-  description?: string;
-  documents?: TaskDocument[];     // supported document attachments
-  image?: string;
-  locations?: string[];
-  geohash?: string;
-  participants?: CalendarEventParticipant[];
-  hashtags?: string[];
-  references?: string[];
-  reminders?: ReminderPreset[];   // per-device push reminders (not published)
-  reminderTime?: string;          // HH:mm reminder clock used for all-day events
-  hiddenUntilISO?: string;        // local visibility gating for board lists
-  recurrence?: Recurrence;        // client-managed recurrence
-  seriesId?: string;              // client-managed recurrence grouping
-  readOnly?: boolean;             // view-only event (cannot publish edits)
-  external?: boolean;             // boardless invitee event
-  originBoardId?: string;         // board id to publish edits/deletions when different from boardId
-  eventKey?: string;              // per-event share key (base64)
-  inviteTokens?: Record<string, string>; // board-only invite tokens keyed by pubkey
-  canonicalAddress?: string;      // canonical event address for invitees
-  viewAddress?: string;           // shareable view address for invitees
-  inviteToken?: string;           // invitee token for RSVP
-  inviteRelays?: string[];        // relays to fetch view + RSVP
-  boardPubkey?: string;           // canonical board pubkey for external RSVP
-  rsvpStatus?: CalendarRsvpStatus; // local RSVP state (external)
-  rsvpCreatedAt?: number;         // created_at for local RSVP (external)
-  rsvpFb?: CalendarRsvpFb;         // free/busy for local RSVP (external)
-};
-
-type DateCalendarEvent = CalendarEventBase & {
-  kind: "date";
-  startDate: string;              // YYYY-MM-DD
-  endDate?: string;               // inclusive YYYY-MM-DD (UI-facing)
-};
-
-type TimeCalendarEvent = CalendarEventBase & {
-  kind: "time";
-  startISO: string;               // ISO timestamp (UTC)
-  endISO?: string;                // ISO timestamp (UTC)
-  startTzid?: string;             // IANA TZID tag
-  endTzid?: string;
-};
-
-type CalendarEvent = DateCalendarEvent | TimeCalendarEvent;
-type ExternalCalendarEvent = CalendarEvent & {
-  external: true;
-  boardPubkey: string;
-};
-
-function isExternalCalendarEvent(event: CalendarEvent): event is ExternalCalendarEvent {
-  return event.external === true;
-}
-
-type EditItemType = "task" | "event";
-
-type EditingState =
-  | { type: "task"; originalType: EditItemType; originalId: string; task: Task }
-  | { type: "event"; originalType: EditItemType; originalId: string; event: CalendarEvent };
-
-const TASK_PRIORITY_MARKS: Record<TaskPriority, string> = {
-  1: "!",
-  2: "!!",
-  3: "!!!",
-};
-
 function taskPriorityMarks(priority: TaskPriority | undefined): string {
   return priority ? TASK_PRIORITY_MARKS[priority] : "";
 }
-
-type BoardSortMode = "manual" | "due" | "priority" | "created" | "alpha";
-type BoardSortDirection = "asc" | "desc";
-type UpcomingBoardGrouping = "mixed" | "grouped";
 
 const LS_MESSAGES_BOARD_ID = "taskify_messages_board_id_v1";
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
 const MESSAGES_COLUMN_ID = "messages-shared";
 const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
 
-type BuiltinReminderPreset = "0h" | "5m" | "15m" | "30m" | "1h" | "1d" | "1w" | "0d";
-type CustomReminderPreset = `custom-${number}`;
-type ReminderPreset = BuiltinReminderPreset | CustomReminderPreset;
-type ReminderPresetMode = "timed" | "date";
-
-type PushPlatform = "ios" | "android";
-
-type PushPreferences = {
-  enabled: boolean;
-  platform: PushPlatform;
-  deviceId?: string;
-  subscriptionId?: string;
-  permission?: NotificationPermission;
-};
-type PublishTaskFn = (
-  task: Task,
-  boardOverride?: Board,
-  options?: { skipBoardMetadata?: boolean }
-) => Promise<void>;
-type PublishCalendarEventFn = (
-  event: CalendarEvent,
-  boardOverride?: Board,
-  options?: { skipBoardMetadata?: boolean }
-) => Promise<void>;
-type ScriptureMemoryUpdate = {
-  entryId: string;
-  completedAt: string;
-  stageBefore?: number;
-  nextScheduled?: { entryId: string; scheduledAtISO: string };
-};
-type CompleteTaskResult = {
-  scriptureMemory?: ScriptureMemoryUpdate;
-} | null;
-type CompleteTaskFn = (
-  id: string,
-  options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" | "decline" | "maybe" }
-) => CompleteTaskResult;
-
-function detectPushPlatformFromNavigator(): PushPlatform {
-  if (typeof navigator === 'undefined') return 'ios';
-  const ua = typeof navigator.userAgent === 'string' ? navigator.userAgent.toLowerCase() : '';
-  const vendor = typeof navigator.vendor === 'string' ? navigator.vendor.toLowerCase() : '';
-  const platform = typeof navigator.platform === 'string' ? navigator.platform.toLowerCase() : '';
-  const isIosDevice = /\b(iphone|ipad|ipod)\b/.test(ua);
-  const isStandalonePwa = typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia('(display-mode: standalone)').matches;
-  const isSafariBrowser = /safari/.test(ua)
-    && !/chrome|crios|fxios|edge|edg\//.test(ua)
-    && !/android/.test(ua);
-  const isAppleWebkit = vendor.includes('apple');
-  if (isIosDevice || (isSafariBrowser && (platform.startsWith('mac') || isAppleWebkit)) || (isAppleWebkit && isStandalonePwa)) {
-    return 'ios';
-  }
-  return 'android';
-}
-
-const INFERRED_PUSH_PLATFORM: PushPlatform = detectPushPlatformFromNavigator();
-
-const DEFAULT_DATE_REMINDER_TIME = "09:00";
-
-const TIMED_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
-  { id: "0h", label: "At due/start time", badge: "0h", minutes: 0 },
-  { id: "5m", label: "5 minutes before", badge: "5m", minutes: 5 },
-  { id: "15m", label: "15 minutes before", badge: "15m", minutes: 15 },
-  { id: "30m", label: "30 minutes before", badge: "30m", minutes: 30 },
-  { id: "1h", label: "1 hour before", badge: "1h", minutes: 60 },
-  { id: "1d", label: "1 day before", badge: "1d", minutes: 1440 },
-];
-
-const DATE_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
-  { id: "1w", label: "1 week before", badge: "1w", minutes: 10080 },
-  { id: "1d", label: "1 day before", badge: "1d", minutes: 1440 },
-  { id: "0d", label: "On the day", badge: "day of", minutes: 0 },
-];
-
-const BUILTIN_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
-  ...DATE_REMINDER_PRESETS,
-  ...TIMED_REMINDER_PRESETS,
-];
-
-const BUILTIN_REMINDER_IDS = new Set<BuiltinReminderPreset>(BUILTIN_REMINDER_PRESETS.map((opt) => opt.id));
-const BUILTIN_REMINDER_MINUTES = new Map<BuiltinReminderPreset, number>(BUILTIN_REMINDER_PRESETS.map((opt) => [opt.id, opt.minutes] as const));
-
 const BIBLE_BOARD_ID = "bible-reading";
 const LS_SCRIPTURE_MEMORY = "taskify_scripture_memory_v1";
 const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
 const FASTING_REMINDER_SERIES_ID = "fasting-reminder";
-
-type FastingRemindersMode = "weekday" | "random";
-
-const MS_PER_DAY = 86400000;
-
-const CUSTOM_REMINDER_PATTERN = /^custom-(-?\d{1,8})$/;
-const MIN_CUSTOM_REMINDER_MINUTES = -99_999_999;
-const MAX_CUSTOM_REMINDER_MINUTES = 99_999_999;
-
-function clampCustomReminderMinutes(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(MIN_CUSTOM_REMINDER_MINUTES, Math.min(MAX_CUSTOM_REMINDER_MINUTES, Math.round(value)));
-}
-
-function normalizeReminderTime(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const parsed = parseTimeValue(value);
-  if (!parsed) return undefined;
-  return `${String(parsed.hour).padStart(2, "0")}:${String(parsed.minute).padStart(2, "0")}`;
-}
-
-function minutesToReminderId(minutes: number): ReminderPreset {
-  if (!Number.isFinite(minutes)) return "0d";
-  const normalized = clampCustomReminderMinutes(minutes);
-  if (normalized === 0) return "0d";
-  for (const [id, builtinMinutes] of BUILTIN_REMINDER_MINUTES) {
-    if (builtinMinutes === normalized) return id;
-  }
-  return `custom-${normalized}`;
-}
-
-function reminderPresetIdForMode(minutes: number, mode: ReminderPresetMode): ReminderPreset {
-  if (!Number.isFinite(minutes)) {
-    return mode === "timed" ? "0h" : "0d";
-  }
-  const normalized = clampCustomReminderMinutes(minutes);
-  if (normalized === 0) {
-    return mode === "timed" ? "0h" : "0d";
-  }
-  return minutesToReminderId(normalized);
-}
-
-function reminderPresetToMinutes(id: ReminderPreset): number {
-  if (BUILTIN_REMINDER_IDS.has(id as BuiltinReminderPreset)) {
-    return BUILTIN_REMINDER_MINUTES.get(id as BuiltinReminderPreset) ?? 0;
-  }
-  const match = typeof id === 'string' ? id.match(CUSTOM_REMINDER_PATTERN) : null;
-  if (!match) return 0;
-  return clampCustomReminderMinutes(parseInt(match[1] ?? '0', 10));
-}
-
-function formatReminderLabel(minutes: number): { label: string; badge: string } {
-  if (!Number.isFinite(minutes)) {
-    return {
-      label: "On the day",
-      badge: "day of",
-    };
-  }
-  if (minutes === 0) {
-    return {
-      label: "On the day",
-      badge: "day of",
-    };
-  }
-  const mins = clampCustomReminderMinutes(minutes);
-  const direction = mins < 0 ? "after" : "before";
-  const signPrefix = mins < 0 ? "+" : "";
-  const absMins = Math.abs(mins);
-  if (absMins % 1440 === 0) {
-    const days = absMins / 1440;
-    return {
-      label: `${days} day${days === 1 ? '' : 's'} ${direction}`,
-      badge: `${signPrefix}${days}d`,
-    };
-  }
-  if (absMins % 60 === 0) {
-    const hours = absMins / 60;
-    return {
-      label: `${hours} hour${hours === 1 ? '' : 's'} ${direction}`,
-      badge: `${signPrefix}${hours}h`,
-    };
-  }
-  return {
-    label: `${absMins} minute${absMins === 1 ? '' : 's'} ${direction}`,
-    badge: `${signPrefix}${absMins}m`,
-  };
-}
-
-type ReminderOption = { id: ReminderPreset; label: string; badge: string; minutes: number; builtin: boolean };
-
-function buildReminderOptions(extraPresetIds: ReminderPreset[] = [], mode: ReminderPresetMode = "timed"): ReminderOption[] {
-  const modePresets = mode === "date" ? DATE_REMINDER_PRESETS : TIMED_REMINDER_PRESETS;
-  const options = new Map<ReminderPreset, ReminderOption>(
-    modePresets.map((preset) => [preset.id, { ...preset, builtin: true }] as const),
-  );
-  const extras: ReminderOption[] = [];
-  for (const id of extraPresetIds) {
-    if (options.has(id)) continue;
-    const minutes = reminderPresetToMinutes(id);
-    if (!Number.isFinite(minutes)) continue;
-    const { label, badge } = formatReminderLabel(minutes);
-    extras.push({ id, label, badge, minutes, builtin: !String(id).startsWith("custom-") });
-  }
-  extras.sort((a, b) => a.minutes - b.minutes);
-  return [...options.values(), ...extras];
-}
-
-function sanitizeReminderList(value: unknown): ReminderPreset[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const dedupByMinutes = new Map<number, ReminderPreset>();
-  const addByMinutes = (id: ReminderPreset) => {
-    const minutes = reminderPresetToMinutes(id);
-    if (!Number.isFinite(minutes)) return;
-    if (!dedupByMinutes.has(minutes)) {
-      dedupByMinutes.set(minutes, id);
-    }
-  };
-  for (const item of value) {
-    if (typeof item === 'string') {
-      if (BUILTIN_REMINDER_IDS.has(item as BuiltinReminderPreset)) {
-        addByMinutes(item as ReminderPreset);
-        continue;
-      }
-      if (CUSTOM_REMINDER_PATTERN.test(item)) {
-        const minutes = reminderPresetToMinutes(item as ReminderPreset);
-        if (Number.isFinite(minutes)) addByMinutes(minutesToReminderId(minutes));
-      }
-      continue;
-    }
-    if (typeof item === 'number' && Number.isFinite(item)) {
-      const remId = minutesToReminderId(item);
-      addByMinutes(remId);
-    }
-  }
-  const sorted = [...dedupByMinutes.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, id]) => id);
-  return sorted;
-}
 
 function normalizeIsoTimestamp(value: unknown): string | undefined {
   if (typeof value !== "string" || !value) return undefined;
@@ -930,12 +519,6 @@ function normalizeIsoTimestamp(value: unknown): string | undefined {
   if (Number.isNaN(date.getTime())) return undefined;
   return date.toISOString();
 }
-
-const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
-  enabled: false,
-  platform: INFERRED_PUSH_PLATFORM,
-  permission: (typeof Notification !== 'undefined' ? Notification.permission : 'default') as NotificationPermission,
-};
 
 const RAW_WORKER_BASE = (import.meta as any)?.env?.VITE_WORKER_BASE_URL || "";
 const FALLBACK_WORKER_BASE_URL = RAW_WORKER_BASE ? String(RAW_WORKER_BASE).replace(/\/$/, "") : "";
@@ -1018,25 +601,12 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
   }
 }
 
-type ListColumn = { id: string; name: string };
 type CompoundIndexGroup = {
   key: string;
   boardId: string;
   boardName: string;
   columns: { id: string; name: string }[];
 };
-
-type BoardBase = {
-  id: string;
-  name: string;
-  // Optional Nostr sharing metadata
-  nostr?: { boardId: string; relays: string[] };
-  archived?: boolean;
-  hidden?: boolean;
-  clearCompletedDisabled?: boolean;
-};
-
-type CompoundChildId = string;
 
 function parseCompoundChildInput(raw: string): { boardId: string; relays: string[] } {
   const trimmed = raw.trim();
@@ -1058,23 +628,6 @@ function parseCompoundChildInput(raw: string): { boardId: string; relays: string
     ? relaySegment.split(/[\s,]+/).map((relay) => relay.trim()).filter(Boolean)
     : [];
   return { boardId, relays };
-}
-
-type Board =
-  | (BoardBase & { kind: "week" }) // fixed Sun–Sat
-  | (BoardBase & { kind: "lists"; columns: ListColumn[]; indexCardEnabled?: boolean }) // multiple customizable columns
-  | (BoardBase & {
-      kind: "compound";
-      children: CompoundChildId[];
-      indexCardEnabled?: boolean;
-      hideChildBoardNames?: boolean;
-    })
-  | (BoardBase & { kind: "bible" });
-
-type ListLikeBoard = Extract<Board, { kind: "lists" | "compound" }>;
-
-function isListLikeBoard(board: Board | null | undefined): board is ListLikeBoard {
-  return !!board && (board.kind === "lists" || board.kind === "compound");
 }
 
 function compoundColumnKey(boardId: string, columnId: string): string {
@@ -1119,86 +672,6 @@ function normalizeCompoundChildId(boards: Board[], childId: string): string {
   const match = findBoardByCompoundChildId(boards, childId);
   return match ? match.id : childId;
 }
-
-type Settings = {
-  weekStart: Weekday; // 0=Sun, 1=Mon, 6=Sat
-  newTaskPosition: "top" | "bottom";
-  streaksEnabled: boolean;
-  completedTab: boolean;
-  bibleTrackerEnabled: boolean;
-  scriptureMemoryEnabled: boolean;
-  scriptureMemoryBoardId?: string | null;
-  scriptureMemoryFrequency: ScriptureMemoryFrequency;
-  scriptureMemorySort: ScriptureMemorySort;
-  fastingRemindersEnabled: boolean;
-  fastingRemindersMode: FastingRemindersMode;
-  fastingRemindersPerMonth: number;
-  fastingRemindersWeekday: Weekday;
-  fastingRemindersRandomSeed: string;
-  showFullWeekRecurring: boolean;
-  // Base UI font size in pixels; null uses the OS preferred size
-  baseFontSize: number | null;
-  startBoardByDay: Partial<Record<Weekday, string>>;
-  accent: "green" | "blue" | "background";
-  backgroundImage?: string | null;
-  backgroundAccent?: AccentPalette | null;
-  backgroundAccents?: AccentPalette[] | null;
-  backgroundAccentIndex?: number | null;
-  backgroundBlur: "blurred" | "sharp";
-  hideCompletedSubtasks: boolean;
-  startupView: "main" | "wallet";
-  walletConversionEnabled: boolean;
-  walletPrimaryCurrency: "sat" | "usd";
-  walletSentStateChecksEnabled: boolean;
-  walletPaymentRequestsEnabled: boolean;
-  walletPaymentRequestsBackgroundChecksEnabled: boolean;
-  walletMintBackupEnabled: boolean;
-  walletContactsSyncEnabled: boolean;
-  fileStorageServer: string;
-  encryptedFileStorageServer: string;
-  fileServers: string; // JSON-serialized FileServerEntry[]
-  npubCashLightningAddressEnabled: boolean;
-  npubCashAutoClaim: boolean;
-  cloudBackupsEnabled: boolean;
-  nostrBackupEnabled: boolean;
-  // Metadata sync is controlled by nostrBackupEnabled; kept for backwards compat
-  nostrBackupMetadataEnabled: boolean;
-  pushNotifications: PushPreferences;
-};
-
-type AccentChoice = {
-  id: "blue" | "green";
-  label: string;
-  fill: string;
-  ring: string;
-  border: string;
-  borderActive: string;
-  shadow: string;
-  shadowActive: string;
-};
-
-const ACCENT_CHOICES: AccentChoice[] = [
-  {
-    id: "blue",
-    label: "iMessage blue",
-    fill: "#0a84ff",
-    ring: "rgba(64, 156, 255, 0.32)",
-    border: "rgba(64, 156, 255, 0.38)",
-    borderActive: "rgba(64, 156, 255, 0.88)",
-    shadow: "0 12px 26px rgba(10, 132, 255, 0.32)",
-    shadowActive: "0 18px 34px rgba(10, 132, 255, 0.42)",
-  },
-  {
-    id: "green",
-    label: "Mint green",
-    fill: "#34c759",
-    ring: "rgba(52, 199, 89, 0.28)",
-    border: "rgba(52, 199, 89, 0.36)",
-    borderActive: "rgba(52, 199, 89, 0.86)",
-    shadow: "0 12px 24px rgba(52, 199, 89, 0.28)",
-    shadowActive: "0 18px 32px rgba(52, 199, 89, 0.38)",
-  },
-];
 
 const CUSTOM_ACCENT_VARIABLES: ReadonlyArray<[string, keyof AccentPalette]> = [
   ["--accent", "fill"],
@@ -1638,12 +1111,6 @@ declare global {
 }
 
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
-const NOSTR_MIGRATION_BUFFER_MS = 15000;
-const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000; // absolute fallback — must exceed typical sync time
-const NOSTR_EOSE_GRACE_MS = 200; // inactivity window after first relay EOSE before flushing
-// How many seconds to look back before the stored cursor to guard against
-// clock skew and events that arrived slightly out of order across relays.
-const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 
 function loadDefaultRelays(): string[] {
   try {
@@ -3376,412 +2843,6 @@ function hiddenUntilForNext(
   const sow = startOfWeek(nextMidnight, weekStart);
   return sow.toISOString();
 }
-
-/* ================= Storage hooks ================= */
-function useSettings() {
-  const [settings, setSettingsRaw] = useState<Settings>(() => {
-    try {
-      const parsed = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
-      const baseFontSize =
-        typeof parsed.baseFontSize === "number" ? parsed.baseFontSize : null;
-      const startBoardByDay: Partial<Record<Weekday, string>> = {};
-      if (parsed && typeof parsed.startBoardByDay === "object" && parsed.startBoardByDay) {
-        for (const [key, value] of Object.entries(parsed.startBoardByDay as Record<string, unknown>)) {
-          const day = Number(key);
-          if (!Number.isInteger(day) || day < 0 || day > 6) continue;
-          if (typeof value !== "string" || !value) continue;
-          startBoardByDay[day as Weekday] = value;
-        }
-      }
-      const backgroundImage = typeof parsed?.backgroundImage === "string" ? parsed.backgroundImage : null;
-      let backgroundAccents = normalizeAccentPaletteList(parsed?.backgroundAccents) ?? null;
-      let backgroundAccentIndex = typeof parsed?.backgroundAccentIndex === "number" ? parsed.backgroundAccentIndex : null;
-      let backgroundAccent = normalizeAccentPalette(parsed?.backgroundAccent) ?? null;
-      if (!backgroundAccents || backgroundAccents.length === 0) {
-        backgroundAccents = null;
-        backgroundAccentIndex = null;
-      } else {
-        if (backgroundAccentIndex == null || backgroundAccentIndex < 0 || backgroundAccentIndex >= backgroundAccents.length) {
-          backgroundAccentIndex = 0;
-        }
-        if (!backgroundAccent) backgroundAccent = backgroundAccents[backgroundAccentIndex];
-      }
-      if (!backgroundImage) {
-        backgroundAccents = null;
-        backgroundAccentIndex = null;
-        backgroundAccent = null;
-      }
-      const backgroundBlur = parsed?.backgroundBlur === "blurred" ? "blurred" : "sharp";
-      let accent: Settings["accent"] = "blue";
-      if (parsed?.accent === "green") accent = "green";
-      else if (parsed?.accent === "background" && backgroundImage && backgroundAccent) accent = "background";
-      const hideCompletedSubtasks = parsed?.hideCompletedSubtasks === true;
-      const startupView = parsed?.startupView === "wallet" ? "wallet" : "main";
-      const walletConversionEnabled = parsed?.walletConversionEnabled !== false;
-      const walletPrimaryCurrency = parsed?.walletPrimaryCurrency === "usd" ? "usd" : "sat";
-      const walletSentStateChecksEnabled = parsed?.walletSentStateChecksEnabled !== false;
-      const walletPaymentRequestsEnabled = parsed?.walletPaymentRequestsEnabled !== false;
-      const walletPaymentRequestsBackgroundChecksEnabled =
-        parsed?.walletPaymentRequestsBackgroundChecksEnabled !== false;
-      let walletMintBackupEnabled = parsed?.walletMintBackupEnabled !== false;
-      if (parsed?.walletMintBackupEnabled == null) {
-        try {
-          walletMintBackupEnabled = kvStorage.getItem(LS_MINT_BACKUP_ENABLED) !== "0";
-        } catch {
-          walletMintBackupEnabled = true;
-        }
-      }
-      const walletContactsSyncEnabled = parsed?.walletContactsSyncEnabled !== false;
-      const npubCashLightningAddressEnabled = parsed?.npubCashLightningAddressEnabled !== false;
-      const npubCashAutoClaim = npubCashLightningAddressEnabled && parsed?.npubCashAutoClaim !== false;
-      const fileStorageServer =
-        normalizeFileServerUrl(
-          typeof parsed?.fileStorageServer === "string" && parsed.fileStorageServer.trim()
-            ? parsed.fileStorageServer.trim()
-            : DEFAULT_FILE_STORAGE_SERVER,
-        ) || DEFAULT_FILE_STORAGE_SERVER;
-      const encryptedFileStorageServer =
-        normalizeFileServerUrl(
-          typeof parsed?.encryptedFileStorageServer === "string" && parsed.encryptedFileStorageServer.trim()
-            ? parsed.encryptedFileStorageServer.trim()
-            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
-        ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-      const fileServers = (() => {
-        if (typeof parsed?.fileServers === "string" && parsed.fileServers.trim()) {
-          return parsed.fileServers.trim();
-        }
-        // Migrate from legacy single-server setting: build server list seeded with the saved server
-        const servers = DEFAULT_FILE_SERVERS.slice();
-        const existingEntry = findServerEntry(servers, fileStorageServer);
-        if (!existingEntry) {
-          servers.unshift({ url: fileStorageServer, type: "nip96" });
-        }
-        return serializeFileServers(servers);
-      })();
-      const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
-      const nostrBackupMetadataEnabled = nostrBackupEnabled;
-      const pushRaw = parsed?.pushNotifications;
-      const inferredPlatform = detectPushPlatformFromNavigator();
-      const storedPlatform = pushRaw?.platform === "android"
-        ? "android"
-        : pushRaw?.platform === "ios"
-          ? "ios"
-          : inferredPlatform;
-      const pushPreferences: PushPreferences = {
-        enabled: pushRaw?.enabled === true,
-        platform: storedPlatform,
-        deviceId: typeof pushRaw?.deviceId === 'string' ? pushRaw.deviceId : undefined,
-        subscriptionId: typeof pushRaw?.subscriptionId === 'string' ? pushRaw.subscriptionId : undefined,
-        permission:
-          pushRaw?.permission === 'granted' || pushRaw?.permission === 'denied'
-            ? pushRaw.permission
-            : DEFAULT_PUSH_PREFERENCES.permission,
-      };
-      const validScriptureFrequencyIds = new Set(SCRIPTURE_MEMORY_FREQUENCIES.map(opt => opt.id));
-      const rawScriptureFrequency = typeof parsed?.scriptureMemoryFrequency === 'string'
-        ? parsed.scriptureMemoryFrequency
-        : '';
-      const scriptureMemoryFrequency: ScriptureMemoryFrequency = validScriptureFrequencyIds.has(rawScriptureFrequency as ScriptureMemoryFrequency)
-        ? (rawScriptureFrequency as ScriptureMemoryFrequency)
-        : 'daily';
-      const validScriptureSortIds = new Set(SCRIPTURE_MEMORY_SORTS.map(opt => opt.id));
-      const rawScriptureSort = typeof parsed?.scriptureMemorySort === 'string' ? parsed.scriptureMemorySort : '';
-      const scriptureMemorySort: ScriptureMemorySort = validScriptureSortIds.has(rawScriptureSort as ScriptureMemorySort)
-        ? (rawScriptureSort as ScriptureMemorySort)
-        : 'needsReview';
-      const scriptureMemoryBoardId = typeof parsed?.scriptureMemoryBoardId === 'string' && parsed.scriptureMemoryBoardId
-        ? parsed.scriptureMemoryBoardId
-        : null;
-      const scriptureMemoryEnabled = parsed?.scriptureMemoryEnabled === true;
-      const fastingRemindersEnabled = parsed?.fastingRemindersEnabled === true;
-      const fastingRemindersMode: FastingRemindersMode = parsed?.fastingRemindersMode === "random" ? "random" : "weekday";
-      const fastingRemindersPerMonthRaw = Number(parsed?.fastingRemindersPerMonth);
-      const fastingRemindersPerMonthMax = fastingRemindersMode === "random" ? 31 : 5;
-      const fastingRemindersPerMonth =
-        Number.isFinite(fastingRemindersPerMonthRaw) && fastingRemindersPerMonthRaw > 0
-          ? Math.min(fastingRemindersPerMonthMax, Math.max(1, Math.round(fastingRemindersPerMonthRaw)))
-          : 4;
-      const fastingRemindersWeekdayRaw = Number(parsed?.fastingRemindersWeekday);
-      const fastingRemindersWeekday: Weekday =
-        Number.isInteger(fastingRemindersWeekdayRaw) && fastingRemindersWeekdayRaw >= 0 && fastingRemindersWeekdayRaw <= 6
-          ? (fastingRemindersWeekdayRaw as Weekday)
-          : 1;
-      const fastingRemindersRandomSeed =
-        typeof parsed?.fastingRemindersRandomSeed === "string" && parsed.fastingRemindersRandomSeed.trim()
-          ? parsed.fastingRemindersRandomSeed.trim()
-          : crypto.randomUUID();
-      if (parsed && typeof parsed === "object") {
-        delete (parsed as Record<string, unknown>).theme;
-        delete (parsed as Record<string, unknown>).backgroundAccents;
-        delete (parsed as Record<string, unknown>).backgroundAccentIndex;
-        delete (parsed as Record<string, unknown>).walletPaymentRequestsAutoClaim;
-        delete (parsed as Record<string, unknown>).walletBountiesEnabled;
-        delete (parsed as Record<string, unknown>).walletBountyList;
-      }
-      return {
-        weekStart: 0,
-        newTaskPosition: "top",
-        streaksEnabled: true,
-        completedTab: true,
-        showFullWeekRecurring: false,
-        ...parsed,
-        bibleTrackerEnabled: parsed?.bibleTrackerEnabled === true,
-        scriptureMemoryEnabled,
-        scriptureMemoryBoardId,
-        scriptureMemoryFrequency,
-        scriptureMemorySort,
-        fastingRemindersEnabled,
-        fastingRemindersMode,
-        fastingRemindersPerMonth,
-        fastingRemindersWeekday,
-        fastingRemindersRandomSeed,
-        hideCompletedSubtasks,
-        baseFontSize,
-        startBoardByDay,
-        accent,
-        backgroundImage,
-        backgroundAccent,
-        backgroundAccents,
-        backgroundAccentIndex,
-        backgroundBlur,
-        startupView,
-        walletConversionEnabled,
-        walletPrimaryCurrency: walletConversionEnabled ? walletPrimaryCurrency : "sat",
-        walletSentStateChecksEnabled,
-        walletPaymentRequestsEnabled,
-        walletPaymentRequestsBackgroundChecksEnabled: walletPaymentRequestsEnabled
-          ? walletPaymentRequestsBackgroundChecksEnabled
-          : false,
-        walletContactsSyncEnabled,
-        fileStorageServer,
-        encryptedFileStorageServer,
-        fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
-          ? parsed.fileServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS),
-        encryptedFileServers: typeof parsed?.encryptedFileServers === "string" && parsed.encryptedFileServers.trim()
-          ? parsed.encryptedFileServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless")),
-        walletMintBackupEnabled,
-        npubCashLightningAddressEnabled,
-        npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
-        cloudBackupsEnabled: parsed?.cloudBackupsEnabled === true,
-        nostrBackupEnabled,
-        nostrBackupMetadataEnabled,
-        pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
-      };
-    } catch {
-      return {
-        weekStart: 0,
-        newTaskPosition: "top",
-        streaksEnabled: true,
-        completedTab: true,
-        bibleTrackerEnabled: false,
-        showFullWeekRecurring: false,
-        baseFontSize: null,
-        startBoardByDay: {},
-        accent: "blue",
-        backgroundImage: null,
-        backgroundAccent: null,
-        backgroundAccents: null,
-        backgroundAccentIndex: null,
-        backgroundBlur: "sharp",
-        hideCompletedSubtasks: false,
-        startupView: "main",
-        walletConversionEnabled: true,
-        walletPrimaryCurrency: "sat",
-        walletMintBackupEnabled: true,
-        walletSentStateChecksEnabled: true,
-        walletPaymentRequestsEnabled: true,
-        walletPaymentRequestsBackgroundChecksEnabled: true,
-        walletContactsSyncEnabled: true,
-        fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
-        encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
-        fileServers: serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS),
-        encryptedFileServers: serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless")),
-        npubCashLightningAddressEnabled: true,
-        npubCashAutoClaim: true,
-        cloudBackupsEnabled: false,
-        nostrBackupEnabled: true,
-        nostrBackupMetadataEnabled: true,
-        scriptureMemoryEnabled: false,
-        scriptureMemoryBoardId: null,
-        scriptureMemoryFrequency: "daily",
-        scriptureMemorySort: "needsReview",
-        fastingRemindersEnabled: false,
-        fastingRemindersMode: "weekday",
-        fastingRemindersPerMonth: 4,
-        fastingRemindersWeekday: 1,
-        fastingRemindersRandomSeed: crypto.randomUUID(),
-        pushNotifications: { ...DEFAULT_PUSH_PREFERENCES },
-      };
-    }
-  });
-  const setSettings = useCallback((s: Partial<Settings>) => {
-    setSettingsRaw(prev => {
-      const next = { ...prev, ...s };
-      if (s.pushNotifications) {
-        next.pushNotifications = { ...prev.pushNotifications, ...DEFAULT_PUSH_PREFERENCES, ...s.pushNotifications };
-        const detectedPlatform = detectPushPlatformFromNavigator();
-        next.pushNotifications.platform = next.pushNotifications.platform === 'android'
-          ? 'android'
-          : detectedPlatform;
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
-        // fileServers changed: keep fileStorageServer in sync with selected server
-        const servers = parseFileServers((s as any).fileServers);
-        const currentSelected = normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
-        const entry = findServerEntry(servers, currentSelected);
-        if (!entry && servers.length > 0) {
-          next.fileStorageServer = normalizeFileServerUrl(servers[0].url) || DEFAULT_FILE_STORAGE_SERVER;
-        }
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "fileStorageServer")) {
-        const rawServer = (s as any).fileStorageServer;
-        const normalizedServer =
-          typeof rawServer === "string" && rawServer.trim()
-            ? normalizeFileServerUrl(rawServer) || DEFAULT_FILE_STORAGE_SERVER
-            : DEFAULT_FILE_STORAGE_SERVER;
-        next.fileStorageServer = normalizedServer;
-      } else if (!next.fileStorageServer) {
-        next.fileStorageServer = DEFAULT_FILE_STORAGE_SERVER;
-      } else {
-        next.fileStorageServer =
-          normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileStorageServer")) {
-        const rawServer = (s as any).encryptedFileStorageServer;
-        const normalizedServer =
-          typeof rawServer === "string" && rawServer.trim()
-            ? normalizeFileServerUrl(rawServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER
-            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-        next.encryptedFileStorageServer = normalizedServer;
-      } else if (!next.encryptedFileStorageServer) {
-        next.encryptedFileStorageServer = DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-      } else {
-        next.encryptedFileStorageServer =
-          normalizeFileServerUrl(next.encryptedFileStorageServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
-        const rawServers = (s as any).fileServers;
-        next.fileServers = typeof rawServers === "string" && rawServers.trim()
-          ? rawServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS);
-      } else if (!next.fileServers) {
-        next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS);
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileServers")) {
-        const rawServers = (s as any).encryptedFileServers;
-        next.encryptedFileServers = typeof rawServers === "string" && rawServers.trim()
-          ? rawServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless"));
-      } else if (!next.encryptedFileServers) {
-        next.encryptedFileServers = serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless"));
-      }
-      if (!next.backgroundImage) {
-        next.backgroundImage = null;
-        next.backgroundAccent = null;
-        next.backgroundAccents = null;
-        next.backgroundAccentIndex = null;
-      } else {
-        next.backgroundAccent = normalizeAccentPalette(next.backgroundAccent) ?? next.backgroundAccent ?? null;
-        const normalizedList = normalizeAccentPaletteList(next.backgroundAccents);
-        next.backgroundAccents = normalizedList && normalizedList.length ? normalizedList : null;
-        if (next.backgroundAccents?.length) {
-          if (typeof next.backgroundAccentIndex !== "number" || next.backgroundAccentIndex < 0 || next.backgroundAccentIndex >= next.backgroundAccents.length) {
-            next.backgroundAccentIndex = 0;
-          }
-          next.backgroundAccent = next.backgroundAccents[next.backgroundAccentIndex];
-        } else {
-          next.backgroundAccents = null;
-          next.backgroundAccentIndex = null;
-          if (next.backgroundAccent) {
-            next.backgroundAccents = [next.backgroundAccent];
-            next.backgroundAccentIndex = 0;
-          }
-        }
-      }
-      if (!next.walletPaymentRequestsEnabled) {
-        next.walletPaymentRequestsBackgroundChecksEnabled = false;
-      }
-      next.walletContactsSyncEnabled = next.walletContactsSyncEnabled !== false;
-      if (next.backgroundBlur !== "sharp" && next.backgroundBlur !== "blurred") {
-        next.backgroundBlur = "sharp";
-      }
-      if (next.accent === "background" && (!next.backgroundImage || !next.backgroundAccent)) {
-        next.accent = "blue";
-      }
-      if (!next.walletConversionEnabled) {
-        next.walletPrimaryCurrency = "sat";
-      } else if (next.walletPrimaryCurrency !== "usd") {
-        next.walletPrimaryCurrency = "sat";
-      }
-      if (!next.npubCashLightningAddressEnabled) {
-        next.npubCashLightningAddressEnabled = false;
-        next.npubCashAutoClaim = false;
-      } else if (next.npubCashAutoClaim !== true && next.npubCashAutoClaim !== false) {
-        next.npubCashAutoClaim = true;
-      }
-      if (next.cloudBackupsEnabled !== true) {
-        next.cloudBackupsEnabled = false;
-      }
-      next.nostrBackupEnabled = next.nostrBackupEnabled !== false;
-      next.nostrBackupMetadataEnabled = next.nostrBackupEnabled;
-      if (!next.bibleTrackerEnabled) {
-        next.bibleTrackerEnabled = false;
-        next.scriptureMemoryEnabled = false;
-        next.scriptureMemoryBoardId = null;
-      }
-      if (typeof next.scriptureMemoryBoardId !== 'string' || !next.scriptureMemoryBoardId) {
-        next.scriptureMemoryBoardId = next.scriptureMemoryBoardId ? String(next.scriptureMemoryBoardId) : null;
-        if (next.scriptureMemoryBoardId === '') next.scriptureMemoryBoardId = null;
-      }
-      if (!SCRIPTURE_MEMORY_FREQUENCIES.some(opt => opt.id === next.scriptureMemoryFrequency)) {
-        next.scriptureMemoryFrequency = 'daily';
-      }
-      if (!SCRIPTURE_MEMORY_SORTS.some(opt => opt.id === next.scriptureMemorySort)) {
-        next.scriptureMemorySort = 'needsReview';
-      }
-      if (next.scriptureMemoryEnabled !== true) {
-        next.scriptureMemoryEnabled = false;
-      }
-      if (typeof next.scriptureMemoryBoardId === 'undefined') {
-        next.scriptureMemoryBoardId = null;
-      }
-      if (next.fastingRemindersEnabled !== true) {
-        next.fastingRemindersEnabled = false;
-      }
-      next.fastingRemindersMode = next.fastingRemindersMode === "random" ? "random" : "weekday";
-      const fastingPerMonthRaw = Number(next.fastingRemindersPerMonth);
-      const fastingPerMonthMax = next.fastingRemindersMode === "random" ? 31 : 5;
-      if (!Number.isFinite(fastingPerMonthRaw) || fastingPerMonthRaw <= 0) {
-        next.fastingRemindersPerMonth = 4;
-      } else {
-        next.fastingRemindersPerMonth = Math.min(
-          fastingPerMonthMax,
-          Math.max(1, Math.round(fastingPerMonthRaw)),
-        );
-      }
-      const fastingWeekdayRaw = Number(next.fastingRemindersWeekday);
-      next.fastingRemindersWeekday =
-        Number.isInteger(fastingWeekdayRaw) && fastingWeekdayRaw >= 0 && fastingWeekdayRaw <= 6
-          ? (fastingWeekdayRaw as Weekday)
-          : 1;
-      if (typeof next.fastingRemindersRandomSeed !== "string" || !next.fastingRemindersRandomSeed.trim()) {
-        next.fastingRemindersRandomSeed = crypto.randomUUID();
-      } else {
-        next.fastingRemindersRandomSeed = next.fastingRemindersRandomSeed.trim();
-      }
-      return next;
-    });
-  }, []);
-  const settingsFirstRun = useRef(true);
-  useEffect(() => {
-    if (settingsFirstRun.current) { settingsFirstRun.current = false; return; }
-    kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
-  }, [settings]);
-  return [settings, setSettings] as const;
-}
-
 function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, string>>): string {
   const visible = boards.filter(b => !b.archived && !b.hidden);
   const today = (new Date().getDay() as Weekday);
@@ -3935,11 +2996,6 @@ function useBoards() {
       clearCompletedDisabled: false,
     }];
   });
-  const boardsFirstRun = useRef(true);
-  useEffect(() => {
-    if (boardsFirstRun.current) { boardsFirstRun.current = false; return; }
-    boardEntityStore.syncWith(boards);
-  }, [boards]);
   return [boards, setBoards] as const;
 }
 
@@ -4061,14 +3117,6 @@ function useTasks() {
       .filter((t): t is Task => !!t);
     return dedupeRecurringInstances(normalized);
   });
-  const tasksFirstRun = useRef(true);
-  useEffect(() => {
-    if (tasksFirstRun.current) { tasksFirstRun.current = false; return; }
-    // Diff-based per-entity write: only changed rows hit IDB, regardless of
-    // how many tasks the user has. Replaces the prior 500ms-debounced
-    // JSON.stringify(all-tasks) which spiked memory on mobile.
-    taskEntityStore.syncWith(tasks);
-  }, [tasks]);
   return [tasks, setTasks] as const;
 }
 
@@ -4338,19 +3386,6 @@ function useCalendarEvents() {
 
     return [...boardEvents, ...Array.from(mergedExternalMap.values())];
   });
-
-  const eventsFirstRun = useRef(true);
-  useEffect(() => {
-    if (eventsFirstRun.current) { eventsFirstRun.current = false; return; }
-    try {
-      const boardEvents = events.filter((event) => !event.external);
-      const externalEvents = events.filter((event) => event.external);
-      calendarEventEntityStore.syncWith(boardEvents);
-      externalCalendarEventEntityStore.syncWith(externalEvents);
-    } catch (err) {
-      console.error("Failed to save calendar events", err);
-    }
-  }, [events]);
 
   return [events, setEvents] as const;
 }
@@ -4924,15 +3959,6 @@ export default function App() {
     } catch {}
   }, [calendarInvites]);
   const [editing, setEditing] = useState<EditingState | null>(null);
-  const [activeEventRsvpCoord, setActiveEventRsvpCoord] = useState<string | null>(null);
-  const [activeEventRsvpRelays, setActiveEventRsvpRelays] = useState<string[]>([]);
-  const [activeEventRsvps, setActiveEventRsvps] = useState<CalendarRsvpEnvelope[]>([]);
-  const activeEventRsvpMapRef = useRef<Map<string, CalendarRsvpEnvelope>>(new Map());
-  const activeEventInviteTokensRef = useRef<Record<string, string> | null>(null);
-  const activeEventInviteTokensVersionRef = useRef<string>("");
-  const activeEventRsvpContextRef = useRef<{ eventId: string; boardNostrId: string; boardSkHex: string } | null>(null);
-  const activeEventRsvpSubCloserRef = useRef<null | (() => void)>(null);
-  const externalEventRsvpSubCloserRef = useRef<null | (() => void)>(null);
   const calendarViewSubCloserRef = useRef<null | (() => void)>(null);
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
   const [shareBoardModalOpen, setShareBoardModalOpen] = useState(false);
@@ -5748,28 +4774,12 @@ export default function App() {
       console.warn("Failed to initialize Nostr session", err);
     });
   }, [defaultRelays]);
-  const [pendingNostrOutboxCount, setPendingNostrOutboxCount] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    nostrOutboxStore.getPendingCount().then((count) => {
-      if (!cancelled) setPendingNostrOutboxCount(count);
-    });
-    const unsubscribe = nostrOutboxStore.subscribe((count) => {
-      if (!cancelled) setPendingNostrOutboxCount(count);
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, []);
-  const retryNostrOutbox = useCallback(() => {
-    const relays = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
-    NostrSession.init(relays)
-      .then((session) => session.publisher.drainOutbox({ force: true }))
-      .catch((err) => {
-        console.warn("Failed to retry pending Nostr sync", err);
-      });
-  }, [defaultRelays]);
+  const { pendingNostrOutboxCount, retryNostrOutbox } = useTaskPersistence({
+    boards,
+    calendarEvents,
+    defaultRelays,
+    tasks,
+  });
 
   // One-time prompt after the v1→v2 SK migration. Shown once per device and
   // dismissed permanently when the user copies their nsec or taps "Got it".
@@ -6075,8 +5085,7 @@ export default function App() {
   // that relay fires EOSE. On EOSE the relay's batch is clock-protected-merged into
   // the task state and IDB data is shown immediately (no blocking spinner).
   // Map<bTag, Map<relayUrl, Map<"boardId::taskId", Task | { _deleted:true; _nostrAt:number }>>>
-  type RelayBatchEntry = Task | { _deleted: true; _nostrAt: number };
-  const relayBatchRef = useRef<Map<string, Map<string, Map<string, RelayBatchEntry>>>>(new Map());
+  const relayBatchRef = useRef<Map<string, Map<string, Map<string, BoardSyncRelayBatchEntry>>>>(new Map());
 
   // Tracks which relay URLs still have pending EOSE for each board.
   // When empty for a board, all relays are done and we're in live mode.
@@ -6880,28 +5889,6 @@ export default function App() {
     nostrApplyQueue.current = next.then(() => {}, () => {});
     return next;
   }, []);
-
-  // Per-board event queues. Each board processes its events independently in
-  // parallel with other boards but serially within the board (preserving task
-  // clock ordering). A GC yield is inserted every N events so iOS can reclaim
-  // memory between chunks instead of accumulating until the process is killed.
-  const NOSTR_BOARD_YIELD_INTERVAL = 50;
-  const boardEventQueuesRef = useRef<Map<string, { promise: Promise<void>; count: number }>>(new Map());
-  const enqueueForBoard = useCallback((boardId: string, fn: () => Promise<void>): Promise<void> => {
-    const entry = boardEventQueuesRef.current.get(boardId) ?? { promise: Promise.resolve(), count: 0 };
-    entry.count++;
-    const shouldYield = entry.count % NOSTR_BOARD_YIELD_INTERVAL === 0;
-    const next = entry.promise.catch(() => {}).then(async () => {
-      // Yield to the browser's task scheduler every N events so GC can run and
-      // iOS memory pressure warnings are less likely to kill the process.
-      if (shouldYield) await new Promise<void>(r => setTimeout(r, 0));
-      return fn();
-    });
-    entry.promise = next.then(() => {}, () => {});
-    boardEventQueuesRef.current.set(boardId, entry);
-    return next;
-  }, []);
-  const [nostrRefresh, setNostrRefresh] = useState(0);
   const normalizeRelayList = useCallback(
     (relays: string[] | null | undefined) => normalizeRelayListSorted(relays) ?? [],
     [],
@@ -11426,326 +10413,25 @@ export default function App() {
     [boards, editing]
   );
 
-  const applyCalendarRsvpEvent = useCallback(async (ev: NostrEvent) => {
-    if (!ev?.content || ev.kind !== TASKIFY_CALENDAR_RSVP_KIND) return;
-    const ctx = activeEventRsvpContextRef.current;
-    if (!ctx) return;
-    const tokenMap = activeEventInviteTokensRef.current ?? {};
-    const attendeePubkey = (ev.pubkey || "").toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(attendeePubkey)) return;
-    try {
-      const raw = await decryptCalendarRsvpPayload(ev.content, ctx.boardSkHex, ev.pubkey);
-      const payload = parseCalendarRsvpPayload(raw);
-      if (!payload || payload.eventId !== ctx.eventId) return;
-      const expectedToken = tokenMap[attendeePubkey];
-      const boardToken = deriveBoardRsvpToken(ctx.boardNostrId, attendeePubkey);
-      const tokenValues = Object.values(tokenMap);
-      const tokenMatches =
-        payload.inviteToken === boardToken
-        || (!!expectedToken && payload.inviteToken === expectedToken)
-        || (tokenValues.length > 0 && tokenValues.includes(payload.inviteToken));
-      if (!tokenMatches) return;
-      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-      const next: CalendarRsvpEnvelope = {
-        eventId: payload.eventId,
-        authorPubkey: attendeePubkey,
-        createdAt,
-        status: payload.status,
-        ...(payload.fb ? { fb: payload.fb } : {}),
-        inviteToken: payload.inviteToken,
-      };
-      const existing = activeEventRsvpMapRef.current.get(next.authorPubkey);
-      if (existing && existing.createdAt > next.createdAt) return;
-      activeEventRsvpMapRef.current.set(next.authorPubkey, next);
-      setActiveEventRsvps(
-        Array.from(activeEventRsvpMapRef.current.values()).sort((a, b) => b.createdAt - a.createdAt),
-      );
-    } catch (err) {
-      console.warn("Failed to decrypt RSVP", err);
-    }
-  }, [setActiveEventRsvps]);
-
-  const applyExternalCalendarRsvpEvent = useCallback(async (ev: NostrEvent) => {
-    if (!ev?.content || ev.kind !== TASKIFY_CALENDAR_RSVP_KIND) return;
-    if (!nostrSkHex || !nostrPK) return;
-    const attendeePubkey = (ev.pubkey || "").toLowerCase();
-    if (attendeePubkey !== nostrPK) return;
-    const canonicalAddr = tagValue(ev, "a");
-    if (!canonicalAddr) return;
-    const target = calendarEventsRef.current.find(
-      (event) => event.external && event.canonicalAddress === canonicalAddr,
-    );
-    if (!target || !target.boardPubkey) return;
-    try {
-      const raw = await decryptCalendarRsvpPayloadForAttendee(ev.content, nostrSkHex, target.boardPubkey);
-      const payload = parseCalendarRsvpPayload(raw);
-      if (!payload || payload.eventId !== target.id) return;
-      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-      setCalendarEvents((prev) => {
-        const idx = prev.findIndex((event) => event.external && event.canonicalAddress === canonicalAddr);
-        if (idx < 0) return prev;
-        const existing = prev[idx];
-        if (existing.rsvpCreatedAt && existing.rsvpCreatedAt > createdAt) return prev;
-        const updated: CalendarEvent = {
-          ...existing,
-          rsvpStatus: payload.status,
-          rsvpCreatedAt: createdAt,
-          ...(payload.fb ? { rsvpFb: payload.fb } : { rsvpFb: undefined }),
-          ...(payload.inviteToken && !existing.inviteToken ? { inviteToken: payload.inviteToken } : {}),
-        };
-        const copy = prev.slice();
-        copy[idx] = updated;
-        return copy;
-      });
-    } catch (err) {
-      console.warn("Failed to decrypt external RSVP", err);
-    }
-  }, [nostrPK, nostrSkHex, setCalendarEvents, tagValue]);
-
-  useEffect(() => {
-    if (activeEventRsvpSubCloserRef.current) {
-      try {
-        activeEventRsvpSubCloserRef.current();
-      } catch {}
-      activeEventRsvpSubCloserRef.current = null;
-    }
-    activeEventRsvpMapRef.current = new Map();
-    activeEventInviteTokensRef.current = null;
-    activeEventInviteTokensVersionRef.current = "";
-    activeEventRsvpContextRef.current = null;
-    setActiveEventRsvps([]);
-    setActiveEventRsvpCoord(null);
-    setActiveEventRsvpRelays([]);
-
-    if (!editing || editing.type !== "event") return;
-    const event = editing.event;
-    const board = boards.find((b) => b.id === event.boardId);
-    const relayCandidates = [
-      ...(board?.nostr?.relays?.length ? board.nostr.relays : []),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
-
-    if (board?.nostr?.boardId && relays.length) {
-      let cancelled = false;
-      const boardNostrId = board.nostr.boardId;
-
-      (async () => {
-        try {
-          const boardKeys = await deriveBoardNostrKeys(board.nostr!.boardId);
-          const coord = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
-          if (cancelled) return;
-          activeEventRsvpContextRef.current = { eventId: event.id, boardNostrId, boardSkHex: boardKeys.skHex };
-          setActiveEventRsvpCoord(coord);
-          setActiveEventRsvpRelays(relays);
-          activeEventInviteTokensRef.current = event.inviteTokens ?? null;
-          activeEventInviteTokensVersionRef.current = event.inviteTokens
-            ? JSON.stringify(Object.keys(event.inviteTokens).sort().map((key) => [key, event.inviteTokens![key]]))
-            : "";
-
-          const subscription = pool.subscribeMany(
-            relays,
-            { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [coord] },
-            {
-              onevent: (ev) => {
-                if (cancelled) return;
-                void applyCalendarRsvpEvent(ev as NostrEvent);
-              },
-            },
-          );
-          activeEventRsvpSubCloserRef.current = () => {
-            try {
-              subscription.close("taskify-rsvps");
-            } catch {}
-          };
-
-          try {
-            if (typeof (pool as any).list === "function") {
-              const events = await (pool as any).list(relays, [
-                { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [coord] },
-              ]);
-              if (!cancelled && Array.isArray(events)) {
-                events.forEach((evt: any) => void applyCalendarRsvpEvent(evt as NostrEvent));
-              }
-            }
-          } catch (err) {
-            console.warn("RSVP fetch failed", err);
-          }
-        } catch (err) {
-          console.warn("RSVP subscription failed", err);
-        }
-      })();
-
-      return () => {
-        cancelled = true;
-        if (activeEventRsvpSubCloserRef.current) {
-          try {
-            activeEventRsvpSubCloserRef.current();
-          } catch {}
-          activeEventRsvpSubCloserRef.current = null;
-        }
-      };
-    }
-
-    if (event.canonicalAddress && event.inviteToken) {
-      setActiveEventRsvpCoord(event.canonicalAddress);
-      setActiveEventRsvpRelays(event.inviteRelays ?? []);
-      if (event.external && nostrPK && event.rsvpStatus) {
-        const createdAt = event.rsvpCreatedAt ?? 0;
-        const next: CalendarRsvpEnvelope = {
-          eventId: event.id,
-          authorPubkey: nostrPK,
-          createdAt,
-          status: event.rsvpStatus,
-          ...(event.rsvpFb ? { fb: event.rsvpFb } : {}),
-          ...(event.inviteToken ? { inviteToken: event.inviteToken } : {}),
-        };
-        activeEventRsvpMapRef.current = new Map([[nostrPK, next]]);
-        setActiveEventRsvps([next]);
-      }
-    }
-  }, [boards, defaultRelays, editing, inboxRelays, nostrPK, pool, applyCalendarRsvpEvent]);
-
-  useEffect(() => {
-    if (externalEventRsvpSubCloserRef.current) {
-      try {
-        externalEventRsvpSubCloserRef.current();
-      } catch {}
-      externalEventRsvpSubCloserRef.current = null;
-    }
-    if (!nostrSkHex || !nostrPK) return;
-
-    const targets = calendarEvents.filter(
-      (event) => event.external && !!event.canonicalAddress && !!event.boardPubkey,
-    );
-    if (!targets.length) return;
-
-    const canonicalAddrs = new Set<string>();
-    const relaySet = new Set<string>();
-    targets.forEach((event) => {
-      if (event.canonicalAddress) canonicalAddrs.add(event.canonicalAddress);
-      (event.inviteRelays ?? []).forEach((relay) => relaySet.add(relay));
-    });
-    if (!canonicalAddrs.size) return;
-
-    const relayCandidates = [
-      ...Array.from(relaySet),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
-    if (!relays.length) return;
-
-    let cancelled = false;
-    const filter: any = { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": Array.from(canonicalAddrs) };
-    if (nostrPK) filter.authors = [nostrPK];
-
-    const subscription = pool.subscribeMany(
-      relays,
-      filter,
-      {
-        onevent: (ev) => {
-          if (cancelled) return;
-          void applyExternalCalendarRsvpEvent(ev as NostrEvent);
-        },
-      },
-    );
-    externalEventRsvpSubCloserRef.current = () => {
-      try {
-        subscription.close("taskify-external-rsvps");
-      } catch {}
-    };
-
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(relays, [filter]);
-          if (!cancelled && Array.isArray(events)) {
-            events.forEach((evt: any) => void applyExternalCalendarRsvpEvent(evt as NostrEvent));
-          }
-        }
-      } catch (err) {
-        console.warn("External RSVP fetch failed", err);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (externalEventRsvpSubCloserRef.current) {
-        try {
-          externalEventRsvpSubCloserRef.current();
-        } catch {}
-        externalEventRsvpSubCloserRef.current = null;
-      }
-    };
-  }, [
-    applyExternalCalendarRsvpEvent,
+  const {
+    activeEventRsvpCoord,
+    activeEventRsvpRelays,
+    activeEventRsvps,
+    recordActiveEventRsvp,
+  } = useCalendarEventManagement({
+    boards,
     calendarEvents,
+    calendarEventsRef,
     defaultRelays,
+    editing,
     inboxRelays,
     nostrPK,
     nostrSkHex,
     pool,
-  ]);
-
-  useEffect(() => {
-    if (!editing || editing.type !== "event") return;
-    if (!editing.event.external) return;
-    if (!nostrPK) return;
-    const latest = calendarEventsRef.current.find(
-      (event) =>
-        event.external &&
-        event.id === editing.event.id &&
-        event.canonicalAddress === editing.event.canonicalAddress,
-    );
-    if (!latest?.rsvpStatus) {
-      activeEventRsvpMapRef.current = new Map();
-      setActiveEventRsvps([]);
-      return;
-    }
-    const createdAt = latest.rsvpCreatedAt ?? 0;
-    const next: CalendarRsvpEnvelope = {
-      eventId: latest.id,
-      authorPubkey: nostrPK,
-      createdAt,
-      status: latest.rsvpStatus,
-      ...(latest.rsvpFb ? { fb: latest.rsvpFb } : {}),
-      ...(latest.inviteToken ? { inviteToken: latest.inviteToken } : {}),
-    };
-    activeEventRsvpMapRef.current = new Map([[nostrPK, next]]);
-    setActiveEventRsvps([next]);
-  }, [calendarEvents, editing, nostrPK]);
-
-  useEffect(() => {
-    if (!editing || editing.type !== "event") return;
-    const eventId = editing.event.id;
-    const latest = calendarEventsRef.current.find((ev) => ev.id === eventId) ?? null;
-    const inviteTokens = latest?.inviteTokens ?? editing.event.inviteTokens ?? null;
-    const tokenVersion = inviteTokens
-      ? JSON.stringify(Object.keys(inviteTokens).sort().map((key) => [key, inviteTokens[key]]))
-      : "";
-    if (tokenVersion === activeEventInviteTokensVersionRef.current) return;
-    activeEventInviteTokensVersionRef.current = tokenVersion;
-    activeEventInviteTokensRef.current = inviteTokens;
-    if (!activeEventRsvpCoord || !activeEventRsvpRelays.length) return;
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(activeEventRsvpRelays, [
-            { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [activeEventRsvpCoord] },
-          ]);
-          if (Array.isArray(events)) {
-            events.forEach((evt: any) => void applyCalendarRsvpEvent(evt as NostrEvent));
-          }
-        }
-      } catch (err) {
-        console.warn("RSVP refresh failed", err);
-      }
-    })();
-  }, [activeEventRsvpCoord, activeEventRsvpRelays, applyCalendarRsvpEvent, calendarEvents, editing, pool]);
+    setCalendarEvents,
+    tagValue,
+    deriveBoardNostrKeys,
+  });
 
   const reminderSystemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
   const reminderSyncItems = useMemo(() => {
@@ -16206,23 +14892,14 @@ export default function App() {
       });
       return changed ? next : prev;
     });
-    if (activeEventRsvpCoord === canonicalAddr) {
-      const next: CalendarRsvpEnvelope = {
-        eventId,
-        authorPubkey: nostrPK,
-        createdAt,
-        status,
-        ...(options?.fb ? { fb: options.fb } : {}),
-        inviteToken,
-      };
-      const existing = activeEventRsvpMapRef.current.get(next.authorPubkey);
-      if (!existing || next.createdAt >= existing.createdAt) {
-        activeEventRsvpMapRef.current.set(next.authorPubkey, next);
-        setActiveEventRsvps(
-          Array.from(activeEventRsvpMapRef.current.values()).sort((a, b) => b.createdAt - a.createdAt),
-        );
-      }
-    }
+    recordActiveEventRsvp(canonicalAddr, {
+      eventId,
+      authorPubkey: nostrPK,
+      createdAt,
+      status,
+      ...(options?.fb ? { fb: options.fb } : {}),
+      ...(typeof inviteToken === "string" ? { inviteToken } : {}),
+    });
   }
 
   async function handleCalendarInviteRsvp(invite: CalendarInvite, status: CalendarRsvpStatus): Promise<void> {
@@ -17280,265 +15957,30 @@ export default function App() {
     }))
   ), [boards]);
 
-  // Subscribe to Nostr for all shared boards
-  const nostrBoardsKey = useMemo(() => {
-    const items = boards
-      .filter(b => b.nostr?.boardId)
-      .map(b => ({ id: boardTag(b.nostr!.boardId), relays: getBoardRelays(b).join(",") }))
-      .sort((a,b) => (a.id + a.relays).localeCompare(b.id + b.relays));
-    return JSON.stringify(items);
-  }, [boards, getBoardRelays]);
-
-  useEffect(() => {
-    if (!currentBoard?.nostr?.boardId) return;
-    setNostrRefresh((n) => n + 1);
-  }, [currentBoard?.nostr?.boardId]);
-
-  useEffect(() => {
-    let parsed: Array<{id:string; relays:string}> = [];
-    try { parsed = JSON.parse(nostrBoardsKey || "[]"); } catch {}
-    const unsubs: Array<() => void> = [];
-    const syncTimeoutByBoard = new Map<string, number>();
-    const clearSyncTimeout = (bTag: string) => {
-      const timeoutId = syncTimeoutByBoard.get(bTag);
-      if (timeoutId == null) return;
-      window.clearTimeout(timeoutId);
-      syncTimeoutByBoard.delete(bTag);
-    };
-    // Mark all boards as syncing (non-blocking — IDB tasks render immediately).
-    setPendingNostrInitialSyncByBoardTag((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const item of parsed) {
-        if (next[item.id]) continue;
-        next[item.id] = true;
-        changed = true;
-      }
-      return changed ? next : prev;
-    });
-
-    // Clock-protected merge: apply a relay's batch into current task state.
-    // Only updates tasks where the relay has newer data than what's already in state.
-    // The bTagClock fallback acts as an in-session tombstone: when a task is locally
-    // deleted (or being published with a fresh optimistic clock), `merged` no longer
-    // has a `_nostrAt` to compare against, so without the clock fallback a stale
-    // CREATE event from a slow relay would re-add the task.
-    const flushRelayBatch = (bTag: string, relayBatch: Map<string, RelayBatchEntry>) => {
-      if (!relayBatch.size) return;
-      const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
-      setTasks(prev => {
-        const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
-        for (const [key, entry] of relayBatch) {
-          const taskId = key.split('::')[1];
-          const incomingNostrAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? bTagClock?.get(taskId) ?? 0;
-          const existingTask = merged.get(key) as Task | undefined;
-          const existingNostrAt = Math.max(
-            existingTask?._nostrAt ?? 0,
-            bTagClock?.get(taskId) ?? 0,
-          );
-          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay/local edit has newer data
-          if ('_deleted' in entry) merged.delete(key);
-          else merged.set(key, entry as Task);
-        }
-        return dedupeRecurringInstances(Array.from(merged.values()));
-      });
-    };
-
-    // After EOSE, verify local tasks that the relay didn't mention. These may
-    // have been deleted while this client was offline or before a backup was taken.
-    // A targeted fetch by task ID (no `since`) lets the relay confirm whether
-    // each task still exists. Tasks the relay doesn't know about are removed.
-    const verifyUnseenTasks = (bTag: string, boardRelays: string[]) => {
-      const seenIds = seenBoardTasksRef.current.get(bTag) ?? new Set<string>();
-      const board = boardsRef.current.find(
-        (b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag
-      );
-      if (!board) { seenBoardTasksRef.current.delete(bTag); return; }
-      const boardId = board.id;
-      // Only verify tasks that came from the relay previously (_nostrAt > 0).
-      // Local-only tasks (no _nostrAt) are not expected to be on the relay.
-      //
-      // Two extra guards prevent newly-created/edited tasks from being deleted
-      // during the relay's verification probe:
-      //   1. Skip tasks currently mid-publish — relay has not received the event yet.
-      //   2. Skip tasks whose _nostrAt is very recent (optimistic stamp from
-      //      maybePublishTask). The stamp may have been set seconds ago and the
-      //      relay might not have propagated the event to the verify subscription
-      //      yet, especially during rapid sequential adds.
-      const VERIFY_RECENT_GRACE_SECS = 60;
-      const nowSecs = Math.floor(Date.now() / 1000);
-      const unseenIds = tasksRef.current
-        .filter((t) => {
-          if (t.boardId !== boardId) return false;
-          if (typeof t._nostrAt !== "number" || t._nostrAt <= 0) return false;
-          if (seenIds.has(t.id)) return false;
-          if (pendingNostrTasksRef.current.has(`${bTag}::${t.id}`)) return false;
-          if (nowSecs - t._nostrAt < VERIFY_RECENT_GRACE_SECS) return false;
-          return true;
-        })
-        .map((t) => t.id);
-      seenBoardTasksRef.current.delete(bTag);
-      if (!unseenIds.length) return;
-      const verifySeen = new Set<string>();
-      const verifyUnsub = pool.subscribe(boardRelays, [
-        { kinds: [30301], "#b": [bTag], "#d": unseenIds },
-      ], (ev, evRelay) => {
-        const tId = tagValue(ev, "d");
-        if (tId) verifySeen.add(tId);
-        (ev as any).__relay = evRelay;
-        enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
-      }, () => {
-        verifyUnsub();
-        // Tasks not returned by the relay were deleted or purged — remove locally.
-        const toRemove = unseenIds.filter((id) => !verifySeen.has(id));
-        if (toRemove.length) {
-          const removeSet = new Set(toRemove);
-          setTasks((prev) => {
-            const next = prev.filter(
-              (t) => !(t.boardId === boardId && removeSet.has(t.id))
-            );
-            return next.length === prev.length ? prev : dedupeRecurringInstances(next);
-          });
-        }
-      });
-      // Safety timeout for the verification subscription.
-      setTimeout(() => { try { verifyUnsub(); } catch { /* already closed */ } }, 15000);
-    };
-
-    for (const it of parsed) {
-      const rls = it.relays.split(",").filter(Boolean);
-      if (!rls.length) continue;
-
-      // Register this board's pending relays. applyTaskEvent reads this ref to route
-      // events into per-relay batches instead of the live path.
-      pendingRelaysByBoardRef.current.set(it.id, new Set(rls));
-
-      // Absolute timeout: flush all remaining relay batches for stuck relays.
-      const timeoutId = window.setTimeout(() => {
-        clearSyncTimeout(it.id);
-        const boardBatch = relayBatchRef.current.get(it.id);
-        if (boardBatch?.size) {
-          const combined = new Map<string, RelayBatchEntry>();
-          for (const relayBatch of boardBatch.values()) {
-            for (const [key, entry] of relayBatch) {
-              const existing = combined.get(key);
-              const inAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? 0;
-              const exAt = existing ? ('_deleted' in existing ? existing._nostrAt : (existing as Task)._nostrAt ?? 0) : -1;
-              if (inAt >= exAt) combined.set(key, entry);
-            }
-          }
-          flushRelayBatch(it.id, combined);
-          relayBatchRef.current.delete(it.id);
-        }
-        pendingRelaysByBoardRef.current.delete(it.id);
-        completedNostrInitialSyncRef.current.add(it.id);
-        markNostrBoardInitialSyncComplete(it.id);
-        try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
-        setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-        // Verify tasks the relay didn't mention — they may have been deleted offline.
-        setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
-      }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
-      syncTimeoutByBoard.set(it.id, timeoutId);
-
-      pool.setRelays(rls);
-      ensureMigrationState(it.id);
-
-      const INITIAL_SYNC_FALLBACK_DAYS = 30;
-      const cursor = boardSyncCursorsRef.current[it.id];
-      const sinceFilter = cursor
-        ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
-        : { since: Math.floor(Date.now() / 1000) - INITIAL_SYNC_FALLBACK_DAYS * 24 * 3600 };
-      const filters = [
-        { kinds: [30300, 30301], "#b": [it.id], ...sinceFilter },
-        { kinds: [30300], "#d": [it.id], limit: 1 },
-        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
-      ];
-
-      const unsub = pool.subscribe(rls, filters, (ev, evRelay) => {
-        // Tag the event with the relay URL so applyTaskEvent can route it to the
-        // correct per-relay batch without changing the function signature.
-        (ev as any).__relay = evRelay;
-        if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
-        else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
-        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
-      }, (eoseRelay) => {
-        // NDK fires a single subscription-level EOSE (not per-relay), so eoseRelay
-        // is typically undefined. When undefined, treat it as "all relays done" and
-        // flush every pending relay batch for this board.
-        if (!eoseRelay) {
-          const boardBatch = relayBatchRef.current.get(it.id);
-          if (boardBatch?.size) {
-            const combined = new Map<string, RelayBatchEntry>();
-            for (const [, relayBatch] of boardBatch) {
-              for (const [key, entry] of relayBatch) {
-                const existing = combined.get(key);
-                const inAt = '_deleted' in entry ? (entry as { _nostrAt?: number })._nostrAt ?? 0 : (entry as Task)._nostrAt ?? 0;
-                const exAt = existing ? ('_deleted' in existing ? (existing as { _nostrAt?: number })._nostrAt ?? 0 : (existing as Task)._nostrAt ?? 0) : -1;
-                if (!existing || inAt > exAt) combined.set(key, entry);
-              }
-            }
-            relayBatchRef.current.delete(it.id);
-            (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-              if (combined.size) flushRelayBatch(it.id, combined);
-            });
-          }
-          clearSyncTimeout(it.id);
-          pendingRelaysByBoardRef.current.delete(it.id);
-          completedNostrInitialSyncRef.current.add(it.id);
-          markNostrBoardInitialSyncComplete(it.id);
-          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
-          setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-          // Verify tasks the relay didn't mention — they may have been deleted offline.
-          setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
-          return;
-        }
-
-        // Per-relay EOSE (if NDK ever provides relay URL): merge just that relay's batch.
-        const relayUrl = eoseRelay;
-        pendingRelaysByBoardRef.current.get(it.id)?.delete(relayUrl);
-
-        const boardBatch = relayBatchRef.current.get(it.id);
-        const relayBatch = boardBatch?.get(relayUrl);
-        if (relayBatch?.size) {
-          boardBatch!.delete(relayUrl);
-          (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-            flushRelayBatch(it.id, relayBatch!);
-          });
-        }
-
-        // If all relays done: clear spinner, persist cursor, trigger migration.
-        const pendingRelays = pendingRelaysByBoardRef.current.get(it.id);
-        if (!pendingRelays?.size) {
-          clearSyncTimeout(it.id);
-          pendingRelaysByBoardRef.current.delete(it.id);
-          completedNostrInitialSyncRef.current.add(it.id);
-          markNostrBoardInitialSyncComplete(it.id);
-          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
-          setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-          // Verify tasks the relay didn't mention — they may have been deleted offline.
-          setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
-        }
-      });
-      unsubs.push(unsub);
-    }
-    return () => {
-      unsubs.forEach((u) => u());
-      syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      for (const it of parsed) pendingRelaysByBoardRef.current.delete(it.id);
-    };
-  }, [
-    nostrBoardsKey,
+  useBoardSync({
+    boards,
+    currentBoard,
+    boardsRef,
+    tasksRef,
+    setTasks,
     pool,
+    getBoardRelays,
+    nostrIdxRef,
+    boardSyncCursorsRef,
+    relayBatchRef,
+    pendingRelaysByBoardRef,
+    seenBoardTasksRef,
+    pendingNostrTasksRef,
+    completedNostrInitialSyncRef,
+    setPendingNostrInitialSyncByBoardTag,
+    markNostrBoardInitialSyncComplete,
+    ensureMigrationState,
+    migrateBoardRef,
+    tagValue,
     applyBoardEvent,
     applyTaskEvent,
     applyCalendarEvent,
-    nostrRefresh,
-    ensureMigrationState,
-    migrateBoardRef,
-    enqueueNostrApply,
-    enqueueForBoard,
-    markNostrBoardInitialSyncComplete,
-  ]);
+  });
 
   // horizontal scroller ref to enable iOS momentum scrolling
   const scrollerRef = useRef<HTMLDivElement>(null);

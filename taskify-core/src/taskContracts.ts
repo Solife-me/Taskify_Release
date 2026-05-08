@@ -7,8 +7,9 @@ export const TASK_PRIORITY_MARKS: Record<TaskPriority, string> = {
 };
 
 import type { Weekday } from "./weekDate.js";
-import type { BuiltinReminderPreset, CustomReminderPreset, ReminderPreset } from "./reminderUtils.js";
+import type { ReminderPreset } from "./reminderUtils.js";
 import type { CalendarRsvpFb, CalendarRsvpStatus } from "./calendarDecode.js";
+import type { SharedContactPayload, SharedTaskPayload } from "./shareContracts.js";
 
 export type Recurrence =
   | { type: "none"; untilISO?: string }
@@ -25,8 +26,8 @@ export type InboxItemStatus = "pending" | "accepted" | "declined" | "tentative" 
 export type TaskDocument = Record<string, unknown>;
 export type InboxItem =
   | { type: "board"; boardId: string; boardName?: string; relays?: string[]; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string }
-  | { type: "contact"; contact: Record<string, unknown>; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string }
-  | { type: "task"; task: Record<string, unknown>; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string };
+  | { type: "contact"; contact: SharedContactPayload; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string }
+  | { type: "task"; task: SharedTaskPayload; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string };
 
 export type TaskAssigneeStatus = "pending" | "accepted" | "declined" | "tentative";
 export type TaskAssignee = { pubkey: string; relay?: string; status?: TaskAssigneeStatus; respondedAt?: number };
@@ -34,6 +35,7 @@ export type TaskAssignee = { pubkey: string; relay?: string; status?: TaskAssign
 export type Task = {
   id: string; boardId: string; title: string; dueISO: string;
   createdBy?: string; lastEditedBy?: string; createdAt?: number; updatedAt?: string;
+  _nostrAt?: number;
   priority?: TaskPriority; note?: string; images?: string[]; documents?: TaskDocument[]; dueDateEnabled?: boolean;
   completed?: boolean; completedAt?: string; completedBy?: string; recurrence?: Recurrence; column?: "day"; columnId?: string;
   hiddenUntilISO?: string; order?: number; streak?: number; longestStreak?: number; seriesId?: string; subtasks?: Subtask[];
