@@ -10,7 +10,12 @@ type PendingRequest = {
 function proofKey(proof: Proof): string {
   if (!proof) return "invalid";
   if (proof.secret) return `secret:${proof.secret}`;
-  return `key:${proof.C ?? ""}|${proof.id ?? ""}|${proof.amount ?? 0}`;
+  const amount = (proof as any).amount;
+  const amountKey =
+    amount && typeof amount === "object" && typeof amount.toString === "function"
+      ? amount.toString()
+      : String(amount ?? 0);
+  return `key:${proof.C ?? ""}|${proof.id ?? ""}|${amountKey}`;
 }
 
 export class StateCheckManager {

@@ -12,7 +12,7 @@
     "test:lint": "npm run lint"
   },
   "dependencies": {
-    "@cashu/cashu-ts": "3.0.0",
+    "@cashu/cashu-ts": "^4.2.1",
     "@cashu/crypto": "^0.3.4",
     "@gandlaf21/bc-ur": "^1.1.12",
     "@noble/hashes": "^1.8.0",

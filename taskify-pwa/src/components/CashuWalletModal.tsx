@@ -6,6 +6,7 @@ import {
   decodePaymentRequest,
   getDecodedToken,
   getEncodedToken,
+  getTokenMetadata,
   PaymentRequest,
   PaymentRequestTransportType,
   type PaymentRequestPayload,
@@ -461,9 +462,30 @@ function normalizeProofAmount(value: unknown): number {
   if (typeof value === "number") {
     return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
   }
+  if (typeof value === "bigint") {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
+    return Math.max(0, Number(value));
+  }
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+  }
+  const amountLike = value as { toNumber?: () => number; toNumberUnsafe?: () => number };
+  try {
+    if (typeof amountLike?.toNumber === "function") {
+      const numeric = amountLike.toNumber();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    if (typeof amountLike?.toNumberUnsafe === "function") {
+      const numeric = amountLike.toNumberUnsafe();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
   }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
@@ -472,6 +494,44 @@ function normalizeProofAmount(value: unknown): number {
 function sumProofAmounts(proofs: any[]): number {
   if (!Array.isArray(proofs)) return 0;
   return proofs.reduce((sum: number, proof: any) => sum + normalizeProofAmount(proof?.amount), 0);
+}
+
+function decodeCashuTokenLoose(token: string): any | null {
+  try {
+    return getDecodedToken(token, []);
+  } catch {
+    return null;
+  }
+}
+
+function readCashuTokenMetadata(token: string): any | null {
+  try {
+    return getTokenMetadata(token);
+  } catch {
+    return null;
+  }
+}
+
+function isValidCashuTokenString(token: string): boolean {
+  return !!readCashuTokenMetadata(token) || !!decodeCashuTokenLoose(token);
+}
+
+function amountFromCashuToken(token: string): number {
+  const metadata = readCashuTokenMetadata(token);
+  const metadataAmount = normalizeProofAmount(metadata?.amount);
+  if (metadataAmount > 0) return metadataAmount;
+  const decoded = decodeCashuTokenLoose(token);
+  const entries: any[] = decoded
+    ? Array.isArray(decoded?.token)
+      ? decoded.token
+      : decoded?.proofs
+        ? [decoded]
+        : []
+    : [];
+  return entries.reduce(
+    (outer, entry) => outer + sumProofAmounts(Array.isArray(entry?.proofs) ? entry.proofs : []),
+    0,
+  );
 }
 
 function extractMinibitsPaymentSender(value: string): string | null {
@@ -496,11 +556,7 @@ function normalizeCashuTokenCandidate(value: string): string | null {
   }
   candidate = candidate.replace(/[)\]}>.,!?;:"'\u2018\u2019\u201C\u201D`]+$/g, "");
   if (!candidate) return null;
-  try {
-    return getDecodedToken(candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
+  return isValidCashuTokenString(candidate) ? candidate : null;
 }
 
 function extractFirstCashuTokenFromText(value: string): string | null {
@@ -1860,7 +1916,7 @@ function summarizeStoredProofStates(proofs: Array<{ lastState?: ProofStateValue 
 
 function buildTokenSpentToastMessage(proofs: Array<{ amount?: number | null }>): string {
   const totalSat = proofs.reduce(
-    (sum, proof) => sum + (typeof proof.amount === "number" ? proof.amount : 0),
+    (sum, proof) => sum + normalizeProofAmount(proof.amount),
     0,
   );
   if (totalSat > 0) {
@@ -2817,7 +2873,8 @@ export default function CashuWalletModal({
     const trimmed = typeof token === "string" ? token.trim() : "";
     if (!trimmed) return undefined;
     try {
-      const decoded: any = getDecodedToken(trimmed);
+      const decoded: any = decodeCashuTokenLoose(trimmed);
+      if (!decoded) return undefined;
       const tokenEntries: any[] = Array.isArray(decoded?.token)
         ? decoded.token
         : decoded?.proofs
@@ -2874,12 +2931,7 @@ export default function CashuWalletModal({
     const candidate = extractCashuUriPayload(trimmed) || trimmed;
     if (/^cashuA:/i.test(candidate)) return false;
     if (!/^cashu[a-z0-9]/i.test(candidate)) return false;
-    try {
-      getDecodedToken(candidate);
-      return true;
-    } catch {
-      return false;
-    }
+    return isValidCashuTokenString(candidate);
   }
 
   interface HistoryItem {
@@ -4622,7 +4674,7 @@ export default function CashuWalletModal({
                   const proofId = typeof proof.id === "string" ? proof.id : null;
                   const C = typeof proof.C === "string" ? proof.C : null;
                   if (!secret || !proofId || !C) return null;
-                  const amount = typeof proof.amount === "number" ? proof.amount : 0;
+                  const amount = normalizeProofAmount(proof.amount);
                   const stored: StoredProofForState = { secret, id: proofId, C, amount };
                   if (typeof proof.witness === "string") stored.witness = proof.witness;
                   const Y = typeof proof.Y === "string" ? proof.Y : computeProofY(secret);
@@ -6453,23 +6505,8 @@ export default function CashuWalletModal({
                 : null;
             detail = typeof (paymentPayload as any).memo === "string" ? (paymentPayload as any).memo : null;
           } else if (typeof paymentPayload === "string") {
-            try {
-              const decoded = getDecodedToken(paymentPayload);
-              const entries: any[] = decoded
-                ? Array.isArray((decoded as any)?.token)
-                  ? (decoded as any).token
-                  : (decoded as any)?.proofs
-                    ? [decoded]
-                    : []
-                : [];
-              const decodedAmount = entries.reduce(
-                (outer, entry) => outer + sumProofAmounts(Array.isArray(entry?.proofs) ? entry.proofs : []),
-                0,
-              );
-              amountSat = decodedAmount > 0 ? decodedAmount : null;
-            } catch {
-              amountSat = null;
-            }
+            const decodedAmount = amountFromCashuToken(paymentPayload);
+            amountSat = decodedAmount > 0 ? decodedAmount : null;
           }
           attachment = {
             type: "payment",
@@ -9714,20 +9751,7 @@ export default function CashuWalletModal({
               continue;
             }
             let decodedAmount = 0;
-            try {
-              const decoded = getDecodedToken(normalizedToken);
-              const tokenEntries: any[] = Array.isArray(decoded?.token)
-                ? decoded.token
-                : decoded?.proofs
-                  ? [decoded]
-                  : [];
-              decodedAmount = tokenEntries.reduce((outerSum, entry) => {
-                const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
-                return outerSum + sumProofAmounts(proofs);
-              }, 0);
-            } catch {
-              decodedAmount = 0;
-            }
+            decodedAmount = amountFromCashuToken(normalizedToken);
 
             decodedAmount = Math.max(0, Math.floor(decodedAmount));
 
@@ -13144,7 +13168,7 @@ export default function CashuWalletModal({
         if (!trimmedMint) return;
         const normalizedProofs = normalizeProofList(proofs);
         if (!normalizedProofs.length) return;
-        const amount = normalizedProofs.reduce((sum, proof) => sum + (Number.isFinite(proof.amount) ? proof.amount : 0), 0);
+        const amount = sumProofAmounts(normalizedProofs);
         if (!amount) return;
         const resolvedUnit =
           typeof unitHint === "string" && unitHint.trim() ? unitHint.toLowerCase() : defaultUnit;
@@ -13225,7 +13249,7 @@ export default function CashuWalletModal({
         }
         if (!normalizedToken) continue;
         try {
-          const decoded = getDecodedToken(normalizedToken);
+          const decoded = decodeCashuTokenLoose(normalizedToken);
           if (!decoded) continue;
           const decodedEntries = Array.isArray((decoded as any)?.token)
             ? (decoded as any).token
@@ -14472,7 +14496,7 @@ export default function CashuWalletModal({
       if (totalProofValue >= sats) {
         const availableNotes = proofs
           .filter((proof) => normalizeProofAmount(proof?.amount) > 0 && typeof proof?.secret === "string" && proof.secret)
-          .map((proof) => ({ secret: proof.secret!, amount: proof.amount ?? 0 }));
+          .map((proof) => ({ secret: proof.secret!, amount: normalizeProofAmount(proof.amount) }));
         if (availableNotes.length) {
           const sortedNotes = [...availableNotes].sort((a, b) => b.amount - a.amount);
           const subsetInfo = computeSubsetSelectionInfo(sortedNotes, sats);
@@ -14641,13 +14665,8 @@ export default function CashuWalletModal({
       } catch {
         // fall back to attempting decode with the provided input
       }
-      try {
-        const decoded = getDecodedToken(normalizedToken);
-        if (decoded) {
-          return { kind: "token", value: normalizedToken };
-        }
-      } catch {
-        // invalid token
+      if (isValidCashuTokenString(normalizedToken)) {
+        return { kind: "token", value: normalizedToken };
       }
       return { kind: "invalid" };
     },
@@ -14675,20 +14694,7 @@ export default function CashuWalletModal({
 
       let savedAmount = typeof saved.amountSat === "number" ? saved.amountSat : 0;
       if (!savedAmount) {
-        try {
-          const decoded = getDecodedToken(normalizedToken);
-          const entries: any[] = Array.isArray(decoded?.token)
-            ? decoded.token
-            : decoded?.proofs
-              ? [decoded]
-              : [];
-          savedAmount = entries.reduce((outer, entry) => {
-            const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
-            return outer + sumProofAmounts(proofs);
-          }, 0);
-        } catch {
-          savedAmount = 0;
-        }
+        savedAmount = amountFromCashuToken(normalizedToken);
       }
 
       const amountNote = savedAmount ? `${savedAmount} sat${savedAmount === 1 ? "" : "s"}` : "Token";

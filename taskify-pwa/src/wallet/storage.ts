@@ -1,4 +1,5 @@
-import type { MeltBlanks, MeltQuoteResponse, Proof } from "@cashu/cashu-ts";
+import type { Proof } from "@cashu/cashu-ts";
+import type { MeltQuoteResponse } from "./cashuTypes";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 
@@ -7,6 +8,7 @@ const LS_ACTIVE_MINT = "cashu_active_mint_v1";
 const LS_PENDING_TOKENS = "cashu_pending_tokens_v1";
 const LS_MINT_LIST = "cashu_tracked_mints_v1";
 const LS_PENDING_MELTS = "cashu_pending_melts_v1";
+const LS_LOCKED_MINT_QUOTES = "cashu_locked_mint_quotes_v1";
 
 export type PendingTokenEntry = {
   id: string;
@@ -38,7 +40,43 @@ export type PendingMeltRecord = {
   quote: MeltQuoteResponse;
   keep: Proof[];
   send: Proof[];
-  blanks?: MeltBlanks;
+  preview?: SerializedMeltPreview;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SerializedOutputData = {
+  blindedMessage: unknown;
+  blindingFactor: string;
+  secret: string;
+  ephemeralE?: string;
+};
+
+export type SerializedMeltPreview = {
+  method: string;
+  inputs: Proof[];
+  outputData: SerializedOutputData[];
+  keysetId: string;
+  quote: MeltQuoteResponse;
+};
+
+export type LockedMintQuotePayload = {
+  quote: string;
+  request?: string;
+  unit?: string;
+  amount?: unknown;
+  state?: string;
+  expiry?: number | null;
+  pubkey?: string;
+  [key: string]: unknown;
+};
+
+export type LockedMintQuoteRecord = {
+  quoteId: string;
+  mint: string;
+  quote: LockedMintQuotePayload;
+  pubkey: string;
+  privkey: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -51,6 +89,37 @@ function safeParse<T>(raw: string | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function amountToNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  if (typeof value === "bigint") {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
+    return Math.max(0, Number(value));
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+  }
+  const amountLike = value as { toNumber?: () => number; toNumberUnsafe?: () => number };
+  try {
+    if (typeof amountLike?.toNumber === "function") {
+      const numeric = amountLike.toNumber();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    if (typeof amountLike?.toNumberUnsafe === "function") {
+      const numeric = amountLike.toNumberUnsafe();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
 }
 
 function generatePendingTokenId(): string {
@@ -135,6 +204,10 @@ function loadPendingMeltEntries(): PendingMeltRecord[] {
   return safeParse<PendingMeltRecord[]>(idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_PENDING_MELTS), []);
 }
 
+function loadLockedMintQuoteEntries(): LockedMintQuoteRecord[] {
+  return safeParse<LockedMintQuoteRecord[]>(idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_LOCKED_MINT_QUOTES), []);
+}
+
 function normalizePendingTokenSource(source: any): PendingTokenSource | undefined {
   if (!source || typeof source !== "object") return undefined;
   if (source.type !== "nutzap") return undefined;
@@ -190,7 +263,7 @@ function normalizePendingMelts(entries: PendingMeltRecord[]): PendingMeltRecord[
       quote: entry.quote,
       keep: Array.isArray(entry.keep) ? entry.keep : [],
       send: Array.isArray(entry.send) ? entry.send : [],
-      blanks: entry.blanks,
+      preview: normalizeSerializedMeltPreview((entry as any).preview),
       createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
       updatedAt: typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
     });
@@ -198,9 +271,68 @@ function normalizePendingMelts(entries: PendingMeltRecord[]): PendingMeltRecord[
   return normalized;
 }
 
+function normalizeSerializedMeltPreview(preview: unknown): SerializedMeltPreview | undefined {
+  if (!preview || typeof preview !== "object") return undefined;
+  const value = preview as SerializedMeltPreview;
+  const quoteId = typeof value.quote?.quote === "string" ? value.quote.quote.trim() : "";
+  if (!quoteId || typeof value.method !== "string" || typeof value.keysetId !== "string") return undefined;
+  if (!Array.isArray(value.inputs) || !Array.isArray(value.outputData)) return undefined;
+  const outputData = value.outputData
+    .map((entry): SerializedOutputData | null => {
+      if (!entry || typeof entry !== "object") return null;
+      const blindingFactor = typeof entry.blindingFactor === "string" ? entry.blindingFactor : "";
+      const secret = typeof entry.secret === "string" ? entry.secret : "";
+      if (!entry.blindedMessage || !blindingFactor || !secret) return null;
+      return {
+        blindedMessage: entry.blindedMessage,
+        blindingFactor,
+        secret,
+        ephemeralE: typeof entry.ephemeralE === "string" ? entry.ephemeralE : undefined,
+      } satisfies SerializedOutputData;
+    })
+    .filter((entry): entry is SerializedOutputData => !!entry);
+  return {
+    method: value.method,
+    inputs: value.inputs,
+    outputData,
+    keysetId: value.keysetId,
+    quote: value.quote,
+  };
+}
+
 function savePendingMeltEntries(entries: PendingMeltRecord[]) {
   const normalized = normalizePendingMelts(entries);
   idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_PENDING_MELTS, JSON.stringify(normalized));
+}
+
+function normalizeLockedMintQuotes(entries: LockedMintQuoteRecord[]): LockedMintQuoteRecord[] {
+  const normalized: LockedMintQuoteRecord[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const quoteId = typeof entry?.quoteId === "string" ? entry.quoteId.trim() : "";
+    const mint = normalizeMintUrl(entry?.mint ?? "");
+    const pubkey = typeof entry?.pubkey === "string" ? entry.pubkey.trim() : "";
+    const privkey = typeof entry?.privkey === "string" ? entry.privkey.trim() : "";
+    if (!quoteId || !mint || !entry?.quote || typeof entry.quote.quote !== "string" || !pubkey || !privkey) continue;
+    const key = `${mint}::${quoteId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push({
+      quoteId,
+      mint,
+      quote: entry.quote,
+      pubkey,
+      privkey,
+      createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+      updatedAt: typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+    });
+  }
+  return normalized;
+}
+
+function saveLockedMintQuoteEntries(entries: LockedMintQuoteRecord[]) {
+  const normalized = normalizeLockedMintQuotes(entries);
+  idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_LOCKED_MINT_QUOTES, JSON.stringify(normalized));
 }
 
 export function saveStore(store: ProofStore) {
@@ -334,6 +466,44 @@ export function removePendingMelt(mintUrl: string, quoteId: string) {
   savePendingMeltEntries(next);
 }
 
+export function getLockedMintQuote(mintUrl: string, quoteId: string): LockedMintQuoteRecord | null {
+  const normalizedMint = normalizeMintUrl(mintUrl);
+  const normalizedQuote = quoteId.trim();
+  if (!normalizedMint || !normalizedQuote) return null;
+  return (
+    normalizeLockedMintQuotes(loadLockedMintQuoteEntries()).find(
+      (entry) => entry.mint === normalizedMint && entry.quoteId === normalizedQuote,
+    ) ?? null
+  );
+}
+
+export function upsertLockedMintQuote(record: LockedMintQuoteRecord): LockedMintQuoteRecord | null {
+  const normalized = normalizeLockedMintQuotes([record])[0];
+  if (!normalized) return null;
+  const existing = loadLockedMintQuoteEntries();
+  const next = existing.filter(
+    (entry) =>
+      normalizeMintUrl(entry?.mint ?? "") !== normalized.mint ||
+      (typeof entry?.quoteId === "string" ? entry.quoteId.trim() : "") !== normalized.quoteId,
+  );
+  next.push({ ...normalized, updatedAt: Date.now() });
+  saveLockedMintQuoteEntries(next);
+  return normalized;
+}
+
+export function removeLockedMintQuote(mintUrl: string, quoteId: string) {
+  const normalizedMint = normalizeMintUrl(mintUrl);
+  const normalizedQuote = quoteId.trim();
+  if (!normalizedMint || !normalizedQuote) return;
+  const existing = loadLockedMintQuoteEntries();
+  const next = existing.filter(
+    (entry) =>
+      normalizeMintUrl(entry?.mint ?? "") !== normalizedMint ||
+      (typeof entry?.quoteId === "string" ? entry.quoteId.trim() : "") !== normalizedQuote,
+  );
+  saveLockedMintQuoteEntries(next);
+}
+
 export function getProofs(mintUrl: string): Proof[] {
   const s = loadStore();
   return Array.isArray(s[mintUrl]) ? s[mintUrl] : [];
@@ -387,7 +557,7 @@ export function normalizeMintUrl(url: string): string {
 function ensureActiveMintSelection(store: ProofStore) {
   try {
     const mintsWithBalance = Object.entries(store)
-      .filter(([, proofs]) => Array.isArray(proofs) && proofs.some((p) => (p?.amount ?? 0) > 0))
+      .filter(([, proofs]) => Array.isArray(proofs) && proofs.some((p) => amountToNumber((p as any)?.amount) > 0))
       .map(([mintUrl]) => mintUrl);
 
     if (mintsWithBalance.length === 0) {
@@ -400,7 +570,7 @@ function ensureActiveMintSelection(store: ProofStore) {
       ([mintUrl]) => normalizeMintUrl(mintUrl) === normalizedActive,
     );
     const activeBalance = Array.isArray(activeEntry?.[1])
-      ? (activeEntry?.[1] as Proof[]).reduce((sum, proof) => sum + (proof?.amount ?? 0), 0)
+      ? (activeEntry?.[1] as Proof[]).reduce((sum, proof) => sum + amountToNumber((proof as any)?.amount), 0)
       : 0;
 
     if (activeBalance > 0) {
@@ -418,7 +588,7 @@ function ensureActiveMintSelection(store: ProofStore) {
 
 function rememberMintFromProofs(mintUrl: string, proofs: Proof[]) {
   if (!Array.isArray(proofs) || !mintUrl) return;
-  const hasBalance = proofs.some((proof) => (proof?.amount ?? 0) > 0);
+  const hasBalance = proofs.some((proof) => amountToNumber((proof as any)?.amount) > 0);
   if (!hasBalance) return;
   addMintToList(mintUrl);
 }

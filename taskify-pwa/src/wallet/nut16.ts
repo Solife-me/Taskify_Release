@@ -2,7 +2,7 @@ import {
   getDecodedToken,
   getDecodedTokenBinary,
   getEncodedToken,
-  type Token,
+  getTokenMetadata,
 } from "@cashu/cashu-ts";
 import { Buffer } from "buffer";
 import { UR, UREncoder, URDecoder } from "@gandlaf21/bc-ur";
@@ -177,25 +177,41 @@ function digestFromBytes(bytes: Uint8Array): string {
   return toBase64Url(hash as Uint8Array).slice(0, 16);
 }
 
-function ensureToken(token: string): Token {
+function isValidToken(token: string): boolean {
+  try {
+    getTokenMetadata(token);
+    return true;
+  } catch {
+    // fall back to a full decode for legacy tokens with full keyset ids
+  }
+  try {
+    return !!getDecodedToken(token, []);
+  } catch {
+    return false;
+  }
+}
+
+function ensureTokenString(token: string): string {
   const trimmed = token.trim();
   if (!trimmed) {
     throw new Error("Missing token value");
   }
-  return getDecodedToken(trimmed);
+  if (!isValidToken(trimmed)) {
+    throw new Error("Invalid Cashu token");
+  }
+  return trimmed;
 }
 
 function decodeTokenFromBytes(bytes: Uint8Array): string {
   // Prefer text tokens (UR "bytes" carrying the encoded token string)
   try {
-    const text = new TextDecoder().decode(bytes);
-    const decoded = getDecodedToken(text);
-    return getEncodedToken(decoded, { version: 4 });
+    const text = new TextDecoder().decode(bytes).trim();
+    if (text && isValidToken(text)) return text;
   } catch {
     // Fallback to binary encoding path
   }
   const token = getDecodedTokenBinary(bytes);
-  const encoded = getEncodedToken(token, { version: 4 });
+  const encoded = getEncodedToken(token);
   if (!encoded) {
     throw new Error("Failed to re-encode animated token");
   }
@@ -207,8 +223,7 @@ export function createNut16Animation(
   opts?: { chunkSize?: number; intervalMs?: number },
 ): Nut16Animation | null {
   try {
-    const decoded = ensureToken(token);
-    const canonical = getEncodedToken(decoded, { version: 4 });
+    const canonical = ensureTokenString(token);
     const payloadBytes = new TextEncoder().encode(canonical);
     const digest = digestFromBytes(payloadBytes);
     const fragmentLength = Math.max(30, opts?.chunkSize ?? DEFAULT_CHUNK_SIZE);

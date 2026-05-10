@@ -25,7 +25,23 @@ function formatMintLabel(url: string): string {
 function sumMintProofs(proofs: Proof[]): number {
   if (!Array.isArray(proofs)) return 0;
   return proofs.reduce((sum, proof) => {
-    const amt = Number.isFinite(proof?.amount) ? Number(proof.amount) : 0;
+    const value = (proof as any)?.amount;
+    let amt = 0;
+    try {
+      if (typeof value === "number") {
+        amt = value;
+      } else if (typeof value === "bigint") {
+        amt = value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(value);
+      } else if (typeof value?.toNumber === "function") {
+        amt = value.toNumber();
+      } else if (typeof value?.toNumberUnsafe === "function") {
+        amt = value.toNumberUnsafe();
+      } else {
+        amt = Number(value);
+      }
+    } catch {
+      amt = 0;
+    }
     return sum + (amt > 0 ? Math.floor(amt) : 0);
   }, 0);
 }
@@ -132,7 +148,7 @@ function BountyAttachSheet({
       }
 
       storeEntries.forEach((payload, normalized) => {
-        const hasBalance = payload.proofs.some((proof) => (proof?.amount ?? 0) > 0);
+        const hasBalance = sumMintProofs(payload.proofs) > 0;
         if (hasBalance && !trackedSet.has(normalized)) {
           trackedMints = addMintToList(payload.url);
           trackedSet.add(normalized);

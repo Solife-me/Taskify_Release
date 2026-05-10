@@ -1,11 +1,9 @@
 import * as Cashu from "@cashu/cashu-ts";
 import {
+  deserializeProofs,
   getDecodedToken,
   getEncodedToken,
-  type MeltBlanks,
   type MeltProofsResponse,
-  type MeltQuoteResponse,
-  type MintQuoteResponse,
   type OutputConfig,
   type P2PKOptions,
   type Proof,
@@ -14,14 +12,21 @@ import {
   type Wallet,
 } from "@cashu/cashu-ts";
 import {
+  getLockedMintQuote,
   getPendingMelt,
   getProofs,
   listPendingMelts,
+  removeLockedMintQuote,
   removePendingMelt,
   setProofs,
+  upsertLockedMintQuote,
   upsertPendingMelt,
   type PendingMeltRecord,
+  type SerializedMeltPreview,
+  type SerializedOutputData,
 } from "./storage";
+import type { MeltQuoteResponse, MintQuoteResponse } from "./cashuTypes";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import {
   getWalletSeedBytes,
   getWalletCounterInit,
@@ -63,7 +68,7 @@ export class CashuManager {
   private getP2PKPrivkey?: (pubkey: string) => string | null;
   private onP2PKUsage?: (pubkey: string, count: number) => void;
   private proofCache: Proof[] = [];
-  private pendingMeltBlanks = new Map<string, MeltBlanks>();
+  private pendingMeltPreviews = new Map<string, SerializedMeltPreview>();
   private mutationChain: Promise<void> = Promise.resolve();
 
   constructor(mintUrl: string, options?: CashuManagerOptions) {
@@ -96,7 +101,7 @@ export class CashuManager {
     if (!this.wallet) return null;
     const keysetId = typeof proof.id === "string" ? proof.id : "";
     if (!keysetId) return null;
-    const amount = typeof proof.amount === "number" ? Math.floor(proof.amount) : Number(proof.amount) || 0;
+    const amount = CashuManager.amountToNumber((proof as any).amount);
     if (!Number.isFinite(amount) || amount <= 0) return null;
     try {
       const keyset = (this.wallet as any).getKeyset?.(keysetId);
@@ -127,46 +132,33 @@ export class CashuManager {
     return key ? key : null;
   }
 
-  private rememberMeltBlanks(blanks: MeltBlanks | null | undefined, fallbackQuoteId?: string | null): string | null {
-    const key = CashuManager.extractQuoteKey(blanks?.quote);
-    const resolvedKey = key ?? (fallbackQuoteId?.trim() || null);
-    if (!resolvedKey) return null;
-    if (blanks) {
-      this.pendingMeltBlanks.set(resolvedKey, blanks);
-      this.persistPendingMeltBlanks(resolvedKey, blanks);
-    } else {
-      this.pendingMeltBlanks.delete(resolvedKey);
-    }
-    return resolvedKey;
-  }
-
-  private clearMeltBlanksByQuote(target: MeltQuoteResponse | string | null | undefined) {
+  private clearMeltPreviewByQuote(target: MeltQuoteResponse | string | null | undefined) {
     if (!target) return;
     const key =
       typeof target === "string"
         ? target.trim()
         : CashuManager.extractQuoteKey(typeof target === "object" ? target : null);
     if (key) {
-      this.pendingMeltBlanks.delete(key);
+      this.pendingMeltPreviews.delete(key);
     }
   }
 
-  private getStoredMeltBlanks(target: MeltQuoteResponse | string | null | undefined): MeltBlanks | null {
+  private getStoredMeltPreview(target: MeltQuoteResponse | string | null | undefined): SerializedMeltPreview | null {
     if (!target) return null;
     const key =
       typeof target === "string"
         ? target.trim()
         : CashuManager.extractQuoteKey(typeof target === "object" ? target : null);
     if (!key) return null;
-    return this.pendingMeltBlanks.get(key) ?? getPendingMelt(this.mintUrl, key)?.blanks ?? null;
+    return this.pendingMeltPreviews.get(key) ?? getPendingMelt(this.mintUrl, key)?.preview ?? null;
   }
 
-  private persistPendingMeltBlanks(quoteId: string, blanks: MeltBlanks) {
+  private persistPendingMeltPreview(quoteId: string, preview: SerializedMeltPreview) {
     const record = getPendingMelt(this.mintUrl, quoteId);
     if (!record) return;
     upsertPendingMelt({
       ...record,
-      blanks,
+      preview,
       updatedAt: Date.now(),
     });
   }
@@ -188,26 +180,134 @@ export class CashuManager {
     removePendingMelt(this.mintUrl, normalized);
   }
 
+  private static amountToNumber(value: unknown): number {
+    if (typeof value === "number") return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    if (typeof value === "bigint") {
+      if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
+      return Math.max(0, Number(value));
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+    }
+    const amountLike = value as { toNumber?: () => number; toNumberUnsafe?: () => number; toString?: () => string };
+    try {
+      if (typeof amountLike?.toNumber === "function") {
+        const numeric = amountLike.toNumber();
+        return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+      }
+    } catch {
+      // fall back below
+    }
+    try {
+      if (typeof amountLike?.toNumberUnsafe === "function") {
+        const numeric = amountLike.toNumberUnsafe();
+        return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+      }
+    } catch {
+      // fall back below
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+  }
+
+  private static normalizeProof(proof: Proof): Proof {
+    return {
+      ...proof,
+      amount: CashuManager.amountToNumber((proof as any).amount) as any,
+    };
+  }
+
+  private static normalizeMintQuoteResponse(quote: MintQuoteResponse): MintQuoteResponse {
+    return {
+      ...quote,
+      amount: CashuManager.amountToNumber((quote as any).amount) as any,
+    };
+  }
+
+  private static normalizeMeltQuoteResponse(quote: MeltQuoteResponse): MeltQuoteResponse {
+    return {
+      ...quote,
+      amount: CashuManager.amountToNumber((quote as any).amount) as any,
+      fee_reserve: CashuManager.amountToNumber((quote as any).fee_reserve) as any,
+    };
+  }
+
+  private serializeOutputData(output: any): SerializedOutputData {
+    const secret = output?.secret instanceof Uint8Array ? output.secret : new Uint8Array(output?.secret ?? []);
+    return {
+      blindedMessage: output?.blindedMessage,
+      blindingFactor: output?.blindingFactor?.toString?.() ?? String(output?.blindingFactor ?? "0"),
+      secret: bytesToHex(secret),
+      ephemeralE: typeof output?.ephemeralE === "string" ? output.ephemeralE : undefined,
+    };
+  }
+
+  private deserializeOutputData(output: SerializedOutputData): any {
+    const OutputDataCtor = CashuAny.OutputData;
+    if (!OutputDataCtor) throw new Error("Unsupported @cashu/cashu-ts version: missing OutputData export");
+    return new OutputDataCtor(
+      output.blindedMessage,
+      BigInt(output.blindingFactor),
+      hexToBytes(output.secret),
+      output.ephemeralE,
+    );
+  }
+
+  private serializeMeltPreview(preview: any): SerializedMeltPreview {
+    return {
+      method: preview.method,
+      inputs: Array.isArray(preview.inputs)
+        ? preview.inputs.map((proof: Proof) => CashuManager.normalizeProof(proof))
+        : [],
+      outputData: Array.isArray(preview.outputData)
+        ? preview.outputData.map((output: any) => this.serializeOutputData(output))
+        : [],
+      keysetId: preview.keysetId,
+      quote: preview.quote,
+    };
+  }
+
+  private deserializeMeltPreview(preview: SerializedMeltPreview): any {
+    return {
+      method: preview.method,
+      inputs: deserializeProofs(JSON.stringify(preview.inputs)),
+      outputData: preview.outputData.map((output) => this.deserializeOutputData(output)),
+      keysetId: preview.keysetId,
+      quote: preview.quote,
+    };
+  }
+
   private async finalizeStoredMeltChange(
     target: MeltQuoteResponse | string | null | undefined,
   ): Promise<Proof[] | null> {
-    const blanks = this.getStoredMeltBlanks(target);
-    if (!blanks) return null;
+    const preview = this.getStoredMeltPreview(target);
+    if (!preview) return null;
+    const walletAny = this.wallet as any;
+    if (typeof walletAny.completeMelt !== "function") return null;
     try {
-      const completion = await this.wallet.completeMelt(blanks);
+      const hydratedPreview = this.deserializeMeltPreview(preview);
+      const privkey = this.privkeysForProofs(hydratedPreview.inputs);
+      const completion = await walletAny.completeMelt(hydratedPreview, privkey);
       const change = Array.isArray(completion?.change) ? completion.change : [];
       if (!change.length) {
-        this.clearMeltBlanksByQuote(target);
+        this.clearMeltPreviewByQuote(target);
         return [];
       }
       const signedChange = this.autoSignProofs(change);
       this.validateDleqProofs(signedChange);
-      this.clearMeltBlanksByQuote(target);
+      this.clearMeltPreviewByQuote(target);
       return signedChange;
     } catch (error) {
-      console.warn("CashuManager: failed to finalize melt change", error);
+      console.warn("CashuManager: failed to finalize stored melt change", error);
       return null;
     }
+  }
+
+  private privkeysForProofs(proofs: Proof[]): string | string[] | undefined {
+    const privkeys = [...this.resolvePrivkeysFromProofs(proofs).values()].map((entry) => entry.privkey);
+    if (!privkeys.length) return undefined;
+    return privkeys.length === 1 ? privkeys[0] : privkeys;
   }
 
   private static parseP2PKSecretString(secret: string): Secret | null {
@@ -239,7 +339,12 @@ export class CashuManager {
   }
 
   private static proofKey(proof: Proof): string {
-    return `${proof.secret ?? ""}|${proof.C ?? ""}|${proof.id ?? ""}|${proof.amount ?? 0}`;
+    const amount = (proof as any)?.amount;
+    const amountKey =
+      amount && typeof amount === "object" && typeof amount.toString === "function"
+        ? amount.toString()
+        : String(amount ?? 0);
+    return `${proof.secret ?? ""}|${proof.C ?? ""}|${proof.id ?? ""}|${amountKey}`;
   }
 
   private static proofStorageKey(proof: Proof): string {
@@ -360,10 +465,23 @@ export class CashuManager {
     return result;
   }
 
+  private getKnownKeysetIds(): string[] {
+    try {
+      const ids = (this.wallet as any)?.keyChain?.getAllKeysetIds?.();
+      return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string" && !!id) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  decodeToken(encoded: string) {
+    return getDecodedToken(encoded, this.getKnownKeysetIds());
+  }
+
   private resolvePrivkeysForToken(encoded: string): Map<string, { privkey: string; count: number }> {
     if (!this.getP2PKPrivkey) return new Map();
     try {
-      const decoded: any = getDecodedToken(encoded);
+      const decoded: any = this.decodeToken(encoded);
       const entries = Array.isArray(decoded?.token) ? decoded.token : decoded ? [decoded] : [];
       const proofs = entries.flatMap((entry: any) =>
         Array.isArray(entry?.proofs) ? (entry.proofs as Proof[]) : [],
@@ -517,7 +635,9 @@ export class CashuManager {
 
   private persistProofs(proofs: Proof[]) {
     const sanitized = Array.isArray(proofs)
-      ? proofs.filter((proof): proof is Proof => !!proof && typeof proof === "object")
+      ? proofs
+          .filter((proof): proof is Proof => !!proof && typeof proof === "object")
+          .map((proof) => CashuManager.normalizeProof(proof))
       : [];
     this.proofCache = sanitized;
     setProofs(this.mintUrl, sanitized);
@@ -586,20 +706,60 @@ export class CashuManager {
     }
   }
 
+  private async supportsNut(nut: number): Promise<boolean> {
+    const info = await this.ensureMintInfo();
+    return this.mintSupportsNut(info, nut);
+  }
+
+  private createMintQuoteKeypair(): { privkey: string; pubkey: string } {
+    if (typeof CashuAny.createRandomSecretKey !== "function" || typeof CashuAny.getPubKeyFromPrivKey !== "function") {
+      throw new Error("Installed cashu wallet library does not support mint quote key generation");
+    }
+    const secret = CashuAny.createRandomSecretKey() as Uint8Array;
+    return {
+      privkey: bytesToHex(secret),
+      pubkey: bytesToHex(CashuAny.getPubKeyFromPrivKey(secret) as Uint8Array),
+    };
+  }
+
+  private rememberLockedMintQuote(quote: MintQuoteResponse, keypair: { privkey: string; pubkey: string }) {
+    const quoteId = CashuManager.extractQuoteKey(quote);
+    if (!quoteId) return;
+    upsertLockedMintQuote({
+      quoteId,
+      mint: this.mintUrl,
+      quote: {
+        ...quote,
+        pubkey: (quote as any).pubkey ?? keypair.pubkey,
+      } as any,
+      pubkey: keypair.pubkey,
+      privkey: keypair.privkey,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  }
+
   private async checkMeltQuoteSafe(quote: MeltQuoteResponse): Promise<MeltQuoteResponse | null> {
     const quoteId = CashuManager.extractQuoteKey(quote);
     if (!quoteId) return null;
     try {
       const walletAny = this.wallet as Wallet & {
+        checkMeltQuoteBolt11?: (quoteOrId: string | MeltQuoteResponse) => Promise<MeltQuoteResponse>;
         checkMeltQuote?: (quoteOrId: string | MeltQuoteResponse) => Promise<MeltQuoteResponse>;
       };
-      if (typeof walletAny.checkMeltQuote !== "function") return null;
-      const status = await walletAny.checkMeltQuote(quoteId);
-      return {
+      const check =
+        typeof walletAny.checkMeltQuoteBolt11 === "function"
+          ? walletAny.checkMeltQuoteBolt11.bind(walletAny)
+          : typeof walletAny.checkMeltQuote === "function"
+            ? walletAny.checkMeltQuote.bind(walletAny)
+            : null;
+      if (!check) return null;
+      const status = await check(quoteId);
+      return CashuManager.normalizeMeltQuoteResponse({
         ...status,
         request: status.request ?? quote.request,
         unit: status.unit ?? quote.unit,
-      } as MeltQuoteResponse;
+      } as MeltQuoteResponse);
     } catch (error) {
       console.warn("CashuManager: failed to check melt quote after error", error);
       return null;
@@ -607,14 +767,14 @@ export class CashuManager {
   }
 
   private async recoverPendingMelt(record: PendingMeltRecord) {
-    if (record.blanks) {
-      this.pendingMeltBlanks.set(record.quoteId, record.blanks);
+    if (record.preview) {
+      this.pendingMeltPreviews.set(record.quoteId, record.preview);
     }
     const status = await this.checkMeltQuoteSafe(record.quote);
     if (!status) return;
 
     if (this.isMeltQuotePaid(status)) {
-      const recoveredChange = await this.finalizeStoredMeltChange(status);
+      const recoveredChange = await this.finalizeStoredMeltChange(record.quoteId);
       const base = this.removeProofSet(this.proofCache, record.send);
       const paidProofs = this.mergeProofSets(
         base,
@@ -622,7 +782,7 @@ export class CashuManager {
         Array.isArray(recoveredChange) ? recoveredChange : [],
       );
       this.persistProofs(paidProofs);
-      this.clearMeltBlanksByQuote(record.quoteId);
+      this.clearMeltPreviewByQuote(record.quoteId);
       this.removePendingMeltRecord(record.quoteId);
       return;
     }
@@ -634,7 +794,7 @@ export class CashuManager {
     }
 
     this.persistProofs(this.mergeProofSets(this.proofCache, record.keep, record.send));
-    this.clearMeltBlanksByQuote(record.quoteId);
+    this.clearMeltPreviewByQuote(record.quoteId);
     this.removePendingMeltRecord(record.quoteId);
   }
 
@@ -650,7 +810,7 @@ export class CashuManager {
   }
 
   get balance(): number {
-    return this.proofCache.reduce((a, p) => a + (p?.amount || 0), 0);
+    return this.proofCache.reduce((a, p) => a + CashuManager.amountToNumber((p as any)?.amount), 0);
   }
 
   async createMintInvoice(
@@ -673,7 +833,7 @@ export class CashuManager {
         amount: normalizedAmount,
         description,
       });
-      return quote as unknown as MintQuoteResponse;
+      return CashuManager.normalizeMintQuoteResponse(quote as unknown as MintQuoteResponse);
     }
     if (typeof walletAny?.createMintQuoteBolt11 === "function") {
       if (options?.pubkey) {
@@ -681,21 +841,41 @@ export class CashuManager {
         if (typeof walletAny.createLockedMintQuote !== "function") {
           throw new Error("Installed cashu wallet library does not support locked mint quotes");
         }
-        return walletAny.createLockedMintQuote(normalizedAmount, options.pubkey, description);
+        const quote = await walletAny.createLockedMintQuote(normalizedAmount, options.pubkey, description);
+        return CashuManager.normalizeMintQuoteResponse(quote);
       }
-      return walletAny.createMintQuoteBolt11(normalizedAmount, description);
+      if (typeof walletAny.createLockedMintQuote === "function") {
+        try {
+          if (await this.supportsNut(20)) {
+            const keypair = this.createMintQuoteKeypair();
+            const quote = await walletAny.createLockedMintQuote(normalizedAmount, keypair.pubkey, description);
+            const normalizedQuote = CashuManager.normalizeMintQuoteResponse(quote);
+            this.rememberLockedMintQuote(normalizedQuote, keypair);
+            return normalizedQuote;
+          }
+        } catch (error) {
+          console.warn("CashuManager: locked mint quote unavailable, falling back to regular quote", error);
+        }
+      }
+      const quote = await walletAny.createMintQuoteBolt11(normalizedAmount, description);
+      return CashuManager.normalizeMintQuoteResponse(quote);
     }
-    return this.wallet.createMintQuote(normalizedAmount, description);
+    return CashuManager.normalizeMintQuoteResponse(await (this.wallet as any).createMintQuote(normalizedAmount, description));
   }
 
   async checkMintQuote(quoteOrId: string | MintQuoteResponse): Promise<MintQuoteResponse> {
     // normalize to id
-    const res = await (typeof quoteOrId === "string"
-      ? this.wallet.checkMintQuote(quoteOrId)
-      : this.wallet.checkMintQuote(quoteOrId.quote));
+    const quoteId = typeof quoteOrId === "string" ? quoteOrId : quoteOrId.quote;
+    const walletAny = this.wallet as any;
+    const res =
+      typeof walletAny.checkMintQuoteBolt11 === "function"
+        ? await walletAny.checkMintQuoteBolt11(quoteId)
+        : typeof walletAny.checkMintQuote === "function"
+          ? await walletAny.checkMintQuote(quoteId)
+          : await (this.wallet as any).checkMintQuote(quoteId);
     // Type narrowing: ensure amount/unit exist (MintQuoteResponse) by probing wallet.getMintInfo if needed
     const info = await this.ensureMintInfo();
-    return {
+    return CashuManager.normalizeMintQuoteResponse({
       amount: (res as any).amount ?? 0,
       unit: (res as any).unit ?? info?.unit ?? this.unit,
       request: res.request,
@@ -703,7 +883,7 @@ export class CashuManager {
       state: res.state as MintQuoteState,
       expiry: res.expiry,
       pubkey: (res as any).pubkey,
-    } as MintQuoteResponse;
+    } as MintQuoteResponse);
   }
 
   async claimMint(quoteId: string, amount: number) {
@@ -716,13 +896,23 @@ export class CashuManager {
       if (state && state !== "PAID") {
         throw new Error("Mint invoice is not paid yet");
       }
+      const lockedQuote = getLockedMintQuote(this.mintUrl, quoteId);
       const proofs = await this.withMintRefreshRetry(async () => {
-        const config: Record<string, any> = { proofsWeHave: [...this.proofCache] };
-        return this.wallet.mintProofs(amount, quoteId, config);
+        const config: Record<string, any> = {
+          proofsWeHave: [...this.proofCache],
+          ...(lockedQuote?.privkey ? { privkey: lockedQuote.privkey } : {}),
+        };
+        const quoteArg = lockedQuote?.quote ?? quoteId;
+        const walletAny = this.wallet as any;
+        if (typeof walletAny.mintProofsBolt11 === "function") {
+          return walletAny.mintProofsBolt11(amount, quoteArg, config);
+        }
+        return (this.wallet as any).mintProofs(amount, quoteArg, config);
       });
       const signed = this.autoSignProofs(proofs);
       this.validateDleqProofs(signed);
       this.mergeProofs(signed);
+      if (lockedQuote) removeLockedMintQuote(this.mintUrl, quoteId);
       return signed;
     });
   }
@@ -813,10 +1003,11 @@ export class CashuManager {
         } satisfies OutputConfig;
       }
       const { keep, send } = await this.withMintRefreshRetry(async () => {
+        const privkey = this.privkeysForProofs(this.proofCache);
         const response = await this.wallet.send(
           amount,
           [...this.proofCache],
-          { proofsWeHave: [...this.proofCache] },
+          { proofsWeHave: [...this.proofCache], ...(privkey ? { privkey } : {}) },
           outputConfig,
         );
         return { keep: response.keep, send: response.send };
@@ -908,13 +1099,19 @@ export class CashuManager {
   }
 
   async createMeltQuote(invoice: string): Promise<MeltQuoteResponse> {
-    const quote = await this.withMintRefreshRetry(() => this.wallet.createMeltQuote(invoice));
-    return quote as MeltQuoteResponse; // {quote, amount, fee_reserve, request, state, expiry, unit}
+    const quote = await this.withMintRefreshRetry(() => {
+      const walletAny = this.wallet as any;
+      if (typeof walletAny.createMeltQuoteBolt11 === "function") {
+        return walletAny.createMeltQuoteBolt11(invoice);
+      }
+      return (this.wallet as any).createMeltQuote(invoice);
+    });
+    return CashuManager.normalizeMeltQuoteResponse(quote as MeltQuoteResponse);
   }
 
   private requiredForQuote(quote: MeltQuoteResponse): number {
-    const amount = typeof quote.amount === "number" ? quote.amount : 0;
-    const fees = typeof quote.fee_reserve === "number" ? quote.fee_reserve : 0;
+    const amount = CashuManager.amountToNumber((quote as any).amount);
+    const fees = CashuManager.amountToNumber((quote as any).fee_reserve);
     return amount + fees;
   }
 
@@ -927,10 +1124,11 @@ export class CashuManager {
     if (this.balance < required) throw new Error("Insufficient balance for invoice + fees");
     const quoteId = CashuManager.extractQuoteKey(quote);
     const { keep, send } = await this.withMintRefreshRetry(async () => {
+      const privkey = this.privkeysForProofs(this.proofCache);
       const swapped = await this.wallet.send(
         required,
         [...this.proofCache],
-        { proofsWeHave: [...this.proofCache] },
+        { proofsWeHave: [...this.proofCache], ...(privkey ? { privkey } : {}) },
       );
       this.validateDleqProofs([...swapped.keep, ...swapped.send]);
       return { keep: swapped.keep, send: swapped.send };
@@ -946,14 +1144,27 @@ export class CashuManager {
       });
     }
 
-    let storedKey: string | null = null;
     let res: MeltProofsResponse;
     try {
-      res = await this.wallet.meltProofs(quote as MeltQuoteResponse, send, {
-        onChangeOutputsCreated: (blanks) => {
-          storedKey = this.rememberMeltBlanks(blanks, quoteId);
-        },
-      });
+      const walletAny = this.wallet as any;
+      const meltPrivkey = this.privkeysForProofs(send);
+      if (typeof walletAny.prepareMelt === "function" && typeof walletAny.completeMelt === "function") {
+        const preview = await walletAny.prepareMelt("bolt11", quote, send);
+        if (quoteId) {
+          const serializedPreview = this.serializeMeltPreview(preview);
+          this.pendingMeltPreviews.set(quoteId, serializedPreview);
+          this.persistPendingMeltPreview(quoteId, serializedPreview);
+        }
+        res = await walletAny.completeMelt(preview, meltPrivkey);
+      } else if (typeof walletAny.meltProofsBolt11 === "function") {
+        res = await walletAny.meltProofsBolt11(quote, send, {
+          ...(meltPrivkey ? { privkey: meltPrivkey } : {}),
+        });
+      } else {
+        res = await (this.wallet as any).meltProofs(quote, send, {
+          ...(meltPrivkey ? { privkey: meltPrivkey } : {}),
+        });
+      }
     } catch (error) {
       const status = await this.checkMeltQuoteSafe(quote);
       if (!status) {
@@ -964,7 +1175,7 @@ export class CashuManager {
         return {
           quote: status,
           change: [],
-        };
+        } as unknown as MeltProofsResponse;
       }
       if (!this.isMeltQuotePaid(status)) {
         this.persistProofs(proofsIfMeltUnpaid);
@@ -978,11 +1189,11 @@ export class CashuManager {
       return {
         quote: status,
         change: Array.isArray(recoveredChange) ? recoveredChange : [],
-      };
+      } as unknown as MeltProofsResponse;
     }
 
     const responseKey =
-      CashuManager.extractQuoteKey(res?.quote) ?? storedKey ?? CashuManager.extractQuoteKey(quote);
+      CashuManager.extractQuoteKey(res?.quote) ?? CashuManager.extractQuoteKey(quote);
 
     let resolvedChange: Proof[] = Array.isArray(res?.change) ? res.change : [];
     if (resolvedChange.length) {
@@ -990,26 +1201,12 @@ export class CashuManager {
       this.validateDleqProofs(signedChange);
       res.change = signedChange;
       resolvedChange = signedChange;
-      if (responseKey) this.clearMeltBlanksByQuote(responseKey);
-    }
-
-    if (responseKey && !resolvedChange.length) {
-      const blanks = this.getStoredMeltBlanks(responseKey);
-      if (blanks && this.isMeltQuotePaid(res?.quote as MeltQuoteResponse)) {
-        const finalized = await this.finalizeStoredMeltChange(responseKey);
-        if (Array.isArray(finalized)) {
-          res.change = finalized;
-          resolvedChange = finalized;
-        }
-      } else if (!blanks) {
-        this.clearMeltBlanksByQuote(responseKey);
-      }
     }
 
     if (this.isMeltQuotePaid(res?.quote as MeltQuoteResponse)) {
       const paidProofs = this.mergeProofSets(keep, resolvedChange);
       this.persistProofs(paidProofs);
-      if (responseKey) this.clearMeltBlanksByQuote(responseKey);
+      if (responseKey) this.clearMeltPreviewByQuote(responseKey);
       if (responseKey) this.removePendingMeltRecord(responseKey);
     } else if (this.isMeltQuotePending(res?.quote as MeltQuoteResponse)) {
       this.persistProofs(this.mergeProofSets(keep));
@@ -1051,9 +1248,10 @@ export class CashuManager {
       const quote = await this.withMintRefreshRetry(() => this.wallet.createMultiPathMeltQuote(invoice, attemptMsat));
       const required = this.requiredForQuote(quote as MeltQuoteResponse);
       if (required <= balance) {
-        return { quote: quote as MeltQuoteResponse, amount: quote.amount ?? attempt, required };
+        const quotedAmount = CashuManager.amountToNumber((quote as any).amount) || attempt;
+        return { quote: quote as MeltQuoteResponse, amount: quotedAmount, required };
       }
-      const feeReserve = typeof quote.fee_reserve === "number" ? quote.fee_reserve : 0;
+      const feeReserve = CashuManager.amountToNumber((quote as any).fee_reserve);
       const maxPartial = Math.floor(balance - feeReserve);
       const nextAttempt = Math.floor(Math.min(attempt - 1, maxPartial));
       if (!Number.isFinite(nextAttempt) || nextAttempt < 1) break;
