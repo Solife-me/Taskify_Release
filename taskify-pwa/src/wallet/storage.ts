@@ -1,4 +1,4 @@
-import type { Proof } from "@cashu/cashu-ts";
+import type { MeltBlanks, MeltQuoteResponse, Proof } from "@cashu/cashu-ts";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 
@@ -6,6 +6,7 @@ const LS_KEY = "cashu_proofs_v1";
 const LS_ACTIVE_MINT = "cashu_active_mint_v1";
 const LS_PENDING_TOKENS = "cashu_pending_tokens_v1";
 const LS_MINT_LIST = "cashu_tracked_mints_v1";
+const LS_PENDING_MELTS = "cashu_pending_melts_v1";
 
 export type PendingTokenEntry = {
   id: string;
@@ -29,6 +30,17 @@ export type PendingTokenSource =
 
 export type ProofStore = {
   [mintUrl: string]: Proof[];
+};
+
+export type PendingMeltRecord = {
+  quoteId: string;
+  mint: string;
+  quote: MeltQuoteResponse;
+  keep: Proof[];
+  send: Proof[];
+  blanks?: MeltBlanks;
+  createdAt: number;
+  updatedAt: number;
 };
 
 function safeParse<T>(raw: string | null, fallback: T): T {
@@ -119,6 +131,10 @@ function loadPendingTokenEntries(): PendingTokenEntry[] {
   return safeParse<PendingTokenEntry[]>(idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_PENDING_TOKENS), []);
 }
 
+function loadPendingMeltEntries(): PendingMeltRecord[] {
+  return safeParse<PendingMeltRecord[]>(idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_PENDING_MELTS), []);
+}
+
 function normalizePendingTokenSource(source: any): PendingTokenSource | undefined {
   if (!source || typeof source !== "object") return undefined;
   if (source.type !== "nutzap") return undefined;
@@ -156,6 +172,35 @@ function normalizePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry
 function savePendingTokenEntries(entries: PendingTokenEntry[]) {
   const normalized = normalizePendingTokens(entries);
   idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_PENDING_TOKENS, JSON.stringify(normalized));
+}
+
+function normalizePendingMelts(entries: PendingMeltRecord[]): PendingMeltRecord[] {
+  const normalized: PendingMeltRecord[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const quoteId = typeof entry?.quoteId === "string" ? entry.quoteId.trim() : "";
+    const mint = normalizeMintUrl(entry?.mint ?? "");
+    if (!quoteId || !mint || !entry?.quote) continue;
+    const key = `${mint}::${quoteId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push({
+      quoteId,
+      mint,
+      quote: entry.quote,
+      keep: Array.isArray(entry.keep) ? entry.keep : [],
+      send: Array.isArray(entry.send) ? entry.send : [],
+      blanks: entry.blanks,
+      createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+      updatedAt: typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+    });
+  }
+  return normalized;
+}
+
+function savePendingMeltEntries(entries: PendingMeltRecord[]) {
+  const normalized = normalizePendingMelts(entries);
+  idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_PENDING_MELTS, JSON.stringify(normalized));
 }
 
 export function saveStore(store: ProofStore) {
@@ -244,6 +289,51 @@ export function replacePendingTokens(entries: PendingTokenEntry[]): PendingToken
   return normalized;
 }
 
+export function listPendingMelts(mintUrl?: string): PendingMeltRecord[] {
+  const entries = normalizePendingMelts(loadPendingMeltEntries());
+  if (!mintUrl) return entries;
+  const normalizedMint = normalizeMintUrl(mintUrl);
+  return entries.filter((entry) => entry.mint === normalizedMint);
+}
+
+export function getPendingMelt(mintUrl: string, quoteId: string): PendingMeltRecord | null {
+  const normalizedMint = normalizeMintUrl(mintUrl);
+  const normalizedQuote = quoteId.trim();
+  if (!normalizedMint || !normalizedQuote) return null;
+  return (
+    listPendingMelts().find(
+      (entry) => entry.mint === normalizedMint && entry.quoteId === normalizedQuote,
+    ) ?? null
+  );
+}
+
+export function upsertPendingMelt(record: PendingMeltRecord): PendingMeltRecord | null {
+  const normalized = normalizePendingMelts([record])[0];
+  if (!normalized) return null;
+  const existing = loadPendingMeltEntries();
+  const next = existing.filter(
+    (entry) =>
+      normalizeMintUrl(entry?.mint ?? "") !== normalized.mint ||
+      (typeof entry?.quoteId === "string" ? entry.quoteId.trim() : "") !== normalized.quoteId,
+  );
+  next.push({ ...normalized, updatedAt: Date.now() });
+  savePendingMeltEntries(next);
+  return normalized;
+}
+
+export function removePendingMelt(mintUrl: string, quoteId: string) {
+  const normalizedMint = normalizeMintUrl(mintUrl);
+  const normalizedQuote = quoteId.trim();
+  if (!normalizedMint || !normalizedQuote) return;
+  const existing = loadPendingMeltEntries();
+  const next = existing.filter(
+    (entry) =>
+      normalizeMintUrl(entry?.mint ?? "") !== normalizedMint ||
+      (typeof entry?.quoteId === "string" ? entry.quoteId.trim() : "") !== normalizedQuote,
+  );
+  savePendingMeltEntries(next);
+}
+
 export function getProofs(mintUrl: string): Proof[] {
   const s = loadStore();
   return Array.isArray(s[mintUrl]) ? s[mintUrl] : [];
@@ -290,7 +380,7 @@ export function setActiveMint(url: string | null) {
   else idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_ACTIVE_MINT, url);
 }
 
-function normalizeMintUrl(url: string): string {
+export function normalizeMintUrl(url: string): string {
   return (url || "").trim().replace(/\/+$/, "");
 }
 

@@ -37,6 +37,7 @@ const CASHU_PROOFS_KEY = "cashu_proofs_v1";
 const CASHU_ACTIVE_MINT_KEY = "cashu_active_mint_v1";
 const CASHU_PENDING_TOKENS_KEY = "cashu_pending_tokens_v1";
 const CASHU_MINT_LIST_KEY = "cashu_tracked_mints_v1";
+const CASHU_PENDING_MELTS_KEY = "cashu_pending_melts_v1";
 const CASHU_HISTORY_KEY = "cashuHistory";
 const CASHU_NIP60_STATE_KEY = "cashu_nip60_state_v1";
 const CASHU_NIP60_QUEUE_KEY = "cashu_nip60_queue_v1";
@@ -71,6 +72,7 @@ export async function initializeStorageBoundaries(): Promise<void> {
       CASHU_ACTIVE_MINT_KEY,
       CASHU_PENDING_TOKENS_KEY,
       CASHU_MINT_LIST_KEY,
+      CASHU_PENDING_MELTS_KEY,
       CASHU_HISTORY_KEY,
       CASHU_NIP60_STATE_KEY,
       CASHU_NIP60_QUEUE_KEY,

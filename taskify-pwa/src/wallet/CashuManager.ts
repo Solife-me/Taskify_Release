@@ -13,7 +13,15 @@ import {
   type Secret,
   type Wallet,
 } from "@cashu/cashu-ts";
-import { getProofs, setProofs } from "./storage";
+import {
+  getPendingMelt,
+  getProofs,
+  listPendingMelts,
+  removePendingMelt,
+  setProofs,
+  upsertPendingMelt,
+  type PendingMeltRecord,
+} from "./storage";
 import {
   getWalletSeedBytes,
   getWalletCounterInit,
@@ -56,6 +64,7 @@ export class CashuManager {
   private onP2PKUsage?: (pubkey: string, count: number) => void;
   private proofCache: Proof[] = [];
   private pendingMeltBlanks = new Map<string, MeltBlanks>();
+  private mutationChain: Promise<void> = Promise.resolve();
 
   constructor(mintUrl: string, options?: CashuManagerOptions) {
     this.mintUrl = mintUrl.replace(/\/$/, "");
@@ -66,6 +75,20 @@ export class CashuManager {
   updateHooks(options: { getP2PKPrivkey?: (pubkey: string) => string | null; onP2PKUsage?: (pubkey: string, count: number) => void }) {
     if (options.getP2PKPrivkey !== undefined) this.getP2PKPrivkey = options.getP2PKPrivkey;
     if (options.onP2PKUsage !== undefined) this.onP2PKUsage = options.onP2PKUsage;
+  }
+
+  private async withMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutationChain;
+    let release: () => void = () => {};
+    this.mutationChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private resolveMintPubkeyForProof(proof: Proof): string | null {
@@ -104,15 +127,17 @@ export class CashuManager {
     return key ? key : null;
   }
 
-  private rememberMeltBlanks(blanks: MeltBlanks | null | undefined): string | null {
+  private rememberMeltBlanks(blanks: MeltBlanks | null | undefined, fallbackQuoteId?: string | null): string | null {
     const key = CashuManager.extractQuoteKey(blanks?.quote);
-    if (!key) return null;
+    const resolvedKey = key ?? (fallbackQuoteId?.trim() || null);
+    if (!resolvedKey) return null;
     if (blanks) {
-      this.pendingMeltBlanks.set(key, blanks);
+      this.pendingMeltBlanks.set(resolvedKey, blanks);
+      this.persistPendingMeltBlanks(resolvedKey, blanks);
     } else {
-      this.pendingMeltBlanks.delete(key);
+      this.pendingMeltBlanks.delete(resolvedKey);
     }
-    return key;
+    return resolvedKey;
   }
 
   private clearMeltBlanksByQuote(target: MeltQuoteResponse | string | null | undefined) {
@@ -133,7 +158,34 @@ export class CashuManager {
         ? target.trim()
         : CashuManager.extractQuoteKey(typeof target === "object" ? target : null);
     if (!key) return null;
-    return this.pendingMeltBlanks.get(key) ?? null;
+    return this.pendingMeltBlanks.get(key) ?? getPendingMelt(this.mintUrl, key)?.blanks ?? null;
+  }
+
+  private persistPendingMeltBlanks(quoteId: string, blanks: MeltBlanks) {
+    const record = getPendingMelt(this.mintUrl, quoteId);
+    if (!record) return;
+    upsertPendingMelt({
+      ...record,
+      blanks,
+      updatedAt: Date.now(),
+    });
+  }
+
+  private persistPendingMelt(record: Omit<PendingMeltRecord, "mint" | "createdAt" | "updatedAt">) {
+    const now = Date.now();
+    const existing = getPendingMelt(this.mintUrl, record.quoteId);
+    upsertPendingMelt({
+      ...record,
+      mint: this.mintUrl,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+  }
+
+  private removePendingMeltRecord(quoteId: string | null | undefined) {
+    const normalized = quoteId?.trim();
+    if (!normalized) return;
+    removePendingMelt(this.mintUrl, normalized);
   }
 
   private async finalizeStoredMeltChange(
@@ -439,6 +491,7 @@ export class CashuManager {
     await this.wallet.loadMint();
     const existing = getProofs(this.mintUrl);
     this.proofCache = Array.isArray(existing) ? [...existing] : [];
+    await this.recoverPendingMelts();
     if (options.bip39seed) {
       try {
         const snapshot = await this.wallet.counters.snapshot();
@@ -482,9 +535,55 @@ export class CashuManager {
     );
   }
 
+  private removeProofSet(base: Proof[], toRemove: Proof[]): Proof[] {
+    const removeKeys = new Set(
+      (Array.isArray(toRemove) ? toRemove : []).map((proof) => CashuManager.proofStorageKey(proof)),
+    );
+    if (!removeKeys.size) return [...base];
+    return (Array.isArray(base) ? base : []).filter(
+      (proof) => !removeKeys.has(CashuManager.proofStorageKey(proof)),
+    );
+  }
+
   private isMeltQuotePaid(quote: MeltQuoteResponse | null | undefined): boolean {
     const state = typeof quote?.state === "string" ? quote.state.toUpperCase() : "";
     return state === "PAID";
+  }
+
+  private isMeltQuotePending(quote: MeltQuoteResponse | null | undefined): boolean {
+    const state = typeof quote?.state === "string" ? quote.state.toUpperCase() : "";
+    return state === "PENDING";
+  }
+
+  private static mintQuoteState(quote: MintQuoteResponse | null | undefined): string {
+    const state = typeof quote?.state === "string" ? quote.state.toUpperCase() : "";
+    return state;
+  }
+
+  private mintSupportsNut(info: any, nut: number): boolean {
+    try {
+      if (typeof info?.isSupported === "function") {
+        return info.isSupported(nut)?.supported === true;
+      }
+    } catch {
+      return false;
+    }
+    const nutInfo = info?.nuts?.[nut] ?? info?.nuts?.[String(nut)];
+    return nutInfo?.supported === true;
+  }
+
+  private async assertP2PKSupported() {
+    const info = await this.ensureMintInfo();
+    if (!this.mintSupportsNut(info, 10) || !this.mintSupportsNut(info, 11)) {
+      throw new Error("Mint does not advertise P2PK spending-condition support (NUT-10/NUT-11)");
+    }
+  }
+
+  private async assertNutSupported(nut: number, label: string) {
+    const info = await this.ensureMintInfo();
+    if (!this.mintSupportsNut(info, nut)) {
+      throw new Error(`Mint does not advertise ${label} support`);
+    }
   }
 
   private async checkMeltQuoteSafe(quote: MeltQuoteResponse): Promise<MeltQuoteResponse | null> {
@@ -507,35 +606,82 @@ export class CashuManager {
     }
   }
 
+  private async recoverPendingMelt(record: PendingMeltRecord) {
+    if (record.blanks) {
+      this.pendingMeltBlanks.set(record.quoteId, record.blanks);
+    }
+    const status = await this.checkMeltQuoteSafe(record.quote);
+    if (!status) return;
+
+    if (this.isMeltQuotePaid(status)) {
+      const recoveredChange = await this.finalizeStoredMeltChange(status);
+      const base = this.removeProofSet(this.proofCache, record.send);
+      const paidProofs = this.mergeProofSets(
+        base,
+        record.keep,
+        Array.isArray(recoveredChange) ? recoveredChange : [],
+      );
+      this.persistProofs(paidProofs);
+      this.clearMeltBlanksByQuote(record.quoteId);
+      this.removePendingMeltRecord(record.quoteId);
+      return;
+    }
+
+    if (this.isMeltQuotePending(status)) {
+      const base = this.removeProofSet(this.proofCache, record.send);
+      this.persistProofs(this.mergeProofSets(base, record.keep));
+      return;
+    }
+
+    this.persistProofs(this.mergeProofSets(this.proofCache, record.keep, record.send));
+    this.clearMeltBlanksByQuote(record.quoteId);
+    this.removePendingMeltRecord(record.quoteId);
+  }
+
+  private async recoverPendingMelts() {
+    const records = listPendingMelts(this.mintUrl);
+    for (const record of records) {
+      try {
+        await this.recoverPendingMelt(record);
+      } catch (error) {
+        console.warn("CashuManager: failed to recover pending melt", error);
+      }
+    }
+  }
+
   get balance(): number {
     return this.proofCache.reduce((a, p) => a + (p?.amount || 0), 0);
   }
 
-  async createMintInvoice(amount: number, description?: string, options?: { pubkey?: string; method?: "bolt11" | "bolt12" }) {
+  async createMintInvoice(
+    amount: number,
+    description?: string,
+    options?: { pubkey?: string; method?: "bolt11" | "bolt12" },
+  ): Promise<MintQuoteResponse> {
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new Error("Amount must be greater than zero");
     }
     const normalizedAmount = Math.floor(amount);
     const walletAny = this.wallet as Wallet & {
-      createMintQuoteBolt11?: (amount: number | { amount: number; unit: string; description?: string; pubkey?: string }, description?: string) => Promise<MintQuoteResponse>;
-      createMintQuoteBolt12?: (payload: { amount: number; unit: string; description?: string; pubkey?: string }) => Promise<MintQuoteResponse>;
+      createMintQuoteBolt11?: (amount: number, description?: string) => Promise<MintQuoteResponse>;
+      createLockedMintQuote?: (amount: number, pubkey: string, description?: string) => Promise<MintQuoteResponse>;
+      createMintQuoteBolt12?: (pubkey: string, options?: { amount?: number; description?: string }) => Promise<MintQuoteResponse>;
     };
     if (options?.method === "bolt12" && typeof walletAny?.createMintQuoteBolt12 === "function") {
-      return walletAny.createMintQuoteBolt12({
+      if (!options.pubkey) throw new Error("BOLT12 mint quotes require a locking public key");
+      const quote = await walletAny.createMintQuoteBolt12(options.pubkey, {
         amount: normalizedAmount,
-        unit: this.unit,
         description,
-        pubkey: options.pubkey,
       });
+      return quote as unknown as MintQuoteResponse;
     }
     if (typeof walletAny?.createMintQuoteBolt11 === "function") {
       if (options?.pubkey) {
-        return walletAny.createMintQuoteBolt11({
-          amount: normalizedAmount,
-          unit: this.unit,
-          description,
-          pubkey: options.pubkey,
-        });
+        await this.assertNutSupported(20, "locked mint quote (NUT-20)");
+        if (typeof walletAny.createLockedMintQuote !== "function") {
+          throw new Error("Installed cashu wallet library does not support locked mint quotes");
+        }
+        return walletAny.createLockedMintQuote(normalizedAmount, options.pubkey, description);
       }
       return walletAny.createMintQuoteBolt11(normalizedAmount, description);
     }
@@ -561,108 +707,126 @@ export class CashuManager {
   }
 
   async claimMint(quoteId: string, amount: number) {
-    const proofs = await this.withMintRefreshRetry(async () => {
-      const config: Record<string, any> = { proofsWeHave: [...this.proofCache] };
-      return this.wallet.mintProofs(amount, quoteId, config);
+    return this.withMutation(async () => {
+      const status = await this.checkMintQuote(quoteId).catch(() => null);
+      const state = CashuManager.mintQuoteState(status);
+      if (state === "ISSUED") {
+        throw new Error("Mint quote is already issued. Restore from wallet seed if proofs are missing.");
+      }
+      if (state && state !== "PAID") {
+        throw new Error("Mint invoice is not paid yet");
+      }
+      const proofs = await this.withMintRefreshRetry(async () => {
+        const config: Record<string, any> = { proofsWeHave: [...this.proofCache] };
+        return this.wallet.mintProofs(amount, quoteId, config);
+      });
+      const signed = this.autoSignProofs(proofs);
+      this.validateDleqProofs(signed);
+      this.mergeProofs(signed);
+      return signed;
     });
-    const signed = this.autoSignProofs(proofs);
-    this.validateDleqProofs(signed);
-    this.mergeProofs(signed);
-    return signed;
   }
 
   async receiveToken(encoded: string) {
-    const privkeyMap = this.resolvePrivkeysForToken(encoded);
-    const privkeyValues = [...privkeyMap.values()].map((entry) => entry.privkey);
-    const newProofs = await this.withMintRefreshRetry(async () => {
-      const receiveConfig: Record<string, any> = { proofsWeHave: [...this.proofCache] };
-      if (privkeyValues.length === 1) {
-        receiveConfig.privkey = privkeyValues[0];
-      } else if (privkeyValues.length > 1) {
-        receiveConfig.privkey = privkeyValues;
-      }
-      return this.wallet.receive(encoded, receiveConfig);
+    return this.withMutation(async () => {
+      const privkeyMap = this.resolvePrivkeysForToken(encoded);
+      const privkeyValues = [...privkeyMap.values()].map((entry) => entry.privkey);
+      const newProofs = await this.withMintRefreshRetry(async () => {
+        const receiveConfig: Record<string, any> = { proofsWeHave: [...this.proofCache] };
+        if (privkeyValues.length === 1) {
+          receiveConfig.privkey = privkeyValues[0];
+        } else if (privkeyValues.length > 1) {
+          receiveConfig.privkey = privkeyValues;
+        }
+        return this.wallet.receive(encoded, receiveConfig);
+      });
+      const signed = this.autoSignProofs(newProofs);
+      this.validateDleqProofs(signed);
+      this.mergeProofs(signed);
+      privkeyMap.forEach((entry, pubkey) => {
+        if (entry.count > 0) this.onP2PKUsage?.(pubkey, entry.count);
+      });
+      return signed;
     });
-    const signed = this.autoSignProofs(newProofs);
-    this.validateDleqProofs(signed);
-    this.mergeProofs(signed);
-    privkeyMap.forEach((entry, pubkey) => {
-      if (entry.count > 0) this.onP2PKUsage?.(pubkey, entry.count);
-    });
-    return signed;
   }
 
   async createTokenFromProofSecrets(
     secrets: string[],
   ): Promise<{ token: string; send: Proof[]; keep: Proof[]; lockInfo: SendTokenLockInfo }> {
-    if (!Array.isArray(secrets) || secrets.length === 0) {
-      throw new Error("Select at least one note");
-    }
-    const requested = new Set<string>();
-    for (const secret of secrets) {
-      if (typeof secret === "string" && secret.trim()) {
-        requested.add(secret.trim());
+    return this.withMutation(async () => {
+      if (!Array.isArray(secrets) || secrets.length === 0) {
+        throw new Error("Select at least one note");
       }
-    }
-    if (!requested.size) {
-      throw new Error("Select at least one note");
-    }
-    const selected: Proof[] = [];
-    const keep: Proof[] = [];
-    for (const proof of this.proofCache) {
-      const secret = typeof proof?.secret === "string" ? proof.secret : "";
-      if (secret && requested.has(secret)) {
-        selected.push(proof);
-        requested.delete(secret);
-      } else {
-        keep.push(proof);
+      const requested = new Set<string>();
+      for (const secret of secrets) {
+        if (typeof secret === "string" && secret.trim()) {
+          requested.add(secret.trim());
+        }
       }
-    }
-    if (requested.size) {
-      throw new Error("Some selected notes are no longer available");
-    }
-    if (!selected.length) {
-      throw new Error("Select at least one note");
-    }
-    this.persistProofs(keep);
-    const token = getEncodedToken({ mint: this.mintUrl, proofs: selected, unit: this.unit });
-    return { token, send: selected, keep, lockInfo: undefined };
+      if (!requested.size) {
+        throw new Error("Select at least one note");
+      }
+      const selected: Proof[] = [];
+      const keep: Proof[] = [];
+      for (const proof of this.proofCache) {
+        const secret = typeof proof?.secret === "string" ? proof.secret : "";
+        if (secret && requested.has(secret)) {
+          selected.push(proof);
+          requested.delete(secret);
+        } else {
+          keep.push(proof);
+        }
+      }
+      if (requested.size) {
+        throw new Error("Some selected notes are no longer available");
+      }
+      if (!selected.length) {
+        throw new Error("Select at least one note");
+      }
+      this.validateDleqProofs(selected);
+      this.persistProofs(keep);
+      const token = getEncodedToken({ mint: this.mintUrl, proofs: selected, unit: this.unit });
+      return { token, send: selected, keep, lockInfo: undefined };
+    });
   }
 
   async createSendToken(
     amount: number,
     options?: CreateSendTokenOptions,
   ): Promise<{ token: string; send: Proof[]; keep: Proof[]; lockInfo: SendTokenLockInfo }> {
-    if (!Number.isFinite(amount) || amount <= 0) {
-      throw new Error("Amount must be greater than zero");
-    }
-    let outputConfig: OutputConfig | undefined;
-    if (options?.p2pk) {
-      const pubkey = options.p2pk.pubkey;
-      if (!pubkey || (Array.isArray(pubkey) && pubkey.length === 0)) {
-        throw new Error("Missing public key for P2PK lock");
+    return this.withMutation(async () => {
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("Amount must be greater than zero");
       }
-      outputConfig = {
-        send: {
-          type: "p2pk",
-          options: options.p2pk,
-        },
-      } satisfies OutputConfig;
-    }
-    const { keep, send } = await this.withMintRefreshRetry(async () => {
-      const response = await this.wallet.send(
-        amount,
-        [...this.proofCache],
-        { proofsWeHave: [...this.proofCache] },
-        outputConfig,
-      );
-      return { keep: response.keep, send: response.send };
+      let outputConfig: OutputConfig | undefined;
+      if (options?.p2pk) {
+        await this.assertP2PKSupported();
+        const pubkey = options.p2pk.pubkey;
+        if (!pubkey || (Array.isArray(pubkey) && pubkey.length === 0)) {
+          throw new Error("Missing public key for P2PK lock");
+        }
+        outputConfig = {
+          send: {
+            type: "p2pk",
+            options: options.p2pk,
+          },
+        } satisfies OutputConfig;
+      }
+      const { keep, send } = await this.withMintRefreshRetry(async () => {
+        const response = await this.wallet.send(
+          amount,
+          [...this.proofCache],
+          { proofsWeHave: [...this.proofCache] },
+          outputConfig,
+        );
+        return { keep: response.keep, send: response.send };
+      });
+      this.validateDleqProofs([...keep, ...send]);
+      this.persistProofs(this.mergeProofSets(keep));
+      const token = getEncodedToken({ mint: this.mintUrl, proofs: send, unit: this.unit });
+      const lockInfo: SendTokenLockInfo = options?.p2pk ? { type: "p2pk", options: options.p2pk } : undefined;
+      return { token, send, keep, lockInfo };
     });
-    this.validateDleqProofs([...keep, ...send]);
-    this.persistProofs(this.mergeProofSets(keep));
-    const token = getEncodedToken({ mint: this.mintUrl, proofs: send, unit: this.unit });
-    const lockInfo: SendTokenLockInfo = options?.p2pk ? { type: "p2pk", options: options.p2pk } : undefined;
-    return { token, send, keep, lockInfo };
   }
 
   async checkProofStates(proofs: Proof[]): Promise<ProofState[]> {
@@ -755,8 +919,13 @@ export class CashuManager {
   }
 
   private async executeMeltQuote(quote: MeltQuoteResponse): Promise<MeltProofsResponse> {
+    return this.withMutation(() => this.executeMeltQuoteUnlocked(quote));
+  }
+
+  private async executeMeltQuoteUnlocked(quote: MeltQuoteResponse): Promise<MeltProofsResponse> {
     const required = this.requiredForQuote(quote);
     if (this.balance < required) throw new Error("Insufficient balance for invoice + fees");
+    const quoteId = CashuManager.extractQuoteKey(quote);
     const { keep, send } = await this.withMintRefreshRetry(async () => {
       const swapped = await this.wallet.send(
         required,
@@ -767,24 +936,45 @@ export class CashuManager {
       return { keep: swapped.keep, send: swapped.send };
     });
     const proofsIfMeltUnpaid = this.mergeProofSets(keep, send);
+    this.persistProofs(proofsIfMeltUnpaid);
+    if (quoteId) {
+      this.persistPendingMelt({
+        quoteId,
+        quote,
+        keep,
+        send,
+      });
+    }
 
     let storedKey: string | null = null;
     let res: MeltProofsResponse;
     try {
       res = await this.wallet.meltProofs(quote as MeltQuoteResponse, send, {
         onChangeOutputsCreated: (blanks) => {
-          storedKey = this.rememberMeltBlanks(blanks);
+          storedKey = this.rememberMeltBlanks(blanks, quoteId);
         },
       });
     } catch (error) {
-      this.persistProofs(proofsIfMeltUnpaid);
       const status = await this.checkMeltQuoteSafe(quote);
-      if (!status || !this.isMeltQuotePaid(status)) {
+      if (!status) {
+        throw error;
+      }
+      if (this.isMeltQuotePending(status)) {
+        this.persistProofs(this.mergeProofSets(keep));
+        return {
+          quote: status,
+          change: [],
+        };
+      }
+      if (!this.isMeltQuotePaid(status)) {
+        this.persistProofs(proofsIfMeltUnpaid);
+        if (quoteId) this.removePendingMeltRecord(quoteId);
         throw error;
       }
       const recoveredChange = await this.finalizeStoredMeltChange(status);
       const paidProofs = this.mergeProofSets(keep, Array.isArray(recoveredChange) ? recoveredChange : []);
       this.persistProofs(paidProofs);
+      if (quoteId) this.removePendingMeltRecord(quoteId);
       return {
         quote: status,
         change: Array.isArray(recoveredChange) ? recoveredChange : [],
@@ -820,8 +1010,12 @@ export class CashuManager {
       const paidProofs = this.mergeProofSets(keep, resolvedChange);
       this.persistProofs(paidProofs);
       if (responseKey) this.clearMeltBlanksByQuote(responseKey);
+      if (responseKey) this.removePendingMeltRecord(responseKey);
+    } else if (this.isMeltQuotePending(res?.quote as MeltQuoteResponse)) {
+      this.persistProofs(this.mergeProofSets(keep));
     } else {
       this.persistProofs(proofsIfMeltUnpaid);
+      if (responseKey) this.removePendingMeltRecord(responseKey);
     }
 
     return res;
@@ -852,7 +1046,9 @@ export class CashuManager {
     let attempt = Math.min(Math.floor(targetAmount), Math.floor(balance));
     if (!Number.isFinite(attempt) || attempt <= 0) return null;
     while (attempt > 0) {
-      const quote = await this.withMintRefreshRetry(() => this.wallet.createMultiPathMeltQuote(invoice, attempt));
+      const attemptMsat = attempt * 1000;
+      if (!Number.isFinite(attemptMsat) || attemptMsat > Number.MAX_SAFE_INTEGER) return null;
+      const quote = await this.withMintRefreshRetry(() => this.wallet.createMultiPathMeltQuote(invoice, attemptMsat));
       const required = this.requiredForQuote(quote as MeltQuoteResponse);
       if (required <= balance) {
         return { quote: quote as MeltQuoteResponse, amount: quote.amount ?? attempt, required };

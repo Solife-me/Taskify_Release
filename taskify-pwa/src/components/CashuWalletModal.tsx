@@ -5058,6 +5058,13 @@ export default function CashuWalletModal({
         }));
       }
       try {
+        const state = await checkMintQuote(quoteId, { mintUrl: options?.mintUrl });
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state !== "PAID") {
+          throw new Error("Mint invoice is not paid yet");
+        }
         await claimMint(quoteId, amountSat, { mintUrl: options?.mintUrl });
         handleMintQuoteClaimSuccess(historyKey, amountSat, options?.mintUrl ?? null);
       } catch (err: any) {
@@ -5073,7 +5080,7 @@ export default function CashuWalletModal({
         mintQuoteClaimingRef.current.delete(quoteId);
       }
     },
-    [claimMint, handleMintQuoteClaimSuccess, setHistoryMintQuoteStates],
+    [checkMintQuote, claimMint, handleMintQuoteClaimSuccess, setHistoryMintQuoteStates],
   );
   const performTokenStateCheck = useCallback(
     async (item: HistoryItem, options?: { silent?: boolean }) => {
@@ -5278,7 +5285,7 @@ export default function CashuWalletModal({
       }));
       try {
         const state = await checkMintQuote(mintQuote.quote, { mintUrl: targetMintRaw });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "PAID") {
           await claimMint(mintQuote.quote, mintQuote.amount, { mintUrl: targetMintRaw });
           setHistory((prev) => [
             buildHistoryEntry({
@@ -5317,6 +5324,16 @@ export default function CashuWalletModal({
             return next;
           });
           showToast("Invoice expired", 3000);
+          return;
+        }
+        if (normalizedState === "ISSUED") {
+          setHistoryMintQuoteStates((prev) => ({
+            ...prev,
+            [item.id]: {
+              status: "error",
+              message: "Quote already issued. Restore from wallet seed if balance is missing.",
+            },
+          }));
           return;
         }
         const message =
@@ -14073,8 +14090,13 @@ export default function CashuWalletModal({
     const handleState = async (state: string) => {
       if (cancelled || claimed) return;
       const normalized = typeof state === "string" ? state.toUpperCase() : "";
-      if (normalized === "PAID" || normalized === "ISSUED") {
+      if (normalized === "PAID") {
         await finalizeClaim();
+        return;
+      }
+      if (normalized === "ISSUED") {
+        setMintStatus("error");
+        setMintError("Quote already issued. Restore from wallet seed if balance is missing.");
         return;
       }
       if (expiryMs <= Date.now()) {
@@ -14221,9 +14243,19 @@ export default function CashuWalletModal({
       const handleState = (quoteId: string, state: string, amountFromEvent?: number) => {
         if (cancelled) return;
         const normalizedState = state?.toUpperCase?.() ?? "";
-        if (normalizedState !== "PAID" && normalizedState !== "ISSUED") return;
         const plan = planMap.get(quoteId);
         if (!plan) return;
+        if (normalizedState === "ISSUED") {
+          setHistoryMintQuoteStates((prev) => ({
+            ...prev,
+            [plan.item.id]: {
+              status: "error",
+              message: "Quote already issued. Restore from wallet seed if balance is missing.",
+            },
+          }));
+          return;
+        }
+        if (normalizedState !== "PAID") return;
         const amount = amountFromEvent && amountFromEvent > 0 ? amountFromEvent : plan.amount;
         void claimMintQuoteById(quoteId, amount, {
           historyItemId: plan.item.id,
@@ -15231,7 +15263,10 @@ export default function CashuWalletModal({
       const deadline = Date.now() + 120000;
       while (Date.now() < deadline) {
         const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state === "PAID") {
           setNwcFundState("claiming");
           await claimMint(quote.quote, amount, { mintUrl: quote.mintUrl });
           setNwcFundState("done");
@@ -15307,7 +15342,10 @@ export default function CashuWalletModal({
       const deadline = Date.now() + 120000;
       while (Date.now() < deadline) {
         const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state === "PAID") {
           await claimMint(quote.quote, amountSat, { mintUrl: quote.mintUrl });
           setLnurlWithdrawState("done");
           setLnurlWithdrawMessage("");
@@ -15397,7 +15435,10 @@ export default function CashuWalletModal({
       const deadline = Date.now() + 120000;
       while (Date.now() < deadline) {
         const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state === "PAID") {
           setMintSwapState("claiming");
           await claimMint(quote.quote, amount, { mintUrl: quote.mintUrl });
           setMintSwapState("done");
