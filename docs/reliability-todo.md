@@ -214,6 +214,22 @@ Document the public HTTP contract in [docs/worker-backend.md](worker-backend.md)
 
 **Acceptance.** Each module < 800 lines; index.ts becomes the routing entrypoint.
 
+**Progress.** index.ts down from **4,758 → 3,736 lines** (−1,022, −21.5%) across one pass:
+
+- ✅ **Pass 1 — Google Calendar extraction**: created [worker/src/gcal.ts](../worker/src/gcal.ts) (1,059 lines) containing the entire OAuth + sync + webhook + token-encryption flow (15 exported functions: `gcalEncryptToken`, `gcalDecryptToken`, `verifyGcalAuth`, `ensureGcalSchema`, `handleGcalAuthUrl`, `handleGcalAuthCallback`, `handleGcalDisconnect`, `handleGcalStatus`, `handleGcalCalendars`, `handleGcalToggleCalendar`, `handleGcalEvents`, `handleGcalSync`, `handleGcalWebhook`, `gcalRenewExpiredWatches`, `gcalRetryFailedSyncs`). Also exported the necessary shared helpers from index.ts (`requireDb`, `jsonResponse`, `base64UrlEncode`, `base64UrlDecode`, `parseJson`, `D1Database`) so gcal.ts can import them. Trailing test re-exports preserved by re-exporting from gcal.ts. All **43 worker tests still pass**.
+
+**Remaining for #12** (each becomes ≤ ~600 lines once extracted; gcal.ts at 1,059 is the largest and currently exceeds the <800 target — splitting it further would mean separating OAuth from sync, which adds boundaries without much value):
+
+- **`worker/src/preview.ts`** — link preview proxy (`handlePreviewProxy` + `getPreviewFromContent` glue, ~1,500 lines). Largest remaining single concern.
+- **`worker/src/reminders.ts`** — `handleSaveReminders`, `handlePollReminders`, `processDueReminders`, push delivery (`sendPushToDevice`, `signVapidJWT`) — ~800 lines.
+- **`worker/src/devices.ts`** — `handleRegisterDevice`, `handleDeleteDevice` (~150 lines). Could merge with reminders.
+- **`worker/src/backups.ts`** — `handleSaveBackup`, `handleLoadBackup`, `cleanupExpiredBackups` (~250 lines).
+- **`worker/src/nip05.ts`** — `handleNip05Lookup` + `parseNip05Address` (~150 lines).
+- **`worker/src/voice.ts`** — `handleVoiceExtract`, `handleVoiceFinalize`, Gemini integration (~400 lines).
+- **`worker/src/lib/`** — promote shared helpers (`jsonResponse`, `base64Url*`, `requireDb`, `parseJson`, env types) into a dedicated lib so handler modules don't need to circular-import from `index.ts`.
+
+After all splits, index.ts becomes ~150 lines of routing only.
+
 ---
 
 ## Conflict resolution & collaboration (deferred)
