@@ -2,8 +2,8 @@
 // Handles OAuth, calendar/event sync, push webhooks, and AES-256-GCM token encryption.
 
 import { schnorr } from "@noble/curves/secp256k1.js";
-import type { Env, D1Database } from "./index.ts";
-import { requireDb, jsonResponse, base64UrlEncode, base64UrlDecode, parseJson } from "./index.ts";
+import type { Env, D1Database } from "./lib.ts";
+import { requireDb, jsonResponse, base64UrlEncode, base64UrlDecode, parseJson } from "./lib.ts";
 
 // =============================================================================
 

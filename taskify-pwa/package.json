@@ -18,6 +18,7 @@
     "@noble/hashes": "^1.8.0",
     "@nostr-dev-kit/ndk": "^2.18.1",
     "@scure/bip39": "^1.2.1",
+    "@tanstack/react-virtual": "^3.13.24",
     "bech32": "^2.0.0",
     "buffer": "^6.0.3",
     "dompurify": "^3.4.2",

@@ -2,6 +2,12 @@
 // @ts-nocheck
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  flattenUpcomingGroups,
+  buildUpcomingDateKeyIndex,
+  type UpcomingFlatRow,
+} from "./lib/upcomingRows";
 import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
@@ -9946,6 +9952,38 @@ export default function App() {
     });
     return groups;
   }, [upcomingDayMap]);
+
+  // ── Virtualized upcoming list (Item #11) ──────────────────────────────────
+  // The grouped upcoming view is the only surface that grows linearly with
+  // total task/event count across days, so it's the highest-leverage place to
+  // virtualize. We flatten {group → [header, ...events, ...tasks]} into a
+  // single row array (in `lib/upcomingRows.ts`, so the logic is unit-testable
+  // independent of React/jsdom plumbing), then drive a `react-virtual` list
+  // over it. Day headers are small (~32px), cards are variable (~120px
+  // estimate, refined by ResizeObserver via `measureElement`). Scroll parent
+  // is the existing `.app-content` container (`appContentRef`).
+  const upcomingFlatRows = useMemo<UpcomingFlatRow[]>(
+    () => flattenUpcomingGroups(upcomingGroups),
+    [upcomingGroups],
+  );
+
+  // Map dateKey → flat-row index of that day's header. Used by
+  // `scrollUpcomingToDate` to call `virtualizer.scrollToIndex(...)` when the
+  // target day is offscreen (and therefore not in the rendered DOM subtree).
+  const upcomingDateKeyToIndex = useMemo(
+    () => buildUpcomingDateKeyIndex(upcomingFlatRows),
+    [upcomingFlatRows],
+  );
+
+  const upcomingVirtualizer = useVirtualizer({
+    count: upcomingFlatRows.length,
+    getScrollElement: () => appContentRef.current,
+    estimateSize: (index) => {
+      const row = upcomingFlatRows[index];
+      return row?.kind === "day-header" ? 32 : 120;
+    },
+    overscan: 8,
+  });
   const {
     calendarAnchor: upcomingListAnchor,
     calendarMonthLabel: upcomingListMonthLabel,
@@ -10012,6 +10050,16 @@ export default function App() {
     if (!list || !scrollContainer) return false;
     const targetKey = resolveUpcomingTargetDateKey(dateKey);
     if (!targetKey) return false;
+
+    // Grouped view is virtualized: target day's header may be outside the
+    // rendered DOM range, so `querySelector` would miss it. Use the
+    // virtualizer's scrollToIndex with the precomputed dateKey→index map.
+    const virtualIndex = upcomingDateKeyToIndex.get(targetKey);
+    if (typeof virtualIndex === "number") {
+      upcomingVirtualizer.scrollToIndex(virtualIndex, { align: "start", behavior });
+      return true;
+    }
+
     const selector = `[data-upcoming-date="${targetKey}"]`;
     const target = list.querySelector(selector) as HTMLElement | null;
     const fallback = list.firstElementChild as HTMLElement | null;
@@ -10024,7 +10072,7 @@ export default function App() {
       scrollContainer.scrollTo({ top: offset, behavior });
     });
     return true;
-  }, [resolveUpcomingTargetDateKey]);
+  }, [resolveUpcomingTargetDateKey, upcomingDateKeyToIndex, upcomingVirtualizer]);
   const scrollUpcomingToToday = useCallback((behavior: ScrollBehavior = "smooth") => {
     const todayKey = isoDatePart(new Date().toISOString());
     return scrollUpcomingToDate(todayKey, behavior);
@@ -17262,16 +17310,52 @@ export default function App() {
 	        ) : filteredUpcomingCount === 0 ? (
 	          <div className="surface-panel p-6 text-center text-sm text-secondary">No upcoming items.</div>
 	        ) : (
-	          <div className="upcoming-list space-y-4" ref={upcomingListRef}>
-	            {upcomingGroups.map((group) => (
-	              <div key={group.dateKey} className="upcoming-day" data-upcoming-date={group.dateKey}>
-	                <div className="upcoming-day__label">{group.label}</div>
-	                <div className="space-y-2">
-	                  {group.events.map((ev) => renderUpcomingEventCard(ev))}
-	                  {group.tasks.map((task) => renderUpcomingTaskCard(task))}
+	          // Virtualized grouped upcoming list (Item #11). Total height set
+	          // by virtualizer; rows are absolutely positioned via translateY
+	          // so only ~visible items live in the DOM. `data-upcoming-date`
+	          // attributes on rendered headers preserve the existing
+	          // `getFocusedUpcomingDateFromScroll` lookup for the visible
+	          // viewport; offscreen days are reachable via
+	          // `scrollUpcomingToDate` which routes through
+	          // `virtualizer.scrollToIndex`.
+	          <div
+	            className="upcoming-list"
+	            ref={upcomingListRef}
+	            style={{ height: upcomingVirtualizer.getTotalSize(), position: "relative", width: "100%" }}
+	          >
+	            {upcomingVirtualizer.getVirtualItems().map((virtualRow) => {
+	              const row = upcomingFlatRows[virtualRow.index];
+	              if (!row) return null;
+	              const key =
+	                row.kind === "day-header"
+	                  ? `header-${row.dateKey}`
+	                  : row.kind === "event"
+	                  ? `event-${row.event.id}`
+	                  : `task-${row.task.id}`;
+	              return (
+	                <div
+	                  key={key}
+	                  ref={upcomingVirtualizer.measureElement}
+	                  data-index={virtualRow.index}
+	                  data-upcoming-date={row.kind === "day-header" ? row.dateKey : undefined}
+	                  style={{
+	                    position: "absolute",
+	                    top: 0,
+	                    left: 0,
+	                    width: "100%",
+	                    transform: `translateY(${virtualRow.start}px)`,
+	                  }}
+	                >
+	                  {row.kind === "day-header" ? (
+	                    <div className="upcoming-day__label">{row.label}</div>
+	                  ) : row.kind === "event" ? (
+	                    renderUpcomingEventCard(row.event)
+	                  ) : (
+	                    renderUpcomingTaskCard(row.task)
+	                  )}
 	                </div>
-	              </div>
-	            ))}
+	              );
+	            })}
 	          </div>
 	        )}
         </>
