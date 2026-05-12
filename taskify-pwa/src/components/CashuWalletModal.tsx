@@ -64,7 +64,7 @@ import {
   LS_GROUP_LEFT,
   LS_GROUP_MUTED,
 } from "../localStorageKeys";
-import { LS_NOSTR_SK } from "../nostrKeys";
+import { LS_NOSTR_SK, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -139,6 +139,16 @@ type ScanResult = QrScannerLib.ScanResult;
 
 const WALLET_SCAN_TARGET_SIZE = 800;
 const WALLET_SCAN_MAX_SCANS_PER_SECOND = 25;
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined") {
+      resolve();
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
+}
 
 const AnimatedEllipsis = () => {
   const [step, setStep] = useState(0);
@@ -1645,6 +1655,30 @@ type NostrIdentity = {
   secret: string;
   pubkey: string;
 };
+
+type NostrIdentityInfo = {
+  identity: NostrIdentity | null;
+  reason: string | null;
+};
+
+const EMPTY_NOSTR_IDENTITY_INFO: NostrIdentityInfo = { identity: null, reason: null };
+
+function readStoredNostrIdentity(): NostrIdentityInfo {
+  const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
+  if (!raw) {
+    return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
+    return { identity: null, reason: "Nostr secret key must be 64 hexadecimal characters." };
+  }
+  const normalized = raw.toLowerCase();
+  try {
+    const pubkey = getPublicKey(hexToBytes(normalized));
+    return { identity: { secret: normalized, pubkey }, reason: null };
+  } catch {
+    return { identity: null, reason: "Invalid Nostr secret key." };
+  }
+}
 
 type PublicFollow = {
   pubkey: string;
@@ -3582,6 +3616,9 @@ export default function CashuWalletModal({
   const nostrPoolClosingRef = useRef(false);
   const nostrSubscriptionActiveRef = useRef(false);
   const nostrIdentityRef = useRef<{ secret: string; pubkey: string } | null>(null);
+  const [nostrIdentityInfo, setNostrIdentityInfo] = useState<NostrIdentityInfo>(() =>
+    paymentRequestsEnabled ? readStoredNostrIdentity() : EMPTY_NOSTR_IDENTITY_INFO,
+  );
 
   const peanutSendToken = useMemo(() => {
     if (!sendTokenStr.trim()) return null;
@@ -3663,22 +3700,7 @@ export default function CashuWalletModal({
     setSendLockError("");
   }, []);
 
-  const readNostrIdentity = useCallback((): { identity: NostrIdentity | null; reason: string | null } => {
-    const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
-    if (!raw) {
-      return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
-    }
-    if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
-      return { identity: null, reason: "Nostr secret key must be 64 hexadecimal characters." };
-    }
-    const normalized = raw.toLowerCase();
-    try {
-      const pubkey = getPublicKey(hexToBytes(normalized));
-      return { identity: { secret: normalized, pubkey }, reason: null };
-    } catch {
-      return { identity: null, reason: "Invalid Nostr secret key." };
-    }
-  }, []);
+  const readNostrIdentity = useCallback(readStoredNostrIdentity, []);
 
   const readProfileEventId = useCallback((pubkey: string): string | null => {
     if (!pubkey) return null;
@@ -4049,11 +4071,28 @@ export default function CashuWalletModal({
     }
   }, []);
 
-
-  const nostrIdentityInfo = useMemo(() => {
-    if (!paymentRequestsEnabled) return { identity: null as NostrIdentity | null, reason: null as string | null };
-    return readNostrIdentity();
+  const refreshNostrIdentity = useCallback(() => {
+    setNostrIdentityInfo(paymentRequestsEnabled ? readNostrIdentity() : EMPTY_NOSTR_IDENTITY_INFO);
   }, [paymentRequestsEnabled, readNostrIdentity]);
+
+  useEffect(() => {
+    refreshNostrIdentity();
+  }, [open, receiveMode, refreshNostrIdentity, sendMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === LS_NOSTR_SK) {
+        refreshNostrIdentity();
+      }
+    };
+    window.addEventListener(TASKIFY_NOSTR_KEY_UPDATED_EVENT, refreshNostrIdentity);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(TASKIFY_NOSTR_KEY_UPDATED_EVENT, refreshNostrIdentity);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [refreshNostrIdentity]);
 
   useEffect(() => {
     nostrIdentityRef.current = nostrIdentityInfo.identity;
@@ -4075,7 +4114,44 @@ export default function CashuWalletModal({
 
   const [recvMsg, setRecvMsg] = useState("");
 
-  const [lnInput, setLnInput] = useState("");
+  const [lnInput, setLnInputState] = useState("");
+  const lnInputValueRef = useRef("");
+  const lnInputCommitTimerRef = useRef<number | null>(null);
+  const setLnInput = useCallback((next: string | ((previous: string) => string), options?: { defer?: boolean }) => {
+    const resolveNext = (previous: string) => {
+      const resolved = typeof next === "function" ? next(previous) : next;
+      return typeof resolved === "string" ? resolved : String(resolved ?? "");
+    };
+    if (options?.defer && typeof window !== "undefined") {
+      const resolved = resolveNext(lnInputValueRef.current);
+      lnInputValueRef.current = resolved;
+      if (lnInputCommitTimerRef.current !== null) {
+        window.clearTimeout(lnInputCommitTimerRef.current);
+      }
+      lnInputCommitTimerRef.current = window.setTimeout(() => {
+        lnInputCommitTimerRef.current = null;
+        setLnInputState(lnInputValueRef.current);
+      }, 140);
+      return;
+    }
+    if (typeof window !== "undefined" && lnInputCommitTimerRef.current !== null) {
+      window.clearTimeout(lnInputCommitTimerRef.current);
+      lnInputCommitTimerRef.current = null;
+    }
+    setLnInputState((previous) => {
+      const resolved = resolveNext(previous);
+      lnInputValueRef.current = resolved;
+      return resolved;
+    });
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (lnInputCommitTimerRef.current !== null) {
+        window.clearTimeout(lnInputCommitTimerRef.current);
+        lnInputCommitTimerRef.current = null;
+      }
+    };
+  }, []);
   const [lnAddrAmt, setLnAddrAmt] = useState("");
   const [lnState, setLnState] = useState<"idle" | "sending" | "done" | "error">("idle");
   const [lnError, setLnError] = useState("");
@@ -5559,6 +5635,26 @@ export default function CashuWalletModal({
   }, [npubCashIdentity?.address]);
   const nut16CollectorRef = useRef<Nut16Collector | null>(null);
   const lnRef = useRef<HTMLTextAreaElement | null>(null);
+  const readLightningInput = useCallback(() => {
+    const current = lnRef.current?.value ?? lnInputValueRef.current ?? lnInput;
+    return typeof current === "string" ? current : "";
+  }, [lnInput]);
+  const commitLightningInputFromDom = useCallback(
+    (value?: string) => {
+      const next = typeof value === "string" ? value : readLightningInput();
+      setLnInput(next);
+      return next;
+    },
+    [readLightningInput, setLnInput],
+  );
+  useEffect(() => {
+    const input = lnRef.current;
+    if (!input) return;
+    if (typeof document !== "undefined" && document.activeElement === input) return;
+    if (input.value !== lnInput) {
+      input.value = lnInput;
+    }
+  }, [lnInput, lightningSendView, sendMode]);
   const npubCashClaimAbortRef = useRef<AbortController | null>(null);
   const npubCashClaimingRef = useRef(false);
   const backgroundNpubCashClaimRef = useRef(false);
@@ -9347,7 +9443,7 @@ export default function CashuWalletModal({
     setContactsOpen(false);
     resetContactForm();
     setLightningSendView("input");
-  }, [resetContactForm]);
+  }, [resetContactForm, setLnInput]);
 
   useEffect(() => {
     const previous = previousReceiveModeRef.current;
@@ -10370,7 +10466,7 @@ export default function CashuWalletModal({
       setShowNwcSheet(false);
       setLightningSendView("input");
     }
-  }, [open, nwcConnection, resetSendLockSettings]);
+  }, [open, nwcConnection, resetSendLockSettings, setLnInput]);
 
   useEffect(() => {
     if (!pendingPrimaryP2pkKeyId) return;
@@ -10898,11 +10994,6 @@ export default function CashuWalletModal({
     primaryCurrency,
   ]);
 
-  const canReviewLightningInput = useMemo(() => {
-    if (!lnInput.trim()) return false;
-    return isBolt11Input || isLnAddress || isLnurlInput;
-  }, [lnInput, isBolt11Input, isLnAddress, isLnurlInput]);
-
   const lightningInvoiceAmountSecondaryDisplay = useMemo(() => {
     if (lightningInvoiceAmountSat == null) return null;
     if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
@@ -11172,7 +11263,8 @@ export default function CashuWalletModal({
   );
 
   const handleLightningInputReview = useCallback(() => {
-    const kind = evaluateLightningSendInput(lnInput);
+    const currentInput = commitLightningInputFromDom();
+    const kind = evaluateLightningSendInput(currentInput);
     if (kind === "invoice") {
       setLnAddrAmt("");
       setLnState("idle");
@@ -11186,7 +11278,7 @@ export default function CashuWalletModal({
       setLnError("Unsupported input. Paste a Lightning invoice, address, or LNURL.");
     }
     return kind;
-  }, [evaluateLightningSendInput, lnInput]);
+  }, [commitLightningInputFromDom, evaluateLightningSendInput]);
 
   const handlePasteLightningInput = useCallback(async () => {
     try {
@@ -11210,7 +11302,7 @@ export default function CashuWalletModal({
     } catch {
       alert("Unable to read clipboard. Please paste manually.");
     }
-  }, [evaluateLightningSendInput]);
+  }, [evaluateLightningSendInput, setLnInput]);
 
   const handlePaymentRequestKeypadInput = useCallback((key: string) => {
     setPaymentRequestManualAmount((prev) => {
@@ -13999,7 +14091,7 @@ export default function CashuWalletModal({
       console.error("handleLnurlScan failed", err);
       setScannerMessage(err?.message || String(err));
     }
-  }, []);
+  }, [setLnInput]);
 
   const openScanner = useCallback(async () => {
     const constraints: MediaStreamConstraints = {
@@ -14437,6 +14529,7 @@ export default function CashuWalletModal({
 
     setCreatingSendToken(true);
     try {
+      await yieldToBrowser();
       const {
         token,
         proofs: sentProofs,
@@ -14824,12 +14917,21 @@ export default function CashuWalletModal({
     async function process() {
       switch (pendingScan.type) {
         case "ecash": {
-          openReceiveEcashSheet();
           setRecvMsg("");
+          setReceiveMode(null);
           setSendMode(null);
           setShowSendOptions(false);
           setScannerMessage("");
-          await processEcashInput(pendingScan.token);
+          const interpretation = interpretEcashInput(pendingScan.token);
+          if (interpretation.kind !== "token") {
+            showToast("Unrecognized eCash token.", 3500);
+            break;
+          }
+          try {
+            await redeemEcashToken(interpretation.value);
+          } catch (err: any) {
+            showToast(err?.message || "Unable to redeem scanned eCash token.", 4000);
+          }
           break;
         }
         case "bolt11": {
@@ -14883,8 +14985,10 @@ export default function CashuWalletModal({
     pendingScan,
     handleLnurlScan,
     handlePaymentRequestScan,
-    openReceiveEcashSheet,
-    processEcashInput,
+    interpretEcashInput,
+    redeemEcashToken,
+    showToast,
+    setLnInput,
   ]);
 
   const handlePasteEcashClipboard = useCallback(async () => {
@@ -14980,7 +15084,8 @@ export default function CashuWalletModal({
     setLnState("sending");
     setLnError("");
     try {
-      const raw = lnInput.trim();
+      await yieldToBrowser();
+      const raw = commitLightningInputFromDom().trim();
       if (!raw) throw new Error("Paste an invoice or enter lightning address");
       const normalized = raw.replace(/^lightning:/i, "").trim();
       let toastLabel: string | null = null;
@@ -22567,15 +22672,19 @@ export default function CashuWalletModal({
                   ref={lnRef}
                   className="pill-textarea wallet-textarea w-full"
                   placeholder="Enter invoice or lightning address"
-                  value={lnInput}
+                  defaultValue={lnInput}
                   onChange={(event) => {
-                    setLnInput(event.target.value);
-                    setLnError("");
+                    setLnInput(event.currentTarget.value, { defer: true });
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
                       event.preventDefault();
-                      if (canReviewLightningInput) {
+                      const current = event.currentTarget.value.trim().replace(/^lightning:/i, "").trim();
+                      const canReviewCurrent =
+                        /^ln(bc|tb|sb|bcrt)[0-9]/i.test(current) ||
+                        /^[^@\s]+@[^@\s]+$/.test(current) ||
+                        /^lnurl[0-9a-z]+$/i.test(current);
+                      if (canReviewCurrent) {
                         handleLightningInputReview();
                       }
                     }
@@ -22589,7 +22698,8 @@ export default function CashuWalletModal({
                 type="button"
                 className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
                 onClick={() => {
-                  if (lnInput.trim()) {
+                  const current = commitLightningInputFromDom();
+                  if (current.trim()) {
                     handleLightningInputReview();
                   } else {
                     void handlePasteLightningInput();

@@ -14,7 +14,7 @@
 
 export type IdbOpenOptions = {
   name: string;
-  version: number;
+  version?: number;
   /**
    * Optional upgrade hook invoked during `onupgradeneeded`.
    * Use this to create object stores and indexes.
@@ -61,7 +61,10 @@ export const idbStorage = {
   async openDatabase(options: IdbOpenOptions): Promise<IDBDatabase> {
     const factory = ensureIndexedDb();
     return await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = factory.open(options.name, options.version);
+      const request =
+        options.version === undefined
+          ? factory.open(options.name)
+          : factory.open(options.name, options.version);
 
       request.onupgradeneeded = (event) => {
         try {

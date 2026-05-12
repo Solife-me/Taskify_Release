@@ -40,6 +40,7 @@ export type RelayInfoStorage = {
 
 type RelayInfoCacheOptions = {
   ttlMs?: number;
+  failureTtlMs?: number;
   storage?: RelayInfoStorage;
   storageKey?: string;
   maxEntries?: number;
@@ -50,6 +51,7 @@ const DEFAULT_MAX_LIMIT = 5000;
 const DEFAULT_MAX_MESSAGE_LENGTH = 16384;
 const DEFAULT_MAX_SUBSCRIPTIONS = 30;
 const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
+const DEFAULT_FAILURE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_CACHE_ENTRIES = 64;
 const DEFAULT_STORAGE_KEY = "relay-info-cache";
 
@@ -93,7 +95,9 @@ function sanitizeSubscriptionCount(value: unknown): number {
 
 export class RelayInfoCache {
   private readonly ttlMs: number;
+  private readonly failureTtlMs: number;
   private readonly cache = new Map<string, CachedRelayInfo>();
+  private readonly failures = new Map<string, number>();
   private readonly inFlight = new Map<string, Promise<CachedRelayInfo | null>>();
   private readonly storage?: RelayInfoStorage;
   private readonly storageKey: string;
@@ -101,6 +105,7 @@ export class RelayInfoCache {
 
   constructor(options: RelayInfoCacheOptions = {}) {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    this.failureTtlMs = options.failureTtlMs ?? DEFAULT_FAILURE_TTL_MS;
     this.storage = options.storage;
     this.storageKey = options.storageKey ?? DEFAULT_STORAGE_KEY;
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_CACHE_ENTRIES;
@@ -109,6 +114,14 @@ export class RelayInfoCache {
 
   private isExpired(entry: CachedRelayInfo): boolean {
     return Date.now() - entry.fetchedAt > this.ttlMs;
+  }
+
+  private hasRecentFailure(key: string): boolean {
+    const failedAt = this.failures.get(key);
+    if (!failedAt) return false;
+    if (Date.now() - failedAt <= this.failureTtlMs) return true;
+    this.failures.delete(key);
+    return false;
   }
 
   get(relayUrl: string): CachedRelayInfo | null {
@@ -150,6 +163,7 @@ export class RelayInfoCache {
 
     const cached = this.cache.get(key);
     if (cached && !this.isExpired(cached)) return cached;
+    if (this.hasRecentFailure(key)) return cached ?? null;
 
     const existing = this.inFlight.get(key);
     if (existing) return existing;
@@ -160,11 +174,13 @@ export class RelayInfoCache {
         if (info && typeof info === "object") {
           const normalized = this.normalizeEntry(info);
           this.cache.set(key, normalized);
+          this.failures.delete(key);
           this.persist();
           return normalized;
         }
+        this.failures.set(key, Date.now());
       } catch {
-        // noop
+        this.failures.set(key, Date.now());
       } finally {
         this.inFlight.delete(key);
       }
@@ -176,7 +192,10 @@ export class RelayInfoCache {
   }
 
   needsRefresh(relayUrl: string): boolean {
-    const cached = this.get(relayUrl);
+    const key = normalizeRelayCacheKey(relayUrl);
+    if (!key) return false;
+    if (this.hasRecentFailure(key)) return false;
+    const cached = this.cache.get(key);
     if (!cached) return true;
     return this.isExpired(cached);
   }

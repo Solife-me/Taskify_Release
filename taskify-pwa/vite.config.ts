@@ -65,6 +65,17 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ["@gandlaf21/bc-ur", "buffer", "process", "stream-browserify", "util", "events"],
+    include: [
+      "@gandlaf21/bc-ur",
+      "@nostr-dev-kit/ndk",
+      "nostr-tools",
+      "tseep",
+      "buffer",
+      "process",
+      "stream-browserify",
+      "util",
+      "events",
+    ],
+    exclude: ["taskify-runtime-nostr"],
   },
 });

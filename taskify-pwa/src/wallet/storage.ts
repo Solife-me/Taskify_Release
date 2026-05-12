@@ -346,6 +346,10 @@ export function saveStore(store: ProofStore) {
   ensureActiveMintSelection(normalized);
 }
 
+export async function flushWalletStorage(): Promise<void> {
+  await idbKeyValue.flushStore(TASKIFY_STORE_WALLET);
+}
+
 export function listPendingTokens(): PendingTokenEntry[] {
   return loadPendingTokenEntries();
 }

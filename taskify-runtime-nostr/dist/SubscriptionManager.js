@@ -89,6 +89,12 @@ export class SubscriptionManager {
         state.flushScheduled = true;
         scheduleFrame(() => this.flushPending(state));
     }
+    scheduleEoseFlush(state) {
+        if (state.eoseFlushScheduled)
+            return;
+        state.eoseFlushScheduled = true;
+        scheduleFrame(() => this.flushEose(state));
+    }
     flushPending(state) {
         state.flushScheduled = false;
         const batch = state.pendingEvents.splice(0, FLUSH_BATCH_SIZE);
@@ -102,6 +108,24 @@ export class SubscriptionManager {
         }
         if (state.pendingEvents.length > 0)
             this.scheduleFlush(state);
+        else if (state.pendingEoseRelays.length > 0)
+            this.scheduleEoseFlush(state);
+    }
+    flushEose(state) {
+        state.eoseFlushScheduled = false;
+        if (state.pendingEvents.length > 0) {
+            this.scheduleFlush(state);
+            return;
+        }
+        const relays = state.pendingEoseRelays.splice(0);
+        for (const relayUrl of relays) {
+            state.handlers.forEach((h) => {
+                try {
+                    h.onEose?.(relayUrl);
+                }
+                catch { }
+            });
+        }
     }
     async subscribe(filtersInput, options) {
         const filters = Array.isArray(filtersInput) ? filtersInput : [filtersInput];
@@ -126,6 +150,8 @@ export class SubscriptionManager {
             seenIds: new Set(),
             pendingEvents: [],
             flushScheduled: false,
+            pendingEoseRelays: [],
+            eoseFlushScheduled: false,
         };
         this.subs.set(key, state);
         const sub = this.ndk.subscribe(normalized, opts);
@@ -156,32 +182,11 @@ export class SubscriptionManager {
         });
         sub.on("eose", (relay) => {
             const relayUrl = relay && typeof relay === "object" && "url" in relay ? relay.url : undefined;
-            // Drain all buffered events synchronously before notifying EOSE handlers.
-            // Events are queued in pendingEvents and delivered via requestAnimationFrame
-            // (FLUSH_BATCH_SIZE at a time). Without this drain, EOSE fires while
-            // hundreds of events are still pending — the batch flush happens on partial
-            // data, and the remaining events arrive post-flush as "live" individual
-            // updates. This causes old tasks to temporarily appear (out-of-order CREATE
-            // events without their DELETE counterparts) before being corrected, producing
-            // the ~15-30 second flicker of stale state.
-            if (state.pendingEvents.length > 0) {
-                state.flushScheduled = false;
-                const remaining = state.pendingEvents.splice(0);
-                for (const { raw, relayUrl: evRelayUrl } of remaining) {
-                    state.handlers.forEach((h) => {
-                        try {
-                            h.onEvent?.(raw, evRelayUrl);
-                        }
-                        catch { }
-                    });
-                }
-            }
-            state.handlers.forEach((h) => {
-                try {
-                    h.onEose?.(relayUrl);
-                }
-                catch { }
-            });
+            state.pendingEoseRelays.push(relayUrl);
+            if (state.pendingEvents.length > 0)
+                this.scheduleFlush(state);
+            else
+                this.scheduleEoseFlush(state);
         });
         return { key, subscription: sub, release: () => this.release(key, handler), filters: normalized, relayUrls };
     }

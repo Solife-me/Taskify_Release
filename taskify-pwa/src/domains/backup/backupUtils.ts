@@ -14,7 +14,7 @@ import {
   LS_SCRIPTURE_MEMORY,
   LS_BACKGROUND_IMAGE,
 } from "../storageKeys";
-import { LS_NOSTR_RELAYS, LS_NOSTR_SK } from "../../nostrKeys";
+import { LS_NOSTR_RELAYS, LS_NOSTR_SK, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../../nostrKeys";
 import { LS_LIGHTNING_CONTACTS, LS_BTC_USD_PRICE_CACHE, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
 import {
   saveStore as saveProofStore,
@@ -36,6 +36,15 @@ export const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1"
 export const CLOUD_BACKUP_MIN_INTERVAL_MS = 60 * 60 * 1000;
 export const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
 export const SATS_PER_BTC = 100_000_000;
+
+function notifyNostrKeyUpdated(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(TASKIFY_NOSTR_KEY_UPDATED_EVENT));
+  } catch {
+    // ignore same-tab notification failures
+  }
+}
 
 // ---- Crypto helpers (self-contained, no external import needed) ----
 
@@ -226,6 +235,7 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
     kvStorage.setItem(LS_NOSTR_SK, data.nostrSk);
+    notifyNostrKeyUpdated();
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {

@@ -7,6 +7,7 @@ import { MintSession, type MintConnection, type CreateSendTokenOptions, type Sen
 import {
   addPendingToken,
   addMintToList,
+  flushWalletStorage,
   getActiveMint,
   listPendingTokens,
   loadStore,
@@ -427,6 +428,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       }
       if (tokenProofs.length && freshProofs.length === 0) {
         removePendingToken(entry.id);
+        await flushWalletStorage();
         if (targetManager === manager) {
           setBalance(targetManager.balance);
           setProofs(targetManager.proofs);
@@ -461,6 +463,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         return targetManager.receiveToken(partialToken);
       });
       removePendingToken(entry.id);
+      await flushWalletStorage();
       if (targetManager === manager) {
         setBalance(targetManager.balance);
         setProofs(targetManager.proofs);
@@ -549,6 +552,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       addMintToList(normalizedTarget);
 
       const entry = addPendingToken(targetMintUrl, tokenInput, tokenAmount || undefined);
+      await flushWalletStorage();
       refreshTotalBalance();
 
       const crossMint = normalizeMintUrl(activeMint) !== normalizedTarget;
@@ -675,6 +679,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     if (clean) {
       addMintToList(clean);
     }
+    await flushWalletStorage();
   }, []);
 
   const createMintInvoice = useCallback(
@@ -697,6 +702,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       if (!targetManager) throw new Error("Wallet not ready");
 
       const q = await targetManager.createMintInvoice(amount, description);
+      await flushWalletStorage();
       const derivedAmount = amountToNumber(q.amount) || amount;
       const derivedUnit = (q as any)?.unit ?? (targetManager === manager ? info?.unit : targetManager.unit);
       const mintUrlValue = normalizeMintUrl(targetManager.mintUrl);
@@ -757,6 +763,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
       if (!targetManager) throw new Error("Wallet not ready");
       const proofs = await targetManager.claimMint(quoteId, amount);
+      await flushWalletStorage();
       if (targetManager === manager) {
         setBalance(targetManager.balance);
         setProofs(targetManager.proofs);
@@ -808,8 +815,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       const activeMint = normalizeMintUrl(manager.mintUrl);
       const crossMintNeeded = primaryMint && normalizeMintUrl(primaryMint) !== activeMint;
 
-      const queueForLater = (mintUrl: string, cross: boolean): ReceiveTokenResult => {
+      const queueForLater = async (mintUrl: string, cross: boolean): Promise<ReceiveTokenResult> => {
         const entry = addPendingToken(mintUrl, tokenInput, tokenAmount || undefined);
+        await flushWalletStorage();
         refreshTotalBalance();
         return {
           proofs: [],
@@ -866,6 +874,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           };
         }
         const proofs = await target.receiveToken(tokenToRedeem);
+        await flushWalletStorage();
         if (cross) {
           refreshTotalBalance();
         } else {
@@ -946,6 +955,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
     const sendOptions: CreateSendTokenOptions = options ?? {};
     const res = await targetManager.createSendToken(amount, sendOptions);
+    await flushWalletStorage();
 
     if (targetManager === manager) {
       setBalance(manager.balance);
@@ -966,6 +976,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     async (secrets: string[]) => {
       if (!manager) throw new Error("Wallet not ready");
       const res = await manager.createTokenFromProofSecrets(secrets);
+      await flushWalletStorage();
       setBalance(manager.balance);
       setProofs(manager.proofs);
       refreshTotalBalance();
@@ -1024,6 +1035,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
       if (targetManager.balance >= required) {
         const singleResult = await targetManager.payMeltQuote(baseQuote);
+        await flushWalletStorage();
         if (targetManager === manager) {
           setBalance(manager.balance);
           setProofs(manager.proofs);
@@ -1153,6 +1165,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       let finalResult: MeltProofsResponse | null = null;
       for (const plan of plans) {
         const result = await plan.manager.payMeltQuote(plan.quote);
+        await flushWalletStorage();
         if (plan.manager === manager) {
           setBalance(manager.balance);
           setProofs(manager.proofs);

@@ -218,7 +218,7 @@ export class RuntimeNostrSession {
         });
     }
     primeRelayInfo(relayUrl) {
-        if (!this.relayInfoCache.needsRefresh(relayUrl) && this.relayInfoCache.get(relayUrl))
+        if (!this.relayInfoCache.needsRefresh(relayUrl))
             return;
         if (!this.relayHealth.canAttempt(relayUrl)) {
             this.relayHealth.onBackoffExpiry(relayUrl, () => this.primeRelayInfo(relayUrl));

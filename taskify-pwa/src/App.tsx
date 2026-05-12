@@ -59,6 +59,7 @@ import {
   LS_NOSTR_RELAYS,
   LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
   LS_NOSTR_SK,
+  TASKIFY_NOSTR_KEY_UPDATED_EVENT,
 } from "./nostrKeys";
 import {
   loadStore as loadProofStore,
@@ -1693,6 +1694,19 @@ const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
 const SATS_PER_BTC = 100_000_000;
 const HISTORY_MARK_SPENT_CUTOFF_MS = 5 * 24 * 60 * 60 * 1000;
 
+function notifyNostrKeyUpdated(pubkey?: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent(TASKIFY_NOSTR_KEY_UPDATED_EVENT, {
+        detail: { pubkey: pubkey || null },
+      }),
+    );
+  } catch {
+    // ignore same-tab notification failures
+  }
+}
+
 type WalletHistoryEntryKind = "bounty-attachment";
 
 type TaskifyBackupPayload = {
@@ -1811,6 +1825,7 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
     kvStorage.setItem(LS_NOSTR_SK, data.nostrSk);
+    notifyNostrKeyUpdated();
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
@@ -6312,6 +6327,7 @@ export default function App() {
     const pk = getPublicKey(sk);
     setNostrPK(pk);
     try { kvStorage.setItem(LS_NOSTR_SK, skHex); } catch {}
+    notifyNostrKeyUpdated(pk);
     return toNsec(skHex);
   }, []);
 
@@ -6324,6 +6340,7 @@ export default function App() {
       const pk = getPublicKey(sk);
       setNostrPK(pk);
       try { kvStorage.setItem(LS_NOSTR_SK, normalized); } catch {}
+      notifyNostrKeyUpdated(pk);
       return true;
     } catch {
       if (!options?.silent) {
