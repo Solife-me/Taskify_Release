@@ -21,9 +21,12 @@ import {
   setActiveMint,
   replaceMintList,
   replacePendingTokens,
+  normalizeMintUrl,
   type PendingTokenEntry,
+  type ProofStore,
 } from "../../wallet/storage";
 import { type WalletSeedBackupPayload, restoreWalletSeedBackup } from "../../wallet/seed";
+import type { Proof } from "@cashu/cashu-ts";
 import { getPublicKey, nip19 } from "nostr-tools";
 
 // ---- Constants ----
@@ -141,6 +144,39 @@ export function parseBackupJsonPayload(raw: string): Partial<TaskifyBackupPayloa
   return parsed as Partial<TaskifyBackupPayload>;
 }
 
+function normalizeCashuProofStore(raw: unknown): ProofStore | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const store: ProofStore = {};
+  for (const [mintUrl, value] of Object.entries(raw as Record<string, unknown>)) {
+    const mint = normalizeMintUrl(mintUrl);
+    if (!mint || !Array.isArray(value)) continue;
+    const proofs: Proof[] = [];
+    for (const proof of value) {
+      if (!proof || typeof proof !== "object") continue;
+      const candidate = proof as Record<string, unknown>;
+      const id = typeof candidate.id === "string" ? candidate.id : "";
+      const secret = typeof candidate.secret === "string" ? candidate.secret : "";
+      const C = typeof candidate.C === "string" ? candidate.C : "";
+      const amountRaw = candidate.amount;
+      const amount =
+        typeof amountRaw === "number"
+          ? amountRaw
+          : typeof amountRaw === "string" && amountRaw.trim()
+            ? Number.parseFloat(amountRaw)
+            : Number.NaN;
+      if (!id || !secret || !C || !Number.isFinite(amount) || amount <= 0) continue;
+      proofs.push({
+        ...(candidate as Proof),
+        amount: Math.floor(amount) as any,
+      });
+    }
+    if (proofs.length) {
+      store[mint] = proofs;
+    }
+  }
+  return store;
+}
+
 export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
@@ -194,7 +230,10 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
     if ("proofs" in cashuData && cashuData.proofs !== undefined) {
-      saveProofStore(cashuData.proofs);
+      const proofStore = normalizeCashuProofStore(cashuData.proofs);
+      if (proofStore) {
+        saveProofStore(proofStore);
+      }
     }
     if ("activeMint" in cashuData) {
       setActiveMint(cashuData.activeMint || null);

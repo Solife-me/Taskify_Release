@@ -1157,7 +1157,7 @@ function EventEditModal({
 			              <input
 			                ref={documentInputRef}
 			                type="file"
-			                accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+			                accept=".pdf,.doc,.docx,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 			                className="hidden"
 			                multiple
 			                onChange={handleDocumentAttach}

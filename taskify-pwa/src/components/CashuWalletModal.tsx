@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bech32 } from "bech32";
@@ -15,8 +14,8 @@ import {
   type ProofState,
 } from "@cashu/cashu-ts";
 import { secp256k1 } from "@noble/curves/secp256k1";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import QrScannerLib from "qr-scanner";
 import { QRCodeCanvas } from "qrcode.react";
 import { finalizeEvent, getEventHash, getPublicKey, nip04, nip19, nip44, type EventTemplate } from "nostr-tools";
@@ -8189,7 +8188,7 @@ export default function CashuWalletModal({
       }
       return true;
     },
-    [defaultNostrRelays, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays],
+    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
   );
 
   // Resolve the active file-server entry for encrypted messenger attachments.

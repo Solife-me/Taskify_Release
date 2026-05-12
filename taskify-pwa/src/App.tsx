@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Proof } from "@cashu/cashu-ts";
@@ -11811,7 +11810,7 @@ export default function App() {
 	        />
 	      </div>
 	    );
-	  }, [boardMap, handleDragEnd, handleOpenEventDocument, setCalendarEvents, setEditing, settings.weekStart]);
+		  }, [boardMap, handleDragEnd, handleOpenEventDocument, isSelectionMode, selectedItemIds, setCalendarEvents, setEditing, settings.weekStart, toggleItemSelection]);
 
 	  useEffect(() => {
 	    if (activePage !== "upcoming") {
@@ -17664,7 +17663,7 @@ export default function App() {
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
+	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, moveTaskToBoard, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
 
   const moveSelectedTasksToColumn = useCallback((boardId: string, columnId: string) => {
     if (!selectedTasks.length && !selectedEvents.length) return;
@@ -17706,7 +17705,7 @@ export default function App() {
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
+	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, maybePublishTask, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
 
   const selectionMoveTargets = useMemo(() => (
     boards.filter((board) => board.kind !== "bible" && !board.archived && !board.hidden).map((board) => ({
@@ -17892,11 +17891,12 @@ export default function App() {
       });
       unsubs.push(unsub);
     }
-    return () => {
-      unsubs.forEach((u) => u());
-      syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      for (const it of parsed) pendingRelaysByBoardRef.current.delete(it.id);
-    };
+	    const pendingRelaysByBoard = pendingRelaysByBoardRef.current;
+	    return () => {
+	      unsubs.forEach((u) => u());
+	      syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
+	      for (const it of parsed) pendingRelaysByBoard.delete(it.id);
+	    };
   }, [
     nostrBoardsKey,
     pool,
@@ -17907,9 +17907,10 @@ export default function App() {
     ensureMigrationState,
     migrateBoardRef,
     enqueueNostrApply,
-    enqueueForBoard,
-    markNostrBoardInitialSyncComplete,
-  ]);
+	    enqueueForBoard,
+	    markNostrBoardInitialSyncComplete,
+	    setTasks,
+	  ]);
 
   // horizontal scroller ref to enable iOS momentum scrolling
   const scrollerRef = useRef<HTMLDivElement>(null);

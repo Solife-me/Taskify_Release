@@ -1,5 +1,3 @@
-import React from "react";
-
 export function ImageViewer({ src, alt }: { src: string; alt: string }) {
   return (
     <div className="h-full overflow-auto rounded-[28px] bg-[#0f1012] [touch-action:auto]">

@@ -59,6 +59,7 @@ const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
 
 const markdownRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true });
 const SERIALIZED_DOCUMENT_KINDS = new Set<TaskDocumentKind>(["pdf", "doc", "docx", "xls", "xlsx"]);
+const LEGACY_UPLOAD_ONLY_KINDS = new Set<TaskDocumentKind>(["xls"]);
 const SPREADSHEET_PREVIEW_ROWS = 12;
 const SPREADSHEET_PREVIEW_COLS = 6;
 const SPREADSHEET_FULL_ROWS = 500;
@@ -160,7 +161,8 @@ function generateId(): string {
 }
 
 export function isSupportedDocumentFile(file: File): boolean {
-  return inferKind(file.name, file.type) !== null;
+  const kind = inferKind(file.name, file.type);
+  return kind !== null && !LEGACY_UPLOAD_ONLY_KINDS.has(kind);
 }
 
 export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined {
@@ -639,7 +641,7 @@ export async function createDocumentFromDataUrl(input: {
   encryptionBoardId?: string;
 }): Promise<TaskDocument> {
   const kind = inferKind(input.name, input.mimeType);
-  if (!kind) throw new Error("Unsupported file type");
+  if (!kind || LEGACY_UPLOAD_ONLY_KINDS.has(kind)) throw new Error("Unsupported file type");
   const buffer = arrayBufferFromDataUrl(input.dataUrl);
   const base: TaskDocument = {
     id: input.id || generateId(),

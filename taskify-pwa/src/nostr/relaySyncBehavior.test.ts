@@ -15,7 +15,7 @@
  *  9. Absolute timeout — stuck relay's accumulated batch still flushed eventually.
  * 10. _nostrAt stamped on relay batch entries — stored for future merge comparison.
  */
-import { test, describe, expect } from "vitest";
+import { test, expect } from "vitest";
 
 
 // ---------------------------------------------------------------------------

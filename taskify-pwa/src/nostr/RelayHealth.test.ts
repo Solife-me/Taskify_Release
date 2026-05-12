@@ -1,4 +1,4 @@
-import { test, describe, expect } from "vitest";
+import { test, expect } from "vitest";
 
 import { RelayHealthTracker } from "./RelayHealth.ts";
 

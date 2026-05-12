@@ -6,7 +6,7 @@ import {
 } from "@cashu/cashu-ts";
 import { Buffer } from "buffer";
 import { UR, UREncoder, URDecoder } from "@gandlaf21/bc-ur";
-import { sha256 } from "@noble/hashes/sha256";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 const BASE64_PAD = "=";
 const DEFAULT_CHUNK_SIZE = 200; // max fragment length passed to UR encoder (bc-ur default)
@@ -303,7 +303,7 @@ export function parseNut16FrameString(value: string): Nut16Frame | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (isUrString(trimmed)) {
-    const digest = deriveUrKey(trimmed, extractUrDigest(trimmed));
+    const digest = deriveUrKey(trimmed);
     const seq = parseUrSequence(trimmed);
     const index = seq?.index ?? 1;
     const total = seq?.total ?? 0;

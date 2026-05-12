@@ -1,5 +1,3 @@
-import React from "react";
-
 export function SpreadsheetViewer({ html }: { html: string }) {
   return (
     <div className="h-full overflow-auto rounded-[28px] bg-[#15161a] [touch-action:auto]">

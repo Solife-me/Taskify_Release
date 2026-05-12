@@ -152,7 +152,7 @@ export function sanitizeScriptureMemoryState(raw: any): ScriptureMemoryState {
             totalReviews,
           } as ScriptureMemoryEntry;
         })
-        .filter((entry): entry is ScriptureMemoryEntry => !!entry)
+        .filter((entry: ScriptureMemoryEntry | null): entry is ScriptureMemoryEntry => !!entry)
     : [];
   const state = updateScriptureMemoryState({ entries }, entries);
   const persistedLastReview = normalizeIsoTimestamp((raw as any)?.lastReviewISO);

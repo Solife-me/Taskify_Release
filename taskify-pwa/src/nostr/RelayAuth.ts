@@ -1,10 +1,9 @@
-import NDK from "@nostr-dev-kit/ndk";
 import { RelayAuthManager as RuntimeRelayAuthManager } from "taskify-runtime-nostr";
 import { LS_NOSTR_SK } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
 
 export class RelayAuthManager extends RuntimeRelayAuthManager {
-  constructor(ndk: NDK) {
+  constructor(ndk: ConstructorParameters<typeof RuntimeRelayAuthManager>[0]) {
     super(ndk, {
       loadSecretKeyHex: () => {
         if (!kvStorage.isAvailable()) return null;

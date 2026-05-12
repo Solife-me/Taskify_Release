@@ -26,7 +26,7 @@ import {
   type SerializedOutputData,
 } from "./storage";
 import type { MeltQuoteResponse, MintQuoteResponse } from "./cashuTypes";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import {
   getWalletSeedBytes,
   getWalletCounterInit,

@@ -103,7 +103,9 @@ export async function encryptAndUploadAttachment(opts: {
     contentType: "application/octet-stream",
     signer: opts.nostrSkHex,
     signal: opts.signal,
-    onProgress: opts.onProgress,
+    onProgress: opts.onProgress
+      ? (loaded, total) => opts.onProgress?.(total > 0 ? loaded / total : 0, loaded, total)
+      : undefined,
     onPhaseChange: opts.onPhaseChange,
   });
   attachmentDebug("upload:complete", {

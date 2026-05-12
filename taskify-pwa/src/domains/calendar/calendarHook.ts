@@ -3,18 +3,20 @@
 import { useState, useEffect } from "react";
 import type { CalendarEvent, CalendarEventParticipant, CalendarEventBase, DateCalendarEvent, TimeCalendarEvent, Recurrence } from "../tasks/taskTypes";
 import type { CalendarRsvpStatus, CalendarRsvpFb } from "../../lib/privateCalendar";
+import { parseCalendarAddress } from "../../lib/privateCalendar";
+import { ensureDocumentPreview, normalizeDocumentList } from "../../lib/documents";
+import { sanitizeReminderList, normalizeReminderTime } from "../dateTime/reminderUtils";
+import { normalizeNostrPubkeyHex } from "../tasks/contactUtils";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS } from "../../storage/taskifyDb";
 import { LS_CALENDAR_EVENTS, LS_EXTERNAL_CALENDAR_EVENTS } from "../storageKeys";
 
-// NOTE: The following helper functions are referenced inside useCalendarEvents.
-// They are imported from the locations where they live in App.tsx (via lib imports).
-// When wiring this hook into the app, ensure these are available in scope or passed in:
-//   normalizeDocumentList, ensureDocumentPreview  - from "../../lib/documents"
-//   sanitizeReminderList, normalizeReminderTime   - from App.tsx helpers
-//   normalizeIsoTimestamp                          - from App.tsx helpers
-//   parseCalendarAddress                           - from "../../lib/privateCalendar"
-//   normalizeNostrPubkeyHex                        - from "../../lib/nostr" / App.tsx
+function normalizeIsoTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString();
+}
 
 export function useCalendarEvents() {
   const [events, setEvents] = useState<CalendarEvent[]>(() => {

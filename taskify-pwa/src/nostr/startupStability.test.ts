@@ -15,7 +15,7 @@
  *     before the async subscribe promise resolves.
  *  7. Handler errors are isolated — one bad handler doesn't kill others.
  */
-import { test, describe, expect } from "vitest";
+import { test, expect } from "vitest";
 
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ test("does not crash on malformed events (rawEvent throws, no id)", async () => 
 
   await wait(50);
 
-  expect(received).toEqual(["good-1"], "Only well-formed events should be delivered");
+  expect(received).toEqual(["good-1"]);
 });
 
 test("deduplicates events with the same id", async () => {
@@ -211,8 +211,7 @@ test("handler errors are isolated — one bad handler does not kill others", asy
   ingestEvent(state, () => makeEvent("test-event-2"));
   await wait(50);
 
-  expect(received).toEqual(["test-event-1", "test-event-2"],
-    "Good handler should receive events even if another handler throws");
+  expect(received).toEqual(["test-event-1", "test-event-2"]);
 });
 
 test("frame-budgeted batching: large burst does not deliver more than FLUSH_BATCH_SIZE per frame", async () => {

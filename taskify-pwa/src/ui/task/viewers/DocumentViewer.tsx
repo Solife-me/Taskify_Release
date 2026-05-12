@@ -1,5 +1,3 @@
-import React from "react";
-
 interface DocumentContent {
   type: "html" | "text";
   data: string;
