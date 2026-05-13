@@ -1,4 +1,3 @@
- 
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -8,28 +7,24 @@ import {
   type UpcomingFlatRow,
 } from "./lib/upcomingRows";
 import { QRCodeCanvas } from "qrcode.react";
-import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import { finalizeEvent, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
 import {
   DEFAULT_DATE_REMINDER_TIME,
   MS_PER_DAY,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
-  normalizeRelayListSorted,
   compressedToRawHex,
   contactInitials,
   isExternalCalendarEvent,
   isListLikeBoard,
-  normalizeTaskAssignmentStatus,
   normalizeReminderTime,
   reminderPresetToMinutes,
   sanitizeReminderList,
   type Board,
   type BoardSortDirection,
-  type BoardSortMode,
   type CalendarEvent,
   type CalendarEventBase,
   type CalendarEventParticipant,
-  type DateCalendarEvent,
   type EditingState,
   type InboxItem,
   type InboxItemStatus,
@@ -40,8 +35,6 @@ import {
   type Task,
   type TaskAssignee,
   type TaskAssigneeStatus,
-  type TimeCalendarEvent,
-  type UpcomingBoardGrouping,
   type Weekday,
 } from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
@@ -50,7 +43,6 @@ import {
   BibleTracker,
   type BibleTrackerProgress,
   type BibleTrackerState,
-  sanitizeBibleTrackerState,
   cloneBibleProgress,
   cloneBibleVerses,
   cloneBibleVerseCounts,
@@ -77,9 +69,6 @@ import {
 import { kvStorage } from "./storage/kvStorage";
 import {
   getSkSync as nostrSkSync,
-  setSk as nostrSkSet,
-  isBackupNoticePending as nostrSkBackupNoticePending,
-  acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
 } from "./lib/nostrSkStore";
 import {
   taskEntityStore,
@@ -88,37 +77,12 @@ import {
   externalCalendarEventEntityStore,
 } from "./storage/entityStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
-import {
-  LS_NOSTR_BACKUP_STATE,
-  LS_NOSTR_BIBLE_TRACKER_SYNC_STATE,
-  LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
-} from "./nostrKeys";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 import {
   getWalletSeedMnemonic,
-  getWalletSeedBackup,
-  type WalletSeedBackupPayload,
-  restoreWalletSeedBackup,
 } from "./wallet/seed";
 
 
-import {
-  decryptNostrBackupPayload,
-  encryptNostrBackupPayload,
-  NOSTR_APP_BACKUP_CLIENT_TAG,
-  NOSTR_APP_BACKUP_D_TAG,
-  NOSTR_APP_BACKUP_KIND,
-  type NostrAppBackupBoard,
-  type NostrAppBackupPayload,
-} from "./nostrBackup";
-import {
-  decryptNostrSyncPayload,
-  encryptNostrSyncPayload,
-  NOSTR_APP_STATE_CLIENT_TAG,
-  NOSTR_APP_STATE_KIND,
-  NOSTR_BIBLE_TRACKER_D_TAG,
-  NOSTR_SCRIPTURE_MEMORY_D_TAG,
-} from "./nostrAppState";
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
 import type { AccentPalette } from "./theme/palette";
@@ -136,7 +100,6 @@ import {
   updateScriptureMemoryState,
   markScriptureEntryReviewed,
   scheduleScriptureEntry,
-  sanitizeScriptureMemoryState,
   formatScriptureReference,
   formatDueInLabel,
   computeScriptureStats,
@@ -149,12 +112,8 @@ import {
   useScriptureMemory,
 } from "./domains/scripture/scriptureHook";
 import {
-  easterDateKey,
   buildUsHolidayCalendarEvents,
   isUsHolidayCalendarEvent,
-  hashStringToUint32,
-  mulberry32,
-  shuffleInPlace,
   fastingReminderDueTimesForMonth,
 } from "./domains/calendar/holidayUtils";
 import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
@@ -163,7 +122,6 @@ import {
   PINNED_BOUNTY_LIST_KEY,
   normalizeTaskPriority,
   normalizeTaskCreatedAt,
-  normalizeBoardSortState,
   taskHasBountyList,
   withTaskAddedToBountyList,
   withTaskRemovedFromBountyList,
@@ -174,10 +132,17 @@ import {
   pubkeysEqual,
   bountyStateLabel,
   mergeLongestStreak,
-  normalizeHiddenForRecurring,
   recurringInstanceId,
   dedupeRecurringInstances,
 } from "./domains/tasks/taskUtils";
+import {
+  mergeTaskAssigneeResponse,
+  normalizeAgentPubkey,
+  normalizeNostrPubkeyHex,
+  normalizeTaskAssignees,
+} from "./domains/tasks/assignmentUtils";
+import { useBoards, useTasks } from "./domains/tasks/taskHooks";
+import { useCalendarEvents } from "./domains/calendar/calendarHook";
 import type {
   CompleteTaskFn,
   CompleteTaskResult,
@@ -202,7 +167,6 @@ import {
   parseDateKey,
   parseTimeValue,
   resolveSystemTimeZone,
-  scrollWheelColumnToIndex,
   startOfDay,
   taskDateKey,
   taskDisplayDateKey,
@@ -221,16 +185,10 @@ import {
   parseBackupJsonPayload,
 } from "./domains/backup/backupUtils";
 import {
-  type FastingRemindersMode,
   type PushPreferences,
   type Settings,
 } from "./domains/tasks/settingsTypes";
 import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/settingsHook";
-import {
-  buildNostrBackupSnapshot as buildNostrBackupSnapshotDomain,
-  mergeBackupBoards,
-  sanitizeSettingsForNostrBackup,
-} from "./lib/app/nostrBackupDomain";
 import {
   ensureWeekRecurrencesForCurrentWeek,
   tasksInSameSeries,
@@ -273,17 +231,11 @@ import {
 
 import { parseFileServers, findServerEntry } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
-import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import {
-  createNostrPool,
   loadDefaultRelays,
-  loadNostrBackupState,
-  loadNostrSyncState,
-  NOSTR_MIN_EVENT_INTERVAL_MS,
   saveDefaultRelays,
-  type NostrBackupState,
   type NostrEvent,
 } from "./domains/nostr/nostrPool";
 import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSync";
@@ -293,8 +245,14 @@ import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
 import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
 import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
 import { UpcomingSearch } from "./ui/upcoming/UpcomingSearch";
+import { useUpcomingControlsState } from "./ui/upcoming/useUpcomingControlsState";
 import { TrashDropZone } from "./ui/dnd/TrashDropZone";
 import { useTaskPersistence } from "./nostr/useTaskPersistence";
+import { useNostrIdentity } from "./nostr/useNostrIdentity";
+import {
+  normalizeNostrRelayList as normalizeRelayList,
+  useNostrAppBackupSync,
+} from "./nostr/useNostrAppBackupSync";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
 
 import {
@@ -330,7 +288,6 @@ import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
 const ADD_BOARD_OPTION_ID = "__add-board__";
 const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SPECIAL_CALENDAR_US_HOLIDAYS_ID = "special:us-holidays";
 const SPECIAL_CALENDAR_US_HOLIDAYS_LABEL = "US Holidays";
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
@@ -353,7 +310,6 @@ const MONTH_NAMES = [
   "November",
   "December",
 ] as const;
-const MONTH_PICKER_YEAR_WINDOW = 1000;
 
 
 
@@ -375,70 +331,6 @@ type CalendarInvite = {
   receivedAt: string;
   status: CalendarInviteStatus;
 };
-
-function normalizeNostrPubkeyHex(value: string | null | undefined): string | null {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return null;
-  const normalized = normalizeNostrPubkey(trimmed);
-  const raw = compressedToRawHex(normalized ?? trimmed).toLowerCase();
-  return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
-}
-
-function normalizeAgentPubkey(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  return normalizeNostrPubkeyHex(value) ?? undefined;
-}
-
-function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized: TaskAssignee[] = [];
-  const seen = new Set<string>();
-  value.forEach((entry) => {
-    if (!entry || typeof entry !== "object") return;
-    const pubkey = normalizeNostrPubkeyHex((entry as any).pubkey);
-    if (!pubkey || seen.has(pubkey)) return;
-    seen.add(pubkey);
-    const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-    const status = normalizeTaskAssignmentStatus((entry as any).status) as TaskAssigneeStatus | undefined;
-    const respondedAtRaw = Number((entry as any).respondedAt);
-    const respondedAt =
-      Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
-    normalized.push({
-      pubkey,
-      ...(relay ? { relay } : {}),
-      ...(status ? { status } : {}),
-      ...(respondedAt ? { respondedAt } : {}),
-    });
-  });
-  return normalized.length ? normalized : undefined;
-}
-
-function mergeTaskAssigneeResponse(
-  assignees: TaskAssignee[] | undefined,
-  responderPubkey: string,
-  status: TaskAssigneeStatus,
-  respondedAtMs: number,
-): TaskAssignee[] | undefined {
-  const normalizedResponder = normalizeNostrPubkeyHex(responderPubkey);
-  if (!normalizedResponder || !Array.isArray(assignees) || !assignees.length) return assignees;
-  let changed = false;
-  const next = assignees.map((assignee) => {
-    const assigneePubkey = normalizeNostrPubkeyHex(assignee.pubkey);
-    if (!assigneePubkey || assigneePubkey !== normalizedResponder) return assignee;
-    const nextStatus = status;
-    const nextRespondedAt = respondedAtMs > 0 ? respondedAtMs : Date.now();
-    const prevStatus = assignee.status ?? "pending";
-    const prevRespondedAt = typeof assignee.respondedAt === "number" ? assignee.respondedAt : 0;
-    if (prevStatus === nextStatus && prevRespondedAt === nextRespondedAt) return assignee;
-    changed = true;
-    return {
-      ...assignee,
-      status: nextStatus,
-      respondedAt: nextRespondedAt,
-    };
-  });
-  return changed ? next : assignees;
-}
 
 function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean {
   return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
@@ -464,7 +356,6 @@ const MESSAGES_COLUMN_ID = "messages-shared";
 const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
 
 const BIBLE_BOARD_ID = "bible-reading";
-const LS_SCRIPTURE_MEMORY = "taskify_scripture_memory_v1";
 const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
 const FASTING_REMINDER_SERIES_ID = "fasting-reminder";
 
@@ -636,7 +527,6 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 
-const LS_TASKS = "taskify_tasks_v5";
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 // Persistent task-deletion tombstones, keyed by board tag → task id → unix-secs
 // of the deletion. Survives reloads so a stale CREATE event from a slow/unaware
@@ -647,53 +537,12 @@ const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
 // timestamp — the most recent N deletions are always retained, which is what
 // matters for protecting against stale relay re-creates.
 const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
-const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
-const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
-const LS_BOARDS = "taskify_boards_v2";
-const LS_BOARD_SORT = "taskify_board_sort_v1";
-const LS_UPCOMING_FILTER = "taskify_upcoming_filter_v1";
-const LS_UPCOMING_US_HOLIDAYS_ENABLED = "taskify_upcoming_us_holidays_enabled_v1";
-const LS_UPCOMING_VIEW = "taskify_upcoming_view_v1";
-const LS_UPCOMING_SORT = "taskify_upcoming_sort_v1";
-const LS_UPCOMING_BOARD_GROUPING = "taskify_upcoming_board_grouping_v1";
-const LS_UPCOMING_FILTER_PRESETS = "taskify_upcoming_filter_presets_v1";
 const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
 
-const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
 const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
 
-
-
-type UpcomingFilterOption = {
-  id: string;
-  label: string;
-  boardId: string;
-  columnId?: string;
-};
-
-type UpcomingFilterGroup = {
-  id: string;
-  label: string;
-  boardId: string;
-  boardOption: UpcomingFilterOption;
-  listOptions: UpcomingFilterOption[];
-};
-
-type UpcomingFilterPreset = {
-  id: string;
-  name: string;
-  selection: string[];
-};
-
-type NostrBackupSnapshot = {
-  boards: NostrAppBackupBoard[];
-  settings: Partial<Settings>;
-  walletSeed: WalletSeedBackupPayload;
-  defaultRelays: string[];
-};
-const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
 
 
 function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
@@ -774,9 +623,6 @@ function hexToBytes(hex: string): Uint8Array {
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
   return out;
 }
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
-}
 function concatBytes(a: Uint8Array, b: Uint8Array) {
   const out = new Uint8Array(a.length + b.length);
   out.set(a); out.set(b, a.length);
@@ -817,23 +663,6 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
   return new TextDecoder().decode(new Uint8Array(ptBuf));
 }
 
-function normalizeSecretKeyInput(raw: string): string | null {
-  if (typeof raw !== "string") return null;
-  let value = raw.trim();
-  if (!value) return null;
-  if (value.startsWith("nsec")) {
-    try {
-      const dec = nip19.decode(value);
-      if (dec.type !== "nsec") return null;
-      value = typeof dec.data === "string" ? dec.data : bytesToHex(dec.data);
-    } catch {
-      return null;
-    }
-  }
-  if (!/^[0-9a-fA-F]{64}$/.test(value)) return null;
-  return value.toLowerCase();
-}
-
 type BoardNostrKeyPair = {
   sk: Uint8Array;
   skHex: string;
@@ -846,41 +675,8 @@ async function deriveBoardNostrKeys(boardId: string): Promise<BoardNostrKeyPair>
   return boardKeyManager.getBoardKeys(boardId);
 }
 
-function toNsec(secret: string): string {
-  const trimmed = (secret || "").trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith("nsec")) return trimmed;
-  if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed;
-  try {
-    const skBytes = hexToBytes(trimmed);
-    return typeof (nip19 as any)?.nsecEncode === "function" ? (nip19 as any).nsecEncode(skBytes) : trimmed;
-  } catch {
-    return trimmed;
-  }
-}
-
-
-
 /* ================= Date helpers ================= */
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
-
-
-function scheduleWheelSnap(
-  columnRef: React.RefObject<HTMLDivElement | null>,
-  snapRef: React.MutableRefObject<number | null>,
-  targetIndex: number,
-) {
-  if (snapRef.current != null) {
-    window.clearTimeout(snapRef.current);
-    snapRef.current = null;
-  }
-  snapRef.current = window.setTimeout(() => {
-    snapRef.current = null;
-    scrollWheelColumnToIndex(columnRef.current, targetIndex);
-  }, 120);
-}
-
 
 
 
@@ -1154,539 +950,6 @@ function hiddenUntilForNext(
   const sow = startOfWeek(nextMidnight, weekStart);
   return sow.toISOString();
 }
-function migrateBoards(stored: any): Board[] | null {
-  try {
-    const arr = stored as any[];
-    if (!Array.isArray(arr)) return null;
-    return arr.map((b) => {
-      const archived =
-        typeof b?.archived === "boolean"
-          ? b.archived
-          : typeof b?.hidden === "boolean"
-            ? b.hidden
-            : false;
-      const hidden =
-        typeof b?.hidden === "boolean" && typeof b?.archived === "boolean"
-          ? b.hidden
-          : false;
-      const clearCompletedDisabled =
-        typeof b?.clearCompletedDisabled === "boolean" ? b.clearCompletedDisabled : false;
-      const indexCardEnabled =
-        typeof (b as any)?.indexCardEnabled === "boolean" ? Boolean((b as any).indexCardEnabled) : false;
-      const hideChildBoardNames =
-        typeof (b as any)?.hideChildBoardNames === "boolean"
-          ? Boolean((b as any).hideChildBoardNames)
-          : false;
-      if (b?.kind === "week") {
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "week",
-          nostr: b.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-        } as Board;
-      }
-      if (b?.kind === "lists" && Array.isArray(b.columns)) {
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "lists",
-          columns: b.columns,
-          nostr: b.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-          indexCardEnabled,
-        } as Board;
-      }
-      if (b?.kind === "compound") {
-        const rawChildren = Array.isArray((b as any)?.children) ? (b as any).children : [];
-        const children = rawChildren
-          .filter((child: unknown) => typeof child === "string" && child && child !== b.id) as string[];
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "compound",
-          children,
-          nostr: b.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-          indexCardEnabled,
-          hideChildBoardNames,
-        } as Board;
-      }
-      if (b?.kind === "bible") {
-        const name = typeof b?.name === "string" && b.name.trim() ? b.name : "Bible";
-        return {
-          id: b.id,
-          name,
-          kind: "bible",
-          archived,
-          hidden,
-          clearCompletedDisabled,
-        } as Board;
-      }
-      if (b?.kind === "list") {
-        // old single-column boards -> migrate to lists with one column
-        const colId = crypto.randomUUID();
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "lists",
-          columns: [{ id: colId, name: "Items" }],
-          nostr: b?.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-          indexCardEnabled,
-        } as Board;
-      }
-      // unknown -> keep as lists with one column
-      const colId = crypto.randomUUID();
-      return {
-        id: b?.id || crypto.randomUUID(),
-        name: b?.name || "Board",
-        kind: "lists",
-        columns: [{ id: colId, name: "Items" }],
-        nostr: b?.nostr,
-        archived,
-        hidden,
-        clearCompletedDisabled,
-        indexCardEnabled,
-      } as Board;
-    });
-  } catch { return null; }
-}
-
-function useBoards() {
-  const [boards, setBoards] = useState<Board[]>(() => {
-    // Prefer the v3 per-entity store; fall back to the legacy blob if the
-    // entity store is empty (e.g. migration didn't run because the blob was
-    // also empty).
-    let rawArray: unknown[] | null = null;
-    if (boardEntityStore.size() > 0) {
-      rawArray = boardEntityStore.getAll();
-    } else {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS);
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) rawArray = parsed;
-        } catch {}
-      }
-    }
-    if (rawArray) {
-      const migrated = migrateBoards(rawArray);
-      if (migrated && migrated.length) return migrated;
-    }
-    // default: one shared Week board for fresh installs
-    return [{
-      id: "week-default",
-      name: "Week",
-      kind: "week",
-      nostr: { boardId: crypto.randomUUID(), relays: Array.from(DEFAULT_NOSTR_RELAYS) },
-      archived: false,
-      hidden: false,
-      clearCompletedDisabled: false,
-    }];
-  });
-  return [boards, setBoards] as const;
-}
-
-function useTasks() {
-  const [tasks, setTasks] = useState<Task[]>(() => {
-    // Prefer the v3 per-entity store; fall back to legacy blob otherwise.
-    const loadFromBlob = (): any[] => {
-      try {
-        const current = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS);
-        if (current) {
-          const parsed = JSON.parse(current);
-          if (Array.isArray(parsed)) return parsed;
-        }
-      } catch {}
-      return [];
-    };
-
-    const rawTasks: any[] = taskEntityStore.size() > 0
-      ? taskEntityStore.getAll()
-      : loadFromBlob();
-    const orderMap = new Map<string, number>();
-    const createdAtFallback = Date.now();
-    const normalized = rawTasks
-      .map((entry, index) => {
-        if (!entry || typeof entry !== 'object') return null;
-        const fallbackBoard = typeof (entry as any).boardId === 'string' ? (entry as any).boardId : 'week-default';
-        const boardId = fallbackBoard;
-        const next = orderMap.get(boardId) ?? 0;
-        const explicitOrder = typeof (entry as any).order === 'number' ? (entry as any).order : next;
-        orderMap.set(boardId, explicitOrder + 1);
-        const dueISO = typeof (entry as any).dueISO === 'string' ? (entry as any).dueISO : new Date().toISOString();
-        const dueDateEnabled = typeof (entry as any).dueDateEnabled === 'boolean'
-          ? (entry as any).dueDateEnabled
-          : undefined;
-        const dueTimeEnabled = typeof (entry as any).dueTimeEnabled === 'boolean' ? (entry as any).dueTimeEnabled : undefined;
-        const dueTimeZoneRaw = typeof (entry as any).dueTimeZone === "string" ? (entry as any).dueTimeZone : undefined;
-        const dueTimeZone = normalizeTimeZone(dueTimeZoneRaw) ?? undefined;
-        const priority = normalizeTaskPriority((entry as any).priority);
-        const createdAt = normalizeTaskCreatedAt((entry as any).createdAt) ?? (createdAtFallback + index);
-        const updatedAt =
-          typeof (entry as any).updatedAt === "string" && !Number.isNaN(Date.parse((entry as any).updatedAt))
-            ? new Date((entry as any).updatedAt).toISOString()
-            : undefined;
-        const createdBy = normalizeAgentPubkey((entry as any).createdBy);
-        const lastEditedBy = normalizeAgentPubkey((entry as any).lastEditedBy) ?? createdBy;
-        const reminders = sanitizeReminderList((entry as any).reminders);
-        const reminderTime = normalizeReminderTime((entry as any).reminderTime);
-        const id = typeof (entry as any).id === 'string' ? (entry as any).id : crypto.randomUUID();
-        const scriptureMemoryId = typeof (entry as any).scriptureMemoryId === 'string'
-          ? (entry as any).scriptureMemoryId
-          : undefined;
-        const scriptureMemoryStageRaw = Number((entry as any).scriptureMemoryStage);
-        const scriptureMemoryStage = Number.isFinite(scriptureMemoryStageRaw) && scriptureMemoryStageRaw >= 0
-          ? Math.floor(scriptureMemoryStageRaw)
-          : undefined;
-        const prevReviewRaw = (entry as any).scriptureMemoryPrevReviewISO;
-        const scriptureMemoryPrevReviewISO =
-          typeof prevReviewRaw === 'string'
-            ? prevReviewRaw
-            : prevReviewRaw === null
-              ? null
-              : undefined;
-        const scriptureMemoryScheduledAt = typeof (entry as any).scriptureMemoryScheduledAt === 'string'
-          ? (entry as any).scriptureMemoryScheduledAt
-          : undefined;
-        const documents = normalizeDocumentList((entry as any).documents);
-        const assignees = normalizeTaskAssignees((entry as any).assignees);
-        const task: Task = {
-          ...(entry as Task),
-          id,
-          boardId,
-          order: explicitOrder,
-          dueISO,
-          priority,
-          ...(createdBy ? { createdBy } : {}),
-          ...(lastEditedBy ? { lastEditedBy } : {}),
-          createdAt,
-          ...(updatedAt ? { updatedAt } : {}),
-          ...(typeof dueDateEnabled === 'boolean' ? { dueDateEnabled } : {}),
-          ...(typeof dueTimeEnabled === 'boolean' ? { dueTimeEnabled } : {}),
-          ...(dueTimeZone ? { dueTimeZone } : {}),
-          ...(reminders !== undefined ? { reminders } : {}),
-          ...(reminderTime ? { reminderTime } : {}),
-          ...(scriptureMemoryId ? { scriptureMemoryId } : {}),
-          ...(scriptureMemoryStage !== undefined ? { scriptureMemoryStage } : {}),
-          ...(scriptureMemoryPrevReviewISO !== undefined ? { scriptureMemoryPrevReviewISO } : {}),
-          ...(scriptureMemoryScheduledAt ? { scriptureMemoryScheduledAt } : {}),
-          ...(assignees ? { assignees } : {}),
-        } as Task;
-        if (documents) {
-          task.documents = documents.map(ensureDocumentPreview);
-        } else if (Object.prototype.hasOwnProperty.call(entry as any, "documents")) {
-          task.documents = undefined;
-        }
-
-        const rawBountyLists = (entry as any).bountyLists;
-        const bountyListSet = new Set<string>();
-        if (Array.isArray(rawBountyLists)) {
-          const normalizedLists = rawBountyLists
-            .map((value) => (typeof value === "string" ? value.trim() : ""))
-            .filter((value): value is string => value.length > 0);
-          const unique = Array.from(new Set(normalizedLists));
-          if (unique.length > 0) {
-            unique.forEach((value) => bountyListSet.add(value));
-            // Legacy bounties list choices map to the unified pinned list.
-            bountyListSet.add(PINNED_BOUNTY_LIST_KEY);
-          }
-        }
-        if ((entry as any).column === "bounties") {
-          task.column = "day";
-          bountyListSet.add(PINNED_BOUNTY_LIST_KEY);
-        }
-        if (bountyListSet.size > 0) {
-          task.bountyLists = Array.from(bountyListSet);
-        }
-
-        return normalizeTaskBounty(normalizeHiddenForRecurring(task));
-      })
-      .filter((t): t is Task => !!t);
-    return dedupeRecurringInstances(normalized);
-  });
-  return [tasks, setTasks] as const;
-}
-
-function useCalendarEvents() {
-  const [events, setEvents] = useState<CalendarEvent[]>(() => {
-    const normalizeStringArray = (value: unknown): string[] | undefined => {
-      if (!Array.isArray(value)) return undefined;
-      const out = value
-        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-        .filter(Boolean);
-      return out.length ? out : undefined;
-    };
-
-    const normalizeParticipants = (value: unknown): CalendarEventParticipant[] | undefined => {
-      if (!Array.isArray(value)) return undefined;
-      const out: CalendarEventParticipant[] = [];
-      for (const entry of value) {
-        if (!entry || typeof entry !== "object") continue;
-        const pubkey = typeof (entry as any).pubkey === "string" ? (entry as any).pubkey.trim() : "";
-        if (!pubkey) continue;
-        const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-        const role = typeof (entry as any).role === "string" ? (entry as any).role.trim() : "";
-        out.push({ pubkey, relay: relay || undefined, role: role || undefined });
-      }
-      return out.length ? out : undefined;
-    };
-
-    const normalizeInviteTokens = (value: unknown): Record<string, string> | undefined => {
-      if (!value || typeof value !== "object") return undefined;
-      const out: Record<string, string> = {};
-      for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-        if (typeof raw !== "string") continue;
-        const trimmed = raw.trim();
-        if (!trimmed) continue;
-        out[key] = trimmed;
-      }
-      return Object.keys(out).length ? out : undefined;
-    };
-
-    const normalizeRsvpStatus = (value: unknown): CalendarRsvpStatus | undefined => {
-      if (value === "accepted" || value === "declined" || value === "tentative") return value;
-      return undefined;
-    };
-
-    const normalizeRsvpFb = (value: unknown): CalendarRsvpFb | undefined => {
-      if (value === "free" || value === "busy") return value;
-      return undefined;
-    };
-
-    const isDateKey = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
-
-    const loadStored = (key: string): any[] => {
-      try {
-        const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, key);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    };
-
-    // Prefer v3 per-entity stores; fall back to legacy blobs otherwise.
-    const rawEvents: any[] = calendarEventEntityStore.size() > 0
-      ? calendarEventEntityStore.getAll()
-      : loadStored(LS_CALENDAR_EVENTS);
-    const rawExternalEvents: any[] = externalCalendarEventEntityStore.size() > 0
-      ? externalCalendarEventEntityStore.getAll()
-      : loadStored(LS_EXTERNAL_CALENDAR_EVENTS);
-    const orderMap = new Map<string, number>();
-    const todayKey = (() => {
-      const now = new Date();
-      const yyyy = String(now.getFullYear()).padStart(4, "0");
-      const mm = String(now.getMonth() + 1).padStart(2, "0");
-      const dd = String(now.getDate()).padStart(2, "0");
-      return `${yyyy}-${mm}-${dd}`;
-    })();
-
-    const normalizeEntry = (
-      entry: any,
-      options?: { external?: boolean },
-    ): CalendarEvent | null => {
-      if (!entry || typeof entry !== "object") return null;
-
-      const external = options?.external === true;
-      const fallbackBoard = typeof (entry as any).boardId === "string" ? (entry as any).boardId : "week-default";
-      const boardId = fallbackBoard;
-      const nextOrder = orderMap.get(boardId) ?? 0;
-      const explicitOrder = typeof (entry as any).order === "number" ? (entry as any).order : nextOrder;
-      orderMap.set(boardId, explicitOrder + 1);
-
-      const idRaw = typeof (entry as any).id === "string" ? (entry as any).id.trim() : "";
-      const legacyId = typeof (entry as any).eventId === "string" ? (entry as any).eventId.trim() : "";
-      const id = idRaw || legacyId || crypto.randomUUID();
-      const title = typeof (entry as any).title === "string" ? (entry as any).title : "";
-      const summary = typeof (entry as any).summary === "string" ? (entry as any).summary : undefined;
-      const description = typeof (entry as any).description === "string" ? (entry as any).description : undefined;
-      const documents = normalizeDocumentList((entry as any).documents);
-      const image = typeof (entry as any).image === "string" ? (entry as any).image : undefined;
-      const geohash = typeof (entry as any).geohash === "string" ? (entry as any).geohash : undefined;
-      const columnId = typeof (entry as any).columnId === "string" ? (entry as any).columnId : undefined;
-      const reminders = sanitizeReminderList((entry as any).reminders);
-      const reminderTime = normalizeReminderTime((entry as any).reminderTime);
-      const readOnlyRaw = typeof (entry as any).readOnly === "boolean" ? (entry as any).readOnly : undefined;
-      const readOnly = external ? true : readOnlyRaw;
-      const originBoardId = typeof (entry as any).originBoardId === "string" ? (entry as any).originBoardId : undefined;
-      const hiddenUntilISO = normalizeIsoTimestamp((entry as any).hiddenUntilISO);
-
-      const locations = normalizeStringArray((entry as any).locations);
-      const hashtags = normalizeStringArray((entry as any).hashtags);
-      const references = normalizeStringArray((entry as any).references);
-      const participants = normalizeParticipants((entry as any).participants);
-
-      const recurrence =
-        (entry as any).recurrence && typeof (entry as any).recurrence === "object" && typeof (entry as any).recurrence.type === "string"
-          ? ((entry as any).recurrence as Recurrence)
-          : undefined;
-      const seriesId = typeof (entry as any).seriesId === "string" ? (entry as any).seriesId : undefined;
-
-      const eventKey = typeof (entry as any).eventKey === "string" ? (entry as any).eventKey.trim() : "";
-      const inviteTokens = normalizeInviteTokens((entry as any).inviteTokens);
-      const canonicalAddress =
-        typeof (entry as any).canonicalAddress === "string" ? (entry as any).canonicalAddress.trim() : "";
-      const viewAddress =
-        typeof (entry as any).viewAddress === "string" ? (entry as any).viewAddress.trim() : "";
-      const inviteToken = typeof (entry as any).inviteToken === "string" ? (entry as any).inviteToken.trim() : "";
-      const inviteRelays = normalizeStringArray((entry as any).inviteRelays);
-
-      const parsedCanonical = canonicalAddress ? parseCalendarAddress(canonicalAddress) : null;
-      const boardPubkeyRaw = typeof (entry as any).boardPubkey === "string" ? (entry as any).boardPubkey.trim() : "";
-      const boardPubkey =
-        normalizeNostrPubkeyHex(boardPubkeyRaw)
-        ?? normalizeNostrPubkeyHex(parsedCanonical?.pubkey || "")
-        ?? undefined;
-
-      const rsvpStatus = normalizeRsvpStatus((entry as any).rsvpStatus);
-      const rsvpCreatedAtRaw = (entry as any).rsvpCreatedAt;
-      const rsvpCreatedAt = typeof rsvpCreatedAtRaw === "number" && Number.isFinite(rsvpCreatedAtRaw)
-        ? rsvpCreatedAtRaw
-        : undefined;
-      const rsvpFb = normalizeRsvpFb((entry as any).rsvpFb);
-      const createdBy = normalizeAgentPubkey((entry as any).createdBy);
-      const lastEditedBy = normalizeAgentPubkey((entry as any).lastEditedBy) ?? createdBy;
-
-      if (external) {
-        if (!canonicalAddress || !viewAddress || !eventKey || !boardPubkey) return null;
-      }
-
-      const base: CalendarEventBase = {
-        id,
-        boardId,
-        ...(createdBy ? { createdBy } : {}),
-        ...(lastEditedBy ? { lastEditedBy } : {}),
-        columnId,
-        order: explicitOrder,
-        title,
-        summary,
-        description,
-        documents: documents ? documents.map(ensureDocumentPreview) : undefined,
-        image,
-        locations,
-        geohash,
-        participants,
-        hashtags,
-        references,
-        reminders,
-        ...(reminderTime ? { reminderTime } : {}),
-        recurrence,
-        seriesId,
-        ...(hiddenUntilISO ? { hiddenUntilISO } : {}),
-        ...(readOnly ? { readOnly: true } : {}),
-        ...(external ? { external: true } : {}),
-        ...(originBoardId ? { originBoardId } : {}),
-        ...(eventKey ? { eventKey } : {}),
-        ...(inviteTokens ? { inviteTokens } : {}),
-        ...(canonicalAddress ? { canonicalAddress } : {}),
-        ...(viewAddress ? { viewAddress } : {}),
-        ...(inviteToken ? { inviteToken } : {}),
-        ...(inviteRelays ? { inviteRelays } : {}),
-        ...(boardPubkey ? { boardPubkey } : {}),
-        ...(rsvpStatus ? { rsvpStatus } : {}),
-        ...(rsvpCreatedAt ? { rsvpCreatedAt } : {}),
-        ...(rsvpFb ? { rsvpFb } : {}),
-      };
-
-      const inferredKind =
-        (entry as any).kind === "time" || (entry as any).kind === "date"
-          ? (entry as any).kind
-          : typeof (entry as any).startISO === "string"
-            ? "time"
-            : "date";
-
-      if (inferredKind === "time") {
-        const startISO = typeof (entry as any).startISO === "string" ? (entry as any).startISO : new Date().toISOString();
-        if (Number.isNaN(Date.parse(startISO))) return null;
-        const endISO = typeof (entry as any).endISO === "string" ? (entry as any).endISO : undefined;
-        const normalizedEndISO = endISO && !Number.isNaN(Date.parse(endISO)) ? endISO : undefined;
-        const startTzid = typeof (entry as any).startTzid === "string" ? (entry as any).startTzid : undefined;
-        const endTzid = typeof (entry as any).endTzid === "string" ? (entry as any).endTzid : undefined;
-        const event: TimeCalendarEvent = {
-          ...base,
-          kind: "time",
-          startISO,
-          endISO: normalizedEndISO,
-          startTzid,
-          endTzid,
-        };
-        return event;
-      }
-
-      const startDate =
-        typeof (entry as any).startDate === "string" && isDateKey((entry as any).startDate)
-          ? (entry as any).startDate
-          : todayKey;
-      const endDate =
-        typeof (entry as any).endDate === "string" && isDateKey((entry as any).endDate)
-          ? (entry as any).endDate
-          : undefined;
-      const event: DateCalendarEvent = {
-        ...base,
-        kind: "date",
-        startDate,
-        endDate,
-      };
-      return event;
-    };
-
-    const boardEvents: CalendarEvent[] = [];
-    const migratedExternal: CalendarEvent[] = [];
-    rawEvents.forEach((entry) => {
-      const event = normalizeEntry(entry, { external: false });
-      if (!event) return;
-      const shouldMigrateExternal =
-        (entry as any)?.external === true
-        || (!!event.readOnly && !event.originBoardId && !!event.eventKey && !!event.viewAddress && !!event.canonicalAddress);
-      if (shouldMigrateExternal) {
-        const externalEvent = normalizeEntry(entry, { external: true });
-        if (externalEvent) {
-          migratedExternal.push(externalEvent);
-          return;
-        }
-      }
-      boardEvents.push(event);
-    });
-
-    const externalEvents: CalendarEvent[] = [];
-    rawExternalEvents.forEach((entry) => {
-      const event = normalizeEntry(entry, { external: true });
-      if (event) externalEvents.push(event);
-    });
-
-    const mergedExternalMap = new Map<string, CalendarEvent>();
-    [...migratedExternal, ...externalEvents].forEach((event) => {
-      if (!event.external) return;
-      const key = `${event.id}::${event.viewAddress || ""}`;
-      const existing = mergedExternalMap.get(key);
-      if (!existing) {
-        mergedExternalMap.set(key, event);
-        return;
-      }
-      const nextCreated = event.rsvpCreatedAt ?? 0;
-      const prevCreated = existing.rsvpCreatedAt ?? 0;
-      if (nextCreated >= prevCreated) {
-        mergedExternalMap.set(key, event);
-      }
-    });
-
-    return [...boardEvents, ...Array.from(mergedExternalMap.values())];
-  });
-
-  return [events, setEvents] as const;
-}
-
 /* ================= DroppableColumn ================= */
 const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   title: string;
@@ -2891,223 +2154,26 @@ export default function App() {
     };
   }, [settings.backgroundImage, settings.backgroundBlur]);
 
-  // Nostr pool + merge indexes
-  const pool = useMemo(() => createNostrPool(), []);
-  const initialStoredNostrSecretHex = useMemo(() => {
-    try {
-      const existing = nostrSkSync();
-      if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
-        return existing.toLowerCase();
-      }
-    } catch {}
-    return null;
-  }, []);
-  // In-app Nostr key (secp256k1/Schnorr) for signing
-  const [nostrSK, setNostrSK] = useState<Uint8Array>(() => {
-    if (initialStoredNostrSecretHex) {
-      return hexToBytes(initialStoredNostrSecretHex);
-    }
-    return generateSecretKey();
-  });
-  const [nostrPK, setNostrPK] = useState<string>(() => {
-    if (!initialStoredNostrSecretHex) return "";
-    try {
-      return getPublicKey(hexToBytes(initialStoredNostrSecretHex));
-    } catch {
-      return "";
-    }
-  });
-  useEffect(() => { (window as any).nostrPK = nostrPK; }, [nostrPK]);
-  useEffect(() => {
-    const relays = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
-    NostrSession.init(relays).catch((err) => {
-      console.warn("Failed to initialize Nostr session", err);
-    });
-  }, [defaultRelays]);
+  const {
+    applyCustomNostrKey,
+    copyNsecAndDismiss,
+    dismissSkBackupNotice,
+    nostrPK,
+    nostrPublish,
+    nostrPublishRef,
+    nostrSK,
+    nostrSkHex,
+    pool,
+    rotateNostrKey,
+    setCustomNostrKey,
+    showSkBackupNotice,
+  } = useNostrIdentity({ defaultRelays });
   const { pendingNostrOutboxCount, retryNostrOutbox } = useTaskPersistence({
     boards,
     calendarEvents,
     defaultRelays,
     tasks,
   });
-
-  // One-time prompt after the v1→v2 SK migration. Shown once per device and
-  // dismissed permanently when the user copies their nsec or taps "Got it".
-  const [showSkBackupNotice, setShowSkBackupNotice] = useState(() => nostrSkBackupNoticePending());
-  const dismissSkBackupNotice = useCallback(() => {
-    nostrSkAcknowledgeBackupNotice();
-    setShowSkBackupNotice(false);
-  }, []);
-  const copyNsecAndDismiss = useCallback(async () => {
-    try {
-      const sk = nostrSkSync();
-      if (sk) await navigator.clipboard?.writeText(toNsec(sk));
-    } catch {}
-    dismissSkBackupNotice();
-  }, [dismissSkBackupNotice]);
-  const [nostrBackupState, setNostrBackupState] = useState<NostrBackupState>(() => loadNostrBackupState());
-  const nostrBackupStateRef = useRef<NostrBackupState>(nostrBackupState);
-  useEffect(() => { nostrBackupStateRef.current = nostrBackupState; }, [nostrBackupState]);
-  useEffect(() => {
-    try { kvStorage.setItem(LS_NOSTR_BACKUP_STATE, JSON.stringify(nostrBackupState)); } catch {}
-  }, [nostrBackupState]);
-  useEffect(() => {
-    setNostrBackupState((prev) => {
-      if (prev.pubkey === nostrPK) return prev;
-      nostrBackupInitialPublishRef.current = false;
-      nostrBackupPullFinishedRef.current = false;
-      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
-    });
-  }, [nostrPK]);
-  const nostrBackupBaselineRef = useRef<string | null>(null);
-  const nostrBackupSettingsDirtyRef = useRef(false);
-  const nostrBackupPullFinishedRef = useRef(false);
-  const nostrBackupInitialPublishRef = useRef(false);
-  const nostrBackupPublishRef = useRef<Promise<void> | null>(null);
-  const [nostrBackupHold, setNostrBackupHold] = useState(false);
-  const nostrBackupHoldRef = useRef(nostrBackupHold);
-  useEffect(() => { nostrBackupHoldRef.current = nostrBackupHold; }, [nostrBackupHold]);
-
-  const [nostrBibleTrackerState, setNostrBibleTrackerState] = useState<NostrBackupState>(() =>
-    loadNostrSyncState(LS_NOSTR_BIBLE_TRACKER_SYNC_STATE),
-  );
-  const nostrBibleTrackerStateRef = useRef<NostrBackupState>(nostrBibleTrackerState);
-  useEffect(() => { nostrBibleTrackerStateRef.current = nostrBibleTrackerState; }, [nostrBibleTrackerState]);
-  useEffect(() => {
-    try { kvStorage.setItem(LS_NOSTR_BIBLE_TRACKER_SYNC_STATE, JSON.stringify(nostrBibleTrackerState)); } catch {}
-  }, [nostrBibleTrackerState]);
-  const nostrBibleTrackerPublishedSnapshotRef = useRef<string | null>(null);
-  const nostrBibleTrackerPullFinishedRef = useRef(false);
-  const nostrBibleTrackerInitialPublishRef = useRef(false);
-  const nostrBibleTrackerPublishRef = useRef<Promise<void> | null>(null);
-  const nostrBibleTrackerQueuedPublishRef = useRef(false);
-  const nostrBibleTrackerDebounceTimerRef = useRef<number | null>(null);
-  const nostrBibleTrackerErrorToastAtRef = useRef(0);
-  useEffect(() => {
-    setNostrBibleTrackerState((prev) => {
-      if (prev.pubkey === nostrPK) return prev;
-      nostrBibleTrackerInitialPublishRef.current = false;
-      nostrBibleTrackerPullFinishedRef.current = false;
-      nostrBibleTrackerPublishedSnapshotRef.current = null;
-      nostrBibleTrackerQueuedPublishRef.current = false;
-      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
-    });
-  }, [nostrPK]);
-
-  const [nostrScriptureMemoryState, setNostrScriptureMemoryState] = useState<NostrBackupState>(() =>
-    loadNostrSyncState(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE),
-  );
-  const nostrScriptureMemoryStateRef = useRef<NostrBackupState>(nostrScriptureMemoryState);
-  useEffect(() => { nostrScriptureMemoryStateRef.current = nostrScriptureMemoryState; }, [nostrScriptureMemoryState]);
-  useEffect(() => {
-    try { kvStorage.setItem(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE, JSON.stringify(nostrScriptureMemoryState)); } catch {}
-  }, [nostrScriptureMemoryState]);
-  const nostrScriptureMemoryPublishedSnapshotRef = useRef<string | null>(null);
-  const nostrScriptureMemoryPullFinishedRef = useRef(false);
-  const nostrScriptureMemoryInitialPublishRef = useRef(false);
-  const nostrScriptureMemoryPublishRef = useRef<Promise<void> | null>(null);
-  const nostrScriptureMemoryDebounceTimerRef = useRef<number | null>(null);
-  const nostrScriptureMemoryErrorToastAtRef = useRef(0);
-  useEffect(() => {
-    setNostrScriptureMemoryState((prev) => {
-      if (prev.pubkey === nostrPK) return prev;
-      nostrScriptureMemoryInitialPublishRef.current = false;
-      nostrScriptureMemoryPullFinishedRef.current = false;
-      nostrScriptureMemoryPublishedSnapshotRef.current = null;
-      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
-    });
-  }, [nostrPK]);
-  // allow manual key rotation later if needed
-  const rotateNostrKey = useCallback(() => {
-    const sk = generateSecretKey();
-    const skHex = bytesToHex(sk);
-    setNostrSK(sk);
-    const pk = getPublicKey(sk);
-    setNostrPK(pk);
-    void nostrSkSet(skHex);
-    return toNsec(skHex);
-  }, []);
-
-  const applyCustomNostrKey = useCallback((key: string, options?: { silent?: boolean }): boolean => {
-    try {
-      const normalized = normalizeSecretKeyInput(key);
-      if (!normalized) throw new Error("invalid");
-      const sk = hexToBytes(normalized);
-      setNostrSK(sk);
-      const pk = getPublicKey(sk);
-      setNostrPK(pk);
-      void nostrSkSet(normalized);
-      return true;
-    } catch {
-      if (!options?.silent) {
-        alert("Invalid private key");
-      }
-      return false;
-    }
-  }, []);
-
-  const setCustomNostrKey = useCallback((key: string) => {
-    applyCustomNostrKey(key);
-  }, [applyCustomNostrKey]);
-
-  const lastNostrCreated = useRef<Map<string, number>>(new Map());
-  const nostrPublishQueue = useRef<Promise<unknown>>(Promise.resolve());
-  const lastNostrSentMs = useRef(0);
-  async function nostrPublish(relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string }): Promise<number>;
-  async function nostrPublish(
-    relays: string[],
-    template: EventTemplate,
-    options: { sk?: Uint8Array | string; returnEvent: true },
-  ): Promise<{ createdAt: number; event: NostrEvent }>;
-  async function nostrPublish(
-    relays: string[],
-    template: EventTemplate,
-    options?: { sk?: Uint8Array | string; returnEvent?: boolean },
-  ) {
-    const run = async () => {
-      const nowMs = Date.now();
-      const elapsed = nowMs - lastNostrSentMs.current;
-      if (elapsed < NOSTR_MIN_EVENT_INTERVAL_MS) {
-        await new Promise((resolve) => setTimeout(resolve, NOSTR_MIN_EVENT_INTERVAL_MS - elapsed));
-      }
-      const now = Math.floor(Date.now() / 1000);
-      let createdAt = typeof template.created_at === "number" ? template.created_at : now;
-      const signer = options?.sk || nostrSK;
-      const signerBytes =
-        typeof signer === "string"
-          ? (() => {
-              const trimmed = signer.trim();
-              if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-                return hexToBytes(trimmed.toLowerCase());
-              }
-              if (trimmed.startsWith("nsec")) {
-                const decoded = nip19.decode(trimmed);
-                if (decoded.type === "nsec" && decoded.data) {
-                  if (typeof decoded.data === "string") return hexToBytes(decoded.data);
-                  if (decoded.data instanceof Uint8Array) return decoded.data;
-                  if (Array.isArray(decoded.data)) return Uint8Array.from(decoded.data as number[]);
-                }
-              }
-              throw new Error("Invalid Nostr signer key");
-            })()
-          : signer;
-      const signerKey = bytesToHex(signerBytes);
-      const lastForSigner = lastNostrCreated.current.get(signerKey) || 0;
-      if (createdAt <= lastForSigner) {
-        createdAt = lastForSigner + 1;
-      }
-      lastNostrCreated.current.set(signerKey, createdAt);
-      const ev = finalizeEvent({ ...template, created_at: createdAt }, signerBytes);
-      pool.publishEvent(relays, ev as unknown as NostrEvent);
-      lastNostrSentMs.current = Date.now();
-      return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;
-    };
-    const next = nostrPublishQueue.current.catch(() => {}).then(run);
-    nostrPublishQueue.current = next.then(() => {}, () => {});
-    return next;
-  }
-  const nostrPublishRef = useRef(nostrPublish);
-  nostrPublishRef.current = nostrPublish;
   type NostrIndex = {
     boardMeta: Map<string, number>; // nostrBoardId -> created_at
     taskClock: Map<string, Map<string, number>>; // nostrBoardId -> (taskId -> created_at)
@@ -3331,7 +2397,6 @@ export default function App() {
     }
   }, []);
   const inboxPoolRef = useRef<SessionPool | null>(null);
-  const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
 
   // ── Google Calendar integration ──────────────────────────────────────────
   const {
@@ -3900,511 +2965,6 @@ export default function App() {
     [setCalendarEvents],
   );
 
-  const nostrApplyQueue = useRef<Promise<void>>(Promise.resolve());
-  const enqueueNostrApply = useCallback((fn: () => Promise<void>) => {
-    const next = nostrApplyQueue.current.catch(() => {}).then(() => fn());
-    nostrApplyQueue.current = next.then(() => {}, () => {});
-    return next;
-  }, []);
-  const normalizeRelayList = useCallback(
-    (relays: string[] | null | undefined) => normalizeRelayListSorted(relays) ?? [],
-    [],
-  );
-
-  const sanitizeSettingsForBackup = useCallback(
-    (raw: Settings | Record<string, unknown>): Partial<Settings> =>
-      sanitizeSettingsForNostrBackup(raw, DEFAULT_PUSH_PREFERENCES),
-    [],
-  );
-
-  const buildNostrBackupSnapshot = useCallback(
-    (): NostrBackupSnapshot =>
-      buildNostrBackupSnapshotDomain({
-        boards,
-        settings,
-        includeMetadata: settings.nostrBackupEnabled,
-        defaultRelays,
-        fallbackRelays: Array.from(DEFAULT_NOSTR_RELAYS),
-        normalizeRelayList,
-        sanitizeSettingsForBackup,
-        walletSeed: getWalletSeedBackup(),
-      }),
-    [boards, defaultRelays, normalizeRelayList, sanitizeSettingsForBackup, settings],
-  );
-
-  const serializeNostrBackupSnapshot = useCallback(
-    () => JSON.stringify(buildNostrBackupSnapshot()),
-    [buildNostrBackupSnapshot],
-  );
-  const serializeNostrBackupSnapshotRef = useRef(serializeNostrBackupSnapshot);
-  serializeNostrBackupSnapshotRef.current = serializeNostrBackupSnapshot;
-
-  const applyNostrBibleTrackerSyncEvent = useCallback(async (ev: NostrEvent) => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!ev || ev.kind !== NOSTR_APP_STATE_KIND) return;
-    const dTag = tagValue(ev, "d");
-    if (dTag !== NOSTR_BIBLE_TRACKER_D_TAG) return;
-    if (!nostrPK) return;
-    const skHex = bytesToHex(nostrSK);
-    let parsed: any;
-    try {
-      parsed = await decryptNostrSyncPayload(ev.content, skHex, nostrPK);
-    } catch (error) {
-      console.warn("Failed to decrypt Bible tracker sync payload", error);
-      return;
-    }
-    if (!parsed || typeof parsed !== "object") return;
-    if (parsed.version !== 1) return;
-    const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
-    const lastTs = nostrBibleTrackerStateRef.current.lastTimestamp || 0;
-    if (payloadTs <= lastTs) {
-      if (!nostrBibleTrackerStateRef.current.lastEventId && ev.id) {
-        setNostrBibleTrackerState((prev) => ({ ...prev, lastEventId: ev.id }));
-      }
-      return;
-    }
-    const incoming = sanitizeBibleTrackerState(parsed.bibleTracker);
-    setBibleTracker(incoming);
-    nostrBibleTrackerPublishedSnapshotRef.current = JSON.stringify(incoming);
-    nostrBibleTrackerQueuedPublishRef.current = false;
-    const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
-    nostrBibleTrackerStateRef.current = nextState;
-    setNostrBibleTrackerState(nextState);
-  }, [nostrPK, nostrSK, setBibleTracker, setNostrBibleTrackerState, settings.nostrBackupEnabled, tagValue]);
-
-  const applyNostrScriptureMemorySyncEvent = useCallback(async (ev: NostrEvent) => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!ev || ev.kind !== NOSTR_APP_STATE_KIND) return;
-    const dTag = tagValue(ev, "d");
-    if (dTag !== NOSTR_SCRIPTURE_MEMORY_D_TAG) return;
-    if (!nostrPK) return;
-    const skHex = bytesToHex(nostrSK);
-    let parsed: any;
-    try {
-      parsed = await decryptNostrSyncPayload(ev.content, skHex, nostrPK);
-    } catch (error) {
-      console.warn("Failed to decrypt scripture memory sync payload", error);
-      return;
-    }
-    if (!parsed || typeof parsed !== "object") return;
-    if (parsed.version !== 1) return;
-    const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
-    const lastTs = nostrScriptureMemoryStateRef.current.lastTimestamp || 0;
-    if (payloadTs <= lastTs) {
-      if (!nostrScriptureMemoryStateRef.current.lastEventId && ev.id) {
-        setNostrScriptureMemoryState((prev) => ({ ...prev, lastEventId: ev.id }));
-      }
-      return;
-    }
-    const incoming = sanitizeScriptureMemoryState(parsed.scriptureMemory);
-    setScriptureMemory(incoming);
-    nostrScriptureMemoryPublishedSnapshotRef.current = JSON.stringify(incoming);
-    const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
-    nostrScriptureMemoryStateRef.current = nextState;
-    setNostrScriptureMemoryState(nextState);
-  }, [nostrPK, nostrSK, setNostrScriptureMemoryState, setScriptureMemory, settings.nostrBackupEnabled, tagValue]);
-
-  const nostrList = useCallback(
-    async (relays: string[], filters: any[]): Promise<NostrEvent[]> => {
-      const relayList = normalizeRelayList(relays);
-      const session = await NostrSession.init(relayList);
-      return session.fetchEvents(filters as any, relayList);
-    },
-    [normalizeRelayList],
-  );
-
-  const applyNostrBackupPayload = useCallback(
-    async (payload: NostrAppBackupPayload, source: "remote" | "local" = "remote") => {
-      if (!payload || typeof payload !== "object") return;
-      const includeMetadata = settings.nostrBackupEnabled;
-      const baseRelays = normalizeRelayList(
-        payload.defaultRelays && payload.defaultRelays.length
-          ? payload.defaultRelays
-          : defaultRelays.length
-            ? defaultRelays
-            : Array.from(DEFAULT_NOSTR_RELAYS),
-      );
-      if (includeMetadata && payload.settings && typeof payload.settings === "object") {
-        const incoming = sanitizeSettingsForBackup(payload.settings as Record<string, unknown>);
-        setSettings(incoming);
-      }
-      if (includeMetadata && Array.isArray(payload.defaultRelays) && payload.defaultRelays.some((r) => typeof r === "string" && r.trim())) {
-        setDefaultRelays(normalizeRelayList(payload.defaultRelays));
-      }
-      if (payload.walletSeed) {
-        try {
-          restoreWalletSeedBackup(payload.walletSeed);
-        } catch (error) {
-          console.warn("Failed to restore wallet seed from Nostr backup", error);
-        }
-      }
-      if (includeMetadata && Array.isArray(payload.boards)) {
-        setBoards((prev) =>
-          mergeBackupBoards({
-            currentBoards: prev,
-            incomingBoards: payload.boards,
-            baseRelays,
-            normalizeRelayList,
-            createId: () => crypto.randomUUID(),
-          }),
-        );
-      }
-      if (source === "remote") {
-        const message = includeMetadata ? "Synced boards and settings from Nostr" : "Synced wallet backup from Nostr";
-        showToast(message, 2600);
-      }
-    },
-    [defaultRelays, normalizeRelayList, sanitizeSettingsForBackup, setBoards, setDefaultRelays, setSettings, settings.nostrBackupEnabled, showToast],
-  );
-
-  const handleIncomingNostrBackupEvent = useCallback(
-    async (ev: NostrEvent) => {
-      if (!settings.nostrBackupEnabled) return;
-      if (nostrBackupHoldRef.current) return;
-      if (!ev || ev.kind !== NOSTR_APP_BACKUP_KIND) return;
-      const dTag = tagValue(ev, "d");
-      if (dTag !== NOSTR_APP_BACKUP_D_TAG) return;
-      if (!nostrPK) return;
-      const skHex = bytesToHex(nostrSK);
-      let payload: NostrAppBackupPayload;
-      try {
-        payload = await decryptNostrBackupPayload(ev.content, skHex, nostrPK);
-      } catch (error) {
-        console.warn("Failed to decrypt Nostr backup payload", error);
-        return;
-      }
-      if (!payload || payload.version !== 1) return;
-      const payloadTs = Math.max(Number(payload.timestamp) || 0, ev.created_at || 0);
-      const lastTs = nostrBackupStateRef.current.lastTimestamp || 0;
-      if (payloadTs <= lastTs) {
-        if (!nostrBackupStateRef.current.lastEventId && ev.id) {
-          setNostrBackupState((prev) => ({ ...prev, lastEventId: ev.id }));
-        }
-        return;
-      }
-      await applyNostrBackupPayload(payload, "remote");
-      nostrBackupPublishedSnapshotRef.current = serializeNostrBackupSnapshotRef.current();
-      setNostrBackupState({
-        lastEventId: ev.id || null,
-        lastTimestamp: payloadTs,
-        pubkey: nostrPK || null,
-      });
-    },
-    [applyNostrBackupPayload, nostrPK, nostrSK, setNostrBackupState, settings.nostrBackupEnabled, tagValue],
-  );
-
-  const pullNostrBackupOnce = useCallback(async (): Promise<boolean> => {
-    if (!settings.nostrBackupEnabled) return false;
-    if (!nostrPK) return false;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return false;
-    try {
-      const events = await nostrList(relays, [
-        { kinds: [NOSTR_APP_BACKUP_KIND], authors: [nostrPK], "#d": [NOSTR_APP_BACKUP_D_TAG], limit: 5 },
-      ]);
-      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
-        if (!event) return current;
-        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
-        return current;
-      }, null);
-      if (latest) {
-        await handleIncomingNostrBackupEvent(latest as unknown as NostrEvent);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.warn("Failed to fetch Nostr backup", error);
-      return false;
-    }
-  }, [defaultRelays, handleIncomingNostrBackupEvent, normalizeRelayList, nostrList, nostrPK, settings.nostrBackupEnabled]);
-
-  const pullNostrBibleTrackerOnce = useCallback(async (): Promise<boolean> => {
-    if (!settings.nostrBackupEnabled) return false;
-    if (!nostrPK) return false;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return false;
-    try {
-      const events = await nostrList(relays, [
-        { kinds: [NOSTR_APP_STATE_KIND], authors: [nostrPK], "#d": [NOSTR_BIBLE_TRACKER_D_TAG], limit: 5 },
-      ]);
-      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
-        if (!event) return current;
-        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
-        return current;
-      }, null);
-      if (latest) {
-        await enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(latest as unknown as NostrEvent));
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.warn("Failed to fetch Bible tracker sync from Nostr", error);
-      return false;
-    }
-  }, [
-    applyNostrBibleTrackerSyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrList,
-    nostrPK,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const pullNostrScriptureMemoryOnce = useCallback(async (): Promise<boolean> => {
-    if (!settings.nostrBackupEnabled) return false;
-    if (!nostrPK) return false;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return false;
-    try {
-      const events = await nostrList(relays, [
-        { kinds: [NOSTR_APP_STATE_KIND], authors: [nostrPK], "#d": [NOSTR_SCRIPTURE_MEMORY_D_TAG], limit: 5 },
-      ]);
-      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
-        if (!event) return current;
-        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
-        return current;
-      }, null);
-      if (latest) {
-        await enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(latest as unknown as NostrEvent));
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.warn("Failed to fetch scripture memory sync from Nostr", error);
-      return false;
-    }
-  }, [
-    applyNostrScriptureMemorySyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrList,
-    nostrPK,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const publishNostrBibleTracker = useCallback(async () => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    const tracker = bibleTrackerRef.current;
-    const snapshotString = JSON.stringify(tracker);
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(nowSeconds, (nostrBibleTrackerStateRef.current.lastTimestamp || 0) + 1);
-    const payload = { version: 1, timestamp, bibleTracker: tracker } as const;
-    const skHex = bytesToHex(nostrSK);
-    const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
-    const result = await nostrPublishRef.current(
-      relays,
-      {
-        kind: NOSTR_APP_STATE_KIND,
-        content,
-        tags: [
-          ["d", NOSTR_BIBLE_TRACKER_D_TAG],
-          ["client", NOSTR_APP_STATE_CLIENT_TAG],
-        ],
-        created_at: timestamp,
-      },
-      { sk: nostrSK, returnEvent: true },
-    );
-    const eventId = (result as any)?.event?.id || null;
-    const publishedTs = (result as any)?.createdAt ?? timestamp;
-    const nextState = {
-      lastEventId: eventId || null,
-      lastTimestamp: publishedTs,
-      pubkey: nostrPK || null,
-    };
-    nostrBibleTrackerStateRef.current = nextState;
-    setNostrBibleTrackerState(nextState);
-    nostrBibleTrackerPublishedSnapshotRef.current = snapshotString;
-  }, [
-    defaultRelays,
-    normalizeRelayList,
-    nostrPK,
-    nostrSK,
-    setNostrBibleTrackerState,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const publishNostrScriptureMemory = useCallback(async () => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    const snapshotString = JSON.stringify(scriptureMemory);
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(nowSeconds, (nostrScriptureMemoryStateRef.current.lastTimestamp || 0) + 1);
-    const payload = { version: 1, timestamp, scriptureMemory } as const;
-    const skHex = bytesToHex(nostrSK);
-    const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
-    const result = await nostrPublishRef.current(
-      relays,
-      {
-        kind: NOSTR_APP_STATE_KIND,
-        content,
-        tags: [
-          ["d", NOSTR_SCRIPTURE_MEMORY_D_TAG],
-          ["client", NOSTR_APP_STATE_CLIENT_TAG],
-        ],
-        created_at: timestamp,
-      },
-      { sk: nostrSK, returnEvent: true },
-    );
-    const eventId = (result as any)?.event?.id || null;
-    const publishedTs = (result as any)?.createdAt ?? timestamp;
-    const nextState = {
-      lastEventId: eventId || null,
-      lastTimestamp: publishedTs,
-      pubkey: nostrPK || null,
-    };
-    nostrScriptureMemoryStateRef.current = nextState;
-    setNostrScriptureMemoryState(nextState);
-    nostrScriptureMemoryPublishedSnapshotRef.current = snapshotString;
-  }, [
-    defaultRelays,
-    normalizeRelayList,
-    nostrPK,
-    nostrSK,
-    scriptureMemory,
-    setNostrScriptureMemoryState,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const enqueueNostrBibleTrackerPublish = useCallback(() => {
-    if (nostrBibleTrackerPublishRef.current) {
-      nostrBibleTrackerQueuedPublishRef.current = true;
-      return nostrBibleTrackerPublishRef.current;
-    }
-    const task = publishNostrBibleTracker()
-      .catch((error) => {
-        console.warn("Failed to publish Bible tracker sync", error);
-        const now = Date.now();
-        if (now - nostrBibleTrackerErrorToastAtRef.current > 60_000) {
-          nostrBibleTrackerErrorToastAtRef.current = now;
-          showToast("Unable to sync Bible progress", 2600);
-        }
-      })
-      .finally(() => {
-        nostrBibleTrackerPublishRef.current = null;
-        if (!nostrBibleTrackerQueuedPublishRef.current) return;
-        nostrBibleTrackerQueuedPublishRef.current = false;
-        const currentSnapshot = JSON.stringify(bibleTrackerRef.current);
-        if (nostrBibleTrackerPublishedSnapshotRef.current === currentSnapshot) return;
-        enqueueNostrBibleTrackerPublish().catch(() => {});
-      });
-    nostrBibleTrackerPublishRef.current = task;
-    return task;
-  }, [publishNostrBibleTracker, showToast]);
-
-  const enqueueNostrScriptureMemoryPublish = useCallback(() => {
-    if (nostrScriptureMemoryPublishRef.current) return nostrScriptureMemoryPublishRef.current;
-    const task = publishNostrScriptureMemory()
-      .catch((error) => {
-        console.warn("Failed to publish scripture memory sync", error);
-        const now = Date.now();
-        if (now - nostrScriptureMemoryErrorToastAtRef.current > 60_000) {
-          nostrScriptureMemoryErrorToastAtRef.current = now;
-          showToast("Unable to sync scripture memory list", 2600);
-        }
-      })
-      .finally(() => {
-        nostrScriptureMemoryPublishRef.current = null;
-      });
-    nostrScriptureMemoryPublishRef.current = task;
-    return task;
-  }, [publishNostrScriptureMemory, showToast]);
-
-  const publishNostrBackup = useCallback(async () => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    const snapshot = buildNostrBackupSnapshot();
-    const snapshotString = serializeNostrBackupSnapshotRef.current();
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(nowSeconds, (nostrBackupStateRef.current.lastTimestamp || 0) + 1);
-    const payload: NostrAppBackupPayload = { ...snapshot, version: 1, timestamp };
-    const skHex = bytesToHex(nostrSK);
-    const content = await encryptNostrBackupPayload(payload, skHex, nostrPK);
-    const result = await nostrPublishRef.current(
-      relays,
-      {
-        kind: NOSTR_APP_BACKUP_KIND,
-        content,
-        tags: [
-          ["d", NOSTR_APP_BACKUP_D_TAG],
-          ["client", NOSTR_APP_BACKUP_CLIENT_TAG],
-        ],
-        created_at: timestamp,
-      },
-      { sk: nostrSK, returnEvent: true },
-    );
-    const eventId = (result as any)?.event?.id || null;
-    const prev = nostrBackupStateRef.current;
-    const prevEventId = prev.pubkey === nostrPK ? prev.lastEventId : null;
-    const publishedTs = (result as any)?.createdAt ?? timestamp;
-    if (prevEventId && eventId && prevEventId !== eventId) {
-      try {
-        await nostrPublishRef.current(
-          relays,
-          {
-            kind: 5,
-            tags: [
-              ["e", prevEventId],
-              ["a", `${NOSTR_APP_BACKUP_KIND}:${nostrPK}:${NOSTR_APP_BACKUP_D_TAG}`],
-            ],
-            content: "Delete previous Taskify backup",
-            created_at: publishedTs + 1,
-          },
-          { sk: nostrSK },
-        );
-      } catch (error) {
-        console.warn("Failed to publish Nostr backup deletion", error);
-      }
-    }
-    const nextState = {
-      lastEventId: eventId || prevEventId,
-      lastTimestamp: publishedTs,
-      pubkey: nostrPK || null,
-    };
-    nostrBackupStateRef.current = nextState;
-    setNostrBackupState(nextState);
-    nostrBackupPublishedSnapshotRef.current = snapshotString;
-  }, [buildNostrBackupSnapshot, defaultRelays, normalizeRelayList, nostrPK, nostrSK, setNostrBackupState, settings.nostrBackupEnabled]);
-
-  const enqueueNostrBackupPublish = useCallback(() => {
-    if (nostrBackupPublishRef.current) return nostrBackupPublishRef.current;
-    const task = publishNostrBackup()
-      .catch((error) => {
-        console.warn("Failed to publish Nostr backup", error);
-        showToast("Unable to sync backup to Nostr", 2600);
-      })
-      .finally(() => {
-        nostrBackupPublishRef.current = null;
-      });
-    nostrBackupPublishRef.current = task;
-    return task;
-  }, [publishNostrBackup, showToast]);
-
-  const publishLatestNostrBackup = useCallback(async () => {
-    if (!settings.nostrBackupEnabled || !nostrPK) return;
-    const initialSnapshot = serializeNostrBackupSnapshot();
-    if (initialSnapshot === nostrBackupPublishedSnapshotRef.current) return;
-    if (nostrBackupPublishRef.current) {
-      try {
-        await nostrBackupPublishRef.current;
-      } catch {}
-    }
-    const latestSnapshot = serializeNostrBackupSnapshot();
-    if (latestSnapshot === nostrBackupPublishedSnapshotRef.current) return;
-    try {
-      await enqueueNostrBackupPublish();
-    } catch {}
-  }, [enqueueNostrBackupPublish, nostrPK, serializeNostrBackupSnapshot, settings.nostrBackupEnabled]);
-
-
   // header view
   const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
   const [activePage, setActivePage] = useState<
@@ -4424,98 +2984,26 @@ export default function App() {
   const [addBoardOpen, setAddBoardOpen] = useState(false);
 
 
-  const nostrBackupPublishedSnapshotRef = useRef<string | null>(null);
-  const nostrBackupDebounceTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    nostrBackupPullFinishedRef.current = false;
-    let cancelled = false;
-    if (!settings.nostrBackupEnabled || !nostrPK || showSettings || nostrBackupHold) {
-      if (!nostrBackupHold) nostrBackupPullFinishedRef.current = true;
-      return () => {};
-    }
-    (async () => {
-      try {
-        await pullNostrBackupOnce();
-      } finally {
-        if (!cancelled) nostrBackupPullFinishedRef.current = true;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [nostrBackupHold, nostrPK, pullNostrBackupOnce, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    nostrBibleTrackerPullFinishedRef.current = false;
-    let cancelled = false;
-    if (!settings.nostrBackupEnabled || !nostrPK || showSettings) {
-      nostrBibleTrackerPullFinishedRef.current = true;
-      return () => {};
-    }
-    (async () => {
-      try {
-        await pullNostrBibleTrackerOnce();
-      } finally {
-        if (!cancelled) nostrBibleTrackerPullFinishedRef.current = true;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [nostrPK, pullNostrBibleTrackerOnce, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    nostrScriptureMemoryPullFinishedRef.current = false;
-    let cancelled = false;
-    if (!settings.nostrBackupEnabled || !nostrPK || showSettings) {
-      nostrScriptureMemoryPullFinishedRef.current = true;
-      return () => {};
-    }
-    (async () => {
-      try {
-        await pullNostrScriptureMemoryOnce();
-      } finally {
-        if (!cancelled) nostrScriptureMemoryPullFinishedRef.current = true;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [nostrPK, pullNostrScriptureMemoryOnce, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || nostrBackupHold || !nostrBackupPullFinishedRef.current) return;
-    if (nostrBackupInitialPublishRef.current) return;
-    if ((nostrBackupStateRef.current.lastTimestamp || 0) > 0) return;
-    if (!nostrPK) return;
-    nostrBackupInitialPublishRef.current = true;
-    enqueueNostrBackupPublish();
-  }, [enqueueNostrBackupPublish, nostrBackupHold, nostrPK, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrBibleTrackerPullFinishedRef.current) return;
-    if (nostrBibleTrackerInitialPublishRef.current) return;
-    if ((nostrBibleTrackerStateRef.current.lastTimestamp || 0) > 0) return;
-    if (!nostrPK) return;
-    nostrBibleTrackerInitialPublishRef.current = true;
-    enqueueNostrBibleTrackerPublish().catch(() => {});
-  }, [enqueueNostrBibleTrackerPublish, nostrPK, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrScriptureMemoryPullFinishedRef.current) return;
-    if (nostrScriptureMemoryInitialPublishRef.current) return;
-    if ((nostrScriptureMemoryStateRef.current.lastTimestamp || 0) > 0) return;
-    if (!nostrPK) return;
-    nostrScriptureMemoryInitialPublishRef.current = true;
-    enqueueNostrScriptureMemoryPublish().catch(() => {});
-  }, [enqueueNostrScriptureMemoryPublish, nostrPK, settings.nostrBackupEnabled, showSettings]);
-
-  const handleNostrBibleTrackerSubscriptionEvent = useCallback(
-    (event: NostrEvent) => enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(event)),
-    [applyNostrBibleTrackerSyncEvent, enqueueNostrApply],
-  );
-
-  const handleNostrScriptureMemorySubscriptionEvent = useCallback(
-    (event: NostrEvent) => enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(event)),
-    [applyNostrScriptureMemorySyncEvent, enqueueNostrApply],
-  );
+  useNostrAppBackupSync({
+    bibleTracker,
+    bibleTrackerRef,
+    boards,
+    defaultRelays,
+    nostrPK,
+    nostrPublishRef,
+    nostrSK,
+    pool,
+    scriptureMemory,
+    setBibleTracker,
+    setBoards,
+    setDefaultRelays,
+    setScriptureMemory,
+    setSettings,
+    settings,
+    showSettings,
+    showToast,
+    tagValue,
+  });
 
   useNostrSubscriptions({
     sharedInbox: {
@@ -4536,159 +3024,8 @@ export default function App() {
       inboxRelays,
       pool,
     },
-    appBackup: {
-      enabled: settings.nostrBackupEnabled,
-      blocked: showSettings || nostrBackupHold,
-      author: nostrPK,
-      defaultRelays,
-      dTag: NOSTR_APP_BACKUP_D_TAG,
-      errorLogPrefix: "[nostr] backup event handling failed",
-      kind: NOSTR_APP_BACKUP_KIND,
-      normalizeRelayList,
-      onEvent: handleIncomingNostrBackupEvent,
-      pool,
-      stateRef: nostrBackupStateRef,
-    },
-    bibleTracker: {
-      enabled: settings.nostrBackupEnabled,
-      blocked: showSettings,
-      author: nostrPK,
-      defaultRelays,
-      dTag: NOSTR_BIBLE_TRACKER_D_TAG,
-      kind: NOSTR_APP_STATE_KIND,
-      normalizeRelayList,
-      onEvent: handleNostrBibleTrackerSubscriptionEvent,
-      pool,
-      stateRef: nostrBibleTrackerStateRef,
-    },
-    scriptureMemory: {
-      enabled: settings.nostrBackupEnabled,
-      blocked: showSettings,
-      author: nostrPK,
-      defaultRelays,
-      dTag: NOSTR_SCRIPTURE_MEMORY_D_TAG,
-      kind: NOSTR_APP_STATE_KIND,
-      normalizeRelayList,
-      onEvent: handleNostrScriptureMemorySubscriptionEvent,
-      pool,
-      stateRef: nostrScriptureMemoryStateRef,
-    },
   });
 
-  useEffect(() => {
-    if (showSettings) {
-      if (nostrBackupBaselineRef.current == null) {
-        nostrBackupBaselineRef.current = serializeNostrBackupSnapshot();
-        nostrBackupSettingsDirtyRef.current = false;
-      } else {
-        const currentSnapshot = serializeNostrBackupSnapshot();
-        nostrBackupSettingsDirtyRef.current = currentSnapshot !== nostrBackupBaselineRef.current;
-      }
-      return;
-    }
-    if (nostrBackupBaselineRef.current == null) return;
-    const baseline = nostrBackupBaselineRef.current;
-    nostrBackupBaselineRef.current = null;
-    const currentSnapshot = serializeNostrBackupSnapshot();
-    const changedDuringSettings =
-      nostrBackupSettingsDirtyRef.current || baseline !== currentSnapshot;
-    nostrBackupSettingsDirtyRef.current = false;
-    if (!settings.nostrBackupEnabled || !changedDuringSettings) return;
-    let cancelled = false;
-    setNostrBackupHold(true);
-    (async () => {
-      try {
-        await publishLatestNostrBackup();
-      } finally {
-        if (!cancelled) setNostrBackupHold(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [publishLatestNostrBackup, serializeNostrBackupSnapshot, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || nostrBackupHold) return; // settings flow handled separately on close
-    const currentSnapshot = serializeNostrBackupSnapshot();
-    if (nostrBackupPublishedSnapshotRef.current === null) {
-      nostrBackupPublishedSnapshotRef.current = currentSnapshot;
-      return;
-    }
-    if (currentSnapshot === nostrBackupPublishedSnapshotRef.current) return;
-    if (nostrBackupDebounceTimerRef.current) {
-      window.clearTimeout(nostrBackupDebounceTimerRef.current);
-    }
-    nostrBackupDebounceTimerRef.current = window.setTimeout(() => {
-      nostrBackupDebounceTimerRef.current = null;
-      enqueueNostrBackupPublish().catch(() => {});
-    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
-    return () => {
-      if (nostrBackupDebounceTimerRef.current) {
-        window.clearTimeout(nostrBackupDebounceTimerRef.current);
-        nostrBackupDebounceTimerRef.current = null;
-      }
-    };
-  }, [enqueueNostrBackupPublish, nostrBackupHold, serializeNostrBackupSnapshot, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrPK || !nostrBibleTrackerPullFinishedRef.current) return;
-    const currentSnapshot = JSON.stringify(bibleTracker);
-    if (nostrBibleTrackerPublishedSnapshotRef.current === null) {
-      nostrBibleTrackerPublishedSnapshotRef.current = currentSnapshot;
-      return;
-    }
-    if (currentSnapshot === nostrBibleTrackerPublishedSnapshotRef.current) return;
-    if (nostrBibleTrackerDebounceTimerRef.current) {
-      window.clearTimeout(nostrBibleTrackerDebounceTimerRef.current);
-    }
-    nostrBibleTrackerDebounceTimerRef.current = window.setTimeout(() => {
-      nostrBibleTrackerDebounceTimerRef.current = null;
-      enqueueNostrBibleTrackerPublish().catch(() => {});
-    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
-    return () => {
-      if (nostrBibleTrackerDebounceTimerRef.current) {
-        window.clearTimeout(nostrBibleTrackerDebounceTimerRef.current);
-        nostrBibleTrackerDebounceTimerRef.current = null;
-      }
-    };
-  }, [
-    bibleTracker,
-    enqueueNostrBibleTrackerPublish,
-    nostrPK,
-    settings.nostrBackupEnabled,
-    showSettings,
-  ]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrPK || !nostrScriptureMemoryPullFinishedRef.current) return;
-    const currentSnapshot = JSON.stringify(scriptureMemory);
-    if (nostrScriptureMemoryPublishedSnapshotRef.current === null) {
-      nostrScriptureMemoryPublishedSnapshotRef.current = currentSnapshot;
-      return;
-    }
-    if (currentSnapshot === nostrScriptureMemoryPublishedSnapshotRef.current) return;
-    if (nostrScriptureMemoryDebounceTimerRef.current) {
-      window.clearTimeout(nostrScriptureMemoryDebounceTimerRef.current);
-    }
-    nostrScriptureMemoryDebounceTimerRef.current = window.setTimeout(() => {
-      nostrScriptureMemoryDebounceTimerRef.current = null;
-      enqueueNostrScriptureMemoryPublish().catch(() => {});
-    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
-    return () => {
-      if (nostrScriptureMemoryDebounceTimerRef.current) {
-        window.clearTimeout(nostrScriptureMemoryDebounceTimerRef.current);
-        nostrScriptureMemoryDebounceTimerRef.current = null;
-      }
-    };
-  }, [
-    enqueueNostrScriptureMemoryPublish,
-    nostrPK,
-    scriptureMemory,
-    settings.nostrBackupEnabled,
-    showSettings,
-  ]);
   const showWallet = activePage === "wallet";
   const showChat = activePage === "chat";
   const showWalletShell = showWallet || showChat;
@@ -5933,51 +4270,57 @@ export default function App() {
     scheduleBoardDropClose,
     cancelBoardDropClose,
   } = useDragAndDrop();
-  const [upcomingFilterOpen, setUpcomingFilterOpen] = useState(false);
-  const [upcomingUsHolidaysEnabled, setUpcomingUsHolidaysEnabled] = useState<boolean>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_US_HOLIDAYS_ENABLED);
-    if (!raw) return true;
-    return raw === "1" || raw.toLowerCase() === "true";
+  const {
+    applyUpcomingFilterPreset,
+    boardSort,
+    boardSortOptions,
+    boardSortSheetOpen,
+    cancelUpcomingPresetHold,
+    handleBoardSortSelect,
+    handleUpcomingSortSelect,
+    maybeCancelUpcomingPresetHold,
+    saveUpcomingFilterPreset,
+    setBoardSortSheetOpen,
+    setUpcomingBoardGrouping,
+    setUpcomingFilter,
+    setUpcomingFilterOpen,
+    setUpcomingSearch,
+    setUpcomingSearchOpen,
+    setUpcomingSortSheetOpen,
+    setUpcomingUsHolidaysEnabled,
+    setUpcomingView,
+    setUpcomingViewSheetOpen,
+    setUpcomingListDate,
+    showUpcomingSearch,
+    startUpcomingPresetHold,
+    toggleUpcomingFilter,
+    upcomingBoardGrouping,
+    upcomingBoardGroupingOptions,
+    upcomingFilter,
+    upcomingFilterGroups,
+    upcomingFilterLabel,
+    upcomingFilterMap,
+    upcomingFilterOpen,
+    upcomingFilterOptions,
+    upcomingFilterPresets,
+    upcomingFilterSelection,
+    upcomingListDate,
+    upcomingPresetHoldTriggeredRef,
+    upcomingSearch,
+    upcomingSearchOpen,
+    upcomingSearchTerm,
+    upcomingSort,
+    upcomingSortSheetOpen,
+    upcomingUsHolidaysEnabled,
+    upcomingView,
+    upcomingViewSheetOpen,
+  } = useUpcomingControlsState({
+    gcalCalendars,
+    gcalConnected: gcalStatus.connected,
+    usHolidaysLabel: SPECIAL_CALENDAR_US_HOLIDAYS_LABEL,
+    visibleBoards,
   });
-  const [upcomingFilter, setUpcomingFilter] = useState<string[] | null>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_FILTER);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed === null) return null;
-      if (Array.isArray(parsed)) {
-        return parsed.filter((id) => typeof id === "string");
-      }
-    } catch {}
-    return null;
-  });
-  const [upcomingFilterPresets, setUpcomingFilterPresets] = useState<UpcomingFilterPreset[]>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_FILTER_PRESETS);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.flatMap((entry) => {
-        const name = typeof entry?.name === "string" ? entry.name.trim() : "";
-        if (!name) return [];
-        const id = typeof entry?.id === "string" && entry.id ? entry.id : crypto.randomUUID();
-        const selection = Array.isArray(entry?.selection)
-          ? entry.selection.filter((id: unknown) => typeof id === "string")
-          : [];
-        return [{ id, name, selection }];
-      });
-    } catch {
-      return [];
-    }
-  });
-  const [upcomingViewSheetOpen, setUpcomingViewSheetOpen] = useState(false);
-  const [upcomingView, setUpcomingView] = useState<"details" | "list">(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_VIEW);
-    return raw === "list" ? "list" : "details";
-  });
-  const [upcomingSearchOpen, setUpcomingSearchOpen] = useState(false);
-  const [upcomingSearch, setUpcomingSearch] = useState("");
-  const [upcomingListDate, setUpcomingListDate] = useState(() => isoDatePart(new Date().toISOString()));
+
   const openUpcomingTaskEditor = useCallback(() => {
     if (shouldReloadForNavigation()) return;
     const fallbackBoard =
@@ -6014,358 +4357,6 @@ export default function App() {
     };
     setEditing({ type: "task", originalType: "task", originalId: draft.id, task: draft });
   }, [currentBoard, nostrPK, settings.newTaskPosition, shouldReloadForNavigation, showToast, tasks, upcomingListDate, visibleBoards]);
-  const [upcomingSortSheetOpen, setUpcomingSortSheetOpen] = useState(false);
-  const [upcomingSort, setUpcomingSort] = useState<{ mode: BoardSortMode; direction: BoardSortDirection }>(() => {
-    const fallback = { mode: "due" as const, direction: DEFAULT_BOARD_SORT_DIRECTION.due };
-    const raw = kvStorage.getItem(LS_UPCOMING_SORT);
-    if (!raw) return fallback;
-    try {
-      return normalizeBoardSortState(JSON.parse(raw)) ?? fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  const [upcomingBoardGrouping, setUpcomingBoardGrouping] = useState<UpcomingBoardGrouping>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_BOARD_GROUPING);
-    return raw === "grouped" ? "grouped" : "mixed";
-  });
-  const [boardSortSheetOpen, setBoardSortSheetOpen] = useState(false);
-  const [boardSort, setBoardSort] = useState<{ mode: BoardSortMode; direction: BoardSortDirection }>(() => {
-    const fallback = { mode: "due" as const, direction: DEFAULT_BOARD_SORT_DIRECTION.due };
-    const raw = kvStorage.getItem(LS_BOARD_SORT);
-    if (!raw) return fallback;
-    try {
-      return normalizeBoardSortState(JSON.parse(raw)) ?? fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_SORT, JSON.stringify(upcomingSort));
-    } catch {}
-  }, [upcomingSort]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_BOARD_GROUPING, upcomingBoardGrouping);
-    } catch {}
-  }, [upcomingBoardGrouping]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_BOARD_SORT, JSON.stringify(boardSort));
-    } catch {}
-  }, [boardSort]);
-  const boardSortOptions = useMemo(
-    () => [
-      { id: "manual", label: "Manual", supportsDirection: false },
-      { id: "due", label: "Due Date", supportsDirection: true },
-      { id: "priority", label: "Priority", supportsDirection: true },
-      { id: "created", label: "Creation Date", supportsDirection: true },
-      { id: "alpha", label: "A-Z", supportsDirection: true },
-    ] as const,
-    [],
-  );
-  const handleBoardSortSelect = useCallback((mode: BoardSortMode) => {
-    setBoardSort((prev) => {
-      if (prev.mode === mode) {
-        if (mode === "manual") return prev;
-        const nextDirection = prev.direction === "asc" ? "desc" : "asc";
-        return { mode, direction: nextDirection };
-      }
-      return { mode, direction: DEFAULT_BOARD_SORT_DIRECTION[mode] };
-    });
-  }, []);
-  const upcomingBoardGroupingOptions = useMemo(
-    () => [
-      { id: "mixed", label: "Across boards" },
-      { id: "grouped", label: "Group by board" },
-    ] as const,
-    [],
-  );
-  const handleUpcomingSortSelect = useCallback((mode: BoardSortMode) => {
-    setUpcomingSort((prev) => {
-      if (prev.mode === mode) {
-        if (mode === "manual") return prev;
-        const nextDirection = prev.direction === "asc" ? "desc" : "asc";
-        return { mode, direction: nextDirection };
-      }
-      return { mode, direction: DEFAULT_BOARD_SORT_DIRECTION[mode] };
-    });
-  }, []);
-  const upcomingFilterGroups = useMemo<UpcomingFilterGroup[]>(() => {
-    const groups: UpcomingFilterGroup[] = [];
-    visibleBoards
-      .filter((board) => board.kind !== "bible" && board.kind !== "compound")
-      .forEach((board) => {
-        const label = board.name || "Board";
-        const boardOption: UpcomingFilterOption = {
-          id: `board:${board.id}`,
-          label,
-          boardId: board.id,
-        };
-        const listOptions =
-          board.kind === "lists"
-            ? board.columns.map((column) => ({
-                id: `board:${board.id}:col:${column.id}`,
-                label: column.name,
-                boardId: board.id,
-                columnId: column.id,
-              }))
-            : [];
-        groups.push({
-          id: board.id,
-          label,
-          boardId: board.id,
-          boardOption,
-          listOptions,
-        });
-      });
-    return groups;
-  }, [visibleBoards]);
-
-  const upcomingFilterOptions = useMemo(() => {
-    const boardOptions = upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]);
-    const gcalOptions: UpcomingFilterOption[] = gcalStatus.connected
-      ? gcalCalendars.map((cal) => ({
-          id: `gcal:${cal.id}`,
-          label: cal.name,
-          boardId: `gcal:${cal.id}`,
-        }))
-      : [];
-    return [...boardOptions, ...gcalOptions];
-  }, [upcomingFilterGroups, gcalCalendars, gcalStatus.connected]);
-  const upcomingFilterOptionMap = useMemo(() => {
-    const map = new Map<string, UpcomingFilterOption>();
-    upcomingFilterOptions.forEach((option) => {
-      map.set(option.id, option);
-    });
-    return map;
-  }, [upcomingFilterOptions]);
-  const upcomingFilterGroupMap = useMemo(() => {
-    const map = new Map<string, UpcomingFilterGroup>();
-    upcomingFilterGroups.forEach((group) => {
-      map.set(group.boardId, group);
-    });
-    return map;
-  }, [upcomingFilterGroups]);
-
-  const upcomingFilterOptionIds = useMemo(
-    () => upcomingFilterOptions.map((option) => option.id),
-    [upcomingFilterOptions],
-  );
-
-  useEffect(() => {
-    if (upcomingFilter === null || !upcomingFilterOptionIds.length) return;
-    const allowed = new Set(upcomingFilterOptionIds);
-    const next = new Set(upcomingFilter.filter((id) => allowed.has(id)));
-    upcomingFilterOptions.forEach((option) => {
-      if (!option.columnId) return;
-      if (next.has(option.id)) {
-        next.add(`board:${option.boardId}`);
-      }
-    });
-    upcomingFilterGroups.forEach((group) => {
-      if (!next.has(group.boardOption.id)) return;
-      if (group.listOptions.length === 0) return;
-      const hasAnyList = group.listOptions.some((option) => next.has(option.id));
-      if (!hasAnyList) {
-        group.listOptions.forEach((option) => next.add(option.id));
-      }
-    });
-    if (next.size !== upcomingFilter.length || upcomingFilter.some((id) => !next.has(id))) {
-      setUpcomingFilter(Array.from(next));
-    }
-  }, [upcomingFilter, upcomingFilterGroups, upcomingFilterOptionIds, upcomingFilterOptions]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_FILTER, JSON.stringify(upcomingFilter));
-    } catch {}
-  }, [upcomingFilter]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_US_HOLIDAYS_ENABLED, upcomingUsHolidaysEnabled ? "1" : "0");
-    } catch {}
-  }, [upcomingUsHolidaysEnabled]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_FILTER_PRESETS, JSON.stringify(upcomingFilterPresets));
-    } catch {}
-  }, [upcomingFilterPresets]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_VIEW, upcomingView);
-    } catch {}
-  }, [upcomingView]);
-
-  const upcomingFilterLabel = useMemo(() => {
-    if (!upcomingFilterOptions.length) {
-      return upcomingUsHolidaysEnabled ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : "No boards";
-    }
-    if (upcomingFilter === null) {
-      return upcomingUsHolidaysEnabled ? "All boards + US holidays" : "All boards";
-    }
-    if (upcomingFilter.length === 0) {
-      return upcomingUsHolidaysEnabled ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : "None";
-    }
-    if (upcomingFilter.length === 1) {
-      const baseLabel = upcomingFilterOptions.find((option) => option.id === upcomingFilter[0])?.label || "1 selected";
-      return upcomingUsHolidaysEnabled ? `${baseLabel} + US holidays` : baseLabel;
-    }
-    const baseLabel = `${upcomingFilter.length} selected`;
-    return upcomingUsHolidaysEnabled ? `${baseLabel} + US holidays` : baseLabel;
-  }, [upcomingFilter, upcomingFilterOptions, upcomingUsHolidaysEnabled]);
-
-  const upcomingFilterSelection = useMemo(() => {
-    if (upcomingFilter === null) return new Set(upcomingFilterOptionIds);
-    return new Set(upcomingFilter);
-  }, [upcomingFilter, upcomingFilterOptionIds]);
-
-  const upcomingFilterMap = useMemo(() => {
-    const selectedBoards = new Set<string>();
-    const selectedLists = new Map<string, Set<string>>();
-    upcomingFilterOptions.forEach((option) => {
-      if (!upcomingFilterSelection.has(option.id)) return;
-      if (option.columnId) {
-        const existing = selectedLists.get(option.boardId) ?? new Set<string>();
-        existing.add(option.columnId);
-        selectedLists.set(option.boardId, existing);
-      } else {
-        selectedBoards.add(option.boardId);
-      }
-    });
-    return { selectedBoards, selectedLists };
-  }, [upcomingFilterOptions, upcomingFilterSelection]);
-
-  const upcomingSearchTerm = useMemo(() => upcomingSearch.trim().toLowerCase(), [upcomingSearch]);
-  const showUpcomingSearch = upcomingSearchOpen || upcomingSearchTerm.length > 0;
-
-  useEffect(() => {
-    if (activePage !== "upcoming") return;
-    if (!upcomingSearchOpen) return;
-    upcomingSearchInputRef.current?.focus();
-  }, [activePage, upcomingSearchOpen]);
-
-  const toggleUpcomingFilter = useCallback((optionId: string) => {
-    if (!upcomingFilterOptionIds.length) return;
-    setUpcomingFilter((prev) => {
-      const option = upcomingFilterOptionMap.get(optionId);
-      if (!option) return prev;
-      const next = new Set(prev ?? upcomingFilterOptionIds);
-      const group = upcomingFilterGroupMap.get(option.boardId);
-      const listIds = group?.listOptions.map((opt) => opt.id) ?? [];
-      const boardId = `board:${option.boardId}`;
-
-      if (!option.columnId) {
-        if (next.has(optionId)) {
-          next.delete(optionId);
-          listIds.forEach((id) => next.delete(id));
-        } else {
-          next.add(optionId);
-          listIds.forEach((id) => next.add(id));
-        }
-      } else {
-        if (next.has(optionId)) {
-          next.delete(optionId);
-        } else {
-          next.add(optionId);
-          next.add(boardId);
-        }
-        const hasAnyList = listIds.some((id) => next.has(id));
-        if (!hasAnyList) {
-          next.delete(boardId);
-        }
-      }
-
-      const output = Array.from(next);
-      if (output.length === upcomingFilterOptionIds.length) return null;
-      return output;
-    });
-  }, [upcomingFilterGroupMap, upcomingFilterOptionIds, upcomingFilterOptionMap]);
-
-  const applyUpcomingFilterPreset = useCallback(
-    (preset: UpcomingFilterPreset) => {
-      if (!upcomingFilterOptions.length) return;
-      const presetSet = new Set(preset.selection);
-      const next = upcomingFilterOptions
-        .filter((option) => presetSet.has(option.id))
-        .map((option) => option.id);
-      setUpcomingFilter(next.length ? next : []);
-    },
-    [upcomingFilterOptions],
-  );
-
-  const saveUpcomingFilterPreset = useCallback(() => {
-    if (!upcomingFilterOptions.length) return;
-    const name = window.prompt("Name this preset");
-    if (name === null) return;
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    const selection = upcomingFilterOptions
-      .filter((option) => upcomingFilterSelection.has(option.id))
-      .map((option) => option.id);
-    const uniqueSelection = Array.from(new Set(selection));
-    setUpcomingFilterPresets((prev) => {
-      const existingIndex = prev.findIndex((preset) => preset.name.toLowerCase() === trimmed.toLowerCase());
-      const updatedPreset = {
-        id: existingIndex === -1 ? crypto.randomUUID() : prev[existingIndex].id,
-        name: trimmed,
-        selection: uniqueSelection,
-      };
-      if (existingIndex === -1) {
-        return [updatedPreset, ...prev];
-      }
-      return [updatedPreset, ...prev.filter((_, idx) => idx !== existingIndex)];
-    });
-  }, [upcomingFilterOptions, upcomingFilterSelection]);
-
-  const deleteUpcomingFilterPreset = useCallback((preset: UpcomingFilterPreset) => {
-    let confirmed = true;
-    if (typeof window !== "undefined" && typeof window.confirm === "function") {
-      confirmed = window.confirm(`Delete preset "${preset.name}"?`);
-    }
-    if (!confirmed) return;
-    setUpcomingFilterPresets((prev) => prev.filter((p) => p.id !== preset.id));
-  }, []);
-
-  const upcomingPresetHoldTimerRef = useRef<number | null>(null);
-  const upcomingPresetHoldTriggeredRef = useRef(false);
-  const upcomingPresetHoldStartRef = useRef<{ x: number; y: number } | null>(null);
-  const cancelUpcomingPresetHold = useCallback(() => {
-    if (upcomingPresetHoldTimerRef.current != null) {
-      window.clearTimeout(upcomingPresetHoldTimerRef.current);
-      upcomingPresetHoldTimerRef.current = null;
-    }
-    upcomingPresetHoldStartRef.current = null;
-  }, []);
-  useEffect(() => cancelUpcomingPresetHold, [cancelUpcomingPresetHold]);
-
-  const startUpcomingPresetHold = useCallback(
-    (preset: UpcomingFilterPreset, event: React.PointerEvent<HTMLButtonElement>) => {
-      if (event.button !== 0) return;
-      cancelUpcomingPresetHold();
-      upcomingPresetHoldTriggeredRef.current = false;
-      upcomingPresetHoldStartRef.current = { x: event.clientX, y: event.clientY };
-      upcomingPresetHoldTimerRef.current = window.setTimeout(() => {
-        upcomingPresetHoldTimerRef.current = null;
-        upcomingPresetHoldTriggeredRef.current = true;
-        upcomingPresetHoldStartRef.current = null;
-        deleteUpcomingFilterPreset(preset);
-      }, 650);
-    },
-    [cancelUpcomingPresetHold, deleteUpcomingFilterPreset],
-  );
-  const maybeCancelUpcomingPresetHold = useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      const start = upcomingPresetHoldStartRef.current;
-      if (!start) return;
-      const dx = event.clientX - start.x;
-      const dy = event.clientY - start.y;
-      if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
-        cancelUpcomingPresetHold();
-      }
-    },
-    [cancelUpcomingPresetHold],
-  );
 
   // fly-to-completed overlay + target
   const flyLayerRef = useRef<HTMLDivElement>(null);
@@ -6385,6 +4376,12 @@ export default function App() {
   const upcomingCalendarSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
   const columnRefs = useRef(new Map<string, HTMLDivElement>());
   const inlineInputRefs = useRef(new Map<string, HTMLInputElement>());
+
+  useEffect(() => {
+    if (activePage !== "upcoming") return;
+    if (!upcomingSearchOpen) return;
+    upcomingSearchInputRef.current?.focus();
+  }, [activePage, upcomingSearchOpen]);
 
   const openUpcomingSearch = useCallback(() => {
     setUpcomingSearchOpen(true);
