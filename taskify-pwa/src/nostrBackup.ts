@@ -1,26 +1,13 @@
 import { hexToBytes } from "@noble/hashes/utils";
 import { nip44 } from "nostr-tools";
 import type { WalletSeedBackupPayload } from "./wallet/seed";
+import type { NostrAppBackupBoard } from "taskify-core";
 
 export const NOSTR_APP_BACKUP_KIND = 30078;
 export const NOSTR_APP_BACKUP_D_TAG = "taskify-app-backup";
 export const NOSTR_APP_BACKUP_CLIENT_TAG = "taskify.app";
 
-export type NostrAppBackupBoard = {
-  id: string;
-  nostrId?: string;
-  relays?: string[];
-  name?: string;
-  kind?: string;
-  archived?: boolean;
-  hidden?: boolean;
-  order?: number;
-  columns?: { id: string; name: string }[];
-  children?: string[];
-  clearCompletedDisabled?: boolean;
-  indexCardEnabled?: boolean;
-  hideChildBoardNames?: boolean;
-};
+export type { NostrAppBackupBoard };
 
 export type NostrAppBackupPayload = {
   version: 1;

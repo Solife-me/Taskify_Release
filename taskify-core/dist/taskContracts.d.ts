@@ -36,7 +36,50 @@ export type InboxSender = {
     npub?: string;
 };
 export type InboxItemStatus = "pending" | "accepted" | "declined" | "tentative" | "deleted" | "read";
-export type TaskDocument = Record<string, unknown>;
+export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx" | "txt" | "md" | "json" | "csv" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp3" | "aac" | "m4a" | "wav" | "mp4" | "mov" | "webm";
+export type TaskDocumentPreview = {
+    type: "image";
+    data: string;
+} | {
+    type: "html";
+    data: string;
+} | {
+    type: "text";
+    data: string;
+};
+export type TaskDocumentFull = {
+    type: "pdf";
+    data: string;
+} | {
+    type: "html";
+    data: string;
+} | {
+    type: "text";
+    data: string;
+} | {
+    type: "image";
+    data: string;
+} | {
+    type: "audio";
+    data: string;
+} | {
+    type: "video";
+    data: string;
+};
+export type TaskDocument = {
+    id: string;
+    name: string;
+    mimeType: string;
+    kind: TaskDocumentKind;
+    size?: number;
+    dataUrl: string;
+    createdAt: string;
+    preview?: TaskDocumentPreview;
+    full?: TaskDocumentFull;
+    remoteUrl?: string;
+    encrypted?: boolean;
+    encryptionBoardId?: string;
+};
 export type InboxItem = {
     type: "board";
     boardId: string;

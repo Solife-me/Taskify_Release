@@ -13,13 +13,13 @@ type SubscribeManyResult = { close: (...args: unknown[]) => void };
 const EMPTY_CALENDAR_EVENTS: CalendarEvent[] = [];
 const EMPTY_RELAYS: string[] = [];
 
-type SubscribeManyPool = {
+export type SubscribeManyPool = {
   subscribeMany: (
     relays: string[],
-    filter: Record<string, unknown>,
+    filter: unknown,
     opts?: { onevent?: (ev: NostrEvent) => void; oneose?: (relay?: string) => void; closeOnEose?: boolean },
   ) => SubscribeManyResult;
-  list?: (relays: string[], filters: Array<Record<string, unknown>>) => Promise<NostrEvent[]>;
+  list?: (relays: string[], filters: unknown[]) => Promise<NostrEvent[]>;
 };
 
 type ReplaceableSubscriptionPool = {

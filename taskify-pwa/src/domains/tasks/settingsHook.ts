@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
   DEFAULT_FILE_SERVERS,
@@ -16,7 +16,28 @@ import { LS_SETTINGS } from "../storageKeys";
 import { kvStorage } from "../../storage/kvStorage";
 import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
 import type { FastingRemindersMode, PushPreferences, Settings } from "./settingsTypes";
-import type { Weekday } from "./taskTypes";
+import type { Board, Weekday } from "./taskTypes";
+
+type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
+export type SetSettingsFn = (s: Partial<Settings>) => void;
+
+export type UseSettingsSyncOptions = {
+  bibleBoardId: string;
+  boards: Board[];
+  setBoards: StateSetter<Board[]>;
+};
+
+export type UseSettingsSyncResult = {
+  currentBoardId: string;
+  scriptureMemoryBoard: Board | null;
+  scriptureMemoryFrequencyOption: (typeof SCRIPTURE_MEMORY_FREQUENCIES)[number];
+  scriptureMemorySortLabel: string;
+  setCurrentBoardId: StateSetter<string>;
+  setSettings: SetSettingsFn;
+  settings: Settings;
+};
+
+const EMPTY_BOARDS: Board[] = [];
 
 export const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
   enabled: false,
@@ -32,7 +53,27 @@ function defaultEncryptedFileServers(): string {
   return serializeFileServers(DEFAULT_FILE_SERVERS.filter((server) => server.type === "originless"));
 }
 
-export function useSettingsSync() {
+function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, string>>): string {
+  const visible = boards.filter((board) => !board.archived && !board.hidden);
+  const today = new Date().getDay() as Weekday;
+  const overrideId = overrides?.[today];
+  if (overrideId) {
+    const match =
+      visible.find((board) => board.id === overrideId) ||
+      boards.find((board) => !board.archived && board.id === overrideId);
+    if (match) return match.id;
+  }
+  if (visible.length) return visible[0].id;
+  const firstUnarchived = boards.find((board) => !board.archived);
+  if (firstUnarchived) return firstUnarchived.id;
+  return boards[0]?.id || "";
+}
+
+export function useSettingsSync(): readonly [Settings, SetSettingsFn];
+export function useSettingsSync(options: UseSettingsSyncOptions): UseSettingsSyncResult;
+export function useSettingsSync(
+  options?: UseSettingsSyncOptions,
+): readonly [Settings, SetSettingsFn] | UseSettingsSyncResult {
   const [settings, setSettingsRaw] = useState<Settings>(() => {
     try {
       const parsed = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
@@ -259,7 +300,7 @@ export function useSettingsSync() {
     }
   });
 
-  const setSettings = useCallback((s: Partial<Settings>) => {
+  const setSettings = useCallback<SetSettingsFn>((s) => {
     setSettingsRaw((prev) => {
       const next = { ...prev, ...s };
       if (s.pushNotifications) {
@@ -425,6 +466,150 @@ export function useSettingsSync() {
     }
     kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   }, [settings]);
+
+  const boards = options?.boards ?? EMPTY_BOARDS;
+  const setBoards = options?.setBoards;
+  const bibleBoardId = options?.bibleBoardId ?? "bible-reading";
+  const syncBoardSettings = Boolean(options);
+  const [currentBoardId, setCurrentBoardId] = useState(() => pickStartupBoard(boards, settings.startBoardByDay));
+
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
+    } catch {
+      // ignore persistence issues
+    }
+  }, [settings.walletMintBackupEnabled]);
+
+  useEffect(() => {
+    if (!setBoards) return;
+    setBoards((prev) => {
+      const hasBible = prev.some((board) => board.id === bibleBoardId);
+      if (settings.bibleTrackerEnabled) {
+        if (hasBible) {
+          return prev.map((board) => {
+            if (board.id !== bibleBoardId) return board;
+            return {
+              id: bibleBoardId,
+              name: "Bible",
+              kind: "bible",
+              archived: false,
+              hidden: false,
+            } as Board;
+          });
+        }
+        const insertionIndex = prev.findIndex((board) => board.archived);
+        const bibleBoard: Board = {
+          id: bibleBoardId,
+          name: "Bible",
+          kind: "bible",
+          archived: false,
+          hidden: false,
+        };
+        if (insertionIndex === -1) {
+          return [...prev, bibleBoard];
+        }
+        const next = [...prev];
+        next.splice(insertionIndex, 0, bibleBoard);
+        return next;
+      }
+      if (!hasBible) return prev;
+      return prev.filter((board) => board.id !== bibleBoardId);
+    });
+  }, [bibleBoardId, setBoards, settings.bibleTrackerEnabled]);
+
+  useEffect(() => {
+    const detected = detectPushPlatformFromNavigator();
+    if (settings.pushNotifications.platform !== detected) {
+      setSettings({ pushNotifications: { ...settings.pushNotifications, platform: detected } });
+    }
+  }, [settings.pushNotifications, setSettings]);
+
+  const scriptureMemoryFrequencyOption = useMemo(
+    () => SCRIPTURE_MEMORY_FREQUENCIES.find((opt) => opt.id === settings.scriptureMemoryFrequency) || SCRIPTURE_MEMORY_FREQUENCIES[0],
+    [settings.scriptureMemoryFrequency],
+  );
+  const scriptureMemorySortLabel = useMemo(
+    () => SCRIPTURE_MEMORY_SORTS.find((opt) => opt.id === settings.scriptureMemorySort)?.label || SCRIPTURE_MEMORY_SORTS[0].label,
+    [settings.scriptureMemorySort],
+  );
+  const scriptureMemoryBoard = useMemo(
+    () => (settings.scriptureMemoryBoardId ? boards.find((board) => board.id === settings.scriptureMemoryBoardId) || null : null),
+    [boards, settings.scriptureMemoryBoardId],
+  );
+  const availableMemoryBoards = useMemo(
+    () => boards.filter((board) => !board.archived && board.kind !== "bible"),
+    [boards],
+  );
+
+  useEffect(() => {
+    if (!syncBoardSettings) return;
+    if (!settings.bibleTrackerEnabled && currentBoardId === bibleBoardId) {
+      const fallbackBoards = boards.filter((board) => board.id !== bibleBoardId);
+      const next = pickStartupBoard(fallbackBoards, settings.startBoardByDay);
+      if (next !== currentBoardId) setCurrentBoardId(next);
+    }
+  }, [bibleBoardId, boards, currentBoardId, settings.bibleTrackerEnabled, settings.startBoardByDay, syncBoardSettings]);
+
+  useEffect(() => {
+    if (!syncBoardSettings) return;
+    if (!settings.scriptureMemoryEnabled) return;
+    if (scriptureMemoryBoard) return;
+    const fallbackId = availableMemoryBoards[0]?.id;
+    if (fallbackId && fallbackId !== settings.scriptureMemoryBoardId) {
+      setSettings({ scriptureMemoryBoardId: fallbackId });
+    }
+  }, [
+    availableMemoryBoards,
+    scriptureMemoryBoard,
+    setSettings,
+    settings.scriptureMemoryBoardId,
+    settings.scriptureMemoryEnabled,
+    syncBoardSettings,
+  ]);
+
+  useEffect(() => {
+    if (!syncBoardSettings) return;
+    const current = boards.find((board) => board.id === currentBoardId);
+    if (current && !current.archived && !current.hidden) return;
+    const next = pickStartupBoard(boards, settings.startBoardByDay);
+    if (next !== currentBoardId) setCurrentBoardId(next);
+  }, [boards, currentBoardId, settings.startBoardByDay, syncBoardSettings]);
+
+  useEffect(() => {
+    if (!syncBoardSettings) return;
+    const overrides = settings.startBoardByDay;
+    if (!overrides || Object.keys(overrides).length === 0) return;
+    const visibleIds = new Set(boards.filter((board) => !board.archived && !board.hidden).map((board) => board.id));
+    let changed = false;
+    const next: Partial<Record<Weekday, string>> = {};
+    for (const key of Object.keys(overrides)) {
+      const dayNum = Number(key);
+      const boardId = (overrides as Record<string, string | undefined>)[key];
+      if (!Number.isInteger(dayNum) || dayNum < 0 || dayNum > 6) {
+        changed = true;
+        continue;
+      }
+      if (typeof boardId !== "string" || !boardId || !visibleIds.has(boardId)) {
+        changed = true;
+        continue;
+      }
+      next[dayNum as Weekday] = boardId;
+    }
+    if (changed) setSettings({ startBoardByDay: next });
+  }, [boards, setSettings, settings.startBoardByDay, syncBoardSettings]);
+
+  if (options) {
+    return {
+      currentBoardId,
+      scriptureMemoryBoard,
+      scriptureMemoryFrequencyOption,
+      scriptureMemorySortLabel,
+      setCurrentBoardId,
+      setSettings,
+      settings,
+    };
+  }
 
   return [settings, setSettings] as const;
 }

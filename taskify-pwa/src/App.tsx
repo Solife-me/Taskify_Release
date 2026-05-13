@@ -1,5 +1,4 @@
  
-// @ts-nocheck
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -9,18 +8,15 @@ import {
   type UpcomingFlatRow,
 } from "./lib/upcomingRows";
 import { QRCodeCanvas } from "qrcode.react";
-import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
 import {
   DEFAULT_DATE_REMINDER_TIME,
   MS_PER_DAY,
-  TASK_PRIORITY_MARKS,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   normalizeRelayListSorted,
   compressedToRawHex,
   contactInitials,
-  contactVerifiedNip05 as contactVerifiedNip05Core,
   isExternalCalendarEvent,
   isListLikeBoard,
   normalizeTaskAssignmentStatus,
@@ -39,13 +35,11 @@ import {
   type InboxItemStatus,
   type InboxSender,
   type ListColumn,
-  type Nip05CheckState,
   type Recurrence,
   type Subtask,
   type Task,
   type TaskAssignee,
   type TaskAssigneeStatus,
-  type TaskPriority,
   type TimeCalendarEvent,
   type UpcomingBoardGrouping,
   type Weekday,
@@ -79,10 +73,6 @@ import { buildBibleTrackerPrintPdf, buildBoardPrintPdf } from "./lib/printPdf";
 import { useCashu } from "./context/CashuContext";
 import {
   LS_LIGHTNING_CONTACTS,
-  LS_BTC_USD_PRICE_CACHE,
-  LS_MINT_BACKUP_ENABLED,
-  LS_CONTACTS_SYNC_META,
-  LS_CONTACT_NIP05_CACHE,
 } from "./localStorageKeys";
 import { kvStorage } from "./storage/kvStorage";
 import {
@@ -98,20 +88,12 @@ import {
   externalCalendarEventEntityStore,
 } from "./storage/entityStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
-import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./storage/taskifyDb";
 import {
   LS_NOSTR_BACKUP_STATE,
   LS_NOSTR_BIBLE_TRACKER_SYNC_STATE,
-  LS_NOSTR_RELAYS,
   LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
 } from "./nostrKeys";
-import {
-  saveStore as saveProofStore,
-  setActiveMint,
-  replaceMintList,
-  replacePendingTokens,
-  type PendingTokenEntry,
-} from "./wallet/storage";
+import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 import {
   getWalletSeedMnemonic,
   getWalletSeedBackup,
@@ -139,11 +121,9 @@ import {
 } from "./nostrAppState";
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
-import { AccentPalette } from "./theme/palette";
+import type { AccentPalette } from "./theme/palette";
 import {
-  createDocumentAttachment,
   ensureDocumentPreview,
-  isSupportedDocumentFile,
   normalizeDocumentList,
   type TaskDocument,
 } from "./lib/documents";
@@ -153,8 +133,6 @@ import type {
   ScriptureMemoryState,
 } from "./domains/scripture/scriptureTypes";
 import {
-  SCRIPTURE_MEMORY_FREQUENCIES,
-  SCRIPTURE_MEMORY_SORTS,
   updateScriptureMemoryState,
   markScriptureEntryReviewed,
   scheduleScriptureEntry,
@@ -166,6 +144,20 @@ import {
   recurrencesEqual,
   chooseNextScriptureEntry,
 } from "./domains/scripture/scriptureUtils";
+import {
+  useBibleTracker,
+  useScriptureMemory,
+} from "./domains/scripture/scriptureHook";
+import {
+  easterDateKey,
+  buildUsHolidayCalendarEvents,
+  isUsHolidayCalendarEvent,
+  hashStringToUint32,
+  mulberry32,
+  shuffleInPlace,
+  fastingReminderDueTimesForMonth,
+} from "./domains/calendar/holidayUtils";
+import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
 import {
   DEFAULT_BOARD_SORT_DIRECTION,
   PINNED_BOUNTY_LIST_KEY,
@@ -196,11 +188,44 @@ import type {
 import { detectPushPlatformFromNavigator, type PushPlatform } from "./domains/push/pushUtils";
 import { type ReminderPreset } from "./domains/dateTime/reminderUtils";
 import {
+  daysInCalendarMonth,
+  formatDateKeyFromParts,
+  formatDateKeyLocal,
+  formatTimeLabel,
+  formatUpcomingDayLabel,
+  isoDatePart,
+  isoFromDateTime,
+  isoTimePart,
+  monthKeyFromYearMonth,
+  normalizeTimeZone,
+  nudgeHorizontalScroller,
+  parseDateKey,
+  parseTimeValue,
+  resolveSystemTimeZone,
+  scrollWheelColumnToIndex,
+  startOfDay,
+  taskDateKey,
+  taskDisplayDateKey,
+  taskTimeValue,
+  taskWeekday,
+  weekdayFromISO,
+} from "./domains/dateTime/dateUtils";
+import {
+  decryptEcashTokenForRecipient,
+  encryptEcashTokenForRecipient,
+} from "./domains/nostr/nostrCrypto";
+import {
+  appendWalletHistoryEntry,
+  applyBackupDataToStorage,
+  loadCloudBackupPayload,
+  parseBackupJsonPayload,
+} from "./domains/backup/backupUtils";
+import {
   type FastingRemindersMode,
   type PushPreferences,
   type Settings,
 } from "./domains/tasks/settingsTypes";
-import { DEFAULT_PUSH_PREFERENCES, useSettings } from "./domains/tasks/settingsHook";
+import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/settingsHook";
 import {
   buildNostrBackupSnapshot as buildNostrBackupSnapshotDomain,
   mergeBackupBoards,
@@ -251,9 +276,24 @@ import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./l
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
+import {
+  createNostrPool,
+  loadDefaultRelays,
+  loadNostrBackupState,
+  loadNostrSyncState,
+  NOSTR_MIN_EVENT_INTERVAL_MS,
+  saveDefaultRelays,
+  type NostrBackupState,
+  type NostrEvent,
+} from "./domains/nostr/nostrPool";
 import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSync";
 import { useCalendarEventManagement } from "./nostr/useCalendarEventManagement";
-import { useNostrSubscriptions, type CalendarViewSubscriptionTarget } from "./nostr/useNostrSubscriptions";
+import { useNostrSubscriptions, type CalendarViewSubscriptionTarget, type SubscribeManyPool } from "./nostr/useNostrSubscriptions";
+import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
+import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
+import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
+import { UpcomingSearch } from "./ui/upcoming/UpcomingSearch";
+import { TrashDropZone } from "./ui/dnd/TrashDropZone";
 import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
 
@@ -277,7 +317,7 @@ import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
 import { TaskTitle } from "./ui/task/TaskTitle";
 import { TaskMedia } from "./ui/task/TaskMedia";
 import { DocumentPreviewModal } from "./ui/task/DocumentPreviewModal";
-import { EventCard, getDraggedEventId } from "./ui/calendar/EventCard";
+import { EventCard } from "./ui/calendar/EventCard";
 import { EditModal } from "./ui/task/EditModal";
 import EventEditModal from "./ui/calendar/EventEditModal";
 import { AddBoardModal } from "./ui/board/AddBoardModal";
@@ -288,7 +328,6 @@ import { Modal } from "./ui/Modal";
 import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
 
-const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
 const ADD_BOARD_OPTION_ID = "__add-board__";
 const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SPECIAL_CALENDAR_US_HOLIDAYS_ID = "special:us-holidays";
@@ -296,21 +335,10 @@ const SPECIAL_CALENDAR_US_HOLIDAYS_LABEL = "US Holidays";
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
-type ScanResult = QrScannerLib.ScanResult;
 
 /* ================= Types ================= */
 type DayChoice = Weekday | string; // string = custom list columnId
 const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
-const WD_FULL = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-] as const;
 const MONTH_NAMES = [
   "January",
   "February",
@@ -326,24 +354,8 @@ const MONTH_NAMES = [
   "December",
 ] as const;
 const MONTH_PICKER_YEAR_WINDOW = 1000;
-const HOURS_12 = Array.from({ length: 12 }, (_, i) => i + 1);
-const MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
-const MERIDIEMS = ["AM", "PM"] as const;
-type Meridiem = (typeof MERIDIEMS)[number];
 
-type LockRecipientSelection = {
-  value: string;
-  label: string;
-  contactId?: string;
-};
 
-type QuickLockOption = {
-  id: string;
-  title: string;
-  value: string;
-  label: string;
-  contactId?: string;
-};
 
 type CalendarInviteStatus = "pending" | "read" | CalendarRsvpStatus | "dismissed";
 
@@ -432,67 +444,8 @@ function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): bo
   return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
 }
 
-function loadNip05Cache(): Record<string, Nip05CheckState> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACT_NIP05_CACHE);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    const entries: Record<string, Nip05CheckState> = {};
-    Object.entries(parsed as Record<string, any>).forEach(([key, value]) => {
-      if (!value || typeof value !== "object") return;
-      const status = (value as any).status;
-      const nip05 = typeof (value as any).nip05 === "string" ? (value as any).nip05 : "";
-      const npub = typeof (value as any).npub === "string" ? (value as any).npub : "";
-      const checkedAt = Number((value as any).checkedAt) || 0;
-      const contactUpdatedAtRaw = Number((value as any).contactUpdatedAt);
-      if (!nip05 || !npub) return;
-      if (status !== "pending" && status !== "valid" && status !== "invalid") return;
-      entries[key] = {
-        status,
-        nip05,
-        npub,
-        checkedAt: checkedAt || Date.now(),
-        contactUpdatedAt: Number.isFinite(contactUpdatedAtRaw) ? contactUpdatedAtRaw : null,
-      };
-    });
-    return entries;
-  } catch {
-    return {};
-  }
-}
 
-function contactVerifiedNip05(contact: Contact, cache: Record<string, Nip05CheckState>): string | null {
-  const normalizedNpub = normalizeNostrPubkey(contact.npub || "");
-  return contactVerifiedNip05Core(
-    {
-      id: contact.id,
-      nip05: contact.nip05,
-      npub: normalizedNpub || contact.npub,
-    },
-    cache,
-  );
-}
 
-function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
-      <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l.967 2.329a1.125 1.125 0 0 0 1.304.674l2.457-.624c1.119-.285 2.114.71 1.829 1.829l-.624 2.457a1.125 1.125 0 0 0 .674 1.304l2.329.967c1.077.448 1.077 1.976 0 2.424l-2.329.967a1.125 1.125 0 0 0-.674 1.304l.624 2.457c.285 1.119-.71 2.114-1.829 1.829l-2.457-.624a1.125 1.125 0 0 0-1.304.674l-.967 2.329c-.448 1.077-1.976 1.077-2.424 0l-.967-2.329a1.125 1.125 0 0 0-1.304-.674l-2.457.624c-1.119.285-2.114-.71-1.829-1.829l.624-2.457a1.125 1.125 0 0 0-.674-1.304l-2.329-.967c-1.077-.448-1.077-1.976 0-2.424l2.329-.967a1.125 1.125 0 0 0 .674-1.304l-.624-2.457c-.285-1.119.71-2.114 1.829-1.829l2.457.624a1.125 1.125 0 0 0 1.304-.674l.967-2.329Z"
-      />
-      <path
-        d="m9.4 12.75 1.9 1.9 3.85-3.85"
-        fill="none"
-        stroke="var(--surface-base)"
-        strokeWidth={1.6}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -504,9 +457,6 @@ function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-function taskPriorityMarks(priority: TaskPriority | undefined): string {
-  return priority ? TASK_PRIORITY_MARKS[priority] : "";
-}
 
 const LS_MESSAGES_BOARD_ID = "taskify_messages_board_id_v1";
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
@@ -613,27 +563,6 @@ type CompoundIndexGroup = {
   columns: { id: string; name: string }[];
 };
 
-function parseCompoundChildInput(raw: string): { boardId: string; relays: string[] } {
-  const trimmed = raw.trim();
-  if (!trimmed) return { boardId: "", relays: [] };
-  let boardId = trimmed;
-  let relaySegment = "";
-  const atIndex = trimmed.indexOf("@");
-  if (atIndex >= 0) {
-    boardId = trimmed.slice(0, atIndex).trim();
-    relaySegment = trimmed.slice(atIndex + 1).trim();
-  } else {
-    const spaceIndex = trimmed.search(/\s/);
-    if (spaceIndex >= 0) {
-      boardId = trimmed.slice(0, spaceIndex).trim();
-      relaySegment = trimmed.slice(spaceIndex + 1).trim();
-    }
-  }
-  const relays = relaySegment
-    ? relaySegment.split(/[\s,]+/).map((relay) => relay.trim()).filter(Boolean)
-    : [];
-  return { boardId, relays };
-}
 
 function compoundColumnKey(boardId: string, columnId: string): string {
   return `${boardId}::${columnId}`;
@@ -669,14 +598,7 @@ function findBoardByCompoundChildId(boards: Board[], childId: string): Board | u
   });
 }
 
-function compoundChildMatchesBoard(childId: string, board: Board): boolean {
-  return childId === board.id || (!!board.nostr?.boardId && childId === board.nostr.boardId);
-}
 
-function normalizeCompoundChildId(boards: Board[], childId: string): string {
-  const match = findBoardByCompoundChildId(boards, childId);
-  return match ? match.id : childId;
-}
 
 const CUSTOM_ACCENT_VARIABLES: ReadonlyArray<[string, keyof AccentPalette]> = [
   ["--accent", "fill"],
@@ -713,15 +635,7 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${clampedAlpha})`;
 }
 
-function isSameLocalDate(aMs: number, bMs: number): boolean {
-  const a = new Date(aMs);
-  const b = new Date(bMs);
-  return a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-}
 
-const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 // Persistent task-deletion tombstones, keyed by board tag → task id → unix-secs
@@ -736,7 +650,6 @@ const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
 const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
 const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
-const LS_SETTINGS = "taskify_settings_v2";
 const LS_BOARDS = "taskify_boards_v2";
 const LS_BOARD_SORT = "taskify_board_sort_v1";
 const LS_UPCOMING_FILTER = "taskify_upcoming_filter_v1";
@@ -750,162 +663,8 @@ const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
 const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
 const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
-const LS_LAST_CLOUD_BACKUP = "taskify_cloud_backup_last_v1";
-const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1";
-const CLOUD_BACKUP_MIN_INTERVAL_MS = 60 * 60 * 1000;
-const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
-const SATS_PER_BTC = 100_000_000;
-const HISTORY_MARK_SPENT_CUTOFF_MS = 5 * 24 * 60 * 60 * 1000;
 
-type WalletHistoryEntryKind = "bounty-attachment";
 
-type TaskifyBackupPayload = {
-  tasks: unknown;
-  calendarEvents: unknown;
-  externalCalendarEvents?: unknown;
-  boards: unknown;
-  settings: unknown;
-  scriptureMemory: unknown;
-  bibleTracker: unknown;
-  defaultRelays: unknown;
-  contacts: unknown;
-  contactsSyncMeta?: unknown;
-  nostrSk: string;
-  cashu: {
-    proofs: unknown;
-    activeMint: string | null;
-    history: unknown;
-    trackedMints: string[];
-    pendingTokens: PendingTokenEntry[];
-    walletSeed: WalletSeedBackupPayload;
-  };
-};
-
-function parseBackupJsonPayload(raw: string): Partial<TaskifyBackupPayload> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("Invalid backup file.");
-  }
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid backup data");
-  }
-  return parsed as Partial<TaskifyBackupPayload>;
-}
-
-function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
-  if (!data || typeof data !== "object") {
-    throw new Error("Invalid backup data");
-  }
-  // Derive per-board sync cursors from the max task timestamp in the backup instead
-  // of clearing them to {}. Clearing to {} caused limit:500 on the next open which
-  // fetched all recent events including old CREATE events whose DELETE events were
-  // beyond the 500 limit — those old tasks would reappear temporarily.
-  //
-  // By seeding the cursor from the backup's task timestamps, the post-restore sync
-  // uses since:(max_task_time - lookback) and only fetches events newer than the
-  // backup, which are exactly the changes the user missed while offline.
-  const RESTORE_LOOKBACK_SECS = 3600; // 1 hour buffer for clock skew / in-flight events
-  // Build a map from local boardId → max task timestamp (to avoid iterating boards twice)
-  const boardLocalMaxSecs = new Map<string, number>();
-  if (Array.isArray(data.tasks)) {
-    for (const task of data.tasks as Array<{ boardId?: string; createdAt?: number; updatedAt?: string }>) {
-      if (!task.boardId) continue;
-      let secs = 0;
-      if (typeof task.createdAt === "number" && task.createdAt > 0) {
-        secs = Math.max(secs, Math.floor(task.createdAt / 1000));
-      }
-      if (typeof task.updatedAt === "string") {
-        const ms = Date.parse(task.updatedAt);
-        if (!isNaN(ms) && ms > 0) secs = Math.max(secs, Math.floor(ms / 1000));
-      }
-      boardLocalMaxSecs.set(task.boardId, Math.max(boardLocalMaxSecs.get(task.boardId) ?? 0, secs));
-    }
-  }
-  // Cursors must be keyed by bTag = boardTag(b.nostr!.boardId) — this is how the
-  // subscription loop reads them (it.id = boardTag(b.nostr!.boardId)).
-  const cursors: Record<string, number> = {};
-  if (Array.isArray(data.boards)) {
-    for (const board of data.boards as Array<{ id?: string; nostr?: { boardId?: string } }>) {
-      const localId = board.id;
-      const nostrBoardId = board.nostr?.boardId;
-      if (!localId || !nostrBoardId) continue;
-      const maxSecs = boardLocalMaxSecs.get(localId) ?? 0;
-      if (maxSecs > 0) {
-        const bTag = boardTag(nostrBoardId);
-        cursors[bTag] = Math.max(0, maxSecs - RESTORE_LOOKBACK_SECS);
-      }
-    }
-  }
-  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(cursors));
-  // Per-entity v3 stores are the source of truth post-migration. Wholesale
-  // replace each so an existing user's local data is dropped in favour of
-  // the backup contents. (The page reloads after restore — flush() is awaited
-  // by the caller so writes are durable before reload.)
-  if ("tasks" in data && Array.isArray(data.tasks)) {
-    taskEntityStore.replaceAll(data.tasks as { id: string }[]);
-  }
-  if ("calendarEvents" in data && Array.isArray(data.calendarEvents)) {
-    calendarEventEntityStore.replaceAll(data.calendarEvents as { id: string }[]);
-  }
-  if ("externalCalendarEvents" in data && Array.isArray(data.externalCalendarEvents)) {
-    externalCalendarEventEntityStore.replaceAll(data.externalCalendarEvents as { id: string }[]);
-  }
-  if ("boards" in data && Array.isArray(data.boards)) {
-    boardEntityStore.replaceAll(data.boards as { id: string }[]);
-  }
-  if ("settings" in data && data.settings !== undefined) {
-    kvStorage.setItem(LS_SETTINGS, JSON.stringify(data.settings));
-  }
-  if ("scriptureMemory" in data && data.scriptureMemory !== undefined) {
-    kvStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(data.scriptureMemory));
-  }
-  if ("bibleTracker" in data && data.bibleTracker !== undefined) {
-    kvStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(data.bibleTracker));
-  }
-  if ("defaultRelays" in data && data.defaultRelays !== undefined) {
-    kvStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(data.defaultRelays));
-  }
-  if ("contacts" in data && data.contacts !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_LIGHTNING_CONTACTS, JSON.stringify(data.contacts));
-  }
-  if ("contactsSyncMeta" in data && data.contactsSyncMeta !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
-  }
-  if (typeof data.nostrSk === "string" && data.nostrSk) {
-    void nostrSkSet(data.nostrSk);
-  }
-  const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
-  if (cashuData && typeof cashuData === "object") {
-    if ("proofs" in cashuData && cashuData.proofs !== undefined) {
-      saveProofStore(cashuData.proofs);
-    }
-    if ("activeMint" in cashuData) {
-      setActiveMint(cashuData.activeMint || null);
-    }
-    if ("history" in cashuData) {
-      try {
-        const history = Array.isArray(cashuData.history) ? cashuData.history : [];
-        idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(history));
-      } catch {
-        idbKeyValue.removeItem(TASKIFY_STORE_WALLET, "cashuHistory");
-      }
-    }
-    if ("trackedMints" in cashuData && cashuData.trackedMints !== undefined) {
-      replaceMintList(Array.isArray(cashuData.trackedMints) ? cashuData.trackedMints : []);
-    }
-    if ("pendingTokens" in cashuData && cashuData.pendingTokens !== undefined) {
-      const entries = Array.isArray(cashuData.pendingTokens)
-        ? (cashuData.pendingTokens as PendingTokenEntry[])
-        : [];
-      replacePendingTokens(entries);
-    }
-    if ("walletSeed" in cashuData && cashuData.walletSeed) {
-      restoreWalletSeedBackup(cashuData.walletSeed as WalletSeedBackupPayload);
-    }
-  }
-}
 
 type UpcomingFilterOption = {
   id: string;
@@ -928,12 +687,6 @@ type UpcomingFilterPreset = {
   selection: string[];
 };
 
-type NostrBackupState = {
-  lastEventId: string | null;
-  lastTimestamp: number;
-  pubkey: string | null;
-};
-
 type NostrBackupSnapshot = {
   boards: NostrAppBackupBoard[];
   settings: Partial<Settings>;
@@ -942,43 +695,6 @@ type NostrBackupSnapshot = {
 };
 const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
 
-type WalletHistoryLogEntry = {
-  id?: string;
-  summary: string;
-  type: "lightning" | "ecash";
-  direction: "in" | "out";
-  amountSat?: number;
-  detail?: string;
-  detailKind?: "token" | "invoice" | "note";
-  mintUrl?: string;
-  feeSat?: number;
-  entryKind?: WalletHistoryEntryKind;
-  relatedTaskTitle?: string;
-};
-
-function readWalletConversionsEnabled(fallback?: boolean): boolean {
-  if (typeof fallback === "boolean") return fallback;
-  try {
-    const raw = kvStorage.getItem(LS_SETTINGS);
-    if (!raw) return true;
-    const parsed = JSON.parse(raw);
-    return parsed?.walletConversionEnabled !== false;
-  } catch {
-    return true;
-  }
-}
-
-function readCachedUsdPrice(): number | null {
-  try {
-    const raw = kvStorage.getItem(LS_BTC_USD_PRICE_CACHE);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const price = Number(parsed?.price);
-    return Number.isFinite(price) ? price : null;
-  } catch {
-    return null;
-  }
-}
 
 function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
   if (!value || typeof value !== "object") return null;
@@ -1047,165 +763,6 @@ function persistBiblePrintPaperSize(paperSize: PrintPaperSize): void {
   } catch {}
 }
 
-function captureHistoryFiatValue(amountSat?: number | null, conversionsEnabled?: boolean): number | undefined {
-  if (!conversionsEnabled || amountSat == null || !Number.isFinite(amountSat) || amountSat <= 0) {
-    return undefined;
-  }
-  const cachedPrice = readCachedUsdPrice();
-  if (cachedPrice == null || cachedPrice <= 0) return undefined;
-  const usdValue = (amountSat / SATS_PER_BTC) * cachedPrice;
-  return Number.isFinite(usdValue) ? Number(usdValue.toFixed(2)) : undefined;
-}
-
-function appendWalletHistoryEntry(entry: WalletHistoryLogEntry, options?: { conversionsEnabled?: boolean }) {
-  try {
-    const conversionsEnabled = readWalletConversionsEnabled(options?.conversionsEnabled);
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
-    const existing = raw ? JSON.parse(raw) : [];
-    const createdAt = Date.now();
-    const fiatValueUsd = captureHistoryFiatValue(entry.amountSat, conversionsEnabled);
-    const normalized = {
-      id: entry.id ?? `${entry.type}-${createdAt}`,
-      summary: entry.summary,
-      type: entry.type,
-      direction: entry.direction,
-      amountSat: entry.amountSat,
-      detail: entry.detail,
-      detailKind: entry.detailKind,
-      mintUrl: entry.mintUrl,
-      feeSat: entry.feeSat,
-      entryKind: entry.entryKind,
-      relatedTaskTitle: entry.relatedTaskTitle,
-      createdAt,
-      fiatValueUsd,
-    };
-    const next = Array.isArray(existing) ? [normalized, ...existing] : [normalized];
-    idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(next));
-    try {
-      window.dispatchEvent(new Event("taskify:wallet-history-updated"));
-    } catch {
-      // ignore
-    }
-  } catch (error) {
-    console.warn("Failed to append wallet history entry", error);
-  }
-}
-
-/* ================= Nostr minimal client ================= */
-type NostrEvent = {
-  id: string;
-  kind: number;
-  pubkey: string;
-  created_at: number;
-  tags: string[][];
-  content: string;
-  sig: string;
-};
-
-type NostrUnsignedEvent = Omit<NostrEvent, "id" | "sig" | "pubkey"> & {
-  pubkey?: string;
-};
-
-declare global {
-  interface Window {
-    nostr?: {
-      getPublicKey: () => Promise<string>;
-      signEvent: (e: NostrUnsignedEvent) => Promise<NostrEvent>;
-    };
-  }
-}
-
-const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
-
-function loadDefaultRelays(): string[] {
-  try {
-    const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.every((x) => typeof x === "string")) return arr;
-    }
-  } catch {}
-  return DEFAULT_NOSTR_RELAYS.slice();
-}
-
-function saveDefaultRelays(relays: string[]) {
-  kvStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(relays));
-}
-
-function loadNostrBackupState(): NostrBackupState {
-  try {
-    const raw = kvStorage.getItem(LS_NOSTR_BACKUP_STATE);
-    if (!raw) return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-    const parsed = JSON.parse(raw);
-    const lastEventId = typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null;
-    const lastTimestamp = Number(parsed?.lastTimestamp) || 0;
-    const pubkey = typeof parsed?.pubkey === "string" ? parsed.pubkey : null;
-    return { lastEventId, lastTimestamp, pubkey };
-  } catch {
-    return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-  }
-}
-
-function loadNostrSyncState(storageKey: string): NostrBackupState {
-  try {
-    const raw = kvStorage.getItem(storageKey);
-    if (!raw) return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-    const parsed = JSON.parse(raw);
-    const lastEventId = typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null;
-    const lastTimestamp = Number(parsed?.lastTimestamp) || 0;
-    const pubkey = typeof parsed?.pubkey === "string" ? parsed.pubkey : null;
-    return { lastEventId, lastTimestamp, pubkey };
-  } catch {
-    return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-  }
-}
-
-type NostrPool = {
-  ensureRelay: (url: string) => void;
-  setRelays: (urls: string[]) => void;
-  subscribe: (
-    relays: string[],
-    filters: any[],
-    onEvent: (ev: NostrEvent, from: string) => void,
-    onEose?: (from: string) => void
-  ) => () => void;
-  subscribeMany: (
-    relays: string[],
-    filter: any,
-    opts?: { onevent?: (ev: NostrEvent) => void; oneose?: (relay?: string) => void; closeOnEose?: boolean },
-  ) => { close: (...args: any[]) => void };
-  publish: (relays: string[], event: NostrUnsignedEvent) => Promise<void>;
-  publishEvent: (relays: string[], event: NostrEvent) => void;
-  list?: (relays: string[], filters: any[]) => Promise<NostrEvent[]>;
-  get?: (relays: string[], filter: any) => Promise<NostrEvent | null>;
-};
-
-function createNostrPool(): NostrPool {
-  const pool = new SessionPool();
-  return {
-    ensureRelay(url: string) {
-      if (url) void NostrSession.init([url]);
-    },
-    setRelays(urls: string[]) {
-      if (Array.isArray(urls) && urls.length) void NostrSession.init(urls);
-    },
-    subscribe(relayUrls, filters, onEvent, onEose) {
-      return pool.subscribe(relayUrls, filters, onEvent, onEose);
-    },
-    subscribeMany(relayUrls, filter, opts) {
-      return pool.subscribeMany(relayUrls, filter, opts);
-    },
-    async publish(relayUrls, event) {
-      await pool.publish(relayUrls, event as unknown as NostrEvent);
-    },
-    publishEvent(relayUrls, event) {
-      void pool.publishEvent(relayUrls, event as unknown as NostrEvent);
-    },
-    list: pool.list.bind(pool),
-    get: pool.get.bind(pool),
-  };
-}
-
 /* ================== Crypto helpers (AES-GCM via local Nostr key) ================== */
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
   const h = await crypto.subtle.digest("SHA-256", data);
@@ -1260,60 +817,6 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
   return new TextDecoder().decode(new Uint8Array(ptBuf));
 }
 
-// NIP-04 encryption for recipient
-async function encryptEcashTokenForRecipient(recipientHex: string, plain: string): Promise<{ alg: "nip04"; data: string }> {
-  const skHex = nostrSkSync();
-  if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
-  if (!/^[0-9a-fA-F]{64}$/.test(recipientHex)) throw new Error("Invalid recipient pubkey");
-  const data = await nip04.encrypt(skHex, recipientHex, plain);
-  return { alg: "nip04", data };
-}
-
-async function decryptEcashTokenForRecipient(senderHex: string, enc: { alg: "nip04"; data: string }): Promise<string> {
-  const skHex = nostrSkSync();
-  if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
-  if (!/^[0-9a-fA-F]{64}$/.test(senderHex)) throw new Error("Invalid sender pubkey");
-  return await nip04.decrypt(skHex, senderHex, enc.data);
-}
-
-const CLOUD_BACKUP_KEY_LABEL = new TextEncoder().encode("taskify-cloud-backup-v1");
-
-async function deriveBackupAesKey(skHex: string): Promise<CryptoKey> {
-  const raw = concatBytes(hexToBytes(skHex), CLOUD_BACKUP_KEY_LABEL);
-  const digest = await sha256(raw);
-  return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-async function encryptBackupWithSecretKey(skHex: string, plain: string): Promise<{ iv: string; ciphertext: string }> {
-  const key = await deriveBackupAesKey(skHex);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
-  return { iv: b64encode(iv), ciphertext: b64encode(ctBuf) };
-}
-
-async function decryptBackupWithSecretKey(
-  skHex: string,
-  payload: { iv: string; ciphertext: string },
-): Promise<string> {
-  const key = await deriveBackupAesKey(skHex);
-  const iv = b64decode(payload.iv);
-  const ct = b64decode(payload.ciphertext);
-  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(new Uint8Array(ptBuf));
-}
-
-function deriveNpubFromSecretKeyHex(skHex: string): string | null {
-  try {
-    const pkHex = getPublicKey(hexToBytes(skHex));
-    if (typeof (nip19 as any)?.npubEncode === "function") {
-      return (nip19 as any).npubEncode(pkHex);
-    }
-    return pkHex;
-  } catch {
-    return null;
-  }
-}
-
 function normalizeSecretKeyInput(raw: string): string | null {
   if (typeof raw !== "string") return null;
   let value = raw.trim();
@@ -1329,47 +832,6 @@ function normalizeSecretKeyInput(raw: string): string | null {
   }
   if (!/^[0-9a-fA-F]{64}$/.test(value)) return null;
   return value.toLowerCase();
-}
-
-async function loadCloudBackupPayload(
-  workerBaseUrl: string,
-  secretKeyInput: string,
-): Promise<Partial<TaskifyBackupPayload>> {
-  if (!workerBaseUrl) {
-    throw new Error("Cloud backup service is unavailable.");
-  }
-  const normalized = normalizeSecretKeyInput(secretKeyInput);
-  if (!normalized) {
-    throw new Error("Enter a valid nsec or 64-hex private key.");
-  }
-  if (typeof crypto === "undefined" || !crypto.subtle) {
-    throw new Error("Browser crypto APIs are unavailable.");
-  }
-  const npub = deriveNpubFromSecretKeyHex(normalized);
-  if (!npub) {
-    throw new Error("Unable to derive npub from the provided key.");
-  }
-  const res = await fetch(`${workerBaseUrl}/api/backups?npub=${encodeURIComponent(npub)}`);
-  if (res.status === 404) {
-    throw new Error("No cloud backup found for that key.");
-  }
-  if (!res.ok) {
-    throw new Error(`Backup request failed (${res.status})`);
-  }
-  const body = await res.json();
-  const backup = body?.backup;
-  if (!backup || typeof backup !== "object" || typeof backup.ciphertext !== "string" || typeof backup.iv !== "string") {
-    throw new Error("Invalid backup payload received.");
-  }
-  const decrypted = await decryptBackupWithSecretKey(normalized, {
-    ciphertext: backup.ciphertext,
-    iv: backup.iv,
-  });
-  try {
-    return parseBackupJsonPayload(decrypted);
-  } catch {
-    throw new Error("Cloud backup could not be decoded.");
-  }
 }
 
 type BoardNostrKeyPair = {
@@ -1397,326 +859,15 @@ function toNsec(secret: string): string {
   }
 }
 
-async function fileToDataURL(file: File): Promise<string> {
-  const dataUrl: string = await new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(fr.error);
-    fr.onload = () => resolve(fr.result as string);
-    fr.readAsDataURL(file);
-  });
 
-  return await new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const maxDim = 1280;
-      let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        const scale = Math.min(maxDim / width, maxDim / height);
-        width = Math.round(width * scale);
-        height = Math.round(height * scale);
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.8));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
-}
-
-async function readDocumentsFromFiles(list: FileList | File[]): Promise<TaskDocument[]> {
-  const files = Array.from(list);
-  const attachments: TaskDocument[] = [];
-  for (const file of files) {
-    if (!isSupportedDocumentFile(file)) {
-      throw new Error("Unsupported file type");
-    }
-    const doc = await createDocumentAttachment(file);
-    attachments.push(ensureDocumentPreview(doc));
-  }
-  return attachments;
-}
 
 /* ================= Date helpers ================= */
-function startOfDay(d: Date) {
-  const nd = new Date(d);
-  nd.setHours(0, 0, 0, 0);
-  return nd;
-}
-
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_ZONE_VALIDATION_CACHE = new Map<string, string | null>();
-const DATE_KEY_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
-const TIME_KEY_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
-const OFFSET_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
 
-function resolveSystemTimeZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch {
-    return "UTC";
-  }
-}
 
-function normalizeTimeZone(value?: string | null): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (TIME_ZONE_VALIDATION_CACHE.has(trimmed)) return TIME_ZONE_VALIDATION_CACHE.get(trimmed) ?? null;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(new Date());
-    TIME_ZONE_VALIDATION_CACHE.set(trimmed, trimmed);
-    return trimmed;
-  } catch {
-    TIME_ZONE_VALIDATION_CACHE.set(trimmed, null);
-    return null;
-  }
-}
-
-function formatDateKeyFromParts(year: number, month: number, day: number): string {
-  const yyyy = String(year).padStart(4, "0");
-  const mm = String(month).padStart(2, "0");
-  const dd = String(day).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function formatDateKeyLocal(date: Date): string {
-  return formatDateKeyFromParts(date.getFullYear(), date.getMonth() + 1, date.getDate());
-}
-
-function parseDateKey(value: string): { year: number; month: number; day: number } | null {
-  if (!ISO_DATE_PATTERN.test(value)) return null;
-  const [yearRaw, monthRaw, dayRaw] = value.split("-");
-  const year = Number(yearRaw);
-  const month = Number(monthRaw);
-  const day = Number(dayRaw);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  return { year, month, day };
-}
-
-function parseTimeValue(value: string): { hour: number; minute: number } | null {
-  if (typeof value !== "string" || !value.includes(":")) return null;
-  const [hourRaw, minuteRaw] = value.split(":");
-  const hour = Number.parseInt(hourRaw ?? "", 10);
-  const minute = Number.parseInt(minuteRaw ?? "", 10);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
-  return {
-    hour: Math.min(23, Math.max(0, hour)),
-    minute: Math.min(59, Math.max(0, minute)),
-  };
-}
-
-function getDateKeyFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = DATE_KEY_FORMATTER_CACHE.get(timeZone);
-  if (cached) return cached;
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  DATE_KEY_FORMATTER_CACHE.set(timeZone, formatter);
-  return formatter;
-}
-
-function getTimeKeyFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = TIME_KEY_FORMATTER_CACHE.get(timeZone);
-  if (cached) return cached;
-  const formatter = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-  TIME_KEY_FORMATTER_CACHE.set(timeZone, formatter);
-  return formatter;
-}
-
-function getOffsetFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = OFFSET_FORMATTER_CACHE.get(timeZone);
-  if (cached) return cached;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-  OFFSET_FORMATTER_CACHE.set(timeZone, formatter);
-  return formatter;
-}
-
-function formatDateKeyInTimeZone(date: Date, timeZone: string): string {
-  const formatter = getDateKeyFormatter(timeZone);
-  const parts = formatter.formatToParts(date);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-  if (!year || !month || !day) return formatDateKeyLocal(date);
-  return `${year}-${month}-${day}`;
-}
-
-function formatTimeKeyInTimeZone(date: Date, timeZone: string): string {
-  const formatter = getTimeKeyFormatter(timeZone);
-  const parts = formatter.formatToParts(date);
-  const hour = parts.find((part) => part.type === "hour")?.value;
-  const minute = parts.find((part) => part.type === "minute")?.value;
-  if (!hour || !minute) return "";
-  return `${hour}:${minute}`;
-}
-
-function getTimeZoneOffset(date: Date, timeZone: string): number {
-  const formatter = getOffsetFormatter(timeZone);
-  const parts = formatter.formatToParts(date);
-  const year = Number(parts.find((part) => part.type === "year")?.value);
-  const month = Number(parts.find((part) => part.type === "month")?.value);
-  const day = Number(parts.find((part) => part.type === "day")?.value);
-  const hour = Number(parts.find((part) => part.type === "hour")?.value);
-  const minute = Number(parts.find((part) => part.type === "minute")?.value);
-  const second = Number(parts.find((part) => part.type === "second")?.value);
-  if ([year, month, day, hour, minute, second].some((value) => !Number.isFinite(value))) return 0;
-  const asUTC = Date.UTC(year, month - 1, day, hour, minute, second);
-  return asUTC - date.getTime();
-}
-
-function formatOffsetLabel(offsetMinutes: number): string {
-  if (!Number.isFinite(offsetMinutes)) return "UTC";
-  if (offsetMinutes === 0) return "UTC";
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const abs = Math.abs(offsetMinutes);
-  const hours = String(Math.floor(abs / 60)).padStart(2, "0");
-  const minutes = String(abs % 60).padStart(2, "0");
-  return `UTC${sign}${hours}:${minutes}`;
-}
-
-function zonedTimeToUtc(dateStr: string, timeStr: string, timeZone: string): Date | null {
-  const parsedDate = parseDateKey(dateStr);
-  const parsedTime = parseTimeValue(timeStr);
-  if (!parsedDate || !parsedTime) return null;
-  const { year, month, day } = parsedDate;
-  const { hour, minute } = parsedTime;
-  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
-  const offset = getTimeZoneOffset(utcGuess, timeZone);
-  let adjusted = new Date(utcGuess.getTime() - offset);
-  const offsetCheck = getTimeZoneOffset(adjusted, timeZone);
-  if (offsetCheck !== offset) {
-    adjusted = new Date(utcGuess.getTime() - offsetCheck);
-  }
-  return adjusted;
-}
-
-function isoDatePart(iso: string, timeZone?: string): string {
-  if (typeof iso === "string" && ISO_DATE_PATTERN.test(iso)) return iso;
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return formatDateKeyLocal(new Date());
-  const safeZone = normalizeTimeZone(timeZone);
-  if (safeZone) return formatDateKeyInTimeZone(date, safeZone);
-  return formatDateKeyLocal(date);
-}
-
-function formatUpcomingDayLabel(dateKey: string): string {
-  const parsed = new Date(`${dateKey}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return dateKey;
-  const weekday = parsed.toLocaleDateString([], { weekday: "long" });
-  const monthDay = parsed.toLocaleDateString([], { month: "short", day: "numeric" });
-  return `${weekday} — ${monthDay}`;
-}
-
-function isoTimePart(iso: string, timeZone?: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const safeZone = normalizeTimeZone(timeZone);
-  if (safeZone) return formatTimeKeyInTimeZone(date, safeZone);
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
-}
-
-function isoTimePartUtc(iso: string): string {
-  if (typeof iso === 'string' && iso.length >= 16) return iso.slice(11, 16);
-  try { return new Date(iso).toISOString().slice(11, 16); } catch { return ""; }
-}
-
-function weekdayFromISO(iso: string, timeZone?: string): Weekday | null {
-  const dateKey = isoDatePart(iso, timeZone);
-  const parsed = parseDateKey(dateKey);
-  if (!parsed) return null;
-  const utc = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
-  if (!Number.isFinite(utc)) return null;
-  return new Date(utc).getUTCDay() as Weekday;
-}
-
-function taskDateKey(task: Task): string {
-  return isoDatePart(task.dueISO, task.dueTimeZone);
-}
-
-function taskDisplayDateKey(task: Task): string {
-  return isoDatePart(task.dueISO);
-}
-
-function taskTimeValue(task: Task): number | null {
-  if (!task.dueTimeEnabled) return null;
-  const timePart = isoTimePart(task.dueISO);
-  const parsed = parseTimeValue(timePart);
-  if (!parsed) return null;
-  return parsed.hour * 60 + parsed.minute;
-}
-
-function taskWeekday(task: Task): Weekday | null {
-  return weekdayFromISO(task.dueISO, task.dueTimeZone);
-}
-
-function calendarAnchorFrom(dateStr?: string | null) {
-  const base = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
-  if (Number.isNaN(base.getTime())) {
-    const today = new Date();
-    return new Date(today.getFullYear(), today.getMonth(), 1);
-  }
-  return new Date(base.getFullYear(), base.getMonth(), 1);
-}
-
-function getWheelMetrics(column: HTMLDivElement | null) {
-  if (!column) return null;
-  const first = column.querySelector<HTMLElement>("[data-picker-index]");
-  if (!first) return null;
-  const optionHeight = first.getBoundingClientRect().height;
-  const optionOffset = first.offsetTop;
-  return { optionHeight, optionOffset };
-}
-
-function scrollWheelColumnToIndex(column: HTMLDivElement | null, index: number) {
-  if (!column) return;
-  const metrics = getWheelMetrics(column);
-  if (!metrics) return;
-  const { optionHeight, optionOffset } = metrics;
-  const optionCenter = optionOffset + index * optionHeight + optionHeight / 2;
-  const targetTop = optionCenter - column.clientHeight / 2;
-  const maxScroll = Math.max(0, column.scrollHeight - column.clientHeight);
-  const clampedTop = Math.max(0, Math.min(targetTop, maxScroll));
-  if (Math.abs(column.scrollTop - clampedTop) < 0.5) return;
-  column.scrollTo({ top: clampedTop });
-}
-
-function getWheelNearestIndex(column: HTMLDivElement | null, totalOptions: number) {
-  if (!column || totalOptions <= 0) return null;
-  const metrics = getWheelMetrics(column);
-  if (!metrics) return null;
-  const { optionHeight, optionOffset } = metrics;
-  if (!optionHeight) return null;
-  const viewCenter = column.scrollTop + column.clientHeight / 2;
-  const relative = (viewCenter - optionOffset - optionHeight / 2) / optionHeight;
-  const rawIndex = Math.round(relative);
-  return Math.min(totalOptions - 1, Math.max(0, rawIndex));
-}
 
 function scheduleWheelSnap(
-  columnRef: React.RefObject<HTMLDivElement>,
+  columnRef: React.RefObject<HTMLDivElement | null>,
   snapRef: React.MutableRefObject<number | null>,
   targetIndex: number,
 ) {
@@ -1730,853 +881,8 @@ function scheduleWheelSnap(
   }, 120);
 }
 
-function nudgeHorizontalScroller(scroller: HTMLDivElement | null) {
-  if (!scroller) return;
-  const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-  if (maxScroll < 1) return;
-  const start = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-  const bump = start < maxScroll ? start + 1 : start - 1;
-  if (Math.abs(bump - start) < 0.5) return;
-  scroller.scrollLeft = bump;
-  scroller.scrollLeft = start;
-}
 
-function isoFromDateTime(dateStr: string, timeStr?: string, timeZone?: string): string {
-  const safeZone = normalizeTimeZone(timeZone);
-  if (dateStr) {
-    if (safeZone && ISO_DATE_PATTERN.test(dateStr)) {
-      const timeValue = timeStr || "00:00";
-      const zoned = zonedTimeToUtc(dateStr, timeValue, safeZone);
-      if (zoned && !Number.isNaN(zoned.getTime())) return zoned.toISOString();
-    }
-    if (timeStr) {
-      const withTime = new Date(`${dateStr}T${timeStr}`);
-      if (!Number.isNaN(withTime.getTime())) return withTime.toISOString();
-    }
-    const midnight = new Date(`${dateStr}T00:00`);
-    if (!Number.isNaN(midnight.getTime())) return midnight.toISOString();
-  }
-  const parsed = new Date(dateStr);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
-  return new Date().toISOString();
-}
 
-function monthKeyFromYearMonth(year: number, monthIndex: number): string {
-  const mm = String(monthIndex + 1).padStart(2, "0");
-  return `${year}-${mm}`;
-}
-
-function daysInCalendarMonth(year: number, monthIndex: number): number {
-  const value = new Date(year, monthIndex + 1, 0).getDate();
-  return Number.isFinite(value) && value > 0 ? value : 30;
-}
-
-function nthWeekdayOfMonthDateKey(
-  year: number,
-  monthIndex: number,
-  weekday: Weekday,
-  occurrence: number,
-): string | null {
-  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(occurrence)) return null;
-  if (occurrence < 1) return null;
-  const firstOfMonth = new Date(Date.UTC(year, monthIndex, 1));
-  if (Number.isNaN(firstOfMonth.getTime())) return null;
-  const firstWeekday = firstOfMonth.getUTCDay() as Weekday;
-  const offset = (weekday - firstWeekday + 7) % 7;
-  const day = 1 + offset + (occurrence - 1) * 7;
-  const maxDay = daysInCalendarMonth(year, monthIndex);
-  if (day < 1 || day > maxDay) return null;
-  return formatDateKeyFromParts(year, monthIndex + 1, day);
-}
-
-function lastWeekdayOfMonthDateKey(year: number, monthIndex: number, weekday: Weekday): string | null {
-  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return null;
-  const maxDay = daysInCalendarMonth(year, monthIndex);
-  const lastOfMonth = new Date(Date.UTC(year, monthIndex, maxDay));
-  if (Number.isNaN(lastOfMonth.getTime())) return null;
-  const lastWeekday = lastOfMonth.getUTCDay() as Weekday;
-  const offset = (lastWeekday - weekday + 7) % 7;
-  const day = maxDay - offset;
-  if (day < 1 || day > maxDay) return null;
-  return formatDateKeyFromParts(year, monthIndex + 1, day);
-}
-
-function observedUsHolidayDateKey(dateKey: string): string | null {
-  const parsed = parseDateKey(dateKey);
-  if (!parsed) return null;
-  const date = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
-  if (Number.isNaN(date.getTime())) return null;
-  const weekday = date.getUTCDay() as Weekday;
-  if (weekday === 6) date.setUTCDate(date.getUTCDate() - 1);
-  else if (weekday === 0) date.setUTCDate(date.getUTCDate() + 1);
-  else return null;
-  return date.toISOString().slice(0, 10);
-}
-
-function easterDateKey(year: number): string | null {
-  if (!Number.isFinite(year)) return null;
-  const y = Math.trunc(year);
-  if (y < 1583) return null;
-  const a = y % 19;
-  const b = Math.floor(y / 100);
-  const c = y % 100;
-  const d = Math.floor(b / 4);
-  const e = b % 4;
-  const f = Math.floor((b + 8) / 25);
-  const g = Math.floor((b - f + 1) / 3);
-  const h = (19 * a + b - d - g + 15) % 30;
-  const i = Math.floor(c / 4);
-  const k = c % 4;
-  const l = (32 + 2 * e + 2 * i - h - k) % 7;
-  const m = Math.floor((a + 11 * h + 22 * l) / 451);
-  const month = Math.floor((h + l - 7 * m + 114) / 31);
-  const day = ((h + l - 7 * m + 114) % 31) + 1;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return formatDateKeyFromParts(y, month, day);
-}
-
-type UsHolidayDefinition = {
-  id: string;
-  title: string;
-  dateForYear: (year: number) => string | null;
-  includeObserved?: boolean;
-  summary?: string;
-};
-
-function buildUsHolidayCalendarEvents(startYear: number, endYear: number): CalendarEvent[] {
-  const fromYear = Math.min(startYear, endYear);
-  const toYear = Math.max(startYear, endYear);
-  const definitions: UsHolidayDefinition[] = [
-    {
-      id: "new-years-day",
-      title: "New Year's Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 1, 1),
-    },
-    {
-      id: "mlk-day",
-      title: "Martin Luther King Jr. Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 0, 1, 3),
-    },
-    {
-      id: "presidents-day",
-      title: "Presidents Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 1, 1, 3),
-    },
-    {
-      id: "valentines-day",
-      title: "Valentine's Day",
-      dateForYear: (year) => formatDateKeyFromParts(year, 2, 14),
-      summary: "US holiday",
-    },
-    {
-      id: "easter",
-      title: "Easter",
-      dateForYear: (year) => easterDateKey(year),
-      summary: "US holiday",
-    },
-    {
-      id: "memorial-day",
-      title: "Memorial Day",
-      dateForYear: (year) => lastWeekdayOfMonthDateKey(year, 4, 1),
-    },
-    {
-      id: "juneteenth",
-      title: "Juneteenth",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 6, 19),
-    },
-    {
-      id: "independence-day",
-      title: "Independence Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 7, 4),
-    },
-    {
-      id: "labor-day",
-      title: "Labor Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 8, 1, 1),
-    },
-    {
-      id: "columbus-day",
-      title: "Columbus Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 9, 1, 2),
-    },
-    {
-      id: "veterans-day",
-      title: "Veterans Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 11, 11),
-    },
-    {
-      id: "thanksgiving-day",
-      title: "Thanksgiving Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 10, 4, 4),
-    },
-    {
-      id: "christmas-eve",
-      title: "Christmas Eve",
-      dateForYear: (year) => formatDateKeyFromParts(year, 12, 24),
-      summary: "US holiday",
-    },
-    {
-      id: "christmas-day",
-      title: "Christmas Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 12, 25),
-    },
-  ];
-
-  const events: CalendarEvent[] = [];
-  const seen = new Set<string>();
-  const addEvent = (id: string, title: string, dateKey: string, summary: string) => {
-    if (!ISO_DATE_PATTERN.test(dateKey)) return;
-    const dedupeKey = `${id}|${dateKey}`;
-    if (seen.has(dedupeKey)) return;
-    seen.add(dedupeKey);
-    events.push({
-      id,
-      kind: "date",
-      boardId: SPECIAL_CALENDAR_US_HOLIDAYS_ID,
-      title,
-      summary,
-      startDate: dateKey,
-      readOnly: true,
-    });
-  };
-
-  for (let year = fromYear; year <= toYear; year += 1) {
-    definitions.forEach((definition) => {
-      const dateKey = definition.dateForYear(year);
-      if (!dateKey) return;
-      addEvent(
-        `us-holiday:${definition.id}:${year}`,
-        definition.title,
-        dateKey,
-        definition.summary ?? "US federal holiday",
-      );
-
-      if (!definition.includeObserved) return;
-      const observedDateKey = observedUsHolidayDateKey(dateKey);
-      if (!observedDateKey) return;
-      addEvent(
-        `us-holiday:${definition.id}:${year}:observed`,
-        `${definition.title} (Observed)`,
-        observedDateKey,
-        `${definition.summary ?? "US federal holiday"} (observed date)`,
-      );
-    });
-
-    const dstStart = nthWeekdayOfMonthDateKey(year, 2, 0, 2);
-    if (dstStart) {
-      addEvent(
-        `us-holiday:dst-start:${year}`,
-        "Daylight Saving Time Begins",
-        dstStart,
-        "Clocks move forward one hour in most US time zones",
-      );
-    }
-
-    const dstEnd = nthWeekdayOfMonthDateKey(year, 10, 0, 1);
-    if (dstEnd) {
-      addEvent(
-        `us-holiday:dst-end:${year}`,
-        "Daylight Saving Time Ends",
-        dstEnd,
-        "Clocks move back one hour in most US time zones",
-      );
-    }
-  }
-
-  events.sort((a, b) => {
-    if (a.kind !== "date" || b.kind !== "date") return a.id.localeCompare(b.id);
-    const dateDiff = a.startDate.localeCompare(b.startDate);
-    if (dateDiff !== 0) return dateDiff;
-    const titleDiff = a.title.localeCompare(b.title);
-    if (titleDiff !== 0) return titleDiff;
-    return a.id.localeCompare(b.id);
-  });
-
-  return events;
-}
-
-function isUsHolidayCalendarEvent(event: CalendarEvent): boolean {
-  return event.boardId === SPECIAL_CALENDAR_US_HOLIDAYS_ID;
-}
-
-function hashStringToUint32(input: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function mulberry32(seed: number): () => number {
-  let t = seed >>> 0;
-  return () => {
-    t = (t + 0x6D2B79F5) >>> 0;
-    let x = t;
-    x = Math.imul(x ^ (x >>> 15), x | 1);
-    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function shuffleInPlace<T>(arr: T[], rng: () => number): void {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    if (j === i) continue;
-    const tmp = arr[i];
-    arr[i] = arr[j];
-    arr[j] = tmp;
-  }
-}
-
-function fastingReminderDueTimesForMonth(
-  year: number,
-  monthIndex: number,
-  options: { mode: FastingRemindersMode; weekday: Weekday; perMonth: number; seed: string },
-): number[] {
-  const totalDays = daysInCalendarMonth(year, monthIndex);
-  const perMonth = Number.isFinite(options.perMonth) ? Math.max(1, Math.round(options.perMonth)) : 1;
-  if (options.mode === "weekday") {
-    const out: number[] = [];
-    for (let day = 1; day <= totalDays; day++) {
-      const date = new Date(year, monthIndex, day);
-      if ((date.getDay() as Weekday) !== options.weekday) continue;
-      const midnight = startOfDay(date);
-      if (!Number.isNaN(midnight.getTime())) out.push(midnight.getTime());
-    }
-    return out.slice(0, perMonth);
-  }
-
-  const candidates = Array.from({ length: totalDays }, (_, i) => i + 1);
-  const rng = mulberry32(hashStringToUint32(`${options.seed}|${monthKeyFromYearMonth(year, monthIndex)}`));
-  shuffleInPlace(candidates, rng);
-  return candidates
-    .slice(0, Math.min(perMonth, totalDays))
-    .sort((a, b) => a - b)
-    .map((day) => startOfDay(new Date(year, monthIndex, day)).getTime())
-    .filter((time) => Number.isFinite(time) && !Number.isNaN(time));
-}
-
-function formatTimeLabel(iso: string, timeZone?: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const safeZone = normalizeTimeZone(timeZone);
-  return date.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-    ...(safeZone ? { timeZone: safeZone } : {}),
-  });
-}
-
-type TimeZoneOption = {
-  id: string;
-  label: string;
-  city: string;
-  region: string;
-  shortNames: string[];
-  longNames: string[];
-  offsetMinutes: number;
-  offsetLabel: string;
-  search: string;
-};
-
-const FALLBACK_TIME_ZONES = [
-  "UTC",
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Phoenix",
-  "America/Anchorage",
-  "Pacific/Honolulu",
-  "Europe/London",
-  "Europe/Paris",
-  "Europe/Berlin",
-  "Europe/Moscow",
-  "Asia/Dubai",
-  "Asia/Kolkata",
-  "Asia/Bangkok",
-  "Asia/Singapore",
-  "Asia/Shanghai",
-  "Asia/Tokyo",
-  "Australia/Sydney",
-];
-
-let cachedTimeZoneOptions: TimeZoneOption[] | null = null;
-let cachedTimeZoneOptionMap: Map<string, TimeZoneOption> | null = null;
-
-function getSupportedTimeZones(): string[] {
-  try {
-    const supported = typeof (Intl as any).supportedValuesOf === "function"
-      ? (Intl as any).supportedValuesOf("timeZone")
-      : null;
-    if (Array.isArray(supported) && supported.length > 0) {
-      return supported.includes("UTC") ? supported : ["UTC", ...supported];
-    }
-  } catch {}
-  return FALLBACK_TIME_ZONES;
-}
-
-function extractTimeZoneName(timeZone: string, date: Date, style: "short" | "long"): string {
-  try {
-    const formatter = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: style });
-    const part = formatter.formatToParts(date).find((entry) => entry.type === "timeZoneName");
-    return part?.value?.trim() || "";
-  } catch {
-    return "";
-  }
-}
-
-function getTimeZoneLabelParts(timeZone: string): { label: string; city: string; region: string } {
-  const parts = timeZone.split("/");
-  const rawCity = parts[parts.length - 1] || timeZone;
-  const city = rawCity.replace(/_/g, " ");
-  const region = parts.slice(0, -1).join("/").replace(/_/g, " ");
-  return { label: city || timeZone, city, region };
-}
-
-function buildTimeZoneOption(timeZone: string, referenceDates: Date[]): TimeZoneOption | null {
-  const normalized = normalizeTimeZone(timeZone) ?? (timeZone === "UTC" ? "UTC" : null);
-  if (!normalized) return null;
-  const { label, city, region } = getTimeZoneLabelParts(normalized);
-  const shortNames = new Set<string>();
-  const longNames = new Set<string>();
-  referenceDates.forEach((date) => {
-    const shortName = extractTimeZoneName(normalized, date, "short");
-    const longName = extractTimeZoneName(normalized, date, "long");
-    if (shortName) shortNames.add(shortName);
-    if (longName) longNames.add(longName);
-  });
-  const offsetMinutes = Math.round(getTimeZoneOffset(new Date(), normalized) / 60000);
-  const offsetLabel = formatOffsetLabel(offsetMinutes);
-  const offsetAlias = offsetLabel.replace("UTC", "GMT");
-  const search = [
-    normalized,
-    label,
-    city,
-    region,
-    ...shortNames,
-    ...longNames,
-    offsetLabel,
-    offsetAlias,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return {
-    id: normalized,
-    label,
-    city,
-    region,
-    shortNames: Array.from(shortNames),
-    longNames: Array.from(longNames),
-    offsetMinutes,
-    offsetLabel,
-    search,
-  };
-}
-
-function getTimeZoneOptions(): { options: TimeZoneOption[]; map: Map<string, TimeZoneOption> } {
-  if (cachedTimeZoneOptions && cachedTimeZoneOptionMap) {
-    return { options: cachedTimeZoneOptions, map: cachedTimeZoneOptionMap };
-  }
-  const now = new Date();
-  const year = now.getUTCFullYear();
-  const referenceDates = [
-    now,
-    new Date(Date.UTC(year, 0, 1, 12, 0, 0)),
-    new Date(Date.UTC(year, 6, 1, 12, 0, 0)),
-  ];
-  const options: TimeZoneOption[] = [];
-  const map = new Map<string, TimeZoneOption>();
-  const seen = new Set<string>();
-  for (const zone of getSupportedTimeZones()) {
-    if (!zone || seen.has(zone)) continue;
-    seen.add(zone);
-    const option = buildTimeZoneOption(zone, referenceDates);
-    if (!option) continue;
-    options.push(option);
-    map.set(option.id, option);
-  }
-  options.sort((a, b) => {
-    if (a.offsetMinutes !== b.offsetMinutes) return a.offsetMinutes - b.offsetMinutes;
-    return a.label.localeCompare(b.label);
-  });
-  cachedTimeZoneOptions = options;
-  cachedTimeZoneOptionMap = map;
-  return { options, map };
-}
-
-function formatTimeZoneDisplay(timeZone: string, optionMap: Map<string, TimeZoneOption>): string {
-  const option = optionMap.get(timeZone);
-  if (!option) return timeZone;
-  const short = option.shortNames.find((name) => !!name) || "";
-  if (short && short !== option.label) return `${option.label} (${short})`;
-  return option.label;
-}
-
-function scoreTimeZoneOption(option: TimeZoneOption, query: string): number {
-  const normalized = query.toLowerCase();
-  const isAbbrev = /^[a-z]{2,6}$/.test(normalized);
-  const id = option.id.toLowerCase();
-  const label = option.label.toLowerCase();
-  const city = option.city.toLowerCase();
-  const region = option.region.toLowerCase();
-  const shortNames = option.shortNames.map((name) => name.toLowerCase());
-  const longNames = option.longNames.map((name) => name.toLowerCase());
-
-  if (
-    id === normalized ||
-    label === normalized ||
-    city === normalized ||
-    region === normalized ||
-    shortNames.includes(normalized) ||
-    longNames.includes(normalized)
-  ) {
-    return 0;
-  }
-
-  if (isAbbrev && shortNames.some((name) => name.startsWith(normalized))) return 1;
-
-  if (
-    id.startsWith(normalized) ||
-    label.startsWith(normalized) ||
-    city.startsWith(normalized) ||
-    region.startsWith(normalized) ||
-    shortNames.some((name) => name.startsWith(normalized)) ||
-    longNames.some((name) => name.startsWith(normalized))
-  ) {
-    return 2;
-  }
-
-  return 3;
-}
-
-function parseTimePickerValue(value?: string | null, fallback = "09:00") {
-  const source = typeof value === "string" && value.includes(":") ? value : fallback;
-  const [hourRaw, minuteRaw] = (source || "09:00").split(":");
-  const hour24 = Number.parseInt(hourRaw ?? "0", 10);
-  const minute = Number.parseInt(minuteRaw ?? "0", 10);
-  const safeHour24 = Number.isFinite(hour24) ? Math.min(23, Math.max(0, hour24)) : 9;
-  const safeMinute = Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0;
-  const meridiem: Meridiem = safeHour24 >= 12 ? "PM" : "AM";
-  const hour12 = safeHour24 % 12 === 0 ? 12 : safeHour24 % 12;
-  return {
-    hour: hour12,
-    minute: safeMinute,
-    meridiem,
-  };
-}
-
-function useCalendarPicker(baseDate?: string) {
-  const [calendarAnchor, setCalendarAnchor] = useState(() => calendarAnchorFrom(baseDate));
-  const [showMonthPicker, setShowMonthPicker] = useState(false);
-  const [monthPickerMonth, setMonthPickerMonth] = useState(calendarAnchor.getMonth());
-  const [monthPickerYear, setMonthPickerYear] = useState(() => calendarAnchor.getFullYear());
-  const monthPickerMonthColumnRef = useRef<HTMLDivElement | null>(null);
-  const monthPickerYearColumnRef = useRef<HTMLDivElement | null>(null);
-  const monthPickerMonthScrollFrame = useRef<number | null>(null);
-  const monthPickerYearScrollFrame = useRef<number | null>(null);
-  const monthPickerMonthSnapTimeout = useRef<number | null>(null);
-  const monthPickerYearSnapTimeout = useRef<number | null>(null);
-  const monthPickerMonthValueRef = useRef(monthPickerMonth);
-  const monthPickerYearValueRef = useRef(monthPickerYear);
-
-  const monthPickerYears = useMemo(() => {
-    const anchorYear = calendarAnchor.getFullYear();
-    const start = anchorYear - MONTH_PICKER_YEAR_WINDOW;
-    const end = anchorYear + MONTH_PICKER_YEAR_WINDOW;
-    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
-  }, [calendarAnchor]);
-
-  const calendarMonthLabel = useMemo(
-    () => calendarAnchor.toLocaleDateString([], { month: "long", year: "numeric" }),
-    [calendarAnchor],
-  );
-
-  const calendarCells = useMemo(() => {
-    const year = calendarAnchor.getFullYear();
-    const month = calendarAnchor.getMonth();
-    const firstWeekday = new Date(year, month, 1).getDay();
-    const totalDays = new Date(year, month + 1, 0).getDate();
-    const totalCells = Math.ceil((firstWeekday + totalDays) / 7) * 7;
-    const cells: (number | null)[] = [];
-    for (let i = 0; i < totalCells; i += 1) {
-      const day = i - firstWeekday + 1;
-      cells.push(day > 0 && day <= totalDays ? day : null);
-    }
-    return { cells, year, month };
-  }, [calendarAnchor]);
-
-  const todayDate = useMemo(() => {
-    const today = new Date();
-    return new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  }, []);
-
-  useEffect(() => {
-    setCalendarAnchor(calendarAnchorFrom(baseDate));
-  }, [baseDate]);
-
-  useEffect(() => {
-    setMonthPickerMonth(calendarAnchor.getMonth());
-    setMonthPickerYear(calendarAnchor.getFullYear());
-  }, [calendarAnchor]);
-
-  useEffect(() => {
-    monthPickerMonthValueRef.current = monthPickerMonth;
-  }, [monthPickerMonth]);
-
-  useEffect(() => {
-    monthPickerYearValueRef.current = monthPickerYear;
-  }, [monthPickerYear]);
-
-  useEffect(() => {
-    if (!showMonthPicker) return;
-    scrollWheelColumnToIndex(monthPickerMonthColumnRef.current, monthPickerMonth);
-    const yearIndex = monthPickerYears.indexOf(monthPickerYear);
-    if (yearIndex >= 0) {
-      scrollWheelColumnToIndex(monthPickerYearColumnRef.current, yearIndex);
-    }
-  }, [monthPickerMonth, monthPickerYear, monthPickerYears, showMonthPicker]);
-
-  const moveCalendarMonth = useCallback((delta: number) => {
-    setCalendarAnchor((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
-  }, []);
-
-  const applyMonthPickerSelection = useCallback(() => {
-    const safeYear = Number.isFinite(monthPickerYear) ? monthPickerYear : calendarAnchor.getFullYear();
-    const safeMonth = Math.min(11, Math.max(0, monthPickerMonth));
-    setCalendarAnchor(new Date(safeYear, safeMonth, 1));
-    setShowMonthPicker(false);
-  }, [calendarAnchor, monthPickerMonth, monthPickerYear]);
-
-  const handleMonthLabelClick = useCallback(() => {
-    if (!showMonthPicker) {
-      setMonthPickerMonth(calendarAnchor.getMonth());
-      setMonthPickerYear(calendarAnchor.getFullYear());
-      setShowMonthPicker(true);
-    } else {
-      applyMonthPickerSelection();
-    }
-  }, [applyMonthPickerSelection, calendarAnchor, showMonthPicker]);
-
-  const handleMonthPickerMonthScroll = useCallback(() => {
-    const column = monthPickerMonthColumnRef.current;
-    if (!column) return;
-    if (monthPickerMonthScrollFrame.current != null) {
-      cancelAnimationFrame(monthPickerMonthScrollFrame.current);
-    }
-    monthPickerMonthScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MONTH_NAMES.length);
-      if (clampedIndex == null) return;
-      if (monthPickerMonthValueRef.current !== clampedIndex) {
-        setMonthPickerMonth(clampedIndex);
-      }
-      scheduleWheelSnap(monthPickerMonthColumnRef, monthPickerMonthSnapTimeout, clampedIndex);
-    });
-  }, []);
-
-  const handleMonthPickerYearScroll = useCallback(() => {
-    const column = monthPickerYearColumnRef.current;
-    if (!column) return;
-    if (monthPickerYearScrollFrame.current != null) {
-      cancelAnimationFrame(monthPickerYearScrollFrame.current);
-    }
-    monthPickerYearScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, monthPickerYears.length);
-      if (clampedIndex == null) return;
-      const nextYear = monthPickerYears[clampedIndex];
-      if (nextYear != null && monthPickerYearValueRef.current !== nextYear) {
-        setMonthPickerYear(nextYear);
-      }
-      if (nextYear != null) {
-        scheduleWheelSnap(monthPickerYearColumnRef, monthPickerYearSnapTimeout, clampedIndex);
-      }
-    });
-  }, [monthPickerYears]);
-
-  return {
-    calendarAnchor,
-    calendarMonthLabel,
-    calendarCells,
-    todayDate,
-    showMonthPicker,
-    moveCalendarMonth,
-    handleMonthLabelClick,
-    monthPickerYears,
-    monthPickerMonth,
-    monthPickerYear,
-    monthPickerMonthColumnRef,
-    monthPickerYearColumnRef,
-    handleMonthPickerMonthScroll,
-    handleMonthPickerYearScroll,
-  };
-}
-
-function DatePickerCalendar({
-  baseDate,
-  selectedDate,
-  onSelectDate,
-}: {
-  baseDate?: string;
-  selectedDate?: string;
-  onSelectDate: (iso: string) => void;
-}) {
-  const {
-    calendarMonthLabel,
-    calendarCells,
-    todayDate,
-    showMonthPicker,
-    moveCalendarMonth,
-    handleMonthLabelClick,
-    monthPickerYears,
-    monthPickerMonth,
-    monthPickerYear,
-    monthPickerMonthColumnRef,
-    monthPickerYearColumnRef,
-    handleMonthPickerMonthScroll,
-    handleMonthPickerYearScroll,
-  } = useCalendarPicker(baseDate);
-
-  const selectedDateObj = useMemo(() => {
-    if (!selectedDate) return null;
-    const parsed = new Date(`${selectedDate}T00:00:00`);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }, [selectedDate]);
-
-  function handleSelectCalendarDay(day: number | null) {
-    if (!day) return;
-    const next = new Date(calendarCells.year, calendarCells.month, day);
-    if (Number.isNaN(next.getTime())) return;
-    onSelectDate(formatDateKeyLocal(next));
-  }
-
-  return (
-    <div className="edit-calendar">
-      <div className="edit-calendar__header">
-        <button
-          type="button"
-          className="ghost-button button-sm pressable"
-          onClick={() => moveCalendarMonth(-1)}
-          aria-label="Previous month"
-        >
-          ‹
-        </button>
-        <button type="button" className="edit-calendar__month" onClick={handleMonthLabelClick}>
-          {calendarMonthLabel}
-        </button>
-        <button
-          type="button"
-          className="ghost-button button-sm pressable"
-          onClick={() => moveCalendarMonth(1)}
-          aria-label="Next month"
-        >
-          ›
-        </button>
-      </div>
-      {showMonthPicker && (
-        <div className="edit-month-picker">
-          <div
-            className="edit-month-picker__column"
-            ref={monthPickerMonthColumnRef}
-            onScroll={handleMonthPickerMonthScroll}
-            role="listbox"
-            aria-label="Select month"
-          >
-            {MONTH_NAMES.map((name, idx) => (
-              <div
-                key={name}
-                className={`edit-month-picker__option ${monthPickerMonth === idx ? "is-active" : ""}`}
-                data-picker-index={idx}
-                role="option"
-                aria-selected={monthPickerMonth === idx}
-              >
-                {name.slice(0, 3)}
-              </div>
-            ))}
-          </div>
-          <div
-            className="edit-month-picker__column"
-            ref={monthPickerYearColumnRef}
-            onScroll={handleMonthPickerYearScroll}
-            role="listbox"
-            aria-label="Select year"
-          >
-            {monthPickerYears.map((year, idx) => (
-              <div
-                key={year}
-                className={`edit-month-picker__option ${monthPickerYear === year ? "is-active" : ""}`}
-                data-picker-index={idx}
-                role="option"
-                aria-selected={monthPickerYear === year}
-              >
-                {year}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      <div className="edit-calendar__weekdays">
-        {WD_SHORT.map((label) => (
-          <span key={label}>{label}</span>
-        ))}
-      </div>
-      <div className="edit-calendar__grid">
-        {calendarCells.cells.map((cell, idx) => {
-          if (!cell) {
-            return <span key={`empty-${idx}`} className="edit-calendar__day edit-calendar__day--muted" />;
-          }
-          const isSelected =
-            !!selectedDateObj &&
-            selectedDateObj.getFullYear() === calendarCells.year &&
-            selectedDateObj.getMonth() === calendarCells.month &&
-            selectedDateObj.getDate() === cell;
-          const currentViewDate = new Date(calendarCells.year, calendarCells.month, cell);
-          const isToday =
-            todayDate.getFullYear() === currentViewDate.getFullYear() &&
-            todayDate.getMonth() === currentViewDate.getMonth() &&
-            todayDate.getDate() === currentViewDate.getDate();
-          const dayCls = [
-            "edit-calendar__day",
-            isSelected ? "edit-calendar__day--selected" : "",
-            !isSelected && isToday ? "edit-calendar__day--today" : "",
-          ]
-            .filter(Boolean)
-            .join(" ");
-          return (
-            <button
-              key={`day-${idx}-${cell}`}
-              type="button"
-              className={dayCls}
-              onClick={() => handleSelectCalendarDay(cell)}
-            >
-              {cell}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function formatTimePickerValue(hour12: number, minute: number, meridiem: Meridiem) {
-  const normalizedHour = Math.min(12, Math.max(1, hour12 || 12));
-  const normalizedMinute = Math.min(59, Math.max(0, minute));
-  let hour24 = normalizedHour % 12;
-  if (meridiem === "PM") {
-    hour24 += 12;
-  } else if (normalizedHour === 12) {
-    hour24 = 0;
-  }
-  const hh = String(hour24).padStart(2, "0");
-  const mm = String(normalizedMinute).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
 
 function isoForWeekday(
   target: Weekday,
@@ -2848,20 +1154,6 @@ function hiddenUntilForNext(
   const sow = startOfWeek(nextMidnight, weekStart);
   return sow.toISOString();
 }
-function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, string>>): string {
-  const visible = boards.filter(b => !b.archived && !b.hidden);
-  const today = (new Date().getDay() as Weekday);
-  const overrideId = overrides?.[today];
-  if (overrideId) {
-    const match = visible.find(b => b.id === overrideId) || boards.find(b => !b.archived && b.id === overrideId);
-    if (match) return match.id;
-  }
-  if (visible.length) return visible[0].id;
-  const firstUnarchived = boards.find(b => !b.archived);
-  if (firstUnarchived) return firstUnarchived.id;
-  return boards[0]?.id || "";
-}
-
 function migrateBoards(stored: any): Board[] | null {
   try {
     const arr = stored as any[];
@@ -3395,42 +1687,6 @@ function useCalendarEvents() {
   return [events, setEvents] as const;
 }
 
-function useBibleTracker(): [BibleTrackerState, React.Dispatch<React.SetStateAction<BibleTrackerState>>] {
-  const [state, setState] = useState<BibleTrackerState>(() => {
-    try {
-      const raw = kvStorage.getItem(LS_BIBLE_TRACKER);
-      if (raw) {
-        return sanitizeBibleTrackerState(JSON.parse(raw));
-      }
-    } catch {}
-    return sanitizeBibleTrackerState(null);
-  });
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(state));
-    } catch {}
-  }, [state]);
-  return [state, setState];
-}
-
-function useScriptureMemory(): [ScriptureMemoryState, React.Dispatch<React.SetStateAction<ScriptureMemoryState>>] {
-  const [state, setState] = useState<ScriptureMemoryState>(() => {
-    try {
-      const raw = kvStorage.getItem(LS_SCRIPTURE_MEMORY);
-      if (raw) {
-        return sanitizeScriptureMemoryState(JSON.parse(raw));
-      }
-    } catch {}
-    return sanitizeScriptureMemoryState(null);
-  });
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(state));
-    } catch {}
-  }, [state]);
-  return [state, setState];
-}
-
 /* ================= DroppableColumn ================= */
 const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   title: string;
@@ -3610,7 +1866,7 @@ export default function App() {
   const [selectionMoveBoardId, setSelectionMoveBoardId] = useState<string | null>(null);
   const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
   const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
-  const runtimeConfigPromiseRef = useRef<Promise<void> | null>(null);
+  const runtimeConfigPromiseRef = useRef<Promise<{ workerBaseUrl: string | null; vapidPublicKey: string | null } | null> | null>(null);
   if (typeof window !== "undefined") {
     (window as any).__TASKIFY_WORKER_BASE_URL__ = workerBaseUrl;
   }
@@ -3732,108 +1988,18 @@ export default function App() {
     return id;
   });
   const [boards, setBoards] = useBoards();
-  const [settings, setSettings] = useSettings();
-
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
-    } catch {
-      // ignore persistence issues
-    }
-  }, [settings.walletMintBackupEnabled]);
-  useEffect(() => {
-    setBoards(prev => {
-      const hasBible = prev.some(b => b.id === BIBLE_BOARD_ID);
-      if (settings.bibleTrackerEnabled) {
-        if (hasBible) {
-          return prev.map(b => {
-            if (b.id !== BIBLE_BOARD_ID) return b;
-            return {
-              id: BIBLE_BOARD_ID,
-              name: "Bible",
-              kind: "bible",
-              archived: false,
-              hidden: false,
-            } as Board;
-          });
-        }
-        const insertionIndex = prev.findIndex(b => b.archived);
-        const bibleBoard: Board = {
-          id: BIBLE_BOARD_ID,
-          name: "Bible",
-          kind: "bible",
-          archived: false,
-          hidden: false,
-        };
-        if (insertionIndex === -1) {
-          return [...prev, bibleBoard];
-        }
-        const next = [...prev];
-        next.splice(insertionIndex, 0, bibleBoard);
-        return next;
-      }
-      if (!hasBible) return prev;
-      return prev.filter(b => b.id !== BIBLE_BOARD_ID);
-    });
-  }, [settings.bibleTrackerEnabled, setBoards]);
-  useEffect(() => {
-    const detected = detectPushPlatformFromNavigator();
-    if (settings.pushNotifications.platform !== detected) {
-      setSettings({ pushNotifications: { ...settings.pushNotifications, platform: detected } });
-    }
-  }, [settings.pushNotifications, setSettings]);
-  const [currentBoardId, setCurrentBoardIdState] = useState(() => pickStartupBoard(boards, settings.startBoardByDay));
+  const {
+    currentBoardId,
+    scriptureMemoryBoard,
+    scriptureMemoryFrequencyOption,
+    scriptureMemorySortLabel,
+    setCurrentBoardId: setCurrentBoardIdState,
+    setSettings,
+    settings,
+  } = useSettingsSync({ boards, setBoards, bibleBoardId: BIBLE_BOARD_ID });
   const currentBoard = boards.find(b => b.id === currentBoardId);
   const isListBoard = currentBoard?.kind === "lists";
   const visibleBoards = useMemo(() => boards.filter(b => !b.archived && !b.hidden), [boards]);
-  const scriptureMemoryFrequencyOption = useMemo(
-    () => SCRIPTURE_MEMORY_FREQUENCIES.find((opt) => opt.id === settings.scriptureMemoryFrequency) || SCRIPTURE_MEMORY_FREQUENCIES[0],
-    [settings.scriptureMemoryFrequency]
-  );
-  const scriptureMemorySortLabel = useMemo(
-    () => SCRIPTURE_MEMORY_SORTS.find((opt) => opt.id === settings.scriptureMemorySort)?.label || SCRIPTURE_MEMORY_SORTS[0].label,
-    [settings.scriptureMemorySort]
-  );
-  const scriptureMemoryBoard = useMemo(
-    () => (settings.scriptureMemoryBoardId ? boards.find((b) => b.id === settings.scriptureMemoryBoardId) || null : null),
-    [boards, settings.scriptureMemoryBoardId]
-  );
-  const availableMemoryBoards = useMemo(
-    () => boards.filter((b) => !b.archived && b.kind !== "bible"),
-    [boards]
-  );
-
-  useEffect(() => {
-    if (!settings.bibleTrackerEnabled && currentBoardId === BIBLE_BOARD_ID) {
-      const fallbackBoards = boards.filter(b => b.id !== BIBLE_BOARD_ID);
-      const next = pickStartupBoard(fallbackBoards, settings.startBoardByDay);
-      if (next !== currentBoardId) setCurrentBoardIdState(next);
-    }
-  }, [settings.bibleTrackerEnabled, currentBoardId, boards, settings.startBoardByDay]);
-
-  useEffect(() => {
-    if (!settings.scriptureMemoryEnabled) return;
-    if (scriptureMemoryBoard) return;
-    const fallbackId = availableMemoryBoards[0]?.id;
-    if (fallbackId && fallbackId !== settings.scriptureMemoryBoardId) {
-      setSettings({ scriptureMemoryBoardId: fallbackId });
-    }
-  }, [
-    settings.scriptureMemoryEnabled,
-    scriptureMemoryBoard,
-    availableMemoryBoards,
-    setSettings,
-    settings.scriptureMemoryBoardId,
-  ]);
-
-
-
-  useEffect(() => {
-    const current = boards.find(b => b.id === currentBoardId);
-    if (current && !current.archived && !current.hidden) return;
-    const next = pickStartupBoard(boards, settings.startBoardByDay);
-    if (next !== currentBoardId) setCurrentBoardIdState(next);
-  }, [boards, currentBoardId, settings.startBoardByDay]);
 
   const [tasks, setTasks] = useTasks();
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
@@ -3949,7 +2115,7 @@ export default function App() {
             status,
           } satisfies CalendarInvite;
         })
-        .filter((entry): entry is CalendarInvite => !!entry);
+        .filter((entry): entry is NonNullable<typeof entry> => !!entry);
     } catch {
       return [];
     }
@@ -4367,9 +2533,11 @@ export default function App() {
     let hiddenUntilISO: string | undefined;
     if (startOfDay(dueDate).getTime() > startOfDay(now).getTime()) {
       const candidate = hiddenUntilForNext(dueISO, recurrence, settings.weekStart);
-      const candidateMidnight = startOfDay(new Date(candidate)).getTime();
-      const todayMidnight = startOfDay(now).getTime();
-      if (candidateMidnight > todayMidnight) hiddenUntilISO = candidate;
+      if (candidate) {
+        const candidateMidnight = startOfDay(new Date(candidate)).getTime();
+        const todayMidnight = startOfDay(now).getTime();
+        if (candidateMidnight > todayMidnight) hiddenUntilISO = candidate;
+      }
     }
     let createdTask: Task | null = null;
     setTasks((prev) => {
@@ -4609,28 +2777,6 @@ export default function App() {
     setTasks(prev => ensureWeekRecurrences(prev));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.showFullWeekRecurring, settings.weekStart]);
-
-  useEffect(() => {
-    const overrides = settings.startBoardByDay;
-    if (!overrides || Object.keys(overrides).length === 0) return;
-    const visibleIds = new Set(boards.filter(b => !b.archived && !b.hidden).map(b => b.id));
-    let changed = false;
-    const next: Partial<Record<Weekday, string>> = {};
-    for (const key of Object.keys(overrides)) {
-      const dayNum = Number(key);
-      const boardId = overrides[key as keyof typeof overrides];
-      if (!Number.isInteger(dayNum) || dayNum < 0 || dayNum > 6) {
-        changed = true;
-        continue;
-      }
-      if (typeof boardId !== "string" || !boardId || !visibleIds.has(boardId)) {
-        changed = true;
-        continue;
-      }
-      next[dayNum as Weekday] = boardId;
-    }
-    if (changed) setSettings({ startBoardByDay: next });
-  }, [boards, settings.startBoardByDay, setSettings]);
 
   // Apply font size setting to root; fall back to default size
   useEffect(() => {
@@ -5365,9 +3511,8 @@ export default function App() {
         }
       } else if (item.type === "contact") {
         contactPayload = (item as any).contact ?? (item as any);
-        const contactNpub = contactPayload?.npub;
-        if (!contactNpub) return;
-        lines.push(`npub: ${shortenNpub(toNpub(contactNpub))}`);
+        if (!contactPayload || !contactPayload.npub) return;
+        lines.push(`npub: ${shortenNpub(toNpub(contactPayload.npub))}`);
         if (contactPayload.nip05) lines.push(`NIP-05: ${contactPayload.nip05}`);
         if (contactPayload.lud16) lines.push(`Lightning: ${contactPayload.lud16}`);
       } else if (item.type === "task") {
@@ -5439,9 +3584,9 @@ export default function App() {
           item.type === "board"
             ? item.boardName?.trim() || "Shared board"
             : item.type === "contact"
-              ? contactPayload.name?.trim() ||
-                contactPayload.displayName?.trim() ||
-                shortenNpub(toNpub(contactPayload.npub)) ||
+              ? contactPayload?.name?.trim() ||
+                contactPayload?.displayName?.trim() ||
+                (contactPayload?.npub ? shortenNpub(toNpub(contactPayload.npub)) : "") ||
                 "Shared contact"
               : taskPayload?.title?.trim() || "Shared task",
         note,
@@ -6268,7 +4413,6 @@ export default function App() {
   // Ref updated every render so navigation callbacks can read the gate without
   // stale-closure issues (isOnboardingActive is derived further down).
   const isOnboardingActiveRef = useRef(false);
-  const [walletBountiesTab, setWalletBountiesTab] = useState<"open" | "funded" | "pinned">("pinned");
   useEffect(() => {
     if (currentBoard?.kind === "bible") {
       if (view !== "completed") setView("bible");
@@ -6376,7 +4520,7 @@ export default function App() {
   useNostrSubscriptions({
     sharedInbox: {
       enabled: true,
-      ensurePool: ensureInboxPool,
+      ensurePool: ensureInboxPool as unknown as () => SubscribeManyPool,
       handleEvent: handleIncomingShareEvent,
       lookbackSeconds: SHARE_DM_LOOKBACK_SECONDS,
       nostrPK,
@@ -7634,8 +5778,8 @@ export default function App() {
   }
 
   function addListColumn(boardId: string, name?: string): string | null {
-    const board = boards.find((b) => b.id === boardId && b.kind === "lists");
-    if (!board) return null;
+    const board = boards.find((b) => b.id === boardId);
+    if (!board || board.kind !== "lists") return null;
     const colName = name?.trim() ? name.trim() : `List ${board.columns.length + 1}`;
     const col: ListColumn = { id: crypto.randomUUID(), name: colName };
     const updated: Board = { ...board, columns: [...board.columns, col] };
@@ -7647,8 +5791,8 @@ export default function App() {
   }
 
   function renameListColumn(boardId: string, columnId: string, name: string): boolean {
-    const board = boards.find((b) => b.id === boardId && b.kind === "lists");
-    if (!board) return false;
+    const board = boards.find((b) => b.id === boardId);
+    if (!board || board.kind !== "lists") return false;
     const trimmed = name.trim() || undefined;
     let didChange = false;
     const updated: Board = {
@@ -7679,8 +5823,8 @@ export default function App() {
   }, []);
 
   function removeListColumn(boardId: string, columnId: string) {
-    const board = boards.find((b) => b.id === boardId && b.kind === "lists");
-    if (!board) return;
+    const board = boards.find((b) => b.id === boardId);
+    if (!board || board.kind !== "lists") return;
     const updatedColumns = board.columns.filter((col) => col.id !== columnId);
     if (updatedColumns.length === board.columns.length) return;
     const updatedBoard: Board = { ...board, columns: updatedColumns };
@@ -7770,11 +5914,25 @@ export default function App() {
     });
   }, [setTasks]);
 
-  // drag-to-delete
-  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
-  const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
-  const [trashHover, setTrashHover] = useState(false);
-  const [upcomingHover, setUpcomingHover] = useState(false);
+  // drag-and-drop UI state (see ui/dnd/useDragAndDrop.ts)
+  const {
+    draggingTaskId,
+    draggingEventId,
+    trashHover,
+    upcomingHover,
+    boardDropOpen,
+    boardDropPos,
+    boardDropTimer,
+    setDraggingTaskId,
+    setDraggingEventId,
+    setTrashHover,
+    setUpcomingHover,
+    setBoardDropOpen,
+    setBoardDropPos,
+    handleDragEnd,
+    scheduleBoardDropClose,
+    cancelBoardDropClose,
+  } = useDragAndDrop();
   const [upcomingFilterOpen, setUpcomingFilterOpen] = useState(false);
   const [upcomingUsHolidaysEnabled, setUpcomingUsHolidaysEnabled] = useState<boolean>(() => {
     const raw = kvStorage.getItem(LS_UPCOMING_US_HOLIDAYS_ENABLED);
@@ -7934,38 +6092,6 @@ export default function App() {
       return { mode, direction: DEFAULT_BOARD_SORT_DIRECTION[mode] };
     });
   }, []);
-  const [boardDropOpen, setBoardDropOpen] = useState(false);
-  const [boardDropPos, setBoardDropPos] = useState<{ top: number; left: number } | null>(null);
-  const boardDropTimer = useRef<number>();
-  const boardDropCloseTimer = useRef<number>();
-
-  function scheduleBoardDropClose() {
-    if (boardDropCloseTimer.current) window.clearTimeout(boardDropCloseTimer.current);
-    boardDropCloseTimer.current = window.setTimeout(() => {
-      setBoardDropOpen(false);
-      setBoardDropPos(null);
-      boardDropCloseTimer.current = undefined;
-    }, 100);
-  }
-
-  function cancelBoardDropClose() {
-    if (boardDropCloseTimer.current) {
-      window.clearTimeout(boardDropCloseTimer.current);
-      boardDropCloseTimer.current = undefined;
-    }
-  }
-
-  const handleDragEnd = useCallback(() => {
-    setDraggingTaskId(null);
-    setDraggingEventId(null);
-    setTrashHover(false);
-    setUpcomingHover(false);
-    setBoardDropOpen(false);
-    setBoardDropPos(null);
-    if (boardDropTimer.current) window.clearTimeout(boardDropTimer.current);
-    if (boardDropCloseTimer.current) window.clearTimeout(boardDropCloseTimer.current);
-  }, []);
-
   const upcomingFilterGroups = useMemo<UpcomingFilterGroup[]>(() => {
     const groups: UpcomingFilterGroup[] = [];
     visibleBoards
@@ -8944,12 +7070,6 @@ export default function App() {
     list.sort(compareWalletBountyTasks);
     return list;
   }, [compareWalletBountyTasks, tasks]);
-
-  const walletBountiesVisibleTasks = useMemo(() => {
-    if (walletBountiesTab === "funded") return fundedBountyTasks;
-    if (walletBountiesTab === "pinned") return pinnedBountyTasks;
-    return openBountyTasks;
-  }, [fundedBountyTasks, openBountyTasks, pinnedBountyTasks, walletBountiesTab]);
 
   const itemsByColumn = useMemo(() => {
     if (!currentBoard || !isListLikeBoard(currentBoard)) return new Map<string, Task[]>();
@@ -11729,7 +9849,7 @@ export default function App() {
         // Different ids: pick the newer one
         if (normalizedOld.id !== normalizedIncoming.id) return incNewer ? normalizedIncoming : normalizedOld;
 
-        const next = { ...normalizedOld } as Task["bounty"];
+        const next = { ...normalizedOld } as NonNullable<Task["bounty"]>;
         // accept token/content updates if incoming is newer
         if (incNewer) {
           if (typeof normalizedIncoming.amount === 'number') next.amount = normalizedIncoming.amount;
@@ -12182,7 +10302,7 @@ export default function App() {
       dedupeRecurringInstances,
       isFrequentRecurrence,
       nextOccurrence,
-      startOfWeek,
+      startOfWeek: startOfWeek as (date: Date, weekStart: number) => Date,
       recurringInstanceId,
       isoDatePart,
       taskDateKey,
@@ -12627,8 +10747,8 @@ export default function App() {
     if (type === "weekly") {
       const rawDays = Array.isArray((value as any).days) ? (value as any).days : [];
       const days = rawDays
-        .map((entry) => (typeof entry === "number" && Number.isInteger(entry) ? entry : Number.NaN))
-        .filter((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 6) as Weekday[];
+        .map((entry: unknown) => (typeof entry === "number" && Number.isInteger(entry) ? entry : Number.NaN))
+        .filter((entry: number) => Number.isInteger(entry) && entry >= 0 && entry <= 6) as Weekday[];
       if (!days.length) return undefined;
       const untilISO = normalizeIsoTimestamp((value as any).untilISO);
       return { type: "weekly", days: Array.from(new Set(days)), ...(untilISO ? { untilISO } : {}) };
@@ -13353,7 +11473,7 @@ export default function App() {
                 completed: !!subtask.completed,
               };
             })
-            .filter((subtask): subtask is Subtask => !!subtask)
+            .filter((subtask): subtask is NonNullable<typeof subtask> => !!subtask)
         : undefined;
       const recurrence =
         payload.recurrence && typeof payload.recurrence === "object" && typeof payload.recurrence.type === "string"
@@ -13598,7 +11718,7 @@ export default function App() {
             memoryUpdate = {
               entryId: working.scriptureMemoryId,
               completedAt: now,
-              stageBefore: typeof working.scriptureMemoryStage === "number" ? working.scriptureMemoryStage : working.stage ?? 0,
+              stageBefore: typeof working.scriptureMemoryStage === "number" ? working.scriptureMemoryStage : 0,
             };
           }
           toPublish.push(done);
@@ -13699,22 +11819,30 @@ export default function App() {
       }
       return updated;
     });
-    if (inboxAction && inboxAction.action === "accept") {
-      if (inboxAction.item.type === "board") {
+    // Snapshot inboxAction into a local const so TS retains the discriminated-
+    // union narrowing through the subsequent .item.type checks. The cast is
+    // safe at runtime: the let was annotated with this exact shape at
+    // declaration, but TS narrows it to `never` here because the assignment
+    // happens inside a setTasks callback and TS's CFA doesn't trust the
+    // mutation across the closure.
+    const acceptedInbox = inboxAction as { item: InboxItem; action: "accept" | "dismiss" | "decline" | "maybe" } | null;
+    if (acceptedInbox && acceptedInbox.action === "accept") {
+      const item = acceptedInbox.item;
+      if (item.type === "board") {
         addSharedBoardFromInbox({
-          boardId: inboxAction.item.boardId,
-          boardName: inboxAction.item.boardName,
-          relays: inboxAction.item.relays,
+          boardId: item.boardId,
+          boardName: item.boardName,
+          relays: item.relays,
         });
-      } else if (inboxAction.item.type === "contact") {
-        const added = upsertSharedContact(inboxAction.item.contact);
+      } else if (item.type === "contact") {
+        const added = upsertSharedContact(item.contact);
         if (added) {
           showToast("Contact added to your list");
         } else {
           showToast("Unable to add contact");
         }
-      } else if (inboxAction.item.type === "task") {
-        const added = addSharedTaskFromInbox(inboxAction.item.task, inboxAction.item.sender);
+      } else if (item.type === "task") {
+        const added = addSharedTaskFromInbox(item.task, item.sender);
         if (added) {
           showToast("Task added to your board");
         } else {
@@ -13722,18 +11850,25 @@ export default function App() {
         }
       }
     }
-    if (assignmentResponse) {
-      void sendTaskAssignmentResponse(assignmentResponse.item, assignmentResponse.status).catch((err) => {
+    // Snapshot the let (assigned inside setTasks callback) so TS retains the
+    // union narrowing after the truthiness check.
+    const finalAssignmentResponse = assignmentResponse as { item: Extract<InboxItem, { type: "task" }>; status: TaskAssigneeStatus } | null;
+    if (finalAssignmentResponse) {
+      void sendTaskAssignmentResponse(finalAssignmentResponse.item, finalAssignmentResponse.status).catch((err) => {
         console.warn("Failed to send task assignment response", err);
       });
-      if (assignmentResponse.status === "tentative") {
+      if (finalAssignmentResponse.status === "tentative") {
         showToast("Responded: maybe");
-      } else if (assignmentResponse.status === "declined") {
+      } else if (finalAssignmentResponse.status === "declined") {
         showToast("Responded: declined");
       }
     }
-    if (scheduledUpdate && memoryUpdate) {
-      memoryUpdate = { ...memoryUpdate, nextScheduled: scheduledUpdate };
+    const finalScheduledUpdate = scheduledUpdate;
+    // Cast: see the same setState-callback narrowing footgun as inboxAction
+    // above. The let was annotated `ScriptureMemoryUpdate | null` at decl.
+    const memoryUpdateSnapshot = memoryUpdate as ScriptureMemoryUpdate | null;
+    if (finalScheduledUpdate && memoryUpdateSnapshot) {
+      memoryUpdate = { ...memoryUpdateSnapshot, nextScheduled: finalScheduledUpdate };
     }
     if (memoryUpdate && !options?.skipScriptureMemoryUpdate) {
       scriptureLastReviewRef.current = memoryUpdate.completedAt;
@@ -14808,7 +12943,7 @@ export default function App() {
           try {
             const keys = await deriveBoardNostrKeys(board.nostr!.boardId);
             if (keys.pk === canonicalParsed.pubkey) {
-              boardNostrId = board.nostr.boardId;
+              boardNostrId = board.nostr!.boardId;
               break;
             }
           } catch {}
@@ -17113,50 +15248,12 @@ export default function App() {
       {activePage === "upcoming" && (
         <>
           {showUpcomingSearch && (
-            <div className="upcoming-search">
-              <div className="upcoming-search__field">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.8}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="upcoming-search__icon"
-                  aria-hidden="true"
-                >
-                  <circle cx="11" cy="11" r="7" />
-                  <line x1="16.65" y1="16.65" x2="21" y2="21" />
-                </svg>
-                <input
-                  ref={upcomingSearchInputRef}
-                  type="search"
-                  className="upcoming-search__input"
-                  placeholder="Search title or notes"
-                  value={upcomingSearch}
-                  onChange={(event) => setUpcomingSearch(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      closeUpcomingSearch();
-                    }
-                  }}
-                  aria-label="Search tasks by title or notes"
-                />
-                <button
-                  type="button"
-                  className="upcoming-search__clear pressable"
-                  onClick={closeUpcomingSearch}
-                  aria-label={upcomingSearch ? "Clear search" : "Close search"}
-                >
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                  </svg>
-                </button>
-              </div>
-            </div>
+            <UpcomingSearch
+              inputRef={upcomingSearchInputRef}
+              value={upcomingSearch}
+              onChange={setUpcomingSearch}
+              onClose={closeUpcomingSearch}
+            />
           )}
           {upcomingView === "list" ? (
             <div className="upcoming-list-view">
@@ -17361,115 +15458,16 @@ export default function App() {
         </>
       )}
       {activePage === "wallet-bounties" && (
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          <div className="wallet-section space-y-3">
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={walletBountiesTab === "pinned" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
-                onClick={() => setWalletBountiesTab("pinned")}
-              >
-                Pinned
-              </button>
-              <button
-                type="button"
-                className={walletBountiesTab === "funded" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
-                onClick={() => setWalletBountiesTab("funded")}
-              >
-                Funded
-              </button>
-              <button
-                type="button"
-                className={walletBountiesTab === "open" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
-                onClick={() => setWalletBountiesTab("open")}
-              >
-                Open
-              </button>
-            </div>
-            <div className="text-xs text-secondary">
-              {walletBountiesTab === "open"
-                ? "All tasks with an active bounty."
-                : walletBountiesTab === "funded"
-                  ? "Tasks where you funded the bounty."
-                  : "Tasks you pinned for quick access."}
-            </div>
-          </div>
-          <div className="surface-panel board-column p-4">
-            {walletBountiesVisibleTasks.length === 0 ? (
-              <div className="text-sm text-secondary">
-                No {walletBountiesTab === "open" ? "open bounties" : walletBountiesTab === "funded" ? "funded bounties" : "pinned tasks"} yet.
-              </div>
-            ) : (
-              <ul className="space-y-2">
-                {walletBountiesVisibleTasks.map((task) => {
-                  const boardName = boardMap.get(task.boardId)?.name || "Board";
-                  const bounty = task.bounty;
-                  const creatorNpub = toNpub(task.createdBy || "");
-                  const lastEditorNpub = toNpub(task.lastEditedBy || task.completedBy || task.createdBy || "");
-                  const parsedDue = new Date(task.dueISO);
-                  const dueLabel = Number.isNaN(parsedDue.getTime())
-                    ? ""
-                    : parsedDue.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-                  const amountLabel =
-                    bounty && typeof bounty.amount === "number"
-                      ? `${bounty.amount} sats`
-                      : "Amount unknown";
-                  return (
-                    <li
-                      key={task.id}
-                      className="task-card space-y-2"
-                      data-form="stacked"
-                      data-agent-entity="task"
-                      data-agent-creator-npub={creatorNpub || undefined}
-                      data-agent-last-editor-npub={lastEditorNpub || undefined}
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium leading-[1.2]">
-                            <TaskTitle key={`${task.id}:${task.priority ?? "none"}`} task={task} />
-                          </div>
-                          <div className="text-xs text-secondary">
-                            {boardName}
-                            {dueLabel ? ` • ${dueLabel}` : ""}
-                          </div>
-                          {bounty ? (
-                            <div className="mt-1 text-xs text-secondary">
-                              {amountLabel} • {bountyStateLabel(bounty)}
-                            </div>
-                          ) : (
-                            <div className="mt-1 text-xs text-secondary">No bounty attached yet.</div>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-1 justify-end">
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => setEditing({ type: "task", originalType: "task", originalId: task.id, task })}
-                          >
-                            Open task
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => {
-                              if (taskHasBountyList(task, PINNED_BOUNTY_LIST_KEY)) {
-                                removeTaskFromBountyList(task.id);
-                              } else {
-                                addTaskToBountyList(task.id);
-                              }
-                            }}
-                          >
-                            {taskHasBountyList(task, PINNED_BOUNTY_LIST_KEY) ? "Unpin" : "Pin"}
-                          </button>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        </div>
+        <WalletBountiesView
+          fundedBountyTasks={fundedBountyTasks}
+          pinnedBountyTasks={pinnedBountyTasks}
+          openBountyTasks={openBountyTasks}
+          boardMap={boardMap}
+          toNpub={toNpub}
+          setEditing={setEditing}
+          addTaskToBountyList={addTaskToBountyList}
+          removeTaskFromBountyList={removeTaskFromBountyList}
+        />
       )}
       {activePage === "settings" && (
         <SettingsModal
@@ -17511,48 +15509,13 @@ export default function App() {
       </div>
 
       {activePage === "upcoming" && (
-        <div className="upcoming-controls">
-          <div className="upcoming-controls__left">
-            <button
-              type="button"
-              className="upcoming-controls__today pressable"
-              onClick={handleUpcomingToday}
-              disabled={upcomingView === "details" && upcomingGroups.length === 0}
-              title="Jump to today"
-              aria-label="Jump to today"
-            >
-              Today
-            </button>
-          </div>
-          <div className="upcoming-controls__right">
-            <button
-              type="button"
-              className="app-header__icon-btn pressable"
-              onClick={() => setUpcomingFilterOpen(true)}
-              title={`Filter upcoming tasks (${upcomingFilterLabel})`}
-              aria-label={`Filter upcoming tasks (${upcomingFilterLabel})`}
-              data-active={upcomingFilter !== null || upcomingFilterOpen}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-[18px] w-[18px]"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.8}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <line x1="4" y1="6" x2="20" y2="6" />
-                <line x1="4" y1="12" x2="20" y2="12" />
-                <line x1="4" y1="18" x2="20" y2="18" />
-                <circle cx="9" cy="6" r="2" />
-                <circle cx="15" cy="12" r="2" />
-                <circle cx="11" cy="18" r="2" />
-              </svg>
-            </button>
-          </div>
-        </div>
+        <UpcomingControls
+          todayDisabled={upcomingView === "details" && upcomingGroups.length === 0}
+          onTodayClick={handleUpcomingToday}
+          filterActive={upcomingFilter !== null || upcomingFilterOpen}
+          filterLabel={upcomingFilterLabel}
+          onOpenFilter={() => setUpcomingFilterOpen(true)}
+        />
       )}
 
       <div className="app-tab-switcher">
@@ -18121,48 +16084,17 @@ export default function App() {
 
 
       {/* Drag trash can */}
-      {(draggingTaskId || draggingEventId) && (
-        <div
-          className="fixed bottom-4 left-4 z-50"
-          onDragOver={(e) => {
-            e.preventDefault();
-            setTrashHover(true);
-          }}
-          onDragLeave={() => setTrashHover(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            const allIds = getDraggedTaskIds(e.dataTransfer);
-            if (allIds && allIds.length > 1) {
-              allIds.forEach((id) => deleteTask(id, { skipPrompt: true }));
-              if (isSelectionMode) exitSelectionMode();
-            } else {
-              const taskId = getDraggedTaskId(e.dataTransfer);
-              if (taskId) {
-                deleteTask(taskId);
-              } else {
-                const eventId = getDraggedEventId(e.dataTransfer);
-                if (eventId) deleteCalendarEvent(eventId);
-              }
-            }
-            handleDragEnd();
-          }}
-        >
-          <div
-            className={`w-14 h-14 rounded-full bg-neutral-900 border border-neutral-700 flex items-center justify-center text-secondary transition-transform ${trashHover ? 'scale-110' : ''}`}
-          >
-            <svg
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="pointer-events-none"
-            >
-              <path d="M9 3h6l1 1h5v2H3V4h5l1-1z" />
-              <path d="M5 7h14l-1.5 13h-11L5 7z" />
-            </svg>
-          </div>
-        </div>
-      )}
+      <TrashDropZone
+        visible={!!(draggingTaskId || draggingEventId)}
+        hovered={trashHover}
+        setHovered={setTrashHover}
+        onDragEnd={handleDragEnd}
+        deleteTask={deleteTask}
+        deleteCalendarEvent={deleteCalendarEvent}
+        isSelectionMode={isSelectionMode}
+        exitSelectionMode={exitSelectionMode}
+      />
+
 
       {isSelectionMode && (
         <div
@@ -18833,7 +16765,7 @@ export default function App() {
             onMarkMessagesRead={markInboxMessagesRead}
             inboxPendingItems={inboxPendingItems}
             pendingCalendarInvites={pendingCalendarInvites}
-            onCalendarInviteRsvp={handleCalendarInviteRsvp}
+            onCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
             onDismissCalendarInvite={dismissCalendarInvite}
             formatCalendarInviteWhen={formatCalendarInviteWhen}
             onDmUnreadCountChange={setDmUnreadCount}

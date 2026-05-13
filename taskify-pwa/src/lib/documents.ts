@@ -3,36 +3,14 @@ import readXlsxFile from "read-excel-file/browser";
 import MarkdownIt from "markdown-it";
 import * as mammoth from "mammoth/mammoth.browser";
 import * as XLSX from "xlsx";
+import type {
+  TaskDocument,
+  TaskDocumentFull,
+  TaskDocumentKind,
+  TaskDocumentPreview,
+} from "taskify-core";
 
-export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx" | "txt" | "md" | "json" | "csv" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp3" | "aac" | "m4a" | "wav" | "mp4" | "mov" | "webm";
-
-export type TaskDocumentPreview =
-  | { type: "image"; data: string }
-  | { type: "html"; data: string }
-  | { type: "text"; data: string };
-
-export type TaskDocumentFull =
-  | { type: "pdf"; data: string }
-  | { type: "html"; data: string }
-  | { type: "text"; data: string }
-  | { type: "image"; data: string }
-  | { type: "audio"; data: string }
-  | { type: "video"; data: string };
-
-export type TaskDocument = {
-  id: string;
-  name: string;
-  mimeType: string;
-  kind: TaskDocumentKind;
-  size?: number;
-  dataUrl: string;
-  createdAt: string;
-  preview?: TaskDocumentPreview;
-  full?: TaskDocumentFull;
-  remoteUrl?: string;
-  encrypted?: boolean;
-  encryptionBoardId?: string;
-};
+export type { TaskDocument, TaskDocumentFull, TaskDocumentKind, TaskDocumentPreview };
 
 const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
   ".pdf": "pdf",

@@ -231,7 +231,10 @@ export function taskTimeValue(task: Task): number | null {
 }
 
 export function taskWeekday(task: Task): Weekday | null {
-  return weekdayFromISO(task.dueISO);
+  // Use the task's stored dueTimeZone so a Wed-11pm-Pacific task doesn't
+  // appear on Thursday for a viewer in UTC. The regression test in
+  // tests/weekBoardGroupingRegression.test.ts asserts this exact shape.
+  return weekdayFromISO(task.dueISO, task.dueTimeZone);
 }
 
 export function calendarAnchorFrom(dateStr?: string | null) {

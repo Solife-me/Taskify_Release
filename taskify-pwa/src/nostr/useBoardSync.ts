@@ -37,7 +37,7 @@ export type BoardSyncNostrPool = {
   subscribe: (
     relays: string[],
     filters: Array<Record<string, unknown>>,
-    onEvent: (ev: BoardSyncNostrEvent, from: string) => void,
+    onEvent: (ev: BoardSyncNostrEvent, from?: string) => void,
     onEose?: (from?: string) => void,
   ) => () => void;
 };
