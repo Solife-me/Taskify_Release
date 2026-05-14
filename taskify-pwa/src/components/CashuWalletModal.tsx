@@ -134,8 +134,11 @@ import {
 import { useWalletHistory } from "../hooks/wallet/useWalletHistory";
 import { usePendingTokenHistorySync } from "../hooks/wallet/usePendingTokenHistorySync";
 import { useMintBackup } from "../hooks/wallet/useMintBackup";
+import { useMintSelection } from "../hooks/wallet/useMintSelection";
+import { useNwcManager } from "../hooks/wallet/useNwcManager";
 import { useWalletMediaQuery } from "../hooks/wallet/useWalletMediaQuery";
 import { SATS_PER_BTC, useWalletPrice } from "../hooks/wallet/useWalletPrice";
+import { useWalletSwapFlow } from "../hooks/wallet/useWalletSwapFlow";
 import {
   AnimatedEllipsis,
   BackIcon,
@@ -2155,7 +2158,6 @@ export default function CashuWalletModal({
   const [mintStatus, setMintStatus] = useState<"idle" | "waiting" | "minted" | "error">("idle");
   const [mintError, setMintError] = useState("");
   const [creatingMintInvoice, setCreatingMintInvoice] = useState(false);
-  const [mintInfoByUrl, setMintInfoByUrl] = useState<Record<string, { name?: string; unit?: string }>>({});
   const [lightningAddressCopied, setLightningAddressCopied] = useState(false);
 
   useEffect(() => {
@@ -3184,10 +3186,31 @@ export default function CashuWalletModal({
   const [paymentRequestStatus, setPaymentRequestStatus] = useState<"idle" | "sending" | "done" | "error">("idle");
   const [paymentRequestMessage, setPaymentRequestMessage] = useState("");
 
-  const [showNwcManager, setShowNwcManager] = useState(false);
-  const [nwcUrlInput, setNwcUrlInput] = useState("");
-  const [nwcBusy, setNwcBusy] = useState(false);
-  const [nwcFeedback, setNwcFeedback] = useState("");
+  const {
+    showNwcManager,
+    openNwcManager,
+    closeNwcManager,
+    nwcUrlInput,
+    setNwcUrlInput,
+    nwcBusy,
+    nwcFeedback,
+    hasNwcConnection,
+    nwcAlias,
+    nwcBalanceSats,
+    nwcStatusLabel,
+    handleNwcConnect,
+    handleNwcTest,
+    handleNwcDisconnect,
+  } = useNwcManager({
+    connectNwc,
+    disconnectNwc,
+    getNwcBalanceMsat,
+    nwcConnection,
+    nwcInfo,
+    nwcStatus,
+    open,
+    refreshNwcInfo,
+  });
 
   const [swapAmount, setSwapAmount] = useState("");
   const [swapFromValue, setSwapFromValue] = useState<string>("");
@@ -3889,7 +3912,6 @@ export default function CashuWalletModal({
   const proofSubscriptionCooldownRef = useRef<Map<string, number>>(new Map());
   const mintQuoteSubscriptionCooldownRef = useRef<Map<string, number>>(new Map());
   const unsupportedMintQuoteSubscriptionMintsRef = useRef<Set<string>>(new Set());
-  const pendingMintInfoRef = useRef<Set<string>>(new Set());
   const previousReceiveModeRef = useRef<typeof receiveMode>(receiveMode);
 
   useEffect(() => {
@@ -4242,7 +4264,6 @@ export default function CashuWalletModal({
     if (lnurlPayData.lnurl.trim().toLowerCase() !== normalizedLnInput.toLowerCase()) return true;
     return lnurlPayData.minSendable !== lnurlPayData.maxSendable;
   }, [isLnurlInput, lnurlPayData, normalizedLnInput]);
-  const hasNwcConnection = !!nwcConnection;
   const messageItemsByEventId = useMemo(() => {
     const map = new Map<string, WalletMessageItem>();
     messageItems.forEach((item) => {
@@ -6081,47 +6102,6 @@ export default function CashuWalletModal({
       </div>
     );
   };
-  const nwcAlias = nwcInfo?.alias || nwcConnection?.walletName || "";
-  const nwcBalanceSats = typeof nwcInfo?.balanceMsat === "number" ? Math.floor(nwcInfo.balanceMsat / 1000) : null;
-  const nwcStatusLabel = useMemo(() => {
-    if (!hasNwcConnection) return "Not connected";
-    switch (nwcStatus) {
-      case "connecting":
-        return "Connecting…";
-      case "error":
-        return "Error";
-      default:
-        return "Connected";
-    }
-  }, [hasNwcConnection, nwcStatus]);
-  const nwcFundStatusText = useMemo(() => {
-    switch (nwcFundState) {
-      case "creating":
-        return "Creating invoice…";
-      case "paying":
-        return "Paying via NWC…";
-      case "waiting":
-        return "Waiting on mint…";
-      case "claiming":
-        return "Claiming ecash…";
-      case "done":
-        return "Completed";
-      default:
-        return "";
-    }
-  }, [nwcFundState]);
-  const nwcWithdrawStatusText = useMemo(() => {
-    switch (nwcWithdrawState) {
-      case "requesting":
-        return "Requesting invoice…";
-      case "paying":
-        return "Paying from wallet…";
-      case "done":
-        return "Completed";
-      default:
-        return "";
-    }
-  }, [nwcWithdrawState]);
   const lnurlWithdrawStatusText = useMemo(() => {
     switch (lnurlWithdrawState) {
       case "creating":
@@ -7390,9 +7370,6 @@ export default function CashuWalletModal({
     const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
     return identity ? formatNpub(identity.pubkey) : null;
   }, [formatNpub, profileSharePayload, readNostrIdentity]);
-  const nwcFundInProgress = nwcFundState === "creating" || nwcFundState === "paying" || nwcFundState === "waiting" || nwcFundState === "claiming";
-  const nwcWithdrawInProgress = nwcWithdrawState === "requesting" || nwcWithdrawState === "paying";
-
   const {
     showMintBalances,
     setShowMintBalances,
@@ -7423,7 +7400,7 @@ export default function CashuWalletModal({
   }, []);
 
   const closeNwcSheets = useCallback(() => {
-    setShowNwcManager(false);
+    closeNwcManager();
     setShowNwcSheet(false);
     resetNwcFundState();
     resetNwcWithdrawState();
@@ -7432,9 +7409,7 @@ export default function CashuWalletModal({
     setSwapAmount("");
     setSwapFromValue("");
     setSwapToValue("");
-    setNwcFeedback("");
-    setNwcBusy(false);
-  }, [resetNwcFundState, resetNwcWithdrawState]);
+  }, [closeNwcManager, resetNwcFundState, resetNwcWithdrawState, setShowNwcSheet]);
 
   const resetLnurlWithdrawView = useCallback(() => {
     setLnurlWithdrawState("idle");
@@ -7566,197 +7541,32 @@ export default function CashuWalletModal({
     npubCashLightningAddressEnabled,
   ]);
 
-  const ensureMintInfo = useCallback(
-    async (url: string) => {
-      const normalized = normalizeMintUrl(url);
-      if (!normalized) return;
-      if (mintInfoByUrl[normalized] || pendingMintInfoRef.current.has(normalized)) return;
-      pendingMintInfoRef.current.add(normalized);
-      const fallbackName = formatMintDisplayName(normalized);
-      const targets = ["info", "v1/info", "api/v1/info"].map((segment) => `${normalized}/${segment}`);
-      let resolvedName: string | undefined;
-      let resolvedUnit: string | undefined;
-      try {
-        for (const target of targets) {
-          try {
-            const response = await fetchWithTimeout(target, { headers: { accept: "application/json" } }, 10000);
-            if (!response.ok) {
-              continue;
-            }
-            const data = await response
-              .json()
-              .catch(() => null);
-            if (!data || typeof data !== "object") {
-              continue;
-            }
-            const candidateName = typeof (data as any)?.name === "string" ? (data as any).name.trim() : "";
-            const candidateUnit = typeof (data as any)?.unit === "string" ? (data as any).unit.trim() : undefined;
-            if (candidateName && !resolvedName) {
-              resolvedName = candidateName;
-            }
-            if (candidateUnit && !resolvedUnit) {
-              resolvedUnit = candidateUnit;
-            }
-            if (resolvedName && resolvedUnit) {
-              break;
-            }
-          } catch {
-            continue;
-          }
-        }
-      } finally {
-        setMintInfoByUrl((prev) => ({
-          ...prev,
-          [normalized]: {
-            name: resolvedName || prev[normalized]?.name || fallbackName,
-            unit: resolvedUnit ?? prev[normalized]?.unit,
-          },
-        }));
-        pendingMintInfoRef.current.delete(normalized);
-      }
-    },
-    [mintInfoByUrl],
-  );
-
-  useEffect(() => {
-    if (!mintUrl) return;
-    const normalized = normalizeMintUrl(mintUrl);
-    if (!normalized) return;
-    const derivedName = info?.name?.trim();
-    const derivedUnit = info?.unit;
-    setMintInfoByUrl((prev) => {
-      const existing = prev[normalized];
-      const nextName = derivedName || existing?.name || formatMintDisplayName(normalized);
-      const nextUnit = derivedUnit ?? existing?.unit;
-      if (existing && existing.name === nextName && existing.unit === nextUnit) {
-        return prev;
-      }
-      return {
-        ...prev,
-        [normalized]: {
-          name: nextName,
-          unit: nextUnit,
-        },
-      };
-    });
-  }, [mintUrl, info?.name, info?.unit]);
-
-  const mintEntriesByNormalized = useMemo(() => {
-    const map = new Map<string, { url: string; balance: number; count: number }>();
-    mintEntries.forEach((entry) => {
-      const normalized = normalizeMintUrl(entry.url);
-      if (!normalized) return;
-      map.set(normalized, entry);
-    });
-    return map;
-  }, [mintEntries]);
-
-  const mintSelectionOptions = useMemo(() => {
-    const options: { url: string; normalized: string; balance: number; isActive: boolean }[] = [];
-    const seen = new Set<string>();
-    const normalizedActive = mintUrl ? normalizeMintUrl(mintUrl) : null;
-
-    if (normalizedActive) {
-      const activeEntry = mintEntriesByNormalized.get(normalizedActive);
-      options.push({
-        url: activeEntry?.url ?? mintUrl!,
-        normalized: normalizedActive,
-        balance: activeEntry?.balance ?? 0,
-        isActive: true,
-      });
-      seen.add(normalizedActive);
-    }
-
-    for (const entry of mintEntries) {
-      const normalized = normalizeMintUrl(entry.url);
-      if (!normalized || seen.has(normalized)) continue;
-      options.push({ url: entry.url, normalized, balance: entry.balance, isActive: false });
-      seen.add(normalized);
-    }
-
-    return options;
-  }, [mintEntries, mintEntriesByNormalized, mintUrl]);
-
-  const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
-
-  const swapOptionList = useMemo(() => {
-    const options = mintSelectionOptions.map((option) => ({ value: option.normalized, type: "mint" as const }));
-    if (hasNwcConnection) {
-      options.push({ value: "nwc", type: "nwc" as const });
-    }
-    return options;
-  }, [hasNwcConnection, mintSelectionOptions]);
-
-  const getSwapOptionMeta = useCallback(
-    (value: string) => {
-      if (!value) {
-        return { label: "No selection", balanceLabel: "Choose a mint or wallet" };
-      }
-      if (value === "nwc") {
-        if (!hasNwcConnection) {
-          return { label: "NWC wallet", balanceLabel: "Not connected" };
-        }
-        const alias = nwcAlias?.trim();
-        const label = alias || "NWC wallet";
-        const balanceLabel =
-          nwcBalanceSats != null
-            ? `${satFormatter.format(nwcBalanceSats)} sat available`
-            : "Balance unknown";
-        return { label, balanceLabel };
-      }
-      const entry = mintEntriesByNormalized.get(value);
-      const info = mintInfoByUrl[value];
-      const fallbackName = entry ? formatMintDisplayName(entry.url) : formatMintDisplayName(value);
-      const label = info?.name || fallbackName;
-      const balance = entry?.balance ?? 0;
-      return { label, balanceLabel: `${satFormatter.format(balance)} sat available` };
-    },
-    [hasNwcConnection, mintEntriesByNormalized, mintInfoByUrl, nwcAlias, nwcBalanceSats, satFormatter],
-  );
-
-  useEffect(() => {
-    if (!showNwcSheet) return;
-    refreshMintEntries();
-  }, [refreshMintEntries, showNwcSheet]);
-
-  useEffect(() => {
-    if (!showNwcSheet) return;
-    setSwapFromValue((current) => (current ? "" : current));
-    setSwapToValue((current) => (current ? "" : current));
-  }, [showNwcSheet]);
-
-  useEffect(() => {
-    if (!showNwcSheet) return;
-    const mintedValues = mintSelectionOptions.map((option) => option.normalized);
-    const availableOptions = hasNwcConnection ? ["nwc", ...mintedValues] : [...mintedValues];
-    let fromCandidate = swapFromValue;
-    if (fromCandidate === "nwc" && !hasNwcConnection) {
-      fromCandidate = "";
-    } else if (fromCandidate && !availableOptions.includes(fromCandidate)) {
-      fromCandidate = "";
-    }
-    let toCandidate = swapToValue;
-    if (toCandidate === "nwc" && !hasNwcConnection) {
-      toCandidate = "";
-    } else if (toCandidate && !availableOptions.includes(toCandidate)) {
-      toCandidate = "";
-    }
-    if (fromCandidate && fromCandidate === toCandidate) {
-      toCandidate = "";
-    }
-    if (fromCandidate !== swapFromValue) {
-      setSwapFromValue(fromCandidate);
-    }
-    if (toCandidate !== swapToValue) {
-      setSwapToValue(toCandidate);
-    }
-  }, [
-    hasNwcConnection,
+  const {
+    mintInfoByUrl,
+    mintEntriesByNormalized,
     mintSelectionOptions,
+    swapOptionList,
+    getSwapOptionMeta,
+    selectedMintValue,
+    selectedMintLabel,
+    selectedMintBalanceLabel,
+  } = useMintSelection({
+    activeMintInfo: info,
+    hasNwcConnection,
+    mintEntries,
+    mintUrl,
+    nwcAlias,
+    nwcBalanceSats,
+    preloadMintInfo: lightningReceiveView === "amount",
+    refreshMintEntries,
+    setSwapFromValue,
+    setSwapToValue,
     showNwcSheet,
     swapFromValue,
     swapToValue,
-  ]);
+  });
+
+  const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
 
   const handleRemoveMintEntry = useCallback(
     (url: string) => {
@@ -8457,10 +8267,6 @@ export default function CashuWalletModal({
       setShowSendOptions(false);
       setReceiveMode(null);
       setSendMode(null);
-      setShowNwcManager(false);
-      setNwcUrlInput(nwcConnection?.uri || "");
-      setNwcBusy(false);
-      setNwcFeedback("");
 
       setNwcFundState("idle");
       setNwcFundMessage("");
@@ -8484,7 +8290,7 @@ export default function CashuWalletModal({
       setShowNwcSheet(false);
       setLightningSendView("input");
     }
-  }, [open, nwcConnection, resetSendLockSettings, setLnInput]);
+  }, [open, resetSendLockSettings, setLnInput]);
 
   useEffect(() => {
     if (!pendingPrimaryP2pkKeyId) return;
@@ -8516,12 +8322,6 @@ export default function CashuWalletModal({
     setMintInputSheet(mintUrl || "");
     refreshMintEntries();
   }, [showMintBalances, mintUrl, refreshMintEntries]);
-
-  useEffect(() => {
-    if (!showNwcManager) return;
-    setNwcUrlInput(nwcConnection?.uri || "");
-    setNwcFeedback("");
-  }, [showNwcManager, nwcConnection]);
 
   const usdFormatterLarge = useMemo(() => new Intl.NumberFormat(undefined, {
     style: "currency",
@@ -8870,32 +8670,6 @@ export default function CashuWalletModal({
   const canCreateMintInvoice = useMemo(
     () => parsedMintAmount.sats > 0 && !parsedMintAmount.error && !!mintUrl,
     [parsedMintAmount, mintUrl],
-  );
-
-  const selectedMintBalance = useMemo(() => {
-    const selected = mintSelectionOptions.find((option) => option.isActive);
-    return selected?.balance ?? 0;
-  }, [mintSelectionOptions]);
-
-  const selectedMintOption = useMemo(
-    () => mintSelectionOptions.find((option) => option.isActive) || null,
-    [mintSelectionOptions],
-  );
-
-  const selectedMintValue = selectedMintOption?.normalized ?? "";
-
-  const selectedMintLabel = useMemo(() => {
-    if (!selectedMintOption) return "Select mint";
-    const info = mintInfoByUrl[selectedMintOption.normalized];
-    return info?.name || formatMintDisplayName(selectedMintOption.url);
-  }, [selectedMintOption, mintInfoByUrl]);
-
-  const selectedMintBalanceLabel = useMemo(
-    () =>
-      selectedMintBalance > 0
-        ? `${satFormatter.format(selectedMintBalance)} sat available`
-        : "No eCash stored yet",
-    [selectedMintBalance, satFormatter],
   );
 
   const parsedLightningSendAmount = useMemo(
@@ -9475,151 +9249,56 @@ export default function CashuWalletModal({
     [primaryCurrency],
   );
 
-  const handleSwapAmountKeypadInput = useCallback(
-    (key: string) => {
-      setSwapAmount((prev) => {
-        const current = prev || "";
-        if (key === "backspace") {
-          return current.slice(0, -1);
-        }
-        if (key === "clear") {
-          return "";
-        }
-        if (key === "decimal") {
-          if (primaryCurrency !== "usd") return current;
-          if (current.includes(".")) return current;
-          return current ? `${current}.` : "0.";
-        }
-        if (/^\d$/.test(key)) {
-          if (primaryCurrency === "usd") {
-            let next = current === "0" && !current.includes(".") ? key : `${current}${key}`;
-            if (current === "" && key === "0") {
-              return "0";
-            }
-            if (!current.includes(".") && /^0\d/.test(next)) {
-              next = String(Number(next));
-            }
-            const decimalPart = next.split(".")[1];
-            if (decimalPart && decimalPart.length > 2) {
-              return current;
-            }
-            return next;
-          }
-          const combined = `${current}${key}`;
-          const normalized = combined.replace(/^0+(?=\d)/, "");
-          return normalized || "0";
-        }
-        return current;
-      });
-      if (mintSwapState === "error") {
-        setMintSwapState("idle");
-        setMintSwapMessage("");
-      }
-      if (nwcFundState === "error") {
-        setNwcFundMessage("");
-      }
-      if (nwcWithdrawState === "error") {
-        setNwcWithdrawMessage("");
-      }
-    },
-    [mintSwapState, nwcFundState, nwcWithdrawState, primaryCurrency],
-  );
-
-  useEffect(() => {
-    if (lightningReceiveView !== "amount") return;
-    mintSelectionOptions.forEach((option) => {
-      void ensureMintInfo(option.url);
-    });
-  }, [lightningReceiveView, mintSelectionOptions, ensureMintInfo]);
-
-  const swapFromIsNwc = swapFromValue === "nwc";
-  const swapToIsNwc = swapToValue === "nwc";
-
-  const swapScenario = useMemo<"mint-to-mint" | "mint-to-nwc" | "nwc-to-mint" | null>(() => {
-    if (!swapFromValue || !swapToValue) return null;
-    if (swapFromValue === swapToValue) return null;
-    if (swapFromIsNwc && swapToIsNwc) return null;
-    if (swapFromIsNwc) return "nwc-to-mint";
-    if (swapToIsNwc) return "mint-to-nwc";
-    return "mint-to-mint";
-  }, [swapFromIsNwc, swapFromValue, swapToIsNwc, swapToValue]);
-
-  const parsedSwapAmount = useMemo(() => parseAmountInput(swapAmount), [parseAmountInput, swapAmount]);
-
-  const swapPrimaryAmountText = useMemo(() => {
-    const trimmed = swapAmount.trim();
-    if (primaryCurrency === "usd") {
-      return `$${trimmed || "0.00"}`;
-    }
-    return `${trimmed || "0"} sat`;
-  }, [swapAmount, primaryCurrency]);
-
-  const swapSecondaryAmountText = useMemo(() => {
-    if (parsedSwapAmount.error || parsedSwapAmount.sats <= 0) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedSwapAmount.sats)} sat`;
-    }
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    const usdValue = (parsedSwapAmount.sats / SATS_PER_BTC) * btcUsdPrice;
-    return `≈ ${formatUsdAmount(usdValue)}`;
-  }, [
+  const {
+    canSubmitSwap,
+    handleSwapAmountKeypadInput,
+    handleSwapSubmit,
+    mintSwapStatusText,
+    nwcFundInProgress,
+    nwcFundStatusText,
+    nwcWithdrawInProgress,
+    nwcWithdrawStatusText,
+    swapInProgress,
+    swapPrimaryAmountText,
+    swapScenario,
+    swapSecondaryAmountText,
+  } = useWalletSwapFlow({
     amountInputUnitLabel,
     btcUsdPrice,
+    buildHistoryEntry,
+    checkMintQuote,
+    claimMint,
+    closeNwcSheets,
+    createMintInvoice,
     formatUsdAmount,
-    parsedSwapAmount,
-    primaryCurrency,
-    satFormatter,
-    walletConversionEnabled,
-  ]);
-
-  const mintSwapInProgress =
-    mintSwapState === "creating" || mintSwapState === "paying" || mintSwapState === "waiting" || mintSwapState === "claiming";
-
-  const swapInProgress = useMemo(() => {
-    if (swapScenario === "mint-to-mint") return mintSwapInProgress;
-    if (swapScenario === "nwc-to-mint") return nwcFundInProgress;
-    if (swapScenario === "mint-to-nwc") return nwcWithdrawInProgress;
-    return false;
-  }, [mintSwapInProgress, nwcFundInProgress, nwcWithdrawInProgress, swapScenario]);
-
-  const canSubmitSwap = useMemo(() => {
-    if (!swapScenario) return false;
-    if (parsedSwapAmount.error || parsedSwapAmount.sats <= 0) return false;
-    if (swapScenario === "mint-to-mint") {
-      return mintEntriesByNormalized.has(swapFromValue) && mintEntriesByNormalized.has(swapToValue);
-    }
-    if (!hasNwcConnection) return false;
-    const mintValue = swapScenario === "mint-to-nwc" ? swapFromValue : swapToValue;
-    return !!mintValue && mintEntriesByNormalized.has(mintValue);
-  }, [
+    getNwcBalanceMsat,
+    getSwapOptionMeta,
     hasNwcConnection,
+    makeNwcInvoice,
     mintEntriesByNormalized,
-    parsedSwapAmount,
+    mintSwapState,
+    parseAmountInput,
+    payMintInvoice,
+    payWithNwc,
+    primaryCurrency,
+    setHistory,
+    setMintSwapMessage,
+    setMintSwapState,
+    setNwcFundInvoice,
+    setNwcFundMessage,
+    setNwcFundState,
+    setNwcWithdrawInvoice,
+    setNwcWithdrawMessage,
+    setNwcWithdrawState,
+    setSwapAmount,
+    showToast,
+    swapAmount,
     swapFromValue,
-    swapScenario,
     swapToValue,
-  ]);
-
-  const mintSwapStatusText = useMemo(() => {
-    switch (mintSwapState) {
-      case "creating":
-        return "Creating invoice…";
-      case "paying":
-        return "Paying invoice…";
-      case "waiting":
-        return "Waiting for mint…";
-      case "claiming":
-        return "Claiming eCash…";
-      case "done":
-        return "Swap complete";
-      default:
-        return "";
-    }
-  }, [mintSwapState]);
+    walletConversionEnabled,
+    nwcFundState,
+    nwcWithdrawState,
+  });
 
   const claimingEventSet = useMemo(() => new Set(claimingEventIds), [claimingEventIds]);
 
@@ -13282,103 +12961,6 @@ export default function CashuWalletModal({
     }
   }
 
-  async function handleNwcConnect() {
-    const url = nwcUrlInput.trim();
-    if (!url) {
-      setNwcFeedback("Enter NWC connection URL");
-      return;
-    }
-    setNwcBusy(true);
-    setNwcFeedback("");
-    try {
-      await connectNwc(url);
-      await refreshNwcInfo().catch(() => null);
-      await getNwcBalanceMsat().catch(() => null);
-      setNwcFeedback("NWC wallet connected");
-    } catch (e: any) {
-      setNwcFeedback(e?.message || String(e));
-    } finally {
-      setNwcBusy(false);
-    }
-  }
-
-  async function handleNwcTest() {
-    setNwcBusy(true);
-    setNwcFeedback("");
-    try {
-      const latest = await refreshNwcInfo().catch(() => null);
-      const balanceMsat = await getNwcBalanceMsat().catch(() => latest?.balanceMsat ?? null);
-      if (typeof balanceMsat === "number") {
-        setNwcFeedback(`Balance: ${Math.floor(balanceMsat / 1000)} sats`);
-      } else {
-        setNwcFeedback("Connection OK");
-      }
-    } catch (e: any) {
-      setNwcFeedback(e?.message || String(e));
-    } finally {
-      setNwcBusy(false);
-    }
-  }
-
-  function handleNwcDisconnect() {
-    disconnectNwc();
-    setNwcUrlInput("");
-    setNwcFeedback("Disconnected");
-  }
-
-  async function handleNwcFund(amount: number, targetMintNormalized: string) {
-    setNwcFundMessage("");
-    try {
-      if (!hasNwcConnection) throw new Error("Connect an NWC wallet first");
-      if (!targetMintNormalized) throw new Error("Select a receiving mint");
-      const targetMintEntry = mintEntriesByNormalized.get(targetMintNormalized);
-      const targetMintUrl = targetMintEntry?.url ?? targetMintNormalized;
-      setNwcFundState("creating");
-      const quote = await createMintInvoice(amount, `Taskify via NWC (${amount} sat)`, { mintUrl: targetMintUrl });
-      setNwcFundInvoice(quote.request);
-      setNwcFundState("paying");
-      await payWithNwc(quote.request);
-      setNwcFundState("waiting");
-      const deadline = Date.now() + 120000;
-      while (Date.now() < deadline) {
-        const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "ISSUED") {
-          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
-        }
-        if (state === "PAID") {
-          setNwcFundState("claiming");
-          await claimMint(quote.quote, amount, { mintUrl: quote.mintUrl });
-          setNwcFundState("done");
-          setNwcFundMessage("");
-          setHistory((h) => [
-            buildHistoryEntry({
-              id: `nwc-fund-${Date.now()}`,
-              summary: `Funded ${amount} sats via NWC`,
-              detail: quote.request,
-              detailKind: "invoice",
-              type: "lightning",
-              direction: "in",
-              amountSat: amount,
-              mintUrl: quote.mintUrl ?? targetMintUrl ?? undefined,
-              stateLabel: "Paid",
-            }),
-            ...h,
-          ]);
-          setNwcFundInvoice("");
-          await getNwcBalanceMsat().catch(() => null);
-          showToast(`received ${amount} sats`, 3500);
-          closeNwcSheets();
-          return;
-        }
-        await sleep(2500);
-      }
-      throw new Error("Mint invoice not paid yet. Try again in a moment.");
-    } catch (e: any) {
-      setNwcFundState("error");
-      setNwcFundMessage(e?.message || String(e));
-    }
-  }
-
   async function handleLnurlWithdrawConfirm() {
     if (!lnurlWithdrawInfo) {
       setLnurlWithdrawMessage("Scan an LNURL withdraw code first");
@@ -13457,166 +13039,6 @@ export default function CashuWalletModal({
       setLnurlWithdrawState("error");
       setLnurlWithdrawMessage(err?.message || String(err));
     }
-  }
-
-  async function handleNwcWithdraw(amount: number, sourceMintNormalized: string) {
-    setNwcWithdrawMessage("");
-    try {
-      if (!hasNwcConnection) throw new Error("Connect an NWC wallet first");
-      if (!sourceMintNormalized) throw new Error("Select a sending mint");
-      const sourceMintEntry = mintEntriesByNormalized.get(sourceMintNormalized);
-      const sourceMintUrl = sourceMintEntry?.url ?? sourceMintNormalized;
-      setNwcWithdrawState("requesting");
-      const msat = amount * 1000;
-      const invoiceRes = await makeNwcInvoice(msat, `Taskify withdrawal ${amount} sat`);
-      setNwcWithdrawInvoice(invoiceRes.invoice);
-      setNwcWithdrawState("paying");
-      const paymentResult = await payMintInvoice(invoiceRes.invoice, { mintUrl: sourceMintUrl });
-      setHistory((h) => [
-        buildHistoryEntry({
-          id: `nwc-withdraw-${Date.now()}`,
-          summary: `Withdrew ${amount} sats via NWC`,
-          detail: invoiceRes.invoice,
-          detailKind: "invoice",
-          type: "lightning",
-          direction: "out",
-          amountSat: amount,
-          feeSat: paymentResult?.feeReserveSat ?? undefined,
-          mintUrl: paymentResult?.mintUrl ?? sourceMintUrl ?? undefined,
-          stateLabel: paymentResult?.state || "Paid",
-        }),
-        ...h,
-      ]);
-      setNwcWithdrawState("done");
-      setNwcWithdrawMessage("");
-      await getNwcBalanceMsat().catch(() => null);
-      showToast(`sent ${amount} sats`, 3500);
-      closeNwcSheets();
-    } catch (e: any) {
-      setNwcWithdrawState("error");
-      setNwcWithdrawMessage(e?.message || String(e));
-    }
-  }
-
-  async function handleMintSwap(amount: number, fromNormalized: string, toNormalized: string) {
-    setMintSwapMessage("");
-    try {
-      if (!fromNormalized || !toNormalized) throw new Error("Select mints for the swap");
-      const fromEntry = mintEntriesByNormalized.get(fromNormalized);
-      const toEntry = mintEntriesByNormalized.get(toNormalized);
-      const fromUrl = fromEntry?.url ?? fromNormalized;
-      const toUrl = toEntry?.url ?? toNormalized;
-      setMintSwapState("creating");
-      const quote = await createMintInvoice(amount, `Taskify swap ${amount} sat`, { mintUrl: toUrl });
-      setMintSwapState("paying");
-      const paymentResult = await payMintInvoice(quote.request, { mintUrl: fromUrl });
-      setMintSwapState("waiting");
-      const deadline = Date.now() + 120000;
-      while (Date.now() < deadline) {
-        const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "ISSUED") {
-          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
-        }
-        if (state === "PAID") {
-          setMintSwapState("claiming");
-          await claimMint(quote.quote, amount, { mintUrl: quote.mintUrl });
-          setMintSwapState("done");
-          const fromMeta = getSwapOptionMeta(fromNormalized);
-          const toMeta = getSwapOptionMeta(toNormalized);
-          const timestamp = Date.now();
-          setHistory((h) => [
-            buildHistoryEntry({
-              id: `swap-out-${timestamp}`,
-              summary: `Swapped ${amount} sats from ${fromMeta.label} to ${toMeta.label}`,
-              detail: quote.request,
-              detailKind: "invoice",
-              type: "lightning",
-              direction: "out",
-              amountSat: amount,
-              feeSat: paymentResult?.feeReserveSat ?? undefined,
-              mintUrl: paymentResult?.mintUrl ?? fromUrl ?? undefined,
-              stateLabel: paymentResult?.state || "Paid",
-            }),
-            buildHistoryEntry({
-              id: `swap-in-${timestamp + 1}`,
-              summary: `Received ${amount} sats on ${toMeta.label}`,
-              detail: quote.request,
-              detailKind: "invoice",
-              type: "lightning",
-              direction: "in",
-              amountSat: amount,
-              mintUrl: quote.mintUrl ?? toUrl ?? undefined,
-              stateLabel: "Paid",
-            }),
-            ...h,
-          ]);
-          showToast(`swapped ${amount} sats`, 3500);
-          closeNwcSheets();
-          return;
-        }
-        await sleep(2500);
-      }
-      throw new Error("Swap still pending. Try again shortly.");
-    } catch (error: any) {
-      setMintSwapState("error");
-      setMintSwapMessage(error?.message || String(error));
-    }
-  }
-
-  async function handleSwapSubmit() {
-    const scenario = swapScenario;
-    if (!scenario) {
-      const message = "Select swap options";
-      setMintSwapState("error");
-      setMintSwapMessage(message);
-      if (swapFromValue === "nwc") {
-        setNwcFundState("error");
-        setNwcFundMessage(message);
-      }
-      if (swapToValue === "nwc") {
-        setNwcWithdrawState("error");
-        setNwcWithdrawMessage(message);
-      }
-      return;
-    }
-    const { sats: amount, error } = parseAmountInput(swapAmount);
-    if (error) {
-      if (scenario === "mint-to-mint") {
-        setMintSwapState("error");
-        setMintSwapMessage(error);
-      } else if (scenario === "nwc-to-mint") {
-        setNwcFundState("error");
-        setNwcFundMessage(error);
-      } else if (scenario === "mint-to-nwc") {
-        setNwcWithdrawState("error");
-        setNwcWithdrawMessage(error);
-      }
-      return;
-    }
-    if (!amount) {
-      const message = `Enter amount in ${amountInputUnitLabel}`;
-      if (scenario === "mint-to-mint") {
-        setMintSwapState("error");
-        setMintSwapMessage(message);
-      } else if (scenario === "nwc-to-mint") {
-        setNwcFundState("error");
-        setNwcFundMessage(message);
-      } else if (scenario === "mint-to-nwc") {
-        setNwcWithdrawState("error");
-        setNwcWithdrawMessage(message);
-      }
-      return;
-    }
-
-    if (scenario === "nwc-to-mint") {
-      await handleNwcFund(amount, swapToValue);
-      return;
-    }
-    if (scenario === "mint-to-nwc") {
-      await handleNwcWithdraw(amount, swapFromValue);
-      return;
-    }
-    await handleMintSwap(amount, swapFromValue, swapToValue);
   }
 
   async function handleFulfillPaymentRequest() {
@@ -21852,7 +21274,7 @@ export default function CashuWalletModal({
         onClose={closeNwcSheets}
         title="Swap"
         actions={(
-          <button className="ghost-button button-sm pressable" onClick={()=>setShowNwcManager(true)}>
+          <button className="ghost-button button-sm pressable" onClick={openNwcManager}>
             {hasNwcConnection ? "Manage NWC" : "Connect NWC"}
           </button>
         )}
@@ -22020,11 +21442,7 @@ export default function CashuWalletModal({
 
       <ActionSheet
         open={showNwcManager}
-        onClose={() => {
-          setShowNwcManager(false);
-          setNwcFeedback("");
-          setNwcBusy(false);
-        }}
+        onClose={closeNwcManager}
         title="Manage NWC"
       >
         <div className="space-y-4 text-sm">
