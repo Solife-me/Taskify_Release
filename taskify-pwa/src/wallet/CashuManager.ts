@@ -586,6 +586,104 @@ export class CashuManager {
     }
   }
 
+  // ------------------------------------------------------------------
+  // Auto-recovery for "outputs have already been signed before"
+  // ------------------------------------------------------------------
+  // The mint rejects swap/mint/melt requests whose blinded outputs (B')
+  // it has already signed in the past. Under NUT-13 deterministic
+  // secrets that happens when our local counter is behind the mint's
+  // view of what we previously consumed — e.g. because a previous
+  // operation reached the mint but the response was lost before
+  // `countersReserved` could persist the advanced cursor, or because
+  // a wallet was restored from a stale backup. Cashu.me's reference
+  // implementation handles this by force-bumping the keyset counter
+  // and asking the user to try again; we do the same here, but apply
+  // the bump inline and retry the original operation once so the
+  // failure is invisible to the caller in the common case.
+  private static readonly OUTPUTS_ALREADY_SIGNED_COUNTER_BUMP = 10;
+
+  // Exposed for unit-testing — keep public surface minimal but allow specs
+  // to verify that mint error responses (HTTP detail, NUT-12 envelope,
+  // bare string) are all recognised.
+  static isOutputsAlreadySignedError(error: unknown): boolean {
+    const message = CashuManager.toErrorMessage(error);
+    if (!message) return false;
+    return (
+      message.includes("outputs have already been signed") ||
+      message.includes("outputs already signed")
+    );
+  }
+
+  private resolveActiveKeysetId(): string | null {
+    if (!this.wallet) return null;
+    try {
+      const keysetId = (this.wallet as any).keysetId;
+      return typeof keysetId === "string" && keysetId ? keysetId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readWalletCounterFor(keysetId: string): Promise<number> {
+    if (!this.wallet) return 0;
+    const counters = (this.wallet as any).counters;
+    try {
+      const next = await counters?.peekNext?.(keysetId);
+      if (typeof next === "number" && Number.isFinite(next)) {
+        return Math.max(0, Math.floor(next));
+      }
+    } catch {
+      // counter source may not support peekNext — fall back to local persistence
+    }
+    const persisted = getWalletCounterInit(this.mintUrl)?.[keysetId];
+    if (typeof persisted === "number" && Number.isFinite(persisted)) {
+      return Math.max(0, Math.floor(persisted));
+    }
+    return 0;
+  }
+
+  private async advanceCounterPastSignedOutputs(): Promise<void> {
+    if (!this.wallet) return;
+    const keysetId = this.resolveActiveKeysetId();
+    if (!keysetId) return;
+    const current = await this.readWalletCounterFor(keysetId);
+    const target = current + CashuManager.OUTPUTS_ALREADY_SIGNED_COUNTER_BUMP;
+    try {
+      const counters = (this.wallet as any).counters;
+      if (typeof counters?.advanceToAtLeast === "function") {
+        await counters.advanceToAtLeast(keysetId, target);
+      }
+    } catch (error) {
+      console.warn(
+        "CashuManager: failed to advance wallet counter in-memory after 'outputs already signed'",
+        error,
+      );
+    }
+    try {
+      persistWalletCounter(this.mintUrl, keysetId, target);
+    } catch (error) {
+      console.warn(
+        "CashuManager: failed to persist advanced counter after 'outputs already signed'",
+        error,
+      );
+    }
+  }
+
+  private async withCounterRecoveryRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!CashuManager.isOutputsAlreadySignedError(error)) {
+        throw error;
+      }
+      console.warn(
+        "CashuManager: mint reported 'outputs already signed', bumping keyset counter and retrying",
+      );
+      await this.advanceCounterPastSignedOutputs();
+      return operation();
+    }
+  }
+
   async init() {
     const mint = new MintCtor(this.mintUrl);
     const seed = getWalletSeedBytes();
@@ -889,18 +987,20 @@ export class CashuManager {
         throw new Error("Mint invoice is not paid yet");
       }
       const lockedQuote = getLockedMintQuote(this.mintUrl, quoteId);
-      const proofs = await this.withMintRefreshRetry(async () => {
-        const config: Record<string, any> = {
-          proofsWeHave: [...this.proofCache],
-          ...(lockedQuote?.privkey ? { privkey: lockedQuote.privkey } : {}),
-        };
-        const quoteArg = lockedQuote?.quote ?? quoteId;
-        const walletAny = this.wallet as any;
-        if (typeof walletAny.mintProofsBolt11 === "function") {
-          return walletAny.mintProofsBolt11(amount, quoteArg, config);
-        }
-        return (this.wallet as any).mintProofs(amount, quoteArg, config);
-      });
+      const proofs = await this.withMintRefreshRetry(async () =>
+        this.withCounterRecoveryRetry(async () => {
+          const config: Record<string, any> = {
+            proofsWeHave: [...this.proofCache],
+            ...(lockedQuote?.privkey ? { privkey: lockedQuote.privkey } : {}),
+          };
+          const quoteArg = lockedQuote?.quote ?? quoteId;
+          const walletAny = this.wallet as any;
+          if (typeof walletAny.mintProofsBolt11 === "function") {
+            return walletAny.mintProofsBolt11(amount, quoteArg, config);
+          }
+          return (this.wallet as any).mintProofs(amount, quoteArg, config);
+        }),
+      );
       const signed = this.autoSignProofs(proofs);
       this.validateDleqProofs(signed);
       this.mergeProofs(signed);
@@ -913,15 +1013,17 @@ export class CashuManager {
     return this.withMutation(async () => {
       const privkeyMap = this.resolvePrivkeysForToken(encoded);
       const privkeyValues = [...privkeyMap.values()].map((entry) => entry.privkey);
-      const newProofs = await this.withMintRefreshRetry(async () => {
-        const receiveConfig: Record<string, any> = { proofsWeHave: [...this.proofCache] };
-        if (privkeyValues.length === 1) {
-          receiveConfig.privkey = privkeyValues[0];
-        } else if (privkeyValues.length > 1) {
-          receiveConfig.privkey = privkeyValues;
-        }
-        return this.wallet.receive(encoded, receiveConfig);
-      });
+      const newProofs = await this.withMintRefreshRetry(async () =>
+        this.withCounterRecoveryRetry(async () => {
+          const receiveConfig: Record<string, any> = { proofsWeHave: [...this.proofCache] };
+          if (privkeyValues.length === 1) {
+            receiveConfig.privkey = privkeyValues[0];
+          } else if (privkeyValues.length > 1) {
+            receiveConfig.privkey = privkeyValues;
+          }
+          return this.wallet.receive(encoded, receiveConfig);
+        }),
+      );
       const signed = this.autoSignProofs(newProofs);
       this.validateDleqProofs(signed);
       this.mergeProofs(signed);
@@ -994,16 +1096,18 @@ export class CashuManager {
           },
         } satisfies OutputConfig;
       }
-      const { keep, send } = await this.withMintRefreshRetry(async () => {
-        const privkey = this.privkeysForProofs(this.proofCache);
-        const response = await this.wallet.send(
-          amount,
-          [...this.proofCache],
-          { proofsWeHave: [...this.proofCache], ...(privkey ? { privkey } : {}) },
-          outputConfig,
-        );
-        return { keep: response.keep, send: response.send };
-      });
+      const { keep, send } = await this.withMintRefreshRetry(async () =>
+        this.withCounterRecoveryRetry(async () => {
+          const privkey = this.privkeysForProofs(this.proofCache);
+          const response = await this.wallet.send(
+            amount,
+            [...this.proofCache],
+            { proofsWeHave: [...this.proofCache], ...(privkey ? { privkey } : {}) },
+            outputConfig,
+          );
+          return { keep: response.keep, send: response.send };
+        }),
+      );
       this.validateDleqProofs([...keep, ...send]);
       this.persistProofs(this.mergeProofSets(keep));
       const token = getEncodedToken({ mint: this.mintUrl, proofs: send, unit: this.unit });
@@ -1115,16 +1219,18 @@ export class CashuManager {
     const required = this.requiredForQuote(quote);
     if (this.balance < required) throw new Error("Insufficient balance for invoice + fees");
     const quoteId = CashuManager.extractQuoteKey(quote);
-    const { keep, send } = await this.withMintRefreshRetry(async () => {
-      const privkey = this.privkeysForProofs(this.proofCache);
-      const swapped = await this.wallet.send(
-        required,
-        [...this.proofCache],
-        { proofsWeHave: [...this.proofCache], ...(privkey ? { privkey } : {}) },
-      );
-      this.validateDleqProofs([...swapped.keep, ...swapped.send]);
-      return { keep: swapped.keep, send: swapped.send };
-    });
+    const { keep, send } = await this.withMintRefreshRetry(async () =>
+      this.withCounterRecoveryRetry(async () => {
+        const privkey = this.privkeysForProofs(this.proofCache);
+        const swapped = await this.wallet.send(
+          required,
+          [...this.proofCache],
+          { proofsWeHave: [...this.proofCache], ...(privkey ? { privkey } : {}) },
+        );
+        this.validateDleqProofs([...swapped.keep, ...swapped.send]);
+        return { keep: swapped.keep, send: swapped.send };
+      }),
+    );
     const proofsIfMeltUnpaid = this.mergeProofSets(keep, send);
     this.persistProofs(proofsIfMeltUnpaid);
     if (quoteId) {
