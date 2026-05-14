@@ -139,6 +139,17 @@ import { useNwcManager } from "../hooks/wallet/useNwcManager";
 import { useWalletMediaQuery } from "../hooks/wallet/useWalletMediaQuery";
 import { SATS_PER_BTC, useWalletPrice } from "../hooks/wallet/useWalletPrice";
 import { useWalletSwapFlow } from "../hooks/wallet/useWalletSwapFlow";
+import { useLightningFlow, type LnurlPayData } from "../hooks/wallet/useLightningFlow";
+import { useEcashReceiveState } from "../hooks/wallet/useEcashReceiveState";
+import { useEcashSendState } from "../hooks/wallet/useEcashSendState";
+import { usePaymentRequestState } from "../hooks/wallet/usePaymentRequestState";
+import { useDmState, type WalletDmAttachment, type DecryptedNostrDm, type DmReaction, type WalletDmMessage, type WalletDmThread, type PendingDmMessage, type DmThreadListEntry, type DmSyncMeta, MAX_GROUP_MEMBERS, generateGroupId, normalizeDmPeerHex } from "../hooks/wallet/useDmState";
+import { useContactsState, type ContactViewMode, type ContactEditDraft, type Nip05CheckState, type ContactSyncMeta } from "../hooks/wallet/useContactsState";
+import {
+  isSamePaymentRequest,
+  type ActivePaymentRequest,
+  type IncomingPaymentRequest,
+} from "../wallet/paymentRequestTypes";
 import {
   AnimatedEllipsis,
   BackIcon,
@@ -767,16 +778,6 @@ function randomPastTimestampSeconds(maxOffsetSeconds = 2 * 24 * 60 * 60): number
   return Math.max(0, now - offset);
 }
 
-type LnurlPayData = {
-  lnurl: string;
-  callback: string;
-  domain: string;
-  minSendable: number;
-  maxSendable: number;
-  commentAllowed: number;
-  metadata?: string;
-};
-
 type LnurlWithdrawData = {
   lnurl: string;
   callback: string;
@@ -787,215 +788,6 @@ type LnurlWithdrawData = {
   defaultDescription?: string;
 };
 
-type WalletDmAttachment =
-  | {
-      type: "board";
-      boardName?: string | null;
-      boardId?: string | null;
-      taskId?: string | null;
-      status?: string | null;
-    }
-  | {
-      type: "contact";
-      contactName?: string | null;
-      displayName?: string | null;
-      username?: string | null;
-      npub?: string | null;
-      nip05?: string | null;
-      address?: string | null;
-      picture?: string | null;
-      taskId?: string | null;
-      status?: string | null;
-    }
-  | {
-      type: "task";
-      task?: SharedTaskPayload | null;
-      taskId?: string | null;
-      status?: string | null;
-    }
-  | {
-      type: "event";
-      title?: string | null;
-      start?: string | null;
-      end?: string | null;
-      whenLabel?: string | null;
-      inviteId?: string | null;
-      status?: string | null;
-      canonical?: string | null;
-      view?: string | null;
-    }
-  | { type: "payment"; amountSat?: number | null; detail?: string | null; raw?: string | null }
-  | {
-      type: "file";
-      url: string;
-      mimeType: string;
-      filename?: string | null;
-      size?: number | null;
-      width?: number | null;
-      height?: number | null;
-      algorithm: string;
-      keyHex: string;
-      nonceHex: string;
-      sha256?: string | null;
-    }
-  | { type: "text" };
-
-type DecryptedNostrDm = {
-  content: string;
-  senderPubkey?: string | null;
-  recipientPubkey?: string | null;
-  recipientPubkeys?: string[] | null;
-  createdAt?: number | null;
-  kind?: number | null;
-  tags?: string[][] | null;
-  /** The inner rumor's event ID (NIP-17 canonical message ID for cross-client compat) */
-  rumorId?: string | null;
-};
-
-type DmReaction = {
-  emoji: string;
-  senderPubkey: string;
-  reactEventId: string;
-};
-
-type WalletDmMessage = {
-  id: string;
-  eventId: string;
-  /** The inner NIP-17 rumor event ID — canonical cross-client identifier for reactions/replies */
-  rumorEventId?: string;
-  peerPubkey: string; // for DMs: peer hex; for groups: groupId
-  isIncoming: boolean;
-  createdAt: number;
-  content: string;
-  preview: string;
-  attachment?: WalletDmAttachment;
-  groupId?: string; // set for group messages
-  senderPubkey?: string; // set for group messages — who sent this specific message
-  replyToEventId?: string; // "e" tag from inner kind-14 rumor
-};
-
-type WalletDmThread = {
-  peerPubkey: string; // for DMs: peer hex; for groups: groupId
-  messages: WalletDmMessage[];
-  lastCreatedAt: number;
-  lastPreview: string;
-  isStranger: boolean;
-  groupId?: string; // set for group threads
-};
-
-type PendingDmMessage = {
-  id: string;
-  content: string;
-  peerPubkey: string;
-  createdAt: number;
-  status: "sending" | "sent" | "done" | "failed";
-  // File-attachment pending state (in-flight encrypt + upload + giftwrap)
-  file?: {
-    filename: string;
-    mimeType: string;
-    size: number;
-    previewUrl?: string; // object URL for local preview of in-flight image
-    progress: number; // 0..1
-    phase: "encrypting" | "uploading" | "sending";
-  } | null;
-};
-
-type DmThreadListEntry =
-  | { kind: "thread"; thread: WalletDmThread; lastCreatedAt: number }
-  | { kind: "strangers"; lastCreatedAt: number; lastPreview: string };
-
-type DmSyncMeta = {
-  lastCompletedSyncAt: number;
-};
-
-const MAX_GROUP_MEMBERS = 17;
-
-function generateGroupId(members: string[]): string {
-  const sorted = [...new Set(members.map((m) => m.toLowerCase()))].sort();
-  const data = new TextEncoder().encode(sorted.join(","));
-  const hash = sha256(data);
-  return bytesToHex(hash);
-}
-
-function readGroupChats(): GroupChat[] {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_GROUP_CHATS);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((entry) => normalizeGroupChatRecord(entry)).filter((group): group is GroupChat => !!group);
-  } catch {
-    return [];
-  }
-}
-
-function readStoredStringSet(storageKey: string): Set<string> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      parsed
-        .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
-        .filter(Boolean),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-function readStoredTimestampMap(storageKey: string): Map<string, number> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
-    if (!raw) return new Map();
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      const now = Date.now();
-      return new Map(
-        parsed
-          .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
-          .filter(Boolean)
-          .map((entry) => [entry, now] as const),
-      );
-    }
-    if (!parsed || typeof parsed !== "object") return new Map();
-    return new Map(
-      Object.entries(parsed)
-        .map(([key, value]) => {
-          const normalizedKey = typeof key === "string" ? key.trim().toLowerCase() : "";
-          const normalizedValue =
-            typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-          return normalizedKey && normalizedValue > 0 ? ([normalizedKey, normalizedValue] as const) : null;
-        })
-        .filter(Boolean) as Array<readonly [string, number]>,
-    );
-  } catch {
-    return new Map();
-  }
-}
-
-function readStoredExpiryMap(storageKey: string): Map<string, number> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, storageKey);
-    if (!raw) return new Map();
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Map();
-    const now = Date.now();
-    return new Map(
-      Object.entries(parsed)
-        .map(([key, value]) => {
-          const normalizedKey = typeof key === "string" ? key.trim() : "";
-          const expiresAt =
-            typeof value === "number" && Number.isFinite(value) && value > now ? Math.floor(value) : 0;
-          return normalizedKey && expiresAt > 0 ? ([normalizedKey, expiresAt] as const) : null;
-        })
-        .filter(Boolean) as Array<readonly [string, number]>,
-    );
-  } catch {
-    return new Map();
-  }
-}
 
 function dmThreadKeyForMessage(message: Pick<WalletDmMessage, "peerPubkey" | "groupId"> | null | undefined): string {
   return ((message?.groupId || message?.peerPubkey || "") as string).trim().toLowerCase();
@@ -1028,28 +820,6 @@ type SharedContactPreview = {
   status?: WalletMessageItem["status"] | "dismissed" | null;
 };
 
-type ContactViewMode = "list" | "detail" | "edit";
-
-type ContactEditDraft = {
-  id: string | null;
-  name: string;
-  displayName: string;
-  username: string;
-  address: string;
-  npub: string;
-  nip05: string;
-  about: string;
-  picture: string;
-  isProfile?: boolean;
-};
-
-type Nip05CheckState = {
-  status: "pending" | "valid" | "invalid";
-  nip05: string;
-  npub: string;
-  checkedAt: number;
-  contactUpdatedAt: number | null;
-};
 
 type NostrEvent = {
   id: string;
@@ -1060,40 +830,6 @@ type NostrEvent = {
   content: string;
   sig: string;
 };
-
-type IncomingPaymentRequest = {
-  eventId: string;
-  id?: string | null;
-  token: string;
-  amount: number;
-  mint: string;
-  unit: string;
-  sender: string;
-  receivedAt: number;
-  fingerprint?: string | null;
-};
-
-type ActivePaymentRequest = {
-  id: string;
-  encoded: string;
-  request: PaymentRequest;
-  amountSat?: number;
-  lockPubkey?: string | null;
-};
-
-function isSamePaymentRequest(
-  a: ActivePaymentRequest | null | undefined,
-  b: ActivePaymentRequest | null | undefined,
-): boolean {
-  if (!a || !b) return false;
-  if (a === b) return true;
-  return (
-    a.encoded === b.encoded &&
-    (a.lockPubkey ?? null) === (b.lockPubkey ?? null) &&
-    (a.amountSat ?? null) === (b.amountSat ?? null) &&
-    a.request.singleUse === b.request.singleUse
-  );
-}
 
 type NormalizedIncomingPayment = {
   token: string;
@@ -1139,13 +875,6 @@ type PublicFollow = {
   nip05?: string;
 };
 
-type ContactSyncMeta = {
-  lastEventId: string | null;
-  lastUpdatedAt: number | null;
-  fingerprint: string | null;
-  publicFollows: PublicFollow[];
-};
-
 type ContactSharePayload = {
   v: 1;
   kind: "nostr" | "custom";
@@ -1158,35 +887,6 @@ type ContactSharePayload = {
   picture?: string;
 };
 
-function loadNip05Cache(): Record<string, Nip05CheckState> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACT_NIP05_CACHE);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    const entries: Record<string, Nip05CheckState> = {};
-    Object.entries(parsed as Record<string, any>).forEach(([key, value]) => {
-      if (!value || typeof value !== "object") return;
-      const status = (value as any).status;
-      const nip05 = typeof (value as any).nip05 === "string" ? (value as any).nip05 : "";
-      const npub = typeof (value as any).npub === "string" ? (value as any).npub : "";
-      const checkedAt = Number((value as any).checkedAt) || 0;
-      const contactUpdatedAtRaw = Number((value as any).contactUpdatedAt);
-      if (!nip05 || !npub) return;
-      if (status !== "pending" && status !== "valid" && status !== "invalid") return;
-      entries[key] = {
-        status,
-        nip05,
-        npub,
-        checkedAt: checkedAt || Date.now(),
-        contactUpdatedAt: Number.isFinite(contactUpdatedAtRaw) ? contactUpdatedAtRaw : null,
-      };
-    });
-    return entries;
-  } catch {
-    return {};
-  }
-}
 
 function isMintTokenAlreadySpentError(err: unknown): boolean {
   if (!err || typeof err !== "object") {
@@ -1234,45 +934,6 @@ function isMintTokenAlreadySpentError(err: unknown): boolean {
   return false;
 }
 
-function normalizePublicFollow(raw: any): PublicFollow | null {
-  if (!raw || typeof raw !== "object") return null;
-  const pubkey = typeof raw.pubkey === "string" ? raw.pubkey.trim() : "";
-  const relay = typeof raw.relay === "string" ? raw.relay.trim() : "";
-  const petname = typeof raw.petname === "string" ? raw.petname.trim() : "";
-  const username = typeof raw.username === "string" ? sanitizeUsername(raw.username) : "";
-  const nip05 = typeof raw.nip05 === "string" ? raw.nip05.trim() : "";
-  if (!pubkey) return null;
-  return {
-    pubkey,
-    relay: relay || undefined,
-    petname: petname || undefined,
-    username: username || undefined,
-    nip05: nip05 || undefined,
-  };
-}
-
-function normalizePublicFollowsList(raw: any): PublicFollow[] {
-  const list = Array.isArray(raw) ? raw : [];
-  const byPubkey = new Map<string, PublicFollow>();
-  list.forEach((entry) => {
-    const normalized = normalizePublicFollow(entry);
-    if (!normalized) return;
-    const key = normalized.pubkey.toLowerCase();
-    const existing = byPubkey.get(key);
-    if (!existing) {
-      byPubkey.set(key, normalized);
-      return;
-    }
-    byPubkey.set(key, {
-      pubkey: normalized.pubkey,
-      relay: normalized.relay || existing.relay,
-      petname: normalized.petname || existing.petname,
-      username: normalized.username || existing.username,
-      nip05: normalized.nip05 || existing.nip05,
-    });
-  });
-  return Array.from(byPubkey.values());
-}
 
 function extractPublicFollowsFromTags(rawTags: any): PublicFollow[] {
   const tags = Array.isArray(rawTags) ? rawTags : [];
@@ -1384,82 +1045,6 @@ function shouldSuppressProofStateChecks(error: unknown): boolean {
   return false;
 }
 
-function isWalletDmAttachment(value: unknown): value is WalletDmAttachment {
-  if (!value || typeof value !== "object") return false;
-  const type = (value as { type?: unknown }).type;
-  return typeof type === "string";
-}
-
-function isWalletDmMessage(value: unknown): value is WalletDmMessage {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<WalletDmMessage>;
-  return (
-    typeof candidate.eventId === "string" &&
-    typeof candidate.peerPubkey === "string" &&
-    typeof candidate.isIncoming === "boolean" &&
-    typeof candidate.createdAt === "number" &&
-    typeof candidate.content === "string" &&
-    typeof candidate.preview === "string"
-  );
-}
-
-function isResolvedPendingDm(pending: PendingDmMessage, messages: WalletDmMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      !message.isIncoming &&
-      message.peerPubkey === pending.peerPubkey &&
-      message.content === pending.content &&
-      Math.abs(message.createdAt - pending.createdAt) < 15,
-  );
-}
-
-function readDmCache(): WalletDmMessage[] {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(isWalletDmMessage)
-      .map((entry) => ({
-        id: entry.id || entry.eventId,
-        eventId: entry.eventId,
-        peerPubkey: entry.peerPubkey.toLowerCase(),
-        isIncoming: entry.isIncoming,
-        createdAt: entry.createdAt,
-        content: entry.content,
-        preview: entry.preview,
-        attachment: isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" },
-        ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
-        ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
-      }))
-      .sort((a, b) => a.createdAt - b.createdAt);
-  } catch {
-    return [];
-  }
-}
-
-function readDmSyncMeta(): DmSyncMeta {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META);
-    if (!raw) return { lastCompletedSyncAt: 0 };
-    const parsed = JSON.parse(raw) as Partial<DmSyncMeta> | null;
-    const value = typeof parsed?.lastCompletedSyncAt === "number" ? parsed.lastCompletedSyncAt : 0;
-    return { lastCompletedSyncAt: Number.isFinite(value) ? value : 0 };
-  } catch {
-    return { lastCompletedSyncAt: 0 };
-  }
-}
-
-function normalizeDmPeerHex(value: string | null | undefined): string | null {
-  const normalized = normalizeNostrPubkey(value || "");
-  const candidate = (normalized || value || "").trim();
-  if (!candidate) return null;
-  if (/^(02|03)[0-9a-fA-F]{64}$/.test(candidate)) return candidate.slice(-64).toLowerCase();
-  if (/^0x[0-9a-fA-F]{64}$/.test(candidate)) return candidate.slice(-64).toLowerCase();
-  if (/^[0-9a-fA-F]{64}$/.test(candidate)) return candidate.toLowerCase();
-  return candidate.toLowerCase();
-}
 
 function cachedContactProfileToDmProfile(entry: CachedContactProfile): ContactProfile {
   return {
@@ -1468,18 +1053,6 @@ function cachedContactProfileToDmProfile(entry: CachedContactProfile): ContactPr
   };
 }
 
-function buildInitialDmPeerProfiles(messages: WalletDmMessage[]): Map<string, ContactProfile> {
-  const cachedProfiles = loadContactProfileCache();
-  const next = new Map<string, ContactProfile>();
-  messages.forEach((message) => {
-    const peerHex = normalizeDmPeerHex(message.peerPubkey);
-    if (!peerHex || next.has(peerHex)) return;
-    const cached = cachedProfiles[peerHex];
-    if (!cached?.profile) return;
-    next.set(peerHex, cachedContactProfileToDmProfile(cached));
-  });
-  return next;
-}
 
 function buildWalletMessageSyntheticEventId(item: WalletMessageItem): string {
   const dmEventId = item.dmEventId?.trim();
@@ -1661,482 +1234,86 @@ export default function CashuWalletModal({
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const isContactsPage = page === "contacts";
   const isChatPage = page === "chat";
-  const [chatView, setChatView] = useState<
-    "threads" | "conversation" | "new-message" | "new-group-select" | "new-group-name" | "group-info" | "group-members" | "group-name-edit"
-  >("threads");
-  const [chatCompose, setChatCompose] = useState("");
-  const [pendingMessages, setPendingMessages] = useState<PendingDmMessage[]>([]);
-  const [groupChats, setGroupChats] = useState<GroupChat[]>(() => readGroupChats());
-  const [groupSelectMembers, setGroupSelectMembers] = useState<Set<string>>(new Set());
-  const [groupNameDraft, setGroupNameDraft] = useState("");
-  const [renameGroupDraft, setRenameGroupDraft] = useState("");
-  const [renameGroupBusy, setRenameGroupBusy] = useState(false);
-  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
-  const [groupMembersSearch, setGroupMembersSearch] = useState("");
-  const [groupInfoTab, setGroupInfoTab] = useState<"info" | "photos" | "links">("info");
-  const groupChatsRef = useRef<GroupChat[]>(groupChats);
-  useEffect(() => { groupChatsRef.current = groupChats; }, [groupChats]);
-  const dmMutedGroupsRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_GROUP_MUTED));
-  const [dmMutedGroupsVersion, setDmMutedGroupsVersion] = useState(0);
-  const dmLeftGroupsRef = useRef<Set<string>>(readStoredStringSet(LS_GROUP_LEFT));
-  const [dmLeftGroupsVersion, setDmLeftGroupsVersion] = useState(0);
-  const dmThreadReadAtRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_DM_THREAD_READ_STATE));
-  const [dmThreadReadAtVersion, setDmThreadReadAtVersion] = useState(0);
-  const [attachTrayOpen, setAttachTrayOpen] = useState(false);
-  const [chatKeyboardHeight, setChatKeyboardHeight] = useState(0);
-  const [chatKeyboardHeightCache, setChatKeyboardHeightCache] = useState(() => measureDefaultChatAttachTrayHeight());
-  const chatComposeInputRef = useRef<HTMLInputElement>(null);
-  const chatPhotoInputRef = useRef<HTMLInputElement>(null);
-  const chatFileInputRef = useRef<HTMLInputElement>(null);
-  const messagesScrollRef = useRef<HTMLDivElement>(null);
-  const messagesInnerRef = useRef<HTMLDivElement>(null);
-  const dragTouchStartX = useRef(0);
-  const dragTouchStartY = useRef(0);
-  const dragDirectionLocked = useRef<"horizontal" | "vertical" | null>(null);
-  const dmListViewRef = useRef<"list" | "strangers">("list");
-  const scrollToMessageIdRef = useRef<string | null>(null);
-  const dmAutoScrollStateRef = useRef<{ threadPeer: string | null; itemCount: number }>({
-    threadPeer: null,
-    itemCount: 0,
+  const {
+    chatView, setChatView,
+    chatCompose, setChatCompose,
+    pendingMessages, setPendingMessages,
+    groupChats, setGroupChats,
+    groupSelectMembers, setGroupSelectMembers,
+    groupNameDraft, setGroupNameDraft,
+    renameGroupDraft, setRenameGroupDraft,
+    renameGroupBusy, setRenameGroupBusy,
+    activeGroupId, setActiveGroupId,
+    groupMembersSearch, setGroupMembersSearch,
+    groupInfoTab, setGroupInfoTab,
+    groupChatsRef,
+    dmMutedGroupsRef, dmMutedGroupsVersion, setDmMutedGroupsVersion,
+    dmLeftGroupsRef, dmLeftGroupsVersion, setDmLeftGroupsVersion,
+    dmThreadReadAtRef, dmThreadReadAtVersion, setDmThreadReadAtVersion,
+    attachTrayOpen, setAttachTrayOpen,
+    chatKeyboardHeight, setChatKeyboardHeight,
+    chatKeyboardHeightCache, setChatKeyboardHeightCache,
+    chatComposeInputRef, chatPhotoInputRef, chatFileInputRef,
+    messagesScrollRef, messagesInnerRef,
+    dragTouchStartX, dragTouchStartY, dragDirectionLocked,
+    dmListViewRef, scrollToMessageIdRef, dmAutoScrollStateRef,
+    chatModeUsesContacts,
+    dmMessages, setDmMessages,
+    dmExpandedMessages, setDmExpandedMessages,
+    dmMessageActions, setDmMessageActions,
+    replyToMessage, setReplyToMessage,
+    dmReactions, setDmReactions,
+    dmInfoMessage, setDmInfoMessage,
+    dmForwardMessage, setDmForwardMessage,
+    dmReactionDetail, setDmReactionDetail,
+    dmLongPressTimerRef,
+    dmDeletedEventsRef, dmDeletedEventsVersion, setDmDeletedEventsVersion,
+    dmTempDeletedEventsRef, dmTempDeletedEventsVersion, setDmTempDeletedEventsVersion,
+    dmArchivedThreadsRef, dmArchivedThreadsVersion, setDmArchivedThreadsVersion,
+    dmBlockedPeersRef, setDmBlockedPeersVersion,
+    dmPeerProfilesRef, dmPeerProfileLoadingRef, setDmPeerProfilesVersion,
+    dmProcessedEventsRef, dmSubscriptionCloseRef, dmLastSyncRef,
+    messageItemsRef,
+    dmView, setDmView,
+    activeThreadPeer, setActiveThreadPeer,
+    dmSearch, setDmSearch,
+    scrollToMessageId, setScrollToMessageId,
+    visiblePendingMessages,
+    toggleDmMessageExpanded, isDmMessageExpanded,
+    copyMessageValue,
+    persistDeletedDmEvents, persistTempDeletedDmEvents, persistArchivedDmThreads,
+    pruneTempDeletedDmEvents, persistBlockedPeers, persistDmMessages,
+    persistDmThreadReadState, persistGroupChats, persistGroupStateSet,
+    upsertGroupChat, persistDmSyncMeta, persistDmPeerProfileCache,
+    buildDmCopyValue, handleDeleteDmMessage, cancelDmLongPress,
+  } = useDmState({
+    open,
+    isChatPage,
+    chatMessageRetention,
+    showToast,
+    messageItems,
   });
-  const chatModeUsesContacts = isChatPage && (chatView === "new-message" || chatView === "new-group-select" || chatView === "new-group-name");
-  const initialDmMessages = useMemo(() => readDmCache(), []);
-  const initialDmPeerProfiles = useMemo(() => buildInitialDmPeerProfiles(initialDmMessages), [initialDmMessages]);
-  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>(() => initialDmMessages);
-  const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
-  const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string; msg: WalletDmMessage } | null>(null);
-  const [replyToMessage, setReplyToMessage] = useState<WalletDmMessage | null>(null);
-  const [dmReactions, setDmReactions] = useState<Map<string, DmReaction[]>>(new Map());
-  const [dmInfoMessage, setDmInfoMessage] = useState<WalletDmMessage | null>(null);
-  const [dmForwardMessage, setDmForwardMessage] = useState<WalletDmMessage | null>(null);
-  const [dmReactionDetail, setDmReactionDetail] = useState<{ eventId: string } | null>(null);
-  useEffect(() => {
-    if (!open || !isChatPage || typeof window === "undefined") return;
-    const viewport = window.visualViewport;
-    if (!viewport) return;
-    const updateKeyboardHeight = () => {
-      const layoutHeight = Math.max(window.innerHeight, document.documentElement?.clientHeight || 0);
-      const nextHeight = Math.max(0, Math.round(layoutHeight - viewport.height - viewport.offsetTop));
-      if (nextHeight > 120) {
-        setChatKeyboardHeight(nextHeight);
-        setChatKeyboardHeightCache(
-          Math.min(
-            CHAT_ATTACH_TRAY_MAX_HEIGHT,
-            Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, nextHeight),
-          ),
-        );
-      } else {
-        setChatKeyboardHeight(0);
-      }
-    };
-    updateKeyboardHeight();
-    viewport.addEventListener("resize", updateKeyboardHeight);
-    viewport.addEventListener("scroll", updateKeyboardHeight);
-    window.addEventListener("orientationchange", updateKeyboardHeight);
-    return () => {
-      viewport.removeEventListener("resize", updateKeyboardHeight);
-      viewport.removeEventListener("scroll", updateKeyboardHeight);
-      window.removeEventListener("orientationchange", updateKeyboardHeight);
-    };
-  }, [isChatPage, open]);
-  useEffect(() => {
-    if (chatView === "conversation") return;
-    setAttachTrayOpen(false);
-  }, [chatView]);
-  const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dmDeletedEventsRef = useRef<Set<string>>(new Set());
-  const [dmDeletedEventsVersion, setDmDeletedEventsVersion] = useState(0);
-  const dmTempDeletedEventsRef = useRef<Map<string, number>>(readStoredExpiryMap(LS_DM_TEMP_DELETED_EVENTS));
-  const [dmTempDeletedEventsVersion, setDmTempDeletedEventsVersion] = useState(0);
-  const dmArchivedThreadsRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_DM_ARCHIVED_THREADS));
-  const [dmArchivedThreadsVersion, setDmArchivedThreadsVersion] = useState(0);
-  const dmBlockedPeersRef = useRef<Set<string>>(new Set());
-  const [, setDmBlockedPeersVersion] = useState(0);
-  const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(initialDmPeerProfiles);
-  const dmPeerProfileLoadingRef = useRef<Set<string>>(new Set());
-  const [, setDmPeerProfilesVersion] = useState(0);
-  const dmProcessedEventsRef = useRef<Set<string>>(new Set());
-  const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
-  const dmLastSyncRef = useRef<number>(readDmSyncMeta().lastCompletedSyncAt || 0);
-  const messageItemsRef = useRef<WalletMessageItem[]>(messageItems);
-  useEffect(() => {
-    messageItemsRef.current = messageItems;
-  }, [messageItems]);
-  const [dmView, setDmView] = useState<"list" | "thread" | "strangers">("list");
-  const [activeThreadPeer, setActiveThreadPeer] = useState<string | null>(null);
-  const [dmSearch, setDmSearch] = useState("");
-  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
-  useEffect(() => {
-    setAttachTrayOpen(false);
-  }, [activeThreadPeer]);
-  useEffect(() => {
-    setPendingMessages([]);
-  }, [activeThreadPeer]);
-  const visiblePendingMessages = useMemo(
-    () => pendingMessages.filter((message) => !isResolvedPendingDm(message, dmMessages)),
-    [dmMessages, pendingMessages],
-  );
-  // Remove optimistic pending bubbles from state once the real outgoing DM is present.
-  useEffect(() => {
-    setPendingMessages(prev =>
-      {
-        const next = prev.filter((message) => !isResolvedPendingDm(message, dmMessages));
-        return next.length === prev.length ? prev : next;
-      },
-    );
-  }, [dmMessages]);
   useEffect(() => {
     if (showTabSwitcher || isContactsPage || isChatPage) return;
     if (walletTab !== "wallet") {
       setWalletTab("wallet");
     }
   }, [isChatPage, isContactsPage, showTabSwitcher, walletTab]);
-  const toggleDmMessageExpanded = useCallback((eventId: string) => {
-    setDmExpandedMessages((prev) => {
-      const next = new Set(prev);
-      if (next.has(eventId)) {
-        next.delete(eventId);
-      } else {
-        next.add(eventId);
-      }
-      return next;
-    });
-  }, []);
-  const isDmMessageExpanded = useCallback(
-    (eventId: string) => dmExpandedMessages.has(eventId),
-    [dmExpandedMessages],
-  );
-  const copyMessageValue = useCallback(
-    async (value: string, label: string) => {
-      if (!value) return;
-      try {
-        await navigator.clipboard?.writeText(value);
-        showToast(`${label} copied`, 2000);
-      } catch {
-        showToast("Unable to copy", 2000);
-      }
-    },
-    [showToast],
-  );
-  const persistDeletedDmEvents = useCallback((events: Set<string>) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_DELETED_EVENTS, JSON.stringify(Array.from(events)));
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const persistTempDeletedDmEvents = useCallback((events: Map<string, number>) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_TEMP_DELETED_EVENTS, JSON.stringify(Object.fromEntries(events)));
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const persistArchivedDmThreads = useCallback((threads: Map<string, number>) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_ARCHIVED_THREADS, JSON.stringify(Object.fromEntries(threads)));
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const pruneTempDeletedDmEvents = useCallback(() => {
-    const now = Date.now();
-    const next = new Map(
-      Array.from(dmTempDeletedEventsRef.current.entries()).filter(([, expiresAt]) => expiresAt > now),
-    );
-    if (next.size === dmTempDeletedEventsRef.current.size) return false;
-    dmTempDeletedEventsRef.current = next;
-    persistTempDeletedDmEvents(next);
-    setDmTempDeletedEventsVersion((v) => v + 1);
-    return true;
-  }, [persistTempDeletedDmEvents]);
-  const persistBlockedPeers = useCallback((peers: Set<string>) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_BLOCKED_PEERS, JSON.stringify(Array.from(peers)));
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const persistDmMessages = useCallback((messages: WalletDmMessage[]) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages));
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const persistDmThreadReadState = useCallback((next: Map<string, number>) => {
-    try {
-      idbKeyValue.setItem(
-        TASKIFY_STORE_NOSTR,
-        LS_DM_THREAD_READ_STATE,
-        JSON.stringify(Object.fromEntries(Array.from(next.entries()))),
-      );
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const persistGroupChats = useCallback((groups: GroupChat[]) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_GROUP_CHATS, JSON.stringify(groups));
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const persistGroupStateSet = useCallback((storageKey: string, values: Set<string>) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, storageKey, JSON.stringify(Array.from(values)));
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const upsertGroupChat = useCallback(
-    (group: GroupChat) => {
-      setGroupChats((prev) => {
-        const idx = prev.findIndex((g) => g.groupId === group.groupId);
-        const nextGroup = idx >= 0 ? mergeGroupChats(prev[idx], group) : mergeGroupChats(null, group);
-        const next = idx >= 0 ? [...prev.slice(0, idx), nextGroup, ...prev.slice(idx + 1)] : [...prev, nextGroup];
-        persistGroupChats(next);
-        return next;
-      });
-    },
-    [persistGroupChats],
-  );
-  const persistDmSyncMeta = useCallback((meta: DmSyncMeta) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_SYNC_META, JSON.stringify(meta));
-      dmLastSyncRef.current = meta.lastCompletedSyncAt || 0;
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  useEffect(() => {
-    pruneTempDeletedDmEvents();
-    const timer = window.setInterval(() => {
-      pruneTempDeletedDmEvents();
-    }, 60 * 60 * 1000);
-    return () => window.clearInterval(timer);
-  }, [pruneTempDeletedDmEvents]);
-
-  useEffect(() => {
-    const cutoff = chatRetentionCutoffMs(chatMessageRetention as any);
-    if (cutoff == null) return;
-    setDmMessages((prev) => {
-      const next = prev.filter((m) => m.createdAt * 1000 >= cutoff);
-      if (next.length === prev.length) return prev;
-      persistDmMessages(next);
-      return next;
-    });
-  }, [chatMessageRetention, persistDmMessages]);
-
-  useEffect(() => {
-    const handler = () => {
-      setDmMessages([]);
-      persistDmMessages([]);
-    };
-    window.addEventListener("taskify:clear-chat-history", handler);
-    return () => window.removeEventListener("taskify:clear-chat-history", handler);
-  }, [persistDmMessages]);
-  const persistDmPeerProfileCache = useCallback(
-    (peerHex: string, profile: ContactProfile, updatedAt: number, pictureDataUrl?: string) => {
-      const normalizedPeerHex = normalizeDmPeerHex(peerHex);
-      if (!normalizedPeerHex) return;
-      const cache = loadContactProfileCache();
-      const existing = cache[normalizedPeerHex];
-      const existingUpdatedAt = existing?.updatedAt ?? 0;
-      const incomingUpdatedAt =
-        Number.isFinite(updatedAt) && updatedAt > 0 ? Math.floor(updatedAt) : existingUpdatedAt;
-      const preferIncoming = incomingUpdatedAt >= existingUpdatedAt;
-      const mergeString = (incoming?: string, current?: string) => {
-        const incomingValue = typeof incoming === "string" ? incoming.trim() : "";
-        const currentValue = typeof current === "string" ? current.trim() : "";
-        return preferIncoming ? incomingValue || currentValue || undefined : currentValue || incomingValue || undefined;
-      };
-      const normalizeRelays = (value?: string[]) =>
-        Array.isArray(value) && value.length
-          ? Array.from(
-              new Set(
-                value
-                  .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-                  .filter(Boolean),
-              ),
-            )
-          : undefined;
-      const incomingPictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
-      const existingPictureUrl = typeof existing?.profile.picture === "string" ? existing.profile.picture.trim() : "";
-      const nextPictureDataUrl =
-        (pictureDataUrl && isDataUrl(pictureDataUrl) ? pictureDataUrl.trim() : "") ||
-        (existing?.pictureDataUrl && incomingPictureUrl && incomingPictureUrl === existingPictureUrl
-          ? existing.pictureDataUrl
-          : undefined);
-      const nextEntry = normalizeCachedContactProfile({
-        profile: {
-          username: mergeString(profile.username, existing?.profile.username),
-          displayName: mergeString(profile.displayName, existing?.profile.displayName),
-          about: mergeString(profile.about, existing?.profile.about),
-          picture: mergeString(profile.picture, existing?.profile.picture),
-          lud16: mergeString(profile.lud16, existing?.profile.lud16),
-          nip05: mergeString(profile.nip05, existing?.profile.nip05),
-          paymentRequest: mergeString(profile.paymentRequest, existing?.profile.paymentRequest),
-          creq: mergeString(profile.creq, existing?.profile.creq),
-          relays: preferIncoming
-            ? normalizeRelays(profile.relays) || normalizeRelays(existing?.profile.relays)
-            : normalizeRelays(existing?.profile.relays) || normalizeRelays(profile.relays),
-        },
-        updatedAt: Math.max(existingUpdatedAt, incomingUpdatedAt),
-        pictureDataUrl: nextPictureDataUrl,
-      });
-      if (!nextEntry) return;
-      cache[normalizedPeerHex] = nextEntry;
-      persistContactProfileCache(cache);
-    },
-    [],
-  );
-  useEffect(() => {
-    persistDmMessages(dmMessages);
-  }, [dmMessages, persistDmMessages]);
-
-  useEffect(() => {
-    if (!isChatPage || !open || chatView !== "threads") return;
-    if (dmMessages.length > 0) return;
-    const cached = readDmCache();
-    if (cached.length > 0) {
-      setDmMessages(cached);
-    }
-  }, [chatView, dmMessages.length, isChatPage, open]);
-
-  useEffect(() => {
-    try {
-      const rawDeleted = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_DELETED_EVENTS);
-      if (rawDeleted) {
-        const parsed = JSON.parse(rawDeleted);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed
-            .map((id) => (typeof id === "string" ? id.trim() : ""))
-            .filter(Boolean);
-          dmDeletedEventsRef.current = new Set(filtered);
-          setDmDeletedEventsVersion((v) => v + 1);
-        }
-      }
-    } catch {
-      dmDeletedEventsRef.current = new Set();
-    }
-    try {
-      const rawBlocked = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_BLOCKED_PEERS);
-      if (rawBlocked) {
-        const parsed = JSON.parse(rawBlocked);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed
-            .map((id) => (typeof id === "string" ? id.trim().toLowerCase() : ""))
-            .filter(Boolean);
-          dmBlockedPeersRef.current = new Set(filtered);
-          setDmBlockedPeersVersion((v) => v + 1);
-        }
-      }
-    } catch {
-      dmBlockedPeersRef.current = new Set();
-    }
-  }, []);
-  useEffect(() => {
-    if (!dmMessages.length) return;
-    const removed = new Set<string>();
-    const filtered = dmMessages.filter((msg) => {
-      if (dmDeletedEventsRef.current.has(msg.eventId)) {
-        removed.add(msg.eventId);
-        return false;
-      }
-      if ((dmTempDeletedEventsRef.current.get(msg.eventId) ?? 0) > Date.now()) {
-        removed.add(msg.eventId);
-        return false;
-      }
-      return true;
-    });
-    if (!removed.size && filtered.length === dmMessages.length) return;
-    setDmMessages(filtered);
-    if (removed.size) {
-      setDmExpandedMessages((prev) => {
-        const next = new Set(prev);
-        removed.forEach((id) => next.delete(id));
-        return next;
-      });
-    }
-  }, [dmDeletedEventsVersion, dmMessages, dmTempDeletedEventsVersion]);
-  const buildDmCopyValue = useCallback(
-    (
-      msg: WalletDmMessage,
-      extras?: {
-        paymentToken?: string | null;
-        boardId?: string | null;
-        contactNpub?: string | null;
-        taskPayload?: SharedTaskPayload | null;
-      },
-    ) => {
-      if (msg.attachment?.type === "board") {
-        return extras?.boardId?.trim() || msg.attachment.boardId || msg.content || msg.eventId;
-      }
-      if (msg.attachment?.type === "contact") {
-        return extras?.contactNpub?.trim() || msg.attachment.npub || msg.content || msg.eventId;
-      }
-      if (msg.attachment?.type === "task") {
-        const payload = msg.attachment.task || extras?.taskPayload;
-        if (payload) {
-          try {
-            return JSON.stringify(payload);
-          } catch {}
-        }
-        return msg.content || msg.eventId;
-      }
-      if (msg.attachment?.type === "payment") {
-        return extras?.paymentToken?.trim() || msg.attachment.raw || msg.content || msg.eventId;
-      }
-      return msg.content || msg.preview || msg.eventId;
-    },
-    [],
-  );
-  const handleDeleteDmMessage = useCallback(
-    (eventId: string) => {
-      if (!eventId) return;
-      dmDeletedEventsRef.current.add(eventId);
-      persistDeletedDmEvents(dmDeletedEventsRef.current);
-      setDmDeletedEventsVersion((v) => v + 1);
-      dmProcessedEventsRef.current.add(eventId);
-      setDmMessages((prev) => prev.filter((msg) => msg.eventId !== eventId));
-      setDmExpandedMessages((prev) => {
-        if (!prev.has(eventId)) return prev;
-        const next = new Set(prev);
-        next.delete(eventId);
-        return next;
-      });
-      setDmMessageActions((prev) => (prev?.eventId === eventId ? null : prev));
-    },
-    [persistDeletedDmEvents],
-  );
-  const cancelDmLongPress = useCallback(() => {
-    if (dmLongPressTimerRef.current) {
-      clearTimeout(dmLongPressTimerRef.current);
-      dmLongPressTimerRef.current = null;
-    }
-  }, []);
-  useEffect(() => {
-    return () => {
-      cancelDmLongPress();
-    };
-  }, [cancelDmLongPress]);
-  useEffect(() => {
-    cancelDmLongPress();
-    setDmMessageActions(null);
-    setReplyToMessage(null);
-  }, [activeThreadPeer, cancelDmLongPress, dmView]);
   const [receiveMode, setReceiveMode] = useState<null | "ecash" | "lightning" | "lnurlWithdraw">(null);
-  const [receiveLockVisible, setReceiveLockVisible] = useState(false);
-  const [ecashReceiveView, setEcashReceiveView] = useState<"overview" | "amount" | "request">(
-    "overview",
-  );
-  const [lastCreatedEcashRequest, setLastCreatedEcashRequest] = useState<ActivePaymentRequest | null>(
-    null,
-  );
-  const [ecashRequestAmt, setEcashRequestAmt] = useState("");
-  const [ecashRequestMode, setEcashRequestMode] = useState<"multi" | "single">("multi");
-  const [pendingPrimaryP2pkKeyId, setPendingPrimaryP2pkKeyId] = useState<string | null>(null);
+  const {
+    receiveLockVisible,
+    setReceiveLockVisible,
+    ecashReceiveView,
+    setEcashReceiveView,
+    lastCreatedEcashRequest,
+    setLastCreatedEcashRequest,
+    ecashRequestAmt,
+    setEcashRequestAmt,
+    ecashRequestMode,
+    setEcashRequestMode,
+    pendingPrimaryP2pkKeyId,
+    setPendingPrimaryP2pkKeyId,
+  } = useEcashReceiveState();
   const [sendMode, setSendMode] = useState<null | "ecash" | "lightning" | "paymentRequest">(null);
   const backgroundSuspended = useMemo(() => sendMode !== null || receiveMode !== null, [sendMode, receiveMode]);
   const {
@@ -2150,47 +1327,89 @@ export default function CashuWalletModal({
     refreshIntervalMs: BACKGROUND_REFRESH_INTERVAL_MS,
   });
 
-  const [mintAmt, setMintAmt] = useState("");
-  const [mintQuote, setMintQuote] = useState<{ request: string; quote: string; expiry: number } | null>(null);
-  const [lightningReceiveView, setLightningReceiveView] = useState<"address" | "amount" | "invoice">("address");
-  const [activeMintInvoice, setActiveMintInvoice] = useState<
-    { request: string; quote: string; expiry: number; amountSat: number; mintUrl?: string } | null
-  >(null);
-  const [mintStatus, setMintStatus] = useState<"idle" | "waiting" | "minted" | "error">("idle");
-  const [mintError, setMintError] = useState("");
-  const [creatingMintInvoice, setCreatingMintInvoice] = useState(false);
-  const [lightningAddressCopied, setLightningAddressCopied] = useState(false);
+  const {
+    mintAmt,
+    setMintAmt,
+    mintQuote,
+    setMintQuote,
+    lightningReceiveView,
+    setLightningReceiveView,
+    activeMintInvoice,
+    setActiveMintInvoice,
+    mintStatus,
+    setMintStatus,
+    mintError,
+    setMintError,
+    creatingMintInvoice,
+    setCreatingMintInvoice,
+    lightningAddressCopied,
+    setLightningAddressCopied,
+    lnInput,
+    setLnInput,
+    lnInputValueRef,
+    lnAddrAmt,
+    setLnAddrAmt,
+    lnState,
+    setLnState,
+    lnError,
+    setLnError,
+    lnurlPayData,
+    setLnurlPayData,
+    lightningSendView,
+    setLightningSendView,
+  } = useLightningFlow();
 
-  useEffect(() => {
-    if (!lightningAddressCopied) return;
-    const timer = window.setTimeout(() => setLightningAddressCopied(false), 1800);
-    return () => window.clearTimeout(timer);
-  }, [lightningAddressCopied]);
-
-  const [sendAmt, setSendAmt] = useState("");
-  const [sendTokenStr, setSendTokenStr] = useState("");
-  const [nutTokenCopied, setNutTokenCopied] = useState(false);
-  const [ecashSendView, setEcashSendView] = useState<"amount" | "token" | "contact">("amount");
-  const [ecashSendRecipient, setEcashSendRecipient] = useState<Contact | null>(null);
-  const [lastSendTokenAmount, setLastSendTokenAmount] = useState<number | null>(null);
-  const [lastSendTokenMint, setLastSendTokenMint] = useState<string | null>(null);
-  const [creatingSendToken, setCreatingSendToken] = useState(false);
-  const [lastSendTokenFingerprint, setLastSendTokenFingerprint] = useState<string | null>(null);
-  const [lastSendTokenLockLabel, setLastSendTokenLockLabel] = useState<string | null>(null);
-  const [lockSendToPubkey, setLockSendToPubkey] = useState(false);
-  const [sendLockPubkeyInput, setSendLockPubkeyInput] = useState("");
-  const [sendLockError, setSendLockError] = useState("");
-  const [paymentRequestManualAmount, setPaymentRequestManualAmount] = useState("");
-  const [currentPaymentRequest, setCurrentPaymentRequest] = useState<ActivePaymentRequest | null>(null);
-  const [openPaymentRequest, setOpenPaymentRequest] = useState<ActivePaymentRequest | null>(null);
-  const [paymentRequestError, setPaymentRequestError] = useState("");
-  const [paymentRequestStatusMessage, setPaymentRequestStatusMessage] = useState("");
-  const [paymentRequestLockEnabled, setPaymentRequestLockEnabled] = useState(false);
-  const [paymentRequestLockPubkey, setPaymentRequestLockPubkey] = useState("");
-  const incomingPaymentRequestsRef = useRef<IncomingPaymentRequest[]>([]);
-  const spentIncomingPaymentsRef = useRef<Map<string, string>>(new Map());
-  const spentIncomingTokenFingerprintsRef = useRef<Set<string>>(new Set());
-  const textEncoderRef = useRef<TextEncoder | null>(null);
+  const {
+    sendAmt,
+    setSendAmt,
+    sendTokenStr,
+    setSendTokenStr,
+    nutTokenCopied,
+    setNutTokenCopied,
+    ecashSendView,
+    setEcashSendView,
+    ecashSendRecipient,
+    setEcashSendRecipient,
+    lastSendTokenAmount,
+    setLastSendTokenAmount,
+    lastSendTokenMint,
+    setLastSendTokenMint,
+    creatingSendToken,
+    setCreatingSendToken,
+    lastSendTokenFingerprint,
+    setLastSendTokenFingerprint,
+    lastSendTokenLockLabel,
+    setLastSendTokenLockLabel,
+    lockSendToPubkey,
+    setLockSendToPubkey,
+    sendLockPubkeyInput,
+    setSendLockPubkeyInput,
+    sendLockError,
+    setSendLockError,
+  } = useEcashSendState();
+  const {
+    paymentRequestManualAmount,
+    setPaymentRequestManualAmount,
+    currentPaymentRequest,
+    setCurrentPaymentRequest,
+    openPaymentRequest,
+    setOpenPaymentRequest,
+    paymentRequestError,
+    setPaymentRequestError,
+    paymentRequestStatusMessage,
+    setPaymentRequestStatusMessage,
+    paymentRequestLockEnabled,
+    setPaymentRequestLockEnabled,
+    paymentRequestLockPubkey,
+    setPaymentRequestLockPubkey,
+    incomingPaymentRequestsRef,
+    spentIncomingPaymentsRef,
+    spentIncomingTokenFingerprintsRef,
+    textEncoderRef,
+  } = usePaymentRequestState({
+    paymentRequestsEnabled,
+    activeP2pkPublicKey: activeP2pkKey?.publicKey ?? null,
+  });
   const [claimingEventIds, setClaimingEventIds] = useState<string[]>([]);
   const defaultNostrRelays = useMemo(() => Array.from(new Set(DEFAULT_NOSTR_RELAYS)), []);
   const preferredFileServer = useMemo(
@@ -2683,499 +1902,66 @@ export default function CashuWalletModal({
     nostrIdentityRef.current = nostrIdentityInfo.identity;
   }, [nostrIdentityInfo]);
 
-  useEffect(() => {
-    if (!paymentRequestsEnabled) return;
-    if (!paymentRequestLockPubkey && activeP2pkKey) {
-      setPaymentRequestLockPubkey(activeP2pkKey.publicKey);
-    }
-    if (paymentRequestLockEnabled && !paymentRequestLockPubkey) {
-      if (activeP2pkKey) {
-        setPaymentRequestLockPubkey(activeP2pkKey.publicKey);
-      } else {
-        setPaymentRequestLockEnabled(false);
-      }
-    }
-  }, [paymentRequestsEnabled, paymentRequestLockEnabled, paymentRequestLockPubkey, activeP2pkKey]);
-
   const [recvMsg, setRecvMsg] = useState("");
 
-  const [lnInput, setLnInputState] = useState("");
-  const lnInputValueRef = useRef("");
-  const lnInputCommitTimerRef = useRef<number | null>(null);
-  const setLnInput = useCallback((next: string | ((previous: string) => string), options?: { defer?: boolean }) => {
-    const resolveNext = (previous: string) => {
-      const resolved = typeof next === "function" ? next(previous) : next;
-      return typeof resolved === "string" ? resolved : String(resolved ?? "");
-    };
-    if (options?.defer && typeof window !== "undefined") {
-      const resolved = resolveNext(lnInputValueRef.current);
-      lnInputValueRef.current = resolved;
-      if (lnInputCommitTimerRef.current !== null) {
-        window.clearTimeout(lnInputCommitTimerRef.current);
-      }
-      lnInputCommitTimerRef.current = window.setTimeout(() => {
-        lnInputCommitTimerRef.current = null;
-        setLnInputState(lnInputValueRef.current);
-      }, 140);
-      return;
-    }
-    if (typeof window !== "undefined" && lnInputCommitTimerRef.current !== null) {
-      window.clearTimeout(lnInputCommitTimerRef.current);
-      lnInputCommitTimerRef.current = null;
-    }
-    setLnInputState((previous) => {
-      const resolved = resolveNext(previous);
-      lnInputValueRef.current = resolved;
-      return resolved;
-    });
-  }, []);
-  useEffect(() => {
-    return () => {
-      if (lnInputCommitTimerRef.current !== null) {
-        window.clearTimeout(lnInputCommitTimerRef.current);
-        lnInputCommitTimerRef.current = null;
-      }
-    };
-  }, []);
-  const [lnAddrAmt, setLnAddrAmt] = useState("");
-  const [lnState, setLnState] = useState<"idle" | "sending" | "done" | "error">("idle");
-  const [lnError, setLnError] = useState("");
-  const [lnurlPayData, setLnurlPayData] = useState<LnurlPayData | null>(null);
-  const [lightningSendView, setLightningSendView] = useState<"input" | "invoice" | "address">("input");
-  const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
-  const [contactsOpen, setContactsOpen] = useState(false);
-  const [nip05Checks, setNip05Checks] = useState<Record<string, Nip05CheckState>>(() =>
-    typeof window !== "undefined" ? loadNip05Cache() : {},
-  );
-  const ensureNip05VerificationRef = useRef<
-    ((contactId: string, nip05?: string | null, npub?: string | null, contactUpdatedAt?: number | null) => void) | null
-  >(null);
-  const isNip05VerifiedForRef = useRef<
-    ((contactId: string, nip05?: string | null, npub?: string | null) => boolean) | null
-  >(null);
-  const contactsRef = useRef<Contact[]>(contacts);
-  const skipContactsEventRef = useRef(false);
-  const skipContactsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    contactsRef.current = contacts;
-  }, [contacts]);
-  useEffect(() => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACT_NIP05_CACHE, JSON.stringify(nip05Checks));
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("taskify:nip05-cache-updated"));
-      }
-    } catch {
-      // ignore persistence issues
-    }
-  }, [nip05Checks]);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const handleContactsUpdated = () => {
-      if (skipContactsEventRef.current) {
-        skipContactsEventRef.current = false;
-        return;
-      }
-      setContacts(loadContactsFromStorage());
-    };
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === LS_LIGHTNING_CONTACTS) {
-        handleContactsUpdated();
-      }
-    };
-    window.addEventListener("taskify:contacts-updated", handleContactsUpdated);
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener("taskify:contacts-updated", handleContactsUpdated);
-      window.removeEventListener("storage", handleStorage);
-      if (skipContactsTimerRef.current) {
-        clearTimeout(skipContactsTimerRef.current);
-        skipContactsTimerRef.current = null;
-      }
-    };
-  }, []);
-  useEffect(() => {
-    if (contactsOpen) {
-      setContacts(loadContactsFromStorage());
-    }
-  }, [contactsOpen]);
+  const {
+    contacts, setContacts,
+    contactsOpen, setContactsOpen,
+    nip05Checks, setNip05Checks,
+    ensureNip05VerificationRef, isNip05VerifiedForRef,
+    contactsRef, skipContactsEventRef, skipContactsTimerRef,
+    contactsTabOpen, setContactsTabOpen,
+    contactsPanelRef,
+    contactSyncState, setContactSyncState,
+    contactsPublishState, setContactsPublishState,
+    setContactsPublishMessage,
+    contactSyncMetaRef, contactSyncMeta, setContactSyncMeta,
+    persistContactSyncMeta,
+    profileForm, setProfileForm,
+    profileSharePayload, setProfileSharePayload,
+    profileEventIdRef, profileFormRef,
+    profileStatus, setProfileStatus,
+    profileMessage, setProfileMessage,
+    profileUpdatedAt, setProfileUpdatedAt,
+    profileEditorOpen, setProfileEditorOpen,
+    contactLookupInput, setContactLookupInput,
+    contactLookupBusy, setContactLookupBusy,
+    contactLookupError, setContactLookupError,
+    showCustomContactFields, setShowCustomContactFields,
+    contactView, setContactView,
+    activeContactId, setActiveContactId,
+    contactReturnView, setContactReturnView,
+    contactDetailOverride, setContactDetailOverride,
+    shareContactPickerOpen, setShareContactPickerOpen,
+    shareContactPickerMode, setShareContactPickerMode,
+    shareContactSource, setShareContactSource,
+    shareContactStatus, setShareContactStatus,
+    shareContactBusy, setShareContactBusy,
+    shareContactOpenedAtPeerRef,
+    contactEditDraft, setContactEditDraft,
+    contactEditError, setContactEditError,
+    profilePhotoError, setProfilePhotoError,
+    profilePhotoBusy, setProfilePhotoBusy,
+    profilePhotoInputRef, profilePhotoUploadRef,
+    publicFollowPickerOpen, setPublicFollowPickerOpen,
+    resetContactEditDraft, closeContactsTab,
+    handleStartAddContact, handleBackToContactsList, handleReturnToProfileCard,
+    contactsPublishQueuedRef, contactsContext, setContactsContext,
+    contactsContextRef, contactsFingerprintRef,
+    nip51MigrationInFlightRef, contactProfilesRefreshedRef,
+    computeContactsFingerprint,
+    upsertContact, compressedToRawHex, formatNpub, formatNpubDisplay,
+  } = useContactsState({
+    isChatPage,
+    showTabSwitcher,
+    isContactsPage,
+    chatView,
+    setChatView,
+    setWalletTab,
+    activeThreadPeer,
+    persistProfileEventId,
+  });
   const resetContactForm = useCallback(() => {}, []);
-  const [contactsTabOpen, setContactsTabOpen] = useState(false);
-  const contactsPanelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (showTabSwitcher) return;
-    if (isContactsPage && !contactsTabOpen) {
-      setContactsTabOpen(true);
-    } else if (!isContactsPage && contactsTabOpen) {
-      setContactsTabOpen(false);
-    }
-  }, [contactsTabOpen, isContactsPage, showTabSwitcher]);
-  const [contactSyncState, setContactSyncState] = useState<{
-    status: "idle" | "loading" | "error" | "success";
-    message?: string;
-    updatedAt?: number | null;
-  }>({ status: "idle", updatedAt: null });
-  const [contactsPublishState, setContactsPublishState] = useState<"idle" | "publishing" | "error" | "success">("idle");
-  const [, setContactsPublishMessage] = useState("");
-  const initialContactSyncMeta = useMemo<ContactSyncMeta>(() => {
-    try {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return {
-          lastEventId: typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null,
-          lastUpdatedAt: Number(parsed?.lastUpdatedAt) || null,
-          fingerprint: typeof parsed?.fingerprint === "string" ? parsed.fingerprint : null,
-          publicFollows: normalizePublicFollowsList(parsed?.publicFollows),
-        };
-      }
-    } catch {
-      // ignore parse issues
-    }
-    return { lastEventId: null, lastUpdatedAt: null, fingerprint: null, publicFollows: [] };
-  }, []);
-  const contactSyncMetaRef = useRef<ContactSyncMeta>(initialContactSyncMeta);
-  const [contactSyncMeta, setContactSyncMeta] = useState<ContactSyncMeta>(initialContactSyncMeta);
-  const persistContactSyncMeta = useCallback(
-    (meta: Partial<ContactSyncMeta>) => {
-      let nextState: ContactSyncMeta | null = null;
-      setContactSyncMeta((prev) => {
-        const nextPublicFollows =
-          meta.publicFollows !== undefined
-            ? normalizePublicFollowsList(meta.publicFollows)
-            : prev.publicFollows ?? [];
-        const next: ContactSyncMeta = {
-          lastEventId: meta.lastEventId ?? prev.lastEventId ?? null,
-          lastUpdatedAt: meta.lastUpdatedAt ?? prev.lastUpdatedAt ?? null,
-          fingerprint: meta.fingerprint ?? prev.fingerprint ?? null,
-          publicFollows: nextPublicFollows,
-        };
-        nextState = next;
-        try {
-          idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(next));
-        } catch {
-          // ignore persistence issues
-        }
-        return next;
-      });
-      if (nextState) {
-        contactSyncMetaRef.current = nextState;
-      }
-      return nextState;
-    },
-    [contactSyncMetaRef],
-  );
-  const [profileForm, setProfileForm] = useState<{
-    username: string;
-    displayName: string;
-    lud16: string;
-    nip05: string;
-    about: string;
-    picture: string;
-  }>(() => {
-    const { identity } = readNostrIdentity();
-    const cached = identity ? readProfileMetadataCache(identity.pubkey) : null;
-    return (
-      cached?.profile ?? {
-        username: "",
-        displayName: "",
-        lud16: "",
-        nip05: "",
-        about: "",
-        picture: "",
-      }
-    );
-  });
-  const [profileSharePayload, setProfileSharePayload] = useState<string | null>(() => {
-    try {
-      const cached = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, PROFILE_SHARE_CACHE_KEY);
-      if (!cached) return null;
-      const parsed = JSON.parse(cached);
-      if (typeof parsed === "string") return parsed;
-    } catch {
-      // ignore cache issues
-    }
-    return null;
-  });
-  const profileEventIdRef = useRef<string | null>(null);
-  const profileFormRef = useRef(profileForm);
-  useEffect(() => {
-    profileFormRef.current = profileForm;
-  }, [profileForm]);
-  useEffect(() => {
-    if (!profileSharePayload) return;
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, PROFILE_SHARE_CACHE_KEY, JSON.stringify(profileSharePayload));
-    } catch {
-      // ignore persistence issues
-    }
-  }, [profileSharePayload]);
-  const [profileStatus, setProfileStatus] = useState<"idle" | "loading" | "ready" | "publishing" | "error">(() => {
-    const { identity } = readNostrIdentity();
-    const cached = identity ? readProfileMetadataCache(identity.pubkey) : null;
-    return cached?.profile ? "ready" : "idle";
-  });
-  const [profileMessage, setProfileMessage] = useState("");
-  const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(() => {
-    const { identity } = readNostrIdentity();
-    const cached = identity ? readProfileMetadataCache(identity.pubkey) : null;
-    return cached?.updatedAt ?? null;
-  });
-  useEffect(() => {
-    const { identity } = readNostrIdentity();
-    if (!identity) return;
-    const cached = readProfileMetadataCache(identity.pubkey);
-    if (cached?.eventId && !profileEventIdRef.current) {
-      profileEventIdRef.current = cached.eventId;
-      persistProfileEventId(identity.pubkey, cached.eventId);
-    }
-  }, [persistProfileEventId, readNostrIdentity]);
-  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
-  const [contactLookupInput, setContactLookupInput] = useState("");
-  const [contactLookupBusy, setContactLookupBusy] = useState(false);
-  const [contactLookupError, setContactLookupError] = useState("");
-  const [showCustomContactFields, setShowCustomContactFields] = useState(false);
-  const [contactView, setContactView] = useState<ContactViewMode>("list");
-  const [activeContactId, setActiveContactId] = useState<string | "profile" | null>(null);
-  const [contactReturnView, setContactReturnView] = useState<"new-message" | "group-members" | "group-info">("new-message");
-  const [contactDetailOverride, setContactDetailOverride] = useState<Contact | null>(null);
-  const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
-  const [shareContactPickerMode, setShareContactPickerMode] = useState<"recipient" | "chat-source">("recipient");
-  const [shareContactSource, setShareContactSource] = useState<Contact | null>(null);
-  const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
-  const [shareContactBusy, setShareContactBusy] = useState(false);
-  // Tracks which thread peer was active when the chat-source picker was opened,
-  // so the effect below only closes it when the user switches conversations.
-  const shareContactOpenedAtPeerRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source" || chatView === "conversation") return;
-    setShareContactPickerOpen(false);
-    setShareContactPickerMode("recipient");
-    setShareContactSource(null);
-    setShareContactStatus(null);
-  }, [chatView, shareContactPickerMode, shareContactPickerOpen]);
-  useEffect(() => {
-    if (!shareContactPickerOpen || shareContactPickerMode !== "chat-source") return;
-    // Only close if the active thread actually changed since the picker was opened.
-    if (activeThreadPeer === shareContactOpenedAtPeerRef.current) return;
-    setShareContactPickerOpen(false);
-    setShareContactPickerMode("recipient");
-    setShareContactSource(null);
-    setShareContactStatus(null);
-  }, [activeThreadPeer, shareContactPickerMode, shareContactPickerOpen]);
-  const [contactEditDraft, setContactEditDraft] = useState<ContactEditDraft>({
-    id: null,
-    name: "",
-    displayName: "",
-    username: "",
-    address: "",
-    npub: "",
-    nip05: "",
-    about: "",
-    picture: "",
-    isProfile: false,
-  });
-  const [contactEditError, setContactEditError] = useState("");
-  const [profilePhotoError, setProfilePhotoError] = useState("");
-  const [profilePhotoBusy, setProfilePhotoBusy] = useState(false);
-  const profilePhotoInputRef = useRef<HTMLInputElement | null>(null);
-  const profilePhotoUploadRef = useRef<{ blob: Blob; name?: string; contentType?: string } | null>(null);
-  const [publicFollowPickerOpen, setPublicFollowPickerOpen] = useState(false);
-  const resetContactEditDraft = useCallback(() => {
-    setContactEditDraft({
-      id: null,
-      name: "",
-      displayName: "",
-      username: "",
-      address: "",
-      npub: "",
-      nip05: "",
-      about: "",
-      picture: "",
-      isProfile: false,
-    });
-    setContactEditError("");
-    setProfilePhotoError("");
-    setProfilePhotoBusy(false);
-    profilePhotoUploadRef.current = null;
-  }, []);
-  const closeContactsTab = useCallback(() => {
-    setContactsTabOpen(false);
-    setProfileEditorOpen(false);
-    resetContactEditDraft();
-    setContactView("list");
-    setActiveContactId(null);
-    setShowCustomContactFields(false);
-    setWalletTab("wallet");
-  }, [resetContactEditDraft]);
-  const handleStartAddContact = useCallback(() => {
-    resetContactEditDraft();
-    setContactEditError("");
-    setContactLookupError("");
-    setContactLookupInput("");
-    setShowCustomContactFields(false);
-    setContactDetailOverride(null);
-    setContactReturnView("new-message");
-    setContactView("edit");
-  }, [resetContactEditDraft]);
-  const handleBackToContactsList = useCallback(() => {
-    setContactView("list");
-    setActiveContactId(null);
-    setContactDetailOverride(null);
-    if (isChatPage) {
-      setChatView(contactReturnView);
-    }
-    setContactReturnView("new-message");
-  }, [contactReturnView, isChatPage]);
-  const handleReturnToProfileCard = useCallback(() => {
-    setActiveContactId("profile");
-    setContactDetailOverride(null);
-    setContactView("detail");
-    if (isChatPage) {
-      setChatView("new-message");
-    }
-  }, [isChatPage]);
-  const contactsPublishQueuedRef = useRef(false);
-  const [contactsContext, setContactsContext] = useState<"lightning" | "ecash" | null>(null);
-  const contactsContextRef = useRef<"lightning" | "ecash" | null>(null);
-  const contactsFingerprintRef = useRef<string | null>(null);
-  const nip51MigrationInFlightRef = useRef(false);
-  const contactProfilesRefreshedRef = useRef(false);
-  const computeContactsFingerprint = useCallback(
-    (list: Contact[]): string => {
-      const normalized = list
-        .map((contact) => {
-          const relays = Array.isArray(contact.relays)
-            ? Array.from(
-                new Set(
-                  contact.relays
-                    .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-                    .filter(Boolean),
-                ),
-              ).sort()
-            : [];
-          return {
-            id: contact.id,
-            kind: contact.kind,
-            name: (contact.name || "").trim(),
-            address: (contact.address || "").trim(),
-            paymentRequest: (contact.paymentRequest || "").trim(),
-            npub: (contact.npub || "").trim(),
-            username: sanitizeUsername(contact.username || ""),
-            displayName: (contact.displayName || "").trim(),
-            nip05: (contact.nip05 || "").trim(),
-            about: (contact.about || "").trim(),
-            picture: (contact.picture || "").trim(),
-            relays,
-          };
-        })
-        .sort((a, b) => a.id.localeCompare(b.id));
-      let encoder = textEncoderRef.current;
-      if (!encoder) {
-        encoder = new TextEncoder();
-        textEncoderRef.current = encoder;
-      }
-      return bytesToHex(sha256(encoder.encode(JSON.stringify(normalized))));
-    },
-    [],
-  );
-
-  const upsertContact = useCallback(
-    (input: Partial<Contact> & { id?: string }) => {
-      const shouldUpdatePaymentRequest =
-        Object.prototype.hasOwnProperty.call(input, "paymentRequest") ||
-        Object.prototype.hasOwnProperty.call(input as any, "creq") ||
-        Object.prototype.hasOwnProperty.call(input as any, "cashuPaymentRequest");
-      const normalized = normalizeContact({
-        ...input,
-        id: input.id || makeContactId(),
-        kind: input.kind || (input.npub ? "nostr" : "custom"),
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      if (!normalized) return null;
-      const normalizedNpub = formatContactNpub(normalized.npub);
-      const normalizedWithNpub: Contact = { ...normalized, npub: normalizedNpub };
-      let result: Contact = normalizedWithNpub;
-      setContacts((prev) => {
-        const normalizedHex = normalizeNostrPubkey(normalizedWithNpub.npub || "");
-        const existingIndex = prev.findIndex((entry) => {
-          if (entry.id === normalized.id) return true;
-          if (normalizedHex) {
-            const entryHex = normalizeNostrPubkey(entry.npub || "");
-            if (entryHex && entryHex === normalizedHex) return true;
-          }
-          return false;
-        });
-        if (existingIndex >= 0) {
-          const prevContact = prev[existingIndex];
-          const merged: Contact = {
-            ...prevContact,
-            ...normalizedWithNpub,
-            id: prevContact.id,
-            updatedAt: Date.now(),
-            paymentRequest: shouldUpdatePaymentRequest
-              ? normalizedWithNpub.paymentRequest
-              : prevContact.paymentRequest,
-          };
-          result = merged;
-          const next = prev.slice();
-          next[existingIndex] = merged;
-          return next;
-        }
-        result = normalizedWithNpub;
-        return [...prev, normalizedWithNpub];
-      });
-      return result;
-    },
-    [normalizeContact, normalizeNostrPubkey, setContacts, makeContactId, formatContactNpub],
-  );
-
-  const compressedToRawHex = useCallback((value: string) => {
-    if (typeof value !== "string") return value;
-    if (/^(02|03)[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-    if (/^0x[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-    if (/^[0-9a-fA-F]{64}$/.test(value)) return value;
-    return value;
-  }, []);
-
-  const formatNpub = useCallback(
-    (value: string) => {
-      const raw = compressedToRawHex(value);
-      try {
-        return nip19.npubEncode(raw);
-      } catch {
-        return value;
-      }
-    },
-    [compressedToRawHex],
-  );
-
-  const formatNpubDisplay = useCallback(
-    (value: string | null | undefined): string | null => {
-      if (!value) return null;
-      const trimmed = value.trim();
-      if (!trimmed) return null;
-      if (trimmed.startsWith("npub")) return trimmed;
-      const normalized = normalizeNostrPubkey(trimmed);
-      const candidate = normalized || trimmed;
-      let rawHex: string | null = null;
-      if (/^[0-9a-f]{64}$/i.test(candidate)) {
-        rawHex = candidate;
-      } else if (/^(02|03)[0-9a-f]{64}$/i.test(candidate)) {
-        rawHex = candidate.slice(-64);
-      }
-      if (rawHex) {
-        try {
-          return nip19.npubEncode(hexToBytes(rawHex));
-        } catch {
-          return rawHex;
-        }
-      }
-      return candidate;
-    },
-    [normalizeNostrPubkey],
-  );
 
   const [lnurlWithdrawInfo, setLnurlWithdrawInfo] = useState<LnurlWithdrawData | null>(null);
   const [lnurlWithdrawAmt, setLnurlWithdrawAmt] = useState("");
