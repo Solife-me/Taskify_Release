@@ -32,6 +32,7 @@ export type BackupBoardLike = {
   archived?: boolean;
   hidden?: boolean;
   clearCompletedDisabled?: boolean;
+  order?: number;
   indexCardEnabled?: boolean;
   hideChildBoardNames?: boolean;
   columns?: { id: string; name: string }[];
@@ -53,6 +54,10 @@ function normalizeColumns(raw: unknown): { id: string; name: string }[] {
 function normalizeChildren(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((child): child is string => typeof child === "string" && !!child.trim());
+}
+
+function normalizeOrder(raw: unknown): number | undefined {
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
 
 export function sanitizeSettingsForNostrBackup<TSettings extends Record<string, unknown>>(raw: TSettings | Record<string, unknown>, defaultPushPreferences: Record<string, unknown>): Partial<TSettings> {
@@ -90,14 +95,14 @@ export function buildNostrBackupSnapshot<TBoard extends BackupBoardLike, TSettin
         if (!nostrId) return null;
         const relays = normalizeRelayList(board.nostr?.relays?.length ? board.nostr.relays : relayFallback);
         return {
-          id: board.id, nostrId, relays, name: board.name, kind: board.kind, archived: !!board.archived, hidden: !!board.hidden, order: index,
+          id: board.id, nostrId, relays, name: board.name, kind: board.kind, archived: !!board.archived, hidden: !!board.hidden, order: normalizeOrder(board.order) ?? index,
           columns: board.kind === "lists" ? (board.columns ?? []).map((column) => ({ id: column.id, name: column.name })) : undefined,
           children: board.kind === "compound" ? (board.children ?? []).slice() : undefined,
           clearCompletedDisabled: !!board.clearCompletedDisabled,
           indexCardEnabled: board.kind === "lists" || board.kind === "compound" ? !!board.indexCardEnabled : undefined,
           hideChildBoardNames: board.kind === "compound" ? !!board.hideChildBoardNames : undefined,
         } as NostrAppBackupBoard;
-      }).filter((board): board is NostrAppBackupBoard => !!board).sort((a, b) => a.id.localeCompare(b.id))
+      }).filter((board): board is NostrAppBackupBoard => !!board).sort((a, b) => (normalizeOrder(a.order) ?? 0) - (normalizeOrder(b.order) ?? 0) || a.id.localeCompare(b.id))
     : [];
   const settingsPayload = includeMetadata ? sanitizeSettingsForBackup(settings) : {};
   return { boards: boardsPayload, settings: settingsPayload, walletSeed, defaultRelays: defaultRelayList };
@@ -113,12 +118,15 @@ export function mergeBackupBoards<TBoard extends BackupBoardLike>(options: {
   const { currentBoards, incomingBoards, baseRelays, normalizeRelayList, createId } = options;
   let next = currentBoards.slice();
   let changed = false;
+  let hasIncomingOrder = false;
   const normalizeForBoard = (relays?: string[]) => {
     const normalized = normalizeRelayList(relays);
     return normalized.length ? normalized : baseRelays;
   };
   incomingBoards.forEach((entry) => {
     if (!entry || typeof entry !== "object") return;
+    const incomingOrder = normalizeOrder(entry.order);
+    if (incomingOrder !== undefined) hasIncomingOrder = true;
     const entryId = typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : "";
     const nostrIdRaw = entry.nostrId || (entry as any)?.nostr?.boardId;
     const nostrId = typeof nostrIdRaw === "string" && nostrIdRaw.trim() ? nostrIdRaw.trim() : undefined;
@@ -130,6 +138,7 @@ export function mergeBackupBoards<TBoard extends BackupBoardLike>(options: {
       const existing = next[existingIndex];
       const relaysChanged = relays.join("|") !== currentRelays.join("|");
       const patched = { ...existing, id: existing.id || entryId || nostrId || existing.nostr?.boardId || existing.id, nostr: { boardId: existing.nostr?.boardId || nostrId, relays } } as TBoard;
+      if (incomingOrder !== undefined) patched.order = incomingOrder;
       if (typeof entry.archived === "boolean") patched.archived = entry.archived;
       if (typeof entry.hidden === "boolean") patched.hidden = entry.hidden;
       const name = typeof entry.name === "string" ? entry.name.trim() : "";
@@ -141,7 +150,7 @@ export function mergeBackupBoards<TBoard extends BackupBoardLike>(options: {
       if (typeof entry.clearCompletedDisabled === "boolean") patched.clearCompletedDisabled = !!entry.clearCompletedDisabled;
       if (typeof entry.indexCardEnabled === "boolean" && (patched.kind === "lists" || patched.kind === "compound")) patched.indexCardEnabled = !!entry.indexCardEnabled;
       if (typeof entry.hideChildBoardNames === "boolean" && patched.kind === "compound") patched.hideChildBoardNames = !!entry.hideChildBoardNames;
-      if (!existing.nostr || relaysChanged || patched.name !== existing.name || patched.archived !== existing.archived || patched.hidden !== existing.hidden) {
+      if (!existing.nostr || relaysChanged || patched.name !== existing.name || patched.archived !== existing.archived || patched.hidden !== existing.hidden || patched.order !== existing.order) {
         next[existingIndex] = patched; changed = true;
       }
       return;
@@ -150,10 +159,23 @@ export function mergeBackupBoards<TBoard extends BackupBoardLike>(options: {
     const kind: TBoard["kind"] = (kindRaw === "week" || kindRaw === "compound" || kindRaw === "bible" ? kindRaw : "lists") as TBoard["kind"];
     const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : "Shared Board";
     const boardId = entryId || nostrId || createId();
-    const base: TBoard = kind === "week" ? ({ id: boardId, name, kind: "week", nostr: { boardId: nostrId, relays }, archived: !!entry.archived, hidden: !!entry.hidden, clearCompletedDisabled: !!entry.clearCompletedDisabled } as TBoard)
-      : kind === "compound" ? ({ id: boardId, name, kind: "compound", children: normalizeChildren(entry.children), nostr: { boardId: nostrId, relays }, archived: !!entry.archived, hidden: !!entry.hidden, clearCompletedDisabled: !!entry.clearCompletedDisabled, indexCardEnabled: typeof entry.indexCardEnabled === "boolean" ? !!entry.indexCardEnabled : false, hideChildBoardNames: typeof entry.hideChildBoardNames === "boolean" ? !!entry.hideChildBoardNames : false } as TBoard)
-      : ({ id: boardId, name, kind: "lists", columns: (() => { const columns = normalizeColumns(entry.columns); return columns.length ? columns : [{ id: createId(), name: "Items" }]; })(), nostr: { boardId: nostrId, relays }, archived: !!entry.archived, hidden: !!entry.hidden, clearCompletedDisabled: !!entry.clearCompletedDisabled, indexCardEnabled: typeof entry.indexCardEnabled === "boolean" ? !!entry.indexCardEnabled : false } as TBoard);
+    const orderPatch = incomingOrder !== undefined ? { order: incomingOrder } : {};
+    const base: TBoard = kind === "week" ? ({ id: boardId, name, kind: "week", nostr: { boardId: nostrId, relays }, archived: !!entry.archived, hidden: !!entry.hidden, clearCompletedDisabled: !!entry.clearCompletedDisabled, ...orderPatch } as TBoard)
+      : kind === "compound" ? ({ id: boardId, name, kind: "compound", children: normalizeChildren(entry.children), nostr: { boardId: nostrId, relays }, archived: !!entry.archived, hidden: !!entry.hidden, clearCompletedDisabled: !!entry.clearCompletedDisabled, indexCardEnabled: typeof entry.indexCardEnabled === "boolean" ? !!entry.indexCardEnabled : false, hideChildBoardNames: typeof entry.hideChildBoardNames === "boolean" ? !!entry.hideChildBoardNames : false, ...orderPatch } as TBoard)
+      : ({ id: boardId, name, kind: "lists", columns: (() => { const columns = normalizeColumns(entry.columns); return columns.length ? columns : [{ id: createId(), name: "Items" }]; })(), nostr: { boardId: nostrId, relays }, archived: !!entry.archived, hidden: !!entry.hidden, clearCompletedDisabled: !!entry.clearCompletedDisabled, indexCardEnabled: typeof entry.indexCardEnabled === "boolean" ? !!entry.indexCardEnabled : false, ...orderPatch } as TBoard);
     next = [...next, base]; changed = true;
   });
+  if (hasIncomingOrder) {
+    const currentIndex = new Map(next.map((board, index) => [board.id, index]));
+    const sorted = next.slice().sort((left, right) => {
+      const leftOrder = normalizeOrder(left.order) ?? currentIndex.get(left.id) ?? 0;
+      const rightOrder = normalizeOrder(right.order) ?? currentIndex.get(right.id) ?? 0;
+      return leftOrder - rightOrder || (currentIndex.get(left.id) ?? 0) - (currentIndex.get(right.id) ?? 0);
+    });
+    if (sorted.some((board, index) => board !== next[index])) {
+      next = sorted;
+      changed = true;
+    }
+  }
   return changed ? next : currentBoards;
 }

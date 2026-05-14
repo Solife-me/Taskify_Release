@@ -78,11 +78,26 @@ export function normalizeCompoundChildId(boards: Board[], childId: string): stri
 
 // ---- Board migration ----
 
+function normalizeBoardOrder(raw: unknown, fallback: number): number {
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
+}
+
+export function withBoardOrder(boards: Board[]): Board[] {
+  let changed = false;
+  const ordered = boards.map((board, index) => {
+    if (board.order === index) return board;
+    changed = true;
+    return { ...board, order: index } as Board;
+  });
+  return changed ? ordered : boards;
+}
+
 export function migrateBoards(stored: any): Board[] | null {
   try {
     const arr = stored as any[];
     if (!Array.isArray(arr)) return null;
-    return arr.map((b) => {
+    const migrated = arr.map((b, index) => {
+      const order = normalizeBoardOrder(b?.order, index);
       const archived =
         typeof b?.archived === "boolean"
           ? b.archived
@@ -110,6 +125,7 @@ export function migrateBoards(stored: any): Board[] | null {
           archived,
           hidden,
           clearCompletedDisabled,
+          order,
         } as Board;
       }
       if (b?.kind === "lists" && Array.isArray(b.columns)) {
@@ -123,6 +139,7 @@ export function migrateBoards(stored: any): Board[] | null {
           hidden,
           clearCompletedDisabled,
           indexCardEnabled,
+          order,
         } as Board;
       }
       if (b?.kind === "compound") {
@@ -140,6 +157,7 @@ export function migrateBoards(stored: any): Board[] | null {
           clearCompletedDisabled,
           indexCardEnabled,
           hideChildBoardNames,
+          order,
         } as Board;
       }
       if (b?.kind === "bible") {
@@ -151,6 +169,7 @@ export function migrateBoards(stored: any): Board[] | null {
           archived,
           hidden,
           clearCompletedDisabled,
+          order,
         } as Board;
       }
       if (b?.kind === "list") {
@@ -166,6 +185,7 @@ export function migrateBoards(stored: any): Board[] | null {
           hidden,
           clearCompletedDisabled,
           indexCardEnabled,
+          order,
         } as Board;
       }
       // unknown -> keep as lists with one column
@@ -180,8 +200,11 @@ export function migrateBoards(stored: any): Board[] | null {
         hidden,
         clearCompletedDisabled,
         indexCardEnabled,
+        order,
       } as Board;
     });
+    const sorted = migrated.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    return withBoardOrder(sorted);
   } catch { return null; }
 }
 

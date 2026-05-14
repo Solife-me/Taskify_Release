@@ -260,6 +260,7 @@ export type BoardBase = {
     archived?: boolean;
     hidden?: boolean;
     clearCompletedDisabled?: boolean;
+    order?: number;
 };
 export type Board = (BoardBase & {
     kind: "week";

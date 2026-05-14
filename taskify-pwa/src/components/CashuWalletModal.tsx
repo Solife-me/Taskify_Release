@@ -1,4 +1,8 @@
 // @ts-nocheck
+// TODO: This file is ~24k lines and needs to be broken up. Extract custom hooks
+// (wallet state, mint management, send/receive flows, payment requests, NWC,
+// nostr DM redemption, lightning, swaps, history) into src/hooks/wallet/ and
+// split sub-views into smaller components to reduce this file's size.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bech32 } from "bech32";
 import {

@@ -122,7 +122,7 @@ export type UpcomingBoardGrouping = "mixed" | "grouped";
 
 export type ListColumn = { id: string; name: string };
 export type CompoundChildId = string;
-export type BoardBase = { id: string; name: string; nostr?: { boardId: string; relays: string[] }; archived?: boolean; hidden?: boolean; clearCompletedDisabled?: boolean };
+export type BoardBase = { id: string; name: string; nostr?: { boardId: string; relays: string[] }; archived?: boolean; hidden?: boolean; clearCompletedDisabled?: boolean; order?: number };
 export type Board =
   | (BoardBase & { kind: "week" })
   | (BoardBase & { kind: "lists"; columns: ListColumn[]; indexCardEnabled?: boolean })

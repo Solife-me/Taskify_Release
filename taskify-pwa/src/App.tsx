@@ -170,6 +170,7 @@ import {
   type Settings,
 } from "./domains/tasks/settingsTypes";
 import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/settingsHook";
+import { withBoardOrder } from "./domains/tasks/boardUtils";
 import {
   ensureWeekRecurrencesForCurrentWeek,
   tasksInSameSeries,
@@ -2742,7 +2743,7 @@ export default function App() {
           ...(nostrBoardId ? { nostr: { boardId: nostrBoardId, relays: relayList } } : {}),
         } as Board;
       }
-      setBoards((prev) => [...prev, board]);
+      setBoards((prev) => withBoardOrder([...prev, board]));
       changeBoard(id);
       if (shared && nostrBoardId) {
         publishBoardMetadataRef.current?.(board).catch(() => {});
@@ -2787,12 +2788,13 @@ export default function App() {
             hidden: false,
             clearCompletedDisabled: existing.clearCompletedDisabled ?? newBoard.clearCompletedDisabled,
             indexCardEnabled,
+            order: existing.order,
           };
           const copy = prev.slice();
           copy[existingIndex] = merged;
           return copy;
         }
-        return [...prev, newBoard];
+        return withBoardOrder([...prev, newBoard]);
       });
       changeBoard(id);
     },
@@ -6960,8 +6962,9 @@ export default function App() {
           hidden: true,
           clearCompletedDisabled: false,
           indexCardEnabled: false,
+          order: state.length,
         };
-        return { id: stub.id, boards: [...state, stub] };
+        return { id: stub.id, boards: withBoardOrder([...state, stub]) };
       };
 
       const buildNext = (): { board: Board; boards: Board[] } => {
@@ -6974,6 +6977,7 @@ export default function App() {
             archived: current.archived,
             hidden: current.hidden,
             clearCompletedDisabled,
+            order: current.order,
           };
           return { board: next, boards: working };
         }
@@ -6993,6 +6997,7 @@ export default function App() {
             hidden: current.hidden,
             clearCompletedDisabled,
             indexCardEnabled: listIndexEnabled,
+            order: current.order,
           };
           return { board: next, boards: working };
         }
@@ -7030,6 +7035,7 @@ export default function App() {
             clearCompletedDisabled,
             indexCardEnabled: listIndexEnabled,
             hideChildBoardNames: hideBoardNames,
+            order: current.order,
           };
           return { board: next, boards: boardsState };
         }
@@ -7058,7 +7064,7 @@ export default function App() {
         return working;
       }
       working[targetIndex] = updatedBoard;
-      return working;
+      return withBoardOrder(working);
     });
   }, [setBoards, tagValue, defaultRelays, ensureMigrationState]);
   const applyTaskEvent = useCallback(async (ev: NostrEvent) => {
@@ -8784,8 +8790,9 @@ export default function App() {
           hidden: false,
           clearCompletedDisabled: false,
           indexCardEnabled: false,
+          order: prev.length,
         };
-        return [...prev, nextBoard];
+        return withBoardOrder([...prev, nextBoard]);
       });
     },
     [inboxRelays, setBoards],

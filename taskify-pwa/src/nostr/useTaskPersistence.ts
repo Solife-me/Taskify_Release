@@ -11,6 +11,7 @@ import {
   externalCalendarEventEntityStore,
   taskEntityStore,
 } from "../storage/entityStore";
+import { withBoardOrder } from "../domains/tasks/boardUtils";
 import { nostrOutboxStore } from "./NostrOutboxStore";
 
 const TASKIFY_TASK_EVENT_KIND = 30301;
@@ -53,11 +54,15 @@ export function useTaskPersistence({
 }: UseTaskPersistenceParams) {
   const boardsFirstRun = useRef(true);
   useEffect(() => {
+    const orderedBoards = withBoardOrder(boards);
     if (boardsFirstRun.current) {
       boardsFirstRun.current = false;
+      if (shouldBackfillPersistedBoardOrder(orderedBoards)) {
+        boardEntityStore.syncWith(orderedBoards);
+      }
       return;
     }
-    boardEntityStore.syncWith(boards);
+    boardEntityStore.syncWith(orderedBoards);
   }, [boards]);
 
   const tasksFirstRun = useRef(true);
@@ -229,4 +234,15 @@ function buildPendingNostrItemSync(rows: NostrOutboxMutation[]): OutboxItemSyncS
 function tagValue(tags: string[][], name: string): string | null {
   const value = tags.find((tag) => tag[0] === name)?.[1];
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function shouldBackfillPersistedBoardOrder(boards: Board[]): boolean {
+  if (boardEntityStore.size() === 0) return false;
+  const stored = boardEntityStore.getAll() as Board[];
+  if (stored.length !== boards.length) return false;
+  const storedById = new Map(stored.map((board) => [board.id, board]));
+  return boards.some((board) => {
+    const persisted = storedById.get(board.id);
+    return !!persisted && persisted.order !== board.order;
+  });
 }
