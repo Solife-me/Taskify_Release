@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, type MouseEvent } from "react";
 import type { Task } from "../../domains/tasks/taskTypes";
 import type { CalendarEvent } from "../../domains/tasks/taskTypes";
-import type { TaskDocument } from "../../lib/documents";
+import { normalizeDocumentList, type TaskDocument } from "../../lib/documents";
 import { useUrlPreview } from "../../lib/urlPreview";
 import type { UrlPreviewData } from "../../lib/urlPreview";
 import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
@@ -9,18 +9,6 @@ import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } fro
 import { DocumentThumbnail } from "./DocumentPreviewModal";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
 import { ImagePreviewModal } from "./ImagePreviewModal";
-
-function ResolvedTaskImage({ src, boardId }: { src: string; boardId?: string }) {
-  const [resolvedSrc, setResolvedSrc] = useState(src);
-  useEffect(() => {
-    let cancelled = false;
-    if (!src || src.startsWith("data:")) { setResolvedSrc(src); return; }
-    if (!boardId) { setResolvedSrc(src); return; }
-    decryptAttachment({ boardId, url: src, mimeType: "image/jpeg" }).then((next) => { if (!cancelled) setResolvedSrc(next); }).catch(() => { if (!cancelled) setResolvedSrc(src); });
-    return () => { cancelled = true; };
-  }, [src, boardId]);
-  return <img src={resolvedSrc} className="max-h-40 w-full rounded-2xl object-contain" />;
-}
 
 export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
   const [imageFailed, setImageFailed] = useState(false);
@@ -134,7 +122,7 @@ function useDecryptedSrc(src: string, boardId: string | undefined) {
   return { decryptedSrc, decrypting, error };
 }
 
-function DecryptableImage({ src, boardId, onOpen }: { src: string; boardId?: string; onOpen: (src: string, e: React.MouseEvent) => void }) {
+function DecryptableImage({ src, boardId, onOpen }: { src: string; boardId?: string; onOpen: (src: string, e: MouseEvent) => void }) {
   const { decryptedSrc, decrypting, error } = useDecryptedSrc(src, boardId);
   if (decrypting) {
     return <div className="max-h-40 w-full rounded-2xl bg-surface opacity-50" style={{ height: "10rem" }} />;
@@ -164,11 +152,12 @@ export function TaskMedia({
 }) {
   const noteText = useMemo(() => stripUrlsFromText(task.note), [task.note]);
   const hasImages = Boolean(task.images && task.images.length);
-  const hasDocuments = Boolean(task.documents && task.documents.length);
+  const documents = useMemo(() => normalizeDocumentList(task.documents), [task.documents]);
+  const hasDocuments = Boolean(documents?.length);
   const derivedPreview = useTaskPreview(task);
   const hasPreview = Boolean(derivedPreview);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-  const openPreview = useCallback((src: string, e: React.MouseEvent) => {
+  const openPreview = useCallback((src: string, e: MouseEvent) => {
     e.stopPropagation();
     setPreviewSrc(src);
   }, []);
@@ -200,7 +189,7 @@ export function TaskMedia({
       ) : null}
       {hasDocuments ? (
         <div className="space-y-2">
-          {task.documents!.map((doc) => (
+          {documents!.map((doc) => (
             <DocumentThumbnail
               key={doc.id}
               document={doc}
@@ -251,7 +240,8 @@ export function EventMedia({
   onOpenDocument?: (event: CalendarEvent, doc: TaskDocument) => void;
 }) {
   const noteText = useMemo(() => stripUrlsFromText(event.description), [event.description]);
-  const hasDocuments = Boolean(event.documents && event.documents.length);
+  const documents = useMemo(() => normalizeDocumentList(event.documents), [event.documents]);
+  const hasDocuments = Boolean(documents?.length);
   const derivedPreview = useEventPreview(event);
   const hasPreview = Boolean(derivedPreview);
 
@@ -269,7 +259,7 @@ export function EventMedia({
       )}
       {hasDocuments ? (
         <div className="space-y-2">
-          {event.documents!.map((doc) => (
+          {documents!.map((doc) => (
             <DocumentThumbnail
               key={doc.id}
               document={doc}

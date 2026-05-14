@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "taskify-pwa",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "dev", "--port", "5175"],
+      "cwd": "taskify-pwa",
+      "port": 5175
+    }
+  ]
+}

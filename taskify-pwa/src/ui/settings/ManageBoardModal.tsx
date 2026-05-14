@@ -9,7 +9,7 @@ import {
   findBoardByCompoundChildId,
   parseCompoundChildInput,
 } from "../../domains/tasks/boardUtils";
-import { deriveBoardNostrKeys, toNsec } from "../../domains/nostr/nostrKeyUtils";
+import { deriveBoardNostrKeys } from "../../domains/nostr/nostrKeyUtils";
 import { createNostrPool, type NostrEvent } from "../../domains/nostr/nostrPool";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import { boardTag } from "../../boardCrypto";

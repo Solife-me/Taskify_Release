@@ -1,10 +1,17 @@
 // @ts-nocheck
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { kvStorage } from "../../storage/kvStorage";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "../../storage/taskifyDb";
 import { LS_LIGHTNING_CONTACTS, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
-import { LS_NOSTR_RELAYS, LS_NOSTR_SK } from "../../nostrKeys";
+import { LS_NOSTR_RELAYS } from "../../nostrKeys";
+import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import {
+  taskEntityStore,
+  boardEntityStore,
+  calendarEventEntityStore,
+  externalCalendarEventEntityStore,
+} from "../../storage/entityStore";
 import {
   loadStore as loadProofStore,
   getActiveMint,
@@ -70,20 +77,33 @@ export function BackupSection({
     const settingsData = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
     const bgImage = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BACKGROUND_IMAGE);
     if (bgImage) settingsData.backgroundImage = bgImage;
+    // Pull tasks/boards/calendar events from the v3 per-entity stores (the
+    // post-migration source of truth). Fall back to the legacy blobs only if
+    // the entity store is empty (pre-migration boot or fresh install).
+    const tasksFromEntity = taskEntityStore.size() > 0
+      ? taskEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS) || "[]");
+    const calendarFromEntity = calendarEventEntityStore.size() > 0
+      ? calendarEventEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS) || "[]");
+    const externalCalendarFromEntity = externalCalendarEventEntityStore.size() > 0
+      ? externalCalendarEventEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS) || "[]");
+    const boardsFromEntity = boardEntityStore.size() > 0
+      ? boardEntityStore.getAll()
+      : JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS) || "[]");
     return {
-      tasks: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS) || "[]"),
-      calendarEvents: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS) || "[]"),
-      externalCalendarEvents: JSON.parse(
-        idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS) || "[]",
-      ),
-      boards: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS) || "[]"),
+      tasks: tasksFromEntity,
+      calendarEvents: calendarFromEntity,
+      externalCalendarEvents: externalCalendarFromEntity,
+      boards: boardsFromEntity,
       settings: settingsData,
       scriptureMemory: JSON.parse(kvStorage.getItem(LS_SCRIPTURE_MEMORY) || "{}"),
       bibleTracker: bibleTrackerRaw ? JSON.parse(bibleTrackerRaw) : null,
       defaultRelays: JSON.parse(kvStorage.getItem(LS_NOSTR_RELAYS) || "[]"),
       contacts: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_LIGHTNING_CONTACTS) || "[]"),
       contactsSyncMeta: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META) || "{}"),
-      nostrSk: kvStorage.getItem(LS_NOSTR_SK) || "",
+      nostrSk: nostrSkSync(),
       cashu: {
         proofs: loadProofStore(),
         activeMint: getActiveMint(),
@@ -142,8 +162,15 @@ export function BackupSection({
     return now;
   }, [collectBackupData, workerBaseUrl]);
 
-  const applyBackupData = useCallback((data: Partial<TaskifyBackupPayload>) => {
+  const applyBackupData = useCallback(async (data: Partial<TaskifyBackupPayload>) => {
     applyBackupDataToStorage(data);
+    // Wait for v3 entity-store writes to durably land before reload.
+    await Promise.all([
+      taskEntityStore.flush(),
+      boardEntityStore.flush(),
+      calendarEventEntityStore.flush(),
+      externalCalendarEventEntityStore.flush(),
+    ]);
     onReloadNeeded();
   }, [onReloadNeeded]);
 
@@ -170,7 +197,7 @@ export function BackupSection({
     const attemptBackup = async () => {
       try {
         if (typeof crypto === "undefined" || !crypto.subtle) return;
-        const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
+        const skHex = nostrSkSync();
         if (!/^[0-9a-fA-F]{64}$/.test(skHex)) return;
         const lastRaw = kvStorage.getItem(LS_LAST_CLOUD_BACKUP);
         const lastMs = lastRaw ? Number.parseInt(lastRaw, 10) : 0;
@@ -200,7 +227,7 @@ export function BackupSection({
       setCloudBackupMessage("Browser crypto APIs are unavailable.");
       return;
     }
-    const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
+    const skHex = nostrSkSync();
     if (!/^[0-9a-fA-F]{64}$/.test(skHex)) {
       setCloudBackupState("error");
       setCloudBackupMessage("Add your Nostr secret key in Keys to use cloud backups.");

@@ -1,29 +1,44 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
-// @ts-nocheck
-import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Proof } from "@cashu/cashu-ts";
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { QRCodeCanvas } from "qrcode.react";
-import QrScannerLib from "qr-scanner";
-import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  flattenUpcomingGroups,
+  buildUpcomingDateKeyIndex,
+  type UpcomingFlatRow,
+} from "./lib/upcomingRows";
+import { finalizeEvent, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import {
+  DEFAULT_DATE_REMINDER_TIME,
+  MS_PER_DAY,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
-  normalizeRelayListSorted,
-  parseBoardSharePayload,
-  normalizeNip05,
   compressedToRawHex,
-  contactInitials,
-  contactVerifiedNip05 as contactVerifiedNip05Core,
-  normalizeTaskAssignmentStatus,
+  isExternalCalendarEvent,
+  isListLikeBoard,
+  normalizeReminderTime,
+  reminderPresetToMinutes,
+  sanitizeReminderList,
+  type Board,
+  type BoardSortDirection,
+  type CalendarEvent,
+  type CalendarEventBase,
+  type CalendarEventParticipant,
+  type EditingState,
+  type InboxItem,
+  type InboxItemStatus,
+  type InboxSender,
+  type ListColumn,
+  type Recurrence,
+  type Subtask,
+  type Task,
+  type TaskAssignee,
+  type TaskAssigneeStatus,
+  type Weekday,
 } from "taskify-core";
-const loadCashuWalletModal = () => import("./components/CashuWalletModal");
-const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
   BibleTracker,
   type BibleTrackerProgress,
   type BibleTrackerState,
-  sanitizeBibleTrackerState,
   cloneBibleProgress,
   cloneBibleVerses,
   cloneBibleVerseCounts,
@@ -33,104 +48,128 @@ import {
   getBibleBookOrder,
   MAX_VERSE_COUNT,
 } from "./components/BibleTracker";
-import { BibleTrackerPrintPreview, type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
-import { BibleTrackerScanPanel } from "./components/BibleTrackerScanSheet";
+import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
 import { buildBiblePrintLayout } from "./components/BibleTrackerPrintLayout";
-import { BoardPrintPreview } from "./components/BoardPrintSheet";
-import { BoardScanPanel } from "./components/BoardScanSheet";
 import { BOARD_PRINT_LAYOUT_VERSION, buildBoardPrintLayout, type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
 import { isPrintPaperSize, type PrintPaperSize } from "./components/printPaper";
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { buildBibleTrackerPrintPdf, buildBoardPrintPdf } from "./lib/printPdf";
 import { useCashu } from "./context/CashuContext";
-import {
-  LS_LIGHTNING_CONTACTS,
-  LS_BTC_USD_PRICE_CACHE,
-  LS_MINT_BACKUP_ENABLED,
-  LS_CONTACTS_SYNC_META,
-  LS_CONTACT_NIP05_CACHE,
-} from "./localStorageKeys";
 import { kvStorage } from "./storage/kvStorage";
+import {
+  getSkSync as nostrSkSync,
+} from "./lib/nostrSkStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
-import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./storage/taskifyDb";
-import {
-  LS_NOSTR_BACKUP_STATE,
-  LS_NOSTR_BIBLE_TRACKER_SYNC_STATE,
-  LS_NOSTR_RELAYS,
-  LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
-  LS_NOSTR_SK,
-} from "./nostrKeys";
-import {
-  loadStore as loadProofStore,
-  saveStore as saveProofStore,
-  getActiveMint,
-  setActiveMint,
-  getMintList,
-  addMintToList,
-  replaceMintList,
-  listPendingTokens,
-  replacePendingTokens,
-  type PendingTokenEntry,
-} from "./wallet/storage";
-import {
-  getWalletSeedMnemonic,
-  getWalletSeedBackupJson,
-  getWalletSeedBackup,
-  getWalletCountersByMint,
-  incrementWalletCounter,
-  regenerateWalletSeed,
-  type WalletSeedBackupPayload,
-  restoreWalletSeedBackup,
-} from "./wallet/seed";
-import {
-  createMintBackupTemplate,
-  decryptMintBackupPayload,
-  deriveMintBackupKeys,
-  loadMintBackupCache,
-  MINT_BACKUP_CLIENT_TAG,
-  MINT_BACKUP_D_TAG,
-  MINT_BACKUP_KIND,
-  persistMintBackupCache,
-  type MintBackupPayload,
-} from "./wallet/mintBackup";
-import {
-  decryptNostrBackupPayload,
-  encryptNostrBackupPayload,
-  NOSTR_APP_BACKUP_CLIENT_TAG,
-  NOSTR_APP_BACKUP_D_TAG,
-  NOSTR_APP_BACKUP_KIND,
-  type NostrAppBackupBoard,
-  type NostrAppBackupPayload,
-} from "./nostrBackup";
-import {
-  decryptNostrSyncPayload,
-  encryptNostrSyncPayload,
-  NOSTR_APP_STATE_CLIENT_TAG,
-  NOSTR_APP_STATE_KIND,
-  NOSTR_BIBLE_TRACKER_D_TAG,
-  NOSTR_SCRIPTURE_MEMORY_D_TAG,
-} from "./nostrAppState";
+import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
+
+
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
-import { useP2PK, type P2PKKey } from "./context/P2PKContext";
-import { AccentPalette, BackgroundImageError, normalizeAccentPalette, normalizeAccentPaletteList, prepareBackgroundImage } from "./theme/palette";
-import { extractFirstUrl, isUrlLike, useUrlPreview, type UrlPreviewData } from "./lib/urlPreview";
+import type { AccentPalette } from "./theme/palette";
 import {
-  createDocumentAttachment,
   ensureDocumentPreview,
-  loadDocumentPreview,
-  isSupportedDocumentFile,
   normalizeDocumentList,
-  type TaskDocumentPreview,
   type TaskDocument,
 } from "./lib/documents";
 import { normalizeNostrPubkey } from "./lib/nostr";
+import type {
+  ScriptureMemoryEntry,
+  ScriptureMemoryState,
+} from "./domains/scripture/scriptureTypes";
 import {
-  buildNostrBackupSnapshot as buildNostrBackupSnapshotDomain,
-  mergeBackupBoards,
-  sanitizeSettingsForNostrBackup,
-} from "./lib/app/nostrBackupDomain";
+  updateScriptureMemoryState,
+  markScriptureEntryReviewed,
+  scheduleScriptureEntry,
+  formatScriptureReference,
+  formatDueInLabel,
+  computeScriptureStats,
+  scriptureFrequencyToRecurrence,
+  recurrencesEqual,
+  chooseNextScriptureEntry,
+} from "./domains/scripture/scriptureUtils";
+import {
+  useBibleTracker,
+  useScriptureMemory,
+} from "./domains/scripture/scriptureHook";
+import {
+  buildUsHolidayCalendarEvents,
+  isUsHolidayCalendarEvent,
+  fastingReminderDueTimesForMonth,
+} from "./domains/calendar/holidayUtils";
+import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
+import {
+  DEFAULT_BOARD_SORT_DIRECTION,
+  PINNED_BOUNTY_LIST_KEY,
+  normalizeTaskPriority,
+  normalizeTaskCreatedAt,
+  taskHasBountyList,
+  withTaskAddedToBountyList,
+  withTaskRemovedFromBountyList,
+  isRecoverableBountyTask,
+  normalizeBounty,
+  normalizeTaskBounty,
+  ensureXOnlyHex,
+  pubkeysEqual,
+  mergeLongestStreak,
+  recurringInstanceId,
+  dedupeRecurringInstances,
+} from "./domains/tasks/taskUtils";
+import {
+  mergeTaskAssigneeResponse,
+  normalizeAgentPubkey,
+  normalizeNostrPubkeyHex,
+  normalizeTaskAssignees,
+} from "./domains/tasks/assignmentUtils";
+import { useBoards, useTasks } from "./domains/tasks/taskHooks";
+import { useCalendarEvents } from "./domains/calendar/calendarHook";
+import {
+  useCalendarInvites,
+  type CalendarInvite,
+  type CalendarInviteStatus,
+} from "./domains/calendar/calendarInvitesHook";
+import type {
+  CompleteTaskFn,
+  CompleteTaskResult,
+  PublishCalendarEventFn,
+  PublishTaskFn,
+  ScriptureMemoryUpdate,
+} from "./domains/tasks/taskTypes";
+import { type PushPlatform } from "./domains/push/pushUtils";
+import { type ReminderPreset } from "./domains/dateTime/reminderUtils";
+import {
+  daysInCalendarMonth,
+  formatDateKeyFromParts,
+  formatDateKeyLocal,
+  formatTimeLabel,
+  formatUpcomingDayLabel,
+  isoDatePart,
+  isoFromDateTime,
+  isoTimePart,
+  monthKeyFromYearMonth,
+  normalizeTimeZone,
+  parseDateKey,
+  parseTimeValue,
+  resolveSystemTimeZone,
+  startOfDay,
+  taskDateKey,
+  taskDisplayDateKey,
+  taskTimeValue,
+  taskWeekday,
+  weekdayFromISO,
+} from "./domains/dateTime/dateUtils";
+import {
+  decryptEcashTokenForRecipient,
+  encryptEcashTokenForRecipient,
+} from "./domains/nostr/nostrCrypto";
+import {
+  appendWalletHistoryEntry,
+} from "./domains/backup/backupUtils";
+import {
+  type PushPreferences,
+  type Settings,
+} from "./domains/tasks/settingsTypes";
+import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/settingsHook";
 import {
   ensureWeekRecurrencesForCurrentWeek,
   tasksInSameSeries,
@@ -149,18 +188,13 @@ import {
   encryptCalendarPayloadWithEventKey,
   decryptCalendarPayloadWithEventKey,
   encryptCalendarRsvpPayload,
-  decryptCalendarRsvpPayload,
-  decryptCalendarRsvpPayloadForAttendee,
   deriveBoardRsvpToken,
   parseCalendarCanonicalPayload,
   parseCalendarViewPayload,
-  parseCalendarRsvpPayload,
   type CalendarRsvpFb,
   type CalendarRsvpStatus,
 } from "./lib/privateCalendar";
 import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
-import { ActionSheet } from "./components/ActionSheet";
-import { VoiceDictationModal } from "./components/VoiceDictationModal";
 import type { FinalTask } from "./nostr/useVoiceSession";
 import type { Contact } from "./lib/contacts";
 import {
@@ -169,23 +203,50 @@ import {
   loadContactsFromStorage,
   makeContactId,
   normalizeContact,
-  contactHasNpub,
   saveContactsToStorage,
 } from "./lib/contacts";
-import { COINBASE_SPOT_PRICE_URL } from "./lib/pricing";
-import {
-  markHistoryEntrySpentRaw,
-  MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
-  type HistoryEntryRaw,
-} from "./lib/walletHistory";
-import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
+
+
+import { parseFileServers, findServerEntry } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
-import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
-import { publishFileServerPreference } from "./nostr/ProfilePublisher";
-import { EcashGlyph } from "./components/EcashGlyph";
-import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
+import {
+  loadDefaultRelays,
+  saveDefaultRelays,
+  type NostrEvent,
+} from "./domains/nostr/nostrPool";
+import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSync";
+import { useCalendarEventManagement } from "./nostr/useCalendarEventManagement";
+import { useNostrSubscriptions, type CalendarViewSubscriptionTarget, type SubscribeManyPool } from "./nostr/useNostrSubscriptions";
+import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
+import { useSelectionMode } from "./ui/selection/useSelectionMode";
+import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
+import { BoardUpcomingView, CompletedBoardView } from "./ui/board/BoardSecondaryViews";
+import { ShareBoardDialogs } from "./ui/board/ShareBoardDialogs";
+import { useShareBoardState } from "./ui/board/useShareBoardState";
+import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
+import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
+import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
+import { useWalletShellState } from "./ui/wallet/useWalletShellState";
+import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
+import { UpcomingSearch } from "./ui/upcoming/UpcomingSearch";
+import { useUpcomingControlsState } from "./ui/upcoming/useUpcomingControlsState";
+import { AppSortSheets } from "./ui/app/AppSortSheets";
+import { AppModalStack } from "./ui/app/AppModalStack";
+import { UpdateToast } from "./ui/app/UpdateToast";
+import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
+import { InlineTaskOverlays } from "./ui/task/InlineTaskOverlays";
+import { useTaskPersistence } from "./nostr/useTaskPersistence";
+import { useNostrIdentity } from "./nostr/useNostrIdentity";
+import {
+  normalizeNostrRelayList as normalizeRelayList,
+  useNostrAppBackupSync,
+} from "./nostr/useNostrAppBackupSync";
+import { useFirstRunOnboarding } from "./onboarding/useFirstRunOnboarding";
+import { useClipboardWriteToast } from "./hooks/useClipboardWriteToast";
+import { useBiblePrintPaperSize, usePrintPortal } from "./hooks/usePrintState";
+import { useRuntimeConfig } from "./hooks/useRuntimeConfig";
 
 import {
   buildBoardShareEnvelope,
@@ -200,54 +261,25 @@ import {
   type SharedContactPayload,
   type SharedTaskPayload,
 } from "./lib/shareInbox";
-import type { WalletMessageItem } from "./types/walletMessages";
 
 // ---- UI component imports (extracted subcomponents) ----
 import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
-import { autolink, TaskTitle, stripUrlsFromText, useTaskPreview } from "./ui/task/TaskTitle";
-import { TaskMedia, UrlPreviewCard, EventTitle, EventMedia, useEventPreview } from "./ui/task/TaskMedia";
-import { DocumentThumbnail, DocumentPreviewModal } from "./ui/task/DocumentPreviewModal";
-import { EventCard, getDraggedEventId } from "./ui/calendar/EventCard";
+import { EventCard } from "./ui/calendar/EventCard";
 import { EditModal } from "./ui/task/EditModal";
 import EventEditModal from "./ui/calendar/EventEditModal";
-import { AddBoardModal } from "./ui/board/AddBoardModal";
 import { SettingsModal } from "./ui/board/SettingsModal";
-
-import { Modal } from "./ui/Modal";
-import { CustomReminderSheet } from "./ui/reminders/CustomReminderSheet";
-import { RecurrencePicker, RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "./ui/recurrence/RecurrencePicker";
-import { BoardQrScanner } from "./ui/board/BoardQrScanner";
-import { BountyAttachSheet, normalizeMintUrlLite, formatMintLabel, sumMintProofs } from "./ui/bounty/BountyAttachSheet";
-import { LockToNpubSheet } from "./ui/bounty/LockToNpubSheet";
-import { TimeZoneSheet } from "./ui/reminders/TimeZoneSheet";
 
 import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
 
-const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
 const ADD_BOARD_OPTION_ID = "__add-board__";
 const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SPECIAL_CALENDAR_US_HOLIDAYS_ID = "special:us-holidays";
 const SPECIAL_CALENDAR_US_HOLIDAYS_LABEL = "US Holidays";
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
-type ScanResult = QrScannerLib.ScanResult;
 
-/* ================= Types ================= */
-type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
-type DayChoice = Weekday | string; // string = custom list columnId
 const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
-const WD_FULL = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-] as const;
 const MONTH_NAMES = [
   "January",
   "February",
@@ -262,255 +294,15 @@ const MONTH_NAMES = [
   "November",
   "December",
 ] as const;
-const MONTH_PICKER_YEAR_WINDOW = 1000;
-const HOURS_12 = Array.from({ length: 12 }, (_, i) => i + 1);
-const MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
-const MERIDIEMS = ["AM", "PM"] as const;
-type Meridiem = (typeof MERIDIEMS)[number];
 
-type Recurrence =
-  | { type: "none"; untilISO?: string }
-  | { type: "daily"; untilISO?: string }
-  | { type: "weekly"; days: Weekday[]; untilISO?: string }
-  | { type: "every"; n: number; unit: "hour" | "day" | "week"; untilISO?: string }
-  | { type: "monthlyDay"; day: number; interval?: number; untilISO?: string };
 
-type Subtask = {
-  id: string;
-  title: string;
-  completed?: boolean;
-};
-
-type LockRecipientSelection = {
-  value: string;
-  label: string;
-  contactId?: string;
-};
-
-type QuickLockOption = {
-  id: string;
-  title: string;
-  value: string;
-  label: string;
-  contactId?: string;
-};
-
-type Nip05CheckState = {
-  status: "pending" | "valid" | "invalid";
-  nip05: string;
-  npub: string;
-  checkedAt: number;
-  contactUpdatedAt?: number | null;
-};
-
-type InboxSender = {
-  pubkey: string;
-  name?: string;
-  npub?: string;
-};
-
-type InboxItemStatus =
-  | "pending"
-  | "accepted"
-  | "declined"
-  | "tentative"
-  | "deleted"
-  | "read";
-
-type InboxItem =
-  | {
-      type: "board";
-      boardId: string;
-      boardName?: string;
-      relays?: string[];
-      sender: InboxSender;
-      receivedAt: string;
-      status?: InboxItemStatus;
-      dmEventId?: string;
-    }
-  | {
-      type: "contact";
-      contact: SharedContactPayload;
-      sender: InboxSender;
-      receivedAt: string;
-      status?: InboxItemStatus;
-      dmEventId?: string;
-    }
-  | {
-      type: "task";
-      task: SharedTaskPayload;
-      sender: InboxSender;
-      receivedAt: string;
-      status?: InboxItemStatus;
-      dmEventId?: string;
-    };
-
-type TaskAssigneeStatus = "pending" | "accepted" | "declined" | "tentative";
-
-type TaskAssignee = {
-  pubkey: string;
-  relay?: string;
-  status?: TaskAssigneeStatus;
-  respondedAt?: number;
-};
-
-type CalendarInviteStatus = "pending" | "read" | CalendarRsvpStatus | "dismissed";
-
-type CalendarInvite = {
-  id: string;
-  source: "dm" | "nostr";
-  eventId: string;
-  canonical: string;
-  view: string;
-  eventKey: string;
-  inviteToken: string;
-  title?: string;
-  start?: string;
-  end?: string;
-  relays?: string[];
-  sender?: InboxSender;
-  receivedAt: string;
-  status: CalendarInviteStatus;
-};
-
-type CalendarRsvpEnvelope = {
-  eventId: string;
-  authorPubkey: string;
-  createdAt: number;
-  status: CalendarRsvpStatus;
-  fb?: CalendarRsvpFb;
-  inviteToken?: string;
-};
-
-function normalizeNostrPubkeyHex(value: string | null | undefined): string | null {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return null;
-  const normalized = normalizeNostrPubkey(trimmed);
-  const raw = compressedToRawHex(normalized ?? trimmed).toLowerCase();
-  return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
-}
-
-function normalizeAgentPubkey(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  return normalizeNostrPubkeyHex(value) ?? undefined;
-}
-
-function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized: TaskAssignee[] = [];
-  const seen = new Set<string>();
-  value.forEach((entry) => {
-    if (!entry || typeof entry !== "object") return;
-    const pubkey = normalizeNostrPubkeyHex((entry as any).pubkey);
-    if (!pubkey || seen.has(pubkey)) return;
-    seen.add(pubkey);
-    const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-    const status = normalizeTaskAssignmentStatus((entry as any).status) as TaskAssigneeStatus | undefined;
-    const respondedAtRaw = Number((entry as any).respondedAt);
-    const respondedAt =
-      Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
-    normalized.push({
-      pubkey,
-      ...(relay ? { relay } : {}),
-      ...(status ? { status } : {}),
-      ...(respondedAt ? { respondedAt } : {}),
-    });
-  });
-  return normalized.length ? normalized : undefined;
-}
-
-function mergeTaskAssigneeResponse(
-  assignees: TaskAssignee[] | undefined,
-  responderPubkey: string,
-  status: TaskAssigneeStatus,
-  respondedAtMs: number,
-): TaskAssignee[] | undefined {
-  const normalizedResponder = normalizeNostrPubkeyHex(responderPubkey);
-  if (!normalizedResponder || !Array.isArray(assignees) || !assignees.length) return assignees;
-  let changed = false;
-  const next = assignees.map((assignee) => {
-    const assigneePubkey = normalizeNostrPubkeyHex(assignee.pubkey);
-    if (!assigneePubkey || assigneePubkey !== normalizedResponder) return assignee;
-    const nextStatus = status;
-    const nextRespondedAt = respondedAtMs > 0 ? respondedAtMs : Date.now();
-    const prevStatus = assignee.status ?? "pending";
-    const prevRespondedAt = typeof assignee.respondedAt === "number" ? assignee.respondedAt : 0;
-    if (prevStatus === nextStatus && prevRespondedAt === nextRespondedAt) return assignee;
-    changed = true;
-    return {
-      ...assignee,
-      status: nextStatus,
-      respondedAt: nextRespondedAt,
-    };
-  });
-  return changed ? next : assignees;
-}
 
 function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean {
   return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
 }
 
-function loadNip05Cache(): Record<string, Nip05CheckState> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACT_NIP05_CACHE);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    const entries: Record<string, Nip05CheckState> = {};
-    Object.entries(parsed as Record<string, any>).forEach(([key, value]) => {
-      if (!value || typeof value !== "object") return;
-      const status = (value as any).status;
-      const nip05 = typeof (value as any).nip05 === "string" ? (value as any).nip05 : "";
-      const npub = typeof (value as any).npub === "string" ? (value as any).npub : "";
-      const checkedAt = Number((value as any).checkedAt) || 0;
-      const contactUpdatedAtRaw = Number((value as any).contactUpdatedAt);
-      if (!nip05 || !npub) return;
-      if (status !== "pending" && status !== "valid" && status !== "invalid") return;
-      entries[key] = {
-        status,
-        nip05,
-        npub,
-        checkedAt: checkedAt || Date.now(),
-        contactUpdatedAt: Number.isFinite(contactUpdatedAtRaw) ? contactUpdatedAtRaw : null,
-      };
-    });
-    return entries;
-  } catch {
-    return {};
-  }
-}
 
-function contactVerifiedNip05(contact: Contact, cache: Record<string, Nip05CheckState>): string | null {
-  const normalizedNpub = normalizeNostrPubkey(contact.npub || "");
-  return contactVerifiedNip05Core(
-    {
-      id: contact.id,
-      nip05: contact.nip05,
-      npub: normalizedNpub || contact.npub,
-    },
-    cache,
-  );
-}
 
-function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
-      <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l.967 2.329a1.125 1.125 0 0 0 1.304.674l2.457-.624c1.119-.285 2.114.71 1.829 1.829l-.624 2.457a1.125 1.125 0 0 0 .674 1.304l2.329.967c1.077.448 1.077 1.976 0 2.424l-2.329.967a1.125 1.125 0 0 0-.674 1.304l.624 2.457c.285 1.119-.71 2.114-1.829 1.829l-2.457-.624a1.125 1.125 0 0 0-1.304.674l-.967 2.329c-.448 1.077-1.976 1.077-2.424 0l-.967-2.329a1.125 1.125 0 0 0-1.304-.674l-2.457.624c-1.119.285-2.114-.71-1.829-1.829l.624-2.457a1.125 1.125 0 0 0-.674-1.304l-2.329-.967c-1.077-.448-1.077-1.976 0-2.424l2.329-.967a1.125 1.125 0 0 0 .674-1.304l-.624-2.457c-.285-1.119.71-2.114 1.829-1.829l2.457.624a1.125 1.125 0 0 0 1.304-.674l.967-2.329Z"
-      />
-      <path
-        d="m9.4 12.75 1.9 1.9 3.85-3.85"
-        fill="none"
-        stroke="var(--surface-base)"
-        strokeWidth={1.6}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -522,609 +314,14 @@ function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-type TaskPriority = 1 | 2 | 3;
 
-type Task = {
-  id: string;
-  boardId: string;
-  createdBy?: string;             // nostr pubkey of task creator
-  lastEditedBy?: string;          // nostr pubkey of latest task editor
-  createdAt?: number;             // unix ms timestamp (local)
-  updatedAt?: string;             // iso timestamp of latest local edit when known
-  _nostrAt?: number;              // unix seconds of the Nostr event that last wrote this task (not persisted to IDB in old data)
-  title: string;
-  priority?: TaskPriority;        // 1-3 exclamation marks
-  note?: string;
-  images?: string[];              // base64 data URLs for pasted images
-  documents?: TaskDocument[];     // supported document attachments
-  dueISO: string;                 // for week board day grouping
-  dueDateEnabled?: boolean;       // whether the due date is active
-  completed?: boolean;
-  completedAt?: string;
-  completedBy?: string;           // nostr pubkey of user who marked complete
-  recurrence?: Recurrence;
-  // Week board columns:
-  column?: "day";
-  // Custom boards (multi-list):
-  columnId?: string;
-  hiddenUntilISO?: string;        // controls visibility (appear at/after this date)
-  order?: number;                 // order within the board for manual reordering
-  streak?: number;                // consecutive completion count
-  longestStreak?: number;         // highest recorded streak for the series
-  seriesId?: string;              // identifier for a recurring series
-  subtasks?: Subtask[];           // optional list of subtasks
-  assignees?: TaskAssignee[];     // optional assignment list with response states
-  bounty?: {
-    id: string;                   // bounty id (uuid)
-    token: string;                // cashu token string (locked or unlocked)
-    amount?: number;              // optional, sats
-    mint?: string;                // optional hint
-    lock?: "p2pk" | "htlc" | "none" | "unknown";
-    owner?: string;               // hex pubkey of task creator (who can unlock)
-    sender?: string;              // hex pubkey of funder (who can revoke)
-    receiver?: string;            // hex pubkey of intended recipient (who can decrypt nip04)
-    state: "locked" | "unlocked" | "revoked" | "claimed";
-    updatedAt: string;            // iso
-    enc?:
-      | {                         // optional encrypted form (hidden until funder reveals)
-          alg: "aes-gcm-256";
-          iv: string;            // base64
-          ct: string;            // base64
-        }
-      | {
-          alg: "nip04";         // encrypted to receiver's nostr pubkey (nip04 format)
-          data: string;          // ciphertext returned by nip04.encrypt
-      }
-      | null;
-  };
-  dueTimeEnabled?: boolean;       // whether a specific due time is set
-  dueTimeZone?: string;           // IANA time zone for due time (defaults to device zone)
-  reminders?: ReminderPreset[];   // preset reminder offsets before due time
-  reminderTime?: string;          // HH:mm reminder clock used when due time is not set
-  scriptureMemoryId?: string;     // reference to scripture memory entry when auto-created
-  scriptureMemoryStage?: number;  // stage at time of scheduling (for undo)
-  scriptureMemoryPrevReviewISO?: string | null; // previous review timestamp snapshot
-  scriptureMemoryScheduledAt?: string; // when this memory task was generated
-  bountyLists?: string[];         // local-only set of bounty list keys the task belongs to
-  bountyDeletedAt?: string;       // local-only marker for recoverable bounty-task deletes
-  inboxItem?: InboxItem;          // shared inbox metadata (boards/contacts/tasks)
-};
-
-type CalendarEventParticipant = {
-  pubkey: string;
-  relay?: string;
-  role?: string;
-};
-
-type CalendarEventBase = {
-  id: string;                     // stable event identifier
-  boardId: string;
-  createdBy?: string;             // nostr pubkey of event creator
-  lastEditedBy?: string;          // nostr pubkey of latest event editor
-  columnId?: string;              // list boards only
-  order?: number;                 // manual ordering within board/column
-  title: string;
-  summary?: string;
-  description?: string;
-  documents?: TaskDocument[];     // supported document attachments
-  image?: string;
-  locations?: string[];
-  geohash?: string;
-  participants?: CalendarEventParticipant[];
-  hashtags?: string[];
-  references?: string[];
-  reminders?: ReminderPreset[];   // per-device push reminders (not published)
-  reminderTime?: string;          // HH:mm reminder clock used for all-day events
-  hiddenUntilISO?: string;        // local visibility gating for board lists
-  recurrence?: Recurrence;        // client-managed recurrence
-  seriesId?: string;              // client-managed recurrence grouping
-  readOnly?: boolean;             // view-only event (cannot publish edits)
-  external?: boolean;             // boardless invitee event
-  originBoardId?: string;         // board id to publish edits/deletions when different from boardId
-  eventKey?: string;              // per-event share key (base64)
-  inviteTokens?: Record<string, string>; // board-only invite tokens keyed by pubkey
-  canonicalAddress?: string;      // canonical event address for invitees
-  viewAddress?: string;           // shareable view address for invitees
-  inviteToken?: string;           // invitee token for RSVP
-  inviteRelays?: string[];        // relays to fetch view + RSVP
-  boardPubkey?: string;           // canonical board pubkey for external RSVP
-  rsvpStatus?: CalendarRsvpStatus; // local RSVP state (external)
-  rsvpCreatedAt?: number;         // created_at for local RSVP (external)
-  rsvpFb?: CalendarRsvpFb;         // free/busy for local RSVP (external)
-};
-
-type DateCalendarEvent = CalendarEventBase & {
-  kind: "date";
-  startDate: string;              // YYYY-MM-DD
-  endDate?: string;               // inclusive YYYY-MM-DD (UI-facing)
-};
-
-type TimeCalendarEvent = CalendarEventBase & {
-  kind: "time";
-  startISO: string;               // ISO timestamp (UTC)
-  endISO?: string;                // ISO timestamp (UTC)
-  startTzid?: string;             // IANA TZID tag
-  endTzid?: string;
-};
-
-type CalendarEvent = DateCalendarEvent | TimeCalendarEvent;
-type ExternalCalendarEvent = CalendarEvent & {
-  external: true;
-  boardPubkey: string;
-};
-
-function isExternalCalendarEvent(event: CalendarEvent): event is ExternalCalendarEvent {
-  return event.external === true;
-}
-
-type EditItemType = "task" | "event";
-
-type EditingState =
-  | { type: "task"; originalType: EditItemType; originalId: string; task: Task }
-  | { type: "event"; originalType: EditItemType; originalId: string; event: CalendarEvent };
-
-const TASK_PRIORITY_MARKS: Record<TaskPriority, string> = {
-  1: "!",
-  2: "!!",
-  3: "!!!",
-};
-
-function normalizeTaskPriority(value: unknown): TaskPriority | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const rounded = Math.round(value);
-    if (rounded === 1 || rounded === 2 || rounded === 3) return rounded as TaskPriority;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!") {
-      return trimmed.length as TaskPriority;
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (parsed === 1 || parsed === 2 || parsed === 3) return parsed as TaskPriority;
-  }
-  return undefined;
-}
-
-function normalizeTaskCreatedAt(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  return undefined;
-}
-
-function taskPriorityMarks(priority: TaskPriority | undefined): string {
-  return priority ? TASK_PRIORITY_MARKS[priority] : "";
-}
-
-type BoardSortMode = "manual" | "due" | "priority" | "created" | "alpha";
-type BoardSortDirection = "asc" | "desc";
-type UpcomingBoardGrouping = "mixed" | "grouped";
-
-const DEFAULT_BOARD_SORT_DIRECTION: Record<BoardSortMode, BoardSortDirection> = {
-  manual: "asc",
-  due: "asc",
-  priority: "desc",
-  created: "desc",
-  alpha: "asc",
-};
-
-const BOARD_SORT_MODE_IDS = new Set<BoardSortMode>(["manual", "due", "priority", "created", "alpha"]);
-
-function normalizeBoardSortState(value: unknown): { mode: BoardSortMode; direction: BoardSortDirection } | null {
-  const modeRaw = typeof (value as any)?.mode === "string" ? (value as any).mode : "";
-  if (!BOARD_SORT_MODE_IDS.has(modeRaw as BoardSortMode)) return null;
-  const mode = modeRaw as BoardSortMode;
-  const directionRaw = typeof (value as any)?.direction === "string" ? (value as any).direction : "";
-  const direction: BoardSortDirection =
-    directionRaw === "asc" || directionRaw === "desc" ? (directionRaw as BoardSortDirection) : DEFAULT_BOARD_SORT_DIRECTION[mode];
-  return { mode, direction };
-}
-
-const PINNED_BOUNTY_LIST_KEY = "taskify::pinned";
-const LS_MESSAGES_BOARD_ID = "taskify_messages_board_id_v1";
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
 const MESSAGES_COLUMN_ID = "messages-shared";
 const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
 
-function taskHasBountyList(task: Task, key: string | null | undefined): boolean {
-  if (!key) return false;
-  if (!Array.isArray(task.bountyLists)) return false;
-  return task.bountyLists.includes(key);
-}
-
-function withTaskAddedToBountyList(task: Task, key: string | null): Task {
-  if (!key) return task;
-  if (taskHasBountyList(task, key)) return task;
-  const nextLists = Array.isArray(task.bountyLists) ? [...task.bountyLists, key] : [key];
-  return { ...task, bountyLists: nextLists };
-}
-
-function withTaskRemovedFromBountyList(task: Task, key: string | null): Task {
-  if (!key || !Array.isArray(task.bountyLists)) return task;
-  if (!task.bountyLists.includes(key)) return task;
-  const filtered = task.bountyLists.filter((value) => value !== key);
-  if (filtered.length === 0) {
-    const clone = { ...task };
-    delete clone.bountyLists;
-    return clone;
-  }
-  return { ...task, bountyLists: filtered };
-}
-
-function isRecoverableBountyTask(task: Task): boolean {
-  return !!task.bounty && typeof task.bountyDeletedAt === "string" && task.bountyDeletedAt.trim().length > 0;
-}
-
-function normalizeBounty(bounty?: Task["bounty"] | null): Task["bounty"] | undefined {
-  if (!bounty) return undefined;
-  const normalized: Task["bounty"] = { ...bounty };
-  const owner = ensureXOnlyHex(normalized.owner);
-  if (owner) normalized.owner = owner; else delete normalized.owner;
-  const sender = ensureXOnlyHex(normalized.sender);
-  if (sender) normalized.sender = sender; else delete normalized.sender;
-  const receiver = ensureXOnlyHex(normalized.receiver);
-  if (receiver) normalized.receiver = receiver; else delete normalized.receiver;
-  const token = typeof normalized.token === "string" ? normalized.token : "";
-  const hasToken = token.trim().length > 0;
-  const hasCipher = normalized.enc !== undefined && normalized.enc !== null;
-
-  if (normalized.state === "claimed" || normalized.state === "revoked") {
-    return normalized;
-  }
-
-  if (hasToken && !hasCipher) {
-    normalized.state = "unlocked";
-    if (!normalized.lock || normalized.lock === "unknown") {
-      normalized.lock = "none";
-    }
-  } else if (hasCipher && !hasToken) {
-    normalized.state = "locked";
-  } else if (hasToken && hasCipher) {
-    normalized.state = "unlocked";
-  } else {
-    normalized.state = "locked";
-  }
-
-  return normalized;
-}
-
-function normalizeTaskBounty(task: Task): Task {
-  if (!Object.prototype.hasOwnProperty.call(task, "bounty")) {
-    return task;
-  }
-  const clone: Task = { ...task };
-  const bounty = (clone as any).bounty as Task["bounty"] | undefined;
-  if (!bounty) {
-    delete (clone as any).bounty;
-    return clone;
-  }
-  const normalized = normalizeBounty(bounty);
-  if (!normalized) {
-    delete (clone as any).bounty;
-    return clone;
-  }
-  clone.bounty = normalized;
-  return clone;
-}
-
-function toXOnlyHex(value?: string | null): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim().toLowerCase();
-  const hex = trimmed.startsWith("0x") ? trimmed.slice(2) : trimmed;
-  if (/^(02|03)[0-9a-f]{64}$/.test(hex)) {
-    return hex.slice(-64);
-  }
-  if (/^[0-9a-f]{64}$/.test(hex)) {
-    return hex;
-  }
-  return null;
-}
-
-function ensureXOnlyHex(value?: string | null): string | undefined {
-  const normalized = toXOnlyHex(value);
-  return normalized ?? undefined;
-}
-
-function pubkeysEqual(a?: string | null, b?: string | null): boolean {
-  const ax = toXOnlyHex(a);
-  const bx = toXOnlyHex(b);
-  return !!(ax && bx && ax === bx);
-}
-
-function bountyStateLabel(bounty: Task["bounty"]): string {
-  if (
-    bounty.state === "locked" &&
-    bounty.lock === "p2pk" &&
-    bounty.receiver &&
-    typeof window !== "undefined" &&
-    pubkeysEqual(bounty.receiver, (window as any).nostrPK)
-  ) {
-    return "ready to redeem";
-  }
-  return bounty.state;
-}
-
-function mergeLongestStreak(task: Task, streak: number | undefined): number | undefined {
-  const previous =
-    typeof task.longestStreak === "number"
-      ? task.longestStreak
-      : typeof task.streak === "number"
-        ? task.streak
-        : undefined;
-  if (typeof streak === "number") {
-    return previous === undefined ? streak : Math.max(previous, streak);
-  }
-  return previous;
-}
-
-type BuiltinReminderPreset = "0h" | "5m" | "15m" | "30m" | "1h" | "1d" | "1w" | "0d";
-type CustomReminderPreset = `custom-${number}`;
-type ReminderPreset = BuiltinReminderPreset | CustomReminderPreset;
-type ReminderPresetMode = "timed" | "date";
-
-type PushPlatform = "ios" | "android";
-
-type PushPreferences = {
-  enabled: boolean;
-  platform: PushPlatform;
-  deviceId?: string;
-  subscriptionId?: string;
-  permission?: NotificationPermission;
-};
-type PublishTaskFn = (
-  task: Task,
-  boardOverride?: Board,
-  options?: { skipBoardMetadata?: boolean }
-) => Promise<void>;
-type PublishCalendarEventFn = (
-  event: CalendarEvent,
-  boardOverride?: Board,
-  options?: { skipBoardMetadata?: boolean }
-) => Promise<void>;
-type ScriptureMemoryUpdate = {
-  entryId: string;
-  completedAt: string;
-  stageBefore?: number;
-  nextScheduled?: { entryId: string; scheduledAtISO: string };
-};
-type CompleteTaskResult = {
-  scriptureMemory?: ScriptureMemoryUpdate;
-} | null;
-type CompleteTaskFn = (
-  id: string,
-  options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" | "decline" | "maybe" }
-) => CompleteTaskResult;
-
-function detectPushPlatformFromNavigator(): PushPlatform {
-  if (typeof navigator === 'undefined') return 'ios';
-  const ua = typeof navigator.userAgent === 'string' ? navigator.userAgent.toLowerCase() : '';
-  const vendor = typeof navigator.vendor === 'string' ? navigator.vendor.toLowerCase() : '';
-  const platform = typeof navigator.platform === 'string' ? navigator.platform.toLowerCase() : '';
-  const isIosDevice = /\b(iphone|ipad|ipod)\b/.test(ua);
-  const isStandalonePwa = typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia('(display-mode: standalone)').matches;
-  const isSafariBrowser = /safari/.test(ua)
-    && !/chrome|crios|fxios|edge|edg\//.test(ua)
-    && !/android/.test(ua);
-  const isAppleWebkit = vendor.includes('apple');
-  if (isIosDevice || (isSafariBrowser && (platform.startsWith('mac') || isAppleWebkit)) || (isAppleWebkit && isStandalonePwa)) {
-    return 'ios';
-  }
-  return 'android';
-}
-
-const INFERRED_PUSH_PLATFORM: PushPlatform = detectPushPlatformFromNavigator();
-
-const DEFAULT_DATE_REMINDER_TIME = "09:00";
-
-const TIMED_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
-  { id: "0h", label: "At due/start time", badge: "0h", minutes: 0 },
-  { id: "5m", label: "5 minutes before", badge: "5m", minutes: 5 },
-  { id: "15m", label: "15 minutes before", badge: "15m", minutes: 15 },
-  { id: "30m", label: "30 minutes before", badge: "30m", minutes: 30 },
-  { id: "1h", label: "1 hour before", badge: "1h", minutes: 60 },
-  { id: "1d", label: "1 day before", badge: "1d", minutes: 1440 },
-];
-
-const DATE_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
-  { id: "1w", label: "1 week before", badge: "1w", minutes: 10080 },
-  { id: "1d", label: "1 day before", badge: "1d", minutes: 1440 },
-  { id: "0d", label: "On the day", badge: "day of", minutes: 0 },
-];
-
-const BUILTIN_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
-  ...DATE_REMINDER_PRESETS,
-  ...TIMED_REMINDER_PRESETS,
-];
-
-const BUILTIN_REMINDER_IDS = new Set<BuiltinReminderPreset>(BUILTIN_REMINDER_PRESETS.map((opt) => opt.id));
-const BUILTIN_REMINDER_MINUTES = new Map<BuiltinReminderPreset, number>(BUILTIN_REMINDER_PRESETS.map((opt) => [opt.id, opt.minutes] as const));
-
 const BIBLE_BOARD_ID = "bible-reading";
-const LS_SCRIPTURE_MEMORY = "taskify_scripture_memory_v1";
 const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
 const FASTING_REMINDER_SERIES_ID = "fasting-reminder";
-
-type ScriptureMemoryFrequency = "daily" | "every2d" | "twiceWeek" | "weekly";
-type ScriptureMemorySort = "canonical" | "oldest" | "newest" | "needsReview";
-type FastingRemindersMode = "weekday" | "random";
-
-type ScriptureMemoryEntry = {
-  id: string;
-  bookId: string;
-  chapter: number;
-  startVerse: number | null;
-  endVerse: number | null;
-  addedAtISO: string;
-  lastReviewISO?: string;
-  scheduledAtISO?: string;
-  stage: number;
-  totalReviews: number;
-};
-
-type ScriptureMemoryState = {
-  entries: ScriptureMemoryEntry[];
-  lastReviewISO?: string;
-};
-
-const MS_PER_DAY = 86400000;
-
-const MAX_SCRIPTURE_STAGE = 8;
-const SCRIPTURE_STAGE_GROWTH = 1.8;
-const SCRIPTURE_INTERVAL_CAP_DAYS = 180;
-
-const SCRIPTURE_MEMORY_FREQUENCIES: Array<{
-  id: ScriptureMemoryFrequency;
-  label: string;
-  days: number;
-  description: string;
-}> = [
-  { id: "daily", label: "Daily", days: 1, description: "Creates a review task every day." },
-  { id: "every2d", label: "Every 2 days", days: 2, description: "Review roughly three to four times per week." },
-  { id: "twiceWeek", label: "Twice per week", days: 3, description: "Focus on scripture memory a couple times per week." },
-  { id: "weekly", label: "Weekly", days: 7, description: "Schedule one scripture memory task each week." },
-];
-
-const SCRIPTURE_MEMORY_SORTS: Array<{ id: ScriptureMemorySort; label: string }> = [
-  { id: "canonical", label: "Canonical order" },
-  { id: "oldest", label: "Oldest added" },
-  { id: "newest", label: "Newest added" },
-  { id: "needsReview", label: "Needs review" },
-];
-
-const CUSTOM_REMINDER_PATTERN = /^custom-(-?\d{1,8})$/;
-const MIN_CUSTOM_REMINDER_MINUTES = -99_999_999;
-const MAX_CUSTOM_REMINDER_MINUTES = 99_999_999;
-
-function clampCustomReminderMinutes(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(MIN_CUSTOM_REMINDER_MINUTES, Math.min(MAX_CUSTOM_REMINDER_MINUTES, Math.round(value)));
-}
-
-function normalizeReminderTime(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const parsed = parseTimeValue(value);
-  if (!parsed) return undefined;
-  return `${String(parsed.hour).padStart(2, "0")}:${String(parsed.minute).padStart(2, "0")}`;
-}
-
-function minutesToReminderId(minutes: number): ReminderPreset {
-  if (!Number.isFinite(minutes)) return "0d";
-  const normalized = clampCustomReminderMinutes(minutes);
-  if (normalized === 0) return "0d";
-  for (const [id, builtinMinutes] of BUILTIN_REMINDER_MINUTES) {
-    if (builtinMinutes === normalized) return id;
-  }
-  return `custom-${normalized}`;
-}
-
-function reminderPresetIdForMode(minutes: number, mode: ReminderPresetMode): ReminderPreset {
-  if (!Number.isFinite(minutes)) {
-    return mode === "timed" ? "0h" : "0d";
-  }
-  const normalized = clampCustomReminderMinutes(minutes);
-  if (normalized === 0) {
-    return mode === "timed" ? "0h" : "0d";
-  }
-  return minutesToReminderId(normalized);
-}
-
-function reminderPresetToMinutes(id: ReminderPreset): number {
-  if (BUILTIN_REMINDER_IDS.has(id as BuiltinReminderPreset)) {
-    return BUILTIN_REMINDER_MINUTES.get(id as BuiltinReminderPreset) ?? 0;
-  }
-  const match = typeof id === 'string' ? id.match(CUSTOM_REMINDER_PATTERN) : null;
-  if (!match) return 0;
-  return clampCustomReminderMinutes(parseInt(match[1] ?? '0', 10));
-}
-
-function formatReminderLabel(minutes: number): { label: string; badge: string } {
-  if (!Number.isFinite(minutes)) {
-    return {
-      label: "On the day",
-      badge: "day of",
-    };
-  }
-  if (minutes === 0) {
-    return {
-      label: "On the day",
-      badge: "day of",
-    };
-  }
-  const mins = clampCustomReminderMinutes(minutes);
-  const direction = mins < 0 ? "after" : "before";
-  const signPrefix = mins < 0 ? "+" : "";
-  const absMins = Math.abs(mins);
-  if (absMins % 1440 === 0) {
-    const days = absMins / 1440;
-    return {
-      label: `${days} day${days === 1 ? '' : 's'} ${direction}`,
-      badge: `${signPrefix}${days}d`,
-    };
-  }
-  if (absMins % 60 === 0) {
-    const hours = absMins / 60;
-    return {
-      label: `${hours} hour${hours === 1 ? '' : 's'} ${direction}`,
-      badge: `${signPrefix}${hours}h`,
-    };
-  }
-  return {
-    label: `${absMins} minute${absMins === 1 ? '' : 's'} ${direction}`,
-    badge: `${signPrefix}${absMins}m`,
-  };
-}
-
-type ReminderOption = { id: ReminderPreset; label: string; badge: string; minutes: number; builtin: boolean };
-
-function buildReminderOptions(extraPresetIds: ReminderPreset[] = [], mode: ReminderPresetMode = "timed"): ReminderOption[] {
-  const modePresets = mode === "date" ? DATE_REMINDER_PRESETS : TIMED_REMINDER_PRESETS;
-  const options = new Map<ReminderPreset, ReminderOption>(
-    modePresets.map((preset) => [preset.id, { ...preset, builtin: true }] as const),
-  );
-  const extras: ReminderOption[] = [];
-  for (const id of extraPresetIds) {
-    if (options.has(id)) continue;
-    const minutes = reminderPresetToMinutes(id);
-    if (!Number.isFinite(minutes)) continue;
-    const { label, badge } = formatReminderLabel(minutes);
-    extras.push({ id, label, badge, minutes, builtin: !String(id).startsWith("custom-") });
-  }
-  extras.sort((a, b) => a.minutes - b.minutes);
-  return [...options.values(), ...extras];
-}
-
-function sanitizeReminderList(value: unknown): ReminderPreset[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const dedupByMinutes = new Map<number, ReminderPreset>();
-  const addByMinutes = (id: ReminderPreset) => {
-    const minutes = reminderPresetToMinutes(id);
-    if (!Number.isFinite(minutes)) return;
-    if (!dedupByMinutes.has(minutes)) {
-      dedupByMinutes.set(minutes, id);
-    }
-  };
-  for (const item of value) {
-    if (typeof item === 'string') {
-      if (BUILTIN_REMINDER_IDS.has(item as BuiltinReminderPreset)) {
-        addByMinutes(item as ReminderPreset);
-        continue;
-      }
-      if (CUSTOM_REMINDER_PATTERN.test(item)) {
-        const minutes = reminderPresetToMinutes(item as ReminderPreset);
-        if (Number.isFinite(minutes)) addByMinutes(minutesToReminderId(minutes));
-      }
-      continue;
-    }
-    if (typeof item === 'number' && Number.isFinite(item)) {
-      const remId = minutesToReminderId(item);
-      addByMinutes(remId);
-    }
-  }
-  const sorted = [...dedupByMinutes.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, id]) => id);
-  return sorted;
-}
 
 function normalizeIsoTimestamp(value: unknown): string | undefined {
   if (typeof value !== "string" || !value) return undefined;
@@ -1132,225 +329,6 @@ function normalizeIsoTimestamp(value: unknown): string | undefined {
   if (Number.isNaN(date.getTime())) return undefined;
   return date.toISOString();
 }
-
-function latestScriptureReviewISO(entries: ScriptureMemoryEntry[]): string | undefined {
-  let latestTime = Number.NEGATIVE_INFINITY;
-  let latestISO: string | undefined;
-  for (const entry of entries) {
-    if (!entry.lastReviewISO) continue;
-    const time = new Date(entry.lastReviewISO).getTime();
-    if (!Number.isFinite(time)) continue;
-    if (time > latestTime) {
-      latestTime = time;
-      latestISO = new Date(time).toISOString();
-    }
-  }
-  return Number.isFinite(latestTime) && latestTime > Number.NEGATIVE_INFINITY ? latestISO : undefined;
-}
-
-function updateScriptureMemoryState(
-  prev: ScriptureMemoryState,
-  entries: ScriptureMemoryEntry[],
-  overrideLastReview?: string
-): ScriptureMemoryState {
-  const next: ScriptureMemoryState = { ...prev, entries };
-  const normalizedOverride = normalizeIsoTimestamp(overrideLastReview);
-  if (normalizedOverride) {
-    next.lastReviewISO = normalizedOverride;
-  } else {
-    next.lastReviewISO = latestScriptureReviewISO(entries);
-  }
-  if (!next.lastReviewISO) {
-    delete (next as { lastReviewISO?: string }).lastReviewISO;
-  }
-  return next;
-}
-
-function markScriptureEntryReviewed(
-  prev: ScriptureMemoryState,
-  entryId: string,
-  completedAtISO: string,
-  stageBefore?: number | null,
-): ScriptureMemoryState {
-  let changed = false;
-  const entries = prev.entries.map((entry) => {
-    if (entry.id !== entryId) return entry;
-    changed = true;
-    const baseStage = typeof stageBefore === "number" ? stageBefore : entry.stage ?? 0;
-    const nextStage = Math.min(MAX_SCRIPTURE_STAGE, Math.max(0, baseStage + 1));
-    return {
-      ...entry,
-      stage: nextStage,
-      totalReviews: (entry.totalReviews ?? 0) + 1,
-      lastReviewISO: completedAtISO,
-      scheduledAtISO: undefined,
-    };
-  });
-  if (!changed) return prev;
-  return updateScriptureMemoryState(prev, entries, completedAtISO);
-}
-
-function scheduleScriptureEntry(
-  prev: ScriptureMemoryState,
-  entryId: string,
-  scheduledAtISO: string
-): ScriptureMemoryState {
-  let changed = false;
-  const entries = prev.entries.map((entry) => {
-    if (entry.id !== entryId) return entry;
-    changed = true;
-    return { ...entry, scheduledAtISO };
-  });
-  if (!changed) return prev;
-  return updateScriptureMemoryState(prev, entries, prev.lastReviewISO);
-}
-
-function sanitizeScriptureMemoryState(raw: any): ScriptureMemoryState {
-  const now = new Date().toISOString();
-  if (!raw || typeof raw !== "object") {
-    return { entries: [] };
-  }
-  const entries: ScriptureMemoryEntry[] = Array.isArray((raw as any).entries)
-    ? (raw as any).entries
-        .map((entry: any) => {
-          const bookId = typeof entry?.bookId === "string" ? entry.bookId : "";
-          const chapter = Number(entry?.chapter);
-          if (!bookId || Number.isNaN(chapter) || chapter <= 0) return null;
-          const chapterCount = getBibleBookChapterCount(bookId);
-          if (!chapterCount || chapter > chapterCount) return null;
-          const verseCount = getBibleChapterVerseCount(bookId, chapter);
-          if (!verseCount) return null;
-          let startVerse = Number(entry?.startVerse);
-          if (!Number.isFinite(startVerse) || startVerse <= 0) startVerse = 1;
-          let endVerse = Number(entry?.endVerse);
-          if (!Number.isFinite(endVerse) || endVerse <= 0) endVerse = startVerse;
-          startVerse = Math.max(1, Math.min(verseCount, Math.floor(startVerse)));
-          endVerse = Math.max(startVerse, Math.min(verseCount, Math.floor(endVerse)));
-          const addedAtISO = typeof entry?.addedAtISO === "string" && entry.addedAtISO ? entry.addedAtISO : now;
-          const lastReviewISO = typeof entry?.lastReviewISO === "string" && entry.lastReviewISO ? entry.lastReviewISO : undefined;
-          const scheduledAtISO = typeof entry?.scheduledAtISO === "string" && entry.scheduledAtISO
-            ? entry.scheduledAtISO
-            : undefined;
-          const stageRaw = Number(entry?.stage);
-          const stage = Number.isFinite(stageRaw) && stageRaw >= 0 ? Math.min(Math.floor(stageRaw), MAX_SCRIPTURE_STAGE) : 0;
-          const totalReviewsRaw = Number(entry?.totalReviews);
-          const totalReviews = Number.isFinite(totalReviewsRaw) && totalReviewsRaw > 0 ? Math.floor(totalReviewsRaw) : 0;
-          const id = typeof entry?.id === "string" && entry.id ? entry.id : crypto.randomUUID();
-          return {
-            id,
-            bookId,
-            chapter,
-            startVerse,
-            endVerse,
-            addedAtISO,
-            lastReviewISO,
-            scheduledAtISO,
-            stage,
-            totalReviews,
-          } as ScriptureMemoryEntry;
-        })
-        .filter((entry): entry is ScriptureMemoryEntry => !!entry)
-    : [];
-  const state = updateScriptureMemoryState({ entries }, entries);
-  const persistedLastReview = normalizeIsoTimestamp((raw as any)?.lastReviewISO);
-  if (persistedLastReview) {
-    state.lastReviewISO = persistedLastReview;
-  }
-  return state;
-}
-
-function formatScriptureReference(entry: ScriptureMemoryEntry): string {
-  const book = getBibleBookTitle(entry.bookId) ?? entry.bookId;
-  const verseStart = entry.startVerse ?? null;
-  const verseEnd = entry.endVerse ?? null;
-  if (verseStart && verseEnd && verseStart !== verseEnd) {
-    return `${book} ${entry.chapter}:${verseStart}-${verseEnd}`;
-  }
-  if (verseStart) {
-    return `${book} ${entry.chapter}:${verseStart}`;
-  }
-  return `${book} ${entry.chapter}`;
-}
-
-function formatDueInLabel(dueInDays: number): string {
-  if (!Number.isFinite(dueInDays)) return "Due now";
-  if (Math.abs(dueInDays) < 0.5) return "Due now";
-  const rounded = Math.round(dueInDays);
-  if (rounded === 0) return "Due now";
-  const abs = Math.abs(rounded);
-  const unit = abs === 1 ? "day" : "days";
-  if (rounded > 0) return `Due in ${abs} ${unit}`;
-  return `Overdue by ${abs} ${unit}`;
-}
-
-function computeScriptureIntervalDays(entry: ScriptureMemoryEntry, baseDays: number, totalEntries: number): number {
-  const entryCountFactor = Math.max(1, Math.log2(totalEntries + 1));
-  const normalizedBase = Math.max(0.5, baseDays / entryCountFactor);
-  const stageFactor = Math.pow(SCRIPTURE_STAGE_GROWTH, Math.max(0, entry.stage || 0));
-  const interval = normalizedBase * stageFactor;
-  return Math.min(interval, SCRIPTURE_INTERVAL_CAP_DAYS);
-}
-
-function computeScriptureStats(
-  entry: ScriptureMemoryEntry,
-  baseDays: number,
-  totalEntries: number,
-  now: Date
-): {
-  intervalDays: number;
-  daysSinceReview: number;
-  score: number;
-  dueInDays: number;
-  dueNow: boolean;
-} {
-  const intervalDays = computeScriptureIntervalDays(entry, baseDays, totalEntries);
-  const lastReview = entry.lastReviewISO ? new Date(entry.lastReviewISO) : null;
-  let daysSinceReview = lastReview ? (now.getTime() - lastReview.getTime()) / 86400000 : Infinity;
-  if (!Number.isFinite(daysSinceReview)) daysSinceReview = Infinity;
-  const score = !lastReview ? Number.POSITIVE_INFINITY : daysSinceReview / Math.max(intervalDays, 0.5);
-  const dueInDays = !lastReview ? 0 : intervalDays - daysSinceReview;
-  const dueNow = !lastReview || daysSinceReview >= intervalDays * 0.95;
-  return { intervalDays, daysSinceReview, score, dueInDays, dueNow };
-}
-
-function scriptureFrequencyToRecurrence(baseDays: number): Recurrence {
-  const normalized = Math.max(1, Math.round(baseDays));
-  if (normalized <= 1) return { type: "daily" };
-  return { type: "every", n: normalized, unit: "day" };
-}
-
-function recurrencesEqual(a: Recurrence | undefined, b: Recurrence | undefined): boolean {
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function chooseNextScriptureEntry(
-  entries: ScriptureMemoryEntry[],
-  baseDays: number,
-  now: Date
-): { entry: ScriptureMemoryEntry; stats: ReturnType<typeof computeScriptureStats> } | null {
-  if (!entries.length) return null;
-  const total = entries.length;
-  let best: { entry: ScriptureMemoryEntry; stats: ReturnType<typeof computeScriptureStats> } | null = null;
-  for (const entry of entries) {
-    const stats = computeScriptureStats(entry, baseDays, total, now);
-    if (!entry.lastReviewISO) {
-      return { entry, stats };
-    }
-    if (!best || stats.score > best.stats.score) {
-      best = { entry, stats };
-    }
-  }
-  if (!best) return null;
-  return best;
-}
-
-const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
-  enabled: false,
-  platform: INFERRED_PUSH_PLATFORM,
-  permission: (typeof Notification !== 'undefined' ? Notification.permission : 'default') as NotificationPermission,
-};
 
 const RAW_WORKER_BASE = (import.meta as any)?.env?.VITE_WORKER_BASE_URL || "";
 const FALLBACK_WORKER_BASE_URL = RAW_WORKER_BASE ? String(RAW_WORKER_BASE).replace(/\/$/, "") : "";
@@ -1433,7 +411,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
   }
 }
 
-type ListColumn = { id: string; name: string };
 type CompoundIndexGroup = {
   key: string;
   boardId: string;
@@ -1441,56 +418,6 @@ type CompoundIndexGroup = {
   columns: { id: string; name: string }[];
 };
 
-type BoardBase = {
-  id: string;
-  name: string;
-  // Optional Nostr sharing metadata
-  nostr?: { boardId: string; relays: string[] };
-  archived?: boolean;
-  hidden?: boolean;
-  clearCompletedDisabled?: boolean;
-};
-
-type CompoundChildId = string;
-
-function parseCompoundChildInput(raw: string): { boardId: string; relays: string[] } {
-  const trimmed = raw.trim();
-  if (!trimmed) return { boardId: "", relays: [] };
-  let boardId = trimmed;
-  let relaySegment = "";
-  const atIndex = trimmed.indexOf("@");
-  if (atIndex >= 0) {
-    boardId = trimmed.slice(0, atIndex).trim();
-    relaySegment = trimmed.slice(atIndex + 1).trim();
-  } else {
-    const spaceIndex = trimmed.search(/\s/);
-    if (spaceIndex >= 0) {
-      boardId = trimmed.slice(0, spaceIndex).trim();
-      relaySegment = trimmed.slice(spaceIndex + 1).trim();
-    }
-  }
-  const relays = relaySegment
-    ? relaySegment.split(/[\s,]+/).map((relay) => relay.trim()).filter(Boolean)
-    : [];
-  return { boardId, relays };
-}
-
-type Board =
-  | (BoardBase & { kind: "week" }) // fixed Sun–Sat
-  | (BoardBase & { kind: "lists"; columns: ListColumn[]; indexCardEnabled?: boolean }) // multiple customizable columns
-  | (BoardBase & {
-      kind: "compound";
-      children: CompoundChildId[];
-      indexCardEnabled?: boolean;
-      hideChildBoardNames?: boolean;
-    })
-  | (BoardBase & { kind: "bible" });
-
-type ListLikeBoard = Extract<Board, { kind: "lists" | "compound" }>;
-
-function isListLikeBoard(board: Board | null | undefined): board is ListLikeBoard {
-  return !!board && (board.kind === "lists" || board.kind === "compound");
-}
 
 function compoundColumnKey(boardId: string, columnId: string): string {
   return `${boardId}::${columnId}`;
@@ -1526,94 +453,7 @@ function findBoardByCompoundChildId(boards: Board[], childId: string): Board | u
   });
 }
 
-function compoundChildMatchesBoard(childId: string, board: Board): boolean {
-  return childId === board.id || (!!board.nostr?.boardId && childId === board.nostr.boardId);
-}
 
-function normalizeCompoundChildId(boards: Board[], childId: string): string {
-  const match = findBoardByCompoundChildId(boards, childId);
-  return match ? match.id : childId;
-}
-
-type Settings = {
-  weekStart: Weekday; // 0=Sun, 1=Mon, 6=Sat
-  newTaskPosition: "top" | "bottom";
-  streaksEnabled: boolean;
-  completedTab: boolean;
-  bibleTrackerEnabled: boolean;
-  scriptureMemoryEnabled: boolean;
-  scriptureMemoryBoardId?: string | null;
-  scriptureMemoryFrequency: ScriptureMemoryFrequency;
-  scriptureMemorySort: ScriptureMemorySort;
-  fastingRemindersEnabled: boolean;
-  fastingRemindersMode: FastingRemindersMode;
-  fastingRemindersPerMonth: number;
-  fastingRemindersWeekday: Weekday;
-  fastingRemindersRandomSeed: string;
-  showFullWeekRecurring: boolean;
-  // Base UI font size in pixels; null uses the OS preferred size
-  baseFontSize: number | null;
-  startBoardByDay: Partial<Record<Weekday, string>>;
-  accent: "green" | "blue" | "background";
-  backgroundImage?: string | null;
-  backgroundAccent?: AccentPalette | null;
-  backgroundAccents?: AccentPalette[] | null;
-  backgroundAccentIndex?: number | null;
-  backgroundBlur: "blurred" | "sharp";
-  hideCompletedSubtasks: boolean;
-  startupView: "main" | "wallet";
-  walletConversionEnabled: boolean;
-  walletPrimaryCurrency: "sat" | "usd";
-  walletSentStateChecksEnabled: boolean;
-  walletPaymentRequestsEnabled: boolean;
-  walletPaymentRequestsBackgroundChecksEnabled: boolean;
-  walletMintBackupEnabled: boolean;
-  walletContactsSyncEnabled: boolean;
-  fileStorageServer: string;
-  encryptedFileStorageServer: string;
-  fileServers: string; // JSON-serialized FileServerEntry[]
-  npubCashLightningAddressEnabled: boolean;
-  npubCashAutoClaim: boolean;
-  cloudBackupsEnabled: boolean;
-  nostrBackupEnabled: boolean;
-  // Metadata sync is controlled by nostrBackupEnabled; kept for backwards compat
-  nostrBackupMetadataEnabled: boolean;
-  pushNotifications: PushPreferences;
-};
-
-type AccentChoice = {
-  id: "blue" | "green";
-  label: string;
-  fill: string;
-  ring: string;
-  border: string;
-  borderActive: string;
-  shadow: string;
-  shadowActive: string;
-};
-
-const ACCENT_CHOICES: AccentChoice[] = [
-  {
-    id: "blue",
-    label: "iMessage blue",
-    fill: "#0a84ff",
-    ring: "rgba(64, 156, 255, 0.32)",
-    border: "rgba(64, 156, 255, 0.38)",
-    borderActive: "rgba(64, 156, 255, 0.88)",
-    shadow: "0 12px 26px rgba(10, 132, 255, 0.32)",
-    shadowActive: "0 18px 34px rgba(10, 132, 255, 0.42)",
-  },
-  {
-    id: "green",
-    label: "Mint green",
-    fill: "#34c759",
-    ring: "rgba(52, 199, 89, 0.28)",
-    border: "rgba(52, 199, 89, 0.36)",
-    borderActive: "rgba(52, 199, 89, 0.86)",
-    shadow: "0 12px 24px rgba(52, 199, 89, 0.28)",
-    shadowActive: "0 18px 32px rgba(52, 199, 89, 0.38)",
-  },
-];
 
 const CUSTOM_ACCENT_VARIABLES: ReadonlyArray<[string, keyof AccentPalette]> = [
   ["--accent", "fill"],
@@ -1650,16 +490,7 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${clampedAlpha})`;
 }
 
-function isSameLocalDate(aMs: number, bMs: number): boolean {
-  const a = new Date(aMs);
-  const b = new Date(bMs);
-  return a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-}
 
-const R_NONE: Recurrence = { type: "none" };
-const LS_TASKS = "taskify_tasks_v5";
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 // Persistent task-deletion tombstones, keyed by board tag → task id → unix-secs
 // of the deletion. Survives reloads so a stale CREATE event from a slow/unaware
@@ -1670,252 +501,9 @@ const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
 // timestamp — the most recent N deletions are always retained, which is what
 // matters for protecting against stale relay re-creates.
 const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
-const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
-const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
-const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
-const LS_SETTINGS = "taskify_settings_v2";
-const LS_BOARDS = "taskify_boards_v2";
-const LS_BOARD_SORT = "taskify_board_sort_v1";
-const LS_UPCOMING_FILTER = "taskify_upcoming_filter_v1";
-const LS_UPCOMING_US_HOLIDAYS_ENABLED = "taskify_upcoming_us_holidays_enabled_v1";
-const LS_UPCOMING_VIEW = "taskify_upcoming_view_v1";
-const LS_UPCOMING_SORT = "taskify_upcoming_sort_v1";
-const LS_UPCOMING_BOARD_GROUPING = "taskify_upcoming_board_grouping_v1";
-const LS_UPCOMING_FILTER_PRESETS = "taskify_upcoming_filter_presets_v1";
-const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
-
-const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
-const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
-const LS_LAST_CLOUD_BACKUP = "taskify_cloud_backup_last_v1";
-const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1";
-const CLOUD_BACKUP_MIN_INTERVAL_MS = 60 * 60 * 1000;
-const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
-const SATS_PER_BTC = 100_000_000;
-const HISTORY_MARK_SPENT_CUTOFF_MS = 5 * 24 * 60 * 60 * 1000;
 
-type WalletHistoryEntryKind = "bounty-attachment";
 
-type TaskifyBackupPayload = {
-  tasks: unknown;
-  calendarEvents: unknown;
-  externalCalendarEvents?: unknown;
-  boards: unknown;
-  settings: unknown;
-  scriptureMemory: unknown;
-  bibleTracker: unknown;
-  defaultRelays: unknown;
-  contacts: unknown;
-  contactsSyncMeta?: unknown;
-  nostrSk: string;
-  cashu: {
-    proofs: unknown;
-    activeMint: string | null;
-    history: unknown;
-    trackedMints: string[];
-    pendingTokens: PendingTokenEntry[];
-    walletSeed: WalletSeedBackupPayload;
-  };
-};
-
-function parseBackupJsonPayload(raw: string): Partial<TaskifyBackupPayload> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("Invalid backup file.");
-  }
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid backup data");
-  }
-  return parsed as Partial<TaskifyBackupPayload>;
-}
-
-function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
-  if (!data || typeof data !== "object") {
-    throw new Error("Invalid backup data");
-  }
-  // Derive per-board sync cursors from the max task timestamp in the backup instead
-  // of clearing them to {}. Clearing to {} caused limit:500 on the next open which
-  // fetched all recent events including old CREATE events whose DELETE events were
-  // beyond the 500 limit — those old tasks would reappear temporarily.
-  //
-  // By seeding the cursor from the backup's task timestamps, the post-restore sync
-  // uses since:(max_task_time - lookback) and only fetches events newer than the
-  // backup, which are exactly the changes the user missed while offline.
-  const RESTORE_LOOKBACK_SECS = 3600; // 1 hour buffer for clock skew / in-flight events
-  // Build a map from local boardId → max task timestamp (to avoid iterating boards twice)
-  const boardLocalMaxSecs = new Map<string, number>();
-  if (Array.isArray(data.tasks)) {
-    for (const task of data.tasks as Array<{ boardId?: string; createdAt?: number; updatedAt?: string }>) {
-      if (!task.boardId) continue;
-      let secs = 0;
-      if (typeof task.createdAt === "number" && task.createdAt > 0) {
-        secs = Math.max(secs, Math.floor(task.createdAt / 1000));
-      }
-      if (typeof task.updatedAt === "string") {
-        const ms = Date.parse(task.updatedAt);
-        if (!isNaN(ms) && ms > 0) secs = Math.max(secs, Math.floor(ms / 1000));
-      }
-      boardLocalMaxSecs.set(task.boardId, Math.max(boardLocalMaxSecs.get(task.boardId) ?? 0, secs));
-    }
-  }
-  // Cursors must be keyed by bTag = boardTag(b.nostr!.boardId) — this is how the
-  // subscription loop reads them (it.id = boardTag(b.nostr!.boardId)).
-  const cursors: Record<string, number> = {};
-  if (Array.isArray(data.boards)) {
-    for (const board of data.boards as Array<{ id?: string; nostr?: { boardId?: string } }>) {
-      const localId = board.id;
-      const nostrBoardId = board.nostr?.boardId;
-      if (!localId || !nostrBoardId) continue;
-      const maxSecs = boardLocalMaxSecs.get(localId) ?? 0;
-      if (maxSecs > 0) {
-        const bTag = boardTag(nostrBoardId);
-        cursors[bTag] = Math.max(0, maxSecs - RESTORE_LOOKBACK_SECS);
-      }
-    }
-  }
-  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(cursors));
-  if ("tasks" in data && data.tasks !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
-  }
-  if ("calendarEvents" in data && data.calendarEvents !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(data.calendarEvents));
-  }
-  if ("externalCalendarEvents" in data && data.externalCalendarEvents !== undefined) {
-    idbKeyValue.setItem(
-      TASKIFY_STORE_TASKS,
-      LS_EXTERNAL_CALENDAR_EVENTS,
-      JSON.stringify(data.externalCalendarEvents),
-    );
-  }
-  if ("boards" in data && data.boards !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(data.boards));
-  }
-  if ("settings" in data && data.settings !== undefined) {
-    kvStorage.setItem(LS_SETTINGS, JSON.stringify(data.settings));
-  }
-  if ("scriptureMemory" in data && data.scriptureMemory !== undefined) {
-    kvStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(data.scriptureMemory));
-  }
-  if ("bibleTracker" in data && data.bibleTracker !== undefined) {
-    kvStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(data.bibleTracker));
-  }
-  if ("defaultRelays" in data && data.defaultRelays !== undefined) {
-    kvStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(data.defaultRelays));
-  }
-  if ("contacts" in data && data.contacts !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_LIGHTNING_CONTACTS, JSON.stringify(data.contacts));
-  }
-  if ("contactsSyncMeta" in data && data.contactsSyncMeta !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
-  }
-  if (typeof data.nostrSk === "string" && data.nostrSk) {
-    kvStorage.setItem(LS_NOSTR_SK, data.nostrSk);
-  }
-  const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
-  if (cashuData && typeof cashuData === "object") {
-    if ("proofs" in cashuData && cashuData.proofs !== undefined) {
-      saveProofStore(cashuData.proofs);
-    }
-    if ("activeMint" in cashuData) {
-      setActiveMint(cashuData.activeMint || null);
-    }
-    if ("history" in cashuData) {
-      try {
-        const history = Array.isArray(cashuData.history) ? cashuData.history : [];
-        idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(history));
-      } catch {
-        idbKeyValue.removeItem(TASKIFY_STORE_WALLET, "cashuHistory");
-      }
-    }
-    if ("trackedMints" in cashuData && cashuData.trackedMints !== undefined) {
-      replaceMintList(Array.isArray(cashuData.trackedMints) ? cashuData.trackedMints : []);
-    }
-    if ("pendingTokens" in cashuData && cashuData.pendingTokens !== undefined) {
-      const entries = Array.isArray(cashuData.pendingTokens)
-        ? (cashuData.pendingTokens as PendingTokenEntry[])
-        : [];
-      replacePendingTokens(entries);
-    }
-    if ("walletSeed" in cashuData && cashuData.walletSeed) {
-      restoreWalletSeedBackup(cashuData.walletSeed as WalletSeedBackupPayload);
-    }
-  }
-}
-
-type UpcomingFilterOption = {
-  id: string;
-  label: string;
-  boardId: string;
-  columnId?: string;
-};
-
-type UpcomingFilterGroup = {
-  id: string;
-  label: string;
-  boardId: string;
-  boardOption: UpcomingFilterOption;
-  listOptions: UpcomingFilterOption[];
-};
-
-type UpcomingFilterPreset = {
-  id: string;
-  name: string;
-  selection: string[];
-};
-
-type NostrBackupState = {
-  lastEventId: string | null;
-  lastTimestamp: number;
-  pubkey: string | null;
-};
-
-type NostrBackupSnapshot = {
-  boards: NostrAppBackupBoard[];
-  settings: Partial<Settings>;
-  walletSeed: WalletSeedBackupPayload;
-  defaultRelays: string[];
-};
-const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
-
-type WalletHistoryLogEntry = {
-  id?: string;
-  summary: string;
-  type: "lightning" | "ecash";
-  direction: "in" | "out";
-  amountSat?: number;
-  detail?: string;
-  detailKind?: "token" | "invoice" | "note";
-  mintUrl?: string;
-  feeSat?: number;
-  entryKind?: WalletHistoryEntryKind;
-  relatedTaskTitle?: string;
-};
-
-function readWalletConversionsEnabled(fallback?: boolean): boolean {
-  if (typeof fallback === "boolean") return fallback;
-  try {
-    const raw = kvStorage.getItem(LS_SETTINGS);
-    if (!raw) return true;
-    const parsed = JSON.parse(raw);
-    return parsed?.walletConversionEnabled !== false;
-  } catch {
-    return true;
-  }
-}
-
-function readCachedUsdPrice(): number | null {
-  try {
-    const raw = kvStorage.getItem(LS_BTC_USD_PRICE_CACHE);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const price = Number(parsed?.price);
-    return Number.isFinite(price) ? price : null;
-  } catch {
-    return null;
-  }
-}
 
 function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
   if (!value || typeof value !== "object") return null;
@@ -1969,186 +557,6 @@ function persistBoardPrintJob(job: BoardPrintJob): void {
   } catch {}
 }
 
-function loadBiblePrintPaperSize(): PrintPaperSize {
-  try {
-    const raw = kvStorage.getItem(LS_BIBLE_PRINT_PAPER);
-    return isPrintPaperSize(raw) ? raw : "letter";
-  } catch {
-    return "letter";
-  }
-}
-
-function persistBiblePrintPaperSize(paperSize: PrintPaperSize): void {
-  try {
-    kvStorage.setItem(LS_BIBLE_PRINT_PAPER, paperSize);
-  } catch {}
-}
-
-function captureHistoryFiatValue(amountSat?: number | null, conversionsEnabled?: boolean): number | undefined {
-  if (!conversionsEnabled || amountSat == null || !Number.isFinite(amountSat) || amountSat <= 0) {
-    return undefined;
-  }
-  const cachedPrice = readCachedUsdPrice();
-  if (cachedPrice == null || cachedPrice <= 0) return undefined;
-  const usdValue = (amountSat / SATS_PER_BTC) * cachedPrice;
-  return Number.isFinite(usdValue) ? Number(usdValue.toFixed(2)) : undefined;
-}
-
-function appendWalletHistoryEntry(entry: WalletHistoryLogEntry, options?: { conversionsEnabled?: boolean }) {
-  try {
-    const conversionsEnabled = readWalletConversionsEnabled(options?.conversionsEnabled);
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
-    const existing = raw ? JSON.parse(raw) : [];
-    const createdAt = Date.now();
-    const fiatValueUsd = captureHistoryFiatValue(entry.amountSat, conversionsEnabled);
-    const normalized = {
-      id: entry.id ?? `${entry.type}-${createdAt}`,
-      summary: entry.summary,
-      type: entry.type,
-      direction: entry.direction,
-      amountSat: entry.amountSat,
-      detail: entry.detail,
-      detailKind: entry.detailKind,
-      mintUrl: entry.mintUrl,
-      feeSat: entry.feeSat,
-      entryKind: entry.entryKind,
-      relatedTaskTitle: entry.relatedTaskTitle,
-      createdAt,
-      fiatValueUsd,
-    };
-    const next = Array.isArray(existing) ? [normalized, ...existing] : [normalized];
-    idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(next));
-    try {
-      window.dispatchEvent(new Event("taskify:wallet-history-updated"));
-    } catch {
-      // ignore
-    }
-  } catch (error) {
-    console.warn("Failed to append wallet history entry", error);
-  }
-}
-
-/* ================= Nostr minimal client ================= */
-type NostrEvent = {
-  id: string;
-  kind: number;
-  pubkey: string;
-  created_at: number;
-  tags: string[][];
-  content: string;
-  sig: string;
-};
-
-type NostrUnsignedEvent = Omit<NostrEvent, "id" | "sig" | "pubkey"> & {
-  pubkey?: string;
-};
-
-declare global {
-  interface Window {
-    nostr?: {
-      getPublicKey: () => Promise<string>;
-      signEvent: (e: NostrUnsignedEvent) => Promise<NostrEvent>;
-    };
-  }
-}
-
-const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
-const NOSTR_MIGRATION_BUFFER_MS = 15000;
-const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000; // absolute fallback — must exceed typical sync time
-const NOSTR_EOSE_GRACE_MS = 200; // inactivity window after first relay EOSE before flushing
-// How many seconds to look back before the stored cursor to guard against
-// clock skew and events that arrived slightly out of order across relays.
-const NOSTR_CURSOR_LOOKBACK_SECS = 300;
-
-function loadDefaultRelays(): string[] {
-  try {
-    const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.every((x) => typeof x === "string")) return arr;
-    }
-  } catch {}
-  return DEFAULT_NOSTR_RELAYS.slice();
-}
-
-function saveDefaultRelays(relays: string[]) {
-  kvStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(relays));
-}
-
-function loadNostrBackupState(): NostrBackupState {
-  try {
-    const raw = kvStorage.getItem(LS_NOSTR_BACKUP_STATE);
-    if (!raw) return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-    const parsed = JSON.parse(raw);
-    const lastEventId = typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null;
-    const lastTimestamp = Number(parsed?.lastTimestamp) || 0;
-    const pubkey = typeof parsed?.pubkey === "string" ? parsed.pubkey : null;
-    return { lastEventId, lastTimestamp, pubkey };
-  } catch {
-    return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-  }
-}
-
-function loadNostrSyncState(storageKey: string): NostrBackupState {
-  try {
-    const raw = kvStorage.getItem(storageKey);
-    if (!raw) return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-    const parsed = JSON.parse(raw);
-    const lastEventId = typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null;
-    const lastTimestamp = Number(parsed?.lastTimestamp) || 0;
-    const pubkey = typeof parsed?.pubkey === "string" ? parsed.pubkey : null;
-    return { lastEventId, lastTimestamp, pubkey };
-  } catch {
-    return { lastEventId: null, lastTimestamp: 0, pubkey: null };
-  }
-}
-
-type NostrPool = {
-  ensureRelay: (url: string) => void;
-  setRelays: (urls: string[]) => void;
-  subscribe: (
-    relays: string[],
-    filters: any[],
-    onEvent: (ev: NostrEvent, from: string) => void,
-    onEose?: (from: string) => void
-  ) => () => void;
-  subscribeMany: (
-    relays: string[],
-    filter: any,
-    opts?: { onevent?: (ev: NostrEvent) => void; oneose?: (relay?: string) => void; closeOnEose?: boolean },
-  ) => { close: (...args: any[]) => void };
-  publish: (relays: string[], event: NostrUnsignedEvent) => Promise<void>;
-  publishEvent: (relays: string[], event: NostrEvent) => void;
-  list?: (relays: string[], filters: any[]) => Promise<NostrEvent[]>;
-  get?: (relays: string[], filter: any) => Promise<NostrEvent | null>;
-};
-
-function createNostrPool(): NostrPool {
-  const pool = new SessionPool();
-  return {
-    ensureRelay(url: string) {
-      if (url) void NostrSession.init([url]);
-    },
-    setRelays(urls: string[]) {
-      if (Array.isArray(urls) && urls.length) void NostrSession.init(urls);
-    },
-    subscribe(relayUrls, filters, onEvent, onEose) {
-      return pool.subscribe(relayUrls, filters, onEvent, onEose);
-    },
-    subscribeMany(relayUrls, filter, opts) {
-      return pool.subscribeMany(relayUrls, filter, opts);
-    },
-    async publish(relayUrls, event) {
-      await pool.publish(relayUrls, event as unknown as NostrEvent);
-    },
-    publishEvent(relayUrls, event) {
-      void pool.publishEvent(relayUrls, event as unknown as NostrEvent);
-    },
-    list: pool.list.bind(pool),
-    get: pool.get.bind(pool),
-  };
-}
-
 /* ================== Crypto helpers (AES-GCM via local Nostr key) ================== */
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
   const h = await crypto.subtle.digest("SHA-256", data);
@@ -2159,9 +567,6 @@ function hexToBytes(hex: string): Uint8Array {
   const out = new Uint8Array(clean.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
   return out;
-}
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 function concatBytes(a: Uint8Array, b: Uint8Array) {
   const out = new Uint8Array(a.length + b.length);
@@ -2181,7 +586,7 @@ function b64decode(s: string): Uint8Array {
 }
 async function deriveAesKeyFromLocalSk(): Promise<CryptoKey> {
   // Derive a stable AES key from local Nostr SK: AES-GCM 256 with SHA-256(sk || label)
-  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
+  const skHex = nostrSkSync();
   if (!skHex || !/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   const label = new TextEncoder().encode("taskify-ecash-v1");
   const raw = concatBytes(hexToBytes(skHex), label);
@@ -2203,118 +608,6 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
   return new TextDecoder().decode(new Uint8Array(ptBuf));
 }
 
-// NIP-04 encryption for recipient
-async function encryptEcashTokenForRecipient(recipientHex: string, plain: string): Promise<{ alg: "nip04"; data: string }> {
-  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
-  if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
-  if (!/^[0-9a-fA-F]{64}$/.test(recipientHex)) throw new Error("Invalid recipient pubkey");
-  const data = await nip04.encrypt(skHex, recipientHex, plain);
-  return { alg: "nip04", data };
-}
-
-async function decryptEcashTokenForRecipient(senderHex: string, enc: { alg: "nip04"; data: string }): Promise<string> {
-  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
-  if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
-  if (!/^[0-9a-fA-F]{64}$/.test(senderHex)) throw new Error("Invalid sender pubkey");
-  return await nip04.decrypt(skHex, senderHex, enc.data);
-}
-
-const CLOUD_BACKUP_KEY_LABEL = new TextEncoder().encode("taskify-cloud-backup-v1");
-
-async function deriveBackupAesKey(skHex: string): Promise<CryptoKey> {
-  const raw = concatBytes(hexToBytes(skHex), CLOUD_BACKUP_KEY_LABEL);
-  const digest = await sha256(raw);
-  return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-async function encryptBackupWithSecretKey(skHex: string, plain: string): Promise<{ iv: string; ciphertext: string }> {
-  const key = await deriveBackupAesKey(skHex);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
-  return { iv: b64encode(iv), ciphertext: b64encode(ctBuf) };
-}
-
-async function decryptBackupWithSecretKey(
-  skHex: string,
-  payload: { iv: string; ciphertext: string },
-): Promise<string> {
-  const key = await deriveBackupAesKey(skHex);
-  const iv = b64decode(payload.iv);
-  const ct = b64decode(payload.ciphertext);
-  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(new Uint8Array(ptBuf));
-}
-
-function deriveNpubFromSecretKeyHex(skHex: string): string | null {
-  try {
-    const pkHex = getPublicKey(hexToBytes(skHex));
-    if (typeof (nip19 as any)?.npubEncode === "function") {
-      return (nip19 as any).npubEncode(pkHex);
-    }
-    return pkHex;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeSecretKeyInput(raw: string): string | null {
-  if (typeof raw !== "string") return null;
-  let value = raw.trim();
-  if (!value) return null;
-  if (value.startsWith("nsec")) {
-    try {
-      const dec = nip19.decode(value);
-      if (dec.type !== "nsec") return null;
-      value = typeof dec.data === "string" ? dec.data : bytesToHex(dec.data);
-    } catch {
-      return null;
-    }
-  }
-  if (!/^[0-9a-fA-F]{64}$/.test(value)) return null;
-  return value.toLowerCase();
-}
-
-async function loadCloudBackupPayload(
-  workerBaseUrl: string,
-  secretKeyInput: string,
-): Promise<Partial<TaskifyBackupPayload>> {
-  if (!workerBaseUrl) {
-    throw new Error("Cloud backup service is unavailable.");
-  }
-  const normalized = normalizeSecretKeyInput(secretKeyInput);
-  if (!normalized) {
-    throw new Error("Enter a valid nsec or 64-hex private key.");
-  }
-  if (typeof crypto === "undefined" || !crypto.subtle) {
-    throw new Error("Browser crypto APIs are unavailable.");
-  }
-  const npub = deriveNpubFromSecretKeyHex(normalized);
-  if (!npub) {
-    throw new Error("Unable to derive npub from the provided key.");
-  }
-  const res = await fetch(`${workerBaseUrl}/api/backups?npub=${encodeURIComponent(npub)}`);
-  if (res.status === 404) {
-    throw new Error("No cloud backup found for that key.");
-  }
-  if (!res.ok) {
-    throw new Error(`Backup request failed (${res.status})`);
-  }
-  const body = await res.json();
-  const backup = body?.backup;
-  if (!backup || typeof backup !== "object" || typeof backup.ciphertext !== "string" || typeof backup.iv !== "string") {
-    throw new Error("Invalid backup payload received.");
-  }
-  const decrypted = await decryptBackupWithSecretKey(normalized, {
-    ciphertext: backup.ciphertext,
-    iv: backup.iv,
-  });
-  try {
-    return parseBackupJsonPayload(decrypted);
-  } catch {
-    throw new Error("Cloud backup could not be decoded.");
-  }
-}
-
 type BoardNostrKeyPair = {
   sk: Uint8Array;
   skHex: string;
@@ -2327,1199 +620,10 @@ async function deriveBoardNostrKeys(boardId: string): Promise<BoardNostrKeyPair>
   return boardKeyManager.getBoardKeys(boardId);
 }
 
-function toNsec(secret: string): string {
-  const trimmed = (secret || "").trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith("nsec")) return trimmed;
-  if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed;
-  try {
-    const skBytes = hexToBytes(trimmed);
-    return typeof (nip19 as any)?.nsecEncode === "function" ? (nip19 as any).nsecEncode(skBytes) : trimmed;
-  } catch {
-    return trimmed;
-  }
-}
-
-async function fileToDataURL(file: File): Promise<string> {
-  const dataUrl: string = await new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(fr.error);
-    fr.onload = () => resolve(fr.result as string);
-    fr.readAsDataURL(file);
-  });
-
-  return await new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const maxDim = 1280;
-      let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        const scale = Math.min(maxDim / width, maxDim / height);
-        width = Math.round(width * scale);
-        height = Math.round(height * scale);
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.8));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
-}
-
-async function readDocumentsFromFiles(list: FileList | File[]): Promise<TaskDocument[]> {
-  const files = Array.from(list);
-  const attachments: TaskDocument[] = [];
-  for (const file of files) {
-    if (!isSupportedDocumentFile(file)) {
-      throw new Error("Unsupported file type");
-    }
-    const doc = await createDocumentAttachment(file);
-    attachments.push(ensureDocumentPreview(doc));
-  }
-  return attachments;
-}
-
 /* ================= Date helpers ================= */
-function startOfDay(d: Date) {
-  const nd = new Date(d);
-  nd.setHours(0, 0, 0, 0);
-  return nd;
-}
-
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_ZONE_VALIDATION_CACHE = new Map<string, string | null>();
-const DATE_KEY_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
-const TIME_KEY_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
-const OFFSET_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
 
-function resolveSystemTimeZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch {
-    return "UTC";
-  }
-}
 
-function normalizeTimeZone(value?: string | null): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (TIME_ZONE_VALIDATION_CACHE.has(trimmed)) return TIME_ZONE_VALIDATION_CACHE.get(trimmed) ?? null;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(new Date());
-    TIME_ZONE_VALIDATION_CACHE.set(trimmed, trimmed);
-    return trimmed;
-  } catch {
-    TIME_ZONE_VALIDATION_CACHE.set(trimmed, null);
-    return null;
-  }
-}
-
-function formatDateKeyFromParts(year: number, month: number, day: number): string {
-  const yyyy = String(year).padStart(4, "0");
-  const mm = String(month).padStart(2, "0");
-  const dd = String(day).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function formatDateKeyLocal(date: Date): string {
-  return formatDateKeyFromParts(date.getFullYear(), date.getMonth() + 1, date.getDate());
-}
-
-function parseDateKey(value: string): { year: number; month: number; day: number } | null {
-  if (!ISO_DATE_PATTERN.test(value)) return null;
-  const [yearRaw, monthRaw, dayRaw] = value.split("-");
-  const year = Number(yearRaw);
-  const month = Number(monthRaw);
-  const day = Number(dayRaw);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  return { year, month, day };
-}
-
-function parseTimeValue(value: string): { hour: number; minute: number } | null {
-  if (typeof value !== "string" || !value.includes(":")) return null;
-  const [hourRaw, minuteRaw] = value.split(":");
-  const hour = Number.parseInt(hourRaw ?? "", 10);
-  const minute = Number.parseInt(minuteRaw ?? "", 10);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
-  return {
-    hour: Math.min(23, Math.max(0, hour)),
-    minute: Math.min(59, Math.max(0, minute)),
-  };
-}
-
-function getDateKeyFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = DATE_KEY_FORMATTER_CACHE.get(timeZone);
-  if (cached) return cached;
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  DATE_KEY_FORMATTER_CACHE.set(timeZone, formatter);
-  return formatter;
-}
-
-function getTimeKeyFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = TIME_KEY_FORMATTER_CACHE.get(timeZone);
-  if (cached) return cached;
-  const formatter = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-  TIME_KEY_FORMATTER_CACHE.set(timeZone, formatter);
-  return formatter;
-}
-
-function getOffsetFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = OFFSET_FORMATTER_CACHE.get(timeZone);
-  if (cached) return cached;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-  OFFSET_FORMATTER_CACHE.set(timeZone, formatter);
-  return formatter;
-}
-
-function formatDateKeyInTimeZone(date: Date, timeZone: string): string {
-  const formatter = getDateKeyFormatter(timeZone);
-  const parts = formatter.formatToParts(date);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-  if (!year || !month || !day) return formatDateKeyLocal(date);
-  return `${year}-${month}-${day}`;
-}
-
-function formatTimeKeyInTimeZone(date: Date, timeZone: string): string {
-  const formatter = getTimeKeyFormatter(timeZone);
-  const parts = formatter.formatToParts(date);
-  const hour = parts.find((part) => part.type === "hour")?.value;
-  const minute = parts.find((part) => part.type === "minute")?.value;
-  if (!hour || !minute) return "";
-  return `${hour}:${minute}`;
-}
-
-function getTimeZoneOffset(date: Date, timeZone: string): number {
-  const formatter = getOffsetFormatter(timeZone);
-  const parts = formatter.formatToParts(date);
-  const year = Number(parts.find((part) => part.type === "year")?.value);
-  const month = Number(parts.find((part) => part.type === "month")?.value);
-  const day = Number(parts.find((part) => part.type === "day")?.value);
-  const hour = Number(parts.find((part) => part.type === "hour")?.value);
-  const minute = Number(parts.find((part) => part.type === "minute")?.value);
-  const second = Number(parts.find((part) => part.type === "second")?.value);
-  if ([year, month, day, hour, minute, second].some((value) => !Number.isFinite(value))) return 0;
-  const asUTC = Date.UTC(year, month - 1, day, hour, minute, second);
-  return asUTC - date.getTime();
-}
-
-function formatOffsetLabel(offsetMinutes: number): string {
-  if (!Number.isFinite(offsetMinutes)) return "UTC";
-  if (offsetMinutes === 0) return "UTC";
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const abs = Math.abs(offsetMinutes);
-  const hours = String(Math.floor(abs / 60)).padStart(2, "0");
-  const minutes = String(abs % 60).padStart(2, "0");
-  return `UTC${sign}${hours}:${minutes}`;
-}
-
-function zonedTimeToUtc(dateStr: string, timeStr: string, timeZone: string): Date | null {
-  const parsedDate = parseDateKey(dateStr);
-  const parsedTime = parseTimeValue(timeStr);
-  if (!parsedDate || !parsedTime) return null;
-  const { year, month, day } = parsedDate;
-  const { hour, minute } = parsedTime;
-  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
-  const offset = getTimeZoneOffset(utcGuess, timeZone);
-  let adjusted = new Date(utcGuess.getTime() - offset);
-  const offsetCheck = getTimeZoneOffset(adjusted, timeZone);
-  if (offsetCheck !== offset) {
-    adjusted = new Date(utcGuess.getTime() - offsetCheck);
-  }
-  return adjusted;
-}
-
-function isoDatePart(iso: string, timeZone?: string): string {
-  if (typeof iso === "string" && ISO_DATE_PATTERN.test(iso)) return iso;
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return formatDateKeyLocal(new Date());
-  const safeZone = normalizeTimeZone(timeZone);
-  if (safeZone) return formatDateKeyInTimeZone(date, safeZone);
-  return formatDateKeyLocal(date);
-}
-
-function formatUpcomingDayLabel(dateKey: string): string {
-  const parsed = new Date(`${dateKey}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return dateKey;
-  const weekday = parsed.toLocaleDateString([], { weekday: "long" });
-  const monthDay = parsed.toLocaleDateString([], { month: "short", day: "numeric" });
-  return `${weekday} — ${monthDay}`;
-}
-
-function isoTimePart(iso: string, timeZone?: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const safeZone = normalizeTimeZone(timeZone);
-  if (safeZone) return formatTimeKeyInTimeZone(date, safeZone);
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
-}
-
-function isoTimePartUtc(iso: string): string {
-  if (typeof iso === 'string' && iso.length >= 16) return iso.slice(11, 16);
-  try { return new Date(iso).toISOString().slice(11, 16); } catch { return ""; }
-}
-
-function weekdayFromISO(iso: string, timeZone?: string): Weekday | null {
-  const dateKey = isoDatePart(iso, timeZone);
-  const parsed = parseDateKey(dateKey);
-  if (!parsed) return null;
-  const utc = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
-  if (!Number.isFinite(utc)) return null;
-  return new Date(utc).getUTCDay() as Weekday;
-}
-
-function taskDateKey(task: Task): string {
-  return isoDatePart(task.dueISO, task.dueTimeZone);
-}
-
-function taskDisplayDateKey(task: Task): string {
-  return isoDatePart(task.dueISO);
-}
-
-function taskTimeValue(task: Task): number | null {
-  if (!task.dueTimeEnabled) return null;
-  const timePart = isoTimePart(task.dueISO);
-  const parsed = parseTimeValue(timePart);
-  if (!parsed) return null;
-  return parsed.hour * 60 + parsed.minute;
-}
-
-function taskWeekday(task: Task): Weekday | null {
-  return weekdayFromISO(task.dueISO, task.dueTimeZone);
-}
-
-function calendarAnchorFrom(dateStr?: string | null) {
-  const base = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
-  if (Number.isNaN(base.getTime())) {
-    const today = new Date();
-    return new Date(today.getFullYear(), today.getMonth(), 1);
-  }
-  return new Date(base.getFullYear(), base.getMonth(), 1);
-}
-
-function getWheelMetrics(column: HTMLDivElement | null) {
-  if (!column) return null;
-  const first = column.querySelector<HTMLElement>("[data-picker-index]");
-  if (!first) return null;
-  const optionHeight = first.getBoundingClientRect().height;
-  const optionOffset = first.offsetTop;
-  return { optionHeight, optionOffset };
-}
-
-function scrollWheelColumnToIndex(column: HTMLDivElement | null, index: number) {
-  if (!column) return;
-  const metrics = getWheelMetrics(column);
-  if (!metrics) return;
-  const { optionHeight, optionOffset } = metrics;
-  const optionCenter = optionOffset + index * optionHeight + optionHeight / 2;
-  const targetTop = optionCenter - column.clientHeight / 2;
-  const maxScroll = Math.max(0, column.scrollHeight - column.clientHeight);
-  const clampedTop = Math.max(0, Math.min(targetTop, maxScroll));
-  if (Math.abs(column.scrollTop - clampedTop) < 0.5) return;
-  column.scrollTo({ top: clampedTop });
-}
-
-function getWheelNearestIndex(column: HTMLDivElement | null, totalOptions: number) {
-  if (!column || totalOptions <= 0) return null;
-  const metrics = getWheelMetrics(column);
-  if (!metrics) return null;
-  const { optionHeight, optionOffset } = metrics;
-  if (!optionHeight) return null;
-  const viewCenter = column.scrollTop + column.clientHeight / 2;
-  const relative = (viewCenter - optionOffset - optionHeight / 2) / optionHeight;
-  const rawIndex = Math.round(relative);
-  return Math.min(totalOptions - 1, Math.max(0, rawIndex));
-}
-
-function scheduleWheelSnap(
-  columnRef: React.RefObject<HTMLDivElement>,
-  snapRef: React.MutableRefObject<number | null>,
-  targetIndex: number,
-) {
-  if (snapRef.current != null) {
-    window.clearTimeout(snapRef.current);
-    snapRef.current = null;
-  }
-  snapRef.current = window.setTimeout(() => {
-    snapRef.current = null;
-    scrollWheelColumnToIndex(columnRef.current, targetIndex);
-  }, 120);
-}
-
-function nudgeHorizontalScroller(scroller: HTMLDivElement | null) {
-  if (!scroller) return;
-  const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-  if (maxScroll < 1) return;
-  const start = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-  const bump = start < maxScroll ? start + 1 : start - 1;
-  if (Math.abs(bump - start) < 0.5) return;
-  scroller.scrollLeft = bump;
-  scroller.scrollLeft = start;
-}
-
-function isoFromDateTime(dateStr: string, timeStr?: string, timeZone?: string): string {
-  const safeZone = normalizeTimeZone(timeZone);
-  if (dateStr) {
-    if (safeZone && ISO_DATE_PATTERN.test(dateStr)) {
-      const timeValue = timeStr || "00:00";
-      const zoned = zonedTimeToUtc(dateStr, timeValue, safeZone);
-      if (zoned && !Number.isNaN(zoned.getTime())) return zoned.toISOString();
-    }
-    if (timeStr) {
-      const withTime = new Date(`${dateStr}T${timeStr}`);
-      if (!Number.isNaN(withTime.getTime())) return withTime.toISOString();
-    }
-    const midnight = new Date(`${dateStr}T00:00`);
-    if (!Number.isNaN(midnight.getTime())) return midnight.toISOString();
-  }
-  const parsed = new Date(dateStr);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
-  return new Date().toISOString();
-}
-
-function monthKeyFromYearMonth(year: number, monthIndex: number): string {
-  const mm = String(monthIndex + 1).padStart(2, "0");
-  return `${year}-${mm}`;
-}
-
-function daysInCalendarMonth(year: number, monthIndex: number): number {
-  const value = new Date(year, monthIndex + 1, 0).getDate();
-  return Number.isFinite(value) && value > 0 ? value : 30;
-}
-
-function nthWeekdayOfMonthDateKey(
-  year: number,
-  monthIndex: number,
-  weekday: Weekday,
-  occurrence: number,
-): string | null {
-  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(occurrence)) return null;
-  if (occurrence < 1) return null;
-  const firstOfMonth = new Date(Date.UTC(year, monthIndex, 1));
-  if (Number.isNaN(firstOfMonth.getTime())) return null;
-  const firstWeekday = firstOfMonth.getUTCDay() as Weekday;
-  const offset = (weekday - firstWeekday + 7) % 7;
-  const day = 1 + offset + (occurrence - 1) * 7;
-  const maxDay = daysInCalendarMonth(year, monthIndex);
-  if (day < 1 || day > maxDay) return null;
-  return formatDateKeyFromParts(year, monthIndex + 1, day);
-}
-
-function lastWeekdayOfMonthDateKey(year: number, monthIndex: number, weekday: Weekday): string | null {
-  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return null;
-  const maxDay = daysInCalendarMonth(year, monthIndex);
-  const lastOfMonth = new Date(Date.UTC(year, monthIndex, maxDay));
-  if (Number.isNaN(lastOfMonth.getTime())) return null;
-  const lastWeekday = lastOfMonth.getUTCDay() as Weekday;
-  const offset = (lastWeekday - weekday + 7) % 7;
-  const day = maxDay - offset;
-  if (day < 1 || day > maxDay) return null;
-  return formatDateKeyFromParts(year, monthIndex + 1, day);
-}
-
-function observedUsHolidayDateKey(dateKey: string): string | null {
-  const parsed = parseDateKey(dateKey);
-  if (!parsed) return null;
-  const date = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
-  if (Number.isNaN(date.getTime())) return null;
-  const weekday = date.getUTCDay() as Weekday;
-  if (weekday === 6) date.setUTCDate(date.getUTCDate() - 1);
-  else if (weekday === 0) date.setUTCDate(date.getUTCDate() + 1);
-  else return null;
-  return date.toISOString().slice(0, 10);
-}
-
-function easterDateKey(year: number): string | null {
-  if (!Number.isFinite(year)) return null;
-  const y = Math.trunc(year);
-  if (y < 1583) return null;
-  const a = y % 19;
-  const b = Math.floor(y / 100);
-  const c = y % 100;
-  const d = Math.floor(b / 4);
-  const e = b % 4;
-  const f = Math.floor((b + 8) / 25);
-  const g = Math.floor((b - f + 1) / 3);
-  const h = (19 * a + b - d - g + 15) % 30;
-  const i = Math.floor(c / 4);
-  const k = c % 4;
-  const l = (32 + 2 * e + 2 * i - h - k) % 7;
-  const m = Math.floor((a + 11 * h + 22 * l) / 451);
-  const month = Math.floor((h + l - 7 * m + 114) / 31);
-  const day = ((h + l - 7 * m + 114) % 31) + 1;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return formatDateKeyFromParts(y, month, day);
-}
-
-type UsHolidayDefinition = {
-  id: string;
-  title: string;
-  dateForYear: (year: number) => string | null;
-  includeObserved?: boolean;
-  summary?: string;
-};
-
-function buildUsHolidayCalendarEvents(startYear: number, endYear: number): CalendarEvent[] {
-  const fromYear = Math.min(startYear, endYear);
-  const toYear = Math.max(startYear, endYear);
-  const definitions: UsHolidayDefinition[] = [
-    {
-      id: "new-years-day",
-      title: "New Year's Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 1, 1),
-    },
-    {
-      id: "mlk-day",
-      title: "Martin Luther King Jr. Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 0, 1, 3),
-    },
-    {
-      id: "presidents-day",
-      title: "Presidents Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 1, 1, 3),
-    },
-    {
-      id: "valentines-day",
-      title: "Valentine's Day",
-      dateForYear: (year) => formatDateKeyFromParts(year, 2, 14),
-      summary: "US holiday",
-    },
-    {
-      id: "easter",
-      title: "Easter",
-      dateForYear: (year) => easterDateKey(year),
-      summary: "US holiday",
-    },
-    {
-      id: "memorial-day",
-      title: "Memorial Day",
-      dateForYear: (year) => lastWeekdayOfMonthDateKey(year, 4, 1),
-    },
-    {
-      id: "juneteenth",
-      title: "Juneteenth",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 6, 19),
-    },
-    {
-      id: "independence-day",
-      title: "Independence Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 7, 4),
-    },
-    {
-      id: "labor-day",
-      title: "Labor Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 8, 1, 1),
-    },
-    {
-      id: "columbus-day",
-      title: "Columbus Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 9, 1, 2),
-    },
-    {
-      id: "veterans-day",
-      title: "Veterans Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 11, 11),
-    },
-    {
-      id: "thanksgiving-day",
-      title: "Thanksgiving Day",
-      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 10, 4, 4),
-    },
-    {
-      id: "christmas-eve",
-      title: "Christmas Eve",
-      dateForYear: (year) => formatDateKeyFromParts(year, 12, 24),
-      summary: "US holiday",
-    },
-    {
-      id: "christmas-day",
-      title: "Christmas Day",
-      includeObserved: true,
-      dateForYear: (year) => formatDateKeyFromParts(year, 12, 25),
-    },
-  ];
-
-  const events: CalendarEvent[] = [];
-  const seen = new Set<string>();
-  const addEvent = (id: string, title: string, dateKey: string, summary: string) => {
-    if (!ISO_DATE_PATTERN.test(dateKey)) return;
-    const dedupeKey = `${id}|${dateKey}`;
-    if (seen.has(dedupeKey)) return;
-    seen.add(dedupeKey);
-    events.push({
-      id,
-      kind: "date",
-      boardId: SPECIAL_CALENDAR_US_HOLIDAYS_ID,
-      title,
-      summary,
-      startDate: dateKey,
-      readOnly: true,
-    });
-  };
-
-  for (let year = fromYear; year <= toYear; year += 1) {
-    definitions.forEach((definition) => {
-      const dateKey = definition.dateForYear(year);
-      if (!dateKey) return;
-      addEvent(
-        `us-holiday:${definition.id}:${year}`,
-        definition.title,
-        dateKey,
-        definition.summary ?? "US federal holiday",
-      );
-
-      if (!definition.includeObserved) return;
-      const observedDateKey = observedUsHolidayDateKey(dateKey);
-      if (!observedDateKey) return;
-      addEvent(
-        `us-holiday:${definition.id}:${year}:observed`,
-        `${definition.title} (Observed)`,
-        observedDateKey,
-        `${definition.summary ?? "US federal holiday"} (observed date)`,
-      );
-    });
-
-    const dstStart = nthWeekdayOfMonthDateKey(year, 2, 0, 2);
-    if (dstStart) {
-      addEvent(
-        `us-holiday:dst-start:${year}`,
-        "Daylight Saving Time Begins",
-        dstStart,
-        "Clocks move forward one hour in most US time zones",
-      );
-    }
-
-    const dstEnd = nthWeekdayOfMonthDateKey(year, 10, 0, 1);
-    if (dstEnd) {
-      addEvent(
-        `us-holiday:dst-end:${year}`,
-        "Daylight Saving Time Ends",
-        dstEnd,
-        "Clocks move back one hour in most US time zones",
-      );
-    }
-  }
-
-  events.sort((a, b) => {
-    if (a.kind !== "date" || b.kind !== "date") return a.id.localeCompare(b.id);
-    const dateDiff = a.startDate.localeCompare(b.startDate);
-    if (dateDiff !== 0) return dateDiff;
-    const titleDiff = a.title.localeCompare(b.title);
-    if (titleDiff !== 0) return titleDiff;
-    return a.id.localeCompare(b.id);
-  });
-
-  return events;
-}
-
-function isUsHolidayCalendarEvent(event: CalendarEvent): boolean {
-  return event.boardId === SPECIAL_CALENDAR_US_HOLIDAYS_ID;
-}
-
-function hashStringToUint32(input: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function mulberry32(seed: number): () => number {
-  let t = seed >>> 0;
-  return () => {
-    t = (t + 0x6D2B79F5) >>> 0;
-    let x = t;
-    x = Math.imul(x ^ (x >>> 15), x | 1);
-    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function shuffleInPlace<T>(arr: T[], rng: () => number): void {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    if (j === i) continue;
-    const tmp = arr[i];
-    arr[i] = arr[j];
-    arr[j] = tmp;
-  }
-}
-
-function fastingReminderDueTimesForMonth(
-  year: number,
-  monthIndex: number,
-  options: { mode: FastingRemindersMode; weekday: Weekday; perMonth: number; seed: string },
-): number[] {
-  const totalDays = daysInCalendarMonth(year, monthIndex);
-  const perMonth = Number.isFinite(options.perMonth) ? Math.max(1, Math.round(options.perMonth)) : 1;
-  if (options.mode === "weekday") {
-    const out: number[] = [];
-    for (let day = 1; day <= totalDays; day++) {
-      const date = new Date(year, monthIndex, day);
-      if ((date.getDay() as Weekday) !== options.weekday) continue;
-      const midnight = startOfDay(date);
-      if (!Number.isNaN(midnight.getTime())) out.push(midnight.getTime());
-    }
-    return out.slice(0, perMonth);
-  }
-
-  const candidates = Array.from({ length: totalDays }, (_, i) => i + 1);
-  const rng = mulberry32(hashStringToUint32(`${options.seed}|${monthKeyFromYearMonth(year, monthIndex)}`));
-  shuffleInPlace(candidates, rng);
-  return candidates
-    .slice(0, Math.min(perMonth, totalDays))
-    .sort((a, b) => a - b)
-    .map((day) => startOfDay(new Date(year, monthIndex, day)).getTime())
-    .filter((time) => Number.isFinite(time) && !Number.isNaN(time));
-}
-
-function formatTimeLabel(iso: string, timeZone?: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const safeZone = normalizeTimeZone(timeZone);
-  return date.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-    ...(safeZone ? { timeZone: safeZone } : {}),
-  });
-}
-
-type TimeZoneOption = {
-  id: string;
-  label: string;
-  city: string;
-  region: string;
-  shortNames: string[];
-  longNames: string[];
-  offsetMinutes: number;
-  offsetLabel: string;
-  search: string;
-};
-
-const FALLBACK_TIME_ZONES = [
-  "UTC",
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Phoenix",
-  "America/Anchorage",
-  "Pacific/Honolulu",
-  "Europe/London",
-  "Europe/Paris",
-  "Europe/Berlin",
-  "Europe/Moscow",
-  "Asia/Dubai",
-  "Asia/Kolkata",
-  "Asia/Bangkok",
-  "Asia/Singapore",
-  "Asia/Shanghai",
-  "Asia/Tokyo",
-  "Australia/Sydney",
-];
-
-let cachedTimeZoneOptions: TimeZoneOption[] | null = null;
-let cachedTimeZoneOptionMap: Map<string, TimeZoneOption> | null = null;
-
-function getSupportedTimeZones(): string[] {
-  try {
-    const supported = typeof (Intl as any).supportedValuesOf === "function"
-      ? (Intl as any).supportedValuesOf("timeZone")
-      : null;
-    if (Array.isArray(supported) && supported.length > 0) {
-      return supported.includes("UTC") ? supported : ["UTC", ...supported];
-    }
-  } catch {}
-  return FALLBACK_TIME_ZONES;
-}
-
-function extractTimeZoneName(timeZone: string, date: Date, style: "short" | "long"): string {
-  try {
-    const formatter = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: style });
-    const part = formatter.formatToParts(date).find((entry) => entry.type === "timeZoneName");
-    return part?.value?.trim() || "";
-  } catch {
-    return "";
-  }
-}
-
-function getTimeZoneLabelParts(timeZone: string): { label: string; city: string; region: string } {
-  const parts = timeZone.split("/");
-  const rawCity = parts[parts.length - 1] || timeZone;
-  const city = rawCity.replace(/_/g, " ");
-  const region = parts.slice(0, -1).join("/").replace(/_/g, " ");
-  return { label: city || timeZone, city, region };
-}
-
-function buildTimeZoneOption(timeZone: string, referenceDates: Date[]): TimeZoneOption | null {
-  const normalized = normalizeTimeZone(timeZone) ?? (timeZone === "UTC" ? "UTC" : null);
-  if (!normalized) return null;
-  const { label, city, region } = getTimeZoneLabelParts(normalized);
-  const shortNames = new Set<string>();
-  const longNames = new Set<string>();
-  referenceDates.forEach((date) => {
-    const shortName = extractTimeZoneName(normalized, date, "short");
-    const longName = extractTimeZoneName(normalized, date, "long");
-    if (shortName) shortNames.add(shortName);
-    if (longName) longNames.add(longName);
-  });
-  const offsetMinutes = Math.round(getTimeZoneOffset(new Date(), normalized) / 60000);
-  const offsetLabel = formatOffsetLabel(offsetMinutes);
-  const offsetAlias = offsetLabel.replace("UTC", "GMT");
-  const search = [
-    normalized,
-    label,
-    city,
-    region,
-    ...shortNames,
-    ...longNames,
-    offsetLabel,
-    offsetAlias,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return {
-    id: normalized,
-    label,
-    city,
-    region,
-    shortNames: Array.from(shortNames),
-    longNames: Array.from(longNames),
-    offsetMinutes,
-    offsetLabel,
-    search,
-  };
-}
-
-function getTimeZoneOptions(): { options: TimeZoneOption[]; map: Map<string, TimeZoneOption> } {
-  if (cachedTimeZoneOptions && cachedTimeZoneOptionMap) {
-    return { options: cachedTimeZoneOptions, map: cachedTimeZoneOptionMap };
-  }
-  const now = new Date();
-  const year = now.getUTCFullYear();
-  const referenceDates = [
-    now,
-    new Date(Date.UTC(year, 0, 1, 12, 0, 0)),
-    new Date(Date.UTC(year, 6, 1, 12, 0, 0)),
-  ];
-  const options: TimeZoneOption[] = [];
-  const map = new Map<string, TimeZoneOption>();
-  const seen = new Set<string>();
-  for (const zone of getSupportedTimeZones()) {
-    if (!zone || seen.has(zone)) continue;
-    seen.add(zone);
-    const option = buildTimeZoneOption(zone, referenceDates);
-    if (!option) continue;
-    options.push(option);
-    map.set(option.id, option);
-  }
-  options.sort((a, b) => {
-    if (a.offsetMinutes !== b.offsetMinutes) return a.offsetMinutes - b.offsetMinutes;
-    return a.label.localeCompare(b.label);
-  });
-  cachedTimeZoneOptions = options;
-  cachedTimeZoneOptionMap = map;
-  return { options, map };
-}
-
-function formatTimeZoneDisplay(timeZone: string, optionMap: Map<string, TimeZoneOption>): string {
-  const option = optionMap.get(timeZone);
-  if (!option) return timeZone;
-  const short = option.shortNames.find((name) => !!name) || "";
-  if (short && short !== option.label) return `${option.label} (${short})`;
-  return option.label;
-}
-
-function scoreTimeZoneOption(option: TimeZoneOption, query: string): number {
-  const normalized = query.toLowerCase();
-  const isAbbrev = /^[a-z]{2,6}$/.test(normalized);
-  const id = option.id.toLowerCase();
-  const label = option.label.toLowerCase();
-  const city = option.city.toLowerCase();
-  const region = option.region.toLowerCase();
-  const shortNames = option.shortNames.map((name) => name.toLowerCase());
-  const longNames = option.longNames.map((name) => name.toLowerCase());
-
-  if (
-    id === normalized ||
-    label === normalized ||
-    city === normalized ||
-    region === normalized ||
-    shortNames.includes(normalized) ||
-    longNames.includes(normalized)
-  ) {
-    return 0;
-  }
-
-  if (isAbbrev && shortNames.some((name) => name.startsWith(normalized))) return 1;
-
-  if (
-    id.startsWith(normalized) ||
-    label.startsWith(normalized) ||
-    city.startsWith(normalized) ||
-    region.startsWith(normalized) ||
-    shortNames.some((name) => name.startsWith(normalized)) ||
-    longNames.some((name) => name.startsWith(normalized))
-  ) {
-    return 2;
-  }
-
-  return 3;
-}
-
-function parseTimePickerValue(value?: string | null, fallback = "09:00") {
-  const source = typeof value === "string" && value.includes(":") ? value : fallback;
-  const [hourRaw, minuteRaw] = (source || "09:00").split(":");
-  const hour24 = Number.parseInt(hourRaw ?? "0", 10);
-  const minute = Number.parseInt(minuteRaw ?? "0", 10);
-  const safeHour24 = Number.isFinite(hour24) ? Math.min(23, Math.max(0, hour24)) : 9;
-  const safeMinute = Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0;
-  const meridiem: Meridiem = safeHour24 >= 12 ? "PM" : "AM";
-  const hour12 = safeHour24 % 12 === 0 ? 12 : safeHour24 % 12;
-  return {
-    hour: hour12,
-    minute: safeMinute,
-    meridiem,
-  };
-}
-
-function useCalendarPicker(baseDate?: string) {
-  const [calendarAnchor, setCalendarAnchor] = useState(() => calendarAnchorFrom(baseDate));
-  const [showMonthPicker, setShowMonthPicker] = useState(false);
-  const [monthPickerMonth, setMonthPickerMonth] = useState(calendarAnchor.getMonth());
-  const [monthPickerYear, setMonthPickerYear] = useState(() => calendarAnchor.getFullYear());
-  const monthPickerMonthColumnRef = useRef<HTMLDivElement | null>(null);
-  const monthPickerYearColumnRef = useRef<HTMLDivElement | null>(null);
-  const monthPickerMonthScrollFrame = useRef<number | null>(null);
-  const monthPickerYearScrollFrame = useRef<number | null>(null);
-  const monthPickerMonthSnapTimeout = useRef<number | null>(null);
-  const monthPickerYearSnapTimeout = useRef<number | null>(null);
-  const monthPickerMonthValueRef = useRef(monthPickerMonth);
-  const monthPickerYearValueRef = useRef(monthPickerYear);
-
-  const monthPickerYears = useMemo(() => {
-    const anchorYear = calendarAnchor.getFullYear();
-    const start = anchorYear - MONTH_PICKER_YEAR_WINDOW;
-    const end = anchorYear + MONTH_PICKER_YEAR_WINDOW;
-    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
-  }, [calendarAnchor]);
-
-  const calendarMonthLabel = useMemo(
-    () => calendarAnchor.toLocaleDateString([], { month: "long", year: "numeric" }),
-    [calendarAnchor],
-  );
-
-  const calendarCells = useMemo(() => {
-    const year = calendarAnchor.getFullYear();
-    const month = calendarAnchor.getMonth();
-    const firstWeekday = new Date(year, month, 1).getDay();
-    const totalDays = new Date(year, month + 1, 0).getDate();
-    const totalCells = Math.ceil((firstWeekday + totalDays) / 7) * 7;
-    const cells: (number | null)[] = [];
-    for (let i = 0; i < totalCells; i += 1) {
-      const day = i - firstWeekday + 1;
-      cells.push(day > 0 && day <= totalDays ? day : null);
-    }
-    return { cells, year, month };
-  }, [calendarAnchor]);
-
-  const todayDate = useMemo(() => {
-    const today = new Date();
-    return new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  }, []);
-
-  useEffect(() => {
-    setCalendarAnchor(calendarAnchorFrom(baseDate));
-  }, [baseDate]);
-
-  useEffect(() => {
-    setMonthPickerMonth(calendarAnchor.getMonth());
-    setMonthPickerYear(calendarAnchor.getFullYear());
-  }, [calendarAnchor]);
-
-  useEffect(() => {
-    monthPickerMonthValueRef.current = monthPickerMonth;
-  }, [monthPickerMonth]);
-
-  useEffect(() => {
-    monthPickerYearValueRef.current = monthPickerYear;
-  }, [monthPickerYear]);
-
-  useEffect(() => {
-    if (!showMonthPicker) return;
-    scrollWheelColumnToIndex(monthPickerMonthColumnRef.current, monthPickerMonth);
-    const yearIndex = monthPickerYears.indexOf(monthPickerYear);
-    if (yearIndex >= 0) {
-      scrollWheelColumnToIndex(monthPickerYearColumnRef.current, yearIndex);
-    }
-  }, [monthPickerMonth, monthPickerYear, monthPickerYears, showMonthPicker]);
-
-  const moveCalendarMonth = useCallback((delta: number) => {
-    setCalendarAnchor((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
-  }, []);
-
-  const applyMonthPickerSelection = useCallback(() => {
-    const safeYear = Number.isFinite(monthPickerYear) ? monthPickerYear : calendarAnchor.getFullYear();
-    const safeMonth = Math.min(11, Math.max(0, monthPickerMonth));
-    setCalendarAnchor(new Date(safeYear, safeMonth, 1));
-    setShowMonthPicker(false);
-  }, [calendarAnchor, monthPickerMonth, monthPickerYear]);
-
-  const handleMonthLabelClick = useCallback(() => {
-    if (!showMonthPicker) {
-      setMonthPickerMonth(calendarAnchor.getMonth());
-      setMonthPickerYear(calendarAnchor.getFullYear());
-      setShowMonthPicker(true);
-    } else {
-      applyMonthPickerSelection();
-    }
-  }, [applyMonthPickerSelection, calendarAnchor, showMonthPicker]);
-
-  const handleMonthPickerMonthScroll = useCallback(() => {
-    const column = monthPickerMonthColumnRef.current;
-    if (!column) return;
-    if (monthPickerMonthScrollFrame.current != null) {
-      cancelAnimationFrame(monthPickerMonthScrollFrame.current);
-    }
-    monthPickerMonthScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MONTH_NAMES.length);
-      if (clampedIndex == null) return;
-      if (monthPickerMonthValueRef.current !== clampedIndex) {
-        setMonthPickerMonth(clampedIndex);
-      }
-      scheduleWheelSnap(monthPickerMonthColumnRef, monthPickerMonthSnapTimeout, clampedIndex);
-    });
-  }, []);
-
-  const handleMonthPickerYearScroll = useCallback(() => {
-    const column = monthPickerYearColumnRef.current;
-    if (!column) return;
-    if (monthPickerYearScrollFrame.current != null) {
-      cancelAnimationFrame(monthPickerYearScrollFrame.current);
-    }
-    monthPickerYearScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, monthPickerYears.length);
-      if (clampedIndex == null) return;
-      const nextYear = monthPickerYears[clampedIndex];
-      if (nextYear != null && monthPickerYearValueRef.current !== nextYear) {
-        setMonthPickerYear(nextYear);
-      }
-      if (nextYear != null) {
-        scheduleWheelSnap(monthPickerYearColumnRef, monthPickerYearSnapTimeout, clampedIndex);
-      }
-    });
-  }, [monthPickerYears]);
-
-  return {
-    calendarAnchor,
-    calendarMonthLabel,
-    calendarCells,
-    todayDate,
-    showMonthPicker,
-    moveCalendarMonth,
-    handleMonthLabelClick,
-    monthPickerYears,
-    monthPickerMonth,
-    monthPickerYear,
-    monthPickerMonthColumnRef,
-    monthPickerYearColumnRef,
-    handleMonthPickerMonthScroll,
-    handleMonthPickerYearScroll,
-  };
-}
-
-function DatePickerCalendar({
-  baseDate,
-  selectedDate,
-  onSelectDate,
-}: {
-  baseDate?: string;
-  selectedDate?: string;
-  onSelectDate: (iso: string) => void;
-}) {
-  const {
-    calendarMonthLabel,
-    calendarCells,
-    todayDate,
-    showMonthPicker,
-    moveCalendarMonth,
-    handleMonthLabelClick,
-    monthPickerYears,
-    monthPickerMonth,
-    monthPickerYear,
-    monthPickerMonthColumnRef,
-    monthPickerYearColumnRef,
-    handleMonthPickerMonthScroll,
-    handleMonthPickerYearScroll,
-  } = useCalendarPicker(baseDate);
-
-  const selectedDateObj = useMemo(() => {
-    if (!selectedDate) return null;
-    const parsed = new Date(`${selectedDate}T00:00:00`);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }, [selectedDate]);
-
-  function handleSelectCalendarDay(day: number | null) {
-    if (!day) return;
-    const next = new Date(calendarCells.year, calendarCells.month, day);
-    if (Number.isNaN(next.getTime())) return;
-    onSelectDate(formatDateKeyLocal(next));
-  }
-
-  return (
-    <div className="edit-calendar">
-      <div className="edit-calendar__header">
-        <button
-          type="button"
-          className="ghost-button button-sm pressable"
-          onClick={() => moveCalendarMonth(-1)}
-          aria-label="Previous month"
-        >
-          ‹
-        </button>
-        <button type="button" className="edit-calendar__month" onClick={handleMonthLabelClick}>
-          {calendarMonthLabel}
-        </button>
-        <button
-          type="button"
-          className="ghost-button button-sm pressable"
-          onClick={() => moveCalendarMonth(1)}
-          aria-label="Next month"
-        >
-          ›
-        </button>
-      </div>
-      {showMonthPicker && (
-        <div className="edit-month-picker">
-          <div
-            className="edit-month-picker__column"
-            ref={monthPickerMonthColumnRef}
-            onScroll={handleMonthPickerMonthScroll}
-            role="listbox"
-            aria-label="Select month"
-          >
-            {MONTH_NAMES.map((name, idx) => (
-              <div
-                key={name}
-                className={`edit-month-picker__option ${monthPickerMonth === idx ? "is-active" : ""}`}
-                data-picker-index={idx}
-                role="option"
-                aria-selected={monthPickerMonth === idx}
-              >
-                {name.slice(0, 3)}
-              </div>
-            ))}
-          </div>
-          <div
-            className="edit-month-picker__column"
-            ref={monthPickerYearColumnRef}
-            onScroll={handleMonthPickerYearScroll}
-            role="listbox"
-            aria-label="Select year"
-          >
-            {monthPickerYears.map((year, idx) => (
-              <div
-                key={year}
-                className={`edit-month-picker__option ${monthPickerYear === year ? "is-active" : ""}`}
-                data-picker-index={idx}
-                role="option"
-                aria-selected={monthPickerYear === year}
-              >
-                {year}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      <div className="edit-calendar__weekdays">
-        {WD_SHORT.map((label) => (
-          <span key={label}>{label}</span>
-        ))}
-      </div>
-      <div className="edit-calendar__grid">
-        {calendarCells.cells.map((cell, idx) => {
-          if (!cell) {
-            return <span key={`empty-${idx}`} className="edit-calendar__day edit-calendar__day--muted" />;
-          }
-          const isSelected =
-            !!selectedDateObj &&
-            selectedDateObj.getFullYear() === calendarCells.year &&
-            selectedDateObj.getMonth() === calendarCells.month &&
-            selectedDateObj.getDate() === cell;
-          const currentViewDate = new Date(calendarCells.year, calendarCells.month, cell);
-          const isToday =
-            todayDate.getFullYear() === currentViewDate.getFullYear() &&
-            todayDate.getMonth() === currentViewDate.getMonth() &&
-            todayDate.getDate() === currentViewDate.getDate();
-          const dayCls = [
-            "edit-calendar__day",
-            isSelected ? "edit-calendar__day--selected" : "",
-            !isSelected && isToday ? "edit-calendar__day--today" : "",
-          ]
-            .filter(Boolean)
-            .join(" ");
-          return (
-            <button
-              key={`day-${idx}-${cell}`}
-              type="button"
-              className={dayCls}
-              onClick={() => handleSelectCalendarDay(cell)}
-            >
-              {cell}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function formatTimePickerValue(hour12: number, minute: number, meridiem: Meridiem) {
-  const normalizedHour = Math.min(12, Math.max(1, hour12 || 12));
-  const normalizedMinute = Math.min(59, Math.max(0, minute));
-  let hour24 = normalizedHour % 12;
-  if (meridiem === "PM") {
-    hour24 += 12;
-  } else if (normalizedHour === 12) {
-    hour24 = 0;
-  }
-  const hh = String(hour24).padStart(2, "0");
-  const mm = String(normalizedMinute).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
 
 function isoForWeekday(
   target: Weekday,
@@ -3791,1091 +895,6 @@ function hiddenUntilForNext(
   const sow = startOfWeek(nextMidnight, weekStart);
   return sow.toISOString();
 }
-
-function normalizeHiddenForRecurring(task: Task): Task {
-  if (!task.hiddenUntilISO || !task.recurrence || !revealsOnDueDate(task.recurrence)) {
-    return task;
-  }
-  const dueMidnight = startOfDay(new Date(task.dueISO));
-  const hiddenMidnight = startOfDay(new Date(task.hiddenUntilISO));
-  if (Number.isNaN(dueMidnight.getTime()) || Number.isNaN(hiddenMidnight.getTime())) return task;
-  const today = startOfDay(new Date());
-  if (dueMidnight.getTime() > today.getTime() && hiddenMidnight.getTime() < dueMidnight.getTime()) {
-    return { ...task, hiddenUntilISO: dueMidnight.toISOString() };
-  }
-  return task;
-}
-
-function recurrenceSeriesKey(task: Task): string | null {
-  if (!task.recurrence) return null;
-  if (task.seriesId) return `series:${task.boardId}:${task.seriesId}`;
-  const recurrence = JSON.stringify(task.recurrence);
-  return `sig:${task.boardId}::${task.title}::${task.note || ""}::${recurrence}`;
-}
-
-function recurringInstanceId(seriesId: string, dueISO: string, rule?: Recurrence, timeZone?: string): string {
-  const datePart = isoDatePart(dueISO, timeZone);
-  const timePart =
-    rule && rule.type === "every" && rule.unit === "hour"
-      ? isoTimePartUtc(dueISO)
-      : "";
-  const suffix = timePart ? `${datePart}T${timePart}` : datePart;
-  return `recurrence:${seriesId}:${suffix}`;
-}
-
-function recurringOccurrenceKey(task: Task): string | null {
-  if (!task.recurrence || !isFrequentRecurrence(task.recurrence)) return null;
-  const seriesKey = recurrenceSeriesKey(task);
-  if (!seriesKey) return null;
-  const datePart = isoDatePart(task.dueISO, task.dueTimeZone);
-  return `${seriesKey}::${datePart}`;
-}
-
-function pickRecurringDuplicate(a: Task, b: Task): Task {
-  const aCompleted = !!a.completed;
-  const bCompleted = !!b.completed;
-  if (aCompleted !== bCompleted) return aCompleted ? a : b;
-  const aCompletedAt = a.completedAt ? Date.parse(a.completedAt) : 0;
-  const bCompletedAt = b.completedAt ? Date.parse(b.completedAt) : 0;
-  if (aCompletedAt !== bCompletedAt) return aCompletedAt >= bCompletedAt ? a : b;
-  const aIsBase = !!(a.seriesId && a.id === a.seriesId);
-  const bIsBase = !!(b.seriesId && b.id === b.seriesId);
-  if (aIsBase !== bIsBase) return aIsBase ? a : b;
-  const aOrder = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
-  const bOrder = typeof b.order === "number" ? b.order : Number.POSITIVE_INFINITY;
-  if (aOrder !== bOrder) return aOrder < bOrder ? a : b;
-  return a.id.localeCompare(b.id) <= 0 ? a : b;
-}
-
-function dedupeRecurringInstances(tasks: Task[]): Task[] {
-  const out: Task[] = [];
-  const indexByKey = new Map<string, number>();
-  let changed = false;
-  for (const task of tasks) {
-    const key = recurringOccurrenceKey(task);
-    if (!key) {
-      out.push(task);
-      continue;
-    }
-    const existingIndex = indexByKey.get(key);
-    if (existingIndex === undefined) {
-      indexByKey.set(key, out.length);
-      out.push(task);
-      continue;
-    }
-    const existing = out[existingIndex];
-    const winner = pickRecurringDuplicate(existing, task);
-    if (winner !== existing) {
-      out[existingIndex] = winner;
-    }
-    changed = true;
-  }
-  return changed ? out : tasks;
-}
-
-/* ================= Storage hooks ================= */
-function useSettings() {
-  const [settings, setSettingsRaw] = useState<Settings>(() => {
-    try {
-      const parsed = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
-      const baseFontSize =
-        typeof parsed.baseFontSize === "number" ? parsed.baseFontSize : null;
-      const startBoardByDay: Partial<Record<Weekday, string>> = {};
-      if (parsed && typeof parsed.startBoardByDay === "object" && parsed.startBoardByDay) {
-        for (const [key, value] of Object.entries(parsed.startBoardByDay as Record<string, unknown>)) {
-          const day = Number(key);
-          if (!Number.isInteger(day) || day < 0 || day > 6) continue;
-          if (typeof value !== "string" || !value) continue;
-          startBoardByDay[day as Weekday] = value;
-        }
-      }
-      const backgroundImage = typeof parsed?.backgroundImage === "string" ? parsed.backgroundImage : null;
-      let backgroundAccents = normalizeAccentPaletteList(parsed?.backgroundAccents) ?? null;
-      let backgroundAccentIndex = typeof parsed?.backgroundAccentIndex === "number" ? parsed.backgroundAccentIndex : null;
-      let backgroundAccent = normalizeAccentPalette(parsed?.backgroundAccent) ?? null;
-      if (!backgroundAccents || backgroundAccents.length === 0) {
-        backgroundAccents = null;
-        backgroundAccentIndex = null;
-      } else {
-        if (backgroundAccentIndex == null || backgroundAccentIndex < 0 || backgroundAccentIndex >= backgroundAccents.length) {
-          backgroundAccentIndex = 0;
-        }
-        if (!backgroundAccent) backgroundAccent = backgroundAccents[backgroundAccentIndex];
-      }
-      if (!backgroundImage) {
-        backgroundAccents = null;
-        backgroundAccentIndex = null;
-        backgroundAccent = null;
-      }
-      const backgroundBlur = parsed?.backgroundBlur === "blurred" ? "blurred" : "sharp";
-      let accent: Settings["accent"] = "blue";
-      if (parsed?.accent === "green") accent = "green";
-      else if (parsed?.accent === "background" && backgroundImage && backgroundAccent) accent = "background";
-      const hideCompletedSubtasks = parsed?.hideCompletedSubtasks === true;
-      const startupView = parsed?.startupView === "wallet" ? "wallet" : "main";
-      const walletConversionEnabled = parsed?.walletConversionEnabled !== false;
-      const walletPrimaryCurrency = parsed?.walletPrimaryCurrency === "usd" ? "usd" : "sat";
-      const walletSentStateChecksEnabled = parsed?.walletSentStateChecksEnabled !== false;
-      const walletPaymentRequestsEnabled = parsed?.walletPaymentRequestsEnabled !== false;
-      const walletPaymentRequestsBackgroundChecksEnabled =
-        parsed?.walletPaymentRequestsBackgroundChecksEnabled !== false;
-      let walletMintBackupEnabled = parsed?.walletMintBackupEnabled !== false;
-      if (parsed?.walletMintBackupEnabled == null) {
-        try {
-          walletMintBackupEnabled = kvStorage.getItem(LS_MINT_BACKUP_ENABLED) !== "0";
-        } catch {
-          walletMintBackupEnabled = true;
-        }
-      }
-      const walletContactsSyncEnabled = parsed?.walletContactsSyncEnabled !== false;
-      const npubCashLightningAddressEnabled = parsed?.npubCashLightningAddressEnabled !== false;
-      const npubCashAutoClaim = npubCashLightningAddressEnabled && parsed?.npubCashAutoClaim !== false;
-      const fileStorageServer =
-        normalizeFileServerUrl(
-          typeof parsed?.fileStorageServer === "string" && parsed.fileStorageServer.trim()
-            ? parsed.fileStorageServer.trim()
-            : DEFAULT_FILE_STORAGE_SERVER,
-        ) || DEFAULT_FILE_STORAGE_SERVER;
-      const encryptedFileStorageServer =
-        normalizeFileServerUrl(
-          typeof parsed?.encryptedFileStorageServer === "string" && parsed.encryptedFileStorageServer.trim()
-            ? parsed.encryptedFileStorageServer.trim()
-            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
-        ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-      const fileServers = (() => {
-        if (typeof parsed?.fileServers === "string" && parsed.fileServers.trim()) {
-          return parsed.fileServers.trim();
-        }
-        // Migrate from legacy single-server setting: build server list seeded with the saved server
-        const servers = DEFAULT_FILE_SERVERS.slice();
-        const existingEntry = findServerEntry(servers, fileStorageServer);
-        if (!existingEntry) {
-          servers.unshift({ url: fileStorageServer, type: "nip96" });
-        }
-        return serializeFileServers(servers);
-      })();
-      const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
-      const nostrBackupMetadataEnabled = nostrBackupEnabled;
-      const pushRaw = parsed?.pushNotifications;
-      const inferredPlatform = detectPushPlatformFromNavigator();
-      const storedPlatform = pushRaw?.platform === "android"
-        ? "android"
-        : pushRaw?.platform === "ios"
-          ? "ios"
-          : inferredPlatform;
-      const pushPreferences: PushPreferences = {
-        enabled: pushRaw?.enabled === true,
-        platform: storedPlatform,
-        deviceId: typeof pushRaw?.deviceId === 'string' ? pushRaw.deviceId : undefined,
-        subscriptionId: typeof pushRaw?.subscriptionId === 'string' ? pushRaw.subscriptionId : undefined,
-        permission:
-          pushRaw?.permission === 'granted' || pushRaw?.permission === 'denied'
-            ? pushRaw.permission
-            : DEFAULT_PUSH_PREFERENCES.permission,
-      };
-      const validScriptureFrequencyIds = new Set(SCRIPTURE_MEMORY_FREQUENCIES.map(opt => opt.id));
-      const rawScriptureFrequency = typeof parsed?.scriptureMemoryFrequency === 'string'
-        ? parsed.scriptureMemoryFrequency
-        : '';
-      const scriptureMemoryFrequency: ScriptureMemoryFrequency = validScriptureFrequencyIds.has(rawScriptureFrequency as ScriptureMemoryFrequency)
-        ? (rawScriptureFrequency as ScriptureMemoryFrequency)
-        : 'daily';
-      const validScriptureSortIds = new Set(SCRIPTURE_MEMORY_SORTS.map(opt => opt.id));
-      const rawScriptureSort = typeof parsed?.scriptureMemorySort === 'string' ? parsed.scriptureMemorySort : '';
-      const scriptureMemorySort: ScriptureMemorySort = validScriptureSortIds.has(rawScriptureSort as ScriptureMemorySort)
-        ? (rawScriptureSort as ScriptureMemorySort)
-        : 'needsReview';
-      const scriptureMemoryBoardId = typeof parsed?.scriptureMemoryBoardId === 'string' && parsed.scriptureMemoryBoardId
-        ? parsed.scriptureMemoryBoardId
-        : null;
-      const scriptureMemoryEnabled = parsed?.scriptureMemoryEnabled === true;
-      const fastingRemindersEnabled = parsed?.fastingRemindersEnabled === true;
-      const fastingRemindersMode: FastingRemindersMode = parsed?.fastingRemindersMode === "random" ? "random" : "weekday";
-      const fastingRemindersPerMonthRaw = Number(parsed?.fastingRemindersPerMonth);
-      const fastingRemindersPerMonthMax = fastingRemindersMode === "random" ? 31 : 5;
-      const fastingRemindersPerMonth =
-        Number.isFinite(fastingRemindersPerMonthRaw) && fastingRemindersPerMonthRaw > 0
-          ? Math.min(fastingRemindersPerMonthMax, Math.max(1, Math.round(fastingRemindersPerMonthRaw)))
-          : 4;
-      const fastingRemindersWeekdayRaw = Number(parsed?.fastingRemindersWeekday);
-      const fastingRemindersWeekday: Weekday =
-        Number.isInteger(fastingRemindersWeekdayRaw) && fastingRemindersWeekdayRaw >= 0 && fastingRemindersWeekdayRaw <= 6
-          ? (fastingRemindersWeekdayRaw as Weekday)
-          : 1;
-      const fastingRemindersRandomSeed =
-        typeof parsed?.fastingRemindersRandomSeed === "string" && parsed.fastingRemindersRandomSeed.trim()
-          ? parsed.fastingRemindersRandomSeed.trim()
-          : crypto.randomUUID();
-      if (parsed && typeof parsed === "object") {
-        delete (parsed as Record<string, unknown>).theme;
-        delete (parsed as Record<string, unknown>).backgroundAccents;
-        delete (parsed as Record<string, unknown>).backgroundAccentIndex;
-        delete (parsed as Record<string, unknown>).walletPaymentRequestsAutoClaim;
-        delete (parsed as Record<string, unknown>).walletBountiesEnabled;
-        delete (parsed as Record<string, unknown>).walletBountyList;
-      }
-      return {
-        weekStart: 0,
-        newTaskPosition: "top",
-        streaksEnabled: true,
-        completedTab: true,
-        showFullWeekRecurring: false,
-        ...parsed,
-        bibleTrackerEnabled: parsed?.bibleTrackerEnabled === true,
-        scriptureMemoryEnabled,
-        scriptureMemoryBoardId,
-        scriptureMemoryFrequency,
-        scriptureMemorySort,
-        fastingRemindersEnabled,
-        fastingRemindersMode,
-        fastingRemindersPerMonth,
-        fastingRemindersWeekday,
-        fastingRemindersRandomSeed,
-        hideCompletedSubtasks,
-        baseFontSize,
-        startBoardByDay,
-        accent,
-        backgroundImage,
-        backgroundAccent,
-        backgroundAccents,
-        backgroundAccentIndex,
-        backgroundBlur,
-        startupView,
-        walletConversionEnabled,
-        walletPrimaryCurrency: walletConversionEnabled ? walletPrimaryCurrency : "sat",
-        walletSentStateChecksEnabled,
-        walletPaymentRequestsEnabled,
-        walletPaymentRequestsBackgroundChecksEnabled: walletPaymentRequestsEnabled
-          ? walletPaymentRequestsBackgroundChecksEnabled
-          : false,
-        walletContactsSyncEnabled,
-        fileStorageServer,
-        encryptedFileStorageServer,
-        fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
-          ? parsed.fileServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS),
-        encryptedFileServers: typeof parsed?.encryptedFileServers === "string" && parsed.encryptedFileServers.trim()
-          ? parsed.encryptedFileServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless")),
-        walletMintBackupEnabled,
-        npubCashLightningAddressEnabled,
-        npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
-        cloudBackupsEnabled: parsed?.cloudBackupsEnabled === true,
-        nostrBackupEnabled,
-        nostrBackupMetadataEnabled,
-        pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
-      };
-    } catch {
-      return {
-        weekStart: 0,
-        newTaskPosition: "top",
-        streaksEnabled: true,
-        completedTab: true,
-        bibleTrackerEnabled: false,
-        showFullWeekRecurring: false,
-        baseFontSize: null,
-        startBoardByDay: {},
-        accent: "blue",
-        backgroundImage: null,
-        backgroundAccent: null,
-        backgroundAccents: null,
-        backgroundAccentIndex: null,
-        backgroundBlur: "sharp",
-        hideCompletedSubtasks: false,
-        startupView: "main",
-        walletConversionEnabled: true,
-        walletPrimaryCurrency: "sat",
-        walletMintBackupEnabled: true,
-        walletSentStateChecksEnabled: true,
-        walletPaymentRequestsEnabled: true,
-        walletPaymentRequestsBackgroundChecksEnabled: true,
-        walletContactsSyncEnabled: true,
-        fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
-        encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
-        fileServers: serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS),
-        encryptedFileServers: serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless")),
-        npubCashLightningAddressEnabled: true,
-        npubCashAutoClaim: true,
-        cloudBackupsEnabled: false,
-        nostrBackupEnabled: true,
-        nostrBackupMetadataEnabled: true,
-        scriptureMemoryEnabled: false,
-        scriptureMemoryBoardId: null,
-        scriptureMemoryFrequency: "daily",
-        scriptureMemorySort: "needsReview",
-        fastingRemindersEnabled: false,
-        fastingRemindersMode: "weekday",
-        fastingRemindersPerMonth: 4,
-        fastingRemindersWeekday: 1,
-        fastingRemindersRandomSeed: crypto.randomUUID(),
-        pushNotifications: { ...DEFAULT_PUSH_PREFERENCES },
-      };
-    }
-  });
-  const setSettings = useCallback((s: Partial<Settings>) => {
-    setSettingsRaw(prev => {
-      const next = { ...prev, ...s };
-      if (s.pushNotifications) {
-        next.pushNotifications = { ...prev.pushNotifications, ...DEFAULT_PUSH_PREFERENCES, ...s.pushNotifications };
-        const detectedPlatform = detectPushPlatformFromNavigator();
-        next.pushNotifications.platform = next.pushNotifications.platform === 'android'
-          ? 'android'
-          : detectedPlatform;
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
-        // fileServers changed: keep fileStorageServer in sync with selected server
-        const servers = parseFileServers((s as any).fileServers);
-        const currentSelected = normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
-        const entry = findServerEntry(servers, currentSelected);
-        if (!entry && servers.length > 0) {
-          next.fileStorageServer = normalizeFileServerUrl(servers[0].url) || DEFAULT_FILE_STORAGE_SERVER;
-        }
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "fileStorageServer")) {
-        const rawServer = (s as any).fileStorageServer;
-        const normalizedServer =
-          typeof rawServer === "string" && rawServer.trim()
-            ? normalizeFileServerUrl(rawServer) || DEFAULT_FILE_STORAGE_SERVER
-            : DEFAULT_FILE_STORAGE_SERVER;
-        next.fileStorageServer = normalizedServer;
-      } else if (!next.fileStorageServer) {
-        next.fileStorageServer = DEFAULT_FILE_STORAGE_SERVER;
-      } else {
-        next.fileStorageServer =
-          normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileStorageServer")) {
-        const rawServer = (s as any).encryptedFileStorageServer;
-        const normalizedServer =
-          typeof rawServer === "string" && rawServer.trim()
-            ? normalizeFileServerUrl(rawServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER
-            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-        next.encryptedFileStorageServer = normalizedServer;
-      } else if (!next.encryptedFileStorageServer) {
-        next.encryptedFileStorageServer = DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-      } else {
-        next.encryptedFileStorageServer =
-          normalizeFileServerUrl(next.encryptedFileStorageServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
-        const rawServers = (s as any).fileServers;
-        next.fileServers = typeof rawServers === "string" && rawServers.trim()
-          ? rawServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS);
-      } else if (!next.fileServers) {
-        next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS);
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileServers")) {
-        const rawServers = (s as any).encryptedFileServers;
-        next.encryptedFileServers = typeof rawServers === "string" && rawServers.trim()
-          ? rawServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless"));
-      } else if (!next.encryptedFileServers) {
-        next.encryptedFileServers = serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless"));
-      }
-      if (!next.backgroundImage) {
-        next.backgroundImage = null;
-        next.backgroundAccent = null;
-        next.backgroundAccents = null;
-        next.backgroundAccentIndex = null;
-      } else {
-        next.backgroundAccent = normalizeAccentPalette(next.backgroundAccent) ?? next.backgroundAccent ?? null;
-        const normalizedList = normalizeAccentPaletteList(next.backgroundAccents);
-        next.backgroundAccents = normalizedList && normalizedList.length ? normalizedList : null;
-        if (next.backgroundAccents?.length) {
-          if (typeof next.backgroundAccentIndex !== "number" || next.backgroundAccentIndex < 0 || next.backgroundAccentIndex >= next.backgroundAccents.length) {
-            next.backgroundAccentIndex = 0;
-          }
-          next.backgroundAccent = next.backgroundAccents[next.backgroundAccentIndex];
-        } else {
-          next.backgroundAccents = null;
-          next.backgroundAccentIndex = null;
-          if (next.backgroundAccent) {
-            next.backgroundAccents = [next.backgroundAccent];
-            next.backgroundAccentIndex = 0;
-          }
-        }
-      }
-      if (!next.walletPaymentRequestsEnabled) {
-        next.walletPaymentRequestsBackgroundChecksEnabled = false;
-      }
-      next.walletContactsSyncEnabled = next.walletContactsSyncEnabled !== false;
-      if (next.backgroundBlur !== "sharp" && next.backgroundBlur !== "blurred") {
-        next.backgroundBlur = "sharp";
-      }
-      if (next.accent === "background" && (!next.backgroundImage || !next.backgroundAccent)) {
-        next.accent = "blue";
-      }
-      if (!next.walletConversionEnabled) {
-        next.walletPrimaryCurrency = "sat";
-      } else if (next.walletPrimaryCurrency !== "usd") {
-        next.walletPrimaryCurrency = "sat";
-      }
-      if (!next.npubCashLightningAddressEnabled) {
-        next.npubCashLightningAddressEnabled = false;
-        next.npubCashAutoClaim = false;
-      } else if (next.npubCashAutoClaim !== true && next.npubCashAutoClaim !== false) {
-        next.npubCashAutoClaim = true;
-      }
-      if (next.cloudBackupsEnabled !== true) {
-        next.cloudBackupsEnabled = false;
-      }
-      next.nostrBackupEnabled = next.nostrBackupEnabled !== false;
-      next.nostrBackupMetadataEnabled = next.nostrBackupEnabled;
-      if (!next.bibleTrackerEnabled) {
-        next.bibleTrackerEnabled = false;
-        next.scriptureMemoryEnabled = false;
-        next.scriptureMemoryBoardId = null;
-      }
-      if (typeof next.scriptureMemoryBoardId !== 'string' || !next.scriptureMemoryBoardId) {
-        next.scriptureMemoryBoardId = next.scriptureMemoryBoardId ? String(next.scriptureMemoryBoardId) : null;
-        if (next.scriptureMemoryBoardId === '') next.scriptureMemoryBoardId = null;
-      }
-      if (!SCRIPTURE_MEMORY_FREQUENCIES.some(opt => opt.id === next.scriptureMemoryFrequency)) {
-        next.scriptureMemoryFrequency = 'daily';
-      }
-      if (!SCRIPTURE_MEMORY_SORTS.some(opt => opt.id === next.scriptureMemorySort)) {
-        next.scriptureMemorySort = 'needsReview';
-      }
-      if (next.scriptureMemoryEnabled !== true) {
-        next.scriptureMemoryEnabled = false;
-      }
-      if (typeof next.scriptureMemoryBoardId === 'undefined') {
-        next.scriptureMemoryBoardId = null;
-      }
-      if (next.fastingRemindersEnabled !== true) {
-        next.fastingRemindersEnabled = false;
-      }
-      next.fastingRemindersMode = next.fastingRemindersMode === "random" ? "random" : "weekday";
-      const fastingPerMonthRaw = Number(next.fastingRemindersPerMonth);
-      const fastingPerMonthMax = next.fastingRemindersMode === "random" ? 31 : 5;
-      if (!Number.isFinite(fastingPerMonthRaw) || fastingPerMonthRaw <= 0) {
-        next.fastingRemindersPerMonth = 4;
-      } else {
-        next.fastingRemindersPerMonth = Math.min(
-          fastingPerMonthMax,
-          Math.max(1, Math.round(fastingPerMonthRaw)),
-        );
-      }
-      const fastingWeekdayRaw = Number(next.fastingRemindersWeekday);
-      next.fastingRemindersWeekday =
-        Number.isInteger(fastingWeekdayRaw) && fastingWeekdayRaw >= 0 && fastingWeekdayRaw <= 6
-          ? (fastingWeekdayRaw as Weekday)
-          : 1;
-      if (typeof next.fastingRemindersRandomSeed !== "string" || !next.fastingRemindersRandomSeed.trim()) {
-        next.fastingRemindersRandomSeed = crypto.randomUUID();
-      } else {
-        next.fastingRemindersRandomSeed = next.fastingRemindersRandomSeed.trim();
-      }
-      return next;
-    });
-  }, []);
-  const settingsFirstRun = useRef(true);
-  useEffect(() => {
-    if (settingsFirstRun.current) { settingsFirstRun.current = false; return; }
-    kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
-  }, [settings]);
-  return [settings, setSettings] as const;
-}
-
-function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, string>>): string {
-  const visible = boards.filter(b => !b.archived && !b.hidden);
-  const today = (new Date().getDay() as Weekday);
-  const overrideId = overrides?.[today];
-  if (overrideId) {
-    const match = visible.find(b => b.id === overrideId) || boards.find(b => !b.archived && b.id === overrideId);
-    if (match) return match.id;
-  }
-  if (visible.length) return visible[0].id;
-  const firstUnarchived = boards.find(b => !b.archived);
-  if (firstUnarchived) return firstUnarchived.id;
-  return boards[0]?.id || "";
-}
-
-function migrateBoards(stored: any): Board[] | null {
-  try {
-    const arr = stored as any[];
-    if (!Array.isArray(arr)) return null;
-    return arr.map((b) => {
-      const archived =
-        typeof b?.archived === "boolean"
-          ? b.archived
-          : typeof b?.hidden === "boolean"
-            ? b.hidden
-            : false;
-      const hidden =
-        typeof b?.hidden === "boolean" && typeof b?.archived === "boolean"
-          ? b.hidden
-          : false;
-      const clearCompletedDisabled =
-        typeof b?.clearCompletedDisabled === "boolean" ? b.clearCompletedDisabled : false;
-      const indexCardEnabled =
-        typeof (b as any)?.indexCardEnabled === "boolean" ? Boolean((b as any).indexCardEnabled) : false;
-      const hideChildBoardNames =
-        typeof (b as any)?.hideChildBoardNames === "boolean"
-          ? Boolean((b as any).hideChildBoardNames)
-          : false;
-      if (b?.kind === "week") {
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "week",
-          nostr: b.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-        } as Board;
-      }
-      if (b?.kind === "lists" && Array.isArray(b.columns)) {
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "lists",
-          columns: b.columns,
-          nostr: b.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-          indexCardEnabled,
-        } as Board;
-      }
-      if (b?.kind === "compound") {
-        const rawChildren = Array.isArray((b as any)?.children) ? (b as any).children : [];
-        const children = rawChildren
-          .filter((child: unknown) => typeof child === "string" && child && child !== b.id) as string[];
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "compound",
-          children,
-          nostr: b.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-          indexCardEnabled,
-          hideChildBoardNames,
-        } as Board;
-      }
-      if (b?.kind === "bible") {
-        const name = typeof b?.name === "string" && b.name.trim() ? b.name : "Bible";
-        return {
-          id: b.id,
-          name,
-          kind: "bible",
-          archived,
-          hidden,
-          clearCompletedDisabled,
-        } as Board;
-      }
-      if (b?.kind === "list") {
-        // old single-column boards -> migrate to lists with one column
-        const colId = crypto.randomUUID();
-        return {
-          id: b.id,
-          name: b.name,
-          kind: "lists",
-          columns: [{ id: colId, name: "Items" }],
-          nostr: b?.nostr,
-          archived,
-          hidden,
-          clearCompletedDisabled,
-          indexCardEnabled,
-        } as Board;
-      }
-      // unknown -> keep as lists with one column
-      const colId = crypto.randomUUID();
-      return {
-        id: b?.id || crypto.randomUUID(),
-        name: b?.name || "Board",
-        kind: "lists",
-        columns: [{ id: colId, name: "Items" }],
-        nostr: b?.nostr,
-        archived,
-        hidden,
-        clearCompletedDisabled,
-        indexCardEnabled,
-      } as Board;
-    });
-  } catch { return null; }
-}
-
-function useBoards() {
-  const [boards, setBoards] = useState<Board[]>(() => {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS);
-    if (raw) {
-      const migrated = migrateBoards(JSON.parse(raw));
-      if (migrated && migrated.length) return migrated;
-    }
-    // default: one shared Week board for fresh installs
-    return [{
-      id: "week-default",
-      name: "Week",
-      kind: "week",
-      nostr: { boardId: crypto.randomUUID(), relays: Array.from(DEFAULT_NOSTR_RELAYS) },
-      archived: false,
-      hidden: false,
-      clearCompletedDisabled: false,
-    }];
-  });
-  const boardsFirstRun = useRef(true);
-  useEffect(() => {
-    if (boardsFirstRun.current) { boardsFirstRun.current = false; return; }
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(boards));
-  }, [boards]);
-  return [boards, setBoards] as const;
-}
-
-function useTasks() {
-  const [tasks, setTasks] = useState<Task[]>(() => {
-    const loadStored = (): any[] => {
-      try {
-        const current = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS);
-        if (current) {
-          const parsed = JSON.parse(current);
-          if (Array.isArray(parsed)) return parsed;
-        }
-      } catch {}
-      return [];
-    };
-
-    const rawTasks = loadStored();
-    const orderMap = new Map<string, number>();
-    const createdAtFallback = Date.now();
-    const normalized = rawTasks
-      .map((entry, index) => {
-        if (!entry || typeof entry !== 'object') return null;
-        const fallbackBoard = typeof (entry as any).boardId === 'string' ? (entry as any).boardId : 'week-default';
-        const boardId = fallbackBoard;
-        const next = orderMap.get(boardId) ?? 0;
-        const explicitOrder = typeof (entry as any).order === 'number' ? (entry as any).order : next;
-        orderMap.set(boardId, explicitOrder + 1);
-        const dueISO = typeof (entry as any).dueISO === 'string' ? (entry as any).dueISO : new Date().toISOString();
-        const dueDateEnabled = typeof (entry as any).dueDateEnabled === 'boolean'
-          ? (entry as any).dueDateEnabled
-          : undefined;
-        const dueTimeEnabled = typeof (entry as any).dueTimeEnabled === 'boolean' ? (entry as any).dueTimeEnabled : undefined;
-        const dueTimeZoneRaw = typeof (entry as any).dueTimeZone === "string" ? (entry as any).dueTimeZone : undefined;
-        const dueTimeZone = normalizeTimeZone(dueTimeZoneRaw) ?? undefined;
-        const priority = normalizeTaskPriority((entry as any).priority);
-        const createdAt = normalizeTaskCreatedAt((entry as any).createdAt) ?? (createdAtFallback + index);
-        const updatedAt =
-          typeof (entry as any).updatedAt === "string" && !Number.isNaN(Date.parse((entry as any).updatedAt))
-            ? new Date((entry as any).updatedAt).toISOString()
-            : undefined;
-        const createdBy = normalizeAgentPubkey((entry as any).createdBy);
-        const lastEditedBy = normalizeAgentPubkey((entry as any).lastEditedBy) ?? createdBy;
-        const reminders = sanitizeReminderList((entry as any).reminders);
-        const reminderTime = normalizeReminderTime((entry as any).reminderTime);
-        const id = typeof (entry as any).id === 'string' ? (entry as any).id : crypto.randomUUID();
-        const scriptureMemoryId = typeof (entry as any).scriptureMemoryId === 'string'
-          ? (entry as any).scriptureMemoryId
-          : undefined;
-        const scriptureMemoryStageRaw = Number((entry as any).scriptureMemoryStage);
-        const scriptureMemoryStage = Number.isFinite(scriptureMemoryStageRaw) && scriptureMemoryStageRaw >= 0
-          ? Math.floor(scriptureMemoryStageRaw)
-          : undefined;
-        const prevReviewRaw = (entry as any).scriptureMemoryPrevReviewISO;
-        const scriptureMemoryPrevReviewISO =
-          typeof prevReviewRaw === 'string'
-            ? prevReviewRaw
-            : prevReviewRaw === null
-              ? null
-              : undefined;
-        const scriptureMemoryScheduledAt = typeof (entry as any).scriptureMemoryScheduledAt === 'string'
-          ? (entry as any).scriptureMemoryScheduledAt
-          : undefined;
-        const documents = normalizeDocumentList((entry as any).documents);
-        const assignees = normalizeTaskAssignees((entry as any).assignees);
-        const task: Task = {
-          ...(entry as Task),
-          id,
-          boardId,
-          order: explicitOrder,
-          dueISO,
-          priority,
-          ...(createdBy ? { createdBy } : {}),
-          ...(lastEditedBy ? { lastEditedBy } : {}),
-          createdAt,
-          ...(updatedAt ? { updatedAt } : {}),
-          ...(typeof dueDateEnabled === 'boolean' ? { dueDateEnabled } : {}),
-          ...(typeof dueTimeEnabled === 'boolean' ? { dueTimeEnabled } : {}),
-          ...(dueTimeZone ? { dueTimeZone } : {}),
-          ...(reminders !== undefined ? { reminders } : {}),
-          ...(reminderTime ? { reminderTime } : {}),
-          ...(scriptureMemoryId ? { scriptureMemoryId } : {}),
-          ...(scriptureMemoryStage !== undefined ? { scriptureMemoryStage } : {}),
-          ...(scriptureMemoryPrevReviewISO !== undefined ? { scriptureMemoryPrevReviewISO } : {}),
-          ...(scriptureMemoryScheduledAt ? { scriptureMemoryScheduledAt } : {}),
-          ...(assignees ? { assignees } : {}),
-        } as Task;
-        if (documents) {
-          task.documents = documents.map(ensureDocumentPreview);
-        } else if (Object.prototype.hasOwnProperty.call(entry as any, "documents")) {
-          task.documents = undefined;
-        }
-
-        const rawBountyLists = (entry as any).bountyLists;
-        const bountyListSet = new Set<string>();
-        if (Array.isArray(rawBountyLists)) {
-          const normalizedLists = rawBountyLists
-            .map((value) => (typeof value === "string" ? value.trim() : ""))
-            .filter((value): value is string => value.length > 0);
-          const unique = Array.from(new Set(normalizedLists));
-          if (unique.length > 0) {
-            unique.forEach((value) => bountyListSet.add(value));
-            // Legacy bounties list choices map to the unified pinned list.
-            bountyListSet.add(PINNED_BOUNTY_LIST_KEY);
-          }
-        }
-        if ((entry as any).column === "bounties") {
-          task.column = "day";
-          bountyListSet.add(PINNED_BOUNTY_LIST_KEY);
-        }
-        if (bountyListSet.size > 0) {
-          task.bountyLists = Array.from(bountyListSet);
-        }
-
-        return normalizeTaskBounty(normalizeHiddenForRecurring(task));
-      })
-      .filter((t): t is Task => !!t);
-    return dedupeRecurringInstances(normalized);
-  });
-  const tasksFirstRun = useRef(true);
-  // Keep a ref so the debounce callback always serializes the latest tasks value.
-  const tasksForSaveRef = useRef(tasks);
-  tasksForSaveRef.current = tasks;
-  const tasksSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (tasksFirstRun.current) { tasksFirstRun.current = false; return; }
-    // Debounce the heavy JSON.stringify so it runs AFTER the browser has painted
-    // and GC has had a chance to run. Without this, a large batch flush triggers
-    // a render + JSON.stringify(1000 tasks) back-to-back, spiking memory on mobile.
-    if (tasksSaveTimerRef.current) clearTimeout(tasksSaveTimerRef.current);
-    tasksSaveTimerRef.current = setTimeout(() => {
-      try {
-        idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasksForSaveRef.current));
-      } catch (err) {
-        console.error('Failed to save tasks', err);
-      }
-    }, 500);
-  }, [tasks]);
-  return [tasks, setTasks] as const;
-}
-
-function useCalendarEvents() {
-  const [events, setEvents] = useState<CalendarEvent[]>(() => {
-    const normalizeStringArray = (value: unknown): string[] | undefined => {
-      if (!Array.isArray(value)) return undefined;
-      const out = value
-        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-        .filter(Boolean);
-      return out.length ? out : undefined;
-    };
-
-    const normalizeParticipants = (value: unknown): CalendarEventParticipant[] | undefined => {
-      if (!Array.isArray(value)) return undefined;
-      const out: CalendarEventParticipant[] = [];
-      for (const entry of value) {
-        if (!entry || typeof entry !== "object") continue;
-        const pubkey = typeof (entry as any).pubkey === "string" ? (entry as any).pubkey.trim() : "";
-        if (!pubkey) continue;
-        const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-        const role = typeof (entry as any).role === "string" ? (entry as any).role.trim() : "";
-        out.push({ pubkey, relay: relay || undefined, role: role || undefined });
-      }
-      return out.length ? out : undefined;
-    };
-
-    const normalizeInviteTokens = (value: unknown): Record<string, string> | undefined => {
-      if (!value || typeof value !== "object") return undefined;
-      const out: Record<string, string> = {};
-      for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-        if (typeof raw !== "string") continue;
-        const trimmed = raw.trim();
-        if (!trimmed) continue;
-        out[key] = trimmed;
-      }
-      return Object.keys(out).length ? out : undefined;
-    };
-
-    const normalizeRsvpStatus = (value: unknown): CalendarRsvpStatus | undefined => {
-      if (value === "accepted" || value === "declined" || value === "tentative") return value;
-      return undefined;
-    };
-
-    const normalizeRsvpFb = (value: unknown): CalendarRsvpFb | undefined => {
-      if (value === "free" || value === "busy") return value;
-      return undefined;
-    };
-
-    const isDateKey = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
-
-    const loadStored = (key: string): any[] => {
-      try {
-        const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, key);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    };
-
-    const rawEvents = loadStored(LS_CALENDAR_EVENTS);
-    const rawExternalEvents = loadStored(LS_EXTERNAL_CALENDAR_EVENTS);
-    const orderMap = new Map<string, number>();
-    const todayKey = (() => {
-      const now = new Date();
-      const yyyy = String(now.getFullYear()).padStart(4, "0");
-      const mm = String(now.getMonth() + 1).padStart(2, "0");
-      const dd = String(now.getDate()).padStart(2, "0");
-      return `${yyyy}-${mm}-${dd}`;
-    })();
-
-    const normalizeEntry = (
-      entry: any,
-      options?: { external?: boolean },
-    ): CalendarEvent | null => {
-      if (!entry || typeof entry !== "object") return null;
-
-      const external = options?.external === true;
-      const fallbackBoard = typeof (entry as any).boardId === "string" ? (entry as any).boardId : "week-default";
-      const boardId = fallbackBoard;
-      const nextOrder = orderMap.get(boardId) ?? 0;
-      const explicitOrder = typeof (entry as any).order === "number" ? (entry as any).order : nextOrder;
-      orderMap.set(boardId, explicitOrder + 1);
-
-      const idRaw = typeof (entry as any).id === "string" ? (entry as any).id.trim() : "";
-      const legacyId = typeof (entry as any).eventId === "string" ? (entry as any).eventId.trim() : "";
-      const id = idRaw || legacyId || crypto.randomUUID();
-      const title = typeof (entry as any).title === "string" ? (entry as any).title : "";
-      const summary = typeof (entry as any).summary === "string" ? (entry as any).summary : undefined;
-      const description = typeof (entry as any).description === "string" ? (entry as any).description : undefined;
-      const documents = normalizeDocumentList((entry as any).documents);
-      const image = typeof (entry as any).image === "string" ? (entry as any).image : undefined;
-      const geohash = typeof (entry as any).geohash === "string" ? (entry as any).geohash : undefined;
-      const columnId = typeof (entry as any).columnId === "string" ? (entry as any).columnId : undefined;
-      const reminders = sanitizeReminderList((entry as any).reminders);
-      const reminderTime = normalizeReminderTime((entry as any).reminderTime);
-      const readOnlyRaw = typeof (entry as any).readOnly === "boolean" ? (entry as any).readOnly : undefined;
-      const readOnly = external ? true : readOnlyRaw;
-      const originBoardId = typeof (entry as any).originBoardId === "string" ? (entry as any).originBoardId : undefined;
-      const hiddenUntilISO = normalizeIsoTimestamp((entry as any).hiddenUntilISO);
-
-      const locations = normalizeStringArray((entry as any).locations);
-      const hashtags = normalizeStringArray((entry as any).hashtags);
-      const references = normalizeStringArray((entry as any).references);
-      const participants = normalizeParticipants((entry as any).participants);
-
-      const recurrence =
-        (entry as any).recurrence && typeof (entry as any).recurrence === "object" && typeof (entry as any).recurrence.type === "string"
-          ? ((entry as any).recurrence as Recurrence)
-          : undefined;
-      const seriesId = typeof (entry as any).seriesId === "string" ? (entry as any).seriesId : undefined;
-
-      const eventKey = typeof (entry as any).eventKey === "string" ? (entry as any).eventKey.trim() : "";
-      const inviteTokens = normalizeInviteTokens((entry as any).inviteTokens);
-      const canonicalAddress =
-        typeof (entry as any).canonicalAddress === "string" ? (entry as any).canonicalAddress.trim() : "";
-      const viewAddress =
-        typeof (entry as any).viewAddress === "string" ? (entry as any).viewAddress.trim() : "";
-      const inviteToken = typeof (entry as any).inviteToken === "string" ? (entry as any).inviteToken.trim() : "";
-      const inviteRelays = normalizeStringArray((entry as any).inviteRelays);
-
-      const parsedCanonical = canonicalAddress ? parseCalendarAddress(canonicalAddress) : null;
-      const boardPubkeyRaw = typeof (entry as any).boardPubkey === "string" ? (entry as any).boardPubkey.trim() : "";
-      const boardPubkey =
-        normalizeNostrPubkeyHex(boardPubkeyRaw)
-        ?? normalizeNostrPubkeyHex(parsedCanonical?.pubkey || "")
-        ?? undefined;
-
-      const rsvpStatus = normalizeRsvpStatus((entry as any).rsvpStatus);
-      const rsvpCreatedAtRaw = (entry as any).rsvpCreatedAt;
-      const rsvpCreatedAt = typeof rsvpCreatedAtRaw === "number" && Number.isFinite(rsvpCreatedAtRaw)
-        ? rsvpCreatedAtRaw
-        : undefined;
-      const rsvpFb = normalizeRsvpFb((entry as any).rsvpFb);
-      const createdBy = normalizeAgentPubkey((entry as any).createdBy);
-      const lastEditedBy = normalizeAgentPubkey((entry as any).lastEditedBy) ?? createdBy;
-
-      if (external) {
-        if (!canonicalAddress || !viewAddress || !eventKey || !boardPubkey) return null;
-      }
-
-      const base: CalendarEventBase = {
-        id,
-        boardId,
-        ...(createdBy ? { createdBy } : {}),
-        ...(lastEditedBy ? { lastEditedBy } : {}),
-        columnId,
-        order: explicitOrder,
-        title,
-        summary,
-        description,
-        documents: documents ? documents.map(ensureDocumentPreview) : undefined,
-        image,
-        locations,
-        geohash,
-        participants,
-        hashtags,
-        references,
-        reminders,
-        ...(reminderTime ? { reminderTime } : {}),
-        recurrence,
-        seriesId,
-        ...(hiddenUntilISO ? { hiddenUntilISO } : {}),
-        ...(readOnly ? { readOnly: true } : {}),
-        ...(external ? { external: true } : {}),
-        ...(originBoardId ? { originBoardId } : {}),
-        ...(eventKey ? { eventKey } : {}),
-        ...(inviteTokens ? { inviteTokens } : {}),
-        ...(canonicalAddress ? { canonicalAddress } : {}),
-        ...(viewAddress ? { viewAddress } : {}),
-        ...(inviteToken ? { inviteToken } : {}),
-        ...(inviteRelays ? { inviteRelays } : {}),
-        ...(boardPubkey ? { boardPubkey } : {}),
-        ...(rsvpStatus ? { rsvpStatus } : {}),
-        ...(rsvpCreatedAt ? { rsvpCreatedAt } : {}),
-        ...(rsvpFb ? { rsvpFb } : {}),
-      };
-
-      const inferredKind =
-        (entry as any).kind === "time" || (entry as any).kind === "date"
-          ? (entry as any).kind
-          : typeof (entry as any).startISO === "string"
-            ? "time"
-            : "date";
-
-      if (inferredKind === "time") {
-        const startISO = typeof (entry as any).startISO === "string" ? (entry as any).startISO : new Date().toISOString();
-        if (Number.isNaN(Date.parse(startISO))) return null;
-        const endISO = typeof (entry as any).endISO === "string" ? (entry as any).endISO : undefined;
-        const normalizedEndISO = endISO && !Number.isNaN(Date.parse(endISO)) ? endISO : undefined;
-        const startTzid = typeof (entry as any).startTzid === "string" ? (entry as any).startTzid : undefined;
-        const endTzid = typeof (entry as any).endTzid === "string" ? (entry as any).endTzid : undefined;
-        const event: TimeCalendarEvent = {
-          ...base,
-          kind: "time",
-          startISO,
-          endISO: normalizedEndISO,
-          startTzid,
-          endTzid,
-        };
-        return event;
-      }
-
-      const startDate =
-        typeof (entry as any).startDate === "string" && isDateKey((entry as any).startDate)
-          ? (entry as any).startDate
-          : todayKey;
-      const endDate =
-        typeof (entry as any).endDate === "string" && isDateKey((entry as any).endDate)
-          ? (entry as any).endDate
-          : undefined;
-      const event: DateCalendarEvent = {
-        ...base,
-        kind: "date",
-        startDate,
-        endDate,
-      };
-      return event;
-    };
-
-    const boardEvents: CalendarEvent[] = [];
-    const migratedExternal: CalendarEvent[] = [];
-    rawEvents.forEach((entry) => {
-      const event = normalizeEntry(entry, { external: false });
-      if (!event) return;
-      const shouldMigrateExternal =
-        (entry as any)?.external === true
-        || (!!event.readOnly && !event.originBoardId && !!event.eventKey && !!event.viewAddress && !!event.canonicalAddress);
-      if (shouldMigrateExternal) {
-        const externalEvent = normalizeEntry(entry, { external: true });
-        if (externalEvent) {
-          migratedExternal.push(externalEvent);
-          return;
-        }
-      }
-      boardEvents.push(event);
-    });
-
-    const externalEvents: CalendarEvent[] = [];
-    rawExternalEvents.forEach((entry) => {
-      const event = normalizeEntry(entry, { external: true });
-      if (event) externalEvents.push(event);
-    });
-
-    const mergedExternalMap = new Map<string, CalendarEvent>();
-    [...migratedExternal, ...externalEvents].forEach((event) => {
-      if (!event.external) return;
-      const key = `${event.id}::${event.viewAddress || ""}`;
-      const existing = mergedExternalMap.get(key);
-      if (!existing) {
-        mergedExternalMap.set(key, event);
-        return;
-      }
-      const nextCreated = event.rsvpCreatedAt ?? 0;
-      const prevCreated = existing.rsvpCreatedAt ?? 0;
-      if (nextCreated >= prevCreated) {
-        mergedExternalMap.set(key, event);
-      }
-    });
-
-    return [...boardEvents, ...Array.from(mergedExternalMap.values())];
-  });
-
-  const eventsFirstRun = useRef(true);
-  useEffect(() => {
-    if (eventsFirstRun.current) { eventsFirstRun.current = false; return; }
-    try {
-      const boardEvents = events.filter((event) => !event.external);
-      const externalEvents = events.filter((event) => event.external);
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(boardEvents));
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS, JSON.stringify(externalEvents));
-    } catch (err) {
-      console.error("Failed to save calendar events", err);
-    }
-  }, [events]);
-
-  return [events, setEvents] as const;
-}
-
-function useBibleTracker(): [BibleTrackerState, React.Dispatch<React.SetStateAction<BibleTrackerState>>] {
-  const [state, setState] = useState<BibleTrackerState>(() => {
-    try {
-      const raw = kvStorage.getItem(LS_BIBLE_TRACKER);
-      if (raw) {
-        return sanitizeBibleTrackerState(JSON.parse(raw));
-      }
-    } catch {}
-    return sanitizeBibleTrackerState(null);
-  });
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(state));
-    } catch {}
-  }, [state]);
-  return [state, setState];
-}
-
-function useScriptureMemory(): [ScriptureMemoryState, React.Dispatch<React.SetStateAction<ScriptureMemoryState>>] {
-  const [state, setState] = useState<ScriptureMemoryState>(() => {
-    try {
-      const raw = kvStorage.getItem(LS_SCRIPTURE_MEMORY);
-      if (raw) {
-        return sanitizeScriptureMemoryState(JSON.parse(raw));
-      }
-    } catch {}
-    return sanitizeScriptureMemoryState(null);
-  });
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(state));
-    } catch {}
-  }, [state]);
-  return [state, setState];
-}
-
 /* ================= DroppableColumn ================= */
 const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
   title: string;
@@ -5048,587 +1067,113 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
 /* ================= App ================= */
 export default function App() {
   const { show: showToast } = useToast();
-  const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
-  const [selectionMoveSheetOpen, setSelectionMoveSheetOpen] = useState(false);
-  const [selectionMoveStep, setSelectionMoveStep] = useState<"board" | "column">("board");
-  const [selectionMoveBoardId, setSelectionMoveBoardId] = useState<string | null>(null);
-  const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
-  const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
-  const runtimeConfigPromiseRef = useRef<Promise<void> | null>(null);
-  if (typeof window !== "undefined") {
-    (window as any).__TASKIFY_WORKER_BASE_URL__ = workerBaseUrl;
-  }
-  useEffect(() => {
-    let cancelled = false;
-    if (!runtimeConfigPromiseRef.current) {
-      runtimeConfigPromiseRef.current = (async () => {
-        try {
-          const response = await fetch("/api/config", { method: "GET" });
-          if (!response.ok) return null;
-          const contentType = response.headers.get("content-type") || "";
-
-          let data: any = null;
-          try {
-            if (/json/i.test(contentType)) {
-              data = await response.json();
-            } else {
-              // Some dev setups may serve plain text; attempt to parse but ignore errors.
-              const text = await response.text();
-              try {
-                data = JSON.parse(text);
-              } catch {
-                return null;
-              }
-            }
-          } catch {
-            return null;
-          }
-
-          if (!data || typeof data !== "object") return null;
-          return {
-            workerBaseUrl:
-              typeof data.workerBaseUrl === "string" && data.workerBaseUrl.trim()
-                ? data.workerBaseUrl.trim().replace(/\/$/, "")
-                : null,
-            vapidPublicKey:
-              typeof data.vapidPublicKey === "string" && data.vapidPublicKey.trim()
-                ? data.vapidPublicKey.trim()
-                : null,
-          };
-        } catch (err) {
-          console.warn("Failed to load runtime config", err);
-          return null;
-        }
-      })();
-    }
-
-    runtimeConfigPromiseRef.current
-      ?.then((data) => {
-        if (cancelled) return;
-        if (data?.workerBaseUrl) {
-          setWorkerBaseUrl(data.workerBaseUrl);
-        } else if (!FALLBACK_WORKER_BASE_URL && typeof window !== "undefined") {
-          setWorkerBaseUrl(window.location.origin);
-        }
-        if (data?.vapidPublicKey) {
-          setVapidPublicKey(data.vapidPublicKey);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        if (!FALLBACK_WORKER_BASE_URL && typeof window !== "undefined") {
-          setWorkerBaseUrl(window.location.origin);
-        }
-      })
-      .finally(() => {
-        runtimeConfigPromiseRef.current = null;
-      });
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
-    if (!workerBaseUrl) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const registration = await navigator.serviceWorker.ready;
-        if (cancelled) return;
-        registration.active?.postMessage({ type: "TASKIFY_CONFIG", workerBaseUrl });
-        if (navigator.serviceWorker.controller) {
-          navigator.serviceWorker.controller.postMessage({ type: "TASKIFY_CONFIG", workerBaseUrl });
-        }
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [workerBaseUrl]);
-  // Show toast on any successful clipboard write across the app
-  useEffect(() => {
-    const clip: any = (navigator as any).clipboard;
-    if (!clip || typeof clip.writeText !== 'function') return;
-    const original = clip.writeText.bind(clip);
-    const patched = (text: string) => {
-      try {
-        const p = original(text);
-        if (p && typeof p.then === 'function') {
-          p.then(() => showToast()).catch(() => {});
-        } else {
-          showToast();
-        }
-        return p;
-      } catch {
-        // swallow, behave like original
-        try { return original(text); } catch {}
-      }
-    };
-    try { clip.writeText = patched; } catch {}
-    return () => { try { clip.writeText = original; } catch {} };
-  }, [showToast]);
-  const [messagesBoardId] = useState<string>(() => {
-    if (typeof window === "undefined") return crypto.randomUUID();
-    try {
-      const existing = kvStorage.getItem(LS_MESSAGES_BOARD_ID);
-      if (existing && existing.trim()) return existing.trim();
-    } catch {}
-    const id = crypto.randomUUID();
-    try {
-      kvStorage.setItem(LS_MESSAGES_BOARD_ID, id);
-    } catch {}
-    return id;
+  const { vapidPublicKey, workerBaseUrl } = useRuntimeConfig({
+    fallbackVapidPublicKey: FALLBACK_VAPID_PUBLIC_KEY,
+    fallbackWorkerBaseUrl: FALLBACK_WORKER_BASE_URL,
   });
+  useClipboardWriteToast(showToast);
+  const messagesBoardId = useMessagesBoardId();
   const [boards, setBoards] = useBoards();
-  const [settings, setSettings] = useSettings();
-
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
-    } catch {
-      // ignore persistence issues
-    }
-  }, [settings.walletMintBackupEnabled]);
-  useEffect(() => {
-    setBoards(prev => {
-      const hasBible = prev.some(b => b.id === BIBLE_BOARD_ID);
-      if (settings.bibleTrackerEnabled) {
-        if (hasBible) {
-          return prev.map(b => {
-            if (b.id !== BIBLE_BOARD_ID) return b;
-            return {
-              id: BIBLE_BOARD_ID,
-              name: "Bible",
-              kind: "bible",
-              archived: false,
-              hidden: false,
-            } as Board;
-          });
-        }
-        const insertionIndex = prev.findIndex(b => b.archived);
-        const bibleBoard: Board = {
-          id: BIBLE_BOARD_ID,
-          name: "Bible",
-          kind: "bible",
-          archived: false,
-          hidden: false,
-        };
-        if (insertionIndex === -1) {
-          return [...prev, bibleBoard];
-        }
-        const next = [...prev];
-        next.splice(insertionIndex, 0, bibleBoard);
-        return next;
-      }
-      if (!hasBible) return prev;
-      return prev.filter(b => b.id !== BIBLE_BOARD_ID);
-    });
-  }, [settings.bibleTrackerEnabled, setBoards]);
-  useEffect(() => {
-    const detected = detectPushPlatformFromNavigator();
-    if (settings.pushNotifications.platform !== detected) {
-      setSettings({ pushNotifications: { ...settings.pushNotifications, platform: detected } });
-    }
-  }, [settings.pushNotifications, setSettings]);
-  const [currentBoardId, setCurrentBoardIdState] = useState(() => pickStartupBoard(boards, settings.startBoardByDay));
+  const {
+    currentBoardId,
+    scriptureMemoryBoard,
+    scriptureMemoryFrequencyOption,
+    scriptureMemorySortLabel,
+    setCurrentBoardId: setCurrentBoardIdState,
+    setSettings,
+    settings,
+  } = useSettingsSync({ boards, setBoards, bibleBoardId: BIBLE_BOARD_ID });
   const currentBoard = boards.find(b => b.id === currentBoardId);
   const isListBoard = currentBoard?.kind === "lists";
   const visibleBoards = useMemo(() => boards.filter(b => !b.archived && !b.hidden), [boards]);
-  const scriptureMemoryFrequencyOption = useMemo(
-    () => SCRIPTURE_MEMORY_FREQUENCIES.find((opt) => opt.id === settings.scriptureMemoryFrequency) || SCRIPTURE_MEMORY_FREQUENCIES[0],
-    [settings.scriptureMemoryFrequency]
-  );
-  const scriptureMemorySortLabel = useMemo(
-    () => SCRIPTURE_MEMORY_SORTS.find((opt) => opt.id === settings.scriptureMemorySort)?.label || SCRIPTURE_MEMORY_SORTS[0].label,
-    [settings.scriptureMemorySort]
-  );
-  const scriptureMemoryBoard = useMemo(
-    () => (settings.scriptureMemoryBoardId ? boards.find((b) => b.id === settings.scriptureMemoryBoardId) || null : null),
-    [boards, settings.scriptureMemoryBoardId]
-  );
-  const availableMemoryBoards = useMemo(
-    () => boards.filter((b) => !b.archived && b.kind !== "bible"),
-    [boards]
-  );
-
-  useEffect(() => {
-    if (!settings.bibleTrackerEnabled && currentBoardId === BIBLE_BOARD_ID) {
-      const fallbackBoards = boards.filter(b => b.id !== BIBLE_BOARD_ID);
-      const next = pickStartupBoard(fallbackBoards, settings.startBoardByDay);
-      if (next !== currentBoardId) setCurrentBoardIdState(next);
-    }
-  }, [settings.bibleTrackerEnabled, currentBoardId, boards, settings.startBoardByDay]);
-
-  useEffect(() => {
-    if (!settings.scriptureMemoryEnabled) return;
-    if (scriptureMemoryBoard) return;
-    const fallbackId = availableMemoryBoards[0]?.id;
-    if (fallbackId && fallbackId !== settings.scriptureMemoryBoardId) {
-      setSettings({ scriptureMemoryBoardId: fallbackId });
-    }
-  }, [
-    settings.scriptureMemoryEnabled,
-    scriptureMemoryBoard,
-    availableMemoryBoards,
-    setSettings,
-    settings.scriptureMemoryBoardId,
-  ]);
-
-
-
-  useEffect(() => {
-    const current = boards.find(b => b.id === currentBoardId);
-    if (current && !current.archived && !current.hidden) return;
-    const next = pickStartupBoard(boards, settings.startBoardByDay);
-    if (next !== currentBoardId) setCurrentBoardIdState(next);
-  }, [boards, currentBoardId, settings.startBoardByDay]);
 
   const [tasks, setTasks] = useTasks();
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
-  const selectedItemIdSet = useMemo(() => new Set(selectedItemIds), [selectedItemIds]);
-  const selectedTasks = useMemo(() => tasks.filter((task) => selectedItemIdSet.has(task.id)), [tasks, selectedItemIdSet]);
-  const selectedEvents = useMemo(() => calendarEvents.filter((event) => selectedItemIdSet.has(event.id)), [calendarEvents, selectedItemIdSet]);
-  const selectedCount = selectedTasks.length + selectedEvents.length;
-  const clearSelection = useCallback(() => {
-    setSelectedItemIds([]);
-  }, []);
-  const exitSelectionMode = useCallback(() => {
-    setIsSelectionMode(false);
-    setSelectedItemIds([]);
-    setSelectionMoveSheetOpen(false);
-  }, []);
-  const toggleItemSelection = useCallback((id: string) => {
-    setSelectedItemIds((p) => p.includes(id) ? p.filter((i) => i !== id) : [...p, id]);
-  }, []);
-  useEffect(() => {
-    const handleToggle = () => {
-      setSelectionMoveSheetOpen(false);
-      setIsSelectionMode((p) => {
-        if (p) {
-          setSelectedItemIds([]);
-          return false;
-        }
-        setSelectedItemIds([]);
-        return true;
-      });
-    };
-    window.addEventListener('toggleSelectionMode', handleToggle);
-    return () => window.removeEventListener('toggleSelectionMode', handleToggle);
-  }, []);
-  useEffect(() => {
-    if (!isSelectionMode) return;
-    setSelectedItemIds((prev) => prev.filter((id) => tasks.some((task) => task.id === id) || calendarEvents.some((event) => event.id === id)));
-  }, [calendarEvents, isSelectionMode, tasks]);
-  useEffect(() => {
-    if (!isSelectionMode || selectedCount > 0) return;
-    setSelectionMoveSheetOpen(false);
-  }, [isSelectionMode, selectedCount]);
-  const [calendarInvites, setCalendarInvites] = useState<CalendarInvite[]>(() => {
-    try {
-      const raw = kvStorage.getItem(LS_CALENDAR_INVITES);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((entry) => {
-          if (!entry || typeof entry !== "object") return null;
-          const eventId = typeof (entry as any).eventId === "string" ? (entry as any).eventId.trim() : "";
-          const canonical = typeof (entry as any).canonical === "string" ? (entry as any).canonical.trim() : "";
-          const view = typeof (entry as any).view === "string" ? (entry as any).view.trim() : "";
-          const eventKey = typeof (entry as any).eventKey === "string" ? (entry as any).eventKey.trim() : "";
-          const inviteToken =
-            typeof (entry as any).inviteToken === "string" ? (entry as any).inviteToken.trim() : "";
-          if (!eventId || !canonical || !view || !eventKey || !inviteToken) return null;
-          const canonicalParsed = parseCalendarAddress(canonical);
-          const viewParsed = parseCalendarAddress(view);
-          if (!canonicalParsed || !viewParsed) return null;
-          if (canonicalParsed.kind !== TASKIFY_CALENDAR_EVENT_KIND || viewParsed.kind !== TASKIFY_CALENDAR_VIEW_KIND) return null;
-          if (canonicalParsed.d !== eventId || viewParsed.d !== eventId) return null;
-          if (canonicalParsed.pubkey !== viewParsed.pubkey) return null;
-          const id = typeof (entry as any).id === "string" ? (entry as any).id.trim() : canonical;
-          if (!id) return null;
-          const source = (entry as any).source === "nostr" ? "nostr" : "dm";
-          const statusRaw = typeof (entry as any).status === "string" ? (entry as any).status : "pending";
-          const status: CalendarInviteStatus =
-            statusRaw === "accepted" || statusRaw === "declined" || statusRaw === "tentative"
-              ? statusRaw
-              : statusRaw === "dismissed"
-                ? "dismissed"
-                : "pending";
-          const receivedAt = typeof (entry as any).receivedAt === "string" ? (entry as any).receivedAt : "";
-          const receivedISO = receivedAt.trim() ? receivedAt : new Date().toISOString();
-          const senderObj = (entry as any).sender;
-          const sender: InboxSender | undefined =
-            senderObj && typeof senderObj === "object" && typeof senderObj.pubkey === "string" && senderObj.pubkey.trim()
-              ? {
-                  pubkey: senderObj.pubkey.trim(),
-                  name: typeof senderObj.name === "string" && senderObj.name.trim() ? senderObj.name.trim() : undefined,
-                  npub: typeof senderObj.npub === "string" && senderObj.npub.trim() ? senderObj.npub.trim() : undefined,
-                }
-              : undefined;
-          const relays = Array.isArray((entry as any).relays)
-            ? (entry as any).relays
-                .map((relay: unknown) => (typeof relay === "string" ? relay.trim() : ""))
-                .filter(Boolean)
-            : undefined;
-          return {
-            id,
-            source,
-            eventId,
-            canonical,
-            view,
-            eventKey,
-            inviteToken,
-            title:
-              typeof (entry as any).title === "string" && (entry as any).title.trim()
-                ? (entry as any).title.trim()
-                : undefined,
-            start:
-              typeof (entry as any).start === "string" && (entry as any).start.trim()
-                ? (entry as any).start.trim()
-                : undefined,
-            end:
-              typeof (entry as any).end === "string" && (entry as any).end.trim()
-                ? (entry as any).end.trim()
-                : undefined,
-            relays: relays?.length ? relays : undefined,
-            sender,
-            receivedAt: receivedISO,
-            status,
-          } satisfies CalendarInvite;
-        })
-        .filter((entry): entry is CalendarInvite => !!entry);
-    } catch {
-      return [];
-    }
-  });
-  const calendarInvitesRef = useRef<CalendarInvite[]>(calendarInvites);
-  const calendarInvitesFirstRun = useRef(true);
-  useEffect(() => {
-    calendarInvitesRef.current = calendarInvites;
-    if (calendarInvitesFirstRun.current) { calendarInvitesFirstRun.current = false; return; }
-    try {
-      kvStorage.setItem(LS_CALENDAR_INVITES, JSON.stringify(calendarInvites));
-    } catch {}
-  }, [calendarInvites]);
+  const {
+    clearSelection,
+    exitSelectionMode,
+    isSelectionMode,
+    selectedCount,
+    selectedEvents,
+    selectedItemIds,
+    selectedItemIdSet,
+    selectedTasks,
+    selectionMoveBoardId,
+    selectionMoveSheetOpen,
+    selectionMoveStep,
+    setSelectedItemIds,
+    setSelectionMoveBoardId,
+    setSelectionMoveSheetOpen,
+    setSelectionMoveStep,
+    toggleItemSelection,
+  } = useSelectionMode({ calendarEvents, tasks });
+  const {
+    formatCalendarInviteWhen,
+    pendingCalendarInvites,
+    setCalendarInvites,
+    unreadCalendarInviteCount,
+  } = useCalendarInvites();
   const [editing, setEditing] = useState<EditingState | null>(null);
-  const [activeEventRsvpCoord, setActiveEventRsvpCoord] = useState<string | null>(null);
-  const [activeEventRsvpRelays, setActiveEventRsvpRelays] = useState<string[]>([]);
-  const [activeEventRsvps, setActiveEventRsvps] = useState<CalendarRsvpEnvelope[]>([]);
-  const activeEventRsvpMapRef = useRef<Map<string, CalendarRsvpEnvelope>>(new Map());
-  const activeEventInviteTokensRef = useRef<Record<string, string> | null>(null);
-  const activeEventInviteTokensVersionRef = useRef<string>("");
-  const activeEventRsvpContextRef = useRef<{ eventId: string; boardNostrId: string; boardSkHex: string } | null>(null);
-  const activeEventRsvpSubCloserRef = useRef<null | (() => void)>(null);
-  const externalEventRsvpSubCloserRef = useRef<null | (() => void)>(null);
-  const calendarViewSubCloserRef = useRef<null | (() => void)>(null);
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
-  const [shareBoardModalOpen, setShareBoardModalOpen] = useState(false);
-  const [shareBoardTargetId, setShareBoardTargetId] = useState<string | null>(null);
-  const shareBoardTarget = useMemo(
-    () => (shareBoardTargetId ? boards.find((board) => board.id === shareBoardTargetId) || null : null),
-    [boards, shareBoardTargetId],
-  );
-  const [shareBoardMode, setShareBoardMode] = useState<"board" | "template">("board");
-  const [shareModeInfoOpen, setShareModeInfoOpen] = useState(false);
-  const shareModeInfoRef = useRef<HTMLDivElement | null>(null);
-  const shareModeInfoButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [shareTemplateShare, setShareTemplateShare] = useState<{
-    id: string;
-    relays: string[];
-    boardId: string;
-  } | null>(null);
-  const [shareTemplateStatus, setShareTemplateStatus] = useState<string | null>(null);
-  const [shareTemplateBusy, setShareTemplateBusy] = useState(false);
-  const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
-  const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
-  const [shareContactBusy, setShareContactBusy] = useState(false);
-  const [shareContacts, setShareContacts] = useState<Contact[]>(() => loadContactsFromStorage());
-  const shareableContacts = useMemo(
-    () => shareContacts.filter((contact) => contactHasNpub(contact)),
-    [shareContacts],
-  );
-  const shareBoardTargetIdRef = useRef<string | null>(null);
-  const shareBoardModalOpenRef = useRef(false);
-  useEffect(() => {
-    shareBoardTargetIdRef.current = shareBoardTargetId;
-  }, [shareBoardTargetId]);
-  useEffect(() => {
-    shareBoardModalOpenRef.current = shareBoardModalOpen;
-  }, [shareBoardModalOpen]);
-  useEffect(() => {
-    if (!shareModeInfoOpen || typeof document === "undefined") return;
-    const handlePointer = (event: MouseEvent | TouchEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (shareModeInfoRef.current?.contains(target)) return;
-      if (shareModeInfoButtonRef.current?.contains(target)) return;
-      setShareModeInfoOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShareModeInfoOpen(false);
-    };
-    document.addEventListener("mousedown", handlePointer);
-    document.addEventListener("touchstart", handlePointer);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handlePointer);
-      document.removeEventListener("touchstart", handlePointer);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [shareModeInfoOpen]);
-  useEffect(() => {
-    const refreshContacts = () => setShareContacts(loadContactsFromStorage());
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === LS_LIGHTNING_CONTACTS) {
-        refreshContacts();
-      }
-    };
-    window.addEventListener("taskify:contacts-updated", refreshContacts);
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener("taskify:contacts-updated", refreshContacts);
-      window.removeEventListener("storage", handleStorage);
-    };
-  }, []);
+  const {
+    closeShareBoard,
+    openShareBoardForTarget,
+    shareBoardModalOpen,
+    shareBoardModalOpenRef,
+    shareBoardMode,
+    shareBoardTarget,
+    shareBoardTargetId,
+    shareBoardTargetIdRef,
+    shareContactBusy,
+    shareContactPickerOpen,
+    shareContactStatus,
+    shareModeInfoButtonRef,
+    shareModeInfoOpen,
+    shareModeInfoRef,
+    shareTemplateBusy,
+    shareTemplateShare,
+    shareTemplateStatus,
+    shareableContacts,
+    setShareBoardMode,
+    setShareContactBusy,
+    setShareContactPickerOpen,
+    setShareContactStatus,
+    setShareModeInfoOpen,
+    setShareTemplateBusy,
+    setShareTemplateShare,
+    setShareTemplateStatus,
+  } = useShareBoardState(boards);
   const boardMap = useMemo(() => {
     const map = new Map<string, Board>();
     boards.forEach((board) => map.set(board.id, board));
     return map;
   }, [boards]);
-  const messagesUnreadCount = useMemo(
-    () =>
-      tasks.filter(
-        (t) =>
-          t.boardId === messagesBoardId &&
-          !t.completed &&
-          t.inboxItem &&
-          t.inboxItem.status !== "accepted" &&
-          t.inboxItem.status !== "declined" &&
-          t.inboxItem.status !== "tentative" &&
-          t.inboxItem.status !== "deleted" &&
-          t.inboxItem.status !== "read",
-      ).length,
-    [messagesBoardId, tasks],
-  );
-  const walletMessageItems = useMemo<WalletMessageItem[]>(
-    () =>
-      tasks
-        .filter((t) => t.boardId === messagesBoardId)
-        .map((t) => ({
-          id: t.id,
-          title: t.title,
-          note: t.note,
-          completed: !!t.completed,
-          type: t.inboxItem?.type,
-          status: t.inboxItem?.status,
-          dmEventId: t.inboxItem?.dmEventId,
-          boardId: t.inboxItem?.type === "board" ? t.inboxItem.boardId : undefined,
-          boardName: t.inboxItem?.type === "board" ? t.inboxItem.boardName : undefined,
-          contact: t.inboxItem?.type === "contact" ? t.inboxItem.contact : undefined,
-          task: t.inboxItem?.type === "task" ? t.inboxItem.task : undefined,
-          sender: t.inboxItem?.sender,
-          receivedAt: t.inboxItem?.receivedAt ?? t.dueISO,
-        })),
-    [messagesBoardId, tasks],
-  );
-  const inboxPendingItems = useMemo(
-    () =>
-      walletMessageItems.filter(
-        (item) =>
-          !item.completed &&
-          item.status !== "accepted" &&
-          item.status !== "declined" &&
-          item.status !== "tentative" &&
-          item.status !== "deleted",
-      ),
-    [walletMessageItems],
-  );
-  const pendingCalendarInvites = useMemo(
-    () => calendarInvites.filter((invite) => invite.status === "pending" || invite.status === "read"),
-    [calendarInvites],
-  );
-  const [dmUnreadCount, setDmUnreadCount] = useState(0);
-  const unreadCalendarInviteCount = useMemo(
-    () => calendarInvites.filter((invite) => invite.status === "pending").length,
-    [calendarInvites],
-  );
-  const formatCalendarInviteWhen = useCallback((invite: CalendarInvite): string => {
-    const startRaw = invite.start?.trim() || "";
-    const endRaw = invite.end?.trim() || "";
-    if (!startRaw) return "";
-
-    const formatDateLabel = (dateKey: string): string => {
-      const parsed = new Date(`${dateKey}T00:00:00`);
-      if (Number.isNaN(parsed.getTime())) return dateKey;
-      return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-    };
-
-    const formatTimeLabel = (date: Date): string => date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-
-    if (ISO_DATE_PATTERN.test(startRaw)) {
-      const startLabel = formatDateLabel(startRaw);
-      if (!endRaw || !ISO_DATE_PATTERN.test(endRaw)) return startLabel;
-      const endLabel = formatDateLabel(endRaw);
-      return `${startLabel} – ${endLabel}`;
-    }
-
-    const startDate = new Date(startRaw);
-    if (Number.isNaN(startDate.getTime())) return startRaw;
-    const dateLabel = startDate.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-    const startTimeLabel = formatTimeLabel(startDate);
-
-    if (!endRaw) return `${dateLabel} • ${startTimeLabel}`;
-    const endDate = new Date(endRaw);
-    if (Number.isNaN(endDate.getTime())) return `${dateLabel} • ${startTimeLabel}`;
-
-    const endDateLabel = endDate.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-    const endTimeLabel = formatTimeLabel(endDate);
-    if (endDateLabel === dateLabel) return `${dateLabel} • ${startTimeLabel} – ${endTimeLabel}`;
-    return `${dateLabel} • ${startTimeLabel} – ${endDateLabel} ${endTimeLabel}`;
-  }, []);
-  const chatUnreadCount = messagesUnreadCount + unreadCalendarInviteCount + dmUnreadCount;
+  const {
+    chatUnreadCount,
+    inboxPendingItems,
+    messagesUnreadCount,
+    setDmUnreadCount,
+    walletMessageItems,
+  } = useWalletMessages({ messagesBoardId, tasks, unreadCalendarInviteCount });
   const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
   const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
   const bibleTrackerRef = useRef<BibleTrackerState>(bibleTracker);
   useEffect(() => { bibleTrackerRef.current = bibleTracker; }, [bibleTracker]);
-  const [biblePrintPaperSize, setBiblePrintPaperSize] = useState<PrintPaperSize>(() => loadBiblePrintPaperSize());
+  const [biblePrintPaperSize, setBiblePrintPaperSize] = useBiblePrintPaperSize();
   const [biblePrintOpen, setBiblePrintOpen] = useState(false);
   const [biblePrintMeta, setBiblePrintMeta] = useState<BiblePrintMeta | null>(null);
   const [biblePrintPdfBusy, setBiblePrintPdfBusy] = useState(false);
   const [bibleScanOpen, setBibleScanOpen] = useState(false);
-  const [biblePrintPortal, setBiblePrintPortal] = useState<HTMLDivElement | null>(null);
+  const biblePrintPortal = usePrintPortal("bible-print-portal");
   const [boardPrintOpen, setBoardPrintOpen] = useState(false);
   const [boardScanOpen, setBoardScanOpen] = useState(false);
   const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
   const [boardPrintPdfBusy, setBoardPrintPdfBusy] = useState(false);
-  const [boardPrintPortal, setBoardPrintPortal] = useState<HTMLDivElement | null>(null);
+  const boardPrintPortal = usePrintPortal("board-print-portal");
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   const [defaultRelays, setDefaultRelays] = useState<string[]>(() => loadDefaultRelays());
   useEffect(() => { saveDefaultRelays(defaultRelays); }, [defaultRelays]);
-  useEffect(() => {
-    persistBiblePrintPaperSize(biblePrintPaperSize);
-  }, [biblePrintPaperSize]);
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const node = document.createElement("div");
-    node.className = "bible-print-portal";
-    document.body.appendChild(node);
-    setBiblePrintPortal(node);
-    return () => {
-      node.remove();
-      setBiblePrintPortal(null);
-    };
-  }, []);
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const node = document.createElement("div");
-    node.className = "board-print-portal";
-    document.body.appendChild(node);
-    setBoardPrintPortal(node);
-    return () => {
-      node.remove();
-      setBoardPrintPortal(null);
-    };
-  }, []);
   const handleAddScriptureMemory = useCallback((payload: AddScripturePayload) => {
     setScriptureMemory((prev) => {
       const entries = prev.entries ? [...prev.entries] : [];
@@ -5822,9 +1367,11 @@ export default function App() {
     let hiddenUntilISO: string | undefined;
     if (startOfDay(dueDate).getTime() > startOfDay(now).getTime()) {
       const candidate = hiddenUntilForNext(dueISO, recurrence, settings.weekStart);
-      const candidateMidnight = startOfDay(new Date(candidate)).getTime();
-      const todayMidnight = startOfDay(now).getTime();
-      if (candidateMidnight > todayMidnight) hiddenUntilISO = candidate;
+      if (candidate) {
+        const candidateMidnight = startOfDay(new Date(candidate)).getTime();
+        const todayMidnight = startOfDay(now).getTime();
+        if (candidateMidnight > todayMidnight) hiddenUntilISO = candidate;
+      }
     }
     let createdTask: Task | null = null;
     setTasks((prev) => {
@@ -6065,28 +1612,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.showFullWeekRecurring, settings.weekStart]);
 
-  useEffect(() => {
-    const overrides = settings.startBoardByDay;
-    if (!overrides || Object.keys(overrides).length === 0) return;
-    const visibleIds = new Set(boards.filter(b => !b.archived && !b.hidden).map(b => b.id));
-    let changed = false;
-    const next: Partial<Record<Weekday, string>> = {};
-    for (const key of Object.keys(overrides)) {
-      const dayNum = Number(key);
-      const boardId = overrides[key as keyof typeof overrides];
-      if (!Number.isInteger(dayNum) || dayNum < 0 || dayNum > 6) {
-        changed = true;
-        continue;
-      }
-      if (typeof boardId !== "string" || !boardId || !visibleIds.has(boardId)) {
-        changed = true;
-        continue;
-      }
-      next[dayNum as Weekday] = boardId;
-    }
-    if (changed) setSettings({ startBoardByDay: next });
-  }, [boards, settings.startBoardByDay, setSettings]);
-
   // Apply font size setting to root; fall back to default size
   useEffect(() => {
     try {
@@ -6200,202 +1725,32 @@ export default function App() {
     };
   }, [settings.backgroundImage, settings.backgroundBlur]);
 
-  // Nostr pool + merge indexes
-  const pool = useMemo(() => createNostrPool(), []);
-  const initialStoredNostrSecretHex = useMemo(() => {
-    try {
-      const existing = kvStorage.getItem(LS_NOSTR_SK);
-      if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
-        return existing.toLowerCase();
-      }
-    } catch {}
-    return null;
-  }, []);
-  // In-app Nostr key (secp256k1/Schnorr) for signing
-  const [nostrSK, setNostrSK] = useState<Uint8Array>(() => {
-    if (initialStoredNostrSecretHex) {
-      return hexToBytes(initialStoredNostrSecretHex);
-    }
-    return generateSecretKey();
+  const {
+    applyCustomNostrKey,
+    copyNsecAndDismiss,
+    dismissSkBackupNotice,
+    nostrPK,
+    nostrPublish,
+    nostrPublishRef,
+    nostrSK,
+    nostrSkHex,
+    pool,
+    rotateNostrKey,
+    setCustomNostrKey,
+    showSkBackupNotice,
+  } = useNostrIdentity({ defaultRelays });
+  const {
+    clearOptimisticNostrCalendarEventSyncPending,
+    clearOptimisticNostrTaskSyncPending,
+    markNostrCalendarEventSyncPending,
+    markNostrTaskSyncPending,
+    pendingNostrCalendarEventIds,
+    pendingNostrTaskIds,
+  } = useTaskPersistence({
+    boards,
+    calendarEvents,
+    tasks,
   });
-  const [nostrPK, setNostrPK] = useState<string>(() => {
-    if (!initialStoredNostrSecretHex) return "";
-    try {
-      return getPublicKey(hexToBytes(initialStoredNostrSecretHex));
-    } catch {
-      return "";
-    }
-  });
-  useEffect(() => { (window as any).nostrPK = nostrPK; }, [nostrPK]);
-  useEffect(() => {
-    const relays = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
-    NostrSession.init(relays).catch((err) => {
-      console.warn("Failed to initialize Nostr session", err);
-    });
-  }, [defaultRelays]);
-  const [nostrBackupState, setNostrBackupState] = useState<NostrBackupState>(() => loadNostrBackupState());
-  const nostrBackupStateRef = useRef<NostrBackupState>(nostrBackupState);
-  useEffect(() => { nostrBackupStateRef.current = nostrBackupState; }, [nostrBackupState]);
-  useEffect(() => {
-    try { kvStorage.setItem(LS_NOSTR_BACKUP_STATE, JSON.stringify(nostrBackupState)); } catch {}
-  }, [nostrBackupState]);
-  useEffect(() => {
-    setNostrBackupState((prev) => {
-      if (prev.pubkey === nostrPK) return prev;
-      nostrBackupInitialPublishRef.current = false;
-      nostrBackupPullFinishedRef.current = false;
-      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
-    });
-  }, [nostrPK]);
-  const nostrBackupBaselineRef = useRef<string | null>(null);
-  const nostrBackupSettingsDirtyRef = useRef(false);
-  const nostrBackupPullFinishedRef = useRef(false);
-  const nostrBackupInitialPublishRef = useRef(false);
-  const nostrBackupPublishRef = useRef<Promise<void> | null>(null);
-  const [nostrBackupHold, setNostrBackupHold] = useState(false);
-  const nostrBackupHoldRef = useRef(nostrBackupHold);
-  useEffect(() => { nostrBackupHoldRef.current = nostrBackupHold; }, [nostrBackupHold]);
-
-  const [nostrBibleTrackerState, setNostrBibleTrackerState] = useState<NostrBackupState>(() =>
-    loadNostrSyncState(LS_NOSTR_BIBLE_TRACKER_SYNC_STATE),
-  );
-  const nostrBibleTrackerStateRef = useRef<NostrBackupState>(nostrBibleTrackerState);
-  useEffect(() => { nostrBibleTrackerStateRef.current = nostrBibleTrackerState; }, [nostrBibleTrackerState]);
-  useEffect(() => {
-    try { kvStorage.setItem(LS_NOSTR_BIBLE_TRACKER_SYNC_STATE, JSON.stringify(nostrBibleTrackerState)); } catch {}
-  }, [nostrBibleTrackerState]);
-  const nostrBibleTrackerPublishedSnapshotRef = useRef<string | null>(null);
-  const nostrBibleTrackerPullFinishedRef = useRef(false);
-  const nostrBibleTrackerInitialPublishRef = useRef(false);
-  const nostrBibleTrackerPublishRef = useRef<Promise<void> | null>(null);
-  const nostrBibleTrackerQueuedPublishRef = useRef(false);
-  const nostrBibleTrackerDebounceTimerRef = useRef<number | null>(null);
-  const nostrBibleTrackerErrorToastAtRef = useRef(0);
-  useEffect(() => {
-    setNostrBibleTrackerState((prev) => {
-      if (prev.pubkey === nostrPK) return prev;
-      nostrBibleTrackerInitialPublishRef.current = false;
-      nostrBibleTrackerPullFinishedRef.current = false;
-      nostrBibleTrackerPublishedSnapshotRef.current = null;
-      nostrBibleTrackerQueuedPublishRef.current = false;
-      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
-    });
-  }, [nostrPK]);
-
-  const [nostrScriptureMemoryState, setNostrScriptureMemoryState] = useState<NostrBackupState>(() =>
-    loadNostrSyncState(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE),
-  );
-  const nostrScriptureMemoryStateRef = useRef<NostrBackupState>(nostrScriptureMemoryState);
-  useEffect(() => { nostrScriptureMemoryStateRef.current = nostrScriptureMemoryState; }, [nostrScriptureMemoryState]);
-  useEffect(() => {
-    try { kvStorage.setItem(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE, JSON.stringify(nostrScriptureMemoryState)); } catch {}
-  }, [nostrScriptureMemoryState]);
-  const nostrScriptureMemoryPublishedSnapshotRef = useRef<string | null>(null);
-  const nostrScriptureMemoryPullFinishedRef = useRef(false);
-  const nostrScriptureMemoryInitialPublishRef = useRef(false);
-  const nostrScriptureMemoryPublishRef = useRef<Promise<void> | null>(null);
-  const nostrScriptureMemoryDebounceTimerRef = useRef<number | null>(null);
-  const nostrScriptureMemoryErrorToastAtRef = useRef(0);
-  useEffect(() => {
-    setNostrScriptureMemoryState((prev) => {
-      if (prev.pubkey === nostrPK) return prev;
-      nostrScriptureMemoryInitialPublishRef.current = false;
-      nostrScriptureMemoryPullFinishedRef.current = false;
-      nostrScriptureMemoryPublishedSnapshotRef.current = null;
-      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
-    });
-  }, [nostrPK]);
-  // allow manual key rotation later if needed
-  const rotateNostrKey = useCallback(() => {
-    const sk = generateSecretKey();
-    const skHex = bytesToHex(sk);
-    setNostrSK(sk);
-    const pk = getPublicKey(sk);
-    setNostrPK(pk);
-    try { kvStorage.setItem(LS_NOSTR_SK, skHex); } catch {}
-    return toNsec(skHex);
-  }, []);
-
-  const applyCustomNostrKey = useCallback((key: string, options?: { silent?: boolean }): boolean => {
-    try {
-      const normalized = normalizeSecretKeyInput(key);
-      if (!normalized) throw new Error("invalid");
-      const sk = hexToBytes(normalized);
-      setNostrSK(sk);
-      const pk = getPublicKey(sk);
-      setNostrPK(pk);
-      try { kvStorage.setItem(LS_NOSTR_SK, normalized); } catch {}
-      return true;
-    } catch {
-      if (!options?.silent) {
-        alert("Invalid private key");
-      }
-      return false;
-    }
-  }, []);
-
-  const setCustomNostrKey = useCallback((key: string) => {
-    applyCustomNostrKey(key);
-  }, [applyCustomNostrKey]);
-
-  const lastNostrCreated = useRef<Map<string, number>>(new Map());
-  const nostrPublishQueue = useRef<Promise<unknown>>(Promise.resolve());
-  const lastNostrSentMs = useRef(0);
-  async function nostrPublish(relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string }): Promise<number>;
-  async function nostrPublish(
-    relays: string[],
-    template: EventTemplate,
-    options: { sk?: Uint8Array | string; returnEvent: true },
-  ): Promise<{ createdAt: number; event: NostrEvent }>;
-  async function nostrPublish(
-    relays: string[],
-    template: EventTemplate,
-    options?: { sk?: Uint8Array | string; returnEvent?: boolean },
-  ) {
-    const run = async () => {
-      const nowMs = Date.now();
-      const elapsed = nowMs - lastNostrSentMs.current;
-      if (elapsed < NOSTR_MIN_EVENT_INTERVAL_MS) {
-        await new Promise((resolve) => setTimeout(resolve, NOSTR_MIN_EVENT_INTERVAL_MS - elapsed));
-      }
-      const now = Math.floor(Date.now() / 1000);
-      let createdAt = typeof template.created_at === "number" ? template.created_at : now;
-      const signer = options?.sk || nostrSK;
-      const signerBytes =
-        typeof signer === "string"
-          ? (() => {
-              const trimmed = signer.trim();
-              if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-                return hexToBytes(trimmed.toLowerCase());
-              }
-              if (trimmed.startsWith("nsec")) {
-                const decoded = nip19.decode(trimmed);
-                if (decoded.type === "nsec" && decoded.data) {
-                  if (typeof decoded.data === "string") return hexToBytes(decoded.data);
-                  if (decoded.data instanceof Uint8Array) return decoded.data;
-                  if (Array.isArray(decoded.data)) return Uint8Array.from(decoded.data as number[]);
-                }
-              }
-              throw new Error("Invalid Nostr signer key");
-            })()
-          : signer;
-      const signerKey = bytesToHex(signerBytes);
-      const lastForSigner = lastNostrCreated.current.get(signerKey) || 0;
-      if (createdAt <= lastForSigner) {
-        createdAt = lastForSigner + 1;
-      }
-      lastNostrCreated.current.set(signerKey, createdAt);
-      const ev = finalizeEvent({ ...template, created_at: createdAt }, signerBytes);
-      pool.publishEvent(relays, ev as unknown as NostrEvent);
-      lastNostrSentMs.current = Date.now();
-      return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;
-    };
-    const next = nostrPublishQueue.current.catch(() => {}).then(run);
-    nostrPublishQueue.current = next.then(() => {}, () => {});
-    return next;
-  }
-  const nostrPublishRef = useRef(nostrPublish);
-  nostrPublishRef.current = nostrPublish;
   type NostrIndex = {
     boardMeta: Map<string, number>; // nostrBoardId -> created_at
     taskClock: Map<string, Map<string, number>>; // nostrBoardId -> (taskId -> created_at)
@@ -6501,6 +1856,7 @@ export default function App() {
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
+  const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
   // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
@@ -6523,18 +1879,12 @@ export default function App() {
   // that relay fires EOSE. On EOSE the relay's batch is clock-protected-merged into
   // the task state and IDB data is shown immediately (no blocking spinner).
   // Map<bTag, Map<relayUrl, Map<"boardId::taskId", Task | { _deleted:true; _nostrAt:number }>>>
-  type RelayBatchEntry = Task | { _deleted: true; _nostrAt: number };
-  const relayBatchRef = useRef<Map<string, Map<string, Map<string, RelayBatchEntry>>>>(new Map());
+  const relayBatchRef = useRef<Map<string, Map<string, Map<string, BoardSyncRelayBatchEntry>>>>(new Map());
 
   // Tracks which relay URLs still have pending EOSE for each board.
   // When empty for a board, all relays are done and we're in live mode.
   // Map<bTag, Set<relayUrl>>
   const pendingRelaysByBoardRef = useRef<Map<string, Set<string>>>(new Map());
-
-  // Track task IDs seen per board during initial sync. After EOSE, local tasks
-  // with _nostrAt that were NOT seen are verified via a targeted fetch — if the
-  // relay no longer has them they were deleted while this client was offline.
-  const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
 
   // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
   // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
@@ -6620,8 +1970,6 @@ export default function App() {
     }
   }, []);
   const inboxPoolRef = useRef<SessionPool | null>(null);
-  const inboxSubCloserRef = useRef<(() => void) | null>(null);
-  const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
 
   // ── Google Calendar integration ──────────────────────────────────────────
   const {
@@ -6801,9 +2149,8 @@ export default function App() {
         }
       } else if (item.type === "contact") {
         contactPayload = (item as any).contact ?? (item as any);
-        const contactNpub = contactPayload?.npub;
-        if (!contactNpub) return;
-        lines.push(`npub: ${shortenNpub(toNpub(contactNpub))}`);
+        if (!contactPayload || !contactPayload.npub) return;
+        lines.push(`npub: ${shortenNpub(toNpub(contactPayload.npub))}`);
         if (contactPayload.nip05) lines.push(`NIP-05: ${contactPayload.nip05}`);
         if (contactPayload.lud16) lines.push(`Lightning: ${contactPayload.lud16}`);
       } else if (item.type === "task") {
@@ -6875,9 +2222,9 @@ export default function App() {
           item.type === "board"
             ? item.boardName?.trim() || "Shared board"
             : item.type === "contact"
-              ? contactPayload.name?.trim() ||
-                contactPayload.displayName?.trim() ||
-                shortenNpub(toNpub(contactPayload.npub)) ||
+              ? contactPayload?.name?.trim() ||
+                contactPayload?.displayName?.trim() ||
+                (contactPayload?.npub ? shortenNpub(toNpub(contactPayload.npub)) : "") ||
                 "Shared contact"
               : taskPayload?.title?.trim() || "Shared task",
         note,
@@ -7109,107 +2456,15 @@ export default function App() {
       sendInboxDeletion,
     ],
   );
-  useEffect(() => {
-    if (!nostrPK || !nostrSkHex) return;
-    if (!inboxRelays.length) return;
-    const pool = ensureInboxPool();
-    const since = Math.max(0, Math.floor(Date.now() / 1000) - SHARE_DM_LOOKBACK_SECONDS);
-    let cancelled = false;
-    const subscription = pool.subscribeMany(
-      inboxRelays,
-      { kinds: [4, 1059], "#p": [nostrPK], since },
-      {
-        onevent: (ev) => {
-          if (cancelled) return;
-          void handleIncomingShareEvent(ev as NostrEvent);
-        },
-      },
-    );
-    inboxSubCloserRef.current = () => {
-      try {
-        subscription.close("taskify-shares");
-      } catch {}
-    };
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(inboxRelays, [
-            { kinds: [4, 1059], "#p": [nostrPK], since },
-          ]);
-          if (!cancelled && Array.isArray(events)) {
-            events.forEach((ev: any) => {
-              void handleIncomingShareEvent(ev as NostrEvent);
-            });
-          }
-        }
-      } catch (err) {
-        console.warn("Shared inbox fetch failed", err);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (inboxSubCloserRef.current) {
-        try {
-          inboxSubCloserRef.current();
-        } catch {}
-        inboxSubCloserRef.current = null;
-      }
-    };
-  }, [ensureInboxPool, handleIncomingShareEvent, inboxRelays, nostrPK, nostrSkHex]);
 
   const tagValue = useCallback((ev: NostrEvent, name: string): string | undefined => {
     const t = ev.tags.find((x) => x[0] === name);
     return t ? t[1] : undefined;
   }, []);
 
-  useEffect(() => {
-    if (calendarViewSubCloserRef.current) {
-      try {
-        calendarViewSubCloserRef.current();
-      } catch {}
-      calendarViewSubCloserRef.current = null;
-    }
-    const targets = calendarEvents.filter(
-      (event) => !!event.readOnly && !!event.viewAddress && !!event.eventKey,
-    );
-    if (!targets.length) return;
-
-    const viewLookup = new Map<string, { eventId: string; eventKey: string }>();
-    const authors = new Set<string>();
-    const dTags = new Set<string>();
-    const relaySet = new Set<string>();
-    targets.forEach((event) => {
-      const addr = parseCalendarAddress(event.viewAddress || "");
-      if (!addr || addr.kind !== TASKIFY_CALENDAR_VIEW_KIND) return;
-      const viewAddress = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, addr.pubkey, addr.d);
-      viewLookup.set(viewAddress, { eventId: event.id, eventKey: event.eventKey! });
-      authors.add(addr.pubkey);
-      dTags.add(addr.d);
-      (event.inviteRelays ?? []).forEach((relay) => relaySet.add(relay));
-    });
-    if (!viewLookup.size || !authors.size || !dTags.size) return;
-
-    const relayCandidates = [
-      ...Array.from(relaySet),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
-    if (!relays.length) return;
-
-    let cancelled = false;
-    const applyViewEvent = async (ev: NostrEvent) => {
-      if (cancelled || ev.kind !== TASKIFY_CALENDAR_VIEW_KIND) return;
-      const dTag = tagValue(ev, "d");
-      if (!dTag) return;
-      const viewAddress = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, ev.pubkey, dTag);
-      const target = viewLookup.get(viewAddress);
-      if (!target) return;
-      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-      const last = calendarViewClockRef.current.get(viewAddress) || 0;
-      if (createdAt < last) return;
-      calendarViewClockRef.current.set(viewAddress, createdAt);
+  const applyCalendarViewSubscriptionEvent = useCallback(
+    async (ev: NostrEvent, target: CalendarViewSubscriptionTarget) => {
+      const viewAddress = target.viewAddress;
       let payload: ReturnType<typeof parseCalendarViewPayload> | null = null;
       try {
         const raw = await decryptCalendarPayloadWithEventKey(ev.content, target.eventKey);
@@ -7279,585 +2534,36 @@ export default function App() {
         copy[idx] = updated;
         return copy;
       });
-    };
-
-    const subscription = pool.subscribeMany(
-      relays,
-      { kinds: [TASKIFY_CALENDAR_VIEW_KIND], authors: Array.from(authors), "#d": Array.from(dTags) },
-      {
-        onevent: (ev) => {
-          if (cancelled) return;
-          void applyViewEvent(ev as NostrEvent);
-        },
-      },
-    );
-    calendarViewSubCloserRef.current = () => {
-      try {
-        subscription.close("taskify-calendar-views");
-      } catch {}
-    };
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(relays, [
-            { kinds: [TASKIFY_CALENDAR_VIEW_KIND], authors: Array.from(authors), "#d": Array.from(dTags) },
-          ]);
-          if (!cancelled && Array.isArray(events)) {
-            events.forEach((evt: any) => void applyViewEvent(evt as NostrEvent));
-          }
-        }
-      } catch (err) {
-        console.warn("Event view fetch failed", err);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (calendarViewSubCloserRef.current) {
-        try {
-          calendarViewSubCloserRef.current();
-        } catch {}
-        calendarViewSubCloserRef.current = null;
-      }
-    };
-  }, [calendarEvents, defaultRelays, inboxRelays, pool, setCalendarEvents, tagValue]);
-
-  const nostrApplyQueue = useRef<Promise<void>>(Promise.resolve());
-  const enqueueNostrApply = useCallback((fn: () => Promise<void>) => {
-    const next = nostrApplyQueue.current.catch(() => {}).then(() => fn());
-    nostrApplyQueue.current = next.then(() => {}, () => {});
-    return next;
-  }, []);
-
-  // Per-board event queues. Each board processes its events independently in
-  // parallel with other boards but serially within the board (preserving task
-  // clock ordering). A GC yield is inserted every N events so iOS can reclaim
-  // memory between chunks instead of accumulating until the process is killed.
-  const NOSTR_BOARD_YIELD_INTERVAL = 50;
-  const boardEventQueuesRef = useRef<Map<string, { promise: Promise<void>; count: number }>>(new Map());
-  const enqueueForBoard = useCallback((boardId: string, fn: () => Promise<void>): Promise<void> => {
-    const entry = boardEventQueuesRef.current.get(boardId) ?? { promise: Promise.resolve(), count: 0 };
-    entry.count++;
-    const shouldYield = entry.count % NOSTR_BOARD_YIELD_INTERVAL === 0;
-    const next = entry.promise.catch(() => {}).then(async () => {
-      // Yield to the browser's task scheduler every N events so GC can run and
-      // iOS memory pressure warnings are less likely to kill the process.
-      if (shouldYield) await new Promise<void>(r => setTimeout(r, 0));
-      return fn();
-    });
-    entry.promise = next.then(() => {}, () => {});
-    boardEventQueuesRef.current.set(boardId, entry);
-    return next;
-  }, []);
-  const [nostrRefresh, setNostrRefresh] = useState(0);
-  const normalizeRelayList = useCallback(
-    (relays: string[] | null | undefined) => normalizeRelayListSorted(relays) ?? [],
-    [],
-  );
-
-  const sanitizeSettingsForBackup = useCallback(
-    (raw: Settings | Record<string, unknown>): Partial<Settings> =>
-      sanitizeSettingsForNostrBackup(raw, DEFAULT_PUSH_PREFERENCES),
-    [],
-  );
-
-  const buildNostrBackupSnapshot = useCallback(
-    (): NostrBackupSnapshot =>
-      buildNostrBackupSnapshotDomain({
-        boards,
-        settings,
-        includeMetadata: settings.nostrBackupEnabled,
-        defaultRelays,
-        fallbackRelays: Array.from(DEFAULT_NOSTR_RELAYS),
-        normalizeRelayList,
-        sanitizeSettingsForBackup,
-        walletSeed: getWalletSeedBackup(),
-      }),
-    [boards, defaultRelays, normalizeRelayList, sanitizeSettingsForBackup, settings],
-  );
-
-  const serializeNostrBackupSnapshot = useCallback(
-    () => JSON.stringify(buildNostrBackupSnapshot()),
-    [buildNostrBackupSnapshot],
-  );
-  const serializeNostrBackupSnapshotRef = useRef(serializeNostrBackupSnapshot);
-  serializeNostrBackupSnapshotRef.current = serializeNostrBackupSnapshot;
-
-  const applyNostrBibleTrackerSyncEvent = useCallback(async (ev: NostrEvent) => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!ev || ev.kind !== NOSTR_APP_STATE_KIND) return;
-    const dTag = tagValue(ev, "d");
-    if (dTag !== NOSTR_BIBLE_TRACKER_D_TAG) return;
-    if (!nostrPK) return;
-    const skHex = bytesToHex(nostrSK);
-    let parsed: any;
-    try {
-      parsed = await decryptNostrSyncPayload(ev.content, skHex, nostrPK);
-    } catch (error) {
-      console.warn("Failed to decrypt Bible tracker sync payload", error);
-      return;
-    }
-    if (!parsed || typeof parsed !== "object") return;
-    if (parsed.version !== 1) return;
-    const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
-    const lastTs = nostrBibleTrackerStateRef.current.lastTimestamp || 0;
-    if (payloadTs <= lastTs) {
-      if (!nostrBibleTrackerStateRef.current.lastEventId && ev.id) {
-        setNostrBibleTrackerState((prev) => ({ ...prev, lastEventId: ev.id }));
-      }
-      return;
-    }
-    const incoming = sanitizeBibleTrackerState(parsed.bibleTracker);
-    setBibleTracker(incoming);
-    nostrBibleTrackerPublishedSnapshotRef.current = JSON.stringify(incoming);
-    nostrBibleTrackerQueuedPublishRef.current = false;
-    const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
-    nostrBibleTrackerStateRef.current = nextState;
-    setNostrBibleTrackerState(nextState);
-  }, [nostrPK, nostrSK, setBibleTracker, setNostrBibleTrackerState, settings.nostrBackupEnabled, tagValue]);
-
-  const applyNostrScriptureMemorySyncEvent = useCallback(async (ev: NostrEvent) => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!ev || ev.kind !== NOSTR_APP_STATE_KIND) return;
-    const dTag = tagValue(ev, "d");
-    if (dTag !== NOSTR_SCRIPTURE_MEMORY_D_TAG) return;
-    if (!nostrPK) return;
-    const skHex = bytesToHex(nostrSK);
-    let parsed: any;
-    try {
-      parsed = await decryptNostrSyncPayload(ev.content, skHex, nostrPK);
-    } catch (error) {
-      console.warn("Failed to decrypt scripture memory sync payload", error);
-      return;
-    }
-    if (!parsed || typeof parsed !== "object") return;
-    if (parsed.version !== 1) return;
-    const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
-    const lastTs = nostrScriptureMemoryStateRef.current.lastTimestamp || 0;
-    if (payloadTs <= lastTs) {
-      if (!nostrScriptureMemoryStateRef.current.lastEventId && ev.id) {
-        setNostrScriptureMemoryState((prev) => ({ ...prev, lastEventId: ev.id }));
-      }
-      return;
-    }
-    const incoming = sanitizeScriptureMemoryState(parsed.scriptureMemory);
-    setScriptureMemory(incoming);
-    nostrScriptureMemoryPublishedSnapshotRef.current = JSON.stringify(incoming);
-    const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
-    nostrScriptureMemoryStateRef.current = nextState;
-    setNostrScriptureMemoryState(nextState);
-  }, [nostrPK, nostrSK, setNostrScriptureMemoryState, setScriptureMemory, settings.nostrBackupEnabled, tagValue]);
-
-  const nostrList = useCallback(
-    async (relays: string[], filters: any[]): Promise<NostrEvent[]> => {
-      const relayList = normalizeRelayList(relays);
-      const session = await NostrSession.init(relayList);
-      return session.fetchEvents(filters as any, relayList);
     },
-    [normalizeRelayList],
+    [setCalendarEvents],
   );
-
-  const applyNostrBackupPayload = useCallback(
-    async (payload: NostrAppBackupPayload, source: "remote" | "local" = "remote") => {
-      if (!payload || typeof payload !== "object") return;
-      const includeMetadata = settings.nostrBackupEnabled;
-      const baseRelays = normalizeRelayList(
-        payload.defaultRelays && payload.defaultRelays.length
-          ? payload.defaultRelays
-          : defaultRelays.length
-            ? defaultRelays
-            : Array.from(DEFAULT_NOSTR_RELAYS),
-      );
-      if (includeMetadata && payload.settings && typeof payload.settings === "object") {
-        const incoming = sanitizeSettingsForBackup(payload.settings as Record<string, unknown>);
-        setSettings(incoming);
-      }
-      if (includeMetadata && Array.isArray(payload.defaultRelays) && payload.defaultRelays.some((r) => typeof r === "string" && r.trim())) {
-        setDefaultRelays(normalizeRelayList(payload.defaultRelays));
-      }
-      if (payload.walletSeed) {
-        try {
-          restoreWalletSeedBackup(payload.walletSeed);
-        } catch (error) {
-          console.warn("Failed to restore wallet seed from Nostr backup", error);
-        }
-      }
-      if (includeMetadata && Array.isArray(payload.boards)) {
-        setBoards((prev) =>
-          mergeBackupBoards({
-            currentBoards: prev,
-            incomingBoards: payload.boards,
-            baseRelays,
-            normalizeRelayList,
-            createId: () => crypto.randomUUID(),
-          }),
-        );
-      }
-      if (source === "remote") {
-        const message = includeMetadata ? "Synced boards and settings from Nostr" : "Synced wallet backup from Nostr";
-        showToast(message, 2600);
-      }
-    },
-    [defaultRelays, normalizeRelayList, sanitizeSettingsForBackup, setBoards, setDefaultRelays, setSettings, settings.nostrBackupEnabled, showToast],
-  );
-
-  const handleIncomingNostrBackupEvent = useCallback(
-    async (ev: NostrEvent) => {
-      if (!settings.nostrBackupEnabled) return;
-      if (nostrBackupHoldRef.current) return;
-      if (!ev || ev.kind !== NOSTR_APP_BACKUP_KIND) return;
-      const dTag = tagValue(ev, "d");
-      if (dTag !== NOSTR_APP_BACKUP_D_TAG) return;
-      if (!nostrPK) return;
-      const skHex = bytesToHex(nostrSK);
-      let payload: NostrAppBackupPayload;
-      try {
-        payload = await decryptNostrBackupPayload(ev.content, skHex, nostrPK);
-      } catch (error) {
-        console.warn("Failed to decrypt Nostr backup payload", error);
-        return;
-      }
-      if (!payload || payload.version !== 1) return;
-      const payloadTs = Math.max(Number(payload.timestamp) || 0, ev.created_at || 0);
-      const lastTs = nostrBackupStateRef.current.lastTimestamp || 0;
-      if (payloadTs <= lastTs) {
-        if (!nostrBackupStateRef.current.lastEventId && ev.id) {
-          setNostrBackupState((prev) => ({ ...prev, lastEventId: ev.id }));
-        }
-        return;
-      }
-      await applyNostrBackupPayload(payload, "remote");
-      nostrBackupPublishedSnapshotRef.current = serializeNostrBackupSnapshotRef.current();
-      setNostrBackupState({
-        lastEventId: ev.id || null,
-        lastTimestamp: payloadTs,
-        pubkey: nostrPK || null,
-      });
-    },
-    [applyNostrBackupPayload, nostrPK, nostrSK, setNostrBackupState, settings.nostrBackupEnabled, tagValue],
-  );
-
-  const pullNostrBackupOnce = useCallback(async (): Promise<boolean> => {
-    if (!settings.nostrBackupEnabled) return false;
-    if (!nostrPK) return false;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return false;
-    try {
-      const events = await nostrList(relays, [
-        { kinds: [NOSTR_APP_BACKUP_KIND], authors: [nostrPK], "#d": [NOSTR_APP_BACKUP_D_TAG], limit: 5 },
-      ]);
-      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
-        if (!event) return current;
-        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
-        return current;
-      }, null);
-      if (latest) {
-        await handleIncomingNostrBackupEvent(latest as unknown as NostrEvent);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.warn("Failed to fetch Nostr backup", error);
-      return false;
-    }
-  }, [defaultRelays, handleIncomingNostrBackupEvent, normalizeRelayList, nostrList, nostrPK, settings.nostrBackupEnabled]);
-
-  const pullNostrBibleTrackerOnce = useCallback(async (): Promise<boolean> => {
-    if (!settings.nostrBackupEnabled) return false;
-    if (!nostrPK) return false;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return false;
-    try {
-      const events = await nostrList(relays, [
-        { kinds: [NOSTR_APP_STATE_KIND], authors: [nostrPK], "#d": [NOSTR_BIBLE_TRACKER_D_TAG], limit: 5 },
-      ]);
-      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
-        if (!event) return current;
-        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
-        return current;
-      }, null);
-      if (latest) {
-        await enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(latest as unknown as NostrEvent));
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.warn("Failed to fetch Bible tracker sync from Nostr", error);
-      return false;
-    }
-  }, [
-    applyNostrBibleTrackerSyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrList,
-    nostrPK,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const pullNostrScriptureMemoryOnce = useCallback(async (): Promise<boolean> => {
-    if (!settings.nostrBackupEnabled) return false;
-    if (!nostrPK) return false;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return false;
-    try {
-      const events = await nostrList(relays, [
-        { kinds: [NOSTR_APP_STATE_KIND], authors: [nostrPK], "#d": [NOSTR_SCRIPTURE_MEMORY_D_TAG], limit: 5 },
-      ]);
-      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
-        if (!event) return current;
-        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
-        return current;
-      }, null);
-      if (latest) {
-        await enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(latest as unknown as NostrEvent));
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.warn("Failed to fetch scripture memory sync from Nostr", error);
-      return false;
-    }
-  }, [
-    applyNostrScriptureMemorySyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrList,
-    nostrPK,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const publishNostrBibleTracker = useCallback(async () => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    const tracker = bibleTrackerRef.current;
-    const snapshotString = JSON.stringify(tracker);
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(nowSeconds, (nostrBibleTrackerStateRef.current.lastTimestamp || 0) + 1);
-    const payload = { version: 1, timestamp, bibleTracker: tracker } as const;
-    const skHex = bytesToHex(nostrSK);
-    const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
-    const result = await nostrPublishRef.current(
-      relays,
-      {
-        kind: NOSTR_APP_STATE_KIND,
-        content,
-        tags: [
-          ["d", NOSTR_BIBLE_TRACKER_D_TAG],
-          ["client", NOSTR_APP_STATE_CLIENT_TAG],
-        ],
-        created_at: timestamp,
-      },
-      { sk: nostrSK, returnEvent: true },
-    );
-    const eventId = (result as any)?.event?.id || null;
-    const publishedTs = (result as any)?.createdAt ?? timestamp;
-    const nextState = {
-      lastEventId: eventId || null,
-      lastTimestamp: publishedTs,
-      pubkey: nostrPK || null,
-    };
-    nostrBibleTrackerStateRef.current = nextState;
-    setNostrBibleTrackerState(nextState);
-    nostrBibleTrackerPublishedSnapshotRef.current = snapshotString;
-  }, [
-    defaultRelays,
-    normalizeRelayList,
-    nostrPK,
-    nostrSK,
-    setNostrBibleTrackerState,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const publishNostrScriptureMemory = useCallback(async () => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    const snapshotString = JSON.stringify(scriptureMemory);
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(nowSeconds, (nostrScriptureMemoryStateRef.current.lastTimestamp || 0) + 1);
-    const payload = { version: 1, timestamp, scriptureMemory } as const;
-    const skHex = bytesToHex(nostrSK);
-    const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
-    const result = await nostrPublishRef.current(
-      relays,
-      {
-        kind: NOSTR_APP_STATE_KIND,
-        content,
-        tags: [
-          ["d", NOSTR_SCRIPTURE_MEMORY_D_TAG],
-          ["client", NOSTR_APP_STATE_CLIENT_TAG],
-        ],
-        created_at: timestamp,
-      },
-      { sk: nostrSK, returnEvent: true },
-    );
-    const eventId = (result as any)?.event?.id || null;
-    const publishedTs = (result as any)?.createdAt ?? timestamp;
-    const nextState = {
-      lastEventId: eventId || null,
-      lastTimestamp: publishedTs,
-      pubkey: nostrPK || null,
-    };
-    nostrScriptureMemoryStateRef.current = nextState;
-    setNostrScriptureMemoryState(nextState);
-    nostrScriptureMemoryPublishedSnapshotRef.current = snapshotString;
-  }, [
-    defaultRelays,
-    normalizeRelayList,
-    nostrPK,
-    nostrSK,
-    scriptureMemory,
-    setNostrScriptureMemoryState,
-    settings.nostrBackupEnabled,
-  ]);
-
-  const enqueueNostrBibleTrackerPublish = useCallback(() => {
-    if (nostrBibleTrackerPublishRef.current) {
-      nostrBibleTrackerQueuedPublishRef.current = true;
-      return nostrBibleTrackerPublishRef.current;
-    }
-    const task = publishNostrBibleTracker()
-      .catch((error) => {
-        console.warn("Failed to publish Bible tracker sync", error);
-        const now = Date.now();
-        if (now - nostrBibleTrackerErrorToastAtRef.current > 60_000) {
-          nostrBibleTrackerErrorToastAtRef.current = now;
-          showToast("Unable to sync Bible progress", 2600);
-        }
-      })
-      .finally(() => {
-        nostrBibleTrackerPublishRef.current = null;
-        if (!nostrBibleTrackerQueuedPublishRef.current) return;
-        nostrBibleTrackerQueuedPublishRef.current = false;
-        const currentSnapshot = JSON.stringify(bibleTrackerRef.current);
-        if (nostrBibleTrackerPublishedSnapshotRef.current === currentSnapshot) return;
-        enqueueNostrBibleTrackerPublish().catch(() => {});
-      });
-    nostrBibleTrackerPublishRef.current = task;
-    return task;
-  }, [publishNostrBibleTracker, showToast]);
-
-  const enqueueNostrScriptureMemoryPublish = useCallback(() => {
-    if (nostrScriptureMemoryPublishRef.current) return nostrScriptureMemoryPublishRef.current;
-    const task = publishNostrScriptureMemory()
-      .catch((error) => {
-        console.warn("Failed to publish scripture memory sync", error);
-        const now = Date.now();
-        if (now - nostrScriptureMemoryErrorToastAtRef.current > 60_000) {
-          nostrScriptureMemoryErrorToastAtRef.current = now;
-          showToast("Unable to sync scripture memory list", 2600);
-        }
-      })
-      .finally(() => {
-        nostrScriptureMemoryPublishRef.current = null;
-      });
-    nostrScriptureMemoryPublishRef.current = task;
-    return task;
-  }, [publishNostrScriptureMemory, showToast]);
-
-  const publishNostrBackup = useCallback(async () => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    const snapshot = buildNostrBackupSnapshot();
-    const snapshotString = serializeNostrBackupSnapshotRef.current();
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(nowSeconds, (nostrBackupStateRef.current.lastTimestamp || 0) + 1);
-    const payload: NostrAppBackupPayload = { ...snapshot, version: 1, timestamp };
-    const skHex = bytesToHex(nostrSK);
-    const content = await encryptNostrBackupPayload(payload, skHex, nostrPK);
-    const result = await nostrPublishRef.current(
-      relays,
-      {
-        kind: NOSTR_APP_BACKUP_KIND,
-        content,
-        tags: [
-          ["d", NOSTR_APP_BACKUP_D_TAG],
-          ["client", NOSTR_APP_BACKUP_CLIENT_TAG],
-        ],
-        created_at: timestamp,
-      },
-      { sk: nostrSK, returnEvent: true },
-    );
-    const eventId = (result as any)?.event?.id || null;
-    const prev = nostrBackupStateRef.current;
-    const prevEventId = prev.pubkey === nostrPK ? prev.lastEventId : null;
-    const publishedTs = (result as any)?.createdAt ?? timestamp;
-    if (prevEventId && eventId && prevEventId !== eventId) {
-      try {
-        await nostrPublishRef.current(
-          relays,
-          {
-            kind: 5,
-            tags: [
-              ["e", prevEventId],
-              ["a", `${NOSTR_APP_BACKUP_KIND}:${nostrPK}:${NOSTR_APP_BACKUP_D_TAG}`],
-            ],
-            content: "Delete previous Taskify backup",
-            created_at: publishedTs + 1,
-          },
-          { sk: nostrSK },
-        );
-      } catch (error) {
-        console.warn("Failed to publish Nostr backup deletion", error);
-      }
-    }
-    const nextState = {
-      lastEventId: eventId || prevEventId,
-      lastTimestamp: publishedTs,
-      pubkey: nostrPK || null,
-    };
-    nostrBackupStateRef.current = nextState;
-    setNostrBackupState(nextState);
-    nostrBackupPublishedSnapshotRef.current = snapshotString;
-  }, [buildNostrBackupSnapshot, defaultRelays, normalizeRelayList, nostrPK, nostrSK, setNostrBackupState, settings.nostrBackupEnabled]);
-
-  const enqueueNostrBackupPublish = useCallback(() => {
-    if (nostrBackupPublishRef.current) return nostrBackupPublishRef.current;
-    const task = publishNostrBackup()
-      .catch((error) => {
-        console.warn("Failed to publish Nostr backup", error);
-        showToast("Unable to sync backup to Nostr", 2600);
-      })
-      .finally(() => {
-        nostrBackupPublishRef.current = null;
-      });
-    nostrBackupPublishRef.current = task;
-    return task;
-  }, [publishNostrBackup, showToast]);
-
-  const publishLatestNostrBackup = useCallback(async () => {
-    if (!settings.nostrBackupEnabled || !nostrPK) return;
-    const initialSnapshot = serializeNostrBackupSnapshot();
-    if (initialSnapshot === nostrBackupPublishedSnapshotRef.current) return;
-    if (nostrBackupPublishRef.current) {
-      try {
-        await nostrBackupPublishRef.current;
-      } catch {}
-    }
-    const latestSnapshot = serializeNostrBackupSnapshot();
-    if (latestSnapshot === nostrBackupPublishedSnapshotRef.current) return;
-    try {
-      await enqueueNostrBackupPublish();
-    } catch {}
-  }, [enqueueNostrBackupPublish, nostrPK, serializeNostrBackupSnapshot, settings.nostrBackupEnabled]);
-
 
   // header view
   const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
   const [activePage, setActivePage] = useState<
     "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings"
   >("boards");
-  // Ref updated every render so navigation callbacks can read the gate without
-  // stale-closure issues (isOnboardingActive is derived further down).
-  const isOnboardingActiveRef = useRef(false);
-  const [walletBountiesTab, setWalletBountiesTab] = useState<"open" | "funded" | "pinned">("pinned");
+  const {
+    completeFirstRunOnboarding,
+    handleOnboardingEnableNotifications,
+    handleOnboardingGenerateNewKey,
+    handleOnboardingRestoreFromBackupFile,
+    handleOnboardingRestoreFromCloud,
+    handleOnboardingUseExistingKey,
+    isOnboardingActiveRef,
+    onboardingPushConfigured,
+    onboardingPushSupported,
+    showFirstRunOnboarding,
+  } = useFirstRunOnboarding({
+    activePage,
+    applyCustomNostrKey,
+    enablePushNotifications,
+    pushPlatform: settings.pushNotifications?.platform,
+    rotateNostrKey,
+    setActivePage,
+    vapidPublicKey,
+    workerBaseUrl,
+  });
   useEffect(() => {
     if (currentBoard?.kind === "bible") {
       if (view !== "completed") setView("bible");
@@ -7869,359 +2575,63 @@ export default function App() {
   const [addBoardOpen, setAddBoardOpen] = useState(false);
 
 
-  const nostrBackupPublishedSnapshotRef = useRef<string | null>(null);
-  const nostrBackupDebounceTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    nostrBackupPullFinishedRef.current = false;
-    let cancelled = false;
-    if (!settings.nostrBackupEnabled || !nostrPK || showSettings || nostrBackupHold) {
-      if (!nostrBackupHold) nostrBackupPullFinishedRef.current = true;
-      return () => {};
-    }
-    (async () => {
-      try {
-        await pullNostrBackupOnce();
-      } finally {
-        if (!cancelled) nostrBackupPullFinishedRef.current = true;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [nostrBackupHold, nostrPK, pullNostrBackupOnce, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    nostrBibleTrackerPullFinishedRef.current = false;
-    let cancelled = false;
-    if (!settings.nostrBackupEnabled || !nostrPK || showSettings) {
-      nostrBibleTrackerPullFinishedRef.current = true;
-      return () => {};
-    }
-    (async () => {
-      try {
-        await pullNostrBibleTrackerOnce();
-      } finally {
-        if (!cancelled) nostrBibleTrackerPullFinishedRef.current = true;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [nostrPK, pullNostrBibleTrackerOnce, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    nostrScriptureMemoryPullFinishedRef.current = false;
-    let cancelled = false;
-    if (!settings.nostrBackupEnabled || !nostrPK || showSettings) {
-      nostrScriptureMemoryPullFinishedRef.current = true;
-      return () => {};
-    }
-    (async () => {
-      try {
-        await pullNostrScriptureMemoryOnce();
-      } finally {
-        if (!cancelled) nostrScriptureMemoryPullFinishedRef.current = true;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [nostrPK, pullNostrScriptureMemoryOnce, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || nostrBackupHold || !nostrBackupPullFinishedRef.current) return;
-    if (nostrBackupInitialPublishRef.current) return;
-    if ((nostrBackupStateRef.current.lastTimestamp || 0) > 0) return;
-    if (!nostrPK) return;
-    nostrBackupInitialPublishRef.current = true;
-    enqueueNostrBackupPublish();
-  }, [enqueueNostrBackupPublish, nostrBackupHold, nostrPK, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrBibleTrackerPullFinishedRef.current) return;
-    if (nostrBibleTrackerInitialPublishRef.current) return;
-    if ((nostrBibleTrackerStateRef.current.lastTimestamp || 0) > 0) return;
-    if (!nostrPK) return;
-    nostrBibleTrackerInitialPublishRef.current = true;
-    enqueueNostrBibleTrackerPublish().catch(() => {});
-  }, [enqueueNostrBibleTrackerPublish, nostrPK, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrScriptureMemoryPullFinishedRef.current) return;
-    if (nostrScriptureMemoryInitialPublishRef.current) return;
-    if ((nostrScriptureMemoryStateRef.current.lastTimestamp || 0) > 0) return;
-    if (!nostrPK) return;
-    nostrScriptureMemoryInitialPublishRef.current = true;
-    enqueueNostrScriptureMemoryPublish().catch(() => {});
-  }, [enqueueNostrScriptureMemoryPublish, nostrPK, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK || showSettings || nostrBackupHold) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    pool.setRelays(relays);
-    const since = nostrBackupStateRef.current.lastTimestamp || undefined;
-    const filters = [
-      {
-        kinds: [NOSTR_APP_BACKUP_KIND],
-        authors: [nostrPK],
-        "#d": [NOSTR_APP_BACKUP_D_TAG],
-        ...(since ? { since } : {}),
-        limit: 5,
-      },
-    ];
-    const unsub = pool.subscribe(relays, filters, (ev) => {
-      handleIncomingNostrBackupEvent(ev).catch((err) => {
-        if ((import.meta as any)?.env?.DEV) console.warn("[nostr] backup event handling failed", err);
-      });
-    });
-    return () => {
-      try { unsub(); } catch {}
-    };
-  }, [defaultRelays, handleIncomingNostrBackupEvent, normalizeRelayList, nostrBackupHold, nostrPK, pool, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK || showSettings) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    pool.setRelays(relays);
-    const since = nostrBibleTrackerStateRef.current.lastTimestamp || undefined;
-    const filters = [
-      {
-        kinds: [NOSTR_APP_STATE_KIND],
-        authors: [nostrPK],
-        "#d": [NOSTR_BIBLE_TRACKER_D_TAG],
-        ...(since ? { since } : {}),
-        limit: 5,
-      },
-    ];
-    const unsub = pool.subscribe(relays, filters, (ev) => {
-      enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(ev)).catch(() => {});
-    });
-    return () => {
-      try { unsub(); } catch {}
-    };
-  }, [
-    applyNostrBibleTrackerSyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrPK,
-    pool,
-    settings.nostrBackupEnabled,
-    showSettings,
-  ]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (!nostrPK || showSettings) return;
-    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    pool.setRelays(relays);
-    const since = nostrScriptureMemoryStateRef.current.lastTimestamp || undefined;
-    const filters = [
-      {
-        kinds: [NOSTR_APP_STATE_KIND],
-        authors: [nostrPK],
-        "#d": [NOSTR_SCRIPTURE_MEMORY_D_TAG],
-        ...(since ? { since } : {}),
-        limit: 5,
-      },
-    ];
-    const unsub = pool.subscribe(relays, filters, (ev) => {
-      enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(ev)).catch(() => {});
-    });
-    return () => {
-      try { unsub(); } catch {}
-    };
-  }, [
-    applyNostrScriptureMemorySyncEvent,
-    defaultRelays,
-    enqueueNostrApply,
-    normalizeRelayList,
-    nostrPK,
-    pool,
-    settings.nostrBackupEnabled,
-    showSettings,
-  ]);
-
-  useEffect(() => {
-    if (showSettings) {
-      if (nostrBackupBaselineRef.current == null) {
-        nostrBackupBaselineRef.current = serializeNostrBackupSnapshot();
-        nostrBackupSettingsDirtyRef.current = false;
-      } else {
-        const currentSnapshot = serializeNostrBackupSnapshot();
-        nostrBackupSettingsDirtyRef.current = currentSnapshot !== nostrBackupBaselineRef.current;
-      }
-      return;
-    }
-    if (nostrBackupBaselineRef.current == null) return;
-    const baseline = nostrBackupBaselineRef.current;
-    nostrBackupBaselineRef.current = null;
-    const currentSnapshot = serializeNostrBackupSnapshot();
-    const changedDuringSettings =
-      nostrBackupSettingsDirtyRef.current || baseline !== currentSnapshot;
-    nostrBackupSettingsDirtyRef.current = false;
-    if (!settings.nostrBackupEnabled || !changedDuringSettings) return;
-    let cancelled = false;
-    setNostrBackupHold(true);
-    (async () => {
-      try {
-        await publishLatestNostrBackup();
-      } finally {
-        if (!cancelled) setNostrBackupHold(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [publishLatestNostrBackup, serializeNostrBackupSnapshot, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || nostrBackupHold) return; // settings flow handled separately on close
-    const currentSnapshot = serializeNostrBackupSnapshot();
-    if (nostrBackupPublishedSnapshotRef.current === null) {
-      nostrBackupPublishedSnapshotRef.current = currentSnapshot;
-      return;
-    }
-    if (currentSnapshot === nostrBackupPublishedSnapshotRef.current) return;
-    if (nostrBackupDebounceTimerRef.current) {
-      window.clearTimeout(nostrBackupDebounceTimerRef.current);
-    }
-    nostrBackupDebounceTimerRef.current = window.setTimeout(() => {
-      nostrBackupDebounceTimerRef.current = null;
-      enqueueNostrBackupPublish().catch(() => {});
-    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
-    return () => {
-      if (nostrBackupDebounceTimerRef.current) {
-        window.clearTimeout(nostrBackupDebounceTimerRef.current);
-        nostrBackupDebounceTimerRef.current = null;
-      }
-    };
-  }, [enqueueNostrBackupPublish, nostrBackupHold, serializeNostrBackupSnapshot, settings.nostrBackupEnabled, showSettings]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrPK || !nostrBibleTrackerPullFinishedRef.current) return;
-    const currentSnapshot = JSON.stringify(bibleTracker);
-    if (nostrBibleTrackerPublishedSnapshotRef.current === null) {
-      nostrBibleTrackerPublishedSnapshotRef.current = currentSnapshot;
-      return;
-    }
-    if (currentSnapshot === nostrBibleTrackerPublishedSnapshotRef.current) return;
-    if (nostrBibleTrackerDebounceTimerRef.current) {
-      window.clearTimeout(nostrBibleTrackerDebounceTimerRef.current);
-    }
-    nostrBibleTrackerDebounceTimerRef.current = window.setTimeout(() => {
-      nostrBibleTrackerDebounceTimerRef.current = null;
-      enqueueNostrBibleTrackerPublish().catch(() => {});
-    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
-    return () => {
-      if (nostrBibleTrackerDebounceTimerRef.current) {
-        window.clearTimeout(nostrBibleTrackerDebounceTimerRef.current);
-        nostrBibleTrackerDebounceTimerRef.current = null;
-      }
-    };
-  }, [
+  useNostrAppBackupSync({
     bibleTracker,
-    enqueueNostrBibleTrackerPublish,
+    bibleTrackerRef,
+    boards,
+    defaultRelays,
     nostrPK,
-    settings.nostrBackupEnabled,
-    showSettings,
-  ]);
-
-  useEffect(() => {
-    if (!settings.nostrBackupEnabled) return;
-    if (showSettings || !nostrPK || !nostrScriptureMemoryPullFinishedRef.current) return;
-    const currentSnapshot = JSON.stringify(scriptureMemory);
-    if (nostrScriptureMemoryPublishedSnapshotRef.current === null) {
-      nostrScriptureMemoryPublishedSnapshotRef.current = currentSnapshot;
-      return;
-    }
-    if (currentSnapshot === nostrScriptureMemoryPublishedSnapshotRef.current) return;
-    if (nostrScriptureMemoryDebounceTimerRef.current) {
-      window.clearTimeout(nostrScriptureMemoryDebounceTimerRef.current);
-    }
-    nostrScriptureMemoryDebounceTimerRef.current = window.setTimeout(() => {
-      nostrScriptureMemoryDebounceTimerRef.current = null;
-      enqueueNostrScriptureMemoryPublish().catch(() => {});
-    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
-    return () => {
-      if (nostrScriptureMemoryDebounceTimerRef.current) {
-        window.clearTimeout(nostrScriptureMemoryDebounceTimerRef.current);
-        nostrScriptureMemoryDebounceTimerRef.current = null;
-      }
-    };
-  }, [
-    enqueueNostrScriptureMemoryPublish,
-    nostrPK,
+    nostrPublishRef,
+    nostrSK,
+    pool,
     scriptureMemory,
-    settings.nostrBackupEnabled,
+    setBibleTracker,
+    setBoards,
+    setDefaultRelays,
+    setScriptureMemory,
+    setSettings,
+    settings,
     showSettings,
-  ]);
-  const showWallet = activePage === "wallet";
-  const showChat = activePage === "chat";
-  const showWalletShell = showWallet || showChat;
-  const walletModalPrefetchedRef = useRef(false);
-  const prefetchWalletModal = useCallback(() => {
-    if (walletModalPrefetchedRef.current) return;
-    walletModalPrefetchedRef.current = true;
-    loadCashuWalletModal().catch((err) => {
-      if ((import.meta as any)?.env?.DEV) console.warn("[wallet] prefetch failed", err);
-      walletModalPrefetchedRef.current = false; // Allow retry
-    });
-  }, []);
-  const [walletTokenStateResetNonce, setWalletTokenStateResetNonce] = useState(0);
-  const [updateToastVisible, setUpdateToastVisible] = useState(false);
+    showToast,
+    tagValue,
+  });
+
+  useNostrSubscriptions({
+    sharedInbox: {
+      enabled: true,
+      ensurePool: ensureInboxPool as unknown as () => SubscribeManyPool,
+      handleEvent: handleIncomingShareEvent,
+      lookbackSeconds: SHARE_DM_LOOKBACK_SECONDS,
+      nostrPK,
+      nostrSkHex,
+      relays: inboxRelays,
+    },
+    calendarViews: {
+      enabled: true,
+      clockRef: calendarViewClockRef,
+      defaultRelays,
+      events: calendarEvents,
+      handleEvent: applyCalendarViewSubscriptionEvent,
+      inboxRelays,
+      pool,
+    },
+  });
+
+  const {
+    handleReloadLater,
+    handleReloadNow,
+    handleResetWalletTokenTracking,
+    prefetchWalletModal,
+    showChat,
+    showWalletShell,
+    updateToastVisible,
+    walletTokenStateResetNonce,
+  } = useWalletShellState({
+    activePage,
+    loadWalletModal: loadCashuWalletModal,
+    showToast,
+  });
   const shouldReloadForNavigation = useCallback(() => false, []);
-
-  useEffect(() => {
-    function handleUpdateAvailable() {
-      setUpdateToastVisible(true);
-    }
-
-    window.addEventListener("taskify:update-available", handleUpdateAvailable);
-    return () => {
-      window.removeEventListener("taskify:update-available", handleUpdateAvailable);
-    };
-  }, []);
-
-  const handleReloadNow = useCallback(() => {
-    setUpdateToastVisible(false);
-    window.location.reload();
-  }, []);
-
-  const handleReloadLater = useCallback(() => {
-    setUpdateToastVisible(false);
-  }, []);
-
-  useEffect(() => {
-    if (showWalletShell || walletModalPrefetchedRef.current) return;
-    const requestIdle = (window as any).requestIdleCallback as
-      | ((cb: () => void, opts?: { timeout: number }) => number)
-      | undefined;
-    const cancelIdle = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
-    let idleId: number | null = null;
-    let timer: number | undefined;
-    if (requestIdle) {
-      idleId = requestIdle(() => prefetchWalletModal(), { timeout: 1200 });
-    } else {
-      timer = window.setTimeout(() => {
-        prefetchWalletModal();
-      }, 300);
-    }
-    return () => {
-      if (idleId != null && cancelIdle) {
-        cancelIdle(idleId);
-      }
-      if (typeof timer === "number") {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [prefetchWalletModal, showWalletShell]);
-  const handleResetWalletTokenTracking = useCallback(() => {
-    setWalletTokenStateResetNonce((value) => value + 1);
-    showToast("Background token tracking reset", 3000);
-  }, [showToast]);
 
   const changeBoard = useCallback(
     (id: string) => {
@@ -8294,33 +2704,8 @@ export default function App() {
   const openShareBoard = useCallback(() => {
     if (shouldReloadForNavigation()) return;
     if (!currentBoard) return;
-    setShareBoardTargetId(currentBoard.id);
-    setShareBoardMode("board");
-    setShareModeInfoOpen(false);
-    setShareTemplateShare(null);
-    setShareTemplateStatus(null);
-    setShareTemplateBusy(false);
-    setShareContactStatus(null);
-    setShareContactBusy(false);
-    setShareContactPickerOpen(false);
-    setShareBoardModalOpen(true);
-    shareBoardTargetIdRef.current = currentBoard.id;
-    shareBoardModalOpenRef.current = true;
-  }, [currentBoard, shouldReloadForNavigation]);
-  const closeShareBoard = useCallback(() => {
-    setShareBoardModalOpen(false);
-    setShareBoardTargetId(null);
-    setShareBoardMode("board");
-    setShareModeInfoOpen(false);
-    setShareTemplateShare(null);
-    setShareTemplateStatus(null);
-    setShareTemplateBusy(false);
-    setShareContactStatus(null);
-    setShareContactBusy(false);
-    setShareContactPickerOpen(false);
-    shareBoardTargetIdRef.current = null;
-    shareBoardModalOpenRef.current = false;
-  }, []);
+    openShareBoardForTarget(currentBoard.id);
+  }, [currentBoard, openShareBoardForTarget, shouldReloadForNavigation]);
 
   const createBoardFromName = useCallback(
     (name: string, type: "lists" | "compound", shared = true) => {
@@ -8424,81 +2809,6 @@ export default function App() {
     }
   }, [settings.startupView]);
   const { receiveToken } = useCashu();
-
-  const onboardingNeedsKeySelection = useMemo(() => {
-    try {
-      const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
-      return !/^[0-9a-fA-F]{64}$/.test(raw);
-    } catch {
-      return true;
-    }
-  }, []);
-  const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
-    if (!onboardingNeedsKeySelection) return false;
-    try {
-      return kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) !== "done";
-    } catch {
-      return true;
-    }
-  });
-  const completeFirstRunOnboarding = useCallback(() => {
-    try {
-      kvStorage.setItem(LS_FIRST_RUN_ONBOARDING_DONE, "done");
-    } catch {}
-    setShowFirstRunOnboarding(false);
-  }, []);
-  const handleOnboardingUseExistingKey = useCallback((value: string) => {
-    return applyCustomNostrKey(value, { silent: true });
-  }, [applyCustomNostrKey]);
-  const handleOnboardingGenerateNewKey = useCallback(() => {
-    try {
-      const nsec = rotateNostrKey();
-      // Ensure wallet seed exists for this account, even though onboarding now only displays nsec.
-      getWalletSeedMnemonic();
-      return { nsec };
-    } catch {
-      return null;
-    }
-  }, [rotateNostrKey]);
-  const completeOnboardingWithReload = useCallback(() => {
-    completeFirstRunOnboarding();
-    if (typeof window !== "undefined") {
-      window.setTimeout(() => window.location.reload(), 120);
-    }
-  }, [completeFirstRunOnboarding]);
-  const handleOnboardingRestoreFromBackupFile = useCallback(async (file: File) => {
-    const parsed = parseBackupJsonPayload(await file.text());
-    applyBackupDataToStorage(parsed);
-    completeOnboardingWithReload();
-  }, [completeOnboardingWithReload]);
-  const handleOnboardingRestoreFromCloud = useCallback(async (value: string) => {
-    const parsed = await loadCloudBackupPayload(workerBaseUrl, value);
-    applyBackupDataToStorage(parsed);
-    completeOnboardingWithReload();
-  }, [completeOnboardingWithReload, workerBaseUrl]);
-  const handleOnboardingEnableNotifications = async () => {
-    const platform = settings.pushNotifications?.platform === "android"
-      ? "android"
-      : detectPushPlatformFromNavigator();
-    await enablePushNotifications(platform);
-  };
-  const onboardingPushSupported = typeof window !== "undefined"
-    && "serviceWorker" in navigator
-    && "PushManager" in window
-    && window.isSecureContext;
-  const onboardingPushConfigured = !!workerBaseUrl && !!vapidPublicKey;
-  // True while any onboarding/welcome overlay is blocking the app. Used to gate
-  // background interaction via the HTML `inert` attribute.
-  const isOnboardingActive = showFirstRunOnboarding;
-  // Keep the ref in sync every render so nav callbacks can read it safely.
-  isOnboardingActiveRef.current = isOnboardingActive;
-  // Hard state-level gate: if onboarding is active, force activePage to the
-  // neutral "boards" base view so no background section is ever visible/active.
-  useEffect(() => {
-    if (isOnboardingActive && activePage !== "boards") {
-      startTransition(() => setActivePage("boards"));
-    }
-  }, [isOnboardingActive, activePage]);
 
   useEffect(() => {
     if (!settings.completedTab) setView("board");
@@ -9127,23 +3437,6 @@ export default function App() {
     });
   }, [setBibleTracker]);
 
-  const [dayChoice, setDayChoiceRaw] = useState<DayChoice>(() => {
-    const firstBoard = boards.find(b => !b.archived) ?? boards[0];
-    if (firstBoard?.kind === "lists") {
-      return (firstBoard as Extract<Board, {kind:"lists"}>).columns[0]?.id || "items";
-    }
-    return new Date().getDay() as Weekday;
-  });
-  const dayChoiceRef = useRef<DayChoice>(dayChoice);
-  const setDayChoice = useCallback((next: DayChoice) => {
-    dayChoiceRef.current = next;
-    setDayChoiceRaw(next);
-  }, []);
-  const lastListViewRef = useRef<Map<string, string>>(new Map());
-  const lastBoardScrollRef = useRef<Map<string, number>>(new Map());
-  const autoCenteredIndexRef = useRef<Set<string>>(new Set());
-  const autoCenteredWeekRef = useRef<Set<string>>(new Set());
-  const activeWeekBoardRef = useRef<string | null>(null);
   const [pushWorkState, setPushWorkState] = useState<"idle" | "enabling" | "disabling">("idle");
   const [pushError, setPushError] = useState<string | null>(null);
   const [inlineTitles, setInlineTitles] = useState<Record<string, string>>({});
@@ -9234,8 +3527,8 @@ export default function App() {
   }
 
   function addListColumn(boardId: string, name?: string): string | null {
-    const board = boards.find((b) => b.id === boardId && b.kind === "lists");
-    if (!board) return null;
+    const board = boards.find((b) => b.id === boardId);
+    if (!board || board.kind !== "lists") return null;
     const colName = name?.trim() ? name.trim() : `List ${board.columns.length + 1}`;
     const col: ListColumn = { id: crypto.randomUUID(), name: colName };
     const updated: Board = { ...board, columns: [...board.columns, col] };
@@ -9247,8 +3540,8 @@ export default function App() {
   }
 
   function renameListColumn(boardId: string, columnId: string, name: string): boolean {
-    const board = boards.find((b) => b.id === boardId && b.kind === "lists");
-    if (!board) return false;
+    const board = boards.find((b) => b.id === boardId);
+    if (!board || board.kind !== "lists") return false;
     const trimmed = name.trim() || undefined;
     let didChange = false;
     const updated: Board = {
@@ -9279,8 +3572,8 @@ export default function App() {
   }, []);
 
   function removeListColumn(boardId: string, columnId: string) {
-    const board = boards.find((b) => b.id === boardId && b.kind === "lists");
-    if (!board) return;
+    const board = boards.find((b) => b.id === boardId);
+    if (!board || board.kind !== "lists") return;
     const updatedColumns = board.columns.filter((col) => col.id !== columnId);
     if (updatedColumns.length === board.columns.length) return;
     const updatedBoard: Board = { ...board, columns: updatedColumns };
@@ -9370,56 +3663,76 @@ export default function App() {
     });
   }, [setTasks]);
 
-  // drag-to-delete
-  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
-  const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
-  const [trashHover, setTrashHover] = useState(false);
-  const [upcomingHover, setUpcomingHover] = useState(false);
-  const [upcomingFilterOpen, setUpcomingFilterOpen] = useState(false);
-  const [upcomingUsHolidaysEnabled, setUpcomingUsHolidaysEnabled] = useState<boolean>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_US_HOLIDAYS_ENABLED);
-    if (!raw) return true;
-    return raw === "1" || raw.toLowerCase() === "true";
+  // drag-and-drop UI state (see ui/dnd/useDragAndDrop.ts)
+  const {
+    draggingTaskId,
+    draggingEventId,
+    trashHover,
+    upcomingHover,
+    boardDropOpen,
+    boardDropPos,
+    boardDropTimer,
+    setDraggingTaskId,
+    setDraggingEventId,
+    setTrashHover,
+    setUpcomingHover,
+    setBoardDropOpen,
+    setBoardDropPos,
+    handleDragEnd,
+    scheduleBoardDropClose,
+    cancelBoardDropClose,
+  } = useDragAndDrop();
+  const {
+    applyUpcomingFilterPreset,
+    boardSort,
+    boardSortOptions,
+    boardSortSheetOpen,
+    cancelUpcomingPresetHold,
+    handleBoardSortSelect,
+    handleUpcomingSortSelect,
+    maybeCancelUpcomingPresetHold,
+    saveUpcomingFilterPreset,
+    setBoardSortSheetOpen,
+    setUpcomingBoardGrouping,
+    setUpcomingFilter,
+    setUpcomingFilterOpen,
+    setUpcomingSearch,
+    setUpcomingSearchOpen,
+    setUpcomingSortSheetOpen,
+    setUpcomingUsHolidaysEnabled,
+    setUpcomingView,
+    setUpcomingViewSheetOpen,
+    setUpcomingListDate,
+    showUpcomingSearch,
+    startUpcomingPresetHold,
+    toggleUpcomingFilter,
+    upcomingBoardGrouping,
+    upcomingBoardGroupingOptions,
+    upcomingFilter,
+    upcomingFilterGroups,
+    upcomingFilterLabel,
+    upcomingFilterMap,
+    upcomingFilterOpen,
+    upcomingFilterOptions,
+    upcomingFilterPresets,
+    upcomingFilterSelection,
+    upcomingListDate,
+    upcomingPresetHoldTriggeredRef,
+    upcomingSearch,
+    upcomingSearchOpen,
+    upcomingSearchTerm,
+    upcomingSort,
+    upcomingSortSheetOpen,
+    upcomingUsHolidaysEnabled,
+    upcomingView,
+    upcomingViewSheetOpen,
+  } = useUpcomingControlsState({
+    gcalCalendars,
+    gcalConnected: gcalStatus.connected,
+    usHolidaysLabel: SPECIAL_CALENDAR_US_HOLIDAYS_LABEL,
+    visibleBoards,
   });
-  const [upcomingFilter, setUpcomingFilter] = useState<string[] | null>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_FILTER);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed === null) return null;
-      if (Array.isArray(parsed)) {
-        return parsed.filter((id) => typeof id === "string");
-      }
-    } catch {}
-    return null;
-  });
-  const [upcomingFilterPresets, setUpcomingFilterPresets] = useState<UpcomingFilterPreset[]>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_FILTER_PRESETS);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.flatMap((entry) => {
-        const name = typeof entry?.name === "string" ? entry.name.trim() : "";
-        if (!name) return [];
-        const id = typeof entry?.id === "string" && entry.id ? entry.id : crypto.randomUUID();
-        const selection = Array.isArray(entry?.selection)
-          ? entry.selection.filter((id: unknown) => typeof id === "string")
-          : [];
-        return [{ id, name, selection }];
-      });
-    } catch {
-      return [];
-    }
-  });
-  const [upcomingViewSheetOpen, setUpcomingViewSheetOpen] = useState(false);
-  const [upcomingView, setUpcomingView] = useState<"details" | "list">(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_VIEW);
-    return raw === "list" ? "list" : "details";
-  });
-  const [upcomingSearchOpen, setUpcomingSearchOpen] = useState(false);
-  const [upcomingSearch, setUpcomingSearch] = useState("");
-  const [upcomingListDate, setUpcomingListDate] = useState(() => isoDatePart(new Date().toISOString()));
+
   const openUpcomingTaskEditor = useCallback(() => {
     if (shouldReloadForNavigation()) return;
     const fallbackBoard =
@@ -9456,390 +3769,6 @@ export default function App() {
     };
     setEditing({ type: "task", originalType: "task", originalId: draft.id, task: draft });
   }, [currentBoard, nostrPK, settings.newTaskPosition, shouldReloadForNavigation, showToast, tasks, upcomingListDate, visibleBoards]);
-  const [upcomingSortSheetOpen, setUpcomingSortSheetOpen] = useState(false);
-  const [upcomingSort, setUpcomingSort] = useState<{ mode: BoardSortMode; direction: BoardSortDirection }>(() => {
-    const fallback = { mode: "due" as const, direction: DEFAULT_BOARD_SORT_DIRECTION.due };
-    const raw = kvStorage.getItem(LS_UPCOMING_SORT);
-    if (!raw) return fallback;
-    try {
-      return normalizeBoardSortState(JSON.parse(raw)) ?? fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  const [upcomingBoardGrouping, setUpcomingBoardGrouping] = useState<UpcomingBoardGrouping>(() => {
-    const raw = kvStorage.getItem(LS_UPCOMING_BOARD_GROUPING);
-    return raw === "grouped" ? "grouped" : "mixed";
-  });
-  const [boardSortSheetOpen, setBoardSortSheetOpen] = useState(false);
-  const [boardSort, setBoardSort] = useState<{ mode: BoardSortMode; direction: BoardSortDirection }>(() => {
-    const fallback = { mode: "due" as const, direction: DEFAULT_BOARD_SORT_DIRECTION.due };
-    const raw = kvStorage.getItem(LS_BOARD_SORT);
-    if (!raw) return fallback;
-    try {
-      return normalizeBoardSortState(JSON.parse(raw)) ?? fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_SORT, JSON.stringify(upcomingSort));
-    } catch {}
-  }, [upcomingSort]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_BOARD_GROUPING, upcomingBoardGrouping);
-    } catch {}
-  }, [upcomingBoardGrouping]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_BOARD_SORT, JSON.stringify(boardSort));
-    } catch {}
-  }, [boardSort]);
-  const boardSortOptions = useMemo(
-    () => [
-      { id: "manual", label: "Manual", supportsDirection: false },
-      { id: "due", label: "Due Date", supportsDirection: true },
-      { id: "priority", label: "Priority", supportsDirection: true },
-      { id: "created", label: "Creation Date", supportsDirection: true },
-      { id: "alpha", label: "A-Z", supportsDirection: true },
-    ] as const,
-    [],
-  );
-  const handleBoardSortSelect = useCallback((mode: BoardSortMode) => {
-    setBoardSort((prev) => {
-      if (prev.mode === mode) {
-        if (mode === "manual") return prev;
-        const nextDirection = prev.direction === "asc" ? "desc" : "asc";
-        return { mode, direction: nextDirection };
-      }
-      return { mode, direction: DEFAULT_BOARD_SORT_DIRECTION[mode] };
-    });
-  }, []);
-  const upcomingBoardGroupingOptions = useMemo(
-    () => [
-      { id: "mixed", label: "Across boards" },
-      { id: "grouped", label: "Group by board" },
-    ] as const,
-    [],
-  );
-  const handleUpcomingSortSelect = useCallback((mode: BoardSortMode) => {
-    setUpcomingSort((prev) => {
-      if (prev.mode === mode) {
-        if (mode === "manual") return prev;
-        const nextDirection = prev.direction === "asc" ? "desc" : "asc";
-        return { mode, direction: nextDirection };
-      }
-      return { mode, direction: DEFAULT_BOARD_SORT_DIRECTION[mode] };
-    });
-  }, []);
-  const [boardDropOpen, setBoardDropOpen] = useState(false);
-  const [boardDropPos, setBoardDropPos] = useState<{ top: number; left: number } | null>(null);
-  const boardDropTimer = useRef<number>();
-  const boardDropCloseTimer = useRef<number>();
-
-  function scheduleBoardDropClose() {
-    if (boardDropCloseTimer.current) window.clearTimeout(boardDropCloseTimer.current);
-    boardDropCloseTimer.current = window.setTimeout(() => {
-      setBoardDropOpen(false);
-      setBoardDropPos(null);
-      boardDropCloseTimer.current = undefined;
-    }, 100);
-  }
-
-  function cancelBoardDropClose() {
-    if (boardDropCloseTimer.current) {
-      window.clearTimeout(boardDropCloseTimer.current);
-      boardDropCloseTimer.current = undefined;
-    }
-  }
-
-  const handleDragEnd = useCallback(() => {
-    setDraggingTaskId(null);
-    setDraggingEventId(null);
-    setTrashHover(false);
-    setUpcomingHover(false);
-    setBoardDropOpen(false);
-    setBoardDropPos(null);
-    if (boardDropTimer.current) window.clearTimeout(boardDropTimer.current);
-    if (boardDropCloseTimer.current) window.clearTimeout(boardDropCloseTimer.current);
-  }, []);
-
-  const upcomingFilterGroups = useMemo<UpcomingFilterGroup[]>(() => {
-    const groups: UpcomingFilterGroup[] = [];
-    visibleBoards
-      .filter((board) => board.kind !== "bible" && board.kind !== "compound")
-      .forEach((board) => {
-        const label = board.name || "Board";
-        const boardOption: UpcomingFilterOption = {
-          id: `board:${board.id}`,
-          label,
-          boardId: board.id,
-        };
-        const listOptions =
-          board.kind === "lists"
-            ? board.columns.map((column) => ({
-                id: `board:${board.id}:col:${column.id}`,
-                label: column.name,
-                boardId: board.id,
-                columnId: column.id,
-              }))
-            : [];
-        groups.push({
-          id: board.id,
-          label,
-          boardId: board.id,
-          boardOption,
-          listOptions,
-        });
-      });
-    return groups;
-  }, [visibleBoards]);
-
-  const upcomingFilterOptions = useMemo(() => {
-    const boardOptions = upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]);
-    const gcalOptions: UpcomingFilterOption[] = gcalStatus.connected
-      ? gcalCalendars.map((cal) => ({
-          id: `gcal:${cal.id}`,
-          label: cal.name,
-          boardId: `gcal:${cal.id}`,
-        }))
-      : [];
-    return [...boardOptions, ...gcalOptions];
-  }, [upcomingFilterGroups, gcalCalendars, gcalStatus.connected]);
-  const upcomingFilterOptionMap = useMemo(() => {
-    const map = new Map<string, UpcomingFilterOption>();
-    upcomingFilterOptions.forEach((option) => {
-      map.set(option.id, option);
-    });
-    return map;
-  }, [upcomingFilterOptions]);
-  const upcomingFilterGroupMap = useMemo(() => {
-    const map = new Map<string, UpcomingFilterGroup>();
-    upcomingFilterGroups.forEach((group) => {
-      map.set(group.boardId, group);
-    });
-    return map;
-  }, [upcomingFilterGroups]);
-
-  const upcomingFilterOptionIds = useMemo(
-    () => upcomingFilterOptions.map((option) => option.id),
-    [upcomingFilterOptions],
-  );
-
-  useEffect(() => {
-    if (upcomingFilter === null || !upcomingFilterOptionIds.length) return;
-    const allowed = new Set(upcomingFilterOptionIds);
-    const next = new Set(upcomingFilter.filter((id) => allowed.has(id)));
-    upcomingFilterOptions.forEach((option) => {
-      if (!option.columnId) return;
-      if (next.has(option.id)) {
-        next.add(`board:${option.boardId}`);
-      }
-    });
-    upcomingFilterGroups.forEach((group) => {
-      if (!next.has(group.boardOption.id)) return;
-      if (group.listOptions.length === 0) return;
-      const hasAnyList = group.listOptions.some((option) => next.has(option.id));
-      if (!hasAnyList) {
-        group.listOptions.forEach((option) => next.add(option.id));
-      }
-    });
-    if (next.size !== upcomingFilter.length || upcomingFilter.some((id) => !next.has(id))) {
-      setUpcomingFilter(Array.from(next));
-    }
-  }, [upcomingFilter, upcomingFilterGroups, upcomingFilterOptionIds, upcomingFilterOptions]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_FILTER, JSON.stringify(upcomingFilter));
-    } catch {}
-  }, [upcomingFilter]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_US_HOLIDAYS_ENABLED, upcomingUsHolidaysEnabled ? "1" : "0");
-    } catch {}
-  }, [upcomingUsHolidaysEnabled]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_FILTER_PRESETS, JSON.stringify(upcomingFilterPresets));
-    } catch {}
-  }, [upcomingFilterPresets]);
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_UPCOMING_VIEW, upcomingView);
-    } catch {}
-  }, [upcomingView]);
-
-  const upcomingFilterLabel = useMemo(() => {
-    if (!upcomingFilterOptions.length) {
-      return upcomingUsHolidaysEnabled ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : "No boards";
-    }
-    if (upcomingFilter === null) {
-      return upcomingUsHolidaysEnabled ? "All boards + US holidays" : "All boards";
-    }
-    if (upcomingFilter.length === 0) {
-      return upcomingUsHolidaysEnabled ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : "None";
-    }
-    if (upcomingFilter.length === 1) {
-      const baseLabel = upcomingFilterOptions.find((option) => option.id === upcomingFilter[0])?.label || "1 selected";
-      return upcomingUsHolidaysEnabled ? `${baseLabel} + US holidays` : baseLabel;
-    }
-    const baseLabel = `${upcomingFilter.length} selected`;
-    return upcomingUsHolidaysEnabled ? `${baseLabel} + US holidays` : baseLabel;
-  }, [upcomingFilter, upcomingFilterOptions, upcomingUsHolidaysEnabled]);
-
-  const upcomingFilterSelection = useMemo(() => {
-    if (upcomingFilter === null) return new Set(upcomingFilterOptionIds);
-    return new Set(upcomingFilter);
-  }, [upcomingFilter, upcomingFilterOptionIds]);
-
-  const upcomingFilterMap = useMemo(() => {
-    const selectedBoards = new Set<string>();
-    const selectedLists = new Map<string, Set<string>>();
-    upcomingFilterOptions.forEach((option) => {
-      if (!upcomingFilterSelection.has(option.id)) return;
-      if (option.columnId) {
-        const existing = selectedLists.get(option.boardId) ?? new Set<string>();
-        existing.add(option.columnId);
-        selectedLists.set(option.boardId, existing);
-      } else {
-        selectedBoards.add(option.boardId);
-      }
-    });
-    return { selectedBoards, selectedLists };
-  }, [upcomingFilterOptions, upcomingFilterSelection]);
-
-  const upcomingSearchTerm = useMemo(() => upcomingSearch.trim().toLowerCase(), [upcomingSearch]);
-  const showUpcomingSearch = upcomingSearchOpen || upcomingSearchTerm.length > 0;
-
-  useEffect(() => {
-    if (activePage !== "upcoming") return;
-    if (!upcomingSearchOpen) return;
-    upcomingSearchInputRef.current?.focus();
-  }, [activePage, upcomingSearchOpen]);
-
-  const toggleUpcomingFilter = useCallback((optionId: string) => {
-    if (!upcomingFilterOptionIds.length) return;
-    setUpcomingFilter((prev) => {
-      const option = upcomingFilterOptionMap.get(optionId);
-      if (!option) return prev;
-      const next = new Set(prev ?? upcomingFilterOptionIds);
-      const group = upcomingFilterGroupMap.get(option.boardId);
-      const listIds = group?.listOptions.map((opt) => opt.id) ?? [];
-      const boardId = `board:${option.boardId}`;
-
-      if (!option.columnId) {
-        if (next.has(optionId)) {
-          next.delete(optionId);
-          listIds.forEach((id) => next.delete(id));
-        } else {
-          next.add(optionId);
-          listIds.forEach((id) => next.add(id));
-        }
-      } else {
-        if (next.has(optionId)) {
-          next.delete(optionId);
-        } else {
-          next.add(optionId);
-          next.add(boardId);
-        }
-        const hasAnyList = listIds.some((id) => next.has(id));
-        if (!hasAnyList) {
-          next.delete(boardId);
-        }
-      }
-
-      const output = Array.from(next);
-      if (output.length === upcomingFilterOptionIds.length) return null;
-      return output;
-    });
-  }, [upcomingFilterGroupMap, upcomingFilterOptionIds, upcomingFilterOptionMap]);
-
-  const applyUpcomingFilterPreset = useCallback(
-    (preset: UpcomingFilterPreset) => {
-      if (!upcomingFilterOptions.length) return;
-      const presetSet = new Set(preset.selection);
-      const next = upcomingFilterOptions
-        .filter((option) => presetSet.has(option.id))
-        .map((option) => option.id);
-      setUpcomingFilter(next.length ? next : []);
-    },
-    [upcomingFilterOptions],
-  );
-
-  const saveUpcomingFilterPreset = useCallback(() => {
-    if (!upcomingFilterOptions.length) return;
-    const name = window.prompt("Name this preset");
-    if (name === null) return;
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    const selection = upcomingFilterOptions
-      .filter((option) => upcomingFilterSelection.has(option.id))
-      .map((option) => option.id);
-    const uniqueSelection = Array.from(new Set(selection));
-    setUpcomingFilterPresets((prev) => {
-      const existingIndex = prev.findIndex((preset) => preset.name.toLowerCase() === trimmed.toLowerCase());
-      const updatedPreset = {
-        id: existingIndex === -1 ? crypto.randomUUID() : prev[existingIndex].id,
-        name: trimmed,
-        selection: uniqueSelection,
-      };
-      if (existingIndex === -1) {
-        return [updatedPreset, ...prev];
-      }
-      return [updatedPreset, ...prev.filter((_, idx) => idx !== existingIndex)];
-    });
-  }, [upcomingFilterOptions, upcomingFilterSelection]);
-
-  const deleteUpcomingFilterPreset = useCallback((preset: UpcomingFilterPreset) => {
-    let confirmed = true;
-    if (typeof window !== "undefined" && typeof window.confirm === "function") {
-      confirmed = window.confirm(`Delete preset "${preset.name}"?`);
-    }
-    if (!confirmed) return;
-    setUpcomingFilterPresets((prev) => prev.filter((p) => p.id !== preset.id));
-  }, []);
-
-  const upcomingPresetHoldTimerRef = useRef<number | null>(null);
-  const upcomingPresetHoldTriggeredRef = useRef(false);
-  const upcomingPresetHoldStartRef = useRef<{ x: number; y: number } | null>(null);
-  const cancelUpcomingPresetHold = useCallback(() => {
-    if (upcomingPresetHoldTimerRef.current != null) {
-      window.clearTimeout(upcomingPresetHoldTimerRef.current);
-      upcomingPresetHoldTimerRef.current = null;
-    }
-    upcomingPresetHoldStartRef.current = null;
-  }, []);
-  useEffect(() => cancelUpcomingPresetHold, [cancelUpcomingPresetHold]);
-
-  const startUpcomingPresetHold = useCallback(
-    (preset: UpcomingFilterPreset, event: React.PointerEvent<HTMLButtonElement>) => {
-      if (event.button !== 0) return;
-      cancelUpcomingPresetHold();
-      upcomingPresetHoldTriggeredRef.current = false;
-      upcomingPresetHoldStartRef.current = { x: event.clientX, y: event.clientY };
-      upcomingPresetHoldTimerRef.current = window.setTimeout(() => {
-        upcomingPresetHoldTimerRef.current = null;
-        upcomingPresetHoldTriggeredRef.current = true;
-        upcomingPresetHoldStartRef.current = null;
-        deleteUpcomingFilterPreset(preset);
-      }, 650);
-    },
-    [cancelUpcomingPresetHold, deleteUpcomingFilterPreset],
-  );
-  const maybeCancelUpcomingPresetHold = useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      const start = upcomingPresetHoldStartRef.current;
-      if (!start) return;
-      const dx = event.clientX - start.x;
-      const dy = event.clientY - start.y;
-      if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
-        cancelUpcomingPresetHold();
-      }
-    },
-    [cancelUpcomingPresetHold],
-  );
 
   // fly-to-completed overlay + target
   const flyLayerRef = useRef<HTMLDivElement>(null);
@@ -9857,8 +3786,13 @@ export default function App() {
   const upcomingAutoScrollRef = useRef(false);
   const upcomingPendingDetailDateRef = useRef<string | null>(null);
   const upcomingCalendarSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
-  const columnRefs = useRef(new Map<string, HTMLDivElement>());
   const inlineInputRefs = useRef(new Map<string, HTMLInputElement>());
+
+  useEffect(() => {
+    if (activePage !== "upcoming") return;
+    if (!upcomingSearchOpen) return;
+    upcomingSearchInputRef.current?.focus();
+  }, [activePage, upcomingSearchOpen]);
 
   const openUpcomingSearch = useCallback(() => {
     setUpcomingSearchOpen(true);
@@ -9876,30 +3810,9 @@ export default function App() {
     setUpcomingSearchOpen(false);
   }, []);
 
-  const setColumnRef = useCallback((key: string, el: HTMLDivElement | null) => {
-    if (el) columnRefs.current.set(key, el);
-    else columnRefs.current.delete(key);
-  }, []);
-
   const setInlineInputRef = useCallback((key: string, el: HTMLInputElement | null) => {
     if (el) inlineInputRefs.current.set(key, el);
     else inlineInputRefs.current.delete(key);
-  }, []);
-
-  const scrollColumnIntoView = useCallback((key: string, behavior: ScrollBehavior = "smooth") => {
-    const scroller = scrollerRef.current;
-    const column = columnRefs.current.get(key);
-    if (!scroller || !column) return;
-    const scrollerRect = scroller.getBoundingClientRect();
-    const columnRect = column.getBoundingClientRect();
-    const offset =
-      scroller.scrollLeft +
-      (columnRect.left - scrollerRect.left) -
-      scroller.clientWidth / 2 +
-      column.clientWidth / 2;
-    const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-    const target = Math.min(Math.max(offset, 0), maxScroll);
-    scroller.scrollTo({ left: target, behavior });
   }, []);
 
   // Custom list boards (including compound boards aggregating multiple lists)
@@ -9966,6 +3879,24 @@ export default function App() {
     }
     return { listColumns: columns, listColumnSources: sourceMap, compoundIndexGroups: groups };
   }, [boards, currentBoard]);
+
+  const {
+    bibleScrollerRef,
+    dayChoice,
+    getColumnElement,
+    scrollerRef,
+    scrollColumnIntoView,
+    setColumnRef,
+    setDayChoice,
+  } = useBoardViewScrollState({
+    activePage,
+    boards,
+    currentBoard,
+    currentBoardId,
+    listColumns,
+    listColumnSources,
+    view,
+  });
 
   const focusListColumn = useCallback(
     (columnId: string, options?: { behavior?: ScrollBehavior }) => {
@@ -10143,7 +4074,7 @@ export default function App() {
     requestAnimationFrame(() => {
       const targetEl =
         dest.type === "column"
-          ? columnRefs.current.get(dest.key) || null
+          ? getColumnElement(dest.key)
           : upcomingButtonRef.current;
       if (!targetEl) return;
 
@@ -10544,12 +4475,6 @@ export default function App() {
     list.sort(compareWalletBountyTasks);
     return list;
   }, [compareWalletBountyTasks, tasks]);
-
-  const walletBountiesVisibleTasks = useMemo(() => {
-    if (walletBountiesTab === "funded") return fundedBountyTasks;
-    if (walletBountiesTab === "pinned") return pinnedBountyTasks;
-    return openBountyTasks;
-  }, [fundedBountyTasks, openBountyTasks, pinnedBountyTasks, walletBountiesTab]);
 
   const itemsByColumn = useMemo(() => {
     if (!currentBoard || !isListLikeBoard(currentBoard)) return new Map<string, Task[]>();
@@ -11552,6 +5477,38 @@ export default function App() {
     });
     return groups;
   }, [upcomingDayMap]);
+
+  // ── Virtualized upcoming list (Item #11) ──────────────────────────────────
+  // The grouped upcoming view is the only surface that grows linearly with
+  // total task/event count across days, so it's the highest-leverage place to
+  // virtualize. We flatten {group → [header, ...events, ...tasks]} into a
+  // single row array (in `lib/upcomingRows.ts`, so the logic is unit-testable
+  // independent of React/jsdom plumbing), then drive a `react-virtual` list
+  // over it. Day headers are small (~32px), cards are variable (~120px
+  // estimate, refined by ResizeObserver via `measureElement`). Scroll parent
+  // is the existing `.app-content` container (`appContentRef`).
+  const upcomingFlatRows = useMemo<UpcomingFlatRow[]>(
+    () => flattenUpcomingGroups(upcomingGroups),
+    [upcomingGroups],
+  );
+
+  // Map dateKey → flat-row index of that day's header. Used by
+  // `scrollUpcomingToDate` to call `virtualizer.scrollToIndex(...)` when the
+  // target day is offscreen (and therefore not in the rendered DOM subtree).
+  const upcomingDateKeyToIndex = useMemo(
+    () => buildUpcomingDateKeyIndex(upcomingFlatRows),
+    [upcomingFlatRows],
+  );
+
+  const upcomingVirtualizer = useVirtualizer({
+    count: upcomingFlatRows.length,
+    getScrollElement: () => appContentRef.current,
+    estimateSize: (index) => {
+      const row = upcomingFlatRows[index];
+      return row?.kind === "day-header" ? 32 : 120;
+    },
+    overscan: 8,
+  });
   const {
     calendarAnchor: upcomingListAnchor,
     calendarMonthLabel: upcomingListMonthLabel,
@@ -11618,6 +5575,16 @@ export default function App() {
     if (!list || !scrollContainer) return false;
     const targetKey = resolveUpcomingTargetDateKey(dateKey);
     if (!targetKey) return false;
+
+    // Grouped view is virtualized: target day's header may be outside the
+    // rendered DOM range, so `querySelector` would miss it. Use the
+    // virtualizer's scrollToIndex with the precomputed dateKey→index map.
+    const virtualIndex = upcomingDateKeyToIndex.get(targetKey);
+    if (typeof virtualIndex === "number") {
+      upcomingVirtualizer.scrollToIndex(virtualIndex, { align: "start", behavior });
+      return true;
+    }
+
     const selector = `[data-upcoming-date="${targetKey}"]`;
     const target = list.querySelector(selector) as HTMLElement | null;
     const fallback = list.firstElementChild as HTMLElement | null;
@@ -11630,7 +5597,7 @@ export default function App() {
       scrollContainer.scrollTo({ top: offset, behavior });
     });
     return true;
-  }, [resolveUpcomingTargetDateKey]);
+  }, [resolveUpcomingTargetDateKey, upcomingDateKeyToIndex, upcomingVirtualizer]);
   const scrollUpcomingToToday = useCallback((behavior: ScrollBehavior = "smooth") => {
     const todayKey = isoDatePart(new Date().toISOString());
     return scrollUpcomingToDate(todayKey, behavior);
@@ -11729,6 +5696,7 @@ export default function App() {
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}
                             selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
+          syncPending={pendingNostrTaskIds.has(t.id)}
           task={t}
           meta={locationLabel}
           trailing={revealAction}
@@ -11803,6 +5771,7 @@ export default function App() {
 	      <div key={ev.id} className="space-y-2">
 	        <EventCard
 	          event={ev}
+	          syncPending={pendingNostrCalendarEventIds.has(ev.id)}
 	          showDate={false}
 	          meta={meta}
 	          trailing={revealAction}
@@ -11816,7 +5785,7 @@ export default function App() {
 	        />
 	      </div>
 	    );
-	  }, [boardMap, handleDragEnd, handleOpenEventDocument, setCalendarEvents, setEditing, settings.weekStart]);
+	  }, [boardMap, handleDragEnd, handleOpenEventDocument, isSelectionMode, pendingNostrCalendarEventIds, selectedItemIds, setCalendarEvents, setEditing, settings.weekStart, toggleItemSelection]);
 
 	  useEffect(() => {
 	    if (activePage !== "upcoming") {
@@ -11861,326 +5830,25 @@ export default function App() {
     [boards, editing]
   );
 
-  const applyCalendarRsvpEvent = useCallback(async (ev: NostrEvent) => {
-    if (!ev?.content || ev.kind !== TASKIFY_CALENDAR_RSVP_KIND) return;
-    const ctx = activeEventRsvpContextRef.current;
-    if (!ctx) return;
-    const tokenMap = activeEventInviteTokensRef.current ?? {};
-    const attendeePubkey = (ev.pubkey || "").toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(attendeePubkey)) return;
-    try {
-      const raw = await decryptCalendarRsvpPayload(ev.content, ctx.boardSkHex, ev.pubkey);
-      const payload = parseCalendarRsvpPayload(raw);
-      if (!payload || payload.eventId !== ctx.eventId) return;
-      const expectedToken = tokenMap[attendeePubkey];
-      const boardToken = deriveBoardRsvpToken(ctx.boardNostrId, attendeePubkey);
-      const tokenValues = Object.values(tokenMap);
-      const tokenMatches =
-        payload.inviteToken === boardToken
-        || (!!expectedToken && payload.inviteToken === expectedToken)
-        || (tokenValues.length > 0 && tokenValues.includes(payload.inviteToken));
-      if (!tokenMatches) return;
-      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-      const next: CalendarRsvpEnvelope = {
-        eventId: payload.eventId,
-        authorPubkey: attendeePubkey,
-        createdAt,
-        status: payload.status,
-        ...(payload.fb ? { fb: payload.fb } : {}),
-        inviteToken: payload.inviteToken,
-      };
-      const existing = activeEventRsvpMapRef.current.get(next.authorPubkey);
-      if (existing && existing.createdAt > next.createdAt) return;
-      activeEventRsvpMapRef.current.set(next.authorPubkey, next);
-      setActiveEventRsvps(
-        Array.from(activeEventRsvpMapRef.current.values()).sort((a, b) => b.createdAt - a.createdAt),
-      );
-    } catch (err) {
-      console.warn("Failed to decrypt RSVP", err);
-    }
-  }, [setActiveEventRsvps]);
-
-  const applyExternalCalendarRsvpEvent = useCallback(async (ev: NostrEvent) => {
-    if (!ev?.content || ev.kind !== TASKIFY_CALENDAR_RSVP_KIND) return;
-    if (!nostrSkHex || !nostrPK) return;
-    const attendeePubkey = (ev.pubkey || "").toLowerCase();
-    if (attendeePubkey !== nostrPK) return;
-    const canonicalAddr = tagValue(ev, "a");
-    if (!canonicalAddr) return;
-    const target = calendarEventsRef.current.find(
-      (event) => event.external && event.canonicalAddress === canonicalAddr,
-    );
-    if (!target || !target.boardPubkey) return;
-    try {
-      const raw = await decryptCalendarRsvpPayloadForAttendee(ev.content, nostrSkHex, target.boardPubkey);
-      const payload = parseCalendarRsvpPayload(raw);
-      if (!payload || payload.eventId !== target.id) return;
-      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-      setCalendarEvents((prev) => {
-        const idx = prev.findIndex((event) => event.external && event.canonicalAddress === canonicalAddr);
-        if (idx < 0) return prev;
-        const existing = prev[idx];
-        if (existing.rsvpCreatedAt && existing.rsvpCreatedAt > createdAt) return prev;
-        const updated: CalendarEvent = {
-          ...existing,
-          rsvpStatus: payload.status,
-          rsvpCreatedAt: createdAt,
-          ...(payload.fb ? { rsvpFb: payload.fb } : { rsvpFb: undefined }),
-          ...(payload.inviteToken && !existing.inviteToken ? { inviteToken: payload.inviteToken } : {}),
-        };
-        const copy = prev.slice();
-        copy[idx] = updated;
-        return copy;
-      });
-    } catch (err) {
-      console.warn("Failed to decrypt external RSVP", err);
-    }
-  }, [nostrPK, nostrSkHex, setCalendarEvents, tagValue]);
-
-  useEffect(() => {
-    if (activeEventRsvpSubCloserRef.current) {
-      try {
-        activeEventRsvpSubCloserRef.current();
-      } catch {}
-      activeEventRsvpSubCloserRef.current = null;
-    }
-    activeEventRsvpMapRef.current = new Map();
-    activeEventInviteTokensRef.current = null;
-    activeEventInviteTokensVersionRef.current = "";
-    activeEventRsvpContextRef.current = null;
-    setActiveEventRsvps([]);
-    setActiveEventRsvpCoord(null);
-    setActiveEventRsvpRelays([]);
-
-    if (!editing || editing.type !== "event") return;
-    const event = editing.event;
-    const board = boards.find((b) => b.id === event.boardId);
-    const relayCandidates = [
-      ...(board?.nostr?.relays?.length ? board.nostr.relays : []),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
-
-    if (board?.nostr?.boardId && relays.length) {
-      let cancelled = false;
-      const boardNostrId = board.nostr.boardId;
-
-      (async () => {
-        try {
-          const boardKeys = await deriveBoardNostrKeys(board.nostr!.boardId);
-          const coord = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
-          if (cancelled) return;
-          activeEventRsvpContextRef.current = { eventId: event.id, boardNostrId, boardSkHex: boardKeys.skHex };
-          setActiveEventRsvpCoord(coord);
-          setActiveEventRsvpRelays(relays);
-          activeEventInviteTokensRef.current = event.inviteTokens ?? null;
-          activeEventInviteTokensVersionRef.current = event.inviteTokens
-            ? JSON.stringify(Object.keys(event.inviteTokens).sort().map((key) => [key, event.inviteTokens![key]]))
-            : "";
-
-          const subscription = pool.subscribeMany(
-            relays,
-            { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [coord] },
-            {
-              onevent: (ev) => {
-                if (cancelled) return;
-                void applyCalendarRsvpEvent(ev as NostrEvent);
-              },
-            },
-          );
-          activeEventRsvpSubCloserRef.current = () => {
-            try {
-              subscription.close("taskify-rsvps");
-            } catch {}
-          };
-
-          try {
-            if (typeof (pool as any).list === "function") {
-              const events = await (pool as any).list(relays, [
-                { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [coord] },
-              ]);
-              if (!cancelled && Array.isArray(events)) {
-                events.forEach((evt: any) => void applyCalendarRsvpEvent(evt as NostrEvent));
-              }
-            }
-          } catch (err) {
-            console.warn("RSVP fetch failed", err);
-          }
-        } catch (err) {
-          console.warn("RSVP subscription failed", err);
-        }
-      })();
-
-      return () => {
-        cancelled = true;
-        if (activeEventRsvpSubCloserRef.current) {
-          try {
-            activeEventRsvpSubCloserRef.current();
-          } catch {}
-          activeEventRsvpSubCloserRef.current = null;
-        }
-      };
-    }
-
-    if (event.canonicalAddress && event.inviteToken) {
-      setActiveEventRsvpCoord(event.canonicalAddress);
-      setActiveEventRsvpRelays(event.inviteRelays ?? []);
-      if (event.external && nostrPK && event.rsvpStatus) {
-        const createdAt = event.rsvpCreatedAt ?? 0;
-        const next: CalendarRsvpEnvelope = {
-          eventId: event.id,
-          authorPubkey: nostrPK,
-          createdAt,
-          status: event.rsvpStatus,
-          ...(event.rsvpFb ? { fb: event.rsvpFb } : {}),
-          ...(event.inviteToken ? { inviteToken: event.inviteToken } : {}),
-        };
-        activeEventRsvpMapRef.current = new Map([[nostrPK, next]]);
-        setActiveEventRsvps([next]);
-      }
-    }
-  }, [boards, defaultRelays, editing, inboxRelays, nostrPK, pool, applyCalendarRsvpEvent]);
-
-  useEffect(() => {
-    if (externalEventRsvpSubCloserRef.current) {
-      try {
-        externalEventRsvpSubCloserRef.current();
-      } catch {}
-      externalEventRsvpSubCloserRef.current = null;
-    }
-    if (!nostrSkHex || !nostrPK) return;
-
-    const targets = calendarEvents.filter(
-      (event) => event.external && !!event.canonicalAddress && !!event.boardPubkey,
-    );
-    if (!targets.length) return;
-
-    const canonicalAddrs = new Set<string>();
-    const relaySet = new Set<string>();
-    targets.forEach((event) => {
-      if (event.canonicalAddress) canonicalAddrs.add(event.canonicalAddress);
-      (event.inviteRelays ?? []).forEach((relay) => relaySet.add(relay));
-    });
-    if (!canonicalAddrs.size) return;
-
-    const relayCandidates = [
-      ...Array.from(relaySet),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
-    if (!relays.length) return;
-
-    let cancelled = false;
-    const filter: any = { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": Array.from(canonicalAddrs) };
-    if (nostrPK) filter.authors = [nostrPK];
-
-    const subscription = pool.subscribeMany(
-      relays,
-      filter,
-      {
-        onevent: (ev) => {
-          if (cancelled) return;
-          void applyExternalCalendarRsvpEvent(ev as NostrEvent);
-        },
-      },
-    );
-    externalEventRsvpSubCloserRef.current = () => {
-      try {
-        subscription.close("taskify-external-rsvps");
-      } catch {}
-    };
-
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(relays, [filter]);
-          if (!cancelled && Array.isArray(events)) {
-            events.forEach((evt: any) => void applyExternalCalendarRsvpEvent(evt as NostrEvent));
-          }
-        }
-      } catch (err) {
-        console.warn("External RSVP fetch failed", err);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (externalEventRsvpSubCloserRef.current) {
-        try {
-          externalEventRsvpSubCloserRef.current();
-        } catch {}
-        externalEventRsvpSubCloserRef.current = null;
-      }
-    };
-  }, [
-    applyExternalCalendarRsvpEvent,
+  const {
+    activeEventRsvpCoord,
+    activeEventRsvpRelays,
+    activeEventRsvps,
+    recordActiveEventRsvp,
+  } = useCalendarEventManagement({
+    boards,
     calendarEvents,
+    calendarEventsRef,
     defaultRelays,
+    editing,
     inboxRelays,
     nostrPK,
     nostrSkHex,
     pool,
-  ]);
-
-  useEffect(() => {
-    if (!editing || editing.type !== "event") return;
-    if (!editing.event.external) return;
-    if (!nostrPK) return;
-    const latest = calendarEventsRef.current.find(
-      (event) =>
-        event.external &&
-        event.id === editing.event.id &&
-        event.canonicalAddress === editing.event.canonicalAddress,
-    );
-    if (!latest?.rsvpStatus) {
-      activeEventRsvpMapRef.current = new Map();
-      setActiveEventRsvps([]);
-      return;
-    }
-    const createdAt = latest.rsvpCreatedAt ?? 0;
-    const next: CalendarRsvpEnvelope = {
-      eventId: latest.id,
-      authorPubkey: nostrPK,
-      createdAt,
-      status: latest.rsvpStatus,
-      ...(latest.rsvpFb ? { fb: latest.rsvpFb } : {}),
-      ...(latest.inviteToken ? { inviteToken: latest.inviteToken } : {}),
-    };
-    activeEventRsvpMapRef.current = new Map([[nostrPK, next]]);
-    setActiveEventRsvps([next]);
-  }, [calendarEvents, editing, nostrPK]);
-
-  useEffect(() => {
-    if (!editing || editing.type !== "event") return;
-    const eventId = editing.event.id;
-    const latest = calendarEventsRef.current.find((ev) => ev.id === eventId) ?? null;
-    const inviteTokens = latest?.inviteTokens ?? editing.event.inviteTokens ?? null;
-    const tokenVersion = inviteTokens
-      ? JSON.stringify(Object.keys(inviteTokens).sort().map((key) => [key, inviteTokens[key]]))
-      : "";
-    if (tokenVersion === activeEventInviteTokensVersionRef.current) return;
-    activeEventInviteTokensVersionRef.current = tokenVersion;
-    activeEventInviteTokensRef.current = inviteTokens;
-    if (!activeEventRsvpCoord || !activeEventRsvpRelays.length) return;
-    (async () => {
-      try {
-        if (typeof (pool as any).list === "function") {
-          const events = await (pool as any).list(activeEventRsvpRelays, [
-            { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [activeEventRsvpCoord] },
-          ]);
-          if (Array.isArray(events)) {
-            events.forEach((evt: any) => void applyCalendarRsvpEvent(evt as NostrEvent));
-          }
-        }
-      } catch (err) {
-        console.warn("RSVP refresh failed", err);
-      }
-    })();
-  }, [activeEventRsvpCoord, activeEventRsvpRelays, applyCalendarRsvpEvent, calendarEvents, editing, pool]);
+    setCalendarEvents,
+    tagValue,
+    deriveBoardNostrKeys,
+  });
 
   const reminderSystemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
   const reminderSyncItems = useMemo(() => {
@@ -12366,6 +6034,18 @@ export default function App() {
     }
     return state;
   }, []);
+  function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
+    if (!taskId || !board?.nostr?.boardId) return null;
+    const bTag = boardTag(board.nostr.boardId);
+    const optimisticAt = Math.floor(Date.now() / 1000);
+    if (!nostrIdxRef.current.taskClock.has(bTag)) {
+      nostrIdxRef.current.taskClock.set(bTag, new Map());
+    }
+    nostrIdxRef.current.taskClock.get(bTag)!.set(taskId, optimisticAt);
+    pendingNostrTasksRef.current.add(`${bTag}::${taskId}`);
+    markNostrTaskSyncPending(taskId);
+    return optimisticAt;
+  }
   async function publishBoardMetadata(board: Board) {
     if (!board.nostr?.boardId) return;
     const relays = getBoardRelays(board);
@@ -12452,17 +6132,12 @@ export default function App() {
     const pendingKey = `${bTag}::${t.id}`;
     // Protect against stale relay events re-creating the task while the
     // deletion publish is in-flight.
-    const optimisticAt = Math.floor(Date.now() / 1000);
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, optimisticAt);
+    const optimisticAt = markTaskRelayPublishPending(t.id, b) ?? Math.floor(Date.now() / 1000);
     // Persist a tombstone NOW — before any await — so a reload between this
     // point and a successful relay publish still keeps the deletion sticky.
     // Without this, a failed/in-flight publish followed by reload would let
     // the original CREATE event from the relay re-add the task on next sync.
     recordTaskTombstone(bTag, t.id, optimisticAt);
-    pendingNostrTasksRef.current.add(pendingKey);
     const boardKeys = await deriveBoardNostrKeys(boardId);
     try {
       await publishBoardMetadata(b);
@@ -12502,6 +6177,7 @@ export default function App() {
       recordTaskTombstone(bTag, t.id, createdAt);
     } finally {
       pendingNostrTasksRef.current.delete(pendingKey);
+      clearOptimisticNostrTaskSyncPending(t.id);
     }
   }
   // Ensure all images and documents for a shared board are stored remotely (encrypted).
@@ -12580,13 +6256,8 @@ export default function App() {
     // Protect optimistic state: advance the task clock and mark pending BEFORE
     // any async work so relay events arriving while the publish is in-flight
     // are rejected by the clock check in applyTaskEvent / flushRelayBatch.
-    const optimisticAt = Math.floor(Date.now() / 1000);
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, optimisticAt);
+    const optimisticAt = markTaskRelayPublishPending(t.id, b) ?? Math.floor(Date.now() / 1000);
     t._nostrAt = optimisticAt;
-    pendingNostrTasksRef.current.add(pendingKey);
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const status = t.completed ? "done" : "open";
     const colTag = (b.kind === "week") ? "day" : (t.columnId || "");
@@ -12646,6 +6317,7 @@ export default function App() {
       nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
     } finally {
       pendingNostrTasksRef.current.delete(pendingKey);
+      clearOptimisticNostrTaskSyncPending(t.id);
     }
   }
 
@@ -12878,6 +6550,7 @@ export default function App() {
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const bTag = boardTag(boardId);
     const pendingKey = `${bTag}::${event.id}`;
+    markNostrCalendarEventSyncPending(event.id);
     pendingNostrCalendarRef.current.add(pendingKey);
     try {
       await publishBoardMetadata(b);
@@ -12919,6 +6592,7 @@ export default function App() {
       nostrIdxRef.current.calendarClock.get(bTag)!.set(eventForPublish.id, createdAt);
     } finally {
       pendingNostrCalendarRef.current.delete(pendingKey);
+      clearOptimisticNostrCalendarEventSyncPending(event.id);
     }
   }
   publishCalendarEventDeletedRef.current = publishCalendarEventDeleted;
@@ -12943,6 +6617,7 @@ export default function App() {
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const bTag = boardTag(boardId);
     const pendingKey = `${bTag}::${event.id}`;
+    markNostrCalendarEventSyncPending(event.id);
     pendingNostrCalendarRef.current.add(pendingKey);
     try {
       if (!options?.skipBoardMetadata) {
@@ -12992,6 +6667,7 @@ export default function App() {
       nostrIdxRef.current.calendarClock.get(bTag)!.set(updatedEvent.id, createdAt);
     } finally {
       pendingNostrCalendarRef.current.delete(pendingKey);
+      clearOptimisticNostrCalendarEventSyncPending(event.id);
     }
   }
 
@@ -13414,9 +7090,6 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
-    // Record this task as seen during sync for post-EOSE stale-task verification.
-    if (!seenBoardTasksRef.current.has(bTag)) seenBoardTasksRef.current.set(bTag, new Set());
-    seenBoardTasksRef.current.get(bTag)!.add(taskId);
     // Advance the in-memory cursor for this board so we know the high-water mark.
     // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
     // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
@@ -13567,6 +7240,10 @@ export default function App() {
     // here represents a genuinely newer state — applying them in arrival order
     // (newest clock wins) produces the correct final state without flicker.
     const liveUpdater = (prev: Task[]) => {
+      const currentClock = nostrIdxRef.current.taskClock.get(bTag)?.get(taskId) || 0;
+      const stillPending = pendingNostrTasksRef.current.has(pendingKey);
+      if (ev.created_at < currentClock) return prev;
+      if (ev.created_at === currentClock && stillPending) return prev;
       return ((prev: Task[]) => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
@@ -13588,7 +7265,7 @@ export default function App() {
         // Different ids: pick the newer one
         if (normalizedOld.id !== normalizedIncoming.id) return incNewer ? normalizedIncoming : normalizedOld;
 
-        const next = { ...normalizedOld } as Task["bounty"];
+        const next = { ...normalizedOld } as NonNullable<Task["bounty"]>;
         // accept token/content updates if incoming is newer
         if (incNewer) {
           if (typeof normalizedIncoming.amount === 'number') next.amount = normalizedIncoming.amount;
@@ -14041,7 +7718,7 @@ export default function App() {
       dedupeRecurringInstances,
       isFrequentRecurrence,
       nextOccurrence,
-      startOfWeek,
+      startOfWeek: startOfWeek as (date: Date, weekStart: number) => Date,
       recurringInstanceId,
       isoDatePart,
       taskDateKey,
@@ -14486,8 +8163,8 @@ export default function App() {
     if (type === "weekly") {
       const rawDays = Array.isArray((value as any).days) ? (value as any).days : [];
       const days = rawDays
-        .map((entry) => (typeof entry === "number" && Number.isInteger(entry) ? entry : Number.NaN))
-        .filter((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 6) as Weekday[];
+        .map((entry: unknown) => (typeof entry === "number" && Number.isInteger(entry) ? entry : Number.NaN))
+        .filter((entry: number) => Number.isInteger(entry) && entry >= 0 && entry <= 6) as Weekday[];
       if (!days.length) return undefined;
       const untilISO = normalizeIsoTimestamp((value as any).untilISO);
       return { type: "weekly", days: Array.from(new Set(days)), ...(untilISO ? { untilISO } : {}) };
@@ -14858,7 +8535,18 @@ export default function App() {
     for (const ft of finalTasks) {
       if (!ft.title?.trim()) continue;
       const nextOrder = nextOrderForBoard(targetBoardId, [...tasks, ...newTasks], settings.newTaskPosition);
-      const hasExplicitVoiceDue = typeof ft.dueISO === "string" && !!ft.dueISO.trim();
+      const rawVoiceDue = typeof ft.dueISO === "string" ? ft.dueISO.trim() : "";
+      const hasExplicitVoiceDue = !!rawVoiceDue;
+      // Worker emits "YYYY-MM-DD" when the user gave a date but no clock
+      // time, and a full ISO datetime when they did. Detect via the date-only
+      // shape so we can suppress the time portion in the saved task.
+      const dateOnlyParts = parseDateKey(rawVoiceDue);
+      const hasExplicitVoiceTime = hasExplicitVoiceDue && !dateOnlyParts;
+      const normalizedVoiceDue = !hasExplicitVoiceDue
+        ? undefined
+        : dateOnlyParts
+          ? new Date(dateOnlyParts.year, dateOnlyParts.month - 1, dateOnlyParts.day).toISOString()
+          : new Date(rawVoiceDue).toISOString();
       const task: Task = {
         id: crypto.randomUUID(),
         boardId: ft.boardId ?? targetBoardId,
@@ -14866,9 +8554,9 @@ export default function App() {
         lastEditedBy: nostrPK || undefined,
         title: ft.title.trim(),
         createdAt: Date.now(),
-        dueISO: ft.dueISO ?? dueISOBase,
-        dueDateEnabled: !!(ft.dueISO || currentBoard.kind === "week"),
-        dueTimeEnabled: hasExplicitVoiceDue,
+        dueISO: normalizedVoiceDue ?? dueISOBase,
+        dueDateEnabled: !!(normalizedVoiceDue || currentBoard.kind === "week"),
+        dueTimeEnabled: hasExplicitVoiceTime,
         completed: false,
         order: nextOrder,
       };
@@ -15212,7 +8900,7 @@ export default function App() {
                 completed: !!subtask.completed,
               };
             })
-            .filter((subtask): subtask is Subtask => !!subtask)
+            .filter((subtask): subtask is NonNullable<typeof subtask> => !!subtask)
         : undefined;
       const recurrence =
         payload.recurrence && typeof payload.recurrence === "object" && typeof payload.recurrence.type === "string"
@@ -15457,7 +9145,7 @@ export default function App() {
             memoryUpdate = {
               entryId: working.scriptureMemoryId,
               completedAt: now,
-              stageBefore: typeof working.scriptureMemoryStage === "number" ? working.scriptureMemoryStage : working.stage ?? 0,
+              stageBefore: typeof working.scriptureMemoryStage === "number" ? working.scriptureMemoryStage : 0,
             };
           }
           toPublish.push(done);
@@ -15558,22 +9246,30 @@ export default function App() {
       }
       return updated;
     });
-    if (inboxAction && inboxAction.action === "accept") {
-      if (inboxAction.item.type === "board") {
+    // Snapshot inboxAction into a local const so TS retains the discriminated-
+    // union narrowing through the subsequent .item.type checks. The cast is
+    // safe at runtime: the let was annotated with this exact shape at
+    // declaration, but TS narrows it to `never` here because the assignment
+    // happens inside a setTasks callback and TS's CFA doesn't trust the
+    // mutation across the closure.
+    const acceptedInbox = inboxAction as { item: InboxItem; action: "accept" | "dismiss" | "decline" | "maybe" } | null;
+    if (acceptedInbox && acceptedInbox.action === "accept") {
+      const item = acceptedInbox.item;
+      if (item.type === "board") {
         addSharedBoardFromInbox({
-          boardId: inboxAction.item.boardId,
-          boardName: inboxAction.item.boardName,
-          relays: inboxAction.item.relays,
+          boardId: item.boardId,
+          boardName: item.boardName,
+          relays: item.relays,
         });
-      } else if (inboxAction.item.type === "contact") {
-        const added = upsertSharedContact(inboxAction.item.contact);
+      } else if (item.type === "contact") {
+        const added = upsertSharedContact(item.contact);
         if (added) {
           showToast("Contact added to your list");
         } else {
           showToast("Unable to add contact");
         }
-      } else if (inboxAction.item.type === "task") {
-        const added = addSharedTaskFromInbox(inboxAction.item.task, inboxAction.item.sender);
+      } else if (item.type === "task") {
+        const added = addSharedTaskFromInbox(item.task, item.sender);
         if (added) {
           showToast("Task added to your board");
         } else {
@@ -15581,18 +9277,25 @@ export default function App() {
         }
       }
     }
-    if (assignmentResponse) {
-      void sendTaskAssignmentResponse(assignmentResponse.item, assignmentResponse.status).catch((err) => {
+    // Snapshot the let (assigned inside setTasks callback) so TS retains the
+    // union narrowing after the truthiness check.
+    const finalAssignmentResponse = assignmentResponse as { item: Extract<InboxItem, { type: "task" }>; status: TaskAssigneeStatus } | null;
+    if (finalAssignmentResponse) {
+      void sendTaskAssignmentResponse(finalAssignmentResponse.item, finalAssignmentResponse.status).catch((err) => {
         console.warn("Failed to send task assignment response", err);
       });
-      if (assignmentResponse.status === "tentative") {
+      if (finalAssignmentResponse.status === "tentative") {
         showToast("Responded: maybe");
-      } else if (assignmentResponse.status === "declined") {
+      } else if (finalAssignmentResponse.status === "declined") {
         showToast("Responded: declined");
       }
     }
-    if (scheduledUpdate && memoryUpdate) {
-      memoryUpdate = { ...memoryUpdate, nextScheduled: scheduledUpdate };
+    const finalScheduledUpdate = scheduledUpdate;
+    // Cast: see the same setState-callback narrowing footgun as inboxAction
+    // above. The let was annotated `ScriptureMemoryUpdate | null` at decl.
+    const memoryUpdateSnapshot = memoryUpdate as ScriptureMemoryUpdate | null;
+    if (finalScheduledUpdate && memoryUpdateSnapshot) {
+      memoryUpdate = { ...memoryUpdateSnapshot, nextScheduled: finalScheduledUpdate };
     }
     if (memoryUpdate && !options?.skipScriptureMemoryUpdate) {
       scriptureLastReviewRef.current = memoryUpdate.completedAt;
@@ -16055,7 +9758,7 @@ export default function App() {
       if (res.crossMint) {
         alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
       }
-      const redeemedAmount = res.proofs.reduce((sum, proof) => sum + (proof?.amount || 0), 0);
+      const redeemedAmount = res.proofs.reduce((sum, proof) => sum + (Number((proof as any)?.amount || 0) || 0), 0);
       appendWalletHistoryEntry({
         id: `redeem-bounty-${Date.now()}`,
         summary: `Redeemed bounty • ${redeemedAmount} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
@@ -16641,23 +10344,14 @@ export default function App() {
       });
       return changed ? next : prev;
     });
-    if (activeEventRsvpCoord === canonicalAddr) {
-      const next: CalendarRsvpEnvelope = {
-        eventId,
-        authorPubkey: nostrPK,
-        createdAt,
-        status,
-        ...(options?.fb ? { fb: options.fb } : {}),
-        inviteToken,
-      };
-      const existing = activeEventRsvpMapRef.current.get(next.authorPubkey);
-      if (!existing || next.createdAt >= existing.createdAt) {
-        activeEventRsvpMapRef.current.set(next.authorPubkey, next);
-        setActiveEventRsvps(
-          Array.from(activeEventRsvpMapRef.current.values()).sort((a, b) => b.createdAt - a.createdAt),
-        );
-      }
-    }
+    recordActiveEventRsvp(canonicalAddr, {
+      eventId,
+      authorPubkey: nostrPK,
+      createdAt,
+      status,
+      ...(options?.fb ? { fb: options.fb } : {}),
+      ...(typeof inviteToken === "string" ? { inviteToken } : {}),
+    });
   }
 
   async function handleCalendarInviteRsvp(invite: CalendarInvite, status: CalendarRsvpStatus): Promise<void> {
@@ -16676,7 +10370,7 @@ export default function App() {
           try {
             const keys = await deriveBoardNostrKeys(board.nostr!.boardId);
             if (keys.pk === canonicalParsed.pubkey) {
-              boardNostrId = board.nostr.boardId;
+              boardNostrId = board.nostr!.boardId;
               break;
             }
           } catch {}
@@ -17399,12 +11093,23 @@ export default function App() {
       | { type: "list"; columnId: string },
     beforeId?: string
   ) {
+    if (beforeId && beforeId === id) return;
+    const pendingTask = tasksRef.current.find((task) => task.id === id);
+    if (pendingTask) {
+      const pendingBoard =
+        target.type === "day"
+          ? boardsRef.current.find((board) => board.id === pendingTask.boardId)
+          : (() => {
+              const source = listColumnSources.get(target.columnId);
+              return source ? boardsRef.current.find((board) => board.id === source.boardId) : undefined;
+            })();
+      markTaskRelayPublishPending(id, pendingBoard);
+    }
     setTasks(prev => {
       const arr = [...prev];
       const fromIdx = arr.findIndex(t => t.id === id);
       if (fromIdx < 0) return prev;
       const task = arr[fromIdx];
-      if (beforeId && beforeId === task.id) return prev;
       const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
 
       const updated: Task = {
@@ -17661,7 +11366,7 @@ export default function App() {
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
+	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, moveTaskToBoard, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
 
   const moveSelectedTasksToColumn = useCallback((boardId: string, columnId: string) => {
     if (!selectedTasks.length && !selectedEvents.length) return;
@@ -17703,7 +11408,7 @@ export default function App() {
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
+	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, maybePublishTask, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
 
   const selectionMoveTargets = useMemo(() => (
     boards.filter((board) => board.kind !== "bible" && !board.archived && !board.hidden).map((board) => ({
@@ -17715,484 +11420,30 @@ export default function App() {
     }))
   ), [boards]);
 
-  // Subscribe to Nostr for all shared boards
-  const nostrBoardsKey = useMemo(() => {
-    const items = boards
-      .filter(b => b.nostr?.boardId)
-      .map(b => ({ id: boardTag(b.nostr!.boardId), relays: getBoardRelays(b).join(",") }))
-      .sort((a,b) => (a.id + a.relays).localeCompare(b.id + b.relays));
-    return JSON.stringify(items);
-  }, [boards, getBoardRelays]);
-
-  useEffect(() => {
-    if (!currentBoard?.nostr?.boardId) return;
-    setNostrRefresh((n) => n + 1);
-  }, [currentBoard?.nostr?.boardId]);
-
-  useEffect(() => {
-    let parsed: Array<{id:string; relays:string}> = [];
-    try { parsed = JSON.parse(nostrBoardsKey || "[]"); } catch {}
-    const unsubs: Array<() => void> = [];
-    const syncTimeoutByBoard = new Map<string, number>();
-    const clearSyncTimeout = (bTag: string) => {
-      const timeoutId = syncTimeoutByBoard.get(bTag);
-      if (timeoutId == null) return;
-      window.clearTimeout(timeoutId);
-      syncTimeoutByBoard.delete(bTag);
-    };
-    // Mark all boards as syncing (non-blocking — IDB tasks render immediately).
-    setPendingNostrInitialSyncByBoardTag((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const item of parsed) {
-        if (next[item.id]) continue;
-        next[item.id] = true;
-        changed = true;
-      }
-      return changed ? next : prev;
-    });
-
-    // Clock-protected merge: apply a relay's batch into current task state.
-    // Only updates tasks where the relay has newer data than what's already in state.
-    // The bTagClock fallback acts as an in-session tombstone: when a task is locally
-    // deleted (or being published with a fresh optimistic clock), `merged` no longer
-    // has a `_nostrAt` to compare against, so without the clock fallback a stale
-    // CREATE event from a slow relay would re-add the task.
-    const flushRelayBatch = (bTag: string, relayBatch: Map<string, RelayBatchEntry>) => {
-      if (!relayBatch.size) return;
-      const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
-      setTasks(prev => {
-        const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
-        for (const [key, entry] of relayBatch) {
-          const taskId = key.split('::')[1];
-          const incomingNostrAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? bTagClock?.get(taskId) ?? 0;
-          const existingTask = merged.get(key) as Task | undefined;
-          const existingNostrAt = Math.max(
-            existingTask?._nostrAt ?? 0,
-            bTagClock?.get(taskId) ?? 0,
-          );
-          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay/local edit has newer data
-          if ('_deleted' in entry) merged.delete(key);
-          else merged.set(key, entry as Task);
-        }
-        return dedupeRecurringInstances(Array.from(merged.values()));
-      });
-    };
-
-    // After EOSE, verify local tasks that the relay didn't mention. These may
-    // have been deleted while this client was offline or before a backup was taken.
-    // A targeted fetch by task ID (no `since`) lets the relay confirm whether
-    // each task still exists. Tasks the relay doesn't know about are removed.
-    const verifyUnseenTasks = (bTag: string, boardRelays: string[]) => {
-      const seenIds = seenBoardTasksRef.current.get(bTag) ?? new Set<string>();
-      const board = boardsRef.current.find(
-        (b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag
-      );
-      if (!board) { seenBoardTasksRef.current.delete(bTag); return; }
-      const boardId = board.id;
-      // Only verify tasks that came from the relay previously (_nostrAt > 0).
-      // Local-only tasks (no _nostrAt) are not expected to be on the relay.
-      //
-      // Two extra guards prevent newly-created/edited tasks from being deleted
-      // during the relay's verification probe:
-      //   1. Skip tasks currently mid-publish — relay has not received the event yet.
-      //   2. Skip tasks whose _nostrAt is very recent (optimistic stamp from
-      //      maybePublishTask). The stamp may have been set seconds ago and the
-      //      relay might not have propagated the event to the verify subscription
-      //      yet, especially during rapid sequential adds.
-      const VERIFY_RECENT_GRACE_SECS = 60;
-      const nowSecs = Math.floor(Date.now() / 1000);
-      const unseenIds = tasksRef.current
-        .filter((t) => {
-          if (t.boardId !== boardId) return false;
-          if (typeof t._nostrAt !== "number" || t._nostrAt <= 0) return false;
-          if (seenIds.has(t.id)) return false;
-          if (pendingNostrTasksRef.current.has(`${bTag}::${t.id}`)) return false;
-          if (nowSecs - t._nostrAt < VERIFY_RECENT_GRACE_SECS) return false;
-          return true;
-        })
-        .map((t) => t.id);
-      seenBoardTasksRef.current.delete(bTag);
-      if (!unseenIds.length) return;
-      const verifySeen = new Set<string>();
-      const verifyUnsub = pool.subscribe(boardRelays, [
-        { kinds: [30301], "#b": [bTag], "#d": unseenIds },
-      ], (ev, evRelay) => {
-        const tId = tagValue(ev, "d");
-        if (tId) verifySeen.add(tId);
-        (ev as any).__relay = evRelay;
-        enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
-      }, () => {
-        verifyUnsub();
-        // Tasks not returned by the relay were deleted or purged — remove locally.
-        const toRemove = unseenIds.filter((id) => !verifySeen.has(id));
-        if (toRemove.length) {
-          const removeSet = new Set(toRemove);
-          setTasks((prev) => {
-            const next = prev.filter(
-              (t) => !(t.boardId === boardId && removeSet.has(t.id))
-            );
-            return next.length === prev.length ? prev : dedupeRecurringInstances(next);
-          });
-        }
-      });
-      // Safety timeout for the verification subscription.
-      setTimeout(() => { try { verifyUnsub(); } catch { /* already closed */ } }, 15000);
-    };
-
-    for (const it of parsed) {
-      const rls = it.relays.split(",").filter(Boolean);
-      if (!rls.length) continue;
-
-      // Register this board's pending relays. applyTaskEvent reads this ref to route
-      // events into per-relay batches instead of the live path.
-      pendingRelaysByBoardRef.current.set(it.id, new Set(rls));
-
-      // Absolute timeout: flush all remaining relay batches for stuck relays.
-      const timeoutId = window.setTimeout(() => {
-        clearSyncTimeout(it.id);
-        const boardBatch = relayBatchRef.current.get(it.id);
-        if (boardBatch?.size) {
-          const combined = new Map<string, RelayBatchEntry>();
-          for (const relayBatch of boardBatch.values()) {
-            for (const [key, entry] of relayBatch) {
-              const existing = combined.get(key);
-              const inAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? 0;
-              const exAt = existing ? ('_deleted' in existing ? existing._nostrAt : (existing as Task)._nostrAt ?? 0) : -1;
-              if (inAt >= exAt) combined.set(key, entry);
-            }
-          }
-          flushRelayBatch(it.id, combined);
-          relayBatchRef.current.delete(it.id);
-        }
-        pendingRelaysByBoardRef.current.delete(it.id);
-        completedNostrInitialSyncRef.current.add(it.id);
-        markNostrBoardInitialSyncComplete(it.id);
-        try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
-        setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-        // Verify tasks the relay didn't mention — they may have been deleted offline.
-        setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
-      }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
-      syncTimeoutByBoard.set(it.id, timeoutId);
-
-      pool.setRelays(rls);
-      ensureMigrationState(it.id);
-
-      const INITIAL_SYNC_FALLBACK_DAYS = 30;
-      const cursor = boardSyncCursorsRef.current[it.id];
-      const sinceFilter = cursor
-        ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
-        : { since: Math.floor(Date.now() / 1000) - INITIAL_SYNC_FALLBACK_DAYS * 24 * 3600 };
-      const filters = [
-        { kinds: [30300, 30301], "#b": [it.id], ...sinceFilter },
-        { kinds: [30300], "#d": [it.id], limit: 1 },
-        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
-      ];
-
-      const unsub = pool.subscribe(rls, filters, (ev, evRelay) => {
-        // Tag the event with the relay URL so applyTaskEvent can route it to the
-        // correct per-relay batch without changing the function signature.
-        (ev as any).__relay = evRelay;
-        if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
-        else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
-        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
-      }, (eoseRelay) => {
-        // NDK fires a single subscription-level EOSE (not per-relay), so eoseRelay
-        // is typically undefined. When undefined, treat it as "all relays done" and
-        // flush every pending relay batch for this board.
-        if (!eoseRelay) {
-          const boardBatch = relayBatchRef.current.get(it.id);
-          if (boardBatch?.size) {
-            const combined = new Map<string, RelayBatchEntry>();
-            for (const [, relayBatch] of boardBatch) {
-              for (const [key, entry] of relayBatch) {
-                const existing = combined.get(key);
-                const inAt = '_deleted' in entry ? (entry as { _nostrAt?: number })._nostrAt ?? 0 : (entry as Task)._nostrAt ?? 0;
-                const exAt = existing ? ('_deleted' in existing ? (existing as { _nostrAt?: number })._nostrAt ?? 0 : (existing as Task)._nostrAt ?? 0) : -1;
-                if (!existing || inAt > exAt) combined.set(key, entry);
-              }
-            }
-            relayBatchRef.current.delete(it.id);
-            (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-              if (combined.size) flushRelayBatch(it.id, combined);
-            });
-          }
-          clearSyncTimeout(it.id);
-          pendingRelaysByBoardRef.current.delete(it.id);
-          completedNostrInitialSyncRef.current.add(it.id);
-          markNostrBoardInitialSyncComplete(it.id);
-          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
-          setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-          // Verify tasks the relay didn't mention — they may have been deleted offline.
-          setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
-          return;
-        }
-
-        // Per-relay EOSE (if NDK ever provides relay URL): merge just that relay's batch.
-        const relayUrl = eoseRelay;
-        pendingRelaysByBoardRef.current.get(it.id)?.delete(relayUrl);
-
-        const boardBatch = relayBatchRef.current.get(it.id);
-        const relayBatch = boardBatch?.get(relayUrl);
-        if (relayBatch?.size) {
-          boardBatch!.delete(relayUrl);
-          (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-            flushRelayBatch(it.id, relayBatch!);
-          });
-        }
-
-        // If all relays done: clear spinner, persist cursor, trigger migration.
-        const pendingRelays = pendingRelaysByBoardRef.current.get(it.id);
-        if (!pendingRelays?.size) {
-          clearSyncTimeout(it.id);
-          pendingRelaysByBoardRef.current.delete(it.id);
-          completedNostrInitialSyncRef.current.add(it.id);
-          markNostrBoardInitialSyncComplete(it.id);
-          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
-          setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-          // Verify tasks the relay didn't mention — they may have been deleted offline.
-          setTimeout(() => verifyUnseenTasks(it.id, rls), 500);
-        }
-      });
-      unsubs.push(unsub);
-    }
-    return () => {
-      unsubs.forEach((u) => u());
-      syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      for (const it of parsed) pendingRelaysByBoardRef.current.delete(it.id);
-    };
-  }, [
-    nostrBoardsKey,
+  useBoardSync({
+    boards,
+    currentBoard,
+    boardsRef,
+    tasksRef,
+    setTasks,
     pool,
+    getBoardRelays,
+    nostrIdxRef,
+    boardSyncCursorsRef,
+    relayBatchRef,
+    pendingRelaysByBoardRef,
+    seenBoardTasksRef,
+    pendingNostrTasksRef,
+    completedNostrInitialSyncRef,
+    setPendingNostrInitialSyncByBoardTag,
+    markNostrBoardInitialSyncComplete,
+    ensureMigrationState,
+    migrateBoardRef,
+    tagValue,
     applyBoardEvent,
     applyTaskEvent,
     applyCalendarEvent,
-    nostrRefresh,
-    ensureMigrationState,
-    migrateBoardRef,
-    enqueueNostrApply,
-    enqueueForBoard,
-    markNostrBoardInitialSyncComplete,
-  ]);
-
-  // horizontal scroller ref to enable iOS momentum scrolling
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const bibleScrollerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const autoCenteredSet = autoCenteredWeekRef.current;
-    const prevActive = activeWeekBoardRef.current;
-
-    if (activePage !== "boards" || view !== "board") {
-      if (prevActive) {
-        autoCenteredSet.delete(prevActive);
-        activeWeekBoardRef.current = null;
-      }
-      return;
-    }
-
-    if (!currentBoardId || currentBoard?.kind !== "week") {
-      if (prevActive) {
-        autoCenteredSet.delete(prevActive);
-        activeWeekBoardRef.current = null;
-      }
-      return;
-    }
-
-    if (prevActive && prevActive !== currentBoardId) {
-      autoCenteredSet.delete(prevActive);
-    }
-
-    activeWeekBoardRef.current = currentBoardId;
-  }, [activePage, currentBoardId, currentBoard?.kind, view]);
-
-  // reset dayChoice when board/view changes and center current day for week boards
-  useEffect(() => {
-    if (!currentBoard || view !== "board" || activePage !== "boards") return;
-    if (currentBoard.kind === "bible") {
-      return;
-    }
-    if (isListLikeBoard(currentBoard)) {
-      const valid = typeof dayChoice === "string" && listColumnSources.has(dayChoice);
-      if (valid) {
-        lastListViewRef.current.set(currentBoard.id, dayChoice);
-        return;
-      }
-
-      const stored = lastListViewRef.current.get(currentBoard.id);
-      const storedValid = stored ? listColumnSources.has(stored) : false;
-      const nextChoice =
-        (storedValid && stored) ||
-        listColumns[0]?.id ||
-        (typeof dayChoice === "string" ? dayChoice : undefined);
-
-      if (nextChoice && nextChoice !== dayChoice) {
-        setDayChoice(nextChoice);
-        lastListViewRef.current.set(currentBoard.id, nextChoice);
-      }
-    } else {
-      const today = new Date().getDay() as Weekday;
-      const boardId = currentBoard.id;
-      const autoCenteredSet = autoCenteredWeekRef.current;
-      const hasCentered = autoCenteredSet.has(boardId);
-      const isValidDayChoice = typeof dayChoice === "number" && dayChoice >= 0 && dayChoice <= 6;
-
-      if ((!hasCentered || !isValidDayChoice) && dayChoice !== today) {
-        setDayChoice(today);
-      }
-
-      if (!hasCentered) {
-        requestAnimationFrame(() => {
-          const scroller = scrollerRef.current;
-          if (!scroller) return;
-          const el = scroller.querySelector(`[data-day='${today}']`) as HTMLElement | null;
-          if (!el) return;
-          const offset = el.offsetLeft - scroller.clientWidth / 2 + el.clientWidth / 2;
-          scroller.scrollTo({ left: offset, behavior: "smooth" });
-          autoCenteredSet.add(boardId);
-        });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePage, currentBoardId, currentBoard?.id, currentBoard?.kind, dayChoice, listColumnSources, listColumns, view]);
-
-  useEffect(() => {
-    const board = currentBoard;
-    if (view !== "board") return;
-    if (!isListLikeBoard(board)) return;
-    if (typeof dayChoice !== "string") return;
-    if (!listColumnSources.has(dayChoice)) return;
-    const prev = lastListViewRef.current.get(board.id);
-    if (prev !== dayChoice) {
-      lastListViewRef.current.set(board.id, dayChoice);
-    }
-  }, [currentBoard, dayChoice, listColumnSources, view]);
-
-  useLayoutEffect(() => {
-    const board = currentBoard;
-    if (view !== "board") return;
-    if (!isListLikeBoard(board)) return;
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-
-    const boardId = board.id;
-    const scrollStore = lastBoardScrollRef.current;
-    const stored = scrollStore.has(boardId) ? scrollStore.get(boardId)! : null;
-    const shouldCenterIndex = !!board.indexCardEnabled;
-    const autoCenteredIndexSet = autoCenteredIndexRef.current;
-
-    const applyInitialScroll = () => {
-      const latest = scrollerRef.current;
-      if (!latest) return;
-      const maxScroll = Math.max(0, latest.scrollWidth - latest.clientWidth);
-      if (shouldCenterIndex && !autoCenteredIndexSet.has(boardId)) {
-        scrollColumnIntoView("list-index", "auto");
-        autoCenteredIndexSet.add(boardId);
-        requestAnimationFrame(() => {
-          const latest = scrollerRef.current;
-          if (!latest) return;
-          const maxScroll = Math.max(0, latest.scrollWidth - latest.clientWidth);
-          const clamped = Math.min(Math.max(latest.scrollLeft, 0), maxScroll);
-          scrollStore.set(boardId, clamped);
-        });
-        nudgeHorizontalScroller(latest);
-        return;
-      }
-      const target = stored == null ? 0 : Math.min(Math.max(stored, 0), maxScroll);
-      if (Math.abs(latest.scrollLeft - target) > 1) {
-        latest.scrollTo({ left: target, behavior: "auto" });
-      } else {
-        latest.scrollLeft = target;
-      }
-      nudgeHorizontalScroller(latest);
-    };
-
-    applyInitialScroll();
-    const raf = requestAnimationFrame(applyInitialScroll);
-    let timeout: number | undefined;
-    if (typeof window !== "undefined") {
-      timeout = window.setTimeout(applyInitialScroll, 150);
-    }
-    let resizeObserver: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(() => {
-        applyInitialScroll();
-      });
-      resizeObserver.observe(scroller);
-    }
-
-    const handleScroll = () => {
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-    };
-
-    scroller.addEventListener("scroll", handleScroll, { passive: true });
-
-    return () => {
-      if (typeof timeout === "number") {
-        window.clearTimeout(timeout);
-      }
-      resizeObserver?.disconnect();
-      cancelAnimationFrame(raf);
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-      if (!board.indexCardEnabled) {
-        autoCenteredIndexSet.delete(boardId);
-      }
-      scroller.removeEventListener("scroll", handleScroll);
-    };
-  }, [currentBoard, scrollColumnIntoView, view]);
-
-  useLayoutEffect(() => {
-    if (currentBoard?.kind !== "bible") return;
-    if (view === "completed") return;
-    const scroller = bibleScrollerRef.current;
-    if (!scroller) return;
-
-    const boardId = currentBoard.id;
-    const scrollStore = lastBoardScrollRef.current;
-    const stored = scrollStore.get(boardId) ?? 0;
-
-    const applyStoredScroll = () => {
-      const latest = bibleScrollerRef.current;
-      if (!latest) return;
-      const maxScroll = Math.max(0, latest.scrollWidth - latest.clientWidth);
-      const target = Math.min(Math.max(stored, 0), maxScroll);
-      if (Math.abs(latest.scrollLeft - target) > 1) {
-        latest.scrollTo({ left: target, behavior: "auto" });
-      } else {
-        latest.scrollLeft = target;
-      }
-    };
-
-    applyStoredScroll();
-    const raf = requestAnimationFrame(applyStoredScroll);
-    let timeout: number | undefined;
-    if (typeof window !== "undefined") {
-      timeout = window.setTimeout(applyStoredScroll, 150);
-    }
-
-    const handleScroll = () => {
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-    };
-
-    scroller.addEventListener("scroll", handleScroll, { passive: true });
-
-    return () => {
-      if (typeof timeout === "number") {
-        window.clearTimeout(timeout);
-      }
-      cancelAnimationFrame(raf);
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-      scroller.removeEventListener("scroll", handleScroll);
-    };
-  }, [currentBoard?.id, currentBoard?.kind, view]);
+  });
 
   const activeView =
     !settings.completedTab && (view === "completed" || view === "board-upcoming") ? "board" : view;
@@ -18602,6 +11853,25 @@ export default function App() {
           </header>
         )}
 
+        {showSkBackupNotice && (
+          <div className="sk-backup-banner" role="alert">
+            <div className="sk-backup-banner__body">
+              <span className="sk-backup-banner__dot" aria-hidden="true" />
+              <span>
+                Your Nostr key is now encrypted on this device. Save your <strong>nsec</strong> somewhere safe so you can recover your account if this device is lost.
+              </span>
+            </div>
+            <div className="sk-backup-banner__actions">
+              <button type="button" className="sk-backup-banner__primary pressable" onClick={copyNsecAndDismiss}>
+                Copy nsec
+              </button>
+              <button type="button" className="sk-backup-banner__secondary pressable" onClick={dismissSkBackupNotice}>
+                Got it
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Animation overlay for fly effects (coins, etc.) */}
         <div ref={flyLayerRef} className="pointer-events-none fixed inset-0 z-[9999]" />
 
@@ -18713,6 +11983,7 @@ export default function App() {
 		                          <EventCard
 		                            key={`${ev.id}-${day}`}
 		                            event={ev}
+		                            syncPending={pendingNostrCalendarEventIds.has(ev.id)}
 		                            showDate={false}
 		                            onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
@@ -18730,6 +12001,7 @@ export default function App() {
                             onToggleSelect={toggleItemSelection}
                             selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
                             key={t.id}
+                            syncPending={pendingNostrTaskIds.has(t.id)}
                             task={t}
 	                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
@@ -18964,6 +12236,7 @@ export default function App() {
 		                        <EventCard
 		                          key={ev.id}
 		                          event={ev}
+		                          syncPending={pendingNostrCalendarEventIds.has(ev.id)}
 		                          showDate
 		                          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
@@ -18981,6 +12254,7 @@ export default function App() {
                             onToggleSelect={toggleItemSelection}
                             selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
                             key={t.id}
+                            syncPending={pendingNostrTaskIds.has(t.id)}
                             task={t}
                           onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
@@ -19027,205 +12301,36 @@ export default function App() {
             </div>
           )
         ) : activeView === "board-upcoming" ? (
-          <div className="surface-panel board-column p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="text-lg font-semibold">Upcoming</div>
-            </div>
-            {boardUpcomingCount === 0 ? (
-              <div className="text-secondary text-sm">No upcoming items on this board.</div>
-            ) : (
-              <div className="upcoming-list space-y-4">
-                {boardUpcomingGroups.map((group) => (
-                  <div key={group.dateKey} className="upcoming-day" data-upcoming-date={group.dateKey}>
-                    <div className="upcoming-day__label">{group.label}</div>
-                    <div className="space-y-2">
-                      {group.events.map((ev) => renderUpcomingEventCard(ev))}
-                      {group.tasks.map((task) => renderUpcomingTaskCard(task))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <BoardUpcomingView
+            boardUpcomingCount={boardUpcomingCount}
+            boardUpcomingGroups={boardUpcomingGroups}
+            renderUpcomingEventCard={renderUpcomingEventCard}
+            renderUpcomingTaskCard={renderUpcomingTaskCard}
+          />
         ) : (
-          // Completed view
-          <div className="surface-panel board-column p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="text-lg font-semibold">Completed</div>
-              {currentBoard?.kind !== "bible" && !currentBoard?.clearCompletedDisabled && (
-                <div className="ml-auto">
-                  <button
-                    className="ghost-button button-sm pressable text-rose-400"
-                    onClick={clearCompleted}
-                  >
-                    Clear completed
-                  </button>
-                </div>
-              )}
-            </div>
-            {currentBoard?.kind === "bible" ? (
-              completedBibleBooks.length === 0 ? (
-                <div className="text-secondary text-sm">No completed books yet.</div>
-              ) : (
-                <ul className="space-y-1.5">
-                  {completedBibleBooks.map((book) => (
-                    <li
-                      key={book.id}
-                      className="task-card space-y-2"
-                      data-state="completed"
-                      data-form="pill"
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1">
-                          <div className="text-sm font-medium leading-[1.15]">{book.name}</div>
-                          <div className="text-xs text-secondary">
-                            {book.completedAtISO
-                              ? `Completed ${new Date(book.completedAtISO).toLocaleString()}`
-                              : "Completed book"}
-                          </div>
-                        </div>
-                        <IconButton label="Restore" onClick={() => handleRestoreBibleBook(book.id)} intent="success">
-                          ↩︎
-                        </IconButton>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )
-            ) : completed.length === 0 ? (
-              <div className="text-secondary text-sm">No completed tasks yet.</div>
-            ) : (
-              <ul className="space-y-1.5">
-                {completed.map((t) => {
-                  const recoverableBounty = isRecoverableBountyTask(t);
-                  const hasDetail =
-                    !!t.note?.trim() ||
-                    (t.images && t.images.length > 0) ||
-                    (t.documents && t.documents.length > 0) ||
-                    (t.subtasks && t.subtasks.length > 0) ||
-                    !!t.bounty;
-                  const scheduledWeekday = taskWeekday(t) ?? (new Date().getDay() as Weekday);
-                  const scheduledDayLabel = WD_SHORT[scheduledWeekday];
-                  const scheduledTimeLabel = t.dueTimeEnabled
-                    ? ` at ${formatTimeLabel(t.dueISO, t.dueTimeZone)}`
-                    : "";
-                  const bountyLabel = t.bounty ? bountyStateLabel(t.bounty) : "";
-                  return (
-                    <li key={t.id} className="task-card space-y-2" data-state="completed" data-form={hasDetail ? 'stacked' : 'pill'}>
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1">
-                          <div className="text-sm font-medium leading-[1.15]">
-                            <TaskTitle key={`${t.id}:${t.priority ?? "none"}`} task={t} />
-                          </div>
-                          <div className="text-xs text-secondary">
-                            {currentBoard?.kind === "week"
-                              ? `Scheduled ${scheduledDayLabel}${scheduledTimeLabel}`
-                              : "Completed item"}
-                            {t.completedAt ? ` • Completed ${new Date(t.completedAt).toLocaleString()}` : ""}
-                            {settings.streaksEnabled &&
-                              t.recurrence &&
-                              isFrequentRecurrence(t.recurrence) &&
-                              typeof t.streak === "number" && t.streak > 0
-                                ? ` • 🔥 ${t.streak}`
-                                : ""}
-                            {recoverableBounty ? " • Recoverable bounty task" : ""}
-                          </div>
-                          <TaskMedia task={t} onOpenDocument={handleOpenDocument} />
-                          {t.inboxItem && (
-                            <div className="mt-1 text-xs text-secondary">
-                              Shared {t.inboxItem.type === "board" ? "board" : t.inboxItem.type === "contact" ? "contact" : "task"} •{" "}
-                              {t.inboxItem.status === "accepted"
-                                ? "Added"
-                                : t.inboxItem.status === "tentative"
-                                  ? "Maybe"
-                                  : t.inboxItem.status === "declined"
-                                    ? "Declined"
-                                    : t.inboxItem.status === "deleted"
-                                      ? "Dismissed"
-                                      : "Pending"}
-                            </div>
-                          )}
-                          {t.subtasks?.length ? (
-                            <ul className="mt-1 space-y-1 text-xs">
-                              {t.subtasks.map(st => (
-                                <li key={st.id} className="subtask-row">
-                                  <input type="checkbox" checked={!!st.completed} disabled className="subtask-row__checkbox" />
-                                  <span className={`subtask-row__text ${st.completed ? 'line-through text-secondary' : ''}`}>{st.title}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          ) : null}
-                          {t.bounty && (
-                            <div className="mt-1">
-                              <span className={`text-[0.6875rem] px-2 py-0.5 rounded-full border ${t.bounty.state==='unlocked' ? 'bg-emerald-700/30 border-emerald-700' : t.bounty.state==='locked' ? 'bg-neutral-700/40 border-neutral-600' : t.bounty.state==='revoked' ? 'bg-rose-700/30 border-rose-700' : 'bg-surface-muted border-surface'}`}>
-                                Bounty {typeof t.bounty.amount==='number' ? `• ${t.bounty.amount} sats` : ''} • {bountyLabel}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex gap-1">
-                          <IconButton label={recoverableBounty ? "Recover" : "Restore"} onClick={() => restoreTask(t.id)} intent="success">↩︎</IconButton>
-                          {!recoverableBounty && (
-                            <IconButton label="Delete" onClick={() => deleteTask(t.id)} intent="danger">✕</IconButton>
-                          )}
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+          <CompletedBoardView
+            clearCompleted={clearCompleted}
+            completed={completed}
+            completedBibleBooks={completedBibleBooks}
+            currentBoard={currentBoard}
+            deleteTask={deleteTask}
+            handleOpenDocument={handleOpenDocument}
+            handleRestoreBibleBook={handleRestoreBibleBook}
+            restoreTask={restoreTask}
+            streaksEnabled={settings.streaksEnabled}
+          />
         )}
         </div>
       )}
       {activePage === "upcoming" && (
         <>
           {showUpcomingSearch && (
-            <div className="upcoming-search">
-              <div className="upcoming-search__field">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.8}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="upcoming-search__icon"
-                  aria-hidden="true"
-                >
-                  <circle cx="11" cy="11" r="7" />
-                  <line x1="16.65" y1="16.65" x2="21" y2="21" />
-                </svg>
-                <input
-                  ref={upcomingSearchInputRef}
-                  type="search"
-                  className="upcoming-search__input"
-                  placeholder="Search title or notes"
-                  value={upcomingSearch}
-                  onChange={(event) => setUpcomingSearch(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      closeUpcomingSearch();
-                    }
-                  }}
-                  aria-label="Search tasks by title or notes"
-                />
-                <button
-                  type="button"
-                  className="upcoming-search__clear pressable"
-                  onClick={closeUpcomingSearch}
-                  aria-label={upcomingSearch ? "Clear search" : "Close search"}
-                >
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                  </svg>
-                </button>
-              </div>
-            </div>
+            <UpcomingSearch
+              inputRef={upcomingSearchInputRef}
+              value={upcomingSearch}
+              onChange={setUpcomingSearch}
+              onClose={closeUpcomingSearch}
+            />
           )}
           {upcomingView === "list" ? (
             <div className="upcoming-list-view">
@@ -19379,130 +12484,67 @@ export default function App() {
 	        ) : filteredUpcomingCount === 0 ? (
 	          <div className="surface-panel p-6 text-center text-sm text-secondary">No upcoming items.</div>
 	        ) : (
-	          <div className="upcoming-list space-y-4" ref={upcomingListRef}>
-	            {upcomingGroups.map((group) => (
-	              <div key={group.dateKey} className="upcoming-day" data-upcoming-date={group.dateKey}>
-	                <div className="upcoming-day__label">{group.label}</div>
-	                <div className="space-y-2">
-	                  {group.events.map((ev) => renderUpcomingEventCard(ev))}
-	                  {group.tasks.map((task) => renderUpcomingTaskCard(task))}
+	          // Virtualized grouped upcoming list (Item #11). Total height set
+	          // by virtualizer; rows are absolutely positioned via translateY
+	          // so only ~visible items live in the DOM. `data-upcoming-date`
+	          // attributes on rendered headers preserve the existing
+	          // `getFocusedUpcomingDateFromScroll` lookup for the visible
+	          // viewport; offscreen days are reachable via
+	          // `scrollUpcomingToDate` which routes through
+	          // `virtualizer.scrollToIndex`.
+	          <div
+	            className="upcoming-list"
+	            ref={upcomingListRef}
+	            style={{ height: upcomingVirtualizer.getTotalSize(), position: "relative", width: "100%" }}
+	          >
+	            {upcomingVirtualizer.getVirtualItems().map((virtualRow) => {
+	              const row = upcomingFlatRows[virtualRow.index];
+	              if (!row) return null;
+	              const key =
+	                row.kind === "day-header"
+	                  ? `header-${row.dateKey}`
+	                  : row.kind === "event"
+	                  ? `event-${row.event.id}`
+	                  : `task-${row.task.id}`;
+	              return (
+	                <div
+	                  key={key}
+	                  ref={upcomingVirtualizer.measureElement}
+	                  data-index={virtualRow.index}
+	                  data-upcoming-date={row.kind === "day-header" ? row.dateKey : undefined}
+	                  style={{
+	                    position: "absolute",
+	                    top: 0,
+	                    left: 0,
+	                    width: "100%",
+	                    transform: `translateY(${virtualRow.start}px)`,
+	                  }}
+	                >
+	                  {row.kind === "day-header" ? (
+	                    <div className="upcoming-day__label">{row.label}</div>
+	                  ) : row.kind === "event" ? (
+	                    renderUpcomingEventCard(row.event)
+	                  ) : (
+	                    renderUpcomingTaskCard(row.task)
+	                  )}
 	                </div>
-	              </div>
-	            ))}
+	              );
+	            })}
 	          </div>
 	        )}
         </>
       )}
       {activePage === "wallet-bounties" && (
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          <div className="wallet-section space-y-3">
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={walletBountiesTab === "pinned" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
-                onClick={() => setWalletBountiesTab("pinned")}
-              >
-                Pinned
-              </button>
-              <button
-                type="button"
-                className={walletBountiesTab === "funded" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
-                onClick={() => setWalletBountiesTab("funded")}
-              >
-                Funded
-              </button>
-              <button
-                type="button"
-                className={walletBountiesTab === "open" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
-                onClick={() => setWalletBountiesTab("open")}
-              >
-                Open
-              </button>
-            </div>
-            <div className="text-xs text-secondary">
-              {walletBountiesTab === "open"
-                ? "All tasks with an active bounty."
-                : walletBountiesTab === "funded"
-                  ? "Tasks where you funded the bounty."
-                  : "Tasks you pinned for quick access."}
-            </div>
-          </div>
-          <div className="surface-panel board-column p-4">
-            {walletBountiesVisibleTasks.length === 0 ? (
-              <div className="text-sm text-secondary">
-                No {walletBountiesTab === "open" ? "open bounties" : walletBountiesTab === "funded" ? "funded bounties" : "pinned tasks"} yet.
-              </div>
-            ) : (
-              <ul className="space-y-2">
-                {walletBountiesVisibleTasks.map((task) => {
-                  const boardName = boardMap.get(task.boardId)?.name || "Board";
-                  const bounty = task.bounty;
-                  const creatorNpub = toNpub(task.createdBy || "");
-                  const lastEditorNpub = toNpub(task.lastEditedBy || task.completedBy || task.createdBy || "");
-                  const parsedDue = new Date(task.dueISO);
-                  const dueLabel = Number.isNaN(parsedDue.getTime())
-                    ? ""
-                    : parsedDue.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-                  const amountLabel =
-                    bounty && typeof bounty.amount === "number"
-                      ? `${bounty.amount} sats`
-                      : "Amount unknown";
-                  return (
-                    <li
-                      key={task.id}
-                      className="task-card space-y-2"
-                      data-form="stacked"
-                      data-agent-entity="task"
-                      data-agent-creator-npub={creatorNpub || undefined}
-                      data-agent-last-editor-npub={lastEditorNpub || undefined}
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium leading-[1.2]">
-                            <TaskTitle key={`${task.id}:${task.priority ?? "none"}`} task={task} />
-                          </div>
-                          <div className="text-xs text-secondary">
-                            {boardName}
-                            {dueLabel ? ` • ${dueLabel}` : ""}
-                          </div>
-                          {bounty ? (
-                            <div className="mt-1 text-xs text-secondary">
-                              {amountLabel} • {bountyStateLabel(bounty)}
-                            </div>
-                          ) : (
-                            <div className="mt-1 text-xs text-secondary">No bounty attached yet.</div>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-1 justify-end">
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => setEditing({ type: "task", originalType: "task", originalId: task.id, task })}
-                          >
-                            Open task
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable"
-                            onClick={() => {
-                              if (taskHasBountyList(task, PINNED_BOUNTY_LIST_KEY)) {
-                                removeTaskFromBountyList(task.id);
-                              } else {
-                                addTaskToBountyList(task.id);
-                              }
-                            }}
-                          >
-                            {taskHasBountyList(task, PINNED_BOUNTY_LIST_KEY) ? "Unpin" : "Pin"}
-                          </button>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        </div>
+        <WalletBountiesView
+          fundedBountyTasks={fundedBountyTasks}
+          pinnedBountyTasks={pinnedBountyTasks}
+          openBountyTasks={openBountyTasks}
+          boardMap={boardMap}
+          toNpub={toNpub}
+          setEditing={setEditing}
+          addTaskToBountyList={addTaskToBountyList}
+          removeTaskFromBountyList={removeTaskFromBountyList}
+        />
       )}
       {activePage === "settings" && (
         <SettingsModal
@@ -19544,48 +12586,13 @@ export default function App() {
       </div>
 
       {activePage === "upcoming" && (
-        <div className="upcoming-controls">
-          <div className="upcoming-controls__left">
-            <button
-              type="button"
-              className="upcoming-controls__today pressable"
-              onClick={handleUpcomingToday}
-              disabled={upcomingView === "details" && upcomingGroups.length === 0}
-              title="Jump to today"
-              aria-label="Jump to today"
-            >
-              Today
-            </button>
-          </div>
-          <div className="upcoming-controls__right">
-            <button
-              type="button"
-              className="app-header__icon-btn pressable"
-              onClick={() => setUpcomingFilterOpen(true)}
-              title={`Filter upcoming tasks (${upcomingFilterLabel})`}
-              aria-label={`Filter upcoming tasks (${upcomingFilterLabel})`}
-              data-active={upcomingFilter !== null || upcomingFilterOpen}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-[18px] w-[18px]"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.8}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <line x1="4" y1="6" x2="20" y2="6" />
-                <line x1="4" y1="12" x2="20" y2="12" />
-                <line x1="4" y1="18" x2="20" y2="18" />
-                <circle cx="9" cy="6" r="2" />
-                <circle cx="15" cy="12" r="2" />
-                <circle cx="11" cy="18" r="2" />
-              </svg>
-            </button>
-          </div>
-        </div>
+        <UpcomingControls
+          todayDisabled={upcomingView === "details" && upcomingGroups.length === 0}
+          onTodayClick={handleUpcomingToday}
+          filterActive={upcomingFilter !== null || upcomingFilterOpen}
+          filterLabel={upcomingFilterLabel}
+          onOpenFilter={() => setUpcomingFilterOpen(true)}
+        />
       )}
 
       <div className="app-tab-switcher">
@@ -19751,627 +12758,135 @@ export default function App() {
         </div>
       </div>
 
-      <ActionSheet
-        open={boardSortSheetOpen}
-        onClose={() => setBoardSortSheetOpen(false)}
-        title="Filter and sort"
-      >
-        <div className="wallet-section space-y-3 text-sm">
-          <div className="text-xs uppercase tracking-wide text-secondary">Sort tasks by</div>
-          <div className="flex flex-wrap gap-2">
-            {boardSortOptions.map((option) => {
-              const active = boardSort.mode === option.id;
-              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-              const showArrow = active && option.supportsDirection;
-              const invertArrow = option.id === "due" || option.id === "alpha";
-              const arrow =
-                boardSort.direction === "asc"
-                  ? (invertArrow ? "↓" : "↑")
-                  : (invertArrow ? "↑" : "↓");
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={cls}
-                  onClick={() => handleBoardSortSelect(option.id)}
-                >
-                  <span>{option.label}</span>
-                  {showArrow && <span className="ml-1 text-xs">{arrow}</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </ActionSheet>
+      <AppSortSheets
+        applyUpcomingFilterPreset={applyUpcomingFilterPreset}
+        boardSort={boardSort}
+        boardSortOptions={boardSortOptions}
+        boardSortSheetOpen={boardSortSheetOpen}
+        cancelUpcomingPresetHold={cancelUpcomingPresetHold}
+        gcalCalendars={gcalCalendars}
+        gcalStatus={gcalStatus}
+        handleBoardSortSelect={handleBoardSortSelect}
+        handleUpcomingSortSelect={handleUpcomingSortSelect}
+        handleUpcomingViewChange={handleUpcomingViewChange}
+        maybeCancelUpcomingPresetHold={maybeCancelUpcomingPresetHold}
+        saveUpcomingFilterPreset={saveUpcomingFilterPreset}
+        setBoardSortSheetOpen={setBoardSortSheetOpen}
+        setUpcomingBoardGrouping={setUpcomingBoardGrouping}
+        setUpcomingFilter={setUpcomingFilter}
+        setUpcomingFilterOpen={setUpcomingFilterOpen}
+        setUpcomingSortSheetOpen={setUpcomingSortSheetOpen}
+        setUpcomingUsHolidaysEnabled={setUpcomingUsHolidaysEnabled}
+        setUpcomingViewSheetOpen={setUpcomingViewSheetOpen}
+        startUpcomingPresetHold={startUpcomingPresetHold}
+        toggleUpcomingFilter={toggleUpcomingFilter}
+        upcomingBoardGrouping={upcomingBoardGrouping}
+        upcomingBoardGroupingOptions={upcomingBoardGroupingOptions}
+        upcomingFilter={upcomingFilter}
+        upcomingFilterGroups={upcomingFilterGroups}
+        upcomingFilterOpen={upcomingFilterOpen}
+        upcomingFilterOptions={upcomingFilterOptions}
+        upcomingFilterPresets={upcomingFilterPresets}
+        upcomingFilterSelection={upcomingFilterSelection}
+        upcomingPresetHoldTriggeredRef={upcomingPresetHoldTriggeredRef}
+        upcomingSort={upcomingSort}
+        upcomingSortSheetOpen={upcomingSortSheetOpen}
+        upcomingUsHolidaysEnabled={upcomingUsHolidaysEnabled}
+        upcomingView={upcomingView}
+        upcomingViewSheetOpen={upcomingViewSheetOpen}
+      />
 
-      <ActionSheet
-        open={upcomingSortSheetOpen}
-        onClose={() => setUpcomingSortSheetOpen(false)}
-        title="Sort"
-      >
-        <div className="wallet-section space-y-3 text-sm">
-          <div className="text-xs uppercase tracking-wide text-secondary">Sort tasks by</div>
-          <div className="flex flex-wrap gap-2">
-            {boardSortOptions.map((option) => {
-              const active = upcomingSort.mode === option.id;
-              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-              const showArrow = active && option.supportsDirection;
-              const invertArrow = option.id === "due" || option.id === "alpha";
-              const arrow =
-                upcomingSort.direction === "asc"
-                  ? (invertArrow ? "↓" : "↑")
-                  : (invertArrow ? "↑" : "↓");
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={cls}
-                  onClick={() => handleUpcomingSortSelect(option.id)}
-                  aria-pressed={active}
-                >
-                  <span>{option.label}</span>
-                  {showArrow && <span className="ml-1 text-xs">{arrow}</span>}
-                </button>
-              );
-            })}
-          </div>
-          <div className="text-xs uppercase tracking-wide text-secondary">Boards</div>
-          <div className="flex flex-wrap gap-2">
-            {upcomingBoardGroupingOptions.map((option) => {
-              const active = upcomingBoardGrouping === option.id;
-              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={cls}
-                  onClick={() => setUpcomingBoardGrouping(option.id)}
-                  aria-pressed={active}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={upcomingViewSheetOpen}
-        onClose={() => setUpcomingViewSheetOpen(false)}
-        title="View"
-      >
-        <div className="overflow-hidden rounded-2xl border border-border bg-elevated">
-          {[
-            { id: "details", label: "Details" },
-            { id: "list", label: "List" },
-          ].map((option) => {
-            const active = upcomingView === option.id;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface"
-	                onClick={() => {
-	                  handleUpcomingViewChange(option.id as "details" | "list");
-	                }}
-	                aria-pressed={active}
-	              >
-                <div className="flex-1">
-                  <div className="text-sm font-medium text-primary">{option.label}</div>
-                </div>
-                {active && <span className="text-accent text-sm font-semibold">✓</span>}
-              </button>
-            );
-          })}
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={upcomingFilterOpen}
-        onClose={() => setUpcomingFilterOpen(false)}
-        title="Calendars"
-        panelClassName="sheet-panel--tall"
-      >
-        <div className="upcoming-filter">
-          <div className="upcoming-filter__controls">
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={() => {
-                setUpcomingFilter(null);
-                setUpcomingUsHolidaysEnabled(true);
-              }}
-            >
-              Select all
-            </button>
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={() => {
-                setUpcomingFilter([]);
-                setUpcomingUsHolidaysEnabled(false);
-              }}
-            >
-              Clear all
-            </button>
-            {upcomingFilterPresets.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className="ghost-button button-sm pressable"
-                onClick={(e) => {
-                  if (upcomingPresetHoldTriggeredRef.current) {
-                    upcomingPresetHoldTriggeredRef.current = false;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return;
-                  }
-                  applyUpcomingFilterPreset(preset);
-                }}
-                onPointerDown={(e) => startUpcomingPresetHold(preset, e)}
-                onPointerUp={cancelUpcomingPresetHold}
-                onPointerCancel={cancelUpcomingPresetHold}
-                onPointerLeave={cancelUpcomingPresetHold}
-                onPointerMove={maybeCancelUpcomingPresetHold}
-                onContextMenu={(e) => e.preventDefault()}
-                title="Press and hold to delete"
-              >
-                {preset.name}
-              </button>
-            ))}
-          </div>
-          <div className="upcoming-filter__list">
-            {upcomingFilterGroups.length === 0 ? (
-              <div className="text-sm text-secondary">No boards yet.</div>
-            ) : (
-              upcomingFilterGroups.map((group) => (
-                <div key={group.id} className="upcoming-filter__group">
-                  <button
-                    type="button"
-                    className="upcoming-filter__row pressable"
-                    onClick={() => toggleUpcomingFilter(group.boardOption.id)}
-                    role="checkbox"
-                    aria-checked={upcomingFilterSelection.has(group.boardOption.id)}
-                  >
-                    <span
-                      className={`upcoming-filter__check${upcomingFilterSelection.has(group.boardOption.id) ? " is-checked" : ""}`}
-                      aria-hidden="true"
-                    >
-                      {upcomingFilterSelection.has(group.boardOption.id) && (
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 12l4 4 10-10" />
-                        </svg>
-                      )}
-                    </span>
-                    <span className="upcoming-filter__label">{group.label}</span>
-                  </button>
-                  {group.listOptions.length > 0 && (
-                    <div className="upcoming-filter__sublist">
-                      {group.listOptions.map((option) => {
-                        const checked = upcomingFilterSelection.has(option.id);
-                        return (
-                          <button
-                            key={option.id}
-                            type="button"
-                            className="upcoming-filter__row upcoming-filter__row--child pressable"
-                            onClick={() => toggleUpcomingFilter(option.id)}
-                            role="checkbox"
-                            aria-checked={checked}
-                          >
-                            <span
-                              className={`upcoming-filter__check${checked ? " is-checked" : ""}`}
-                              aria-hidden="true"
-                            >
-                              {checked && (
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M5 12l4 4 10-10" />
-                                </svg>
-                              )}
-                            </span>
-                            <span className="upcoming-filter__label">{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-            <div className="upcoming-filter__group">
-              <button
-                type="button"
-                className="upcoming-filter__row pressable"
-                onClick={() => setUpcomingUsHolidaysEnabled((prev) => !prev)}
-                role="checkbox"
-                aria-checked={upcomingUsHolidaysEnabled}
-              >
-                <span
-                  className={`upcoming-filter__check${upcomingUsHolidaysEnabled ? " is-checked" : ""}`}
-                  aria-hidden="true"
-                >
-                  {upcomingUsHolidaysEnabled && (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M5 12l4 4 10-10" />
-                    </svg>
-                  )}
-                </span>
-                <span className="upcoming-filter__label">{SPECIAL_CALENDAR_US_HOLIDAYS_LABEL}</span>
-              </button>
-            </div>
-            {gcalStatus.connected && gcalCalendars.map((cal) => {
-              const boardId = `gcal:${cal.id}`;
-              const isSelected = upcomingFilter === null || upcomingFilter.includes(boardId);
-              return (
-                <div key={cal.id} className="upcoming-filter__group">
-                  <button
-                    type="button"
-                    className="upcoming-filter__row pressable"
-                    onClick={() => {
-                      if (upcomingFilter === null) {
-                        // Deselect just this calendar
-                        const allIds = upcomingFilterOptions.map((o) => o.id);
-                        setUpcomingFilter(allIds.filter((id) => id !== boardId));
-                      } else if (isSelected) {
-                        setUpcomingFilter(upcomingFilter.filter((id) => id !== boardId));
-                      } else {
-                        setUpcomingFilter([...upcomingFilter, boardId]);
-                      }
-                    }}
-                    role="checkbox"
-                    aria-checked={isSelected}
-                  >
-                    <span
-                      className={`upcoming-filter__check${isSelected ? " is-checked" : ""}`}
-                      aria-hidden="true"
-                    >
-                      {isSelected && (
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 12l4 4 10-10" />
-                        </svg>
-                      )}
-                    </span>
-                    <span className="upcoming-filter__label">
-                      {cal.color && (
-                        <span
-                          className="inline-block w-2 h-2 rounded-full mr-1.5"
-                          style={{ backgroundColor: cal.color, verticalAlign: "middle" }}
-                        />
-                      )}
-                      {cal.name}
-                    </span>
-                  </button>
-                </div>
-              );
-            })}
-            <div>
-              <button
-                type="button"
-                className="ghost-button button-sm pressable"
-                onClick={saveUpcomingFilterPreset}
-              >
-                Save as preset
-              </button>
-            </div>
-          </div>
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={selectionMoveSheetOpen}
-        onClose={() => { setSelectionMoveSheetOpen(false); setSelectionMoveStep("board"); setSelectionMoveBoardId(null); }}
-        title={selectionMoveStep === "column" ? "Choose a list" : "Move selected items"}
-        stackLevel={10001}
-      >
-        {selectedCount === 0 ? (
-          <div className="text-sm text-secondary">Select one or more items to move.</div>
-        ) : selectionMoveStep === "board" ? (
-          <div className="space-y-2">
-            {selectionMoveTargets.map((board) => (
-              <button
-                key={board.id}
-                type="button"
-                className="contact-row pressable"
-                onClick={() => {
-                  if (board.kind === "lists" && board.columns.length > 1) {
-                    setSelectionMoveBoardId(board.id);
-                    setSelectionMoveStep("column");
-                  } else if (board.kind === "compound" && board.children.length > 0) {
-                    setSelectionMoveBoardId(board.id);
-                    setSelectionMoveStep("column");
-                  } else {
-                    moveSelectedTasksToBoard(board.id);
-                  }
-                }}
-              >
-                <div className="contact-row__text">
-                  <div className="contact-row__name">{board.name}</div>
-                  <div className="contact-row__meta">
-                    <span className="contact-row__meta-text capitalize">{board.kind}</span>
-                    {board.kind === "lists" && board.columns.length > 0 && (
-                      <span className="contact-row__meta-text"> · {board.columns.length} {board.columns.length === 1 ? "list" : "lists"}</span>
-                    )}
-                  </div>
-                </div>
-                {(board.kind === "lists" && board.columns.length > 1) || (board.kind === "compound" && board.children.length > 0) ? (
-                  <span className="text-secondary text-xs ml-auto shrink-0">▸</span>
-                ) : null}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <button
-              type="button"
-              className="ghost-button button-sm pressable mb-2"
-              onClick={() => { setSelectionMoveStep("board"); setSelectionMoveBoardId(null); }}
-            >
-              ← Back
-            </button>
-            {(() => {
-              const board = selectionMoveTargets.find((b) => b.id === selectionMoveBoardId);
-              if (!board) return null;
-              if (board.kind === "compound") {
-                return board.children.map((childId) => {
-                  const childBoard = boards.find((b) => b.id === childId);
-                  if (!childBoard || childBoard.kind !== "lists") return null;
-                  return childBoard.columns.map((col) => (
-                    <button
-                      key={`${childBoard.id}-${col.id}`}
-                      type="button"
-                      className="contact-row pressable"
-                      onClick={() => moveSelectedTasksToColumn(childBoard.id, col.id)}
-                    >
-                      <div className="contact-row__text">
-                        <div className="contact-row__name">{col.name}</div>
-                        <div className="contact-row__meta">
-                          <span className="contact-row__meta-text">{childBoard.name}</span>
-                        </div>
-                      </div>
-                    </button>
-                  ));
-                });
-              }
-              if (board.kind === "lists") {
-                return board.columns.map((col) => (
-                  <button
-                    key={col.id}
-                    type="button"
-                    className="contact-row pressable"
-                    onClick={() => moveSelectedTasksToColumn(board.id, col.id)}
-                  >
-                    <div className="contact-row__text">
-                      <div className="contact-row__name">{col.name}</div>
-                    </div>
-                  </button>
-                ));
-              }
-              return null;
-            })()}
-          </div>
-        )}
-      </ActionSheet>
-
-
-      {/* Drag trash can */}
-      {(draggingTaskId || draggingEventId) && (
-        <div
-          className="fixed bottom-4 left-4 z-50"
-          onDragOver={(e) => {
-            e.preventDefault();
-            setTrashHover(true);
-          }}
-          onDragLeave={() => setTrashHover(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            const allIds = getDraggedTaskIds(e.dataTransfer);
-            if (allIds && allIds.length > 1) {
-              allIds.forEach((id) => deleteTask(id, { skipPrompt: true }));
-              if (isSelectionMode) exitSelectionMode();
-            } else {
-              const taskId = getDraggedTaskId(e.dataTransfer);
-              if (taskId) {
-                deleteTask(taskId);
-              } else {
-                const eventId = getDraggedEventId(e.dataTransfer);
-                if (eventId) deleteCalendarEvent(eventId);
-              }
-            }
-            handleDragEnd();
-          }}
-        >
-          <div
-            className={`w-14 h-14 rounded-full bg-neutral-900 border border-neutral-700 flex items-center justify-center text-secondary transition-transform ${trashHover ? 'scale-110' : ''}`}
-          >
-            <svg
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="pointer-events-none"
-            >
-              <path d="M9 3h6l1 1h5v2H3V4h5l1-1z" />
-              <path d="M5 7h14l-1.5 13h-11L5 7z" />
-            </svg>
-          </div>
-        </div>
-      )}
-
-      {isSelectionMode && (
-        <div
-          className="selection-bar glass-panel fixed left-1/2 z-[10000] -translate-x-1/2 w-[calc(100%-1rem)] max-w-md rounded-2xl"
-          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-height) + 0.25rem)" }}
-        >
-          {/* Top row: count + cancel */}
-          <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
-            <div className="text-sm font-semibold text-primary">
-              {selectedCount ? `${selectedCount} selected` : "Select items"}
-            </div>
-            <button
-              type="button"
-              className="text-xs text-secondary hover:text-primary pressable px-2 py-0.5 rounded-lg"
-              onClick={exitSelectionMode}
-            >
-              Cancel
-            </button>
-          </div>
-          {/* Action buttons row */}
-          <div className="flex items-center justify-around px-2 pb-2.5 pt-0.5">
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={clearSelection}
-              disabled={!selectedCount}
-              title="Clear selection"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              <span>Clear</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={() => setSelectionMoveSheetOpen(true)}
-              disabled={!selectedCount}
-              title="Move"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l3 3 3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
-              <span>Move</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={completeSelectedItems}
-              disabled={!selectedTasks.some((task) => !task.completed)}
-              title="Complete"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Done</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={handlePrintSelectedTasks}
-              disabled={!selectedEvents.length && !selectedTasks.some((task) => !task.completed)}
-              title="Print selected"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-              <span>Print</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action selection-bar__action--danger pressable"
-              onClick={deleteSelectedItems}
-              disabled={!selectedCount}
-              title="Delete"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M9 3h6l1 1h5v2H3V4h5l1-1z"/><path d="M5 7h14l-1.5 13h-11L5 7z"/></svg>
-              <span>Delete</span>
-            </button>
-          </div>
-        </div>
-      )}
+      <SelectionOverlays
+        boards={boards}
+        clearSelection={clearSelection}
+        completeSelectedItems={completeSelectedItems}
+        deleteCalendarEvent={deleteCalendarEvent}
+        deleteSelectedItems={deleteSelectedItems}
+        deleteTask={deleteTask}
+        draggingEventId={draggingEventId}
+        draggingTaskId={draggingTaskId}
+        exitSelectionMode={exitSelectionMode}
+        handleDragEnd={handleDragEnd}
+        handlePrintSelectedTasks={handlePrintSelectedTasks}
+        isSelectionMode={isSelectionMode}
+        moveSelectedTasksToBoard={moveSelectedTasksToBoard}
+        moveSelectedTasksToColumn={moveSelectedTasksToColumn}
+        selectedCount={selectedCount}
+        selectedEventsLength={selectedEvents.length}
+        selectedIncompleteTaskCount={selectedTasks.filter((task) => !task.completed).length}
+        selectionMoveBoardId={selectionMoveBoardId}
+        selectionMoveSheetOpen={selectionMoveSheetOpen}
+        selectionMoveStep={selectionMoveStep}
+        selectionMoveTargets={selectionMoveTargets}
+        setSelectionMoveBoardId={setSelectionMoveBoardId}
+        setSelectionMoveSheetOpen={setSelectionMoveSheetOpen}
+        setSelectionMoveStep={setSelectionMoveStep}
+        setTrashHover={setTrashHover}
+        trashHover={trashHover}
+      />
 
       {/* Undo Snackbar */}
-      {undoTask && (
-        <div
-          className="fixed left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3 z-[9999]"
-          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.75rem)" }}
-        >
-          Task deleted
-          <button onClick={undoDelete} className="accent-button button-sm pressable">Undo</button>
-        </div>
-      )}
+      <AppModalStack
+        addBoardOpen={addBoardOpen}
+        biblePrintMeta={biblePrintMeta}
+        biblePrintOpen={biblePrintOpen}
+        biblePrintPaperSize={biblePrintPaperSize}
+        biblePrintPdfBusy={biblePrintPdfBusy}
+        biblePrintPortal={biblePrintPortal}
+        bibleScanOpen={bibleScanOpen}
+        bibleTracker={bibleTracker}
+        boardPrintJob={boardPrintJob}
+        boardPrintOpen={boardPrintOpen}
+        boardPrintPdfBusy={boardPrintPdfBusy}
+        boardPrintPortal={boardPrintPortal}
+        boardScanOpen={boardScanOpen}
+        closeAddBoard={closeAddBoard}
+        completeFirstRunOnboarding={completeFirstRunOnboarding}
+        createBoardFromName={createBoardFromName}
+        deleteCalendarEvent={deleteCalendarEvent}
+        deleteTask={deleteTask}
+        handleApplyBibleScan={handleApplyBibleScan}
+        handleApplyBoardScan={handleApplyBoardScan}
+        handleBiblePaperSizeChange={handleBiblePaperSizeChange}
+        handleBoardPaperSizeChange={handleBoardPaperSizeChange}
+        handleDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
+        handleExportBiblePdf={handleExportBiblePdf}
+        handleExportBoardPdf={handleExportBoardPdf}
+        handleOnboardingEnableNotifications={handleOnboardingEnableNotifications}
+        handleOnboardingGenerateNewKey={handleOnboardingGenerateNewKey}
+        handleOnboardingRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
+        handleOnboardingRestoreFromCloud={handleOnboardingRestoreFromCloud}
+        handleOnboardingUseExistingKey={handleOnboardingUseExistingKey}
+        handlePrintBibleWindow={handlePrintBibleWindow}
+        handlePrintBoardWindow={handlePrintBoardWindow}
+        joinSharedBoard={joinSharedBoard}
+        onboardingPushConfigured={onboardingPushConfigured}
+        onboardingPushSupported={onboardingPushSupported}
+        previewDocument={previewDocument}
+        previewDocumentBoardId={previewDocumentBoardId}
+        recurringDeleteEvent={recurringDeleteEvent}
+        recurringDeleteTask={recurringDeleteTask}
+        setBiblePrintOpen={setBiblePrintOpen}
+        setBibleScanOpen={setBibleScanOpen}
+        setBoardPrintOpen={setBoardPrintOpen}
+        setBoardScanOpen={setBoardScanOpen}
+        setPreviewDocument={setPreviewDocument}
+        setPreviewDocumentBoardId={setPreviewDocumentBoardId}
+        setRecurringDeleteEvent={setRecurringDeleteEvent}
+        setRecurringDeleteTask={setRecurringDeleteTask}
+        showFirstRunOnboarding={showFirstRunOnboarding}
+        undoDelete={undoDelete}
+        undoTask={undoTask}
+        workerBaseUrl={workerBaseUrl}
+      />
 
-      {recurringDeleteTask && (
-        <Modal onClose={() => setRecurringDeleteTask(null)} title="Delete recurring task">
-          <div className="space-y-4">
-            <div className="text-sm text-secondary">
-              This task repeats. Do you want to delete just this event or all future events in the series?
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={() => {
-                  deleteTask(recurringDeleteTask.id, { skipPrompt: true });
-                  setRecurringDeleteTask(null);
-                }}
-              >
-                Delete this event
-              </button>
-              <button
-                className="ghost-button button-sm pressable text-rose-400"
-                onClick={() => {
-                  deleteTask(recurringDeleteTask.id, { skipPrompt: true, scope: "future" });
-                  setRecurringDeleteTask(null);
-                }}
-              >
-                Delete all future
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <UpdateToast
+        handleReloadLater={handleReloadLater}
+        handleReloadNow={handleReloadNow}
+        updateToastVisible={updateToastVisible}
+      />
 
-      {recurringDeleteEvent && (
-        <Modal onClose={() => setRecurringDeleteEvent(null)} title="Delete recurring event">
-          <div className="space-y-4">
-            <div className="text-sm text-secondary">
-              This event repeats. Do you want to delete just this event or all future events in the series?
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={() => {
-                  deleteCalendarEvent(recurringDeleteEvent.id, { skipPrompt: true });
-                  setRecurringDeleteEvent(null);
-                }}
-              >
-                Delete this event
-              </button>
-              <button
-                className="ghost-button button-sm pressable text-rose-400"
-                onClick={() => {
-                  deleteCalendarEvent(recurringDeleteEvent.id, { skipPrompt: true, scope: "future" });
-                  setRecurringDeleteEvent(null);
-                }}
-              >
-                Delete all future
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {updateToastVisible && (
-        <div className="fixed bottom-4 left-1/2 z-[10001] w-[calc(100%-2rem)] max-w-md -translate-x-1/2">
-          <div className="rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 text-sm text-white shadow-lg">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="space-y-1">
-                <div className="text-base font-semibold">Update available</div>
-                <div className="text-xs text-neutral-300">
-                  Reload to get the latest Taskify features.
-                </div>
-              </div>
-              <div className="flex gap-2 sm:shrink-0">
-                <button
-                  className="ghost-button button-sm pressable"
-                  onClick={handleReloadLater}
-                >
-                  Later
-                </button>
-                <button
-                  className="accent-button button-sm pressable"
-                  onClick={handleReloadNow}
-                >
-                  Reload
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Modals */}
+      {/* Edit Modals */}      {/* Edit Modals */}
       {editing?.type === "task" && (
         <EditModal
           task={editing.task}
@@ -20485,452 +13000,68 @@ export default function App() {
         />
       )}
 
-      {previewDocument && (
-        <DocumentPreviewModal
-          document={previewDocument}
-          boardId={previewDocumentBoardId}
-          onClose={() => { setPreviewDocument(null); setPreviewDocumentBoardId(undefined); }}
-          onDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
-        />
-      )}
+      <ShareBoardDialogs
+        closeShareBoard={closeShareBoard}
+        enableBoardSharing={enableBoardSharing}
+        handleOpenBoardPrint={handleOpenBoardPrint}
+        handleOpenBoardScan={handleOpenBoardScan}
+        handleShareBoardToContact={handleShareBoardToContact}
+        setShareBoardMode={setShareBoardMode}
+        setShareContactPickerOpen={setShareContactPickerOpen}
+        setShareContactStatus={setShareContactStatus}
+        setShareModeInfoOpen={setShareModeInfoOpen}
+        setShareTemplateStatus={setShareTemplateStatus}
+        shareBoardDisplayName={shareBoardDisplayName}
+        shareBoardId={shareBoardId}
+        shareBoardModalOpen={shareBoardModalOpen}
+        shareBoardMode={shareBoardMode}
+        shareBoardQrPayload={shareBoardQrPayload}
+        shareBoardTarget={shareBoardTarget}
+        shareContactBusy={shareContactBusy}
+        shareContactPickerOpen={shareContactPickerOpen}
+        shareContactStatus={shareContactStatus}
+        shareModeInfoButtonRef={shareModeInfoButtonRef}
+        shareModeInfoOpen={shareModeInfoOpen}
+        shareModeInfoRef={shareModeInfoRef}
+        shareTemplateBusy={shareTemplateBusy}
+        shareTemplateStatus={shareTemplateStatus}
+        shareableContacts={shareableContacts}
+      />
 
-      {biblePrintPortal && biblePrintOpen && biblePrintMeta &&
-        createPortal(
-          <BibleTrackerPrintPreview
-            state={bibleTracker}
-            meta={biblePrintMeta}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />,
-          biblePrintPortal
-        )}
+      <CashuWalletShell
+        acceptInboxMessage={acceptInboxMessage}
+        closeWallet={closeWallet}
+        declineInboxMessage={declineInboxMessage}
+        dismissCalendarInvite={dismissCalendarInvite}
+        dismissInboxMessage={dismissInboxMessage}
+        formatCalendarInviteWhen={formatCalendarInviteWhen}
+        handleCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
+        inboxPendingItems={inboxPendingItems}
+        markInboxMessagesRead={markInboxMessagesRead}
+        maybeInboxMessage={maybeInboxMessage}
+        messagesUnreadCount={messagesUnreadCount}
+        openWalletBounties={openWalletBounties}
+        pendingCalendarInvites={pendingCalendarInvites}
+        setDmUnreadCount={setDmUnreadCount}
+        setSettings={setSettings}
+        settings={settings}
+        showChat={showChat}
+        showWalletShell={showWalletShell}
+        walletMessageItems={walletMessageItems}
+        walletTokenStateResetNonce={walletTokenStateResetNonce}
+      />
 
-      {biblePrintOpen && biblePrintMeta && (
-        <Modal
-          onClose={() => setBiblePrintOpen(false)}
-          title="Print Bible tracker"
-          actions={(
-            <>
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleExportBiblePdf}
-                disabled={biblePrintPdfBusy}
-              >
-                {biblePrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
-              </button>
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={handlePrintBibleWindow}
-              >
-                Print
-              </button>
-            </>
-          )}
-        >
-          <BibleTrackerPrintPreview
-            state={bibleTracker}
-            meta={biblePrintMeta}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {bibleScanOpen && (
-        <Modal onClose={() => setBibleScanOpen(false)} title="Scan Bible tracker">
-          <BibleTrackerScanPanel
-            state={bibleTracker}
-            onApply={handleApplyBibleScan}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {boardPrintPortal && boardPrintOpen && boardPrintJob &&
-        createPortal(
-          <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
-            onPaperSizeChange={handleBoardPaperSizeChange}
-          />,
-          boardPrintPortal
-        )}
-
-      {boardPrintOpen && boardPrintJob && (
-        <Modal
-          onClose={() => setBoardPrintOpen(false)}
-          title={`Print ${boardPrintJob.boardName || "board"}`}
-          actions={(
-            <>
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleExportBoardPdf}
-                disabled={boardPrintPdfBusy}
-              >
-                {boardPrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
-              </button>
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={handlePrintBoardWindow}
-              >
-                Print
-              </button>
-            </>
-          )}
-        >
-          <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
-            onPaperSizeChange={handleBoardPaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {boardScanOpen && boardPrintJob && (
-        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${boardPrintJob.boardName || "board"}`}>
-          <BoardScanPanel job={boardPrintJob} onApply={handleApplyBoardScan} />
-        </Modal>
-      )}
-
-      {showFirstRunOnboarding && (
-        <Modal onClose={() => {}} title="Welcome to Taskify" showClose={false}>
-          <FirstRunOnboarding
-            pushSupported={onboardingPushSupported}
-            pushConfigured={onboardingPushConfigured}
-            cloudRestoreAvailable={!!workerBaseUrl}
-            onUseExistingKey={handleOnboardingUseExistingKey}
-            onGenerateNewKey={handleOnboardingGenerateNewKey}
-            onRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
-            onRestoreFromCloud={handleOnboardingRestoreFromCloud}
-            onEnableNotifications={handleOnboardingEnableNotifications}
-            onComplete={completeFirstRunOnboarding}
-          />
-        </Modal>
-      )}
-
-      {addBoardOpen && (
-        <AddBoardModal
-          onClose={closeAddBoard}
-          onCreateBoard={createBoardFromName}
-          onJoinBoard={joinSharedBoard}
-        />
-      )}
-
-      {shareBoardModalOpen && (
-        <Modal onClose={closeShareBoard} title={`Share ${shareBoardDisplayName}`}>
-          {shareBoardTarget ? (
-            shareBoardTarget.nostr?.boardId ? (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <div className="share-mode-header">
-                    <div className="text-xs uppercase tracking-wide text-secondary">Share mode</div>
-                    <button
-                      type="button"
-                      className="share-mode-info-button pressable"
-                      aria-label="About share modes"
-                      aria-expanded={shareModeInfoOpen}
-                      aria-controls="share-mode-info"
-                      onClick={() => setShareModeInfoOpen((prev) => !prev)}
-                      ref={shareModeInfoButtonRef}
-                    >
-                      <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
-                    </button>
-                    {shareModeInfoOpen && (
-                      <div
-                        className="share-mode-info"
-                        role="tooltip"
-                        id="share-mode-info"
-                        ref={shareModeInfoRef}
-                      >
-                        <div className="share-mode-info__row">
-                          <div className="share-mode-info__label">Board</div>
-                          <div className="share-mode-info__text">
-                            Shares the live board ID and keeps changes in sync.
-                          </div>
-                        </div>
-                        <div className="share-mode-info__row">
-                          <div className="share-mode-info__label">Template</div>
-                          <div className="share-mode-info__text">
-                            Creates a new board ID and publishes a snapshot that won't sync future changes.
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  <div className="share-mode-toggle" role="group" aria-label="Share mode">
-                    <button
-                      type="button"
-                      className="pill-select share-mode-toggle__button pressable"
-                      data-active={shareBoardMode === "board"}
-                      aria-pressed={shareBoardMode === "board"}
-                      onClick={() => {
-                        setShareBoardMode("board");
-                        setShareTemplateStatus(null);
-                        setShareModeInfoOpen(false);
-                      }}
-                    >
-                      Board
-                    </button>
-                    <button
-                      type="button"
-                      className="pill-select share-mode-toggle__button pressable"
-                      data-active={shareBoardMode === "template"}
-                      aria-pressed={shareBoardMode === "template"}
-                      onClick={() => {
-                        setShareBoardMode("template");
-                        setShareTemplateStatus(null);
-                        setShareModeInfoOpen(false);
-                      }}
-                    >
-                      Template
-                    </button>
-                  </div>
-                </div>
-                {shareTemplateStatus && (
-                  <div className="text-sm text-rose-400">{shareTemplateStatus}</div>
-                )}
-                <div className="space-y-1">
-                  <div className="wallet-qr-card wallet-qr-card--flat wallet-qr-card--centered">
-                    <div className="wallet-qr-card__code">
-                      {shareBoardId ? (
-                        <button
-                          type="button"
-                          className="wallet-qr-card__canvas wallet-qr-card__canvas--pressable pressable"
-                          style={{ maxWidth: "16rem" }}
-                          aria-label="Copy board ID"
-                          onClick={async () => {
-                            if (!shareBoardId) return;
-                            try {
-                              await navigator.clipboard?.writeText(shareBoardId);
-                            } catch {}
-                          }}
-                        >
-                          <QRCodeCanvas
-                            value={shareBoardQrPayload ?? shareBoardId}
-                            size={256}
-                            includeMargin={true}
-                            className="wallet-qr-card__qr"
-                          />
-                        </button>
-                      ) : (
-                        <div className="contact-qr-placeholder text-secondary">
-                          {shareTemplateBusy ? "Generating template share..." : "No QR to share yet."}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  {shareBoardId && (
-                    <div className="wallet-qr-card__helper">Tap to copy</div>
-                  )}
-                  <div className="flex gap-2">
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={() => {
-                        setShareContactStatus(null);
-                        setShareContactPickerOpen(true);
-                      }}
-                      disabled={!shareBoardId || (shareBoardMode === "template" && shareTemplateBusy)}
-                    >
-                      Contacts
-                    </button>
-                  </div>
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={handleOpenBoardPrint}
-                    >
-                      Print
-                    </button>
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={handleOpenBoardScan}
-                    >
-                      Scan
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <button
-                  className="accent-button button-sm pressable w-full justify-center"
-                  onClick={() => enableBoardSharing(shareBoardTarget.id)}
-                >
-                  Enable sharing
-                </button>
-              </div>
-            )
-          ) : (
-            <div className="text-sm text-secondary">Select a board to share first.</div>
-          )}
-        </Modal>
-      )}
-      <ActionSheet
-        open={shareContactPickerOpen}
-        onClose={() => {
-          if (shareContactBusy) return;
-          setShareContactPickerOpen(false);
-          setShareContactStatus(null);
-        }}
-        title="Send board ID"
-        stackLevel={75}
-      >
-        {shareBoardTarget ? (
-          <div className="text-sm text-secondary mb-2">
-            Choose a contact to send <span className="font-semibold">{shareBoardDisplayName}</span>.
-          </div>
-        ) : (
-          <div className="text-sm text-secondary mb-2">Select a board to share first.</div>
-        )}
-        {shareContactStatus && (
-          <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>
-        )}
-        {shareableContacts.length ? (
-          <div className="space-y-2">
-            {shareableContacts.map((contact) => {
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              return (
-                <button
-                  key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
-                  disabled={shareContactBusy || !shareBoardId}
-                  onClick={() => handleShareBoardToContact(contact)}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name">{label}</div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
-        )}
-        <div className="flex gap-2 mt-3">
-          <button
-            type="button"
-            className="ghost-button button-sm pressable flex-1 justify-center"
-            onClick={() => {
-              if (shareContactBusy) return;
-              setShareContactPickerOpen(false);
-              setShareContactStatus(null);
-            }}
-            disabled={shareContactBusy}
-          >
-            Cancel
-          </button>
-        </div>
-      </ActionSheet>
-
-      {/* Cashu Wallet */}
-      <Suspense fallback={null}>
-        <CashuWalletModal
-            open={showWalletShell}
-            onClose={closeWallet}
-            onOpenBounties={openWalletBounties}
-            page={showChat ? "chat" : "wallet"}
-            showTabSwitcher={false}
-            showBottomNav
-            walletConversionEnabled={settings.walletConversionEnabled}
-            walletPrimaryCurrency={settings.walletPrimaryCurrency}
-            setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}
-            npubCashLightningAddressEnabled={settings.npubCashLightningAddressEnabled}
-            npubCashAutoClaim={settings.npubCashLightningAddressEnabled && settings.npubCashAutoClaim}
-            sentTokenStateChecksEnabled={settings.walletSentStateChecksEnabled}
-            paymentRequestsEnabled={settings.walletPaymentRequestsEnabled}
-            paymentRequestsBackgroundChecksEnabled={
-              settings.walletPaymentRequestsEnabled && settings.walletPaymentRequestsBackgroundChecksEnabled
-            }
-            tokenStateResetNonce={walletTokenStateResetNonce}
-            mintBackupEnabled={settings.walletMintBackupEnabled}
-            contactsSyncEnabled={settings.walletContactsSyncEnabled}
-            fileStorageServer={settings.fileStorageServer}
-            fileServers={settings.fileServers}
-            encryptedFileStorageServer={settings.encryptedFileStorageServer}
-            encryptedFileServers={settings.encryptedFileServers}
-            messageItems={walletMessageItems}
-            messagesUnreadCount={messagesUnreadCount}
-            onAcceptMessage={acceptInboxMessage}
-            onMaybeMessage={maybeInboxMessage}
-            onDeclineMessage={declineInboxMessage}
-            onDismissMessage={dismissInboxMessage}
-            onMarkMessagesRead={markInboxMessagesRead}
-            inboxPendingItems={inboxPendingItems}
-            pendingCalendarInvites={pendingCalendarInvites}
-            onCalendarInviteRsvp={handleCalendarInviteRsvp}
-            onDismissCalendarInvite={dismissCalendarInvite}
-            formatCalendarInviteWhen={formatCalendarInviteWhen}
-            onDmUnreadCountChange={setDmUnreadCount}
-          />
-      </Suspense>
-
-
-      {/* ── Add task menu: New Task / Dictate ─────────────────────────────── */}
-      <ActionSheet
-        open={addMenuKey !== null && voiceDictationKey === null}
-        onClose={() => setAddMenuKey(null)}
-        title="Add Task"
-      >
-        <div className="space-y-1 pb-1">
-          <button
-            type="button"
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
-            onClick={() => {
-              const key = addMenuKey!;
-              setAddMenuKey(null);
-              openInlineTaskEditorDirect(key);
-            }}
-          >
-            <span className="text-lg leading-none">＋</span>
-            <span className="text-sm font-medium">New Task</span>
-          </button>
-          <button
-            type="button"
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
-            onClick={() => {
-              setVoiceDictationKey(addMenuKey);
-            }}
-          >
-            <span className="text-lg leading-none">🎙</span>
-            <span className="text-sm font-medium">Dictate</span>
-          </button>
-        </div>
-      </ActionSheet>
-
-      {/* ── Voice dictation modal ──────────────────────────────────────────── */}
-      {voiceDictationKey !== null && (
-        <VoiceDictationModal
-          isOpen={true}
-          onClose={() => {
-            setVoiceDictationKey(null);
-            setAddMenuKey(null);
-          }}
-          onSave={(tasks) => {
-            if (voiceDictationKey !== null) {
-              handleVoiceSave(voiceDictationKey, tasks);
-            }
-          }}
-          workerBaseUrl={workerBaseUrl}
-          npub={nostrPK ? ((() => {
-            try {
-              return typeof (nip19 as any).npubEncode === "function"
-                ? (nip19 as any).npubEncode(nostrPK)
-                : nostrPK;
-            } catch { return nostrPK; }
-          })()) : ""}
-          testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
-          defaultBoardId={currentBoard?.id}
-        />
-      )}
+      <InlineTaskOverlays
+        addMenuKey={addMenuKey}
+        currentBoardId={currentBoard?.id}
+        handleVoiceSave={handleVoiceSave}
+        nostrPK={nostrPK}
+        openInlineTaskEditorDirect={openInlineTaskEditorDirect}
+        setAddMenuKey={setAddMenuKey}
+        setVoiceDictationKey={setVoiceDictationKey}
+        voiceDictationKey={voiceDictationKey}
+        workerBaseUrl={workerBaseUrl}
+      />
 
       </div>
     </div>
@@ -21041,27 +13172,4 @@ async function syncRemindersToWorker(
   if (!res.ok) {
     throw new Error(`Failed to sync reminders (${res.status})`);
   }
-}
-
-
-/* ================= Retained Subcomponents ================= */
-
-/* Small circular icon button */
-function IconButton({
-  children, onClick, label, intent, buttonRef
-}: React.PropsWithChildren<{ onClick: ()=>void; label: string; intent?: "danger"|"success"; buttonRef?: React.Ref<HTMLButtonElement> }>) {
-  const cls = `icon-button pressable ${intent === 'danger' ? 'icon-button--danger' : intent === 'success' ? 'icon-button--success' : ''}`;
-  const style = { '--icon-size': '2.35rem' } as React.CSSProperties;
-  return (
-    <button
-      ref={buttonRef}
-      aria-label={label}
-      title={label}
-      className={cls}
-      style={style}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
 }

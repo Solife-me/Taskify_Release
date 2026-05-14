@@ -14,11 +14,6 @@ import viteConfig from "./vite.config";
 // source files use the same import paths, but vitest then transforms them
 // through this `taskify-pwa` project, so its `node_modules` is the active
 // resolution root and `@noble/hashes` is found normally.
-//
-// We import from `vite` (not `vitest/config`) because vitest is not a
-// project dependency — it's invoked via `npx vitest`, which means vitest's
-// own modules are not resolvable from this config file. The `test` field is
-// still picked up by vitest at runtime.
 const runtimeNostrSrc = fileURLToPath(new URL("../taskify-runtime-nostr/src/index.ts", import.meta.url));
 
 export default mergeConfig(

@@ -1,4 +1,3 @@
-import React from "react";
 import type { GcalCalendar, GcalConnectionStatus } from "../../hooks/useGoogleCalendar";
 
 type Props = {

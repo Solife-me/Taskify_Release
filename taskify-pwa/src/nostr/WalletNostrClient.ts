@@ -1,11 +1,10 @@
-import type NDK from "@nostr-dev-kit/ndk";
-import type { NDKFilter, NDKRelaySet } from "@nostr-dev-kit/ndk";
+import type { NDKFilter } from "@nostr-dev-kit/ndk";
 import { getPublicKey, nip19, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { PublishCoordinator, type PublishResult } from "./PublishCoordinator";
 import { SubscriptionManager, type ManagedSubscription } from "./SubscriptionManager";
 
-type RelayResolver = (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
+type RelayResolver = (relayUrls?: string[]) => Promise<unknown>;
 
 type SubscribeHandlers = {
   onEvent?: (event: NostrEvent) => void;
@@ -14,13 +13,13 @@ type SubscribeHandlers = {
 };
 
 export class WalletNostrClient {
-  private readonly ndk: NDK;
+  private readonly ndk: any;
   private readonly publisher: PublishCoordinator;
   private readonly subscriptions: SubscriptionManager;
   private readonly resolveRelaySet: RelayResolver;
 
   constructor(
-    ndk: NDK,
+    ndk: any,
     publisher: PublishCoordinator,
     subscriptions: SubscriptionManager,
     resolveRelaySet: RelayResolver,
@@ -58,8 +57,8 @@ export class WalletNostrClient {
   async fetchEvents(filters: NDKFilter[], relays: string[]): Promise<NostrEvent[]> {
     const relaySet = await this.resolveRelaySet(relays);
     const fetched = await this.ndk.fetchEvents(filters, { closeOnEose: true }, relaySet);
-    return Array.from(fetched)
-      .map((ev) => ev.rawEvent?.() ?? (ev as unknown as NostrEvent))
+    return Array.from(fetched as Iterable<any>)
+      .map((ev) => ev.rawEvent?.() ?? (ev as NostrEvent))
       .filter((ev): ev is NostrEvent => !!ev?.id);
   }
 

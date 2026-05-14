@@ -4,6 +4,12 @@ export {
   isListLikeBoard,
 } from "taskify-core";
 
+import type {
+  Board,
+  CalendarEvent,
+  Task,
+} from "taskify-core";
+
 export type {
   TaskPriority,
   Weekday,

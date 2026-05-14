@@ -1,4 +1,4 @@
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
 
 import type { Contact } from "./contacts";

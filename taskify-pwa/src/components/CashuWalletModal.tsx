@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bech32 } from "bech32";
@@ -14,8 +13,8 @@ import {
   type ProofState,
 } from "@cashu/cashu-ts";
 import { secp256k1 } from "@noble/curves/secp256k1";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import QrScannerLib from "qr-scanner";
 import { QRCodeCanvas } from "qrcode.react";
 import { finalizeEvent, getEventHash, getPublicKey, nip04, nip19, nip44, type EventTemplate } from "nostr-tools";
@@ -40,6 +39,7 @@ import {
   parseNut16FrameString,
 } from "../wallet/nut16";
 import { encodePeanut, extractPeanutToken } from "../wallet/peanut";
+import { getCashuTokenMetadata } from "../wallet/cashuTokenMetadata";
 import { decodeBolt11Amount, estimateInvoiceAmountSat, formatMsatAsSat } from "../wallet/lightning";
 import {
   LS_LIGHTNING_CONTACTS,
@@ -64,7 +64,8 @@ import {
   LS_GROUP_LEFT,
   LS_GROUP_MUTED,
 } from "../localStorageKeys";
-import { LS_NOSTR_SK } from "../nostrKeys";
+import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
+import { LS_NOSTR_SK, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -81,7 +82,7 @@ import {
 import { SessionPool } from "../nostr/SessionPool";
 import { NostrSession } from "../nostr/NostrSession";
 import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePublisher";
-import { uploadAvatarToNip96, uploadAvatar } from "../nostr/Nip96Client";
+import { uploadAvatar } from "../nostr/Nip96Client";
 import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
 import {
   encryptAndUploadMessengerAttachment,
@@ -133,11 +134,22 @@ import {
   type MintBackupPayload,
 } from "../wallet/mintBackup";
 import type { WalletMessageItem } from "../types/walletMessages";
+import { chatRetentionCutoffMs } from "../domains/tasks/settingsTypes";
 
 type ScanResult = QrScannerLib.ScanResult;
 
 const WALLET_SCAN_TARGET_SIZE = 800;
 const WALLET_SCAN_MAX_SCANS_PER_SECOND = 25;
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined") {
+      resolve();
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
+}
 
 const AnimatedEllipsis = () => {
   const [step, setStep] = useState(0);
@@ -460,9 +472,30 @@ function normalizeProofAmount(value: unknown): number {
   if (typeof value === "number") {
     return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
   }
+  if (typeof value === "bigint") {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
+    return Math.max(0, Number(value));
+  }
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+  }
+  const amountLike = value as { toNumber?: () => number; toNumberUnsafe?: () => number };
+  try {
+    if (typeof amountLike?.toNumber === "function") {
+      const numeric = amountLike.toNumber();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    if (typeof amountLike?.toNumberUnsafe === "function") {
+      const numeric = amountLike.toNumberUnsafe();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
   }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
@@ -471,6 +504,44 @@ function normalizeProofAmount(value: unknown): number {
 function sumProofAmounts(proofs: any[]): number {
   if (!Array.isArray(proofs)) return 0;
   return proofs.reduce((sum: number, proof: any) => sum + normalizeProofAmount(proof?.amount), 0);
+}
+
+function decodeCashuTokenLoose(token: string): any | null {
+  try {
+    return getDecodedToken(token, []);
+  } catch {
+    return null;
+  }
+}
+
+function readCashuTokenMetadata(token: string): any | null {
+  try {
+    return getCashuTokenMetadata(token);
+  } catch {
+    return null;
+  }
+}
+
+function isValidCashuTokenString(token: string): boolean {
+  return !!readCashuTokenMetadata(token) || !!decodeCashuTokenLoose(token);
+}
+
+function amountFromCashuToken(token: string): number {
+  const metadata = readCashuTokenMetadata(token);
+  const metadataAmount = normalizeProofAmount(metadata?.amount);
+  if (metadataAmount > 0) return metadataAmount;
+  const decoded = decodeCashuTokenLoose(token);
+  const entries: any[] = decoded
+    ? Array.isArray(decoded?.token)
+      ? decoded.token
+      : decoded?.proofs
+        ? [decoded]
+        : []
+    : [];
+  return entries.reduce(
+    (outer, entry) => outer + sumProofAmounts(Array.isArray(entry?.proofs) ? entry.proofs : []),
+    0,
+  );
 }
 
 function extractMinibitsPaymentSender(value: string): string | null {
@@ -495,11 +566,7 @@ function normalizeCashuTokenCandidate(value: string): string | null {
   }
   candidate = candidate.replace(/[)\]}>.,!?;:"'\u2018\u2019\u201C\u201D`]+$/g, "");
   if (!candidate) return null;
-  try {
-    return getDecodedToken(candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
+  return isValidCashuTokenString(candidate) ? candidate : null;
 }
 
 function extractFirstCashuTokenFromText(value: string): string | null {
@@ -1590,6 +1657,30 @@ type NostrIdentity = {
   pubkey: string;
 };
 
+type NostrIdentityInfo = {
+  identity: NostrIdentity | null;
+  reason: string | null;
+};
+
+const EMPTY_NOSTR_IDENTITY_INFO: NostrIdentityInfo = { identity: null, reason: null };
+
+function readStoredNostrIdentity(): NostrIdentityInfo {
+  const raw = nostrSkSync().trim();
+  if (!raw) {
+    return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
+    return { identity: null, reason: "Nostr secret key must be 64 hexadecimal characters." };
+  }
+  const normalized = raw.toLowerCase();
+  try {
+    const pubkey = getPublicKey(hexToBytes(normalized));
+    return { identity: { secret: normalized, pubkey }, reason: null };
+  } catch {
+    return { identity: null, reason: "Invalid Nostr secret key." };
+  }
+}
+
 type PublicFollow = {
   pubkey: string;
   relay?: string;
@@ -1859,7 +1950,7 @@ function summarizeStoredProofStates(proofs: Array<{ lastState?: ProofStateValue 
 
 function buildTokenSpentToastMessage(proofs: Array<{ amount?: number | null }>): string {
   const totalSat = proofs.reduce(
-    (sum, proof) => sum + (typeof proof.amount === "number" ? proof.amount : 0),
+    (sum, proof) => sum + normalizeProofAmount(proof.amount),
     0,
   );
   if (totalSat > 0) {
@@ -2327,8 +2418,7 @@ function readDmCache(): WalletDmMessage[] {
         ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
         ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
       }))
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(-400);
+      .sort((a, b) => a.createdAt - b.createdAt);
   } catch {
     return [];
   }
@@ -2644,6 +2734,7 @@ export default function CashuWalletModal({
   onDismissCalendarInvite,
   formatCalendarInviteWhen,
   onDmUnreadCountChange,
+  chatMessageRetention = "forever",
 }: {
   open: boolean;
   onClose: () => void;
@@ -2679,6 +2770,7 @@ export default function CashuWalletModal({
   onDismissCalendarInvite?: (invite: any) => void;
   formatCalendarInviteWhen?: (invite: any) => string;
   onDmUnreadCountChange?: (count: number) => void;
+  chatMessageRetention?: string;
 }) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -2702,6 +2794,7 @@ export default function CashuWalletModal({
     console.debug("[wallet] CashuWalletModal render start");
   }, [open, walletDebugEnabled]);
   const {
+    ready: walletReady,
     mintUrl,
     setMintUrl,
     totalBalance,
@@ -2815,7 +2908,8 @@ export default function CashuWalletModal({
     const trimmed = typeof token === "string" ? token.trim() : "";
     if (!trimmed) return undefined;
     try {
-      const decoded: any = getDecodedToken(trimmed);
+      const decoded: any = decodeCashuTokenLoose(trimmed);
+      if (!decoded) return undefined;
       const tokenEntries: any[] = Array.isArray(decoded?.token)
         ? decoded.token
         : decoded?.proofs
@@ -2872,12 +2966,7 @@ export default function CashuWalletModal({
     const candidate = extractCashuUriPayload(trimmed) || trimmed;
     if (/^cashuA:/i.test(candidate)) return false;
     if (!/^cashu[a-z0-9]/i.test(candidate)) return false;
-    try {
-      getDecodedToken(candidate);
-      return true;
-    } catch {
-      return false;
-    }
+    return isValidCashuTokenString(candidate);
   }
 
   interface HistoryItem {
@@ -3162,7 +3251,7 @@ export default function CashuWalletModal({
   }, []);
   const persistDmMessages = useCallback((messages: WalletDmMessage[]) => {
     try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages.slice(-400)));
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE, JSON.stringify(messages));
     } catch {
       // ignore storage failures
     }
@@ -3219,6 +3308,26 @@ export default function CashuWalletModal({
     }, 60 * 60 * 1000);
     return () => window.clearInterval(timer);
   }, [pruneTempDeletedDmEvents]);
+
+  useEffect(() => {
+    const cutoff = chatRetentionCutoffMs(chatMessageRetention as any);
+    if (cutoff == null) return;
+    setDmMessages((prev) => {
+      const next = prev.filter((m) => m.createdAt * 1000 >= cutoff);
+      if (next.length === prev.length) return prev;
+      persistDmMessages(next);
+      return next;
+    });
+  }, [chatMessageRetention, persistDmMessages]);
+
+  useEffect(() => {
+    const handler = () => {
+      setDmMessages([]);
+      persistDmMessages([]);
+    };
+    window.addEventListener("taskify:clear-chat-history", handler);
+    return () => window.removeEventListener("taskify:clear-chat-history", handler);
+  }, [persistDmMessages]);
   const persistDmPeerProfileCache = useCallback(
     (peerHex: string, profile: ContactProfile, updatedAt: number, pictureDataUrl?: string) => {
       const normalizedPeerHex = normalizeDmPeerHex(peerHex);
@@ -3509,6 +3618,9 @@ export default function CashuWalletModal({
   const nostrPoolClosingRef = useRef(false);
   const nostrSubscriptionActiveRef = useRef(false);
   const nostrIdentityRef = useRef<{ secret: string; pubkey: string } | null>(null);
+  const [nostrIdentityInfo, setNostrIdentityInfo] = useState<NostrIdentityInfo>(() =>
+    paymentRequestsEnabled ? readStoredNostrIdentity() : EMPTY_NOSTR_IDENTITY_INFO,
+  );
 
   const peanutSendToken = useMemo(() => {
     if (!sendTokenStr.trim()) return null;
@@ -3590,22 +3702,7 @@ export default function CashuWalletModal({
     setSendLockError("");
   }, []);
 
-  const readNostrIdentity = useCallback((): { identity: NostrIdentity | null; reason: string | null } => {
-    const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
-    if (!raw) {
-      return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
-    }
-    if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
-      return { identity: null, reason: "Nostr secret key must be 64 hexadecimal characters." };
-    }
-    const normalized = raw.toLowerCase();
-    try {
-      const pubkey = getPublicKey(hexToBytes(normalized));
-      return { identity: { secret: normalized, pubkey }, reason: null };
-    } catch {
-      return { identity: null, reason: "Invalid Nostr secret key." };
-    }
-  }, []);
+  const readNostrIdentity = useCallback(readStoredNostrIdentity, []);
 
   const readProfileEventId = useCallback((pubkey: string): string | null => {
     if (!pubkey) return null;
@@ -3976,11 +4073,28 @@ export default function CashuWalletModal({
     }
   }, []);
 
-
-  const nostrIdentityInfo = useMemo(() => {
-    if (!paymentRequestsEnabled) return { identity: null as NostrIdentity | null, reason: null as string | null };
-    return readNostrIdentity();
+  const refreshNostrIdentity = useCallback(() => {
+    setNostrIdentityInfo(paymentRequestsEnabled ? readNostrIdentity() : EMPTY_NOSTR_IDENTITY_INFO);
   }, [paymentRequestsEnabled, readNostrIdentity]);
+
+  useEffect(() => {
+    refreshNostrIdentity();
+  }, [open, receiveMode, refreshNostrIdentity, sendMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === LS_NOSTR_SK) {
+        refreshNostrIdentity();
+      }
+    };
+    window.addEventListener(TASKIFY_NOSTR_KEY_UPDATED_EVENT, refreshNostrIdentity);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(TASKIFY_NOSTR_KEY_UPDATED_EVENT, refreshNostrIdentity);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [refreshNostrIdentity]);
 
   useEffect(() => {
     nostrIdentityRef.current = nostrIdentityInfo.identity;
@@ -4002,7 +4116,44 @@ export default function CashuWalletModal({
 
   const [recvMsg, setRecvMsg] = useState("");
 
-  const [lnInput, setLnInput] = useState("");
+  const [lnInput, setLnInputState] = useState("");
+  const lnInputValueRef = useRef("");
+  const lnInputCommitTimerRef = useRef<number | null>(null);
+  const setLnInput = useCallback((next: string | ((previous: string) => string), options?: { defer?: boolean }) => {
+    const resolveNext = (previous: string) => {
+      const resolved = typeof next === "function" ? next(previous) : next;
+      return typeof resolved === "string" ? resolved : String(resolved ?? "");
+    };
+    if (options?.defer && typeof window !== "undefined") {
+      const resolved = resolveNext(lnInputValueRef.current);
+      lnInputValueRef.current = resolved;
+      if (lnInputCommitTimerRef.current !== null) {
+        window.clearTimeout(lnInputCommitTimerRef.current);
+      }
+      lnInputCommitTimerRef.current = window.setTimeout(() => {
+        lnInputCommitTimerRef.current = null;
+        setLnInputState(lnInputValueRef.current);
+      }, 140);
+      return;
+    }
+    if (typeof window !== "undefined" && lnInputCommitTimerRef.current !== null) {
+      window.clearTimeout(lnInputCommitTimerRef.current);
+      lnInputCommitTimerRef.current = null;
+    }
+    setLnInputState((previous) => {
+      const resolved = resolveNext(previous);
+      lnInputValueRef.current = resolved;
+      return resolved;
+    });
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (lnInputCommitTimerRef.current !== null) {
+        window.clearTimeout(lnInputCommitTimerRef.current);
+        lnInputCommitTimerRef.current = null;
+      }
+    };
+  }, []);
   const [lnAddrAmt, setLnAddrAmt] = useState("");
   const [lnState, setLnState] = useState<"idle" | "sending" | "done" | "error">("idle");
   const [lnError, setLnError] = useState("");
@@ -4600,7 +4751,7 @@ export default function CashuWalletModal({
                   const proofId = typeof proof.id === "string" ? proof.id : null;
                   const C = typeof proof.C === "string" ? proof.C : null;
                   if (!secret || !proofId || !C) return null;
-                  const amount = typeof proof.amount === "number" ? proof.amount : 0;
+                  const amount = normalizeProofAmount(proof.amount);
                   const stored: StoredProofForState = { secret, id: proofId, C, amount };
                   if (typeof proof.witness === "string") stored.witness = proof.witness;
                   const Y = typeof proof.Y === "string" ? proof.Y : computeProofY(secret);
@@ -5036,6 +5187,13 @@ export default function CashuWalletModal({
         }));
       }
       try {
+        const state = await checkMintQuote(quoteId, { mintUrl: options?.mintUrl });
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state !== "PAID") {
+          throw new Error("Mint invoice is not paid yet");
+        }
         await claimMint(quoteId, amountSat, { mintUrl: options?.mintUrl });
         handleMintQuoteClaimSuccess(historyKey, amountSat, options?.mintUrl ?? null);
       } catch (err: any) {
@@ -5051,7 +5209,7 @@ export default function CashuWalletModal({
         mintQuoteClaimingRef.current.delete(quoteId);
       }
     },
-    [claimMint, handleMintQuoteClaimSuccess, setHistoryMintQuoteStates],
+    [checkMintQuote, claimMint, handleMintQuoteClaimSuccess, setHistoryMintQuoteStates],
   );
   const performTokenStateCheck = useCallback(
     async (item: HistoryItem, options?: { silent?: boolean }) => {
@@ -5256,7 +5414,7 @@ export default function CashuWalletModal({
       }));
       try {
         const state = await checkMintQuote(mintQuote.quote, { mintUrl: targetMintRaw });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "PAID") {
           await claimMint(mintQuote.quote, mintQuote.amount, { mintUrl: targetMintRaw });
           setHistory((prev) => [
             buildHistoryEntry({
@@ -5295,6 +5453,16 @@ export default function CashuWalletModal({
             return next;
           });
           showToast("Invoice expired", 3000);
+          return;
+        }
+        if (normalizedState === "ISSUED") {
+          setHistoryMintQuoteStates((prev) => ({
+            ...prev,
+            [item.id]: {
+              status: "error",
+              message: "Quote already issued. Restore from wallet seed if balance is missing.",
+            },
+          }));
           return;
         }
         const message =
@@ -5445,7 +5613,7 @@ export default function CashuWalletModal({
   const [npubCashClaimMessage, setNpubCashClaimMessage] = useState("");
   const deriveDefaultLightningAddress = useCallback(() => {
     if (npubCashIdentity?.address) return npubCashIdentity.address;
-    const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
+    const storedSk = nostrSkSync();
     if (!storedSk) return "";
     try {
       const identity = deriveNpubCashIdentity(storedSk);
@@ -5469,6 +5637,26 @@ export default function CashuWalletModal({
   }, [npubCashIdentity?.address]);
   const nut16CollectorRef = useRef<Nut16Collector | null>(null);
   const lnRef = useRef<HTMLTextAreaElement | null>(null);
+  const readLightningInput = useCallback(() => {
+    const current = lnRef.current?.value ?? lnInputValueRef.current ?? lnInput;
+    return typeof current === "string" ? current : "";
+  }, [lnInput]);
+  const commitLightningInputFromDom = useCallback(
+    (value?: string) => {
+      const next = typeof value === "string" ? value : readLightningInput();
+      setLnInput(next);
+      return next;
+    },
+    [readLightningInput, setLnInput],
+  );
+  useEffect(() => {
+    const input = lnRef.current;
+    if (!input) return;
+    if (typeof document !== "undefined" && document.activeElement === input) return;
+    if (input.value !== lnInput) {
+      input.value = lnInput;
+    }
+  }, [lnInput, lightningSendView, sendMode]);
   const npubCashClaimAbortRef = useRef<AbortController | null>(null);
   const npubCashClaimingRef = useRef(false);
   const backgroundNpubCashClaimRef = useRef(false);
@@ -6414,23 +6602,8 @@ export default function CashuWalletModal({
                 : null;
             detail = typeof (paymentPayload as any).memo === "string" ? (paymentPayload as any).memo : null;
           } else if (typeof paymentPayload === "string") {
-            try {
-              const decoded = getDecodedToken(paymentPayload);
-              const entries: any[] = decoded
-                ? Array.isArray((decoded as any)?.token)
-                  ? (decoded as any).token
-                  : (decoded as any)?.proofs
-                    ? [decoded]
-                    : []
-                : [];
-              const decodedAmount = entries.reduce(
-                (outer, entry) => outer + sumProofAmounts(Array.isArray(entry?.proofs) ? entry.proofs : []),
-                0,
-              );
-              amountSat = decodedAmount > 0 ? decodedAmount : null;
-            } catch {
-              amountSat = null;
-            }
+            const decodedAmount = amountFromCashuToken(paymentPayload);
+            amountSat = decodedAmount > 0 ? decodedAmount : null;
           }
           attachment = {
             type: "payment",
@@ -8113,7 +8286,7 @@ export default function CashuWalletModal({
       }
       return true;
     },
-    [defaultNostrRelays, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays],
+    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
   );
 
   // Resolve the active file-server entry for encrypted messenger attachments.
@@ -9272,7 +9445,7 @@ export default function CashuWalletModal({
     setContactsOpen(false);
     resetContactForm();
     setLightningSendView("input");
-  }, [resetContactForm]);
+  }, [resetContactForm, setLnInput]);
 
   useEffect(() => {
     const previous = previousReceiveModeRef.current;
@@ -9590,7 +9763,7 @@ export default function CashuWalletModal({
       if (!npubCashLightningAddressEnabled) return;
       if (npubCashClaimingRef.current) return;
       const auto = options?.auto === true;
-      const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
+      const storedSk = nostrSkSync();
       if (!storedSk) {
         setNpubCashIdentity(null);
         const message = "Add your Taskify Nostr key in Settings → Nostr to use npub.cash.";
@@ -9675,20 +9848,7 @@ export default function CashuWalletModal({
               continue;
             }
             let decodedAmount = 0;
-            try {
-              const decoded = getDecodedToken(normalizedToken);
-              const tokenEntries: any[] = Array.isArray(decoded?.token)
-                ? decoded.token
-                : decoded?.proofs
-                  ? [decoded]
-                  : [];
-              decodedAmount = tokenEntries.reduce((outerSum, entry) => {
-                const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
-                return outerSum + sumProofAmounts(proofs);
-              }, 0);
-            } catch {
-              decodedAmount = 0;
-            }
+            decodedAmount = amountFromCashuToken(normalizedToken);
 
             decodedAmount = Math.max(0, Math.floor(decodedAmount));
 
@@ -10196,7 +10356,7 @@ export default function CashuWalletModal({
       setNpubCashIdentityError(null);
       return;
     }
-    const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
+    const storedSk = nostrSkSync();
     if (!storedSk) {
       setNpubCashIdentity(null);
       setNpubCashIdentityError("Add your Taskify Nostr key in Settings → Nostr to use npub.cash.");
@@ -10308,7 +10468,7 @@ export default function CashuWalletModal({
       setShowNwcSheet(false);
       setLightningSendView("input");
     }
-  }, [open, nwcConnection, resetSendLockSettings]);
+  }, [open, nwcConnection, resetSendLockSettings, setLnInput]);
 
   useEffect(() => {
     if (!pendingPrimaryP2pkKeyId) return;
@@ -10836,11 +10996,6 @@ export default function CashuWalletModal({
     primaryCurrency,
   ]);
 
-  const canReviewLightningInput = useMemo(() => {
-    if (!lnInput.trim()) return false;
-    return isBolt11Input || isLnAddress || isLnurlInput;
-  }, [lnInput, isBolt11Input, isLnAddress, isLnurlInput]);
-
   const lightningInvoiceAmountSecondaryDisplay = useMemo(() => {
     if (lightningInvoiceAmountSat == null) return null;
     if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
@@ -11110,7 +11265,8 @@ export default function CashuWalletModal({
   );
 
   const handleLightningInputReview = useCallback(() => {
-    const kind = evaluateLightningSendInput(lnInput);
+    const currentInput = commitLightningInputFromDom();
+    const kind = evaluateLightningSendInput(currentInput);
     if (kind === "invoice") {
       setLnAddrAmt("");
       setLnState("idle");
@@ -11124,7 +11280,7 @@ export default function CashuWalletModal({
       setLnError("Unsupported input. Paste a Lightning invoice, address, or LNURL.");
     }
     return kind;
-  }, [evaluateLightningSendInput, lnInput]);
+  }, [commitLightningInputFromDom, evaluateLightningSendInput]);
 
   const handlePasteLightningInput = useCallback(async () => {
     try {
@@ -11148,7 +11304,7 @@ export default function CashuWalletModal({
     } catch {
       alert("Unable to read clipboard. Please paste manually.");
     }
-  }, [evaluateLightningSendInput]);
+  }, [evaluateLightningSendInput, setLnInput]);
 
   const handlePaymentRequestKeypadInput = useCallback((key: string) => {
     setPaymentRequestManualAmount((prev) => {
@@ -13105,7 +13261,7 @@ export default function CashuWalletModal({
         if (!trimmedMint) return;
         const normalizedProofs = normalizeProofList(proofs);
         if (!normalizedProofs.length) return;
-        const amount = normalizedProofs.reduce((sum, proof) => sum + (Number.isFinite(proof.amount) ? proof.amount : 0), 0);
+        const amount = sumProofAmounts(normalizedProofs);
         if (!amount) return;
         const resolvedUnit =
           typeof unitHint === "string" && unitHint.trim() ? unitHint.toLowerCase() : defaultUnit;
@@ -13186,7 +13342,7 @@ export default function CashuWalletModal({
         }
         if (!normalizedToken) continue;
         try {
-          const decoded = getDecodedToken(normalizedToken);
+          const decoded = decodeCashuTokenLoose(normalizedToken);
           if (!decoded) continue;
           const decodedEntries = Array.isArray((decoded as any)?.token)
             ? (decoded as any).token
@@ -13506,10 +13662,26 @@ export default function CashuWalletModal({
       autoClaimQueueRef.current.length = 0;
       return;
     }
+    // Sweep any incoming payments that the queue may have already drained
+    // without success — most commonly, DMs that arrived during a brief
+    // window before `walletReady` flipped true and `receiveToken` threw
+    // "Wallet not ready". Re-enqueue every entry that hasn't been marked
+    // spent so the manager-now-ready receiveToken can pick them up. This
+    // also self-heals after a one-off transient failure on the receive
+    // path (e.g. a relay hiccup mid-swap) once any auto-claim dependency
+    // changes — `claimingEventSet` plus `isIncomingPaymentSpent` prevent
+    // double-claiming, so the worst case is a single redundant attempt.
+    const queued = new Set<string>(autoClaimQueueRef.current.map((entry) => entry.eventId));
+    for (const entry of incomingPaymentRequestsRef.current) {
+      if (queued.has(entry.eventId)) continue;
+      if (isIncomingPaymentSpent(entry.eventId, entry.fingerprint ?? null)) continue;
+      autoClaimQueueRef.current.push(entry);
+      queued.add(entry.eventId);
+    }
     if (autoClaimQueueRef.current.length) {
       scheduleAutoClaimRun();
     }
-  }, [paymentRequestsEnabled, scheduleAutoClaimRun]);
+  }, [paymentRequestsEnabled, scheduleAutoClaimRun, isIncomingPaymentSpent, walletReady]);
 
   useEffect(() => {
     if (!paymentRequestsEnabled || (!open && !paymentRequestsBackgroundChecksEnabled)) {
@@ -13937,7 +14109,7 @@ export default function CashuWalletModal({
       console.error("handleLnurlScan failed", err);
       setScannerMessage(err?.message || String(err));
     }
-  }, []);
+  }, [setLnInput]);
 
   const openScanner = useCallback(async () => {
     const constraints: MediaStreamConstraints = {
@@ -14051,8 +14223,13 @@ export default function CashuWalletModal({
     const handleState = async (state: string) => {
       if (cancelled || claimed) return;
       const normalized = typeof state === "string" ? state.toUpperCase() : "";
-      if (normalized === "PAID" || normalized === "ISSUED") {
+      if (normalized === "PAID") {
         await finalizeClaim();
+        return;
+      }
+      if (normalized === "ISSUED") {
+        setMintStatus("error");
+        setMintError("Quote already issued. Restore from wallet seed if balance is missing.");
         return;
       }
       if (expiryMs <= Date.now()) {
@@ -14199,9 +14376,19 @@ export default function CashuWalletModal({
       const handleState = (quoteId: string, state: string, amountFromEvent?: number) => {
         if (cancelled) return;
         const normalizedState = state?.toUpperCase?.() ?? "";
-        if (normalizedState !== "PAID" && normalizedState !== "ISSUED") return;
         const plan = planMap.get(quoteId);
         if (!plan) return;
+        if (normalizedState === "ISSUED") {
+          setHistoryMintQuoteStates((prev) => ({
+            ...prev,
+            [plan.item.id]: {
+              status: "error",
+              message: "Quote already issued. Restore from wallet seed if balance is missing.",
+            },
+          }));
+          return;
+        }
+        if (normalizedState !== "PAID") return;
         const amount = amountFromEvent && amountFromEvent > 0 ? amountFromEvent : plan.amount;
         void claimMintQuoteById(quoteId, amount, {
           historyItemId: plan.item.id,
@@ -14360,6 +14547,7 @@ export default function CashuWalletModal({
 
     setCreatingSendToken(true);
     try {
+      await yieldToBrowser();
       const {
         token,
         proofs: sentProofs,
@@ -14418,7 +14606,7 @@ export default function CashuWalletModal({
       if (totalProofValue >= sats) {
         const availableNotes = proofs
           .filter((proof) => normalizeProofAmount(proof?.amount) > 0 && typeof proof?.secret === "string" && proof.secret)
-          .map((proof) => ({ secret: proof.secret!, amount: proof.amount ?? 0 }));
+          .map((proof) => ({ secret: proof.secret!, amount: normalizeProofAmount(proof.amount) }));
         if (availableNotes.length) {
           const sortedNotes = [...availableNotes].sort((a, b) => b.amount - a.amount);
           const subsetInfo = computeSubsetSelectionInfo(sortedNotes, sats);
@@ -14587,13 +14775,8 @@ export default function CashuWalletModal({
       } catch {
         // fall back to attempting decode with the provided input
       }
-      try {
-        const decoded = getDecodedToken(normalizedToken);
-        if (decoded) {
-          return { kind: "token", value: normalizedToken };
-        }
-      } catch {
-        // invalid token
+      if (isValidCashuTokenString(normalizedToken)) {
+        return { kind: "token", value: normalizedToken };
       }
       return { kind: "invalid" };
     },
@@ -14621,20 +14804,7 @@ export default function CashuWalletModal({
 
       let savedAmount = typeof saved.amountSat === "number" ? saved.amountSat : 0;
       if (!savedAmount) {
-        try {
-          const decoded = getDecodedToken(normalizedToken);
-          const entries: any[] = Array.isArray(decoded?.token)
-            ? decoded.token
-            : decoded?.proofs
-              ? [decoded]
-              : [];
-          savedAmount = entries.reduce((outer, entry) => {
-            const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
-            return outer + sumProofAmounts(proofs);
-          }, 0);
-        } catch {
-          savedAmount = 0;
-        }
+        savedAmount = amountFromCashuToken(normalizedToken);
       }
 
       const amountNote = savedAmount ? `${savedAmount} sat${savedAmount === 1 ? "" : "s"}` : "Token";
@@ -14765,12 +14935,21 @@ export default function CashuWalletModal({
     async function process() {
       switch (pendingScan.type) {
         case "ecash": {
-          openReceiveEcashSheet();
           setRecvMsg("");
+          setReceiveMode(null);
           setSendMode(null);
           setShowSendOptions(false);
           setScannerMessage("");
-          await processEcashInput(pendingScan.token);
+          const interpretation = interpretEcashInput(pendingScan.token);
+          if (interpretation.kind !== "token") {
+            showToast("Unrecognized eCash token.", 3500);
+            break;
+          }
+          try {
+            await redeemEcashToken(interpretation.value);
+          } catch (err: any) {
+            showToast(err?.message || "Unable to redeem scanned eCash token.", 4000);
+          }
           break;
         }
         case "bolt11": {
@@ -14824,8 +15003,10 @@ export default function CashuWalletModal({
     pendingScan,
     handleLnurlScan,
     handlePaymentRequestScan,
-    openReceiveEcashSheet,
-    processEcashInput,
+    interpretEcashInput,
+    redeemEcashToken,
+    showToast,
+    setLnInput,
   ]);
 
   const handlePasteEcashClipboard = useCallback(async () => {
@@ -14921,7 +15102,8 @@ export default function CashuWalletModal({
     setLnState("sending");
     setLnError("");
     try {
-      const raw = lnInput.trim();
+      await yieldToBrowser();
+      const raw = commitLightningInputFromDom().trim();
       if (!raw) throw new Error("Paste an invoice or enter lightning address");
       const normalized = raw.replace(/^lightning:/i, "").trim();
       let toastLabel: string | null = null;
@@ -15209,7 +15391,10 @@ export default function CashuWalletModal({
       const deadline = Date.now() + 120000;
       while (Date.now() < deadline) {
         const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state === "PAID") {
           setNwcFundState("claiming");
           await claimMint(quote.quote, amount, { mintUrl: quote.mintUrl });
           setNwcFundState("done");
@@ -15285,7 +15470,10 @@ export default function CashuWalletModal({
       const deadline = Date.now() + 120000;
       while (Date.now() < deadline) {
         const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state === "PAID") {
           await claimMint(quote.quote, amountSat, { mintUrl: quote.mintUrl });
           setLnurlWithdrawState("done");
           setLnurlWithdrawMessage("");
@@ -15375,7 +15563,10 @@ export default function CashuWalletModal({
       const deadline = Date.now() + 120000;
       while (Date.now() < deadline) {
         const state = await checkMintQuote(quote.quote, { mintUrl: quote.mintUrl });
-        if (state === "PAID" || state === "ISSUED") {
+        if (state === "ISSUED") {
+          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
+        }
+        if (state === "PAID") {
           setMintSwapState("claiming");
           await claimMint(quote.quote, amount, { mintUrl: quote.mintUrl });
           setMintSwapState("done");
@@ -15790,10 +15981,20 @@ export default function CashuWalletModal({
     const ownNpub = normalizeNostrPubkey(myCardNpub);
     const ownHex = ownNpub ? compressedToRawHex(ownNpub).toLowerCase() : "";
     if (ownHex && activeThread.peerPubkey === ownHex) return null;
-    const existing = contactByHex.get(activeThread.peerPubkey);
-    if (existing) return existing;
     const peerMeta = getPeerProfile(activeThread.peerPubkey);
     const peerLabel = peerLabelFor(activeThread.peerPubkey);
+    const existing = contactByHex.get(activeThread.peerPubkey);
+    if (existing) {
+      return {
+        ...existing,
+        address: existing.address.trim() || peerMeta?.lud16?.trim() || "",
+        nip05: existing.nip05?.trim() || peerMeta?.nip05?.trim() || "",
+        displayName: existing.displayName?.trim() || peerMeta?.displayName?.trim() || "",
+        username: existing.username?.trim() || peerMeta?.username?.trim() || "",
+        about: existing.about?.trim() || peerMeta?.about?.trim() || "",
+        picture: existing.picture?.trim() || peerMeta?.picture?.trim() || peerLabel.picture?.trim() || "",
+      } satisfies Contact;
+    }
     return {
       id: `chat-peer-${activeThread.peerPubkey}`,
       kind: "nostr",
@@ -22489,15 +22690,19 @@ export default function CashuWalletModal({
                   ref={lnRef}
                   className="pill-textarea wallet-textarea w-full"
                   placeholder="Enter invoice or lightning address"
-                  value={lnInput}
+                  defaultValue={lnInput}
                   onChange={(event) => {
-                    setLnInput(event.target.value);
-                    setLnError("");
+                    setLnInput(event.currentTarget.value, { defer: true });
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
                       event.preventDefault();
-                      if (canReviewLightningInput) {
+                      const current = event.currentTarget.value.trim().replace(/^lightning:/i, "").trim();
+                      const canReviewCurrent =
+                        /^ln(bc|tb|sb|bcrt)[0-9]/i.test(current) ||
+                        /^[^@\s]+@[^@\s]+$/.test(current) ||
+                        /^lnurl[0-9a-z]+$/i.test(current);
+                      if (canReviewCurrent) {
                         handleLightningInputReview();
                       }
                     }
@@ -22511,7 +22716,8 @@ export default function CashuWalletModal({
                 type="button"
                 className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
                 onClick={() => {
-                  if (lnInput.trim()) {
+                  const current = commitLightningInputFromDom();
+                  if (current.trim()) {
                     handleLightningInputReview();
                   } else {
                     void handlePasteLightningInput();

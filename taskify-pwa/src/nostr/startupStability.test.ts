@@ -15,7 +15,7 @@
  *     before the async subscribe promise resolves.
  *  7. Handler errors are isolated — one bad handler doesn't kill others.
  */
-import { test, describe, expect } from "vitest";
+import { test, expect } from "vitest";
 
 
 // ---------------------------------------------------------------------------
@@ -27,12 +27,15 @@ const FLUSH_BATCH_SIZE = 64;
 
 type NostrEvent = { id: string; kind: number; pubkey: string; created_at: number; tags: string[][]; content: string; sig: string };
 type Handler = { onEvent?: (event: NostrEvent, relay?: string) => void };
+type EoseHandler = Handler & { onEose?: (relay?: string) => void };
 type PendingEvent = { raw: NostrEvent; relayUrl?: string };
 type SubState = {
-  handlers: Set<Handler>;
+  handlers: Set<EoseHandler>;
   seenIds: Set<string>;
   pendingEvents: PendingEvent[];
   flushScheduled: boolean;
+  pendingEoseRelays: Array<string | undefined>;
+  eoseFlushScheduled: boolean;
 };
 
 function scheduleFrame(fn: () => void): void {
@@ -54,6 +57,8 @@ function flushPending(state: SubState): void {
   if (state.pendingEvents.length > 0) {
     state.flushScheduled = true;
     scheduleFrame(() => flushPending(state));
+  } else if (state.pendingEoseRelays.length > 0) {
+    scheduleEoseFlush(state);
   }
 }
 
@@ -61,6 +66,36 @@ function scheduleFlush(state: SubState): void {
   if (state.flushScheduled) return;
   state.flushScheduled = true;
   scheduleFrame(() => flushPending(state));
+}
+
+function flushEose(state: SubState): void {
+  state.eoseFlushScheduled = false;
+  if (state.pendingEvents.length > 0) {
+    scheduleFlush(state);
+    return;
+  }
+  const relays = state.pendingEoseRelays.splice(0);
+  for (const relayUrl of relays) {
+    state.handlers.forEach((h) => {
+      try {
+        h.onEose?.(relayUrl);
+      } catch {
+        // isolate handler errors
+      }
+    });
+  }
+}
+
+function scheduleEoseFlush(state: SubState): void {
+  if (state.eoseFlushScheduled) return;
+  state.eoseFlushScheduled = true;
+  scheduleFrame(() => flushEose(state));
+}
+
+function notifyEose(state: SubState, relayUrl?: string): void {
+  state.pendingEoseRelays.push(relayUrl);
+  if (state.pendingEvents.length > 0) scheduleFlush(state);
+  else scheduleEoseFlush(state);
 }
 
 /** Ingest a raw event through the subscription logic. Returns true if event was accepted. */
@@ -92,12 +127,14 @@ function ingestEvent(
 }
 
 function makeState(handler?: Handler["onEvent"]): SubState {
-  const h: Handler = { onEvent: handler };
+  const h: EoseHandler = { onEvent: handler };
   return {
     handlers: new Set(handler ? [h] : []),
     seenIds: new Set(),
     pendingEvents: [],
     flushScheduled: false,
+    pendingEoseRelays: [],
+    eoseFlushScheduled: false,
   };
 }
 
@@ -142,7 +179,7 @@ test("does not crash on malformed events (rawEvent throws, no id)", async () => 
 
   await wait(50);
 
-  expect(received).toEqual(["good-1"], "Only well-formed events should be delivered");
+  expect(received).toEqual(["good-1"]);
 });
 
 test("deduplicates events with the same id", async () => {
@@ -180,6 +217,8 @@ test("released handlers receive no further events", async () => {
     seenIds: new Set(),
     pendingEvents: [],
     flushScheduled: false,
+    pendingEoseRelays: [],
+    eoseFlushScheduled: false,
   };
 
   ingestEvent(state, () => makeEvent("before-release"));
@@ -205,14 +244,44 @@ test("handler errors are isolated — one bad handler does not kill others", asy
     seenIds: new Set(),
     pendingEvents: [],
     flushScheduled: false,
+    pendingEoseRelays: [],
+    eoseFlushScheduled: false,
   };
 
   ingestEvent(state, () => makeEvent("test-event-1"));
   ingestEvent(state, () => makeEvent("test-event-2"));
   await wait(50);
 
-  expect(received).toEqual(["test-event-1", "test-event-2"],
-    "Good handler should receive events even if another handler throws");
+  expect(received).toEqual(["test-event-1", "test-event-2"]);
+});
+
+test("EOSE is deferred until buffered events drain across frame-budgeted batches", async () => {
+  const received: string[] = [];
+  const eoseRelays: Array<string | undefined> = [];
+  const h: EoseHandler = {
+    onEvent: (ev) => received.push(ev.id),
+    onEose: (relay) => eoseRelays.push(relay),
+  };
+  const state: SubState = {
+    handlers: new Set([h]),
+    seenIds: new Set(),
+    pendingEvents: [],
+    flushScheduled: false,
+    pendingEoseRelays: [],
+    eoseFlushScheduled: false,
+  };
+
+  for (let i = 0; i < FLUSH_BATCH_SIZE + 10; i++) {
+    ingestEvent(state, () => makeEvent(`eose-${i}`), "wss://relay.test");
+  }
+  notifyEose(state, "wss://relay.test");
+
+  expect(eoseRelays).toEqual([]);
+
+  await wait(80);
+
+  expect(received.length).toBe(FLUSH_BATCH_SIZE + 10);
+  expect(eoseRelays).toEqual(["wss://relay.test"]);
 });
 
 test("frame-budgeted batching: large burst does not deliver more than FLUSH_BATCH_SIZE per frame", async () => {

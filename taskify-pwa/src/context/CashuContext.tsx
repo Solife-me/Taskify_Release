@@ -1,12 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { MeltProofsResponse, MeltQuoteResponse, MintQuoteResponse, Proof, ProofState } from "@cashu/cashu-ts";
+import type { MeltProofsResponse, Proof, ProofState } from "@cashu/cashu-ts";
 import { getDecodedToken, getEncodedToken } from "@cashu/cashu-ts";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { MintSession, type MintConnection, type CreateSendTokenOptions, type SendTokenLockInfo } from "../mint/MintSession";
 import {
   addPendingToken,
   addMintToList,
+  flushWalletStorage,
   getActiveMint,
   listPendingTokens,
   loadStore,
@@ -15,12 +16,13 @@ import {
   setActiveMint as persistActiveMint,
   type PendingTokenEntry,
 } from "../wallet/storage";
-import { LS_NOSTR_SK } from "../nostrKeys";
+import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
 import { useP2PK } from "./P2PKContext";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
 import { decodeBolt11Amount } from "../wallet/lightning";
+import { getCashuTokenMetadata } from "../wallet/cashuTokenMetadata";
 import { getWalletSeedBytes } from "../wallet/seed";
-import { kvStorage } from "../storage/kvStorage";
+import type { MeltQuoteResponse, MintQuoteResponse } from "../wallet/cashuTypes";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 
@@ -138,9 +140,46 @@ function isLikelyOfflineError(error: unknown): boolean {
   );
 }
 
+function amountToNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  if (typeof value === "bigint") {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
+    return Math.max(0, Number(value));
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+  }
+  const amountLike = value as { toNumber?: () => number; toNumberUnsafe?: () => number };
+  try {
+    if (typeof amountLike?.toNumber === "function") {
+      const numeric = amountLike.toNumber();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    if (typeof amountLike?.toNumberUnsafe === "function") {
+      const numeric = amountLike.toNumberUnsafe();
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    }
+  } catch {
+    // fall through
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+}
+
 function deriveTokenAmount(token: string): number {
   try {
-    const decoded: any = getDecodedToken(token);
+    const metadata = getCashuTokenMetadata(token);
+    return amountToNumber((metadata as any)?.amount);
+  } catch {
+    // fall back to a full decode for legacy tokens with full keyset ids
+  }
+  try {
+    const decoded: any = getDecodedToken(token, []);
     if (!decoded) return 0;
     const entries: any[] = Array.isArray(decoded?.token)
       ? decoded.token
@@ -153,8 +192,7 @@ function deriveTokenAmount(token: string): number {
       return (
         outerTotal +
         proofs.reduce((sum: number, proof: Proof) => {
-          const amt = typeof proof?.amount === "number" ? proof.amount : 0;
-          return sum + (Number.isFinite(amt) ? amt : 0);
+          return sum + amountToNumber((proof as any)?.amount);
         }, 0)
       );
     }, 0);
@@ -194,11 +232,11 @@ function normalizeMintUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
 
-function extractProofsForMint(token: string, mintUrl: string): Proof[] {
+function extractProofsForMint(token: string, mintUrl: string, decodedToken?: any): Proof[] {
   const normalizedMint = normalizeMintUrl(mintUrl);
   if (!normalizedMint) return [];
   try {
-    const decoded: any = getDecodedToken(token);
+    const decoded: any = decodedToken ?? getDecodedToken(token, []);
     const entries: any[] = decoded
       ? Array.isArray(decoded?.token)
         ? decoded.token
@@ -285,7 +323,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       const base = Object.values(store).reduce((outerTotal, proofsForMint) => {
         if (!Array.isArray(proofsForMint)) return outerTotal;
         const mintProofs = proofsForMint as Proof[];
-        const mintSum = mintProofs.reduce((sum, proof) => sum + (proof?.amount || 0), 0);
+        const mintSum = mintProofs.reduce((sum, proof) => sum + amountToNumber((proof as any)?.amount), 0);
         return outerTotal + mintSum;
       }, 0);
       let pendingSum = 0;
@@ -333,7 +371,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         }
       }
       try {
-        const raw = kvStorage.getItem(LS_NOSTR_SK) || "";
+        const raw = nostrSkSync();
         const trimmed = raw.trim();
         if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
           const derived = deriveCompressedPubkeyFromSecret(trimmed);
@@ -390,6 +428,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       }
       if (tokenProofs.length && freshProofs.length === 0) {
         removePendingToken(entry.id);
+        await flushWalletStorage();
         if (targetManager === manager) {
           setBalance(targetManager.balance);
           setProofs(targetManager.proofs);
@@ -424,6 +463,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         return targetManager.receiveToken(partialToken);
       });
       removePendingToken(entry.id);
+      await flushWalletStorage();
       if (targetManager === manager) {
         setBalance(targetManager.balance);
         setProofs(targetManager.proofs);
@@ -470,9 +510,14 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
       let decoded: any = null;
       try {
-        decoded = getDecodedToken(tokenInput);
+        const metadata = getCashuTokenMetadata(tokenInput);
+        decoded = metadata ? { mint: metadata.mint, proofs: metadata.incompleteProofs, unit: metadata.unit } : null;
       } catch {
-        decoded = null;
+        try {
+          decoded = getDecodedToken(tokenInput, []);
+        } catch {
+          decoded = null;
+        }
       }
 
       const entries: any[] = decoded
@@ -489,8 +534,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
             return (
               outer +
               proofs.reduce((sum: number, proof: Proof) => {
-                const amt = typeof proof?.amount === "number" ? proof.amount : 0;
-                return sum + (Number.isFinite(amt) ? amt : 0);
+                return sum + amountToNumber((proof as any)?.amount);
               }, 0)
             );
           }, 0)
@@ -508,6 +552,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       addMintToList(normalizedTarget);
 
       const entry = addPendingToken(targetMintUrl, tokenInput, tokenAmount || undefined);
+      await flushWalletStorage();
       refreshTotalBalance();
 
       const crossMint = normalizeMintUrl(activeMint) !== normalizedTarget;
@@ -634,6 +679,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     if (clean) {
       addMintToList(clean);
     }
+    await flushWalletStorage();
   }, []);
 
   const createMintInvoice = useCallback(
@@ -656,13 +702,14 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       if (!targetManager) throw new Error("Wallet not ready");
 
       const q = await targetManager.createMintInvoice(amount, description);
-      const derivedAmount = typeof q.amount === "number" ? q.amount : amount;
+      await flushWalletStorage();
+      const derivedAmount = amountToNumber(q.amount) || amount;
       const derivedUnit = (q as any)?.unit ?? (targetManager === manager ? info?.unit : targetManager.unit);
       const mintUrlValue = normalizeMintUrl(targetManager.mintUrl);
       return {
-        request: q.request,
+        request: q.request ?? "",
         quote: q.quote,
-        expiry: q.expiry,
+        expiry: q.expiry ?? 0,
         amount: derivedAmount,
         unit: derivedUnit,
         mintUrl: mintUrlValue,
@@ -690,7 +737,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
       if (!targetManager) throw new Error("Wallet not ready");
       const q = await targetManager.checkMintQuote(quoteId);
-      return q.state;
+      const state = typeof q.state === "string" ? q.state.toUpperCase() : "UNPAID";
+      if (state === "PAID" || state === "ISSUED") return state;
+      return "UNPAID";
     },
     [ensureManagerForMint, manager],
   );
@@ -714,6 +763,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
       if (!targetManager) throw new Error("Wallet not ready");
       const proofs = await targetManager.claimMint(quoteId, amount);
+      await flushWalletStorage();
       if (targetManager === manager) {
         setBalance(targetManager.balance);
         setProofs(targetManager.proofs);
@@ -732,9 +782,14 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
       let decoded: any = null;
       try {
-        decoded = getDecodedToken(tokenInput);
+        const metadata = getCashuTokenMetadata(tokenInput);
+        decoded = metadata ? { mint: metadata.mint, proofs: metadata.incompleteProofs, unit: metadata.unit } : null;
       } catch {
-        decoded = null;
+        try {
+          decoded = getDecodedToken(tokenInput, []);
+        } catch {
+          decoded = null;
+        }
       }
 
       const entries: any[] = decoded
@@ -750,8 +805,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
             return (
               outer +
               proofs.reduce((sum: number, proof: Proof) => {
-                const amt = typeof proof?.amount === "number" ? proof.amount : 0;
-                return sum + (Number.isFinite(amt) ? amt : 0);
+                return sum + amountToNumber((proof as any)?.amount);
               }, 0)
             );
           }, 0)
@@ -761,8 +815,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       const activeMint = normalizeMintUrl(manager.mintUrl);
       const crossMintNeeded = primaryMint && normalizeMintUrl(primaryMint) !== activeMint;
 
-      const queueForLater = (mintUrl: string, cross: boolean): ReceiveTokenResult => {
+      const queueForLater = async (mintUrl: string, cross: boolean): Promise<ReceiveTokenResult> => {
         const entry = addPendingToken(mintUrl, tokenInput, tokenAmount || undefined);
+        await flushWalletStorage();
         refreshTotalBalance();
         return {
           proofs: [],
@@ -776,7 +831,13 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       };
 
       const receiveWithManager = async (target: MintConnection, cross: boolean): Promise<ReceiveTokenResult> => {
-        const tokenProofs = extractProofsForMint(tokenInput, target.mintUrl);
+        let decodedForTarget: any = null;
+        try {
+          decodedForTarget = target.decodeToken(tokenInput);
+        } catch {
+          decodedForTarget = null;
+        }
+        const tokenProofs = extractProofsForMint(tokenInput, target.mintUrl, decodedForTarget);
         const existingSecrets = new Set(
           target.proofs
             .map((proof) => (typeof proof?.secret === "string" ? proof.secret : ""))
@@ -813,6 +874,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           };
         }
         const proofs = await target.receiveToken(tokenToRedeem);
+        await flushWalletStorage();
         if (cross) {
           refreshTotalBalance();
         } else {
@@ -893,6 +955,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
     const sendOptions: CreateSendTokenOptions = options ?? {};
     const res = await targetManager.createSendToken(amount, sendOptions);
+    await flushWalletStorage();
 
     if (targetManager === manager) {
       setBalance(manager.balance);
@@ -913,6 +976,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     async (secrets: string[]) => {
       if (!manager) throw new Error("Wallet not ready");
       const res = await manager.createTokenFromProofSecrets(secrets);
+      await flushWalletStorage();
       setBalance(manager.balance);
       setProofs(manager.proofs);
       refreshTotalBalance();
@@ -957,18 +1021,21 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       }
 
       const baseQuote = await targetManager.createMeltQuote(invoice);
-      const required = (baseQuote.amount || 0) + (baseQuote.fee_reserve || 0);
+      const quoteAmount = amountToNumber(baseQuote.amount);
+      const quoteFeeReserve = amountToNumber(baseQuote.fee_reserve);
+      const required = quoteAmount + quoteFeeReserve;
       const baseFeeReserve =
-        typeof baseQuote.fee_reserve === "number" && Number.isFinite(baseQuote.fee_reserve)
-          ? baseQuote.fee_reserve
+        quoteFeeReserve > 0
+          ? quoteFeeReserve
           : null;
       const baseAmount =
-        typeof baseQuote.amount === "number" && Number.isFinite(baseQuote.amount)
-          ? baseQuote.amount
+        quoteAmount > 0
+          ? quoteAmount
           : invoiceAmountSat;
 
       if (targetManager.balance >= required) {
         const singleResult = await targetManager.payMeltQuote(baseQuote);
+        await flushWalletStorage();
         if (targetManager === manager) {
           setBalance(manager.balance);
           setProofs(manager.proofs);
@@ -1098,6 +1165,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       let finalResult: MeltProofsResponse | null = null;
       for (const plan of plans) {
         const result = await plan.manager.payMeltQuote(plan.quote);
+        await flushWalletStorage();
         if (plan.manager === manager) {
           setBalance(manager.balance);
           setProofs(manager.proofs);

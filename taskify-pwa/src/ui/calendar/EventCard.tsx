@@ -43,12 +43,14 @@ export function EventCard({
   isSelectionMode,
   isSelected,
   onToggleSelect,
+  syncPending,
 }: {
   event: CalendarEvent;
   onEdit?: () => void;
   showDate?: boolean;
   meta?: React.ReactNode;
   trailing?: React.ReactNode;
+  syncPending?: boolean;
   onOpenDocument?: (event: CalendarEvent, doc: TaskDocument) => void;
   onDragStart?: (id: string) => void;
   onDragEnd?: () => void;
@@ -203,7 +205,19 @@ export function EventCard({
           {timeLabel ? <div className="text-xs text-secondary">{timeLabel}</div> : null}
           {metaNode ? <div className="task-card__meta">{metaNode}</div> : null}
         </div>
-        {trailing ? <div className="flex-shrink-0 pt-0.5">{trailing}</div> : null}
+        {(syncPending || trailing) ? (
+          <div className="task-card__trailing">
+            {syncPending ? (
+              <span
+                className="task-card__sync-spinner"
+                role="status"
+                aria-label="Syncing to relays"
+                title="Syncing to relays"
+              />
+            ) : null}
+            {trailing}
+          </div>
+        ) : null}
       </div>
       <EventMedia event={event} onOpenDocument={onOpenDocument} />
     </div>

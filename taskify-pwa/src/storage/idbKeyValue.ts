@@ -5,6 +5,9 @@ type StoreState = {
   loaded: Set<string>;
   values: Map<string, string>;
   writeChain: Promise<void>;
+  failureCount: number;
+  acknowledgedFailureCount: number;
+  lastWriteError: unknown;
 };
 
 const stores = new Map<string, StoreState>();
@@ -12,7 +15,14 @@ const stores = new Map<string, StoreState>();
 function getStoreState(storeName: string): StoreState {
   const existing = stores.get(storeName);
   if (existing) return existing;
-  const created: StoreState = { loaded: new Set(), values: new Map(), writeChain: Promise.resolve() };
+  const created: StoreState = {
+    loaded: new Set(),
+    values: new Map(),
+    writeChain: Promise.resolve(),
+    failureCount: 0,
+    acknowledgedFailureCount: 0,
+    lastWriteError: null,
+  };
   stores.set(storeName, created);
   return created;
 }
@@ -36,8 +46,18 @@ function queueWrite(storeName: string, fn: () => Promise<void>): void {
       await fn();
     })
     .catch((err) => {
+      state.failureCount += 1;
+      state.lastWriteError = err;
       console.warn(`[idbKeyValue] Write failed for store "${storeName}":`, err);
     });
+}
+
+function assertNoUnacknowledgedWriteFailure(state: StoreState): void {
+  if (state.failureCount <= state.acknowledgedFailureCount) return;
+  state.acknowledgedFailureCount = state.failureCount;
+  throw state.lastWriteError instanceof Error
+    ? state.lastWriteError
+    : new Error("IndexedDB write failed");
 }
 
 export const idbKeyValue = {
@@ -89,5 +109,18 @@ export const idbKeyValue = {
       const db = await getTaskifyDb();
       await idbStorage.delete(db, storeName, key);
     });
+  },
+
+  async flushStore(storeName: string): Promise<void> {
+    const state = getStoreState(storeName);
+    await state.writeChain;
+    assertNoUnacknowledgedWriteFailure(state);
+  },
+
+  async flushAll(): Promise<void> {
+    await Promise.all(Array.from(stores.values()).map((state) => state.writeChain));
+    for (const state of stores.values()) {
+      assertNoUnacknowledgedWriteFailure(state);
+    }
   },
 };
