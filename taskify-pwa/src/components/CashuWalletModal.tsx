@@ -2794,6 +2794,7 @@ export default function CashuWalletModal({
     console.debug("[wallet] CashuWalletModal render start");
   }, [open, walletDebugEnabled]);
   const {
+    ready: walletReady,
     mintUrl,
     setMintUrl,
     totalBalance,
@@ -13661,10 +13662,26 @@ export default function CashuWalletModal({
       autoClaimQueueRef.current.length = 0;
       return;
     }
+    // Sweep any incoming payments that the queue may have already drained
+    // without success — most commonly, DMs that arrived during a brief
+    // window before `walletReady` flipped true and `receiveToken` threw
+    // "Wallet not ready". Re-enqueue every entry that hasn't been marked
+    // spent so the manager-now-ready receiveToken can pick them up. This
+    // also self-heals after a one-off transient failure on the receive
+    // path (e.g. a relay hiccup mid-swap) once any auto-claim dependency
+    // changes — `claimingEventSet` plus `isIncomingPaymentSpent` prevent
+    // double-claiming, so the worst case is a single redundant attempt.
+    const queued = new Set<string>(autoClaimQueueRef.current.map((entry) => entry.eventId));
+    for (const entry of incomingPaymentRequestsRef.current) {
+      if (queued.has(entry.eventId)) continue;
+      if (isIncomingPaymentSpent(entry.eventId, entry.fingerprint ?? null)) continue;
+      autoClaimQueueRef.current.push(entry);
+      queued.add(entry.eventId);
+    }
     if (autoClaimQueueRef.current.length) {
       scheduleAutoClaimRun();
     }
-  }, [paymentRequestsEnabled, scheduleAutoClaimRun]);
+  }, [paymentRequestsEnabled, scheduleAutoClaimRun, isIncomingPaymentSpent, walletReady]);
 
   useEffect(() => {
     if (!paymentRequestsEnabled || (!open && !paymentRequestsBackgroundChecksEnabled)) {
