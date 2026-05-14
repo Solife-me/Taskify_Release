@@ -2168,10 +2168,16 @@ export default function App() {
     setCustomNostrKey,
     showSkBackupNotice,
   } = useNostrIdentity({ defaultRelays });
-  const { pendingNostrOutboxCount, retryNostrOutbox } = useTaskPersistence({
+  const {
+    clearOptimisticNostrCalendarEventSyncPending,
+    clearOptimisticNostrTaskSyncPending,
+    markNostrCalendarEventSyncPending,
+    markNostrTaskSyncPending,
+    pendingNostrCalendarEventIds,
+    pendingNostrTaskIds,
+  } = useTaskPersistence({
     boards,
     calendarEvents,
-    defaultRelays,
     tasks,
   });
   type NostrIndex = {
@@ -6288,6 +6294,7 @@ export default function App() {
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}
                             selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
+          syncPending={pendingNostrTaskIds.has(t.id)}
           task={t}
           meta={locationLabel}
           trailing={revealAction}
@@ -6362,6 +6369,7 @@ export default function App() {
 	      <div key={ev.id} className="space-y-2">
 	        <EventCard
 	          event={ev}
+	          syncPending={pendingNostrCalendarEventIds.has(ev.id)}
 	          showDate={false}
 	          meta={meta}
 	          trailing={revealAction}
@@ -6375,7 +6383,7 @@ export default function App() {
 	        />
 	      </div>
 	    );
-	  }, [boardMap, handleDragEnd, handleOpenEventDocument, setCalendarEvents, setEditing, settings.weekStart]);
+	  }, [boardMap, handleDragEnd, handleOpenEventDocument, pendingNostrCalendarEventIds, setCalendarEvents, setEditing, settings.weekStart]);
 
 	  useEffect(() => {
 	    if (activePage !== "upcoming") {
@@ -6624,6 +6632,18 @@ export default function App() {
     }
     return state;
   }, []);
+  function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
+    if (!taskId || !board?.nostr?.boardId) return null;
+    const bTag = boardTag(board.nostr.boardId);
+    const optimisticAt = Math.floor(Date.now() / 1000);
+    if (!nostrIdxRef.current.taskClock.has(bTag)) {
+      nostrIdxRef.current.taskClock.set(bTag, new Map());
+    }
+    nostrIdxRef.current.taskClock.get(bTag)!.set(taskId, optimisticAt);
+    pendingNostrTasksRef.current.add(`${bTag}::${taskId}`);
+    markNostrTaskSyncPending(taskId);
+    return optimisticAt;
+  }
   async function publishBoardMetadata(board: Board) {
     if (!board.nostr?.boardId) return;
     const relays = getBoardRelays(board);
@@ -6710,17 +6730,12 @@ export default function App() {
     const pendingKey = `${bTag}::${t.id}`;
     // Protect against stale relay events re-creating the task while the
     // deletion publish is in-flight.
-    const optimisticAt = Math.floor(Date.now() / 1000);
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, optimisticAt);
+    const optimisticAt = markTaskRelayPublishPending(t.id, b) ?? Math.floor(Date.now() / 1000);
     // Persist a tombstone NOW — before any await — so a reload between this
     // point and a successful relay publish still keeps the deletion sticky.
     // Without this, a failed/in-flight publish followed by reload would let
     // the original CREATE event from the relay re-add the task on next sync.
     recordTaskTombstone(bTag, t.id, optimisticAt);
-    pendingNostrTasksRef.current.add(pendingKey);
     const boardKeys = await deriveBoardNostrKeys(boardId);
     try {
       await publishBoardMetadata(b);
@@ -6760,6 +6775,7 @@ export default function App() {
       recordTaskTombstone(bTag, t.id, createdAt);
     } finally {
       pendingNostrTasksRef.current.delete(pendingKey);
+      clearOptimisticNostrTaskSyncPending(t.id);
     }
   }
   // Ensure all images and documents for a shared board are stored remotely (encrypted).
@@ -6838,13 +6854,8 @@ export default function App() {
     // Protect optimistic state: advance the task clock and mark pending BEFORE
     // any async work so relay events arriving while the publish is in-flight
     // are rejected by the clock check in applyTaskEvent / flushRelayBatch.
-    const optimisticAt = Math.floor(Date.now() / 1000);
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, optimisticAt);
+    const optimisticAt = markTaskRelayPublishPending(t.id, b) ?? Math.floor(Date.now() / 1000);
     t._nostrAt = optimisticAt;
-    pendingNostrTasksRef.current.add(pendingKey);
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const status = t.completed ? "done" : "open";
     const colTag = (b.kind === "week") ? "day" : (t.columnId || "");
@@ -6904,6 +6915,7 @@ export default function App() {
       nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
     } finally {
       pendingNostrTasksRef.current.delete(pendingKey);
+      clearOptimisticNostrTaskSyncPending(t.id);
     }
   }
 
@@ -7136,6 +7148,7 @@ export default function App() {
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const bTag = boardTag(boardId);
     const pendingKey = `${bTag}::${event.id}`;
+    markNostrCalendarEventSyncPending(event.id);
     pendingNostrCalendarRef.current.add(pendingKey);
     try {
       await publishBoardMetadata(b);
@@ -7177,6 +7190,7 @@ export default function App() {
       nostrIdxRef.current.calendarClock.get(bTag)!.set(eventForPublish.id, createdAt);
     } finally {
       pendingNostrCalendarRef.current.delete(pendingKey);
+      clearOptimisticNostrCalendarEventSyncPending(event.id);
     }
   }
   publishCalendarEventDeletedRef.current = publishCalendarEventDeleted;
@@ -7201,6 +7215,7 @@ export default function App() {
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const bTag = boardTag(boardId);
     const pendingKey = `${bTag}::${event.id}`;
+    markNostrCalendarEventSyncPending(event.id);
     pendingNostrCalendarRef.current.add(pendingKey);
     try {
       if (!options?.skipBoardMetadata) {
@@ -7250,6 +7265,7 @@ export default function App() {
       nostrIdxRef.current.calendarClock.get(bTag)!.set(updatedEvent.id, createdAt);
     } finally {
       pendingNostrCalendarRef.current.delete(pendingKey);
+      clearOptimisticNostrCalendarEventSyncPending(event.id);
     }
   }
 
@@ -7825,6 +7841,10 @@ export default function App() {
     // here represents a genuinely newer state — applying them in arrival order
     // (newest clock wins) produces the correct final state without flicker.
     const liveUpdater = (prev: Task[]) => {
+      const currentClock = nostrIdxRef.current.taskClock.get(bTag)?.get(taskId) || 0;
+      const stillPending = pendingNostrTasksRef.current.has(pendingKey);
+      if (ev.created_at < currentClock) return prev;
+      if (ev.created_at === currentClock && stillPending) return prev;
       return ((prev: Task[]) => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
@@ -11663,12 +11683,23 @@ export default function App() {
       | { type: "list"; columnId: string },
     beforeId?: string
   ) {
+    if (beforeId && beforeId === id) return;
+    const pendingTask = tasksRef.current.find((task) => task.id === id);
+    if (pendingTask) {
+      const pendingBoard =
+        target.type === "day"
+          ? boardsRef.current.find((board) => board.id === pendingTask.boardId)
+          : (() => {
+              const source = listColumnSources.get(target.columnId);
+              return source ? boardsRef.current.find((board) => board.id === source.boardId) : undefined;
+            })();
+      markTaskRelayPublishPending(id, pendingBoard);
+    }
     setTasks(prev => {
       const arr = [...prev];
       const fromIdx = arr.findIndex(t => t.id === id);
       if (fromIdx < 0) return prev;
       const task = arr[fromIdx];
-      if (beforeId && beforeId === task.id) return prev;
       const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
 
       const updated: Task = {
@@ -12631,21 +12662,6 @@ export default function App() {
           </header>
         )}
 
-        {pendingNostrOutboxCount > 0 && (
-          <button
-            type="button"
-            className="nostr-outbox-banner pressable"
-            onClick={retryNostrOutbox}
-            title="Retry pending Nostr sync"
-            aria-label={`${pendingNostrOutboxCount} ${pendingNostrOutboxCount === 1 ? "change" : "changes"} pending sync`}
-          >
-            <span className="nostr-outbox-banner__dot" aria-hidden="true" />
-            <span>
-              {pendingNostrOutboxCount} {pendingNostrOutboxCount === 1 ? "change" : "changes"} pending sync
-            </span>
-          </button>
-        )}
-
         {showSkBackupNotice && (
           <div className="sk-backup-banner" role="alert">
             <div className="sk-backup-banner__body">
@@ -12776,6 +12792,7 @@ export default function App() {
 		                          <EventCard
 		                            key={`${ev.id}-${day}`}
 		                            event={ev}
+		                            syncPending={pendingNostrCalendarEventIds.has(ev.id)}
 		                            showDate={false}
 		                            onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
@@ -12793,6 +12810,7 @@ export default function App() {
                             onToggleSelect={toggleItemSelection}
                             selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
                             key={t.id}
+                            syncPending={pendingNostrTaskIds.has(t.id)}
                             task={t}
 	                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
@@ -13027,6 +13045,7 @@ export default function App() {
 		                        <EventCard
 		                          key={ev.id}
 		                          event={ev}
+		                          syncPending={pendingNostrCalendarEventIds.has(ev.id)}
 		                          showDate
 		                          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
@@ -13044,6 +13063,7 @@ export default function App() {
                             onToggleSelect={toggleItemSelection}
                             selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
                             key={t.id}
+                            syncPending={pendingNostrTaskIds.has(t.id)}
                             task={t}
                           onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {

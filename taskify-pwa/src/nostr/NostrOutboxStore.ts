@@ -3,8 +3,10 @@ import { idbStorage } from "../storage/idbStorage";
 import { getTaskifyDb, TASKIFY_STORE_MUTATIONS } from "../storage/taskifyDb";
 
 type OutboxListener = (pendingCount: number) => void;
+type OutboxRowsListener = (rows: NostrOutboxMutation[]) => void;
 
 const listeners = new Set<OutboxListener>();
+const rowListeners = new Set<OutboxRowsListener>();
 
 function isOutboxMutation(value: unknown): value is NostrOutboxMutation {
   const candidate = value as NostrOutboxMutation | undefined;
@@ -36,10 +38,18 @@ async function pendingCount(): Promise<number> {
 }
 
 function notifyListeners(): void {
-  void pendingCount().then((count) => {
+  void listPendingRows().then((rows) => {
+    const count = rows.length;
     listeners.forEach((listener) => {
       try {
         listener(count);
+      } catch {
+        // ignore listener errors
+      }
+    });
+    rowListeners.forEach((listener) => {
+      try {
+        listener(rows);
       } catch {
         // ignore listener errors
       }
@@ -49,7 +59,9 @@ function notifyListeners(): void {
 
 export const nostrOutboxStore: NostrOutboxStore & {
   getPendingCount: () => Promise<number>;
+  getPendingRows: () => Promise<NostrOutboxMutation[]>;
   subscribe: (listener: OutboxListener) => () => void;
+  subscribeRows: (listener: OutboxRowsListener) => () => void;
 } = {
   async get(id) {
     try {
@@ -81,11 +93,23 @@ export const nostrOutboxStore: NostrOutboxStore & {
     return await pendingCount();
   },
 
+  async getPendingRows() {
+    return await listPendingRows();
+  },
+
   subscribe(listener) {
     listeners.add(listener);
     void pendingCount().then(listener);
     return () => {
       listeners.delete(listener);
+    };
+  },
+
+  subscribeRows(listener) {
+    rowListeners.add(listener);
+    void listPendingRows().then(listener);
+    return () => {
+      rowListeners.delete(listener);
     };
   },
 };

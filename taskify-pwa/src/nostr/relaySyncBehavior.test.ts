@@ -125,6 +125,23 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function clockGuardedLiveUpdater(
+  bTag: string,
+  taskId: string,
+  eventCreatedAt: number,
+  taskClock: Map<string, number>,
+  pendingTasks: Set<string>,
+  apply: TaskUpdater,
+): TaskUpdater {
+  return (prev) => {
+    const currentClock = taskClock.get(taskId) || 0;
+    const stillPending = pendingTasks.has(`${bTag}::${taskId}`);
+    if (eventCreatedAt < currentClock) return prev;
+    if (eventCreatedAt === currentClock && stillPending) return prev;
+    return apply(prev);
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 1. IDB data always visible
 // ---------------------------------------------------------------------------
@@ -428,6 +445,38 @@ test("multiple live updates within LIVE_BATCH_MS produce a single render", async
 
   expect(batch.renderCount).toBe(1);
   expect(batch.renderedStates.get("board1")?.[0]?.title).toBe("Update 3");
+});
+
+test("queued live update rechecks taskClock before applying after a local move", async () => {
+  const batch = new LiveMicroBatch();
+  const initialTasks: Task[] = [makeTask("t1", "board1", 100, { columnId: "todo" })];
+  const taskClock = new Map([["t1", 100]]);
+  const pendingTasks = new Set<string>();
+  batch.renderedStates.set("board1", initialTasks);
+
+  batch.enqueue(
+    "board1",
+    clockGuardedLiveUpdater(
+      "board1",
+      "t1",
+      100,
+      taskClock,
+      pendingTasks,
+      (prev) => prev.map((task) => task.id === "t1" ? { ...task, columnId: "todo", title: "Stale relay copy" } : task),
+    ),
+    initialTasks,
+  );
+
+  taskClock.set("t1", 200);
+  pendingTasks.add("board1::t1");
+  batch.renderedStates.set("board1", [
+    makeTask("t1", "board1", 100, { columnId: "doing", title: "Dropped locally" }),
+  ]);
+
+  await wait(LIVE_BATCH_MS + 50);
+
+  expect(batch.renderedStates.get("board1")?.[0]?.columnId).toBe("doing");
+  expect(batch.renderedStates.get("board1")?.[0]?.title).toBe("Dropped locally");
 });
 
 // ---------------------------------------------------------------------------
