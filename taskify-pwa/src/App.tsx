@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -6,7 +6,6 @@ import {
   buildUpcomingDateKeyIndex,
   type UpcomingFlatRow,
 } from "./lib/upcomingRows";
-import { QRCodeCanvas } from "qrcode.react";
 import { finalizeEvent, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
 import {
   DEFAULT_DATE_REMINDER_TIME,
@@ -14,7 +13,6 @@ import {
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   compressedToRawHex,
-  contactInitials,
   isExternalCalendarEvent,
   isListLikeBoard,
   normalizeReminderTime,
@@ -37,8 +35,6 @@ import {
   type TaskAssigneeStatus,
   type Weekday,
 } from "taskify-core";
-const loadCashuWalletModal = () => import("./components/CashuWalletModal");
-const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
   BibleTracker,
   type BibleTrackerProgress,
@@ -52,35 +48,20 @@ import {
   getBibleBookOrder,
   MAX_VERSE_COUNT,
 } from "./components/BibleTracker";
-import { BibleTrackerPrintPreview, type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
-import { BibleTrackerScanPanel } from "./components/BibleTrackerScanSheet";
+import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
 import { buildBiblePrintLayout } from "./components/BibleTrackerPrintLayout";
-import { BoardPrintPreview } from "./components/BoardPrintSheet";
-import { BoardScanPanel } from "./components/BoardScanSheet";
 import { BOARD_PRINT_LAYOUT_VERSION, buildBoardPrintLayout, type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
 import { isPrintPaperSize, type PrintPaperSize } from "./components/printPaper";
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { buildBibleTrackerPrintPdf, buildBoardPrintPdf } from "./lib/printPdf";
 import { useCashu } from "./context/CashuContext";
-import {
-  LS_LIGHTNING_CONTACTS,
-} from "./localStorageKeys";
 import { kvStorage } from "./storage/kvStorage";
 import {
   getSkSync as nostrSkSync,
 } from "./lib/nostrSkStore";
-import {
-  taskEntityStore,
-  boardEntityStore,
-  calendarEventEntityStore,
-  externalCalendarEventEntityStore,
-} from "./storage/entityStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
-import {
-  getWalletSeedMnemonic,
-} from "./wallet/seed";
 
 
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
@@ -130,7 +111,6 @@ import {
   normalizeTaskBounty,
   ensureXOnlyHex,
   pubkeysEqual,
-  bountyStateLabel,
   mergeLongestStreak,
   recurringInstanceId,
   dedupeRecurringInstances,
@@ -143,6 +123,11 @@ import {
 } from "./domains/tasks/assignmentUtils";
 import { useBoards, useTasks } from "./domains/tasks/taskHooks";
 import { useCalendarEvents } from "./domains/calendar/calendarHook";
+import {
+  useCalendarInvites,
+  type CalendarInvite,
+  type CalendarInviteStatus,
+} from "./domains/calendar/calendarInvitesHook";
 import type {
   CompleteTaskFn,
   CompleteTaskResult,
@@ -150,7 +135,7 @@ import type {
   PublishTaskFn,
   ScriptureMemoryUpdate,
 } from "./domains/tasks/taskTypes";
-import { detectPushPlatformFromNavigator, type PushPlatform } from "./domains/push/pushUtils";
+import { type PushPlatform } from "./domains/push/pushUtils";
 import { type ReminderPreset } from "./domains/dateTime/reminderUtils";
 import {
   daysInCalendarMonth,
@@ -163,7 +148,6 @@ import {
   isoTimePart,
   monthKeyFromYearMonth,
   normalizeTimeZone,
-  nudgeHorizontalScroller,
   parseDateKey,
   parseTimeValue,
   resolveSystemTimeZone,
@@ -180,9 +164,6 @@ import {
 } from "./domains/nostr/nostrCrypto";
 import {
   appendWalletHistoryEntry,
-  applyBackupDataToStorage,
-  loadCloudBackupPayload,
-  parseBackupJsonPayload,
 } from "./domains/backup/backupUtils";
 import {
   type PushPreferences,
@@ -214,8 +195,6 @@ import {
   type CalendarRsvpStatus,
 } from "./lib/privateCalendar";
 import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
-import { ActionSheet } from "./components/ActionSheet";
-import { VoiceDictationModal } from "./components/VoiceDictationModal";
 import type { FinalTask } from "./nostr/useVoiceSession";
 import type { Contact } from "./lib/contacts";
 import {
@@ -224,7 +203,6 @@ import {
   loadContactsFromStorage,
   makeContactId,
   normalizeContact,
-  contactHasNpub,
   saveContactsToStorage,
 } from "./lib/contacts";
 
@@ -242,18 +220,33 @@ import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSyn
 import { useCalendarEventManagement } from "./nostr/useCalendarEventManagement";
 import { useNostrSubscriptions, type CalendarViewSubscriptionTarget, type SubscribeManyPool } from "./nostr/useNostrSubscriptions";
 import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
+import { useSelectionMode } from "./ui/selection/useSelectionMode";
+import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
+import { BoardUpcomingView, CompletedBoardView } from "./ui/board/BoardSecondaryViews";
+import { ShareBoardDialogs } from "./ui/board/ShareBoardDialogs";
+import { useShareBoardState } from "./ui/board/useShareBoardState";
 import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
+import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
+import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
+import { useWalletShellState } from "./ui/wallet/useWalletShellState";
 import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
 import { UpcomingSearch } from "./ui/upcoming/UpcomingSearch";
 import { useUpcomingControlsState } from "./ui/upcoming/useUpcomingControlsState";
-import { TrashDropZone } from "./ui/dnd/TrashDropZone";
+import { AppSortSheets } from "./ui/app/AppSortSheets";
+import { AppModalStack } from "./ui/app/AppModalStack";
+import { UpdateToast } from "./ui/app/UpdateToast";
+import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
+import { InlineTaskOverlays } from "./ui/task/InlineTaskOverlays";
 import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { useNostrIdentity } from "./nostr/useNostrIdentity";
 import {
   normalizeNostrRelayList as normalizeRelayList,
   useNostrAppBackupSync,
 } from "./nostr/useNostrAppBackupSync";
-import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
+import { useFirstRunOnboarding } from "./onboarding/useFirstRunOnboarding";
+import { useClipboardWriteToast } from "./hooks/useClipboardWriteToast";
+import { useBiblePrintPaperSize, usePrintPortal } from "./hooks/usePrintState";
+import { useRuntimeConfig } from "./hooks/useRuntimeConfig";
 
 import {
   buildBoardShareEnvelope,
@@ -268,20 +261,13 @@ import {
   type SharedContactPayload,
   type SharedTaskPayload,
 } from "./lib/shareInbox";
-import type { WalletMessageItem } from "./types/walletMessages";
 
 // ---- UI component imports (extracted subcomponents) ----
 import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
-import { TaskTitle } from "./ui/task/TaskTitle";
-import { TaskMedia } from "./ui/task/TaskMedia";
-import { DocumentPreviewModal } from "./ui/task/DocumentPreviewModal";
 import { EventCard } from "./ui/calendar/EventCard";
 import { EditModal } from "./ui/task/EditModal";
 import EventEditModal from "./ui/calendar/EventEditModal";
-import { AddBoardModal } from "./ui/board/AddBoardModal";
 import { SettingsModal } from "./ui/board/SettingsModal";
-
-import { Modal } from "./ui/Modal";
 
 import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
@@ -293,8 +279,6 @@ const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
 
-/* ================= Types ================= */
-type DayChoice = Weekday | string; // string = custom list columnId
 const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const MONTH_NAMES = [
   "January",
@@ -312,25 +296,6 @@ const MONTH_NAMES = [
 ] as const;
 
 
-
-type CalendarInviteStatus = "pending" | "read" | CalendarRsvpStatus | "dismissed";
-
-type CalendarInvite = {
-  id: string;
-  source: "dm" | "nostr";
-  eventId: string;
-  canonical: string;
-  view: string;
-  eventKey: string;
-  inviteToken: string;
-  title?: string;
-  start?: string;
-  end?: string;
-  relays?: string[];
-  sender?: InboxSender;
-  receivedAt: string;
-  status: CalendarInviteStatus;
-};
 
 function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean {
   return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
@@ -350,7 +315,6 @@ function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
 }
 
 
-const LS_MESSAGES_BOARD_ID = "taskify_messages_board_id_v1";
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
 const MESSAGES_COLUMN_ID = "messages-shared";
 const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
@@ -537,10 +501,6 @@ const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
 // timestamp — the most recent N deletions are always retained, which is what
 // matters for protecting against stale relay re-creates.
 const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
-const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
-const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
-
-const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
 
 
@@ -594,21 +554,6 @@ function persistBoardPrintJob(job: BoardPrintJob): void {
     const next = parsed && typeof parsed === "object" ? parsed : {};
     (next as Record<string, BoardPrintJob>)[job.boardId] = job;
     kvStorage.setItem(LS_BOARD_PRINT_JOBS, JSON.stringify(next));
-  } catch {}
-}
-
-function loadBiblePrintPaperSize(): PrintPaperSize {
-  try {
-    const raw = kvStorage.getItem(LS_BIBLE_PRINT_PAPER);
-    return isPrintPaperSize(raw) ? raw : "letter";
-  } catch {
-    return "letter";
-  }
-}
-
-function persistBiblePrintPaperSize(paperSize: PrintPaperSize): void {
-  try {
-    kvStorage.setItem(LS_BIBLE_PRINT_PAPER, paperSize);
   } catch {}
 }
 
@@ -1122,134 +1067,12 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
 /* ================= App ================= */
 export default function App() {
   const { show: showToast } = useToast();
-  const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
-  const [selectionMoveSheetOpen, setSelectionMoveSheetOpen] = useState(false);
-  const [selectionMoveStep, setSelectionMoveStep] = useState<"board" | "column">("board");
-  const [selectionMoveBoardId, setSelectionMoveBoardId] = useState<string | null>(null);
-  const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
-  const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
-  const runtimeConfigPromiseRef = useRef<Promise<{ workerBaseUrl: string | null; vapidPublicKey: string | null } | null> | null>(null);
-  if (typeof window !== "undefined") {
-    (window as any).__TASKIFY_WORKER_BASE_URL__ = workerBaseUrl;
-  }
-  useEffect(() => {
-    let cancelled = false;
-    if (!runtimeConfigPromiseRef.current) {
-      runtimeConfigPromiseRef.current = (async () => {
-        try {
-          const response = await fetch("/api/config", { method: "GET" });
-          if (!response.ok) return null;
-          const contentType = response.headers.get("content-type") || "";
-
-          let data: any = null;
-          try {
-            if (/json/i.test(contentType)) {
-              data = await response.json();
-            } else {
-              // Some dev setups may serve plain text; attempt to parse but ignore errors.
-              const text = await response.text();
-              try {
-                data = JSON.parse(text);
-              } catch {
-                return null;
-              }
-            }
-          } catch {
-            return null;
-          }
-
-          if (!data || typeof data !== "object") return null;
-          return {
-            workerBaseUrl:
-              typeof data.workerBaseUrl === "string" && data.workerBaseUrl.trim()
-                ? data.workerBaseUrl.trim().replace(/\/$/, "")
-                : null,
-            vapidPublicKey:
-              typeof data.vapidPublicKey === "string" && data.vapidPublicKey.trim()
-                ? data.vapidPublicKey.trim()
-                : null,
-          };
-        } catch (err) {
-          console.warn("Failed to load runtime config", err);
-          return null;
-        }
-      })();
-    }
-
-    runtimeConfigPromiseRef.current
-      ?.then((data) => {
-        if (cancelled) return;
-        if (data?.workerBaseUrl) {
-          setWorkerBaseUrl(data.workerBaseUrl);
-        } else if (!FALLBACK_WORKER_BASE_URL && typeof window !== "undefined") {
-          setWorkerBaseUrl(window.location.origin);
-        }
-        if (data?.vapidPublicKey) {
-          setVapidPublicKey(data.vapidPublicKey);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        if (!FALLBACK_WORKER_BASE_URL && typeof window !== "undefined") {
-          setWorkerBaseUrl(window.location.origin);
-        }
-      })
-      .finally(() => {
-        runtimeConfigPromiseRef.current = null;
-      });
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
-    if (!workerBaseUrl) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const registration = await navigator.serviceWorker.ready;
-        if (cancelled) return;
-        registration.active?.postMessage({ type: "TASKIFY_CONFIG", workerBaseUrl });
-        if (navigator.serviceWorker.controller) {
-          navigator.serviceWorker.controller.postMessage({ type: "TASKIFY_CONFIG", workerBaseUrl });
-        }
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [workerBaseUrl]);
-  // Show toast on any successful clipboard write across the app
-  useEffect(() => {
-    const clip: any = (navigator as any).clipboard;
-    if (!clip || typeof clip.writeText !== 'function') return;
-    const original = clip.writeText.bind(clip);
-    const patched = (text: string) => {
-      try {
-        const p = original(text);
-        if (p && typeof p.then === 'function') {
-          p.then(() => showToast()).catch(() => {});
-        } else {
-          showToast();
-        }
-        return p;
-      } catch {
-        // swallow, behave like original
-        try { return original(text); } catch {}
-      }
-    };
-    try { clip.writeText = patched; } catch {}
-    return () => { try { clip.writeText = original; } catch {} };
-  }, [showToast]);
-  const [messagesBoardId] = useState<string>(() => {
-    if (typeof window === "undefined") return crypto.randomUUID();
-    try {
-      const existing = kvStorage.getItem(LS_MESSAGES_BOARD_ID);
-      if (existing && existing.trim()) return existing.trim();
-    } catch {}
-    const id = crypto.randomUUID();
-    try {
-      kvStorage.setItem(LS_MESSAGES_BOARD_ID, id);
-    } catch {}
-    return id;
+  const { vapidPublicKey, workerBaseUrl } = useRuntimeConfig({
+    fallbackVapidPublicKey: FALLBACK_VAPID_PUBLIC_KEY,
+    fallbackWorkerBaseUrl: FALLBACK_WORKER_BASE_URL,
   });
+  useClipboardWriteToast(showToast);
+  const messagesBoardId = useMessagesBoardId();
   const [boards, setBoards] = useBoards();
   const {
     currentBoardId,
@@ -1266,343 +1089,91 @@ export default function App() {
 
   const [tasks, setTasks] = useTasks();
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
-  const selectedItemIdSet = useMemo(() => new Set(selectedItemIds), [selectedItemIds]);
-  const selectedTasks = useMemo(() => tasks.filter((task) => selectedItemIdSet.has(task.id)), [tasks, selectedItemIdSet]);
-  const selectedEvents = useMemo(() => calendarEvents.filter((event) => selectedItemIdSet.has(event.id)), [calendarEvents, selectedItemIdSet]);
-  const selectedCount = selectedTasks.length + selectedEvents.length;
-  const clearSelection = useCallback(() => {
-    setSelectedItemIds([]);
-  }, []);
-  const exitSelectionMode = useCallback(() => {
-    setIsSelectionMode(false);
-    setSelectedItemIds([]);
-    setSelectionMoveSheetOpen(false);
-  }, []);
-  const toggleItemSelection = useCallback((id: string) => {
-    setSelectedItemIds((p) => p.includes(id) ? p.filter((i) => i !== id) : [...p, id]);
-  }, []);
-  useEffect(() => {
-    const handleToggle = () => {
-      setSelectionMoveSheetOpen(false);
-      setIsSelectionMode((p) => {
-        if (p) {
-          setSelectedItemIds([]);
-          return false;
-        }
-        setSelectedItemIds([]);
-        return true;
-      });
-    };
-    window.addEventListener('toggleSelectionMode', handleToggle);
-    return () => window.removeEventListener('toggleSelectionMode', handleToggle);
-  }, []);
-  useEffect(() => {
-    if (!isSelectionMode) return;
-    setSelectedItemIds((prev) => prev.filter((id) => tasks.some((task) => task.id === id) || calendarEvents.some((event) => event.id === id)));
-  }, [calendarEvents, isSelectionMode, tasks]);
-  useEffect(() => {
-    if (!isSelectionMode || selectedCount > 0) return;
-    setSelectionMoveSheetOpen(false);
-  }, [isSelectionMode, selectedCount]);
-  const [calendarInvites, setCalendarInvites] = useState<CalendarInvite[]>(() => {
-    try {
-      const raw = kvStorage.getItem(LS_CALENDAR_INVITES);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((entry) => {
-          if (!entry || typeof entry !== "object") return null;
-          const eventId = typeof (entry as any).eventId === "string" ? (entry as any).eventId.trim() : "";
-          const canonical = typeof (entry as any).canonical === "string" ? (entry as any).canonical.trim() : "";
-          const view = typeof (entry as any).view === "string" ? (entry as any).view.trim() : "";
-          const eventKey = typeof (entry as any).eventKey === "string" ? (entry as any).eventKey.trim() : "";
-          const inviteToken =
-            typeof (entry as any).inviteToken === "string" ? (entry as any).inviteToken.trim() : "";
-          if (!eventId || !canonical || !view || !eventKey || !inviteToken) return null;
-          const canonicalParsed = parseCalendarAddress(canonical);
-          const viewParsed = parseCalendarAddress(view);
-          if (!canonicalParsed || !viewParsed) return null;
-          if (canonicalParsed.kind !== TASKIFY_CALENDAR_EVENT_KIND || viewParsed.kind !== TASKIFY_CALENDAR_VIEW_KIND) return null;
-          if (canonicalParsed.d !== eventId || viewParsed.d !== eventId) return null;
-          if (canonicalParsed.pubkey !== viewParsed.pubkey) return null;
-          const id = typeof (entry as any).id === "string" ? (entry as any).id.trim() : canonical;
-          if (!id) return null;
-          const source = (entry as any).source === "nostr" ? "nostr" : "dm";
-          const statusRaw = typeof (entry as any).status === "string" ? (entry as any).status : "pending";
-          const status: CalendarInviteStatus =
-            statusRaw === "accepted" || statusRaw === "declined" || statusRaw === "tentative"
-              ? statusRaw
-              : statusRaw === "dismissed"
-                ? "dismissed"
-                : "pending";
-          const receivedAt = typeof (entry as any).receivedAt === "string" ? (entry as any).receivedAt : "";
-          const receivedISO = receivedAt.trim() ? receivedAt : new Date().toISOString();
-          const senderObj = (entry as any).sender;
-          const sender: InboxSender | undefined =
-            senderObj && typeof senderObj === "object" && typeof senderObj.pubkey === "string" && senderObj.pubkey.trim()
-              ? {
-                  pubkey: senderObj.pubkey.trim(),
-                  name: typeof senderObj.name === "string" && senderObj.name.trim() ? senderObj.name.trim() : undefined,
-                  npub: typeof senderObj.npub === "string" && senderObj.npub.trim() ? senderObj.npub.trim() : undefined,
-                }
-              : undefined;
-          const relays = Array.isArray((entry as any).relays)
-            ? (entry as any).relays
-                .map((relay: unknown) => (typeof relay === "string" ? relay.trim() : ""))
-                .filter(Boolean)
-            : undefined;
-          return {
-            id,
-            source,
-            eventId,
-            canonical,
-            view,
-            eventKey,
-            inviteToken,
-            title:
-              typeof (entry as any).title === "string" && (entry as any).title.trim()
-                ? (entry as any).title.trim()
-                : undefined,
-            start:
-              typeof (entry as any).start === "string" && (entry as any).start.trim()
-                ? (entry as any).start.trim()
-                : undefined,
-            end:
-              typeof (entry as any).end === "string" && (entry as any).end.trim()
-                ? (entry as any).end.trim()
-                : undefined,
-            relays: relays?.length ? relays : undefined,
-            sender,
-            receivedAt: receivedISO,
-            status,
-          } satisfies CalendarInvite;
-        })
-        .filter((entry): entry is NonNullable<typeof entry> => !!entry);
-    } catch {
-      return [];
-    }
-  });
-  const calendarInvitesRef = useRef<CalendarInvite[]>(calendarInvites);
-  const calendarInvitesFirstRun = useRef(true);
-  useEffect(() => {
-    calendarInvitesRef.current = calendarInvites;
-    if (calendarInvitesFirstRun.current) { calendarInvitesFirstRun.current = false; return; }
-    try {
-      kvStorage.setItem(LS_CALENDAR_INVITES, JSON.stringify(calendarInvites));
-    } catch {}
-  }, [calendarInvites]);
+  const {
+    clearSelection,
+    exitSelectionMode,
+    isSelectionMode,
+    selectedCount,
+    selectedEvents,
+    selectedItemIds,
+    selectedItemIdSet,
+    selectedTasks,
+    selectionMoveBoardId,
+    selectionMoveSheetOpen,
+    selectionMoveStep,
+    setSelectedItemIds,
+    setSelectionMoveBoardId,
+    setSelectionMoveSheetOpen,
+    setSelectionMoveStep,
+    toggleItemSelection,
+  } = useSelectionMode({ calendarEvents, tasks });
+  const {
+    formatCalendarInviteWhen,
+    pendingCalendarInvites,
+    setCalendarInvites,
+    unreadCalendarInviteCount,
+  } = useCalendarInvites();
   const [editing, setEditing] = useState<EditingState | null>(null);
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
-  const [shareBoardModalOpen, setShareBoardModalOpen] = useState(false);
-  const [shareBoardTargetId, setShareBoardTargetId] = useState<string | null>(null);
-  const shareBoardTarget = useMemo(
-    () => (shareBoardTargetId ? boards.find((board) => board.id === shareBoardTargetId) || null : null),
-    [boards, shareBoardTargetId],
-  );
-  const [shareBoardMode, setShareBoardMode] = useState<"board" | "template">("board");
-  const [shareModeInfoOpen, setShareModeInfoOpen] = useState(false);
-  const shareModeInfoRef = useRef<HTMLDivElement | null>(null);
-  const shareModeInfoButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [shareTemplateShare, setShareTemplateShare] = useState<{
-    id: string;
-    relays: string[];
-    boardId: string;
-  } | null>(null);
-  const [shareTemplateStatus, setShareTemplateStatus] = useState<string | null>(null);
-  const [shareTemplateBusy, setShareTemplateBusy] = useState(false);
-  const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
-  const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
-  const [shareContactBusy, setShareContactBusy] = useState(false);
-  const [shareContacts, setShareContacts] = useState<Contact[]>(() => loadContactsFromStorage());
-  const shareableContacts = useMemo(
-    () => shareContacts.filter((contact) => contactHasNpub(contact)),
-    [shareContacts],
-  );
-  const shareBoardTargetIdRef = useRef<string | null>(null);
-  const shareBoardModalOpenRef = useRef(false);
-  useEffect(() => {
-    shareBoardTargetIdRef.current = shareBoardTargetId;
-  }, [shareBoardTargetId]);
-  useEffect(() => {
-    shareBoardModalOpenRef.current = shareBoardModalOpen;
-  }, [shareBoardModalOpen]);
-  useEffect(() => {
-    if (!shareModeInfoOpen || typeof document === "undefined") return;
-    const handlePointer = (event: MouseEvent | TouchEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (shareModeInfoRef.current?.contains(target)) return;
-      if (shareModeInfoButtonRef.current?.contains(target)) return;
-      setShareModeInfoOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShareModeInfoOpen(false);
-    };
-    document.addEventListener("mousedown", handlePointer);
-    document.addEventListener("touchstart", handlePointer);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handlePointer);
-      document.removeEventListener("touchstart", handlePointer);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [shareModeInfoOpen]);
-  useEffect(() => {
-    const refreshContacts = () => setShareContacts(loadContactsFromStorage());
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === LS_LIGHTNING_CONTACTS) {
-        refreshContacts();
-      }
-    };
-    window.addEventListener("taskify:contacts-updated", refreshContacts);
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener("taskify:contacts-updated", refreshContacts);
-      window.removeEventListener("storage", handleStorage);
-    };
-  }, []);
+  const {
+    closeShareBoard,
+    openShareBoardForTarget,
+    shareBoardModalOpen,
+    shareBoardModalOpenRef,
+    shareBoardMode,
+    shareBoardTarget,
+    shareBoardTargetId,
+    shareBoardTargetIdRef,
+    shareContactBusy,
+    shareContactPickerOpen,
+    shareContactStatus,
+    shareModeInfoButtonRef,
+    shareModeInfoOpen,
+    shareModeInfoRef,
+    shareTemplateBusy,
+    shareTemplateShare,
+    shareTemplateStatus,
+    shareableContacts,
+    setShareBoardMode,
+    setShareContactBusy,
+    setShareContactPickerOpen,
+    setShareContactStatus,
+    setShareModeInfoOpen,
+    setShareTemplateBusy,
+    setShareTemplateShare,
+    setShareTemplateStatus,
+  } = useShareBoardState(boards);
   const boardMap = useMemo(() => {
     const map = new Map<string, Board>();
     boards.forEach((board) => map.set(board.id, board));
     return map;
   }, [boards]);
-  const messagesUnreadCount = useMemo(
-    () =>
-      tasks.filter(
-        (t) =>
-          t.boardId === messagesBoardId &&
-          !t.completed &&
-          t.inboxItem &&
-          t.inboxItem.status !== "accepted" &&
-          t.inboxItem.status !== "declined" &&
-          t.inboxItem.status !== "tentative" &&
-          t.inboxItem.status !== "deleted" &&
-          t.inboxItem.status !== "read",
-      ).length,
-    [messagesBoardId, tasks],
-  );
-  const walletMessageItems = useMemo<WalletMessageItem[]>(
-    () =>
-      tasks
-        .filter((t) => t.boardId === messagesBoardId)
-        .map((t) => ({
-          id: t.id,
-          title: t.title,
-          note: t.note,
-          completed: !!t.completed,
-          type: t.inboxItem?.type,
-          status: t.inboxItem?.status,
-          dmEventId: t.inboxItem?.dmEventId,
-          boardId: t.inboxItem?.type === "board" ? t.inboxItem.boardId : undefined,
-          boardName: t.inboxItem?.type === "board" ? t.inboxItem.boardName : undefined,
-          contact: t.inboxItem?.type === "contact" ? t.inboxItem.contact : undefined,
-          task: t.inboxItem?.type === "task" ? t.inboxItem.task : undefined,
-          sender: t.inboxItem?.sender,
-          receivedAt: t.inboxItem?.receivedAt ?? t.dueISO,
-        })),
-    [messagesBoardId, tasks],
-  );
-  const inboxPendingItems = useMemo(
-    () =>
-      walletMessageItems.filter(
-        (item) =>
-          !item.completed &&
-          item.status !== "accepted" &&
-          item.status !== "declined" &&
-          item.status !== "tentative" &&
-          item.status !== "deleted",
-      ),
-    [walletMessageItems],
-  );
-  const pendingCalendarInvites = useMemo(
-    () => calendarInvites.filter((invite) => invite.status === "pending" || invite.status === "read"),
-    [calendarInvites],
-  );
-  const [dmUnreadCount, setDmUnreadCount] = useState(0);
-  const unreadCalendarInviteCount = useMemo(
-    () => calendarInvites.filter((invite) => invite.status === "pending").length,
-    [calendarInvites],
-  );
-  const formatCalendarInviteWhen = useCallback((invite: CalendarInvite): string => {
-    const startRaw = invite.start?.trim() || "";
-    const endRaw = invite.end?.trim() || "";
-    if (!startRaw) return "";
-
-    const formatDateLabel = (dateKey: string): string => {
-      const parsed = new Date(`${dateKey}T00:00:00`);
-      if (Number.isNaN(parsed.getTime())) return dateKey;
-      return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-    };
-
-    const formatTimeLabel = (date: Date): string => date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-
-    if (ISO_DATE_PATTERN.test(startRaw)) {
-      const startLabel = formatDateLabel(startRaw);
-      if (!endRaw || !ISO_DATE_PATTERN.test(endRaw)) return startLabel;
-      const endLabel = formatDateLabel(endRaw);
-      return `${startLabel} – ${endLabel}`;
-    }
-
-    const startDate = new Date(startRaw);
-    if (Number.isNaN(startDate.getTime())) return startRaw;
-    const dateLabel = startDate.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-    const startTimeLabel = formatTimeLabel(startDate);
-
-    if (!endRaw) return `${dateLabel} • ${startTimeLabel}`;
-    const endDate = new Date(endRaw);
-    if (Number.isNaN(endDate.getTime())) return `${dateLabel} • ${startTimeLabel}`;
-
-    const endDateLabel = endDate.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-    const endTimeLabel = formatTimeLabel(endDate);
-    if (endDateLabel === dateLabel) return `${dateLabel} • ${startTimeLabel} – ${endTimeLabel}`;
-    return `${dateLabel} • ${startTimeLabel} – ${endDateLabel} ${endTimeLabel}`;
-  }, []);
-  const chatUnreadCount = messagesUnreadCount + unreadCalendarInviteCount + dmUnreadCount;
+  const {
+    chatUnreadCount,
+    inboxPendingItems,
+    messagesUnreadCount,
+    setDmUnreadCount,
+    walletMessageItems,
+  } = useWalletMessages({ messagesBoardId, tasks, unreadCalendarInviteCount });
   const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
   const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
   const bibleTrackerRef = useRef<BibleTrackerState>(bibleTracker);
   useEffect(() => { bibleTrackerRef.current = bibleTracker; }, [bibleTracker]);
-  const [biblePrintPaperSize, setBiblePrintPaperSize] = useState<PrintPaperSize>(() => loadBiblePrintPaperSize());
+  const [biblePrintPaperSize, setBiblePrintPaperSize] = useBiblePrintPaperSize();
   const [biblePrintOpen, setBiblePrintOpen] = useState(false);
   const [biblePrintMeta, setBiblePrintMeta] = useState<BiblePrintMeta | null>(null);
   const [biblePrintPdfBusy, setBiblePrintPdfBusy] = useState(false);
   const [bibleScanOpen, setBibleScanOpen] = useState(false);
-  const [biblePrintPortal, setBiblePrintPortal] = useState<HTMLDivElement | null>(null);
+  const biblePrintPortal = usePrintPortal("bible-print-portal");
   const [boardPrintOpen, setBoardPrintOpen] = useState(false);
   const [boardScanOpen, setBoardScanOpen] = useState(false);
   const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
   const [boardPrintPdfBusy, setBoardPrintPdfBusy] = useState(false);
-  const [boardPrintPortal, setBoardPrintPortal] = useState<HTMLDivElement | null>(null);
+  const boardPrintPortal = usePrintPortal("board-print-portal");
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   const [defaultRelays, setDefaultRelays] = useState<string[]>(() => loadDefaultRelays());
   useEffect(() => { saveDefaultRelays(defaultRelays); }, [defaultRelays]);
-  useEffect(() => {
-    persistBiblePrintPaperSize(biblePrintPaperSize);
-  }, [biblePrintPaperSize]);
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const node = document.createElement("div");
-    node.className = "bible-print-portal";
-    document.body.appendChild(node);
-    setBiblePrintPortal(node);
-    return () => {
-      node.remove();
-      setBiblePrintPortal(null);
-    };
-  }, []);
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const node = document.createElement("div");
-    node.className = "board-print-portal";
-    document.body.appendChild(node);
-    setBoardPrintPortal(node);
-    return () => {
-      node.remove();
-      setBoardPrintPortal(null);
-    };
-  }, []);
   const handleAddScriptureMemory = useCallback((payload: AddScripturePayload) => {
     setScriptureMemory((prev) => {
       const entries = prev.entries ? [...prev.entries] : [];
@@ -2976,9 +2547,27 @@ export default function App() {
   const [activePage, setActivePage] = useState<
     "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings"
   >("boards");
-  // Ref updated every render so navigation callbacks can read the gate without
-  // stale-closure issues (isOnboardingActive is derived further down).
-  const isOnboardingActiveRef = useRef(false);
+  const {
+    completeFirstRunOnboarding,
+    handleOnboardingEnableNotifications,
+    handleOnboardingGenerateNewKey,
+    handleOnboardingRestoreFromBackupFile,
+    handleOnboardingRestoreFromCloud,
+    handleOnboardingUseExistingKey,
+    isOnboardingActiveRef,
+    onboardingPushConfigured,
+    onboardingPushSupported,
+    showFirstRunOnboarding,
+  } = useFirstRunOnboarding({
+    activePage,
+    applyCustomNostrKey,
+    enablePushNotifications,
+    pushPlatform: settings.pushNotifications?.platform,
+    rotateNostrKey,
+    setActivePage,
+    vapidPublicKey,
+    workerBaseUrl,
+  });
   useEffect(() => {
     if (currentBoard?.kind === "bible") {
       if (view !== "completed") setView("bible");
@@ -3032,70 +2621,21 @@ export default function App() {
     },
   });
 
-  const showWallet = activePage === "wallet";
-  const showChat = activePage === "chat";
-  const showWalletShell = showWallet || showChat;
-  const walletModalPrefetchedRef = useRef(false);
-  const prefetchWalletModal = useCallback(() => {
-    if (walletModalPrefetchedRef.current) return;
-    walletModalPrefetchedRef.current = true;
-    loadCashuWalletModal().catch((err) => {
-      if ((import.meta as any)?.env?.DEV) console.warn("[wallet] prefetch failed", err);
-      walletModalPrefetchedRef.current = false; // Allow retry
-    });
-  }, []);
-  const [walletTokenStateResetNonce, setWalletTokenStateResetNonce] = useState(0);
-  const [updateToastVisible, setUpdateToastVisible] = useState(false);
+  const {
+    handleReloadLater,
+    handleReloadNow,
+    handleResetWalletTokenTracking,
+    prefetchWalletModal,
+    showChat,
+    showWalletShell,
+    updateToastVisible,
+    walletTokenStateResetNonce,
+  } = useWalletShellState({
+    activePage,
+    loadWalletModal: loadCashuWalletModal,
+    showToast,
+  });
   const shouldReloadForNavigation = useCallback(() => false, []);
-
-  useEffect(() => {
-    function handleUpdateAvailable() {
-      setUpdateToastVisible(true);
-    }
-
-    window.addEventListener("taskify:update-available", handleUpdateAvailable);
-    return () => {
-      window.removeEventListener("taskify:update-available", handleUpdateAvailable);
-    };
-  }, []);
-
-  const handleReloadNow = useCallback(() => {
-    setUpdateToastVisible(false);
-    window.location.reload();
-  }, []);
-
-  const handleReloadLater = useCallback(() => {
-    setUpdateToastVisible(false);
-  }, []);
-
-  useEffect(() => {
-    if (showWalletShell || walletModalPrefetchedRef.current) return;
-    const requestIdle = (window as any).requestIdleCallback as
-      | ((cb: () => void, opts?: { timeout: number }) => number)
-      | undefined;
-    const cancelIdle = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
-    let idleId: number | null = null;
-    let timer: number | undefined;
-    if (requestIdle) {
-      idleId = requestIdle(() => prefetchWalletModal(), { timeout: 1200 });
-    } else {
-      timer = window.setTimeout(() => {
-        prefetchWalletModal();
-      }, 300);
-    }
-    return () => {
-      if (idleId != null && cancelIdle) {
-        cancelIdle(idleId);
-      }
-      if (typeof timer === "number") {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [prefetchWalletModal, showWalletShell]);
-  const handleResetWalletTokenTracking = useCallback(() => {
-    setWalletTokenStateResetNonce((value) => value + 1);
-    showToast("Background token tracking reset", 3000);
-  }, [showToast]);
 
   const changeBoard = useCallback(
     (id: string) => {
@@ -3168,33 +2708,8 @@ export default function App() {
   const openShareBoard = useCallback(() => {
     if (shouldReloadForNavigation()) return;
     if (!currentBoard) return;
-    setShareBoardTargetId(currentBoard.id);
-    setShareBoardMode("board");
-    setShareModeInfoOpen(false);
-    setShareTemplateShare(null);
-    setShareTemplateStatus(null);
-    setShareTemplateBusy(false);
-    setShareContactStatus(null);
-    setShareContactBusy(false);
-    setShareContactPickerOpen(false);
-    setShareBoardModalOpen(true);
-    shareBoardTargetIdRef.current = currentBoard.id;
-    shareBoardModalOpenRef.current = true;
-  }, [currentBoard, shouldReloadForNavigation]);
-  const closeShareBoard = useCallback(() => {
-    setShareBoardModalOpen(false);
-    setShareBoardTargetId(null);
-    setShareBoardMode("board");
-    setShareModeInfoOpen(false);
-    setShareTemplateShare(null);
-    setShareTemplateStatus(null);
-    setShareTemplateBusy(false);
-    setShareContactStatus(null);
-    setShareContactBusy(false);
-    setShareContactPickerOpen(false);
-    shareBoardTargetIdRef.current = null;
-    shareBoardModalOpenRef.current = false;
-  }, []);
+    openShareBoardForTarget(currentBoard.id);
+  }, [currentBoard, openShareBoardForTarget, shouldReloadForNavigation]);
 
   const createBoardFromName = useCallback(
     (name: string, type: "lists" | "compound", shared = true) => {
@@ -3298,94 +2813,6 @@ export default function App() {
     }
   }, [settings.startupView]);
   const { receiveToken } = useCashu();
-
-  const onboardingNeedsKeySelection = useMemo(() => {
-    try {
-      const raw = nostrSkSync().trim();
-      return !/^[0-9a-fA-F]{64}$/.test(raw);
-    } catch {
-      return true;
-    }
-  }, []);
-  const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
-    if (!onboardingNeedsKeySelection) return false;
-    try {
-      return kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) !== "done";
-    } catch {
-      return true;
-    }
-  });
-  const completeFirstRunOnboarding = useCallback(() => {
-    try {
-      kvStorage.setItem(LS_FIRST_RUN_ONBOARDING_DONE, "done");
-    } catch {}
-    setShowFirstRunOnboarding(false);
-  }, []);
-  const handleOnboardingUseExistingKey = useCallback((value: string) => {
-    return applyCustomNostrKey(value, { silent: true });
-  }, [applyCustomNostrKey]);
-  const handleOnboardingGenerateNewKey = useCallback(() => {
-    try {
-      const nsec = rotateNostrKey();
-      // Ensure wallet seed exists for this account, even though onboarding now only displays nsec.
-      getWalletSeedMnemonic();
-      return { nsec };
-    } catch {
-      return null;
-    }
-  }, [rotateNostrKey]);
-  const completeOnboardingWithReload = useCallback(() => {
-    completeFirstRunOnboarding();
-    if (typeof window !== "undefined") {
-      window.setTimeout(() => window.location.reload(), 120);
-    }
-  }, [completeFirstRunOnboarding]);
-  const handleOnboardingRestoreFromBackupFile = useCallback(async (file: File) => {
-    const parsed = parseBackupJsonPayload(await file.text());
-    applyBackupDataToStorage(parsed);
-    // Ensure the v3 entity-store writes land before the page reloads.
-    await Promise.all([
-      taskEntityStore.flush(),
-      boardEntityStore.flush(),
-      calendarEventEntityStore.flush(),
-      externalCalendarEventEntityStore.flush(),
-    ]);
-    completeOnboardingWithReload();
-  }, [completeOnboardingWithReload]);
-  const handleOnboardingRestoreFromCloud = useCallback(async (value: string) => {
-    const parsed = await loadCloudBackupPayload(workerBaseUrl, value);
-    applyBackupDataToStorage(parsed);
-    await Promise.all([
-      taskEntityStore.flush(),
-      boardEntityStore.flush(),
-      calendarEventEntityStore.flush(),
-      externalCalendarEventEntityStore.flush(),
-    ]);
-    completeOnboardingWithReload();
-  }, [completeOnboardingWithReload, workerBaseUrl]);
-  const handleOnboardingEnableNotifications = async () => {
-    const platform = settings.pushNotifications?.platform === "android"
-      ? "android"
-      : detectPushPlatformFromNavigator();
-    await enablePushNotifications(platform);
-  };
-  const onboardingPushSupported = typeof window !== "undefined"
-    && "serviceWorker" in navigator
-    && "PushManager" in window
-    && window.isSecureContext;
-  const onboardingPushConfigured = !!workerBaseUrl && !!vapidPublicKey;
-  // True while any onboarding/welcome overlay is blocking the app. Used to gate
-  // background interaction via the HTML `inert` attribute.
-  const isOnboardingActive = showFirstRunOnboarding;
-  // Keep the ref in sync every render so nav callbacks can read it safely.
-  isOnboardingActiveRef.current = isOnboardingActive;
-  // Hard state-level gate: if onboarding is active, force activePage to the
-  // neutral "boards" base view so no background section is ever visible/active.
-  useEffect(() => {
-    if (isOnboardingActive && activePage !== "boards") {
-      startTransition(() => setActivePage("boards"));
-    }
-  }, [isOnboardingActive, activePage]);
 
   useEffect(() => {
     if (!settings.completedTab) setView("board");
@@ -4014,23 +3441,6 @@ export default function App() {
     });
   }, [setBibleTracker]);
 
-  const [dayChoice, setDayChoiceRaw] = useState<DayChoice>(() => {
-    const firstBoard = boards.find(b => !b.archived) ?? boards[0];
-    if (firstBoard?.kind === "lists") {
-      return (firstBoard as Extract<Board, {kind:"lists"}>).columns[0]?.id || "items";
-    }
-    return new Date().getDay() as Weekday;
-  });
-  const dayChoiceRef = useRef<DayChoice>(dayChoice);
-  const setDayChoice = useCallback((next: DayChoice) => {
-    dayChoiceRef.current = next;
-    setDayChoiceRaw(next);
-  }, []);
-  const lastListViewRef = useRef<Map<string, string>>(new Map());
-  const lastBoardScrollRef = useRef<Map<string, number>>(new Map());
-  const autoCenteredIndexRef = useRef<Set<string>>(new Set());
-  const autoCenteredWeekRef = useRef<Set<string>>(new Set());
-  const activeWeekBoardRef = useRef<string | null>(null);
   const [pushWorkState, setPushWorkState] = useState<"idle" | "enabling" | "disabling">("idle");
   const [pushError, setPushError] = useState<string | null>(null);
   const [inlineTitles, setInlineTitles] = useState<Record<string, string>>({});
@@ -4380,7 +3790,6 @@ export default function App() {
   const upcomingAutoScrollRef = useRef(false);
   const upcomingPendingDetailDateRef = useRef<string | null>(null);
   const upcomingCalendarSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
-  const columnRefs = useRef(new Map<string, HTMLDivElement>());
   const inlineInputRefs = useRef(new Map<string, HTMLInputElement>());
 
   useEffect(() => {
@@ -4405,30 +3814,9 @@ export default function App() {
     setUpcomingSearchOpen(false);
   }, []);
 
-  const setColumnRef = useCallback((key: string, el: HTMLDivElement | null) => {
-    if (el) columnRefs.current.set(key, el);
-    else columnRefs.current.delete(key);
-  }, []);
-
   const setInlineInputRef = useCallback((key: string, el: HTMLInputElement | null) => {
     if (el) inlineInputRefs.current.set(key, el);
     else inlineInputRefs.current.delete(key);
-  }, []);
-
-  const scrollColumnIntoView = useCallback((key: string, behavior: ScrollBehavior = "smooth") => {
-    const scroller = scrollerRef.current;
-    const column = columnRefs.current.get(key);
-    if (!scroller || !column) return;
-    const scrollerRect = scroller.getBoundingClientRect();
-    const columnRect = column.getBoundingClientRect();
-    const offset =
-      scroller.scrollLeft +
-      (columnRect.left - scrollerRect.left) -
-      scroller.clientWidth / 2 +
-      column.clientWidth / 2;
-    const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-    const target = Math.min(Math.max(offset, 0), maxScroll);
-    scroller.scrollTo({ left: target, behavior });
   }, []);
 
   // Custom list boards (including compound boards aggregating multiple lists)
@@ -4495,6 +3883,24 @@ export default function App() {
     }
     return { listColumns: columns, listColumnSources: sourceMap, compoundIndexGroups: groups };
   }, [boards, currentBoard]);
+
+  const {
+    bibleScrollerRef,
+    dayChoice,
+    getColumnElement,
+    scrollerRef,
+    scrollColumnIntoView,
+    setColumnRef,
+    setDayChoice,
+  } = useBoardViewScrollState({
+    activePage,
+    boards,
+    currentBoard,
+    currentBoardId,
+    listColumns,
+    listColumnSources,
+    view,
+  });
 
   const focusListColumn = useCallback(
     (columnId: string, options?: { behavior?: ScrollBehavior }) => {
@@ -4672,7 +4078,7 @@ export default function App() {
     requestAnimationFrame(() => {
       const targetEl =
         dest.type === "column"
-          ? columnRefs.current.get(dest.key) || null
+          ? getColumnElement(dest.key)
           : upcomingButtonRef.current;
       if (!targetEl) return;
 
@@ -12035,225 +11441,6 @@ export default function App() {
     applyCalendarEvent,
   });
 
-  // horizontal scroller ref to enable iOS momentum scrolling
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const bibleScrollerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const autoCenteredSet = autoCenteredWeekRef.current;
-    const prevActive = activeWeekBoardRef.current;
-
-    if (activePage !== "boards" || view !== "board") {
-      if (prevActive) {
-        autoCenteredSet.delete(prevActive);
-        activeWeekBoardRef.current = null;
-      }
-      return;
-    }
-
-    if (!currentBoardId || currentBoard?.kind !== "week") {
-      if (prevActive) {
-        autoCenteredSet.delete(prevActive);
-        activeWeekBoardRef.current = null;
-      }
-      return;
-    }
-
-    if (prevActive && prevActive !== currentBoardId) {
-      autoCenteredSet.delete(prevActive);
-    }
-
-    activeWeekBoardRef.current = currentBoardId;
-  }, [activePage, currentBoardId, currentBoard?.kind, view]);
-
-  // reset dayChoice when board/view changes and center current day for week boards
-  useEffect(() => {
-    if (!currentBoard || view !== "board" || activePage !== "boards") return;
-    if (currentBoard.kind === "bible") {
-      return;
-    }
-    if (isListLikeBoard(currentBoard)) {
-      const valid = typeof dayChoice === "string" && listColumnSources.has(dayChoice);
-      if (valid) {
-        lastListViewRef.current.set(currentBoard.id, dayChoice);
-        return;
-      }
-
-      const stored = lastListViewRef.current.get(currentBoard.id);
-      const storedValid = stored ? listColumnSources.has(stored) : false;
-      const nextChoice =
-        (storedValid && stored) ||
-        listColumns[0]?.id ||
-        (typeof dayChoice === "string" ? dayChoice : undefined);
-
-      if (nextChoice && nextChoice !== dayChoice) {
-        setDayChoice(nextChoice);
-        lastListViewRef.current.set(currentBoard.id, nextChoice);
-      }
-    } else {
-      const today = new Date().getDay() as Weekday;
-      const boardId = currentBoard.id;
-      const autoCenteredSet = autoCenteredWeekRef.current;
-      const hasCentered = autoCenteredSet.has(boardId);
-      const isValidDayChoice = typeof dayChoice === "number" && dayChoice >= 0 && dayChoice <= 6;
-
-      if ((!hasCentered || !isValidDayChoice) && dayChoice !== today) {
-        setDayChoice(today);
-      }
-
-      if (!hasCentered) {
-        requestAnimationFrame(() => {
-          const scroller = scrollerRef.current;
-          if (!scroller) return;
-          const el = scroller.querySelector(`[data-day='${today}']`) as HTMLElement | null;
-          if (!el) return;
-          const offset = el.offsetLeft - scroller.clientWidth / 2 + el.clientWidth / 2;
-          scroller.scrollTo({ left: offset, behavior: "smooth" });
-          autoCenteredSet.add(boardId);
-        });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePage, currentBoardId, currentBoard?.id, currentBoard?.kind, dayChoice, listColumnSources, listColumns, view]);
-
-  useEffect(() => {
-    const board = currentBoard;
-    if (view !== "board") return;
-    if (!isListLikeBoard(board)) return;
-    if (typeof dayChoice !== "string") return;
-    if (!listColumnSources.has(dayChoice)) return;
-    const prev = lastListViewRef.current.get(board.id);
-    if (prev !== dayChoice) {
-      lastListViewRef.current.set(board.id, dayChoice);
-    }
-  }, [currentBoard, dayChoice, listColumnSources, view]);
-
-  useLayoutEffect(() => {
-    const board = currentBoard;
-    if (view !== "board") return;
-    if (!isListLikeBoard(board)) return;
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-
-    const boardId = board.id;
-    const scrollStore = lastBoardScrollRef.current;
-    const stored = scrollStore.has(boardId) ? scrollStore.get(boardId)! : null;
-    const shouldCenterIndex = !!board.indexCardEnabled;
-    const autoCenteredIndexSet = autoCenteredIndexRef.current;
-
-    const applyInitialScroll = () => {
-      const latest = scrollerRef.current;
-      if (!latest) return;
-      const maxScroll = Math.max(0, latest.scrollWidth - latest.clientWidth);
-      if (shouldCenterIndex && !autoCenteredIndexSet.has(boardId)) {
-        scrollColumnIntoView("list-index", "auto");
-        autoCenteredIndexSet.add(boardId);
-        requestAnimationFrame(() => {
-          const latest = scrollerRef.current;
-          if (!latest) return;
-          const maxScroll = Math.max(0, latest.scrollWidth - latest.clientWidth);
-          const clamped = Math.min(Math.max(latest.scrollLeft, 0), maxScroll);
-          scrollStore.set(boardId, clamped);
-        });
-        nudgeHorizontalScroller(latest);
-        return;
-      }
-      const target = stored == null ? 0 : Math.min(Math.max(stored, 0), maxScroll);
-      if (Math.abs(latest.scrollLeft - target) > 1) {
-        latest.scrollTo({ left: target, behavior: "auto" });
-      } else {
-        latest.scrollLeft = target;
-      }
-      nudgeHorizontalScroller(latest);
-    };
-
-    applyInitialScroll();
-    const raf = requestAnimationFrame(applyInitialScroll);
-    let timeout: number | undefined;
-    if (typeof window !== "undefined") {
-      timeout = window.setTimeout(applyInitialScroll, 150);
-    }
-    let resizeObserver: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(() => {
-        applyInitialScroll();
-      });
-      resizeObserver.observe(scroller);
-    }
-
-    const handleScroll = () => {
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-    };
-
-    scroller.addEventListener("scroll", handleScroll, { passive: true });
-
-    return () => {
-      if (typeof timeout === "number") {
-        window.clearTimeout(timeout);
-      }
-      resizeObserver?.disconnect();
-      cancelAnimationFrame(raf);
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-      if (!board.indexCardEnabled) {
-        autoCenteredIndexSet.delete(boardId);
-      }
-      scroller.removeEventListener("scroll", handleScroll);
-    };
-  }, [currentBoard, scrollColumnIntoView, view]);
-
-  useLayoutEffect(() => {
-    if (currentBoard?.kind !== "bible") return;
-    if (view === "completed") return;
-    const scroller = bibleScrollerRef.current;
-    if (!scroller) return;
-
-    const boardId = currentBoard.id;
-    const scrollStore = lastBoardScrollRef.current;
-    const stored = scrollStore.get(boardId) ?? 0;
-
-    const applyStoredScroll = () => {
-      const latest = bibleScrollerRef.current;
-      if (!latest) return;
-      const maxScroll = Math.max(0, latest.scrollWidth - latest.clientWidth);
-      const target = Math.min(Math.max(stored, 0), maxScroll);
-      if (Math.abs(latest.scrollLeft - target) > 1) {
-        latest.scrollTo({ left: target, behavior: "auto" });
-      } else {
-        latest.scrollLeft = target;
-      }
-    };
-
-    applyStoredScroll();
-    const raf = requestAnimationFrame(applyStoredScroll);
-    let timeout: number | undefined;
-    if (typeof window !== "undefined") {
-      timeout = window.setTimeout(applyStoredScroll, 150);
-    }
-
-    const handleScroll = () => {
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-    };
-
-    scroller.addEventListener("scroll", handleScroll, { passive: true });
-
-    return () => {
-      if (typeof timeout === "number") {
-        window.clearTimeout(timeout);
-      }
-      cancelAnimationFrame(raf);
-      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-      const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
-      scrollStore.set(boardId, clamped);
-      scroller.removeEventListener("scroll", handleScroll);
-    };
-  }, [currentBoard?.id, currentBoard?.kind, view]);
-
   const activeView =
     !settings.completedTab && (view === "completed" || view === "board-upcoming") ? "board" : view;
   const shareBoardId =
@@ -13110,155 +12297,24 @@ export default function App() {
             </div>
           )
         ) : activeView === "board-upcoming" ? (
-          <div className="surface-panel board-column p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="text-lg font-semibold">Upcoming</div>
-            </div>
-            {boardUpcomingCount === 0 ? (
-              <div className="text-secondary text-sm">No upcoming items on this board.</div>
-            ) : (
-              <div className="upcoming-list space-y-4">
-                {boardUpcomingGroups.map((group) => (
-                  <div key={group.dateKey} className="upcoming-day" data-upcoming-date={group.dateKey}>
-                    <div className="upcoming-day__label">{group.label}</div>
-                    <div className="space-y-2">
-                      {group.events.map((ev) => renderUpcomingEventCard(ev))}
-                      {group.tasks.map((task) => renderUpcomingTaskCard(task))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <BoardUpcomingView
+            boardUpcomingCount={boardUpcomingCount}
+            boardUpcomingGroups={boardUpcomingGroups}
+            renderUpcomingEventCard={renderUpcomingEventCard}
+            renderUpcomingTaskCard={renderUpcomingTaskCard}
+          />
         ) : (
-          // Completed view
-          <div className="surface-panel board-column p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="text-lg font-semibold">Completed</div>
-              {currentBoard?.kind !== "bible" && !currentBoard?.clearCompletedDisabled && (
-                <div className="ml-auto">
-                  <button
-                    className="ghost-button button-sm pressable text-rose-400"
-                    onClick={clearCompleted}
-                  >
-                    Clear completed
-                  </button>
-                </div>
-              )}
-            </div>
-            {currentBoard?.kind === "bible" ? (
-              completedBibleBooks.length === 0 ? (
-                <div className="text-secondary text-sm">No completed books yet.</div>
-              ) : (
-                <ul className="space-y-1.5">
-                  {completedBibleBooks.map((book) => (
-                    <li
-                      key={book.id}
-                      className="task-card space-y-2"
-                      data-state="completed"
-                      data-form="pill"
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1">
-                          <div className="text-sm font-medium leading-[1.15]">{book.name}</div>
-                          <div className="text-xs text-secondary">
-                            {book.completedAtISO
-                              ? `Completed ${new Date(book.completedAtISO).toLocaleString()}`
-                              : "Completed book"}
-                          </div>
-                        </div>
-                        <IconButton label="Restore" onClick={() => handleRestoreBibleBook(book.id)} intent="success">
-                          ↩︎
-                        </IconButton>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )
-            ) : completed.length === 0 ? (
-              <div className="text-secondary text-sm">No completed tasks yet.</div>
-            ) : (
-              <ul className="space-y-1.5">
-                {completed.map((t) => {
-                  const recoverableBounty = isRecoverableBountyTask(t);
-                  const hasDetail =
-                    !!t.note?.trim() ||
-                    (t.images && t.images.length > 0) ||
-                    (t.documents && t.documents.length > 0) ||
-                    (t.subtasks && t.subtasks.length > 0) ||
-                    !!t.bounty;
-                  const scheduledWeekday = taskWeekday(t) ?? (new Date().getDay() as Weekday);
-                  const scheduledDayLabel = WD_SHORT[scheduledWeekday];
-                  const scheduledTimeLabel = t.dueTimeEnabled
-                    ? ` at ${formatTimeLabel(t.dueISO, t.dueTimeZone)}`
-                    : "";
-                  const bountyLabel = t.bounty ? bountyStateLabel(t.bounty) : "";
-                  return (
-                    <li key={t.id} className="task-card space-y-2" data-state="completed" data-form={hasDetail ? 'stacked' : 'pill'}>
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1">
-                          <div className="text-sm font-medium leading-[1.15]">
-                            <TaskTitle key={`${t.id}:${t.priority ?? "none"}`} task={t} />
-                          </div>
-                          <div className="text-xs text-secondary">
-                            {currentBoard?.kind === "week"
-                              ? `Scheduled ${scheduledDayLabel}${scheduledTimeLabel}`
-                              : "Completed item"}
-                            {t.completedAt ? ` • Completed ${new Date(t.completedAt).toLocaleString()}` : ""}
-                            {settings.streaksEnabled &&
-                              t.recurrence &&
-                              isFrequentRecurrence(t.recurrence) &&
-                              typeof t.streak === "number" && t.streak > 0
-                                ? ` • 🔥 ${t.streak}`
-                                : ""}
-                            {recoverableBounty ? " • Recoverable bounty task" : ""}
-                          </div>
-                          <TaskMedia task={t} onOpenDocument={handleOpenDocument} />
-                          {t.inboxItem && (
-                            <div className="mt-1 text-xs text-secondary">
-                              Shared {t.inboxItem.type === "board" ? "board" : t.inboxItem.type === "contact" ? "contact" : "task"} •{" "}
-                              {t.inboxItem.status === "accepted"
-                                ? "Added"
-                                : t.inboxItem.status === "tentative"
-                                  ? "Maybe"
-                                  : t.inboxItem.status === "declined"
-                                    ? "Declined"
-                                    : t.inboxItem.status === "deleted"
-                                      ? "Dismissed"
-                                      : "Pending"}
-                            </div>
-                          )}
-                          {t.subtasks?.length ? (
-                            <ul className="mt-1 space-y-1 text-xs">
-                              {t.subtasks.map(st => (
-                                <li key={st.id} className="subtask-row">
-                                  <input type="checkbox" checked={!!st.completed} disabled className="subtask-row__checkbox" />
-                                  <span className={`subtask-row__text ${st.completed ? 'line-through text-secondary' : ''}`}>{st.title}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          ) : null}
-                          {t.bounty && (
-                            <div className="mt-1">
-                              <span className={`text-[0.6875rem] px-2 py-0.5 rounded-full border ${t.bounty.state==='unlocked' ? 'bg-emerald-700/30 border-emerald-700' : t.bounty.state==='locked' ? 'bg-neutral-700/40 border-neutral-600' : t.bounty.state==='revoked' ? 'bg-rose-700/30 border-rose-700' : 'bg-surface-muted border-surface'}`}>
-                                Bounty {typeof t.bounty.amount==='number' ? `• ${t.bounty.amount} sats` : ''} • {bountyLabel}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex gap-1">
-                          <IconButton label={recoverableBounty ? "Recover" : "Restore"} onClick={() => restoreTask(t.id)} intent="success">↩︎</IconButton>
-                          {!recoverableBounty && (
-                            <IconButton label="Delete" onClick={() => deleteTask(t.id)} intent="danger">✕</IconButton>
-                          )}
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+          <CompletedBoardView
+            clearCompleted={clearCompleted}
+            completed={completed}
+            completedBibleBooks={completedBibleBooks}
+            currentBoard={currentBoard}
+            deleteTask={deleteTask}
+            handleOpenDocument={handleOpenDocument}
+            handleRestoreBibleBook={handleRestoreBibleBook}
+            restoreTask={restoreTask}
+            streaksEnabled={settings.streaksEnabled}
+          />
         )}
         </div>
       )}
@@ -13698,596 +12754,135 @@ export default function App() {
         </div>
       </div>
 
-      <ActionSheet
-        open={boardSortSheetOpen}
-        onClose={() => setBoardSortSheetOpen(false)}
-        title="Filter and sort"
-      >
-        <div className="wallet-section space-y-3 text-sm">
-          <div className="text-xs uppercase tracking-wide text-secondary">Sort tasks by</div>
-          <div className="flex flex-wrap gap-2">
-            {boardSortOptions.map((option) => {
-              const active = boardSort.mode === option.id;
-              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-              const showArrow = active && option.supportsDirection;
-              const invertArrow = option.id === "due" || option.id === "alpha";
-              const arrow =
-                boardSort.direction === "asc"
-                  ? (invertArrow ? "↓" : "↑")
-                  : (invertArrow ? "↑" : "↓");
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={cls}
-                  onClick={() => handleBoardSortSelect(option.id)}
-                >
-                  <span>{option.label}</span>
-                  {showArrow && <span className="ml-1 text-xs">{arrow}</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={upcomingSortSheetOpen}
-        onClose={() => setUpcomingSortSheetOpen(false)}
-        title="Sort"
-      >
-        <div className="wallet-section space-y-3 text-sm">
-          <div className="text-xs uppercase tracking-wide text-secondary">Sort tasks by</div>
-          <div className="flex flex-wrap gap-2">
-            {boardSortOptions.map((option) => {
-              const active = upcomingSort.mode === option.id;
-              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-              const showArrow = active && option.supportsDirection;
-              const invertArrow = option.id === "due" || option.id === "alpha";
-              const arrow =
-                upcomingSort.direction === "asc"
-                  ? (invertArrow ? "↓" : "↑")
-                  : (invertArrow ? "↑" : "↓");
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={cls}
-                  onClick={() => handleUpcomingSortSelect(option.id)}
-                  aria-pressed={active}
-                >
-                  <span>{option.label}</span>
-                  {showArrow && <span className="ml-1 text-xs">{arrow}</span>}
-                </button>
-              );
-            })}
-          </div>
-          <div className="text-xs uppercase tracking-wide text-secondary">Boards</div>
-          <div className="flex flex-wrap gap-2">
-            {upcomingBoardGroupingOptions.map((option) => {
-              const active = upcomingBoardGrouping === option.id;
-              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={cls}
-                  onClick={() => setUpcomingBoardGrouping(option.id)}
-                  aria-pressed={active}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={upcomingViewSheetOpen}
-        onClose={() => setUpcomingViewSheetOpen(false)}
-        title="View"
-      >
-        <div className="overflow-hidden rounded-2xl border border-border bg-elevated">
-          {[
-            { id: "details", label: "Details" },
-            { id: "list", label: "List" },
-          ].map((option) => {
-            const active = upcomingView === option.id;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface"
-	                onClick={() => {
-	                  handleUpcomingViewChange(option.id as "details" | "list");
-	                }}
-	                aria-pressed={active}
-	              >
-                <div className="flex-1">
-                  <div className="text-sm font-medium text-primary">{option.label}</div>
-                </div>
-                {active && <span className="text-accent text-sm font-semibold">✓</span>}
-              </button>
-            );
-          })}
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={upcomingFilterOpen}
-        onClose={() => setUpcomingFilterOpen(false)}
-        title="Calendars"
-        panelClassName="sheet-panel--tall"
-      >
-        <div className="upcoming-filter">
-          <div className="upcoming-filter__controls">
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={() => {
-                setUpcomingFilter(null);
-                setUpcomingUsHolidaysEnabled(true);
-              }}
-            >
-              Select all
-            </button>
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={() => {
-                setUpcomingFilter([]);
-                setUpcomingUsHolidaysEnabled(false);
-              }}
-            >
-              Clear all
-            </button>
-            {upcomingFilterPresets.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className="ghost-button button-sm pressable"
-                onClick={(e) => {
-                  if (upcomingPresetHoldTriggeredRef.current) {
-                    upcomingPresetHoldTriggeredRef.current = false;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return;
-                  }
-                  applyUpcomingFilterPreset(preset);
-                }}
-                onPointerDown={(e) => startUpcomingPresetHold(preset, e)}
-                onPointerUp={cancelUpcomingPresetHold}
-                onPointerCancel={cancelUpcomingPresetHold}
-                onPointerLeave={cancelUpcomingPresetHold}
-                onPointerMove={maybeCancelUpcomingPresetHold}
-                onContextMenu={(e) => e.preventDefault()}
-                title="Press and hold to delete"
-              >
-                {preset.name}
-              </button>
-            ))}
-          </div>
-          <div className="upcoming-filter__list">
-            {upcomingFilterGroups.length === 0 ? (
-              <div className="text-sm text-secondary">No boards yet.</div>
-            ) : (
-              upcomingFilterGroups.map((group) => (
-                <div key={group.id} className="upcoming-filter__group">
-                  <button
-                    type="button"
-                    className="upcoming-filter__row pressable"
-                    onClick={() => toggleUpcomingFilter(group.boardOption.id)}
-                    role="checkbox"
-                    aria-checked={upcomingFilterSelection.has(group.boardOption.id)}
-                  >
-                    <span
-                      className={`upcoming-filter__check${upcomingFilterSelection.has(group.boardOption.id) ? " is-checked" : ""}`}
-                      aria-hidden="true"
-                    >
-                      {upcomingFilterSelection.has(group.boardOption.id) && (
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 12l4 4 10-10" />
-                        </svg>
-                      )}
-                    </span>
-                    <span className="upcoming-filter__label">{group.label}</span>
-                  </button>
-                  {group.listOptions.length > 0 && (
-                    <div className="upcoming-filter__sublist">
-                      {group.listOptions.map((option) => {
-                        const checked = upcomingFilterSelection.has(option.id);
-                        return (
-                          <button
-                            key={option.id}
-                            type="button"
-                            className="upcoming-filter__row upcoming-filter__row--child pressable"
-                            onClick={() => toggleUpcomingFilter(option.id)}
-                            role="checkbox"
-                            aria-checked={checked}
-                          >
-                            <span
-                              className={`upcoming-filter__check${checked ? " is-checked" : ""}`}
-                              aria-hidden="true"
-                            >
-                              {checked && (
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M5 12l4 4 10-10" />
-                                </svg>
-                              )}
-                            </span>
-                            <span className="upcoming-filter__label">{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-            <div className="upcoming-filter__group">
-              <button
-                type="button"
-                className="upcoming-filter__row pressable"
-                onClick={() => setUpcomingUsHolidaysEnabled((prev) => !prev)}
-                role="checkbox"
-                aria-checked={upcomingUsHolidaysEnabled}
-              >
-                <span
-                  className={`upcoming-filter__check${upcomingUsHolidaysEnabled ? " is-checked" : ""}`}
-                  aria-hidden="true"
-                >
-                  {upcomingUsHolidaysEnabled && (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M5 12l4 4 10-10" />
-                    </svg>
-                  )}
-                </span>
-                <span className="upcoming-filter__label">{SPECIAL_CALENDAR_US_HOLIDAYS_LABEL}</span>
-              </button>
-            </div>
-            {gcalStatus.connected && gcalCalendars.map((cal) => {
-              const boardId = `gcal:${cal.id}`;
-              const isSelected = upcomingFilter === null || upcomingFilter.includes(boardId);
-              return (
-                <div key={cal.id} className="upcoming-filter__group">
-                  <button
-                    type="button"
-                    className="upcoming-filter__row pressable"
-                    onClick={() => {
-                      if (upcomingFilter === null) {
-                        // Deselect just this calendar
-                        const allIds = upcomingFilterOptions.map((o) => o.id);
-                        setUpcomingFilter(allIds.filter((id) => id !== boardId));
-                      } else if (isSelected) {
-                        setUpcomingFilter(upcomingFilter.filter((id) => id !== boardId));
-                      } else {
-                        setUpcomingFilter([...upcomingFilter, boardId]);
-                      }
-                    }}
-                    role="checkbox"
-                    aria-checked={isSelected}
-                  >
-                    <span
-                      className={`upcoming-filter__check${isSelected ? " is-checked" : ""}`}
-                      aria-hidden="true"
-                    >
-                      {isSelected && (
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 12l4 4 10-10" />
-                        </svg>
-                      )}
-                    </span>
-                    <span className="upcoming-filter__label">
-                      {cal.color && (
-                        <span
-                          className="inline-block w-2 h-2 rounded-full mr-1.5"
-                          style={{ backgroundColor: cal.color, verticalAlign: "middle" }}
-                        />
-                      )}
-                      {cal.name}
-                    </span>
-                  </button>
-                </div>
-              );
-            })}
-            <div>
-              <button
-                type="button"
-                className="ghost-button button-sm pressable"
-                onClick={saveUpcomingFilterPreset}
-              >
-                Save as preset
-              </button>
-            </div>
-          </div>
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={selectionMoveSheetOpen}
-        onClose={() => { setSelectionMoveSheetOpen(false); setSelectionMoveStep("board"); setSelectionMoveBoardId(null); }}
-        title={selectionMoveStep === "column" ? "Choose a list" : "Move selected items"}
-        stackLevel={10001}
-      >
-        {selectedCount === 0 ? (
-          <div className="text-sm text-secondary">Select one or more items to move.</div>
-        ) : selectionMoveStep === "board" ? (
-          <div className="space-y-2">
-            {selectionMoveTargets.map((board) => (
-              <button
-                key={board.id}
-                type="button"
-                className="contact-row pressable"
-                onClick={() => {
-                  if (board.kind === "lists" && board.columns.length > 1) {
-                    setSelectionMoveBoardId(board.id);
-                    setSelectionMoveStep("column");
-                  } else if (board.kind === "compound" && board.children.length > 0) {
-                    setSelectionMoveBoardId(board.id);
-                    setSelectionMoveStep("column");
-                  } else {
-                    moveSelectedTasksToBoard(board.id);
-                  }
-                }}
-              >
-                <div className="contact-row__text">
-                  <div className="contact-row__name">{board.name}</div>
-                  <div className="contact-row__meta">
-                    <span className="contact-row__meta-text capitalize">{board.kind}</span>
-                    {board.kind === "lists" && board.columns.length > 0 && (
-                      <span className="contact-row__meta-text"> · {board.columns.length} {board.columns.length === 1 ? "list" : "lists"}</span>
-                    )}
-                  </div>
-                </div>
-                {(board.kind === "lists" && board.columns.length > 1) || (board.kind === "compound" && board.children.length > 0) ? (
-                  <span className="text-secondary text-xs ml-auto shrink-0">▸</span>
-                ) : null}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <button
-              type="button"
-              className="ghost-button button-sm pressable mb-2"
-              onClick={() => { setSelectionMoveStep("board"); setSelectionMoveBoardId(null); }}
-            >
-              ← Back
-            </button>
-            {(() => {
-              const board = selectionMoveTargets.find((b) => b.id === selectionMoveBoardId);
-              if (!board) return null;
-              if (board.kind === "compound") {
-                return board.children.map((childId) => {
-                  const childBoard = boards.find((b) => b.id === childId);
-                  if (!childBoard || childBoard.kind !== "lists") return null;
-                  return childBoard.columns.map((col) => (
-                    <button
-                      key={`${childBoard.id}-${col.id}`}
-                      type="button"
-                      className="contact-row pressable"
-                      onClick={() => moveSelectedTasksToColumn(childBoard.id, col.id)}
-                    >
-                      <div className="contact-row__text">
-                        <div className="contact-row__name">{col.name}</div>
-                        <div className="contact-row__meta">
-                          <span className="contact-row__meta-text">{childBoard.name}</span>
-                        </div>
-                      </div>
-                    </button>
-                  ));
-                });
-              }
-              if (board.kind === "lists") {
-                return board.columns.map((col) => (
-                  <button
-                    key={col.id}
-                    type="button"
-                    className="contact-row pressable"
-                    onClick={() => moveSelectedTasksToColumn(board.id, col.id)}
-                  >
-                    <div className="contact-row__text">
-                      <div className="contact-row__name">{col.name}</div>
-                    </div>
-                  </button>
-                ));
-              }
-              return null;
-            })()}
-          </div>
-        )}
-      </ActionSheet>
-
-
-      {/* Drag trash can */}
-      <TrashDropZone
-        visible={!!(draggingTaskId || draggingEventId)}
-        hovered={trashHover}
-        setHovered={setTrashHover}
-        onDragEnd={handleDragEnd}
-        deleteTask={deleteTask}
-        deleteCalendarEvent={deleteCalendarEvent}
-        isSelectionMode={isSelectionMode}
-        exitSelectionMode={exitSelectionMode}
+      <AppSortSheets
+        applyUpcomingFilterPreset={applyUpcomingFilterPreset}
+        boardSort={boardSort}
+        boardSortOptions={boardSortOptions}
+        boardSortSheetOpen={boardSortSheetOpen}
+        cancelUpcomingPresetHold={cancelUpcomingPresetHold}
+        gcalCalendars={gcalCalendars}
+        gcalStatus={gcalStatus}
+        handleBoardSortSelect={handleBoardSortSelect}
+        handleUpcomingSortSelect={handleUpcomingSortSelect}
+        handleUpcomingViewChange={handleUpcomingViewChange}
+        maybeCancelUpcomingPresetHold={maybeCancelUpcomingPresetHold}
+        saveUpcomingFilterPreset={saveUpcomingFilterPreset}
+        setBoardSortSheetOpen={setBoardSortSheetOpen}
+        setUpcomingBoardGrouping={setUpcomingBoardGrouping}
+        setUpcomingFilter={setUpcomingFilter}
+        setUpcomingFilterOpen={setUpcomingFilterOpen}
+        setUpcomingSortSheetOpen={setUpcomingSortSheetOpen}
+        setUpcomingUsHolidaysEnabled={setUpcomingUsHolidaysEnabled}
+        setUpcomingViewSheetOpen={setUpcomingViewSheetOpen}
+        startUpcomingPresetHold={startUpcomingPresetHold}
+        toggleUpcomingFilter={toggleUpcomingFilter}
+        upcomingBoardGrouping={upcomingBoardGrouping}
+        upcomingBoardGroupingOptions={upcomingBoardGroupingOptions}
+        upcomingFilter={upcomingFilter}
+        upcomingFilterGroups={upcomingFilterGroups}
+        upcomingFilterOpen={upcomingFilterOpen}
+        upcomingFilterOptions={upcomingFilterOptions}
+        upcomingFilterPresets={upcomingFilterPresets}
+        upcomingFilterSelection={upcomingFilterSelection}
+        upcomingPresetHoldTriggeredRef={upcomingPresetHoldTriggeredRef}
+        upcomingSort={upcomingSort}
+        upcomingSortSheetOpen={upcomingSortSheetOpen}
+        upcomingUsHolidaysEnabled={upcomingUsHolidaysEnabled}
+        upcomingView={upcomingView}
+        upcomingViewSheetOpen={upcomingViewSheetOpen}
       />
 
-
-      {isSelectionMode && (
-        <div
-          className="selection-bar glass-panel fixed left-1/2 z-[10000] -translate-x-1/2 w-[calc(100%-1rem)] max-w-md rounded-2xl"
-          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-height) + 0.25rem)" }}
-        >
-          {/* Top row: count + cancel */}
-          <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
-            <div className="text-sm font-semibold text-primary">
-              {selectedCount ? `${selectedCount} selected` : "Select items"}
-            </div>
-            <button
-              type="button"
-              className="text-xs text-secondary hover:text-primary pressable px-2 py-0.5 rounded-lg"
-              onClick={exitSelectionMode}
-            >
-              Cancel
-            </button>
-          </div>
-          {/* Action buttons row */}
-          <div className="flex items-center justify-around px-2 pb-2.5 pt-0.5">
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={clearSelection}
-              disabled={!selectedCount}
-              title="Clear selection"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              <span>Clear</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={() => setSelectionMoveSheetOpen(true)}
-              disabled={!selectedCount}
-              title="Move"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l3 3 3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
-              <span>Move</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={completeSelectedItems}
-              disabled={!selectedTasks.some((task) => !task.completed)}
-              title="Complete"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Done</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action pressable"
-              onClick={handlePrintSelectedTasks}
-              disabled={!selectedEvents.length && !selectedTasks.some((task) => !task.completed)}
-              title="Print selected"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-              <span>Print</span>
-            </button>
-            <button
-              type="button"
-              className="selection-bar__action selection-bar__action--danger pressable"
-              onClick={deleteSelectedItems}
-              disabled={!selectedCount}
-              title="Delete"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M9 3h6l1 1h5v2H3V4h5l1-1z"/><path d="M5 7h14l-1.5 13h-11L5 7z"/></svg>
-              <span>Delete</span>
-            </button>
-          </div>
-        </div>
-      )}
+      <SelectionOverlays
+        boards={boards}
+        clearSelection={clearSelection}
+        completeSelectedItems={completeSelectedItems}
+        deleteCalendarEvent={deleteCalendarEvent}
+        deleteSelectedItems={deleteSelectedItems}
+        deleteTask={deleteTask}
+        draggingEventId={draggingEventId}
+        draggingTaskId={draggingTaskId}
+        exitSelectionMode={exitSelectionMode}
+        handleDragEnd={handleDragEnd}
+        handlePrintSelectedTasks={handlePrintSelectedTasks}
+        isSelectionMode={isSelectionMode}
+        moveSelectedTasksToBoard={moveSelectedTasksToBoard}
+        moveSelectedTasksToColumn={moveSelectedTasksToColumn}
+        selectedCount={selectedCount}
+        selectedEventsLength={selectedEvents.length}
+        selectedIncompleteTaskCount={selectedTasks.filter((task) => !task.completed).length}
+        selectionMoveBoardId={selectionMoveBoardId}
+        selectionMoveSheetOpen={selectionMoveSheetOpen}
+        selectionMoveStep={selectionMoveStep}
+        selectionMoveTargets={selectionMoveTargets}
+        setSelectionMoveBoardId={setSelectionMoveBoardId}
+        setSelectionMoveSheetOpen={setSelectionMoveSheetOpen}
+        setSelectionMoveStep={setSelectionMoveStep}
+        setTrashHover={setTrashHover}
+        trashHover={trashHover}
+      />
 
       {/* Undo Snackbar */}
-      {undoTask && (
-        <div
-          className="fixed left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3 z-[9999]"
-          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.75rem)" }}
-        >
-          Task deleted
-          <button onClick={undoDelete} className="accent-button button-sm pressable">Undo</button>
-        </div>
-      )}
+      <AppModalStack
+        addBoardOpen={addBoardOpen}
+        biblePrintMeta={biblePrintMeta}
+        biblePrintOpen={biblePrintOpen}
+        biblePrintPaperSize={biblePrintPaperSize}
+        biblePrintPdfBusy={biblePrintPdfBusy}
+        biblePrintPortal={biblePrintPortal}
+        bibleScanOpen={bibleScanOpen}
+        bibleTracker={bibleTracker}
+        boardPrintJob={boardPrintJob}
+        boardPrintOpen={boardPrintOpen}
+        boardPrintPdfBusy={boardPrintPdfBusy}
+        boardPrintPortal={boardPrintPortal}
+        boardScanOpen={boardScanOpen}
+        closeAddBoard={closeAddBoard}
+        completeFirstRunOnboarding={completeFirstRunOnboarding}
+        createBoardFromName={createBoardFromName}
+        deleteCalendarEvent={deleteCalendarEvent}
+        deleteTask={deleteTask}
+        handleApplyBibleScan={handleApplyBibleScan}
+        handleApplyBoardScan={handleApplyBoardScan}
+        handleBiblePaperSizeChange={handleBiblePaperSizeChange}
+        handleBoardPaperSizeChange={handleBoardPaperSizeChange}
+        handleDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
+        handleExportBiblePdf={handleExportBiblePdf}
+        handleExportBoardPdf={handleExportBoardPdf}
+        handleOnboardingEnableNotifications={handleOnboardingEnableNotifications}
+        handleOnboardingGenerateNewKey={handleOnboardingGenerateNewKey}
+        handleOnboardingRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
+        handleOnboardingRestoreFromCloud={handleOnboardingRestoreFromCloud}
+        handleOnboardingUseExistingKey={handleOnboardingUseExistingKey}
+        handlePrintBibleWindow={handlePrintBibleWindow}
+        handlePrintBoardWindow={handlePrintBoardWindow}
+        joinSharedBoard={joinSharedBoard}
+        onboardingPushConfigured={onboardingPushConfigured}
+        onboardingPushSupported={onboardingPushSupported}
+        previewDocument={previewDocument}
+        previewDocumentBoardId={previewDocumentBoardId}
+        recurringDeleteEvent={recurringDeleteEvent}
+        recurringDeleteTask={recurringDeleteTask}
+        setBiblePrintOpen={setBiblePrintOpen}
+        setBibleScanOpen={setBibleScanOpen}
+        setBoardPrintOpen={setBoardPrintOpen}
+        setBoardScanOpen={setBoardScanOpen}
+        setPreviewDocument={setPreviewDocument}
+        setPreviewDocumentBoardId={setPreviewDocumentBoardId}
+        setRecurringDeleteEvent={setRecurringDeleteEvent}
+        setRecurringDeleteTask={setRecurringDeleteTask}
+        showFirstRunOnboarding={showFirstRunOnboarding}
+        undoDelete={undoDelete}
+        undoTask={undoTask}
+        workerBaseUrl={workerBaseUrl}
+      />
 
-      {recurringDeleteTask && (
-        <Modal onClose={() => setRecurringDeleteTask(null)} title="Delete recurring task">
-          <div className="space-y-4">
-            <div className="text-sm text-secondary">
-              This task repeats. Do you want to delete just this event or all future events in the series?
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={() => {
-                  deleteTask(recurringDeleteTask.id, { skipPrompt: true });
-                  setRecurringDeleteTask(null);
-                }}
-              >
-                Delete this event
-              </button>
-              <button
-                className="ghost-button button-sm pressable text-rose-400"
-                onClick={() => {
-                  deleteTask(recurringDeleteTask.id, { skipPrompt: true, scope: "future" });
-                  setRecurringDeleteTask(null);
-                }}
-              >
-                Delete all future
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <UpdateToast
+        handleReloadLater={handleReloadLater}
+        handleReloadNow={handleReloadNow}
+        updateToastVisible={updateToastVisible}
+      />
 
-      {recurringDeleteEvent && (
-        <Modal onClose={() => setRecurringDeleteEvent(null)} title="Delete recurring event">
-          <div className="space-y-4">
-            <div className="text-sm text-secondary">
-              This event repeats. Do you want to delete just this event or all future events in the series?
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={() => {
-                  deleteCalendarEvent(recurringDeleteEvent.id, { skipPrompt: true });
-                  setRecurringDeleteEvent(null);
-                }}
-              >
-                Delete this event
-              </button>
-              <button
-                className="ghost-button button-sm pressable text-rose-400"
-                onClick={() => {
-                  deleteCalendarEvent(recurringDeleteEvent.id, { skipPrompt: true, scope: "future" });
-                  setRecurringDeleteEvent(null);
-                }}
-              >
-                Delete all future
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {updateToastVisible && (
-        <div className="fixed bottom-4 left-1/2 z-[10001] w-[calc(100%-2rem)] max-w-md -translate-x-1/2">
-          <div className="rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 text-sm text-white shadow-lg">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="space-y-1">
-                <div className="text-base font-semibold">Update available</div>
-                <div className="text-xs text-neutral-300">
-                  Reload to get the latest Taskify features.
-                </div>
-              </div>
-              <div className="flex gap-2 sm:shrink-0">
-                <button
-                  className="ghost-button button-sm pressable"
-                  onClick={handleReloadLater}
-                >
-                  Later
-                </button>
-                <button
-                  className="accent-button button-sm pressable"
-                  onClick={handleReloadNow}
-                >
-                  Reload
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Modals */}
+      {/* Edit Modals */}      {/* Edit Modals */}
       {editing?.type === "task" && (
         <EditModal
           task={editing.task}
@@ -14401,452 +12996,68 @@ export default function App() {
         />
       )}
 
-      {previewDocument && (
-        <DocumentPreviewModal
-          document={previewDocument}
-          boardId={previewDocumentBoardId}
-          onClose={() => { setPreviewDocument(null); setPreviewDocumentBoardId(undefined); }}
-          onDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
-        />
-      )}
+      <ShareBoardDialogs
+        closeShareBoard={closeShareBoard}
+        enableBoardSharing={enableBoardSharing}
+        handleOpenBoardPrint={handleOpenBoardPrint}
+        handleOpenBoardScan={handleOpenBoardScan}
+        handleShareBoardToContact={handleShareBoardToContact}
+        setShareBoardMode={setShareBoardMode}
+        setShareContactPickerOpen={setShareContactPickerOpen}
+        setShareContactStatus={setShareContactStatus}
+        setShareModeInfoOpen={setShareModeInfoOpen}
+        setShareTemplateStatus={setShareTemplateStatus}
+        shareBoardDisplayName={shareBoardDisplayName}
+        shareBoardId={shareBoardId}
+        shareBoardModalOpen={shareBoardModalOpen}
+        shareBoardMode={shareBoardMode}
+        shareBoardQrPayload={shareBoardQrPayload}
+        shareBoardTarget={shareBoardTarget}
+        shareContactBusy={shareContactBusy}
+        shareContactPickerOpen={shareContactPickerOpen}
+        shareContactStatus={shareContactStatus}
+        shareModeInfoButtonRef={shareModeInfoButtonRef}
+        shareModeInfoOpen={shareModeInfoOpen}
+        shareModeInfoRef={shareModeInfoRef}
+        shareTemplateBusy={shareTemplateBusy}
+        shareTemplateStatus={shareTemplateStatus}
+        shareableContacts={shareableContacts}
+      />
 
-      {biblePrintPortal && biblePrintOpen && biblePrintMeta &&
-        createPortal(
-          <BibleTrackerPrintPreview
-            state={bibleTracker}
-            meta={biblePrintMeta}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />,
-          biblePrintPortal
-        )}
+      <CashuWalletShell
+        acceptInboxMessage={acceptInboxMessage}
+        closeWallet={closeWallet}
+        declineInboxMessage={declineInboxMessage}
+        dismissCalendarInvite={dismissCalendarInvite}
+        dismissInboxMessage={dismissInboxMessage}
+        formatCalendarInviteWhen={formatCalendarInviteWhen}
+        handleCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
+        inboxPendingItems={inboxPendingItems}
+        markInboxMessagesRead={markInboxMessagesRead}
+        maybeInboxMessage={maybeInboxMessage}
+        messagesUnreadCount={messagesUnreadCount}
+        openWalletBounties={openWalletBounties}
+        pendingCalendarInvites={pendingCalendarInvites}
+        setDmUnreadCount={setDmUnreadCount}
+        setSettings={setSettings}
+        settings={settings}
+        showChat={showChat}
+        showWalletShell={showWalletShell}
+        walletMessageItems={walletMessageItems}
+        walletTokenStateResetNonce={walletTokenStateResetNonce}
+      />
 
-      {biblePrintOpen && biblePrintMeta && (
-        <Modal
-          onClose={() => setBiblePrintOpen(false)}
-          title="Print Bible tracker"
-          actions={(
-            <>
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleExportBiblePdf}
-                disabled={biblePrintPdfBusy}
-              >
-                {biblePrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
-              </button>
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={handlePrintBibleWindow}
-              >
-                Print
-              </button>
-            </>
-          )}
-        >
-          <BibleTrackerPrintPreview
-            state={bibleTracker}
-            meta={biblePrintMeta}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {bibleScanOpen && (
-        <Modal onClose={() => setBibleScanOpen(false)} title="Scan Bible tracker">
-          <BibleTrackerScanPanel
-            state={bibleTracker}
-            onApply={handleApplyBibleScan}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {boardPrintPortal && boardPrintOpen && boardPrintJob &&
-        createPortal(
-          <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
-            onPaperSizeChange={handleBoardPaperSizeChange}
-          />,
-          boardPrintPortal
-        )}
-
-      {boardPrintOpen && boardPrintJob && (
-        <Modal
-          onClose={() => setBoardPrintOpen(false)}
-          title={`Print ${boardPrintJob.boardName || "board"}`}
-          actions={(
-            <>
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleExportBoardPdf}
-                disabled={boardPrintPdfBusy}
-              >
-                {boardPrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
-              </button>
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={handlePrintBoardWindow}
-              >
-                Print
-              </button>
-            </>
-          )}
-        >
-          <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
-            onPaperSizeChange={handleBoardPaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {boardScanOpen && boardPrintJob && (
-        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${boardPrintJob.boardName || "board"}`}>
-          <BoardScanPanel job={boardPrintJob} onApply={handleApplyBoardScan} />
-        </Modal>
-      )}
-
-      {showFirstRunOnboarding && (
-        <Modal onClose={() => {}} title="Welcome to Taskify" showClose={false}>
-          <FirstRunOnboarding
-            pushSupported={onboardingPushSupported}
-            pushConfigured={onboardingPushConfigured}
-            cloudRestoreAvailable={!!workerBaseUrl}
-            onUseExistingKey={handleOnboardingUseExistingKey}
-            onGenerateNewKey={handleOnboardingGenerateNewKey}
-            onRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
-            onRestoreFromCloud={handleOnboardingRestoreFromCloud}
-            onEnableNotifications={handleOnboardingEnableNotifications}
-            onComplete={completeFirstRunOnboarding}
-          />
-        </Modal>
-      )}
-
-      {addBoardOpen && (
-        <AddBoardModal
-          onClose={closeAddBoard}
-          onCreateBoard={createBoardFromName}
-          onJoinBoard={joinSharedBoard}
-        />
-      )}
-
-      {shareBoardModalOpen && (
-        <Modal onClose={closeShareBoard} title={`Share ${shareBoardDisplayName}`}>
-          {shareBoardTarget ? (
-            shareBoardTarget.nostr?.boardId ? (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <div className="share-mode-header">
-                    <div className="text-xs uppercase tracking-wide text-secondary">Share mode</div>
-                    <button
-                      type="button"
-                      className="share-mode-info-button pressable"
-                      aria-label="About share modes"
-                      aria-expanded={shareModeInfoOpen}
-                      aria-controls="share-mode-info"
-                      onClick={() => setShareModeInfoOpen((prev) => !prev)}
-                      ref={shareModeInfoButtonRef}
-                    >
-                      <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
-                    </button>
-                    {shareModeInfoOpen && (
-                      <div
-                        className="share-mode-info"
-                        role="tooltip"
-                        id="share-mode-info"
-                        ref={shareModeInfoRef}
-                      >
-                        <div className="share-mode-info__row">
-                          <div className="share-mode-info__label">Board</div>
-                          <div className="share-mode-info__text">
-                            Shares the live board ID and keeps changes in sync.
-                          </div>
-                        </div>
-                        <div className="share-mode-info__row">
-                          <div className="share-mode-info__label">Template</div>
-                          <div className="share-mode-info__text">
-                            Creates a new board ID and publishes a snapshot that won't sync future changes.
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  <div className="share-mode-toggle" role="group" aria-label="Share mode">
-                    <button
-                      type="button"
-                      className="pill-select share-mode-toggle__button pressable"
-                      data-active={shareBoardMode === "board"}
-                      aria-pressed={shareBoardMode === "board"}
-                      onClick={() => {
-                        setShareBoardMode("board");
-                        setShareTemplateStatus(null);
-                        setShareModeInfoOpen(false);
-                      }}
-                    >
-                      Board
-                    </button>
-                    <button
-                      type="button"
-                      className="pill-select share-mode-toggle__button pressable"
-                      data-active={shareBoardMode === "template"}
-                      aria-pressed={shareBoardMode === "template"}
-                      onClick={() => {
-                        setShareBoardMode("template");
-                        setShareTemplateStatus(null);
-                        setShareModeInfoOpen(false);
-                      }}
-                    >
-                      Template
-                    </button>
-                  </div>
-                </div>
-                {shareTemplateStatus && (
-                  <div className="text-sm text-rose-400">{shareTemplateStatus}</div>
-                )}
-                <div className="space-y-1">
-                  <div className="wallet-qr-card wallet-qr-card--flat wallet-qr-card--centered">
-                    <div className="wallet-qr-card__code">
-                      {shareBoardId ? (
-                        <button
-                          type="button"
-                          className="wallet-qr-card__canvas wallet-qr-card__canvas--pressable pressable"
-                          style={{ maxWidth: "16rem" }}
-                          aria-label="Copy board ID"
-                          onClick={async () => {
-                            if (!shareBoardId) return;
-                            try {
-                              await navigator.clipboard?.writeText(shareBoardId);
-                            } catch {}
-                          }}
-                        >
-                          <QRCodeCanvas
-                            value={shareBoardQrPayload ?? shareBoardId}
-                            size={256}
-                            includeMargin={true}
-                            className="wallet-qr-card__qr"
-                          />
-                        </button>
-                      ) : (
-                        <div className="contact-qr-placeholder text-secondary">
-                          {shareTemplateBusy ? "Generating template share..." : "No QR to share yet."}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  {shareBoardId && (
-                    <div className="wallet-qr-card__helper">Tap to copy</div>
-                  )}
-                  <div className="flex gap-2">
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={() => {
-                        setShareContactStatus(null);
-                        setShareContactPickerOpen(true);
-                      }}
-                      disabled={!shareBoardId || (shareBoardMode === "template" && shareTemplateBusy)}
-                    >
-                      Contacts
-                    </button>
-                  </div>
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={handleOpenBoardPrint}
-                    >
-                      Print
-                    </button>
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={handleOpenBoardScan}
-                    >
-                      Scan
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <button
-                  className="accent-button button-sm pressable w-full justify-center"
-                  onClick={() => enableBoardSharing(shareBoardTarget.id)}
-                >
-                  Enable sharing
-                </button>
-              </div>
-            )
-          ) : (
-            <div className="text-sm text-secondary">Select a board to share first.</div>
-          )}
-        </Modal>
-      )}
-      <ActionSheet
-        open={shareContactPickerOpen}
-        onClose={() => {
-          if (shareContactBusy) return;
-          setShareContactPickerOpen(false);
-          setShareContactStatus(null);
-        }}
-        title="Send board ID"
-        stackLevel={75}
-      >
-        {shareBoardTarget ? (
-          <div className="text-sm text-secondary mb-2">
-            Choose a contact to send <span className="font-semibold">{shareBoardDisplayName}</span>.
-          </div>
-        ) : (
-          <div className="text-sm text-secondary mb-2">Select a board to share first.</div>
-        )}
-        {shareContactStatus && (
-          <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>
-        )}
-        {shareableContacts.length ? (
-          <div className="space-y-2">
-            {shareableContacts.map((contact) => {
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              return (
-                <button
-                  key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
-                  disabled={shareContactBusy || !shareBoardId}
-                  onClick={() => handleShareBoardToContact(contact)}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name">{label}</div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
-        )}
-        <div className="flex gap-2 mt-3">
-          <button
-            type="button"
-            className="ghost-button button-sm pressable flex-1 justify-center"
-            onClick={() => {
-              if (shareContactBusy) return;
-              setShareContactPickerOpen(false);
-              setShareContactStatus(null);
-            }}
-            disabled={shareContactBusy}
-          >
-            Cancel
-          </button>
-        </div>
-      </ActionSheet>
-
-      {/* Cashu Wallet */}
-      <Suspense fallback={null}>
-        <CashuWalletModal
-            open={showWalletShell}
-            onClose={closeWallet}
-            onOpenBounties={openWalletBounties}
-            page={showChat ? "chat" : "wallet"}
-            showTabSwitcher={false}
-            showBottomNav
-            walletConversionEnabled={settings.walletConversionEnabled}
-            walletPrimaryCurrency={settings.walletPrimaryCurrency}
-            setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}
-            npubCashLightningAddressEnabled={settings.npubCashLightningAddressEnabled}
-            npubCashAutoClaim={settings.npubCashLightningAddressEnabled && settings.npubCashAutoClaim}
-            sentTokenStateChecksEnabled={settings.walletSentStateChecksEnabled}
-            paymentRequestsEnabled={settings.walletPaymentRequestsEnabled}
-            paymentRequestsBackgroundChecksEnabled={
-              settings.walletPaymentRequestsEnabled && settings.walletPaymentRequestsBackgroundChecksEnabled
-            }
-            tokenStateResetNonce={walletTokenStateResetNonce}
-            mintBackupEnabled={settings.walletMintBackupEnabled}
-            contactsSyncEnabled={settings.walletContactsSyncEnabled}
-            fileStorageServer={settings.fileStorageServer}
-            fileServers={settings.fileServers}
-            encryptedFileStorageServer={settings.encryptedFileStorageServer}
-            encryptedFileServers={settings.encryptedFileServers}
-            messageItems={walletMessageItems}
-            messagesUnreadCount={messagesUnreadCount}
-            onAcceptMessage={acceptInboxMessage}
-            onMaybeMessage={maybeInboxMessage}
-            onDeclineMessage={declineInboxMessage}
-            onDismissMessage={dismissInboxMessage}
-            onMarkMessagesRead={markInboxMessagesRead}
-            inboxPendingItems={inboxPendingItems}
-            pendingCalendarInvites={pendingCalendarInvites}
-            onCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
-            onDismissCalendarInvite={dismissCalendarInvite}
-            formatCalendarInviteWhen={formatCalendarInviteWhen}
-            onDmUnreadCountChange={setDmUnreadCount}
-          />
-      </Suspense>
-
-
-      {/* ── Add task menu: New Task / Dictate ─────────────────────────────── */}
-      <ActionSheet
-        open={addMenuKey !== null && voiceDictationKey === null}
-        onClose={() => setAddMenuKey(null)}
-        title="Add Task"
-      >
-        <div className="space-y-1 pb-1">
-          <button
-            type="button"
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
-            onClick={() => {
-              const key = addMenuKey!;
-              setAddMenuKey(null);
-              openInlineTaskEditorDirect(key);
-            }}
-          >
-            <span className="text-lg leading-none">＋</span>
-            <span className="text-sm font-medium">New Task</span>
-          </button>
-          <button
-            type="button"
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
-            onClick={() => {
-              setVoiceDictationKey(addMenuKey);
-            }}
-          >
-            <span className="text-lg leading-none">🎙</span>
-            <span className="text-sm font-medium">Dictate</span>
-          </button>
-        </div>
-      </ActionSheet>
-
-      {/* ── Voice dictation modal ──────────────────────────────────────────── */}
-      {voiceDictationKey !== null && (
-        <VoiceDictationModal
-          isOpen={true}
-          onClose={() => {
-            setVoiceDictationKey(null);
-            setAddMenuKey(null);
-          }}
-          onSave={(tasks) => {
-            if (voiceDictationKey !== null) {
-              handleVoiceSave(voiceDictationKey, tasks);
-            }
-          }}
-          workerBaseUrl={workerBaseUrl}
-          npub={nostrPK ? ((() => {
-            try {
-              return typeof (nip19 as any).npubEncode === "function"
-                ? (nip19 as any).npubEncode(nostrPK)
-                : nostrPK;
-            } catch { return nostrPK; }
-          })()) : ""}
-          testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
-          defaultBoardId={currentBoard?.id}
-        />
-      )}
+      <InlineTaskOverlays
+        addMenuKey={addMenuKey}
+        currentBoardId={currentBoard?.id}
+        handleVoiceSave={handleVoiceSave}
+        nostrPK={nostrPK}
+        openInlineTaskEditorDirect={openInlineTaskEditorDirect}
+        setAddMenuKey={setAddMenuKey}
+        setVoiceDictationKey={setVoiceDictationKey}
+        voiceDictationKey={voiceDictationKey}
+        workerBaseUrl={workerBaseUrl}
+      />
 
       </div>
     </div>
@@ -14957,27 +13168,4 @@ async function syncRemindersToWorker(
   if (!res.ok) {
     throw new Error(`Failed to sync reminders (${res.status})`);
   }
-}
-
-
-/* ================= Retained Subcomponents ================= */
-
-/* Small circular icon button */
-function IconButton({
-  children, onClick, label, intent, buttonRef
-}: React.PropsWithChildren<{ onClick: ()=>void; label: string; intent?: "danger"|"success"; buttonRef?: React.Ref<HTMLButtonElement> }>) {
-  const cls = `icon-button pressable ${intent === 'danger' ? 'icon-button--danger' : intent === 'success' ? 'icon-button--success' : ''}`;
-  const style = { '--icon-size': '2.35rem' } as React.CSSProperties;
-  return (
-    <button
-      ref={buttonRef}
-      aria-label={label}
-      title={label}
-      className={cls}
-      style={style}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
 }
