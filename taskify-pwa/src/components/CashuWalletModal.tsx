@@ -159,6 +159,7 @@ import {
   SwipeableDmThreadRow,
   VerifiedBadgeIcon,
   WalletGlyphIcon,
+  avatarInitials,
   formatDmDateSeparator,
   formatDmDay,
   formatDmTime,

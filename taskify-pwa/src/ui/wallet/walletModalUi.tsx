@@ -43,7 +43,7 @@ export type GroupAvatarMember = {
   picture?: string;
 };
 
-function avatarInitials(value: string): string {
+export function avatarInitials(value: string): string {
   const parts = (value || "").trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
   const cp = parts[0].codePointAt(0) ?? 0;
