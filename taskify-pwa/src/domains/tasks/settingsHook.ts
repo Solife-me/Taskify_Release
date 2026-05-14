@@ -18,6 +18,7 @@ import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/
 import { CHAT_RETENTION_OPTIONS } from "./settingsTypes";
 import type { ChatMessageRetention, FastingRemindersMode, PushPreferences, Settings } from "./settingsTypes";
 import type { Board, Weekday } from "./taskTypes";
+import { withBoardOrder } from "./boardUtils";
 
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
 export type SetSettingsFn = (s: Partial<Settings>) => void;
@@ -505,6 +506,7 @@ export function useSettingsSync(
               kind: "bible",
               archived: false,
               hidden: false,
+              order: board.order,
             } as Board;
           });
         }
@@ -515,16 +517,17 @@ export function useSettingsSync(
           kind: "bible",
           archived: false,
           hidden: false,
+          order: insertionIndex === -1 ? prev.length : insertionIndex,
         };
         if (insertionIndex === -1) {
-          return [...prev, bibleBoard];
+          return withBoardOrder([...prev, bibleBoard]);
         }
         const next = [...prev];
         next.splice(insertionIndex, 0, bibleBoard);
-        return next;
+        return withBoardOrder(next);
       }
       if (!hasBible) return prev;
-      return prev.filter((board) => board.id !== bibleBoardId);
+      return withBoardOrder(prev.filter((board) => board.id !== bibleBoardId));
     });
   }, [bibleBoardId, setBoards, settings.bibleTrackerEnabled]);
 

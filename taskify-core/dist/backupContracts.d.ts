@@ -35,6 +35,7 @@ export type BackupBoardLike = {
     archived?: boolean;
     hidden?: boolean;
     clearCompletedDisabled?: boolean;
+    order?: number;
     indexCardEnabled?: boolean;
     hideChildBoardNames?: boolean;
     columns?: {
