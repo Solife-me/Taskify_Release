@@ -8,7 +8,7 @@
 //   - PEM/JSON key resolution for the VAPID private key
 
 import type { Env, D1Database } from "./lib.ts";
-import { requireDb, jsonResponse, base64UrlEncode, base64UrlDecode, parseJson } from "./lib.ts";
+import { requireDb, jsonResponse, base64UrlEncode, base64UrlDecode, parseJson, JSON_HEADERS } from "./lib.ts";
 
 // ---- Module-level state (caches + key-lookup constants) ----
 

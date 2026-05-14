@@ -12,12 +12,12 @@
     "test:lint": "npm run lint"
   },
   "dependencies": {
-    "@cashu/cashu-ts": "3.0.0",
+    "@cashu/cashu-ts": "^4.2.1",
     "@cashu/crypto": "^0.3.4",
     "@gandlaf21/bc-ur": "^1.1.12",
-    "@noble/hashes": "^1.8.0",
-    "@nostr-dev-kit/ndk": "^2.18.1",
-    "@scure/bip39": "^1.2.1",
+    "@noble/hashes": "^2.2.0",
+    "@nostr-dev-kit/ndk": "^3.0.3",
+    "@scure/bip39": "^2.2.0",
     "@tanstack/react-virtual": "^3.13.24",
     "bech32": "^2.0.0",
     "buffer": "^6.0.3",
@@ -26,7 +26,7 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
     "markdown-it": "^14.1.1",
-    "nostr-tools": "^2.16.2",
+    "nostr-tools": "^2.23.3",
     "pdfjs-dist": "^4.7.76",
     "process": "^0.11.10",
     "qr-scanner": "^1.4.2",
@@ -37,8 +37,7 @@
     "stream-browserify": "^3.0.0",
     "taskify-core": "file:../taskify-core",
     "taskify-runtime-nostr": "file:../taskify-runtime-nostr",
-    "util": "^0.12.5",
-    "xlsx": "^0.18.5"
+    "util": "^0.12.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",

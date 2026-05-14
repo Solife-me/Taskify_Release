@@ -1,4 +1,4 @@
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, type EventTemplate } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";

@@ -1,4 +1,4 @@
-import { bytesToHex } from "@noble/hashes/utils";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
   normalizeRelayListSorted,

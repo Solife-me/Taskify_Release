@@ -1,4 +1,4 @@
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, getPublicKey, nip19, type EventTemplate } from "nostr-tools";
 
 const NPUB_CASH_DEFAULT_DOMAIN = "npub.cash";

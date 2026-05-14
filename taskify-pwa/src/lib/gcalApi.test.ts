@@ -3,8 +3,8 @@
 import { describe, it, expect } from "vitest";
 import { signGcalHeaders } from "./gcalApi";
 import { schnorr } from "@noble/curves/secp256k1";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -124,6 +124,7 @@ describe("gcalEventToCalendarEvent", () => {
     endISO: "2026-03-26T16:00:00.000Z",
     allDay: false,
     status: "confirmed" as const,
+    isRecurring: false,
     readonly: true as const,
     source: "google" as const,
     kind: "calendar_event" as const,
@@ -132,6 +133,7 @@ describe("gcalEventToCalendarEvent", () => {
   it("maps timed event to TimeCalendarEvent shape", () => {
     const result = gcalEventToCalendarEvent(baseEvent);
     expect(result.kind).toBe("time");
+    if (result.kind !== "time") throw new Error("Expected timed calendar event");
     expect(result.startISO).toBe(baseEvent.startISO);
     expect(result.endISO).toBe(baseEvent.endISO);
     expect(result.title).toBe("Doctor appointment");

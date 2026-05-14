@@ -3,6 +3,8 @@ import {
   type ManagedSubscription,
   type SubscribeOptions,
   type PublishResult,
+  type RelayHealthLike,
+  type RelayInfoCacheLike,
 } from "taskify-runtime-nostr";
 import { RelayInfoCache } from "./RelayInfoCache";
 import { RelayHealthTracker } from "./RelayHealth";
@@ -11,6 +13,8 @@ import { WalletNostrClient } from "./WalletNostrClient";
 import { nostrOutboxStore } from "./NostrOutboxStore";
 
 type PwaRuntimeSession = RuntimeNostrSession<WalletNostrClient>;
+export type NostrPublishOptions = NonNullable<Parameters<PwaRuntimeSession["publish"]>[1]>;
+export type NostrPublishSigner = NonNullable<NostrPublishOptions["signer"]>;
 
 export class NostrSession {
   private static singleton: PwaRuntimeSession | null = null;
@@ -25,13 +29,31 @@ export class NostrSession {
     if (!this.singleton) {
       const relayInfoCache = new RelayInfoCache();
       const relayHealth = new RelayHealthTracker();
-      // The runtime's *Like interfaces are intentionally loose (loader returns
-      // Promise<unknown>; severity is plain string). Our concrete classes use
-      // narrower types — assignment is safe at runtime, TS just can't prove it
-      // through the variance rules.
+      const relayInfoCacheAdapter: RelayInfoCacheLike = {
+        prime: (relayUrl, loader) =>
+          relayInfoCache.prime(relayUrl, loader as (nip11Url: string) => Promise<any>) as Promise<{ info?: unknown } | null>,
+        needsRefresh: (relayUrl) => relayInfoCache.needsRefresh(relayUrl),
+        get: (relayUrl) => relayInfoCache.get(relayUrl),
+        getAgeMs: (relayUrl) => relayInfoCache.getAgeMs(relayUrl),
+        getLimits: (relayUrls) => relayInfoCache.getLimits(relayUrls),
+      };
+      const relayHealthAdapter: RelayHealthLike = {
+        canAttempt: (relayUrl) => relayHealth.canAttempt(relayUrl),
+        markFailure: (relayUrl, meta) => {
+          const severity =
+            meta?.severity === "low" || meta?.severity === "normal" || meta?.severity === "high"
+              ? meta.severity
+              : undefined;
+          relayHealth.markFailure(relayUrl, { reason: meta?.reason, ...(severity ? { severity } : {}) });
+        },
+        markSuccess: (relayUrl) => relayHealth.markSuccess(relayUrl),
+        onBackoffExpiry: (relayUrl, fn) => relayHealth.onBackoffExpiry(relayUrl, fn),
+        nextAttemptIn: (relayUrl) => relayHealth.nextAttemptIn(relayUrl),
+        status: (relayUrl) => relayHealth.status(relayUrl),
+      };
       this.singleton = new RuntimeNostrSession(relays, {
-        relayInfoCache: relayInfoCache as never,
-        relayHealth: relayHealth as never,
+        relayInfoCache: relayInfoCacheAdapter,
+        relayHealth: relayHealthAdapter,
         createAuthManager: (ndk) => new RelayAuthManager(ndk),
         createWalletClient: ({ ndk, publisher, subscriptions, resolveRelaySet }) =>
           new WalletNostrClient(ndk, publisher, subscriptions, resolveRelaySet),

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { normalizeDocumentList } from "./documents";
+import { isSupportedDocumentFile, normalizeDocumentList } from "./documents";
 
 // ── normalizeDocumentList ─────────────────────────────────────────────────────
 
@@ -178,5 +178,27 @@ describe("normalizeDocumentList – edge cases", () => {
     const result = normalizeDocumentList(raw);
     expect(result).toHaveLength(1);
     expect(result![0].kind).toBe("xlsx");
+  });
+
+  test("blocks new legacy xls uploads while preserving serialized xls records", () => {
+    const xls = new File(["legacy"], "legacy.xls", { type: "application/vnd.ms-excel" });
+    const xlsx = new File(["modern"], "modern.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    expect(isSupportedDocumentFile(xls)).toBe(false);
+    expect(isSupportedDocumentFile(xlsx)).toBe(true);
+
+    const result = normalizeDocumentList([
+      {
+        id: "legacy-xls",
+        name: "legacy.xls",
+        mimeType: "application/vnd.ms-excel",
+        kind: "xls",
+        dataUrl: "data:application/vnd.ms-excel;base64,BBBB",
+      },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result![0].kind).toBe("xls");
   });
 });

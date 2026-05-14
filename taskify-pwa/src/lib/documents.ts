@@ -1,8 +1,7 @@
 import JSZip from "jszip";
-import readXlsxFile from "read-excel-file/browser";
+import readXlsxFile, { readSheetNames } from "read-excel-file/browser";
 import MarkdownIt from "markdown-it";
 import * as mammoth from "mammoth/mammoth.browser";
-import * as XLSX from "xlsx";
 import type {
   TaskDocument,
   TaskDocumentFull,
@@ -37,6 +36,12 @@ const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
 };
 
 const markdownRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true });
+const SERIALIZED_DOCUMENT_KINDS = new Set<TaskDocumentKind>(["pdf", "doc", "docx", "xls", "xlsx"]);
+const LEGACY_UPLOAD_ONLY_KINDS = new Set<TaskDocumentKind>(["xls"]);
+const SPREADSHEET_PREVIEW_ROWS = 12;
+const SPREADSHEET_PREVIEW_COLS = 6;
+const SPREADSHEET_FULL_ROWS = 500;
+const SPREADSHEET_FULL_COLS = 50;
 
 const MIME_TO_KIND: Record<string, TaskDocumentKind> = {
   "application/pdf": "pdf",
@@ -134,7 +139,8 @@ function generateId(): string {
 }
 
 export function isSupportedDocumentFile(file: File): boolean {
-  return inferKind(file.name, file.type) !== null;
+  const kind = inferKind(file.name, file.type);
+  return kind !== null && !LEGACY_UPLOAD_ONLY_KINDS.has(kind);
 }
 
 export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined {
@@ -151,7 +157,7 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
     if (!name || (!dataUrl && !remoteUrl)) continue;
     const kindInput = typeof (entry as any).kind === "string" ? (entry as any).kind.toLowerCase() : "";
     const mime = typeof (entry as any).mimeType === "string" ? (entry as any).mimeType : "";
-    const kind = (["pdf", "doc", "docx", "xls", "xlsx"] as readonly string[]).includes(kindInput)
+    const kind = SERIALIZED_DOCUMENT_KINDS.has(kindInput as TaskDocumentKind)
       ? (kindInput as TaskDocumentKind)
       : inferKind(name, mime);
     if (!kind) continue;
@@ -542,21 +548,21 @@ async function generateSpreadsheetMarkup(
   _kind: TaskDocumentKind
 ): Promise<{ previewHtml?: string; fullHtml?: string }> {
   try {
-    const workbook = XLSX.read(buffer, { type: "array", cellStyles: true, cellHTML: true, cellNF: true });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet) return {};
-    const fullTable = XLSX.utils.sheet_to_html(sheet, { editable: false, id: "doc-sheet-table" });
-    const fullHtml = `<div class="doc-sheet doc-sheet--rich"><div class="doc-sheet__tab">${escapeHtml(sheetName)}</div>${fullTable}</div>`;
-    try {
-      const blob = new Blob([buffer]);
-      const rows = await readXlsxFile(blob);
-      const rowsArray = Array.isArray(rows) ? (rows as Array<Array<unknown>>) : [];
-      const previewHtml = rowsArray.length ? wrapSheetHtml(rowsArray, 12, 6, sheetName) : fullHtml;
-      return { previewHtml, fullHtml };
-    } catch {
-      return { previewHtml: fullHtml, fullHtml };
-    }
+    if (_kind === "xls") return {};
+    const blob = new Blob([buffer]);
+    const sheetNames = await readSheetNames(blob).catch(() => []);
+    const sheetName = sheetNames[0] || "Sheet 1";
+    const rows = await readXlsxFile(blob, { sheet: sheetName });
+    const rowsArray = Array.isArray(rows) ? (rows as Array<Array<unknown>>) : [];
+    if (!rowsArray.length) return {};
+    const fullColumnCount = Math.min(
+      SPREADSHEET_FULL_COLS,
+      Math.max(1, ...rowsArray.slice(0, SPREADSHEET_FULL_ROWS).map((row) => row.length)),
+    );
+    return {
+      previewHtml: wrapSheetHtml(rowsArray, SPREADSHEET_PREVIEW_ROWS, SPREADSHEET_PREVIEW_COLS, sheetName),
+      fullHtml: wrapSheetHtml(rowsArray, SPREADSHEET_FULL_ROWS, fullColumnCount, sheetName),
+    };
   } catch {
     return {};
   }
@@ -613,7 +619,7 @@ export async function createDocumentFromDataUrl(input: {
   encryptionBoardId?: string;
 }): Promise<TaskDocument> {
   const kind = inferKind(input.name, input.mimeType);
-  if (!kind) throw new Error("Unsupported file type");
+  if (!kind || LEGACY_UPLOAD_ONLY_KINDS.has(kind)) throw new Error("Unsupported file type");
   const buffer = arrayBufferFromDataUrl(input.dataUrl);
   const base: TaskDocument = {
     id: input.id || generateId(),

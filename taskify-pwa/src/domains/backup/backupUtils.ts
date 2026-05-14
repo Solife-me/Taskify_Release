@@ -10,7 +10,7 @@ import {
   LS_SCRIPTURE_MEMORY,
   LS_BACKGROUND_IMAGE,
 } from "../storageKeys";
-import { LS_NOSTR_RELAYS } from "../../nostrKeys";
+import { LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../../nostrKeys";
 import { setSk as nostrSkSet } from "../../lib/nostrSkStore";
 import {
   taskEntityStore,
@@ -24,9 +24,12 @@ import {
   setActiveMint,
   replaceMintList,
   replacePendingTokens,
+  normalizeMintUrl,
   type PendingTokenEntry,
+  type ProofStore,
 } from "../../wallet/storage";
 import { type WalletSeedBackupPayload, restoreWalletSeedBackup } from "../../wallet/seed";
+import type { Proof } from "@cashu/cashu-ts";
 import { getPublicKey, nip19 } from "nostr-tools";
 
 // ---- Constants ----
@@ -36,6 +39,15 @@ export const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1"
 export const CLOUD_BACKUP_MIN_INTERVAL_MS = 60 * 60 * 1000;
 export const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
 export const SATS_PER_BTC = 100_000_000;
+
+function notifyNostrKeyUpdated(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(TASKIFY_NOSTR_KEY_UPDATED_EVENT));
+  } catch {
+    // ignore same-tab notification failures
+  }
+}
 
 // ---- Crypto helpers (self-contained, no external import needed) ----
 
@@ -144,6 +156,39 @@ export function parseBackupJsonPayload(raw: string): Partial<TaskifyBackupPayloa
   return parsed as Partial<TaskifyBackupPayload>;
 }
 
+function normalizeCashuProofStore(raw: unknown): ProofStore | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const store: ProofStore = {};
+  for (const [mintUrl, value] of Object.entries(raw as Record<string, unknown>)) {
+    const mint = normalizeMintUrl(mintUrl);
+    if (!mint || !Array.isArray(value)) continue;
+    const proofs: Proof[] = [];
+    for (const proof of value) {
+      if (!proof || typeof proof !== "object") continue;
+      const candidate = proof as Record<string, unknown>;
+      const id = typeof candidate.id === "string" ? candidate.id : "";
+      const secret = typeof candidate.secret === "string" ? candidate.secret : "";
+      const C = typeof candidate.C === "string" ? candidate.C : "";
+      const amountRaw = candidate.amount;
+      const amount =
+        typeof amountRaw === "number"
+          ? amountRaw
+          : typeof amountRaw === "string" && amountRaw.trim()
+            ? Number.parseFloat(amountRaw)
+            : Number.NaN;
+      if (!id || !secret || !C || !Number.isFinite(amount) || amount <= 0) continue;
+      proofs.push({
+        ...(candidate as Proof),
+        amount: Math.floor(amount) as any,
+      });
+    }
+    if (proofs.length) {
+      store[mint] = proofs;
+    }
+  }
+  return store;
+}
+
 export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
@@ -192,11 +237,15 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
     void nostrSkSet(data.nostrSk);
+    notifyNostrKeyUpdated();
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
-    if ("proofs" in cashuData && cashuData.proofs && typeof cashuData.proofs === "object") {
-      saveProofStore(cashuData.proofs as Parameters<typeof saveProofStore>[0]);
+    if ("proofs" in cashuData && cashuData.proofs !== undefined) {
+      const proofStore = normalizeCashuProofStore(cashuData.proofs);
+      if (proofStore) {
+        saveProofStore(proofStore);
+      }
     }
     if ("activeMint" in cashuData) {
       setActiveMint(cashuData.activeMint || null);

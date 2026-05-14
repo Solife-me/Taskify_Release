@@ -1,5 +1,5 @@
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { getPublicKey, nip19 } from "nostr-tools";
 const BOARD_KEY_LABEL = new TextEncoder().encode("taskify-board-nostr-key-v1");

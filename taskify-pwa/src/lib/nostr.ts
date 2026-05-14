@@ -1,4 +1,4 @@
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { getPublicKey, nip19 } from "nostr-tools";
 
 function arrayLikeToHex(data: ArrayLike<number>): string {

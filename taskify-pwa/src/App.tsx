@@ -1856,6 +1856,7 @@ export default function App() {
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
+  const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
   // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
@@ -1884,11 +1885,6 @@ export default function App() {
   // When empty for a board, all relays are done and we're in live mode.
   // Map<bTag, Set<relayUrl>>
   const pendingRelaysByBoardRef = useRef<Map<string, Set<string>>>(new Map());
-
-  // Track task IDs seen per board during initial sync. After EOSE, local tasks
-  // with _nostrAt that were NOT seen are verified via a targeted fetch — if the
-  // relay no longer has them they were deleted while this client was offline.
-  const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
 
   // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
   // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
@@ -5789,7 +5785,7 @@ export default function App() {
 	        />
 	      </div>
 	    );
-	  }, [boardMap, handleDragEnd, handleOpenEventDocument, pendingNostrCalendarEventIds, setCalendarEvents, setEditing, settings.weekStart]);
+	  }, [boardMap, handleDragEnd, handleOpenEventDocument, isSelectionMode, pendingNostrCalendarEventIds, selectedItemIds, setCalendarEvents, setEditing, settings.weekStart, toggleItemSelection]);
 
 	  useEffect(() => {
 	    if (activePage !== "upcoming") {
@@ -7094,9 +7090,6 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
-    // Record this task as seen during sync for post-EOSE stale-task verification.
-    if (!seenBoardTasksRef.current.has(bTag)) seenBoardTasksRef.current.set(bTag, new Set());
-    seenBoardTasksRef.current.get(bTag)!.add(taskId);
     // Advance the in-memory cursor for this board so we know the high-water mark.
     // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
     // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
@@ -8542,7 +8535,18 @@ export default function App() {
     for (const ft of finalTasks) {
       if (!ft.title?.trim()) continue;
       const nextOrder = nextOrderForBoard(targetBoardId, [...tasks, ...newTasks], settings.newTaskPosition);
-      const hasExplicitVoiceDue = typeof ft.dueISO === "string" && !!ft.dueISO.trim();
+      const rawVoiceDue = typeof ft.dueISO === "string" ? ft.dueISO.trim() : "";
+      const hasExplicitVoiceDue = !!rawVoiceDue;
+      // Worker emits "YYYY-MM-DD" when the user gave a date but no clock
+      // time, and a full ISO datetime when they did. Detect via the date-only
+      // shape so we can suppress the time portion in the saved task.
+      const dateOnlyParts = parseDateKey(rawVoiceDue);
+      const hasExplicitVoiceTime = hasExplicitVoiceDue && !dateOnlyParts;
+      const normalizedVoiceDue = !hasExplicitVoiceDue
+        ? undefined
+        : dateOnlyParts
+          ? new Date(dateOnlyParts.year, dateOnlyParts.month - 1, dateOnlyParts.day).toISOString()
+          : new Date(rawVoiceDue).toISOString();
       const task: Task = {
         id: crypto.randomUUID(),
         boardId: ft.boardId ?? targetBoardId,
@@ -8550,9 +8554,9 @@ export default function App() {
         lastEditedBy: nostrPK || undefined,
         title: ft.title.trim(),
         createdAt: Date.now(),
-        dueISO: ft.dueISO ?? dueISOBase,
-        dueDateEnabled: !!(ft.dueISO || currentBoard.kind === "week"),
-        dueTimeEnabled: hasExplicitVoiceDue,
+        dueISO: normalizedVoiceDue ?? dueISOBase,
+        dueDateEnabled: !!(normalizedVoiceDue || currentBoard.kind === "week"),
+        dueTimeEnabled: hasExplicitVoiceTime,
         completed: false,
         order: nextOrder,
       };
@@ -9754,7 +9758,7 @@ export default function App() {
       if (res.crossMint) {
         alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
       }
-      const redeemedAmount = res.proofs.reduce((sum, proof) => sum + (proof?.amount || 0), 0);
+      const redeemedAmount = res.proofs.reduce((sum, proof) => sum + (Number((proof as any)?.amount || 0) || 0), 0);
       appendWalletHistoryEntry({
         id: `redeem-bounty-${Date.now()}`,
         summary: `Redeemed bounty • ${redeemedAmount} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
@@ -11362,7 +11366,7 @@ export default function App() {
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
+	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, moveTaskToBoard, selectedEvents.length, selectedItemIdSet, selectedTasks, setCalendarEvents, showToast]);
 
   const moveSelectedTasksToColumn = useCallback((boardId: string, columnId: string) => {
     if (!selectedTasks.length && !selectedEvents.length) return;
@@ -11404,7 +11408,7 @@ export default function App() {
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-  }, [boards, exitSelectionMode, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
+	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, maybePublishTask, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
 
   const selectionMoveTargets = useMemo(() => (
     boards.filter((board) => board.kind !== "bible" && !board.archived && !board.hidden).map((board) => ({

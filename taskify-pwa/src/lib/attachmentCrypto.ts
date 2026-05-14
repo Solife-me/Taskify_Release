@@ -57,7 +57,7 @@ export async function encryptAndUploadAttachment(opts: {
   serverEntry: FileServerEntry;
   nostrSkHex: string;
   signal?: AbortSignal;
-  onProgress?: (progress: number) => void;
+  onProgress?: (progress: number, loaded?: number, total?: number) => void;
   onPhaseChange?: (phase: "uploading" | "processing") => void;
 }): Promise<string> {
   attachmentDebug("encrypt:start", {
@@ -104,7 +104,7 @@ export async function encryptAndUploadAttachment(opts: {
     signer: opts.nostrSkHex,
     signal: opts.signal,
     onProgress: opts.onProgress
-      ? (loaded: number, total: number) => opts.onProgress?.(total > 0 ? loaded / total : 0)
+      ? (loaded, total) => opts.onProgress?.(total > 0 ? loaded / total : 0, loaded, total)
       : undefined,
     onPhaseChange: opts.onPhaseChange,
   });

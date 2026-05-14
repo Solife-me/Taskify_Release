@@ -30,7 +30,9 @@ export declare class SubscriptionManager {
     private clampFilters;
     private normalizeFilters;
     private scheduleFlush;
+    private scheduleEoseFlush;
     private flushPending;
+    private flushEose;
     subscribe(filtersInput: NDKFilter | NDKFilter[], options?: SubscribeOptions): Promise<ManagedSubscription>;
     private release;
     shutdown(): void;

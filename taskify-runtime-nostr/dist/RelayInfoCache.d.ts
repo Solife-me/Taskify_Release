@@ -35,6 +35,7 @@ export type RelayInfoStorage = {
 };
 type RelayInfoCacheOptions = {
     ttlMs?: number;
+    failureTtlMs?: number;
     storage?: RelayInfoStorage;
     storageKey?: string;
     maxEntries?: number;
@@ -43,13 +44,16 @@ export declare function normalizeRelayCacheKey(relayUrl: string): string | null;
 export declare function buildNip11Url(relayUrl: string): string | null;
 export declare class RelayInfoCache {
     private readonly ttlMs;
+    private readonly failureTtlMs;
     private readonly cache;
+    private readonly failures;
     private readonly inFlight;
     private readonly storage?;
     private readonly storageKey;
     private readonly maxEntries;
     constructor(options?: RelayInfoCacheOptions);
     private isExpired;
+    private hasRecentFailure;
     get(relayUrl: string): CachedRelayInfo | null;
     getAgeMs(relayUrl: string): number | null;
     getLimits(relayUrls: string[]): RelayLimits;

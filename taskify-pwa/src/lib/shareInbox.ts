@@ -1,5 +1,5 @@
 import { secp256k1 } from "@noble/curves/secp256k1";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, getEventHash, getPublicKey, nip19, nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
 
 import {
@@ -10,7 +10,6 @@ import {
   buildCalendarEventInviteEnvelope as buildCalendarEventInviteEnvelopeCore,
   parseShareEnvelope as parseShareEnvelopeCore,
   type ShareEnvelope,
-  type SharedBoardPayload,
   type SharedContactPayload,
   type SharedTaskPayload,
   type SharedCalendarEventInvitePayload,
@@ -27,7 +26,7 @@ export type {
   SharedTaskPayload,
   SharedCalendarEventInvitePayload,
   SharedTaskAssignmentResponsePayload,
-};
+} from "taskify-core";
 
 const SHARE_ENVELOPE_EMBED_MARKER = "Taskify-Share:";
 

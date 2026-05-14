@@ -1,5 +1,5 @@
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
-import { wordlist } from "@scure/bip39/wordlists/english";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { kvStorage } from "../storage/kvStorage";
 
 const LS_WALLET_SEED = "cashu_wallet_seed_v1";

@@ -159,7 +159,8 @@ export function normalizeTaskBounty(task: Task): Task {
 
 // ---- Bounty state label ----
 
-export function bountyStateLabel(bounty: NonNullable<Task["bounty"]>): string {
+export function bountyStateLabel(bounty: Task["bounty"]): string {
+  if (!bounty) return "";
   if (
     bounty.state === "locked" &&
     bounty.lock === "p2pk" &&

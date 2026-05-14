@@ -15,7 +15,8 @@ import type { ScriptureMemoryFrequency, ScriptureMemorySort } from "../scripture
 import { LS_SETTINGS } from "../storageKeys";
 import { kvStorage } from "../../storage/kvStorage";
 import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
-import type { FastingRemindersMode, PushPreferences, Settings } from "./settingsTypes";
+import { CHAT_RETENTION_OPTIONS } from "./settingsTypes";
+import type { ChatMessageRetention, FastingRemindersMode, PushPreferences, Settings } from "./settingsTypes";
 import type { Board, Weekday } from "./taskTypes";
 
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
@@ -143,6 +144,13 @@ export function useSettingsSync(
         ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
+
+      const validRetentionIds = new Set(CHAT_RETENTION_OPTIONS.map((o) => o.id));
+      const rawRetention = typeof parsed?.chatMessageRetention === "string" ? parsed.chatMessageRetention : "";
+      const chatMessageRetention: ChatMessageRetention = validRetentionIds.has(rawRetention as ChatMessageRetention)
+        ? (rawRetention as ChatMessageRetention)
+        : "forever";
+
       const pushRaw = parsed?.pushNotifications;
       const inferredPlatform = detectPushPlatformFromNavigator();
       const storedPlatform = pushRaw?.platform === "android"
@@ -251,6 +259,7 @@ export function useSettingsSync(
         nostrBackupEnabled,
         nostrBackupMetadataEnabled,
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
+        chatMessageRetention,
       };
     } catch {
       return {
@@ -296,6 +305,7 @@ export function useSettingsSync(
         fastingRemindersWeekday: 1,
         fastingRemindersRandomSeed: crypto.randomUUID(),
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES },
+        chatMessageRetention: "forever",
       };
     }
   });

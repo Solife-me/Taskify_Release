@@ -1,4 +1,4 @@
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip44 } from "nostr-tools";
 import type { WalletSeedBackupPayload } from "./wallet/seed";
 import type { NostrAppBackupBoard } from "taskify-core";

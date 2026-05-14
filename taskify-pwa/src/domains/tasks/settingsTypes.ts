@@ -67,11 +67,35 @@ export type Settings = {
   // Metadata sync is controlled by nostrBackupEnabled; kept for backwards compat
   nostrBackupMetadataEnabled: boolean;
   pushNotifications: PushPreferences;
+  chatMessageRetention: ChatMessageRetention;
   // Legacy Agent Mode toggle; panel access is now controlled by ?agent=1.
 
   // Legacy no-op permission flag kept only for backwards compatibility with stored settings.
 
 };
+
+// ---- Chat ----
+
+export type ChatMessageRetention = "forever" | "1year" | "6months" | "3months" | "30days";
+
+export const CHAT_RETENTION_OPTIONS: { id: ChatMessageRetention; label: string }[] = [
+  { id: "forever", label: "Forever" },
+  { id: "1year", label: "1 year" },
+  { id: "6months", label: "6 months" },
+  { id: "3months", label: "3 months" },
+  { id: "30days", label: "30 days" },
+];
+
+export function chatRetentionCutoffMs(retention: ChatMessageRetention): number | null {
+  const now = Date.now();
+  switch (retention) {
+    case "1year":   return now - 365 * 24 * 60 * 60 * 1000;
+    case "6months": return now - 182 * 24 * 60 * 60 * 1000;
+    case "3months": return now - 91  * 24 * 60 * 60 * 1000;
+    case "30days":  return now - 30  * 24 * 60 * 60 * 1000;
+    default:        return null;
+  }
+}
 
 // ---- Accent choices ----
 

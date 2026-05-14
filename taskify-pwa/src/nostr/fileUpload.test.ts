@@ -1,5 +1,5 @@
 import { test, describe, expect, vi, beforeEach } from "vitest";
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import {
   parseFileServers,
   serializeFileServers,

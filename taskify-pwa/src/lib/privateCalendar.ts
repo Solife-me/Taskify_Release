@@ -1,7 +1,6 @@
-import { sha256 } from "@noble/hashes/sha256";
-import { hexToBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip44 } from "nostr-tools";
-
 export {
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,
@@ -158,4 +157,3 @@ export async function decryptCalendarRsvpPayloadForAttendee(
   const plaintext = await nip44v2.decrypt(content, conversationKey);
   return JSON.parse(plaintext);
 }
-

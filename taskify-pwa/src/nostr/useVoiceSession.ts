@@ -281,7 +281,9 @@ export function isSpeechRecognitionSupported(): boolean {
 function createSpeechRecognition(): SpeechRecognition | null {
   if (typeof window === "undefined") return null;
   const Ctor =
-    (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    ((window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition) as
+      | (new () => SpeechRecognition)
+      | undefined;
   if (!Ctor) return null;
   const rec: SpeechRecognition = new Ctor();
   rec.continuous = true;

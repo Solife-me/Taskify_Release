@@ -6,6 +6,14 @@ import tseslint from 'typescript-eslint'
 import unusedImports from 'eslint-plugin-unused-imports'
 import { globalIgnores } from 'eslint/config'
 
+const legacyUncheckedFiles = [
+  'src/App.tsx',
+  'src/components/CashuWalletModal.tsx',
+  'src/ui/calendar/EventEditModal.tsx',
+  'src/ui/settings/**/*.tsx',
+  'src/ui/task/EditModal.tsx',
+]
+
 export default tseslint.config([
   globalIgnores(['dist']),
   {
@@ -25,6 +33,14 @@ export default tseslint.config([
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+        },
+      ],
       'no-empty': ['error', { allowEmptyCatch: true }],
       'react-refresh/only-export-components': 'off',
       // Defer unused-imports detection to the dedicated plugin which has an
@@ -67,6 +83,14 @@ export default tseslint.config([
     rules: {
       '@typescript-eslint/ban-ts-comment': 'off',
       'unused-imports/no-unused-vars': 'off',
+    },
+  },
+  {
+    files: legacyUncheckedFiles,
+    rules: {
+      '@typescript-eslint/ban-ts-comment': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
     },
   },
 ])

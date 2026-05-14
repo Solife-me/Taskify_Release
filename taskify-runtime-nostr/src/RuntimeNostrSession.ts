@@ -268,7 +268,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   private primeRelayInfo(relayUrl: string): void {
-    if (!this.relayInfoCache.needsRefresh(relayUrl) && this.relayInfoCache.get(relayUrl)) return;
+    if (!this.relayInfoCache.needsRefresh(relayUrl)) return;
     if (!this.relayHealth.canAttempt(relayUrl)) {
       this.relayHealth.onBackoffExpiry(relayUrl, () => this.primeRelayInfo(relayUrl));
       return;

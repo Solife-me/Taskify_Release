@@ -322,7 +322,15 @@ export function useBoardSync({
         (ev, evRelay) => {
           ev.__relay = evRelay;
           if (ev.kind === 30300) enqueueForBoard(item.id, () => applyBoardEvent(ev)).catch(() => {});
-          else if (ev.kind === 30301) enqueueForBoard(item.id, () => applyTaskEvent(ev)).catch(() => {});
+          else if (ev.kind === 30301) {
+            const taskId = tagValue(ev, "d");
+            if (taskId) {
+              const seen = seenBoardTasksRef.current.get(item.id) ?? new Set<string>();
+              seen.add(taskId);
+              seenBoardTasksRef.current.set(item.id, seen);
+            }
+            enqueueForBoard(item.id, () => applyTaskEvent(ev)).catch(() => {});
+          }
           else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) {
             enqueueForBoard(item.id, () => applyCalendarEvent(ev)).catch(() => {});
           }
