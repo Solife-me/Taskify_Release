@@ -1,13 +1,12 @@
 // @ts-nocheck
-// TODO: This file is ~24k lines and needs to be broken up. Extract custom hooks
+// TODO: Continue breaking up this still-large wallet surface. Extract more custom hooks
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
-// nostr DM redemption, lightning, swaps, history) into src/hooks/wallet/ and
-// split sub-views into smaller components to reduce this file's size.
+// nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
+// sub-views into smaller components to reduce this file's size.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bech32 } from "bech32";
 import {
   decodePaymentRequest,
-  getDecodedToken,
   getEncodedToken,
   PaymentRequest,
   PaymentRequestTransportType,
@@ -19,38 +18,25 @@ import {
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import QrScannerLib from "qr-scanner";
-import { QRCodeCanvas } from "qrcode.react";
 import { finalizeEvent, getEventHash, getPublicKey, nip04, nip19, nip44, type EventTemplate } from "nostr-tools";
 import { useCashu } from "../context/CashuContext";
 import { useNwc } from "../context/NwcContext";
 import { useToast } from "../context/ToastContext";
 import { useP2PK, type P2PKKey } from "../context/P2PKContext";
 import { EcashGlyph } from "./EcashGlyph";
-import {
-  addMintToList,
-  getMintList,
-  loadStore,
-  listPendingTokens,
-  removeMintFromList,
-  type PendingTokenEntry,
-} from "../wallet/storage";
+import { removeMintFromList } from "../wallet/storage";
 import {
   assembleNut16FromText,
   containsNut16Frame,
-  createNut16Animation,
   Nut16Collector,
   parseNut16FrameString,
 } from "../wallet/nut16";
 import { encodePeanut, extractPeanutToken } from "../wallet/peanut";
-import { getCashuTokenMetadata } from "../wallet/cashuTokenMetadata";
 import { decodeBolt11Amount, estimateInvoiceAmountSat, formatMsatAsSat } from "../wallet/lightning";
 import {
   LS_LIGHTNING_CONTACTS,
   LS_ECASH_OPEN_REQUESTS,
   LS_SPENT_NOSTR_PAYMENTS,
-  LS_BTC_USD_PRICE_CACHE,
-  LS_MINT_BACKUP_ENABLED,
   LS_CONTACTS_SYNC_META,
   LS_NIP51_CONTACTS_MIGRATED,
   LS_CONTACT_NIP05_CACHE,
@@ -90,19 +76,12 @@ import { uploadAvatar } from "../nostr/Nip96Client";
 import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
 import {
   encryptAndUploadMessengerAttachment,
-  decryptMessengerAttachment,
   isImageMime,
   isVideoMime,
   isAudioMime,
   probeImageDimensions,
-  formatByteSize,
   MESSENGER_ATTACHMENT_ALGO,
 } from "../lib/messengerAttachmentCrypto";
-import {
-  markHistoryEntrySpentRaw,
-  MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
-  type MarkHistoryEntriesOldSpentEventDetail,
-} from "../lib/walletHistory";
 import type { CreateSendTokenOptions } from "../mint/MintSession";
 import {
   NpubCashError,
@@ -127,23 +106,69 @@ import {
   saveContactsToStorage,
 } from "../lib/contacts";
 import { parseShareEnvelope } from "../lib/shareInbox";
-import { COINBASE_SPOT_PRICE_URL } from "../lib/pricing";
-import { getWalletSeedMnemonic } from "../wallet/seed";
-import {
-  createMintBackupTemplate,
-  deriveMintBackupKeys,
-  loadMintBackupCache,
-  MINT_BACKUP_CLIENT_TAG,
-  persistMintBackupCache as persistMintBackupCacheToStorage,
-  type MintBackupPayload,
-} from "../wallet/mintBackup";
 import type { WalletMessageItem } from "../types/walletMessages";
 import { chatRetentionCutoffMs } from "../domains/tasks/settingsTypes";
-
-type ScanResult = QrScannerLib.ScanResult;
-
-const WALLET_SCAN_TARGET_SIZE = 800;
-const WALLET_SCAN_MAX_SCANS_PER_SECOND = 25;
+import {
+  aggregateStoredProofStates,
+  amountFromCashuToken,
+  computeProofY,
+  decodeCashuTokenLoose,
+  deriveTimestampFromId,
+  extractCashuUriPayload,
+  isValidCashuTokenString,
+  normalizeMintUrl,
+  normalizeProofAmount,
+  sanitizeProofStateValue,
+  sumProofAmounts,
+  summarizeStoredProofStates,
+} from "../wallet/cashuProofHelpers";
+import {
+  deriveSpentHistoryTokenStateFromToken,
+  isCashuTokenDetail,
+  type HistoryDetailKind,
+  type HistoryEntryInput,
+  type HistoryItem,
+  type HistoryTokenState,
+  type StoredProofForState,
+} from "../wallet/walletHistoryTypes";
+import { useWalletHistory } from "../hooks/wallet/useWalletHistory";
+import { usePendingTokenHistorySync } from "../hooks/wallet/usePendingTokenHistorySync";
+import { useMintBackup } from "../hooks/wallet/useMintBackup";
+import { useWalletMediaQuery } from "../hooks/wallet/useWalletMediaQuery";
+import { SATS_PER_BTC, useWalletPrice } from "../hooks/wallet/useWalletPrice";
+import {
+  AnimatedEllipsis,
+  BackIcon,
+  CHAT_FILE_PICKER_ACCEPT,
+  ChatBubbleIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  CloseIcon,
+  GroupAvatar,
+  LightningGlyph,
+  LockIcon,
+  MessengerFileBubble,
+  PencilIcon,
+  PersonIcon,
+  QrCodeCard,
+  QrScanner,
+  ShareArrowIcon,
+  SwipeableDmThreadRow,
+  VerifiedBadgeIcon,
+  WalletGlyphIcon,
+  formatDmDateSeparator,
+  formatDmDay,
+  formatDmTime,
+  formatLightningAddressDisplay,
+  formatMintDisplayName,
+  formatShortDate,
+  parseDateLikeToUnixSeconds,
+  shortenNpubDisplay,
+  trimMintUrlScheme,
+  truncatePreview,
+  tryParseJson,
+  type GroupAvatarMember,
+} from "../ui/wallet/walletModalUi";
 
 function yieldToBrowser(): Promise<void> {
   return new Promise((resolve) => {
@@ -155,299 +180,14 @@ function yieldToBrowser(): Promise<void> {
   });
 }
 
-const AnimatedEllipsis = () => {
-  const [step, setStep] = useState(0);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setStep((current) => (current + 1) % 4);
-    }, 350);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  const dots = step === 0 ? "" : ".".repeat(step);
-
-  return <span className="inline-block w-4 text-left">{dots}</span>;
-};
-
-type GroupAvatarMember = {
-  key: string;
-  label: string;
-  picture?: string;
-};
-
-function avatarInitials(value: string): string {
-  const parts = (value || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  const cp = parts[0].codePointAt(0) ?? 0;
-  const isEmoji = (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
-  if (isEmoji) return [...parts[0]][0] ?? "?";
-  if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
-  return `${[...parts[0]][0] ?? ""}${[...parts[parts.length - 1]][0] ?? ""}`.toUpperCase();
-}
-
-function GroupAvatar({
-  members,
-  className = "",
-}: {
-  members: GroupAvatarMember[];
-  className?: string;
-}) {
-  const visibleMembers = members.slice(0, Math.min(4, members.length));
-  const count = Math.max(visibleMembers.length, 1);
-  return (
-    <div className={`group-avatar group-avatar--count-${count}${className ? ` ${className}` : ""}`} aria-hidden="true">
-      {visibleMembers.map((member, index) => (
-        <div
-          key={member.key}
-          className={`group-avatar__item group-avatar__item--${index + 1}${member.picture ? " group-avatar__item--image" : ""}`}
-          title={member.label}
-        >
-          {member.picture ? (
-            <img src={member.picture} alt="" className="group-avatar__img" />
-          ) : (
-            <span className="group-avatar__initials">{avatarInitials(member.label)}</span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SwipeableDmThreadRow({
-  children,
-  onArchive,
-  onDelete,
-}: {
-  children: React.ReactNode;
-  onArchive: () => void;
-  onDelete: () => void;
-}) {
-  const [offset, setOffset] = useState(0);
-  const [transitionEnabled, setTransitionEnabled] = useState(true);
-  const [dismissing, setDismissing] = useState<"archive" | "delete" | null>(null);
-  const offsetRef = useRef(0);
-  const suppressClickRef = useRef(false);
-  const suppressClickTimerRef = useRef<number | null>(null);
-  const gestureRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    startOffset: number;
-    locked: "horizontal" | "vertical" | null;
-    dragged: boolean;
-  } | null>(null);
-  useEffect(() => {
-    return () => {
-      if (suppressClickTimerRef.current != null) {
-        window.clearTimeout(suppressClickTimerRef.current);
-      }
-    };
-  }, []);
-  const setRowOffset = useCallback((next: number) => {
-    const bounded = Math.max(-DM_THREAD_SWIPE_ACTION_WIDTH, Math.min(0, Math.round(next)));
-    offsetRef.current = bounded;
-    setOffset(bounded);
-  }, []);
-  const close = useCallback(() => {
-    setTransitionEnabled(true);
-    setRowOffset(0);
-  }, [setRowOffset]);
-  const open = useCallback(() => {
-    setTransitionEnabled(true);
-    setRowOffset(-DM_THREAD_SWIPE_ACTION_WIDTH);
-  }, [setRowOffset]);
-  const revealRatio = Math.min(1, Math.abs(offset) / DM_THREAD_SWIPE_ACTION_WIDTH);
-  const startSwipeGesture = useCallback((event: React.PointerEvent<HTMLElement>) => {
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    gestureRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startOffset: offsetRef.current,
-      locked: null,
-      dragged: false,
-    };
-    setTransitionEnabled(false);
-  }, []);
-  const moveSwipeGesture = useCallback(
-    (event: React.PointerEvent<HTMLElement>) => {
-      const gesture = gestureRef.current;
-      if (!gesture || gesture.pointerId !== event.pointerId) return;
-      const dx = event.clientX - gesture.startX;
-      const dy = event.clientY - gesture.startY;
-      if (!gesture.locked) {
-        if (Math.abs(dx) > Math.abs(dy) + 5) gesture.locked = "horizontal";
-        else if (Math.abs(dy) > Math.abs(dx) + 5) gesture.locked = "vertical";
-      }
-      if (gesture.locked !== "horizontal") return;
-      event.preventDefault();
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-      if (Math.abs(dx) > 6) gesture.dragged = true;
-      setRowOffset(gesture.startOffset + dx);
-    },
-    [setRowOffset],
-  );
-  const endSwipeGesture = useCallback(
-    (event: React.PointerEvent<HTMLElement>) => {
-      const gesture = gestureRef.current;
-      if (!gesture || gesture.pointerId !== event.pointerId) return;
-      gestureRef.current = null;
-      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-        event.currentTarget.releasePointerCapture?.(event.pointerId);
-      }
-      setTransitionEnabled(true);
-      if (!gesture.dragged) return;
-      suppressClickRef.current = true;
-      if (suppressClickTimerRef.current != null) {
-        window.clearTimeout(suppressClickTimerRef.current);
-      }
-      suppressClickTimerRef.current = window.setTimeout(() => {
-        suppressClickRef.current = false;
-        suppressClickTimerRef.current = null;
-      }, 0);
-      if (gesture.locked === "horizontal" && offsetRef.current < -DM_THREAD_SWIPE_ACTION_WIDTH * 0.35) {
-        open();
-      } else if (gesture.locked === "horizontal") {
-        close();
-      }
-    },
-    [close, open],
-  );
-  const cancelSwipeGesture = useCallback(
-    (event: React.PointerEvent<HTMLElement>) => {
-      const gesture = gestureRef.current;
-      if (!gesture || gesture.pointerId !== event.pointerId) return;
-      gestureRef.current = null;
-      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-        event.currentTarget.releasePointerCapture?.(event.pointerId);
-      }
-      close();
-    },
-    [close],
-  );
-  const suppressDraggedClick = useCallback((event: React.SyntheticEvent) => {
-    if (!suppressClickRef.current) return false;
-    suppressClickRef.current = false;
-    if (suppressClickTimerRef.current != null) {
-      window.clearTimeout(suppressClickTimerRef.current);
-      suppressClickTimerRef.current = null;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    return true;
-  }, []);
-  const runThreadAction = useCallback(
-    (action: "archive" | "delete", handler: () => void) => {
-      setTransitionEnabled(true);
-      setRowOffset(-DM_THREAD_SWIPE_ACTION_WIDTH);
-      setDismissing(action);
-      window.setTimeout(handler, 180);
-    },
-    [setRowOffset],
-  );
-
-  return (
-    <div
-      className={`chat-thread-swipe${offset !== 0 ? " is-open" : ""}${dismissing ? " is-dismissing" : ""}`}
-      onPointerDown={startSwipeGesture}
-      onPointerMove={moveSwipeGesture}
-      onPointerUp={endSwipeGesture}
-      onPointerCancel={cancelSwipeGesture}
-    >
-      <div
-        className="chat-thread-swipe__actions"
-        aria-hidden={offset === 0}
-        style={{
-          opacity: revealRatio,
-          pointerEvents: offset === 0 ? "none" : "auto",
-        }}
-      >
-        <button
-          type="button"
-          className="chat-thread-swipe__action chat-thread-swipe__action--archive pressable"
-          onClick={(event) => {
-            if (suppressDraggedClick(event)) return;
-            event.stopPropagation();
-            runThreadAction("archive", onArchive);
-          }}
-          disabled={!!dismissing}
-          tabIndex={offset === 0 || dismissing ? -1 : 0}
-          aria-label="Archive thread"
-          title="Archive"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="3" y="4" width="18" height="4" rx="1" />
-            <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" />
-            <path d="M10 12h4" />
-          </svg>
-          <span>Archive</span>
-        </button>
-        <button
-          type="button"
-          className="chat-thread-swipe__action chat-thread-swipe__action--delete pressable"
-          onClick={(event) => {
-            if (suppressDraggedClick(event)) return;
-            event.stopPropagation();
-            runThreadAction("delete", onDelete);
-          }}
-          disabled={!!dismissing}
-          tabIndex={offset === 0 || dismissing ? -1 : 0}
-          aria-label="Delete thread"
-          title="Delete"
-        >
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M9 3h6l1 1h5v2H3V4h5l1-1z" />
-            <path d="M5 7h14l-1.5 13h-11L5 7z" />
-          </svg>
-          <span>Delete</span>
-        </button>
-      </div>
-      <div
-        className="chat-thread-swipe__content"
-        style={{
-          transform: `translateX(${offset}px)`,
-          transition: transitionEnabled ? "transform 180ms ease" : "none",
-        }}
-        onClickCapture={(event) => {
-          if (suppressDraggedClick(event)) {
-            return;
-          }
-          if (offsetRef.current !== 0) {
-            event.preventDefault();
-            event.stopPropagation();
-            close();
-          }
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-const ShareArrowIcon = (props: React.SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-    <path d="M14.5 6.5 9 10.5l5.5 4" />
-    <circle cx="17.5" cy="4.5" r="2.25" />
-    <circle cx="17.5" cy="19.5" r="2.25" />
-    <circle cx="6.5" cy="12" r="2.25" />
-  </svg>
-);
-
 const LNURL_DECODE_LIMIT = 2048;
 const CONTACT_PANEL_HEIGHT = "min(calc(100dvh - 6.5rem), calc(100vh - 6.5rem))";
 const PROFILE_SHARE_CACHE_KEY = "taskify.profileSharePayload.v1";
-const HISTORY_ID_TIMESTAMP_REGEX = /(\d{10,})/;
 const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
 const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const PAYMENT_HISTORY_EVENT_ID_REGEX = /^payment-request-(?:recv|pending)-([a-f0-9]{32,})$/i;
 const CHAT_TIMESTAMP_REVEAL_WIDTH = 92;
 const DM_THREAD_DELETE_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
-const DM_THREAD_SWIPE_ACTION_WIDTH = 168;
 const CHAT_ATTACH_TRAY_MIN_HEIGHT = 248;
 const CHAT_ATTACH_TRAY_MAX_HEIGHT = 380;
 const CHAT_ATTACH_TRAY_FALLBACK_RATIO = 0.38;
@@ -459,92 +199,6 @@ function measureDefaultChatAttachTrayHeight(): number {
       CHAT_ATTACH_TRAY_MAX_HEIGHT,
       Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, window.innerHeight * CHAT_ATTACH_TRAY_FALLBACK_RATIO),
     ),
-  );
-}
-
-function deriveTimestampFromId(value: string): number {
-  if (typeof value !== "string" || !value) return Date.now();
-  const match = value.match(HISTORY_ID_TIMESTAMP_REGEX);
-  if (!match) return Date.now();
-  const parsed = Number(match[1]);
-  if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
-  if (parsed >= 1_000_000_000_000) return parsed;
-  return parsed * 1000;
-}
-
-function normalizeProofAmount(value: unknown): number {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
-  }
-  if (typeof value === "bigint") {
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
-    return Math.max(0, Number(value));
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number.parseFloat(value);
-    return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
-  }
-  const amountLike = value as { toNumber?: () => number; toNumberUnsafe?: () => number };
-  try {
-    if (typeof amountLike?.toNumber === "function") {
-      const numeric = amountLike.toNumber();
-      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
-    }
-  } catch {
-    // fall through
-  }
-  try {
-    if (typeof amountLike?.toNumberUnsafe === "function") {
-      const numeric = amountLike.toNumberUnsafe();
-      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
-    }
-  } catch {
-    // fall through
-  }
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
-}
-
-function sumProofAmounts(proofs: any[]): number {
-  if (!Array.isArray(proofs)) return 0;
-  return proofs.reduce((sum: number, proof: any) => sum + normalizeProofAmount(proof?.amount), 0);
-}
-
-function decodeCashuTokenLoose(token: string): any | null {
-  try {
-    return getDecodedToken(token, []);
-  } catch {
-    return null;
-  }
-}
-
-function readCashuTokenMetadata(token: string): any | null {
-  try {
-    return getCashuTokenMetadata(token);
-  } catch {
-    return null;
-  }
-}
-
-function isValidCashuTokenString(token: string): boolean {
-  return !!readCashuTokenMetadata(token) || !!decodeCashuTokenLoose(token);
-}
-
-function amountFromCashuToken(token: string): number {
-  const metadata = readCashuTokenMetadata(token);
-  const metadataAmount = normalizeProofAmount(metadata?.amount);
-  if (metadataAmount > 0) return metadataAmount;
-  const decoded = decodeCashuTokenLoose(token);
-  const entries: any[] = decoded
-    ? Array.isArray(decoded?.token)
-      ? decoded.token
-      : decoded?.proofs
-        ? [decoded]
-        : []
-    : [];
-  return entries.reduce(
-    (outer, entry) => outer + sumProofAmounts(Array.isArray(entry?.proofs) ? entry.proofs : []),
-    0,
   );
 }
 
@@ -647,14 +301,6 @@ function getCalendarInviteStatusLabel(status?: string | null): string | null {
   if (status === "declined") return "Responded: declined";
   if (status === "dismissed") return "Dismissed";
   return null;
-}
-
-function mintListsEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
 }
 
 type SubsetPathEntry = { prevSum: number; noteIndex: number };
@@ -1016,71 +662,6 @@ async function fetchProfilePhotoDataUrl(url: string, timeoutMs = 8000): Promise<
   }
 }
 
-function normalizeMintUrl(url: string): string {
-  return url.replace(/\/$/, "");
-}
-
-function extractCashuUriPayload(raw: string): string {
-  const rest = raw.replace(/^cashu:/i, "").trim();
-  if (!rest) return rest;
-
-  if (rest.startsWith("?")) {
-    const params = new URLSearchParams(rest.slice(1));
-    const paramCandidate =
-      params.get("token") ||
-      params.get("cashu") ||
-      params.get("proofs") ||
-      params.get("t") ||
-      params.get("payment_request") ||
-      params.get("request") ||
-      params.get("pr");
-    if (paramCandidate) {
-      return paramCandidate.trim();
-    }
-    return rest;
-  }
-
-  const keyValueMatch = rest.match(/(?:^|[?&])(token|cashu|proofs|t|payment_request|request|pr)=([^&]+)/i);
-  if (keyValueMatch?.[2]) {
-    return keyValueMatch[2].trim();
-  }
-
-  if (rest.startsWith("//")) {
-    const withoutScheme = rest.replace(/^\/+/, "");
-    const tryParse = () => {
-      const url = new URL(`https://${withoutScheme}`);
-      const paramCandidate =
-        url.searchParams.get("token") ||
-        url.searchParams.get("cashu") ||
-        url.searchParams.get("proofs") ||
-        url.searchParams.get("t") ||
-        url.searchParams.get("payment_request") ||
-        url.searchParams.get("request") ||
-        url.searchParams.get("pr");
-      if (paramCandidate) {
-        return paramCandidate.trim();
-      }
-      const segments = url.pathname.split("/").filter(Boolean);
-      if (segments.length) {
-        return segments[segments.length - 1]!.trim();
-      }
-      return withoutScheme;
-    };
-
-    try {
-      return tryParse();
-    } catch {
-      const parts = withoutScheme.split("/").filter(Boolean);
-      if (parts.length) {
-        return parts[parts.length - 1]!.trim();
-      }
-      return withoutScheme;
-    }
-  }
-
-  return rest;
-}
-
 function extractDomain(target: string): string {
   try {
     const hostname = new URL(target).hostname;
@@ -1147,56 +728,6 @@ function renderFormattedText(text: string): React.ReactNode {
   return parts.length > 0 ? parts : text;
 }
 
-function formatLightningAddressDisplay(address: string, baseMaxLength = 32): string {
-  const ellipsis = "…";
-  if (address.length <= baseMaxLength) return address;
-  const atIndex = address.indexOf("@");
-  if (atIndex <= 0) {
-    return `${address.slice(0, baseMaxLength - 1)}${ellipsis}`;
-  }
-
-  const localPart = address.slice(0, atIndex);
-  const domainPartWithAt = address.slice(atIndex);
-  const dynamicMaxLength = Math.max(baseMaxLength, domainPartWithAt.length + 6);
-  if (address.length <= dynamicMaxLength) return address;
-
-  const maxLocalLength = Math.max(3, dynamicMaxLength - domainPartWithAt.length - ellipsis.length);
-  return `${localPart.slice(0, maxLocalLength)}${ellipsis}${domainPartWithAt}`;
-}
-
-function capitalizeWords(value: string): string {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(" ");
-}
-
-function formatMintDisplayName(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname.replace(/^www\./i, "");
-    const hostParts = hostname.split(".").filter(Boolean);
-    const hostLabel = hostParts
-      .slice(Math.max(0, hostParts.length - 2))
-      .map((part) => capitalizeWords(part.replace(/[-_]+/g, " ")))
-      .join(" ");
-    const pathSegments = parsed.pathname.split("/").filter(Boolean);
-    const lastSegment = pathSegments.length ? decodeURIComponent(pathSegments[pathSegments.length - 1]!) : "";
-    if (lastSegment) {
-      const formattedSegment = capitalizeWords(lastSegment.replace(/[-_]+/g, " "));
-      return `${hostLabel || hostname} • ${formattedSegment}`.trim();
-    }
-    return hostLabel || hostname || url;
-  } catch {
-    return url.replace(/^https?:\/\//i, "");
-  }
-}
-
-function trimMintUrlScheme(url: string): string {
-  return url.replace(/^https?:\/\//i, "");
-}
-
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
   const controller = new AbortController();
   const { signal, ...rest } = init;
@@ -1230,95 +761,6 @@ function randomPastTimestampSeconds(maxOffsetSeconds = 2 * 24 * 60 * 60): number
   const now = Math.floor(Date.now() / 1000);
   const offset = Math.floor(Math.random() * maxOffsetSeconds);
   return Math.max(0, now - offset);
-}
-
-function LockIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <rect x="5" y="9" width="10" height="7" rx="2" />
-      <path d="M7.5 9V7a2.5 2.5 0 0 1 5 0v2" />
-      <circle cx="10" cy="12.5" r="1" />
-    </svg>
-  );
-}
-
-function ChevronDownIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="M5.5 8.5 10 13l4.5-4.5" />
-    </svg>
-  );
-}
-
-function BackIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.25}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...props}
-    >
-      <path d="m14.75 6.75-6 5.25 6 5.25" />
-    </svg>
-  );
-}
-
-function PencilIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L8.032 18.62a3.75 3.75 0 0 1-1.579 0.942l-2.469 0.74 0.74-2.47a3.75 3.75 0 0 1 0.943-1.578L16.862 4.487Z" />
-      <path d="M16.862 4.487 19.5 7.125" />
-    </svg>
-  );
-}
-
-function CloseIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="m7 7 10 10M17 7 7 17" />
-    </svg>
-  );
-}
-
-function CheckIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="m6 12 4.5 4.5L18 8" />
-    </svg>
-  );
-}
-
-function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
-      <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l.967 2.329a1.125 1.125 0 0 0 1.304.674l2.457-.624c1.119-.285 2.114.71 1.829 1.829l-.624 2.457a1.125 1.125 0 0 0 .674 1.304l2.329.967c1.077.448 1.077 1.976 0 2.424l-2.329.967a1.125 1.125 0 0 0-.674 1.304l.624 2.457c.285 1.119-.71 2.114-1.829 1.829l-2.457-.624a1.125 1.125 0 0 0-1.304.674l-.967 2.329c-.448 1.077-1.976 1.077-2.424 0l-.967-2.329a1.125 1.125 0 0 0-1.304-.674l-2.457.624c-1.119.285-2.114-.71-1.829-1.829l.624-2.457a1.125 1.125 0 0 0-.674-1.304l-2.329-.967c-1.077-.448-1.077-1.976 0-2.424l2.329-.967a1.125 1.125 0 0 0 .674-1.304l-.624-2.457c-.285-1.119.71-2.114 1.829-1.829l2.457.624a1.125 1.125 0 0 0 1.304-.674l.967-2.329Z"
-      />
-      <path
-        d="m9.4 12.75 1.9 1.9 3.85-3.85"
-        fill="none"
-        stroke="var(--surface-base)"
-        strokeWidth={1.6}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function PersonIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <circle cx="12" cy="8.25" r="3.25" />
-      <path d="M5.5 19c.25-3.2 3.1-5 6.5-5s6.25 1.8 6.5 5" />
-    </svg>
-  );
 }
 
 type LnurlPayData = {
@@ -1895,63 +1337,11 @@ async function enrichPublicFollowsWithProfiles(
   }
 }
 
-const SATS_PER_BTC = 100_000_000;
 const BACKGROUND_REFRESH_INTERVAL_MS = 300_000;
-const PRICE_REFRESH_MS = BACKGROUND_REFRESH_INTERVAL_MS;
-const PRICE_REFRESH_STAGGER_MS = 0;
 const NPUB_CASH_REFRESH_STAGGER_MS = 20_000;
 const TOKEN_STATE_BACKGROUND_STAGGER_MS = 60_000;
 const TOKEN_STATE_BACKGROUND_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
 const SUBSCRIPTION_RETRY_DELAY_MS = 300_000;
-const PROOF_STATE_VALUES = ["UNSPENT", "PENDING", "SPENT"] as const;
-type ProofStateValue = (typeof PROOF_STATE_VALUES)[number];
-const KNOWN_PROOF_STATES = new Set<ProofStateValue>(PROOF_STATE_VALUES);
-
-function computeProofY(secret: string): string | null {
-  try {
-    if (!secret) return null;
-    return secp256k1.ProjectivePoint.hashToCurve(new TextEncoder().encode(secret)).toHex(true);
-  } catch {
-    return null;
-  }
-}
-
-function sanitizeProofStateValue(state: string | null | undefined): ProofStateValue | undefined {
-  if (!state) return undefined;
-  const normalized = state.trim().toUpperCase();
-  return KNOWN_PROOF_STATES.has(normalized as ProofStateValue)
-    ? (normalized as ProofStateValue)
-    : undefined;
-}
-
-function aggregateStoredProofStates(proofs: Array<{ lastState?: ProofStateValue }>): ProofStateValue | undefined {
-  const values = proofs
-    .map((proof) => proof.lastState)
-    .filter((state): state is ProofStateValue => !!state && KNOWN_PROOF_STATES.has(state));
-  if (!values.length) return undefined;
-  const unique = new Set(values);
-  if (unique.size === 1) {
-    const [only] = Array.from(unique);
-    return only;
-  }
-  if (unique.has("PENDING")) return "PENDING";
-  if (unique.has("SPENT") && unique.has("UNSPENT")) return "PENDING";
-  return undefined;
-}
-
-function summarizeStoredProofStates(proofs: Array<{ lastState?: ProofStateValue }>): string {
-  const counts = new Map<ProofStateValue, number>();
-  for (const proof of proofs) {
-    const state = proof.lastState;
-    if (!state || !KNOWN_PROOF_STATES.has(state)) continue;
-    counts.set(state, (counts.get(state) ?? 0) + 1);
-  }
-  if (!counts.size) return "";
-  return Array.from(counts.entries())
-    .map(([state, count]) => (count > 1 ? `${state} ×${count}` : state))
-    .join(", ");
-}
-
 function buildTokenSpentToastMessage(proofs: Array<{ amount?: number | null }>): string {
   const totalSat = proofs.reduce(
     (sum, proof) => sum + normalizeProofAmount(proof.amount),
@@ -1988,389 +1378,6 @@ function shouldSuppressProofStateChecks(error: unknown): boolean {
   if (name.toLowerCase().includes("mintoperationerror")) return true;
   if (message && /unknown proof/i.test(message)) return true;
   return false;
-}
-
-function QrCodeCard({
-  value,
-  label,
-  copyLabel = "Copy",
-  extraActions,
-  size = 320,
-  className,
-  hideLabel = false,
-  flat = false,
-  enableNut16Animation = false,
-  hideCopyButton = false,
-}: {
-  value: string;
-  label?: string;
-  copyLabel?: string;
-  extraActions?: React.ReactNode;
-  size?: number;
-  className?: string;
-  hideLabel?: boolean;
-  flat?: boolean;
-  enableNut16Animation?: boolean;
-  hideCopyButton?: boolean;
-}) {
-  const trimmed = value?.trim();
-  const [animSpeed, setAnimSpeed] = useState<"S" | "M" | "F">("F");
-  const [animDensity, setAnimDensity] = useState<"S" | "M" | "L">("L");
-  const [copied, setCopied] = useState(false);
-  const [frameIndex, setFrameIndex] = useState(0);
-  const animation = useMemo(() => {
-    if (!enableNut16Animation) return null;
-    const chunkSizeMap: Record<typeof animDensity, number> = { S: 140, M: 200, L: 260 };
-    const intervalMap: Record<typeof animSpeed, number> = { F: 30, M: 60, S: 90 };
-    return createNut16Animation(trimmed, {
-      chunkSize: chunkSizeMap[animDensity],
-      intervalMs: intervalMap[animSpeed],
-    });
-  }, [enableNut16Animation, trimmed, animSpeed, animDensity]);
-  const animationKey = animation
-    ? `${animation.version}:${animation.digest}:${animation.frames.length}`
-    : trimmed;
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  useEffect(() => {
-    setFrameIndex(0);
-  }, [animationKey]);
-
-  useEffect(() => {
-    if (!animation || animation.frames.length <= 1) return;
-    const { frames, intervalMs } = animation;
-    const delay = Math.max(250, Number.isFinite(intervalMs) ? intervalMs : 450);
-    const timer = setInterval(() => {
-      setFrameIndex((idx) => (idx + 1) % frames.length);
-    }, delay);
-    return () => clearInterval(timer);
-  }, [animation]);
-
-  if (!trimmed) return null;
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard?.writeText(trimmed);
-      setCopied(true);
-    } catch (e) {
-      console.warn("Copy failed", e);
-      setCopied(false);
-    }
-  }
-
-  const classes = ["wallet-qr-card"];
-  if (flat) classes.push("wallet-qr-card--flat");
-  if (className) classes.push(className);
-
-  const currentFrame = animation
-    ? animation.frames[Math.min(frameIndex, Math.max(animation.frames.length - 1, 0))]
-    : null;
-  const qrValue = currentFrame?.value ?? trimmed;
-
-  const qrByteLength = (() => {
-    if (!qrValue) return 0;
-    try {
-      return typeof TextEncoder !== "undefined"
-        ? new TextEncoder().encode(qrValue).length
-        : qrValue.length;
-    } catch (error) {
-      console.warn("Failed to measure QR payload", error);
-      return qrValue.length;
-    }
-  })();
-
-  const isQrTooLong = qrByteLength > 2953;
-
-  const showControls = !!animation && animation.frames.length > 1;
-
-  return (
-    <div className={classes.join(" ")}>
-      {(showControls || (!hideLabel && label)) && (
-        <div className="wallet-qr-card__header">
-          {!hideLabel && label && <div className="wallet-qr-card__label">{label}</div>}
-          {showControls && (
-            <div className="wallet-qr-card__controls wallet-qr-card__controls--compact">
-              <button
-                type="button"
-                className="wallet-qr-card__control-pill"
-                onClick={() => setAnimSpeed((prev) => (prev === "S" ? "M" : prev === "M" ? "F" : "S"))}
-                aria-label={`QR speed ${animSpeed}`}
-              >
-                Speed: {animSpeed}
-              </button>
-              <button
-                type="button"
-                className="wallet-qr-card__control-pill"
-                onClick={() => setAnimDensity((prev) => (prev === "S" ? "M" : prev === "M" ? "L" : "S"))}
-                aria-label={`QR size ${animDensity}`}
-              >
-                Size: {animDensity}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      <div className="wallet-qr-card__code" aria-live="polite">
-        <div className="wallet-qr-card__canvas" aria-hidden={isQrTooLong ? undefined : true}>
-          {isQrTooLong ? (
-            <div className="wallet-qr-card__fallback" role="status">
-              QR code unavailable
-            </div>
-          ) : (
-            <QRCodeCanvas value={qrValue} size={size} includeMargin={false} className="wallet-qr-card__qr" />
-          )}
-        </div>
-      </div>
-      {isQrTooLong && (
-        <div className="wallet-qr-card__helper" role="status">
-          This code is too long to display as a QR code. Use the copy button to share it instead.
-        </div>
-      )}
-      <div className="wallet-qr-card__actions">
-        {extraActions}
-        {!hideCopyButton && (
-          <button
-            className="ghost-button button-sm pressable"
-            onClick={handleCopy}
-            aria-label={`Copy ${(label || "code").toLowerCase()}`}
-          >
-            {copied ? "Copied" : copyLabel}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function QrScanner({ active, onDetected, onError }: { active: boolean; onDetected: (value: string) => boolean | Promise<boolean>; onError?: (message: string) => void; }) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const scannerRef = useRef<QrScannerLib | null>(null);
-  const stopRequestedRef = useRef(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const reportError = useCallback((message: string) => {
-    setError(message);
-    if (onError) onError(message);
-  }, [onError]);
-
-  const clearError = useCallback(() => {
-    setError(null);
-  }, []);
-
-  const calculateScanRegion = useCallback((video: HTMLVideoElement) => {
-    const width = video.videoWidth || 0;
-    const height = video.videoHeight || 0;
-    if (!width || !height) {
-      return { x: 0, y: 0, width: 0, height: 0 };
-    }
-    const shortSide = Math.min(width, height);
-    const targetSize = Math.min(WALLET_SCAN_TARGET_SIZE, shortSide);
-    const scale = Math.min(targetSize / shortSide, 1);
-    return {
-      x: 0,
-      y: 0,
-      width,
-      height,
-      downScaledWidth: Math.round(width * scale),
-      downScaledHeight: Math.round(height * scale),
-    };
-  }, []);
-
-  const stopScanner = useCallback(() => {
-    const scanner = scannerRef.current;
-    if (scanner) {
-      try {
-        scanner.stop();
-      } catch (err) {
-        console.warn("Failed to stop scanner", err);
-      }
-      scanner.destroy();
-      scannerRef.current = null;
-    }
-    const video = videoRef.current;
-    if (video && video.srcObject instanceof MediaStream) {
-      video.srcObject.getTracks().forEach((track) => track.stop());
-      video.srcObject = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!active) {
-      stopRequestedRef.current = true;
-      stopScanner();
-      clearError();
-      return;
-    }
-
-    const video = videoRef.current;
-    if (!video) return;
-
-    stopRequestedRef.current = false;
-    let cancelled = false;
-
-    async function start() {
-      try {
-        clearError();
-        const scanner = new QrScannerLib(
-          video,
-          async (result: ScanResult) => {
-            const value = result?.data?.trim();
-            if (!value || stopRequestedRef.current) return;
-            try {
-              const shouldClose = await onDetected(value);
-              if (shouldClose) {
-                stopRequestedRef.current = true;
-                stopScanner();
-              }
-            } catch (err) {
-              console.warn("QR handler failed", err);
-            }
-          },
-          {
-            returnDetailedScanResult: true,
-            highlightScanRegion: false,
-            highlightCodeOutline: false,
-            calculateScanRegion,
-            preferredCamera: "environment",
-            maxScansPerSecond: WALLET_SCAN_MAX_SCANS_PER_SECOND,
-            onDecodeError: (err) => {
-              if (typeof err === "string" && err === QrScannerLib.NO_QR_CODE_FOUND) return;
-            },
-          }
-        );
-
-        video.setAttribute("playsinline", "true");
-        video.setAttribute("muted", "true");
-        video.setAttribute("autoplay", "true");
-        video.playsInline = true;
-        video.muted = true;
-
-        scannerRef.current = scanner;
-        await scanner.start();
-      } catch (err) {
-        if (cancelled) return;
-        const message = err instanceof Error ? err.message : String(err);
-        reportError(message || "Unable to access camera");
-        stopScanner();
-      }
-    }
-
-    start();
-
-    return () => {
-      cancelled = true;
-      stopRequestedRef.current = true;
-      stopScanner();
-    };
-  }, [active, onDetected, reportError, stopScanner, clearError, calculateScanRegion]);
-
-  return (
-    <div className="wallet-scanner space-y-3">
-      <div className={`wallet-scanner__viewport${error ? " wallet-scanner__viewport--error" : ""}`}>
-        {error ? (
-          <div className="wallet-scanner__fallback">{error}</div>
-        ) : (
-          <>
-            <video ref={videoRef} className="wallet-scanner__video" playsInline muted />
-          </>
-        )}
-        {!error && <div className="wallet-scanner__guide" aria-hidden="true" />}
-      </div>
-      <div className="wallet-scanner__hint text-xs text-secondary text-center">
-        {error ? "Camera unavailable. Try entering the code manually." : "Point your camera at a QR code to scan."}
-      </div>
-    </div>
-  );
-}
-
-function LightningGlyph({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 20 20"
-      stroke="currentColor"
-      fill="none"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polyline points="11 2 4 11 9 11 7 18 14 9 9 9 11 2" />
-    </svg>
-  );
-}
-
-function WalletGlyphIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.1} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <line x1="12" y1="4" x2="12" y2="20" />
-      <line x1="8" y1="8" x2="16" y2="8" />
-      <line x1="7" y1="12" x2="17" y2="12" />
-      <line x1="8" y1="16" x2="16" y2="16" />
-      <line x1="12" y1="2.75" x2="12" y2="5.25" />
-      <line x1="12" y1="18.75" x2="12" y2="21.25" />
-    </svg>
-  );
-}
-
-function ChatBubbleIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <rect x="3.5" y="6" width="17" height="12" rx="2" ry="2" />
-      <path d="M4 8l8 5 8-5" />
-    </svg>
-  );
-}
-
-function formatShortDate(tsSeconds: number): string {
-  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
-  const date = new Date(tsSeconds * 1000);
-  if (Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  const sameYear = date.getFullYear() === now.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  if (sameYear) return `${month}-${day}`;
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
-function formatDmDay(tsSeconds: number): string {
-  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
-  const date = new Date(tsSeconds * 1000);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function formatDmTime(tsSeconds: number): string {
-  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
-  const date = new Date(tsSeconds * 1000);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
-
-function formatDmDateSeparator(tsSeconds: number): string {
-  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
-  const date = new Date(tsSeconds * 1000);
-  if (Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const msgDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const diffDays = Math.round((today.getTime() - msgDay.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  const sameYear = date.getFullYear() === now.getFullYear();
-  if (sameYear) return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
-
-function truncatePreview(value: string, limit = 72): string {
-  const trimmed = (value || "").trim();
-  if (trimmed.length <= limit) return trimmed;
-  return `${trimmed.slice(0, limit)}…`;
 }
 
 function isWalletDmAttachment(value: unknown): value is WalletDmAttachment {
@@ -2440,14 +1447,6 @@ function readDmSyncMeta(): DmSyncMeta {
   }
 }
 
-function parseDateLikeToUnixSeconds(value: string | null | undefined, fallback = Math.floor(Date.now() / 1000)): number {
-  if (typeof value !== "string" || !value.trim()) return fallback;
-  const parsed = new Date(value);
-  const millis = parsed.getTime();
-  if (Number.isNaN(millis) || millis <= 0) return fallback;
-  return Math.floor(millis / 1000);
-}
-
 function normalizeDmPeerHex(value: string | null | undefined): string | null {
   const normalized = normalizeNostrPubkey(value || "");
   const candidate = (normalized || value || "").trim();
@@ -2486,222 +1485,6 @@ function buildWalletMessageSyntheticEventId(item: WalletMessageItem): string {
 function buildCalendarInviteSyntheticEventId(invite: PendingCalendarInvite): string {
   const eventId = invite.eventId?.trim();
   return eventId || `calendar-invite-${invite.id}`;
-}
-
-function shortenNpubDisplay(npub: string | null | undefined, lead = 8, tail = 6): string {
-  if (!npub) return "";
-  const value = npub.trim();
-  if (value.length <= lead + tail + 1) return value;
-  return `${value.slice(0, lead)}…${value.slice(-tail)}`;
-}
-
-function tryParseJson<T = any>(value: string | null | undefined): T | null {
-  if (typeof value !== "string") return null;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return null;
-  }
-}
-
-type MessengerFileDescriptor = {
-  url: string;
-  mimeType: string;
-  filename?: string | null;
-  size?: number | null;
-  width?: number | null;
-  height?: number | null;
-  algorithm: string;
-  keyHex: string;
-  nonceHex: string;
-};
-
-const CHAT_FILE_PICKER_ACCEPT = "application/*,text/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.json,.csv,.zip,.7z,.tar,.gz,.rtf";
-
-function MessengerFileBubble({
-  descriptor,
-  isIncoming,
-}: {
-  descriptor: MessengerFileDescriptor;
-  isIncoming: boolean;
-}) {
-  const [state, setState] = useState<
-    | { kind: "idle" }
-    | { kind: "loading" }
-    | { kind: "ready"; objectUrl: string; blob: Blob }
-    | { kind: "error"; message: string }
-  >(() => ({ kind: "idle" }));
-  const mimeLc = (descriptor.mimeType || "").toLowerCase();
-  const isImage = isImageMime(mimeLc);
-  const isVideo = isVideoMime(mimeLc);
-  const isAudio = isAudioMime(mimeLc);
-  const filename = descriptor.filename || "attachment";
-  const sizeLabel = formatByteSize(descriptor.size ?? 0);
-
-  const loadDescriptor = useCallback(async () => {
-    setState({ kind: "loading" });
-    try {
-      const result = await decryptMessengerAttachment({
-        url: descriptor.url,
-        mimeType: descriptor.mimeType,
-        keyHex: descriptor.keyHex,
-        nonceHex: descriptor.nonceHex,
-        algorithm: descriptor.algorithm,
-      });
-      setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
-    } catch (err: any) {
-      setState({ kind: "error", message: err?.message || "Failed to decrypt attachment" });
-    }
-  }, [descriptor.url, descriptor.mimeType, descriptor.keyHex, descriptor.nonceHex, descriptor.algorithm]);
-
-  // Auto-load media attachments (images, video, audio) so they render inline.
-  useEffect(() => {
-    if (isImage || isVideo || isAudio) {
-      void loadDescriptor();
-    }
-  }, [isImage, isVideo, isAudio, loadDescriptor]);
-
-  const handleDownload = useCallback(async () => {
-    let url: string | null = null;
-    if (state.kind === "ready") {
-      url = state.objectUrl;
-    } else {
-      try {
-        const result = await decryptMessengerAttachment({
-          url: descriptor.url,
-          mimeType: descriptor.mimeType,
-          keyHex: descriptor.keyHex,
-          nonceHex: descriptor.nonceHex,
-          algorithm: descriptor.algorithm,
-        });
-        url = result.objectUrl;
-        setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
-      } catch (err: any) {
-        setState({ kind: "error", message: err?.message || "Failed to decrypt attachment" });
-        return;
-      }
-    }
-    if (!url) return;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }, [state, descriptor, filename]);
-
-  const aspectStyle = (() => {
-    const w = descriptor.width ?? 0;
-    const h = descriptor.height ?? 0;
-    if (w > 0 && h > 0) return { aspectRatio: `${w} / ${h}` } as React.CSSProperties;
-    return undefined;
-  })();
-
-  if (isImage) {
-    return (
-      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--image${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
-        <div className="chat-file__image-frame" style={aspectStyle}>
-          {state.kind === "ready" ? (
-            <img src={state.objectUrl} alt={filename} className="chat-file__image" />
-          ) : state.kind === "error" ? (
-            <div className="chat-file__error">
-              <span>{state.message}</span>
-              <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
-                Retry
-              </button>
-            </div>
-          ) : (
-            <div className="chat-file__loading">
-              <div className="chat-sending-spinner" />
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (isVideo) {
-    return (
-      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--video${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
-        <div className="chat-file__video-frame" style={aspectStyle}>
-          {state.kind === "ready" ? (
-            <video src={state.objectUrl} controls className="chat-file__video" />
-          ) : state.kind === "error" ? (
-            <div className="chat-file__error">
-              <span>{state.message}</span>
-              <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
-                Retry
-              </button>
-            </div>
-          ) : (
-            <div className="chat-file__loading">
-              <div className="chat-sending-spinner" />
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (isAudio) {
-    return (
-      <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--audio${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
-        {state.kind === "ready" ? (
-          <audio src={state.objectUrl} controls className="chat-file__audio" />
-        ) : state.kind === "error" ? (
-          <div className="chat-file__error">
-            <span>{state.message}</span>
-            <button type="button" className="ghost-button button-sm pressable" onClick={loadDescriptor}>
-              Retry
-            </button>
-          </div>
-        ) : (
-          <div className="chat-file__loading">
-            <div className="chat-sending-spinner" />
-          </div>
-        )}
-        <div className="chat-file__meta">
-          <div className="chat-file__name" title={filename}>{filename}</div>
-          {sizeLabel && <div className="chat-file__size">{sizeLabel}</div>}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`chat-bubble__card chat-bubble__card--file chat-bubble__card--doc${isIncoming ? " chat-bubble__card--in" : " chat-bubble__card--out"}`}>
-      <button
-        type="button"
-        className="chat-file__doc pressable"
-        onClick={handleDownload}
-        disabled={state.kind === "loading"}
-      >
-        <div className="chat-file__doc-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
-            <polyline points="13 2 13 9 20 9" />
-          </svg>
-        </div>
-        <div className="chat-file__doc-body">
-          <div className="chat-file__name" title={filename}>{filename}</div>
-          <div className="chat-file__size">
-            {state.kind === "loading"
-              ? "Decrypting…"
-              : state.kind === "error"
-                ? state.message
-                : sizeLabel || "Download"}
-          </div>
-        </div>
-        <div className="chat-file__doc-action">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-            <polyline points="7 10 12 15 17 10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-        </div>
-      </button>
-    </div>
-  );
 }
 
 export default function CashuWalletModal({
@@ -2841,167 +1624,6 @@ export default function CashuWalletModal({
     return primaryP2pkKey ?? sortedP2pkKeys[0] ?? null;
   }, [primaryP2pkKey, sortedP2pkKeys]);
 
-  type StoredProofForState = Pick<Proof, "secret" | "amount" | "id" | "C" | "witness"> & {
-    Y?: string | null;
-    lastState?: ProofStateValue;
-  };
-
-  interface HistoryMintQuoteInfo {
-    quote: string;
-    amount: number;
-    request?: string;
-    mintUrl?: string;
-    createdAt?: number;
-    expiresAt?: number;
-    state?: string;
-    suppressChecks?: boolean;
-    lastError?: string;
-    lastErrorAt?: number;
-    errorCount?: number;
-  }
-
-  interface HistoryTokenState {
-    mintUrl: string;
-    proofs: StoredProofForState[];
-    lastState?: ProofStateValue;
-    lastSummary?: string;
-    lastCheckedAt?: number;
-    lastWitnesses?: Record<string, string>;
-    notifiedSpent?: boolean;
-    suppressChecks?: boolean;
-    lastError?: string;
-    lastErrorAt?: number;
-    errorCount?: number;
-  }
-
-  type HistoryEntryType = "lightning" | "ecash";
-  type HistoryEntryDirection = "in" | "out";
-  type HistoryDetailKind = "token" | "invoice" | "note";
-  type HistoryEntryKind = "bounty-attachment";
-
-  function markHistoryTokenStateSpent(tokenState: HistoryTokenState, timestamp: number): HistoryTokenState {
-    const nextProofs = tokenState.proofs.map((proof) =>
-      proof.lastState === "SPENT" ? proof : { ...proof, lastState: "SPENT" as const },
-    );
-    const nextTokenState: HistoryTokenState = {
-      ...tokenState,
-      proofs: nextProofs,
-      lastState: "SPENT",
-      lastSummary: tokenState.lastSummary || "SPENT",
-      lastCheckedAt: timestamp,
-      notifiedSpent: true,
-      suppressChecks: true,
-    };
-    delete (nextTokenState as Partial<HistoryTokenState>).lastError;
-    delete (nextTokenState as Partial<HistoryTokenState>).lastErrorAt;
-    delete (nextTokenState as Partial<HistoryTokenState>).errorCount;
-    return nextTokenState;
-  }
-
-  function deriveSpentHistoryTokenStateFromToken(token: string, timestamp: number): HistoryTokenState | undefined {
-    const derived = deriveHistoryTokenStateFromToken(token);
-    if (!derived) return undefined;
-    return markHistoryTokenStateSpent(derived, timestamp);
-  }
-  const markHistoryTokenStateSpentRef = useRef(markHistoryTokenStateSpent);
-  markHistoryTokenStateSpentRef.current = markHistoryTokenStateSpent;
-  const deriveSpentHistoryTokenStateFromTokenRef = useRef(deriveSpentHistoryTokenStateFromToken);
-  deriveSpentHistoryTokenStateFromTokenRef.current = deriveSpentHistoryTokenStateFromToken;
-
-  function deriveHistoryTokenStateFromToken(token: string): HistoryTokenState | undefined {
-    const trimmed = typeof token === "string" ? token.trim() : "";
-    if (!trimmed) return undefined;
-    try {
-      const decoded: any = decodeCashuTokenLoose(trimmed);
-      if (!decoded) return undefined;
-      const tokenEntries: any[] = Array.isArray(decoded?.token)
-        ? decoded.token
-        : decoded?.proofs
-          ? [decoded]
-          : [];
-      for (const entry of tokenEntries) {
-        const mint = typeof entry?.mint === "string" ? normalizeMintUrl(entry.mint) : null;
-        const proofsRaw = Array.isArray(entry?.proofs) ? entry.proofs : [];
-        const storedProofs = proofsRaw
-          .map((proof: any) => {
-            if (!proof || typeof proof !== "object") return null;
-            const secret = typeof proof.secret === "string" ? proof.secret : null;
-            const id = typeof proof.id === "string" ? proof.id : null;
-            const C = typeof proof.C === "string" ? proof.C : null;
-            if (!secret || !id || !C) return null;
-            const stored: StoredProofForState = {
-              secret,
-              id,
-              C,
-              amount: normalizeProofAmount(proof.amount),
-            };
-            if (typeof proof.witness === "string" && proof.witness) {
-              stored.witness = proof.witness;
-            }
-            const computed = typeof proof.Y === "string" && proof.Y ? proof.Y : computeProofY(secret);
-            if (computed) stored.Y = computed;
-            const proofState =
-              typeof proof.lastState === "string" && proof.lastState
-                ? sanitizeProofStateValue(proof.lastState.toUpperCase())
-                : undefined;
-            if (proofState) stored.lastState = proofState;
-            return stored;
-          })
-          .filter((proof): proof is StoredProofForState => !!proof);
-        if (!mint || !storedProofs.length) continue;
-        return {
-          mintUrl: mint,
-          proofs: storedProofs,
-          lastState: aggregateStoredProofStates(storedProofs) ?? "UNSPENT",
-        };
-      }
-    } catch {
-      return undefined;
-    }
-    return undefined;
-  }
-
-  function isCashuTokenDetail(detail: string | undefined, detailKind?: HistoryDetailKind): boolean {
-    if (!detail) return false;
-    if (detailKind === "token") return true;
-    const trimmed = detail.trim();
-    if (!trimmed) return false;
-    if (containsNut16Frame(trimmed)) return false;
-    const candidate = extractCashuUriPayload(trimmed) || trimmed;
-    if (/^cashuA:/i.test(candidate)) return false;
-    if (!/^cashu[a-z0-9]/i.test(candidate)) return false;
-    return isValidCashuTokenString(candidate);
-  }
-
-  interface HistoryItem {
-    id: string;
-    summary: string;
-    detail?: string;
-    detailKind?: HistoryDetailKind;
-    revertToken?: string;
-    tokenState?: HistoryTokenState;
-    mintQuote?: HistoryMintQuoteInfo;
-    pendingTokenId?: string;
-    pendingTokenAmount?: number;
-    pendingTokenMint?: string;
-    pendingStatus?: "pending" | "redeemed";
-    type?: HistoryEntryType;
-    direction?: HistoryEntryDirection;
-    amountSat?: number;
-    feeSat?: number;
-    mintUrl?: string;
-    createdAt?: number;
-    fiatValueUsd?: number;
-    stateLabel?: string;
-    entryKind?: HistoryEntryKind;
-    relatedTaskTitle?: string;
-  }
-
-  type HistoryEntryInput = Partial<HistoryItem> & {
-    id?: string;
-    summary: string;
-  };
-
   type ManualSendNoteGroup = {
     amount: number;
     secrets: string[];
@@ -3021,29 +1643,7 @@ export default function CashuWalletModal({
 
   const [showSendOptions, setShowSendOptions] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
-  const [isCompactLightningSheetLayout, setIsCompactLightningSheetLayout] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return false;
-    }
-    return window.matchMedia("(max-height: 820px)").matches;
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-    const mediaQuery = window.matchMedia("(max-height: 820px)");
-    const handleChange = (event: MediaQueryListEvent) => {
-      setIsCompactLightningSheetLayout(event.matches);
-    };
-    setIsCompactLightningSheetLayout(mediaQuery.matches);
-    if (typeof mediaQuery.addEventListener === "function") {
-      mediaQuery.addEventListener("change", handleChange);
-      return () => mediaQuery.removeEventListener("change", handleChange);
-    }
-    mediaQuery.addListener(handleChange);
-    return () => mediaQuery.removeListener(handleChange);
-  }, []);
+  const isCompactLightningSheetLayout = useWalletMediaQuery("(max-height: 820px)");
   const [scannerMessage, setScannerMessage] = useState("");
   type PendingScan =
     | { type: "ecash"; token: string }
@@ -3534,41 +2134,17 @@ export default function CashuWalletModal({
   const [ecashRequestMode, setEcashRequestMode] = useState<"multi" | "single">("multi");
   const [pendingPrimaryP2pkKeyId, setPendingPrimaryP2pkKeyId] = useState<string | null>(null);
   const [sendMode, setSendMode] = useState<null | "ecash" | "lightning" | "paymentRequest">(null);
-  const [btcUsdPrice, setBtcUsdPrice] = useState<number | null>(null);
-  const [priceStatus, setPriceStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [priceUpdatedAt, setPriceUpdatedAt] = useState<number | null>(null);
-  const captureFiatValueUsd = useCallback(
-    (amountSat?: number | null) => {
-      if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return undefined;
-      if (typeof amountSat !== "number" || !Number.isFinite(amountSat)) return undefined;
-      if (amountSat < 0) return undefined;
-      const usdValue = (amountSat / SATS_PER_BTC) * btcUsdPrice;
-      if (!Number.isFinite(usdValue)) return undefined;
-      return Number(usdValue.toFixed(2));
-    },
-    [walletConversionEnabled, btcUsdPrice],
-  );
-
-  useEffect(() => {
-    if (!walletConversionEnabled) return;
-    try {
-      const raw = kvStorage.getItem(LS_BTC_USD_PRICE_CACHE);
-      if (!raw) return;
-      const parsed: { price?: unknown; updatedAt?: unknown } = JSON.parse(raw);
-      const cachedPrice = Number(parsed?.price);
-      if (!Number.isFinite(cachedPrice) || cachedPrice <= 0) return;
-      const cachedUpdatedAt = Number(parsed?.updatedAt);
-      setBtcUsdPrice((current) => (current == null ? cachedPrice : current));
-      setPriceUpdatedAt((current) => {
-        if (current != null) return current;
-        return Number.isFinite(cachedUpdatedAt) && cachedUpdatedAt > 0 ? cachedUpdatedAt : Date.now();
-      });
-    } catch (error) {
-      console.warn("[wallet] Failed to read cached BTC/USD price", error);
-    }
-  }, [walletConversionEnabled]);
-
   const backgroundSuspended = useMemo(() => sendMode !== null || receiveMode !== null, [sendMode, receiveMode]);
+  const {
+    btcUsdPrice,
+    priceStatus,
+    priceUpdatedAt,
+    captureFiatValueUsd,
+  } = useWalletPrice({
+    enabled: walletConversionEnabled,
+    active: open && !backgroundSuspended,
+    refreshIntervalMs: BACKGROUND_REFRESH_INTERVAL_MS,
+  });
 
   const [mintAmt, setMintAmt] = useState("");
   const [mintQuote, setMintQuote] = useState<{ request: string; quote: string; expiry: number } | null>(null);
@@ -4625,275 +3201,31 @@ export default function CashuWalletModal({
   const [nwcWithdrawInvoice, setNwcWithdrawInvoice] = useState("");
   const [mintSwapState, setMintSwapState] = useState<"idle" | "creating" | "paying" | "waiting" | "claiming" | "done" | "error">("idle");
   const [mintSwapMessage, setMintSwapMessage] = useState("");
-  const [history, setHistory] = useState<HistoryItem[]>(() => {
-    try {
-      const saved = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
-      if (!saved) return [];
-      const parsed: unknown = JSON.parse(saved);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((item) => {
-          if (!item || typeof item !== "object") return null;
-          const raw = item as Record<string, any>;
-          const { id, summary } = raw;
-          if (typeof id !== "string" || typeof summary !== "string") return null;
-          const normalized: HistoryItem = { id, summary };
-          if (typeof raw.detail === "string" && raw.detail) {
-            normalized.detail = raw.detail;
-          }
-          if (typeof raw.detailKind === "string") {
-            const detailKind = raw.detailKind;
-            if (detailKind === "token" || detailKind === "invoice" || detailKind === "note") {
-              normalized.detailKind = detailKind;
-            }
-          }
-          if (typeof raw.revertToken === "string" && raw.revertToken) {
-            normalized.revertToken = raw.revertToken;
-          }
-          const isBountyAttachmentId = typeof id === "string" && id.startsWith("attach-bounty-");
-          if (raw.entryKind === "bounty-attachment") {
-            normalized.entryKind = "bounty-attachment";
-          } else if (isBountyAttachmentId) {
-            normalized.entryKind = "bounty-attachment";
-          }
-          if (typeof raw.relatedTaskTitle === "string" && raw.relatedTaskTitle.trim()) {
-            normalized.relatedTaskTitle = raw.relatedTaskTitle.trim();
-          }
-          const typeLabel = typeof raw.type === "string" ? raw.type.toLowerCase() : "";
-          if (typeLabel === "lightning" || typeLabel === "ecash") {
-            normalized.type = typeLabel;
-          }
-          const directionLabel = typeof raw.direction === "string" ? raw.direction.toLowerCase() : "";
-          if (directionLabel === "in" || directionLabel === "out") {
-            normalized.direction = directionLabel;
-          }
-          const amountValue = Number(raw.amountSat);
-          if (Number.isFinite(amountValue) && amountValue >= 0) {
-            normalized.amountSat = amountValue;
-          }
-          const feeValue = Number(raw.feeSat);
-          if (Number.isFinite(feeValue) && feeValue >= 0) {
-            normalized.feeSat = feeValue;
-          }
-          if (typeof raw.mintUrl === "string" && raw.mintUrl) {
-            normalized.mintUrl = raw.mintUrl;
-          }
-          if (typeof raw.stateLabel === "string" && raw.stateLabel.trim()) {
-            normalized.stateLabel = raw.stateLabel;
-          }
-          const createdAtValue = Number(raw.createdAt);
-          normalized.createdAt =
-            Number.isFinite(createdAtValue) && createdAtValue > 0
-              ? createdAtValue
-              : deriveTimestampFromId(id);
-          const fiatValue = Number(raw.fiatValueUsd);
-          if (Number.isFinite(fiatValue) && fiatValue >= 0) {
-            normalized.fiatValueUsd = fiatValue;
-          }
-          if (typeof raw.pendingTokenId === "string" && raw.pendingTokenId) {
-            normalized.pendingTokenId = raw.pendingTokenId;
-          }
-          const pendingAmountValue = Number(raw.pendingTokenAmount);
-          if (Number.isFinite(pendingAmountValue) && pendingAmountValue > 0) {
-            normalized.pendingTokenAmount = pendingAmountValue;
-          }
-          if (typeof raw.pendingTokenMint === "string" && raw.pendingTokenMint) {
-            normalized.pendingTokenMint = raw.pendingTokenMint;
-          }
-          if (raw.pendingStatus === "pending" || raw.pendingStatus === "redeemed") {
-            normalized.pendingStatus = raw.pendingStatus;
-          }
-          const rawMintQuote = raw.mintQuote;
-          if (rawMintQuote && typeof rawMintQuote === "object") {
-            const quoteId = typeof (rawMintQuote as any).quote === "string" ? (rawMintQuote as any).quote : null;
-            const amount = Number((rawMintQuote as any).amount);
-            if (quoteId && Number.isFinite(amount)) {
-              const mintQuote: HistoryMintQuoteInfo = { quote: quoteId, amount };
-              if (typeof (rawMintQuote as any).request === "string") {
-                mintQuote.request = (rawMintQuote as any).request;
-              }
-              if (typeof (rawMintQuote as any).mintUrl === "string") {
-                mintQuote.mintUrl = normalizeMintUrl((rawMintQuote as any).mintUrl);
-              }
-              const createdAt = Number((rawMintQuote as any).createdAt);
-              if (Number.isFinite(createdAt) && createdAt > 0) {
-                mintQuote.createdAt = createdAt;
-              }
-              const expiresAt = Number((rawMintQuote as any).expiresAt);
-              if (Number.isFinite(expiresAt) && expiresAt > 0) {
-                mintQuote.expiresAt = expiresAt;
-              }
-              if (typeof (rawMintQuote as any).state === "string") {
-                mintQuote.state = (rawMintQuote as any).state;
-              }
-              if ((rawMintQuote as any).suppressChecks === true) {
-                mintQuote.suppressChecks = true;
-              }
-              if (typeof (rawMintQuote as any).lastError === "string" && (rawMintQuote as any).lastError) {
-                mintQuote.lastError = (rawMintQuote as any).lastError;
-              }
-              const mintQuoteErrorAt = Number((rawMintQuote as any).lastErrorAt);
-              if (Number.isFinite(mintQuoteErrorAt) && mintQuoteErrorAt > 0) {
-                mintQuote.lastErrorAt = mintQuoteErrorAt;
-              }
-              const mintQuoteErrorCount = Number((rawMintQuote as any).errorCount);
-              if (Number.isFinite(mintQuoteErrorCount) && mintQuoteErrorCount > 0) {
-                mintQuote.errorCount = mintQuoteErrorCount;
-              }
-              normalized.mintQuote = mintQuote;
-            }
-          }
-          const rawTokenState = raw.tokenState;
-          if (rawTokenState && typeof rawTokenState === "object") {
-            const mintUrl = typeof rawTokenState.mintUrl === "string" ? rawTokenState.mintUrl : null;
-            const proofsRaw = Array.isArray(rawTokenState.proofs) ? rawTokenState.proofs : [];
-            if (mintUrl && proofsRaw.length) {
-              const normalizedProofs = proofsRaw
-                .map((proof: any) => {
-                  if (!proof || typeof proof !== "object") return null;
-                  const secret = typeof proof.secret === "string" ? proof.secret : null;
-                  const proofId = typeof proof.id === "string" ? proof.id : null;
-                  const C = typeof proof.C === "string" ? proof.C : null;
-                  if (!secret || !proofId || !C) return null;
-                  const amount = normalizeProofAmount(proof.amount);
-                  const stored: StoredProofForState = { secret, id: proofId, C, amount };
-                  if (typeof proof.witness === "string") stored.witness = proof.witness;
-                  const Y = typeof proof.Y === "string" ? proof.Y : computeProofY(secret);
-                  if (Y) stored.Y = Y;
-                  const rawState =
-                    typeof proof.lastState === "string" ? proof.lastState.toUpperCase() : undefined;
-                  const normalizedState = sanitizeProofStateValue(rawState);
-                  if (normalizedState) {
-                    stored.lastState = normalizedState;
-                  }
-                  return stored;
-                })
-                .filter((proof): proof is StoredProofForState => !!proof);
-              if (normalizedProofs.length) {
-                const tokenState: HistoryTokenState = { mintUrl, proofs: normalizedProofs };
-                if (typeof rawTokenState.lastState === "string") {
-                  const normalizedState = sanitizeProofStateValue(rawTokenState.lastState.toUpperCase());
-                  if (normalizedState) {
-                    tokenState.lastState = normalizedState;
-                  }
-                }
-                if (typeof rawTokenState.lastSummary === "string") {
-                  tokenState.lastSummary = rawTokenState.lastSummary;
-                }
-                if (typeof rawTokenState.lastCheckedAt === "number" && Number.isFinite(rawTokenState.lastCheckedAt)) {
-                  tokenState.lastCheckedAt = rawTokenState.lastCheckedAt;
-                }
-                if (rawTokenState.lastWitnesses && typeof rawTokenState.lastWitnesses === "object") {
-                  const witnessEntries = Object.entries(rawTokenState.lastWitnesses as Record<string, unknown>)
-                    .filter((entry): entry is [string, string] => {
-                      const [key, value] = entry;
-                      return typeof key === "string" && typeof value === "string";
-                    });
-                  if (witnessEntries.length) {
-                    tokenState.lastWitnesses = Object.fromEntries(witnessEntries);
-                  }
-                }
-                if (rawTokenState.notifiedSpent === true) {
-                  tokenState.notifiedSpent = true;
-                }
-                if (rawTokenState.suppressChecks === true) {
-                  tokenState.suppressChecks = true;
-                }
-                if (typeof rawTokenState.lastError === "string" && rawTokenState.lastError) {
-                  tokenState.lastError = rawTokenState.lastError;
-                }
-                const tokenStateErrorAt = Number(rawTokenState.lastErrorAt);
-                if (Number.isFinite(tokenStateErrorAt) && tokenStateErrorAt > 0) {
-                  tokenState.lastErrorAt = tokenStateErrorAt;
-                }
-                const tokenStateErrorCount = Number(rawTokenState.errorCount);
-                if (Number.isFinite(tokenStateErrorCount) && tokenStateErrorCount > 0) {
-                  tokenState.errorCount = tokenStateErrorCount;
-                }
-                const summaryMarkedSpent =
-                  typeof normalized.summary === "string" && normalized.summary.includes("(spent)");
-                if (summaryMarkedSpent && tokenState.lastState !== "SPENT") {
-                  tokenState.lastState = "SPENT";
-                  tokenState.lastSummary = tokenState.lastSummary ?? "SPENT";
-                  tokenState.suppressChecks = true;
-                  tokenState.notifiedSpent = true;
-                  tokenState.proofs = tokenState.proofs.map((proof) =>
-                    proof.lastState ? proof : { ...proof, lastState: "SPENT" },
-                  );
-                }
-                normalized.tokenState = tokenState;
-              }
-            }
-          }
-          if (!normalized.tokenState && typeof normalized.detail === "string" && normalized.detail.trim()) {
-            const shouldInferTokenState =
-              normalized.entryKind === "bounty-attachment" ||
-              normalized.detailKind === "token" ||
-              isCashuTokenDetail(normalized.detail, normalized.detailKind);
-            if (shouldInferTokenState) {
-              const inferred = deriveHistoryTokenStateFromToken(normalized.detail);
-              if (inferred) {
-                normalized.tokenState = inferred;
-              }
-            }
-          }
-          return normalized;
-        })
-        .filter((item): item is HistoryItem => !!item);
-    } catch {
-      return [];
-    }
-  });
-  const buildHistoryEntry = useCallback(
-    (entry: HistoryEntryInput): HistoryItem => {
-      const amountSat =
-        typeof entry.amountSat === "number" && Number.isFinite(entry.amountSat)
-          ? entry.amountSat
-          : undefined;
-      const feeSat =
-        typeof entry.feeSat === "number" && Number.isFinite(entry.feeSat) ? entry.feeSat : undefined;
-      const createdAt =
-        typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) && entry.createdAt > 0
-          ? entry.createdAt
-          : Date.now();
-      const fiatSnapshot =
-        entry.fiatValueUsd != null ? entry.fiatValueUsd : captureFiatValueUsd(amountSat);
-      const normalized: HistoryItem = {
-        ...entry,
-        id: entry.id && entry.id.trim() ? entry.id : `${entry.type || "entry"}-${createdAt}`,
-        amountSat,
-        feeSat,
-        createdAt,
-        fiatValueUsd: typeof fiatSnapshot === "number" ? fiatSnapshot : undefined,
-      };
-      if (entry.mintQuote) {
-        normalized.mintQuote = { ...entry.mintQuote };
-      }
-      if (entry.tokenState) {
-        normalized.tokenState = {
-          ...entry.tokenState,
-          proofs: [...entry.tokenState.proofs],
-        };
-      }
-      return normalized;
-    },
-    [captureFiatValueUsd],
-  );
-  const [showHistory, setShowHistory] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState<"all" | "pending" | "bounty">("all");
-  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
-  const [historyRevertState, setHistoryRevertState] = useState<
-    Record<string, { status: "idle" | "pending" | "success" | "error"; message?: string }>
-  >({});
-  const [historyCheckStates, setHistoryCheckStates] = useState<
-    Record<string, { status: "idle" | "pending" | "success" | "error"; message?: string }>
-  >({});
-  const [historyMintQuoteStates, setHistoryMintQuoteStates] = useState<
-    Record<string, { status: "idle" | "pending" | "success" | "error"; message?: string }>
-  >({});
-  const [historyRedeemStates, setHistoryRedeemStates] = useState<
-    Record<string, { status: "idle" | "pending" | "success" | "error"; message?: string }>
-  >({});
+  const {
+    history,
+    setHistory,
+    showHistory,
+    setShowHistory,
+    historyFilter,
+    setHistoryFilter,
+    expandedHistoryId,
+    setExpandedHistoryId,
+    historyRevertState,
+    setHistoryRevertState,
+    historyCheckStates,
+    setHistoryCheckStates,
+    historyMintQuoteStates,
+    setHistoryMintQuoteStates,
+    historyRedeemStates,
+    setHistoryRedeemStates,
+    buildHistoryEntry,
+    removeHistoryEntryStates,
+    markHistoryEntryAsSpent,
+    markHistoryEntriesOlderThan,
+    handleMarkHistoryTokenSpent,
+    handleDeleteHistoryEntry,
+  } = useWalletHistory({ showToast, captureFiatValueUsd });
+  usePendingTokenHistorySync({ open, setHistory });
   const [manualSendPlan, setManualSendPlan] = useState<ManualSendPlan | null>(null);
   const [manualSendSelection, setManualSendSelection] = useState<Set<string>>(() => new Set());
   const [manualSendError, setManualSendError] = useState("");
@@ -5097,7 +3429,7 @@ export default function CashuWalletModal({
         const successMessage = amt
           ? `Redeemed ${amt} sat${amt === 1 ? "" : "s"}${crossNote}`
           : `Redeemed token${crossNote}`;
-        const tokenState = deriveSpentHistoryTokenStateFromTokenRef.current(item.revertToken, Date.now());
+        const tokenState = deriveSpentHistoryTokenStateFromToken(item.revertToken, Date.now());
         setHistory((prev) => {
           const updated = prev.map((entry) =>
             entry.id === item.id
@@ -5485,132 +3817,6 @@ export default function CashuWalletModal({
   },
   [buildHistoryEntry, checkMintQuote, claimMint, mintUrl, setHistory, setHistoryMintQuoteStates, showToast],
 );
-  const removeHistoryEntryStates = useCallback(
-    (entryId: string) => {
-      setHistoryCheckStates((prev) => {
-        if (!(entryId in prev)) return prev;
-        const next = { ...prev };
-        delete next[entryId];
-        return next;
-      });
-      setHistoryMintQuoteStates((prev) => {
-        if (!(entryId in prev)) return prev;
-        const next = { ...prev };
-        delete next[entryId];
-        return next;
-      });
-      setHistoryRedeemStates((prev) => {
-        if (!(entryId in prev)) return prev;
-        const next = { ...prev };
-        delete next[entryId];
-        return next;
-      });
-      setHistoryRevertState((prev) => {
-        if (!(entryId in prev)) return prev;
-        const next = { ...prev };
-        delete next[entryId];
-        return next;
-      });
-    },
-    [
-      setHistoryCheckStates,
-      setHistoryMintQuoteStates,
-      setHistoryRedeemStates,
-      setHistoryRevertState,
-    ],
-  );
-  const markHistoryEntryAsSpent = useCallback(
-    (entry: HistoryItem, timestamp: number): HistoryItem => {
-      const updated = markHistoryEntrySpentRaw(entry, timestamp);
-      return (updated as HistoryItem) ?? entry;
-    },
-    [markHistoryEntrySpentRaw],
-  );
-  const markHistoryEntriesOlderThan = useCallback(
-    (cutoffMs: number, options?: { suppressToast?: boolean }) => {
-      const normalizedCutoff = Math.max(0, cutoffMs);
-      const now = Date.now();
-      const threshold = now - normalizedCutoff;
-      const updatedIds: string[] = [];
-      setHistory((prev) => {
-        let changed = false;
-        const next = prev.map((entry) => {
-          if (!entry.tokenState) return entry;
-          const createdAt =
-            typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt)
-              ? entry.createdAt
-              : deriveTimestampFromId(entry.id);
-          if (createdAt > threshold) return entry;
-          const alreadySpent =
-            entry.tokenState.lastState === "SPENT" || entry.summary.includes("(spent)");
-          if (alreadySpent) return entry;
-          const updatedEntry = markHistoryEntryAsSpent(entry, now);
-          if (updatedEntry === entry) return entry;
-          changed = true;
-          updatedIds.push(entry.id);
-          return updatedEntry;
-        });
-        return changed ? next : prev;
-      });
-      if (!updatedIds.length) {
-        return 0;
-      }
-      setHistoryCheckStates((prev) => {
-        const next = { ...prev };
-        for (const id of updatedIds) {
-          next[id] = { status: "success", message: "Token marked spent" };
-        }
-        return next;
-      });
-      if (!options?.suppressToast) {
-        showToast(
-          `Marked ${updatedIds.length} history entr${updatedIds.length === 1 ? "y" : "ies"} as spent`,
-          3500,
-        );
-      }
-      return updatedIds.length;
-    },
-    [markHistoryEntryAsSpent, setHistory, setHistoryCheckStates, showToast],
-  );
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const handler = (event: Event) => {
-      const customEvent = event as CustomEvent<MarkHistoryEntriesOldSpentEventDetail>;
-      const cutoffMs =
-        customEvent?.detail && typeof customEvent.detail.cutoffMs === "number"
-          ? customEvent.detail.cutoffMs
-          : 0;
-      markHistoryEntriesOlderThan(cutoffMs, { suppressToast: true });
-    };
-    window.addEventListener(MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT, handler);
-    return () => {
-      window.removeEventListener(MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT, handler);
-    };
-  }, [markHistoryEntriesOlderThan]);
-  const handleMarkHistoryTokenSpent = useCallback(
-    (item: HistoryItem) => {
-      if (!item.tokenState) return;
-      const timestamp = Date.now();
-      setHistory((prev) =>
-        prev.map((entry) => (entry.id === item.id ? markHistoryEntryAsSpent(entry, timestamp) : entry)),
-      );
-      setHistoryCheckStates((prev) => ({
-        ...prev,
-        [item.id]: { status: "success", message: "Token marked spent" },
-      }));
-      showToast("Token marked spent", 3000);
-    },
-    [markHistoryEntryAsSpent, setHistory, setHistoryCheckStates, showToast],
-  );
-  const handleDeleteHistoryEntry = useCallback(
-    (item: HistoryItem) => {
-      setHistory((prev) => prev.filter((entry) => entry.id !== item.id));
-      removeHistoryEntryStates(item.id);
-      setExpandedHistoryId((prev) => (prev === item.id ? null : prev));
-      showToast("History entry deleted", 2000);
-    },
-    [removeHistoryEntryStates, setHistory, setExpandedHistoryId, showToast],
-  );
   const [npubCashIdentity, setNpubCashIdentity] = useState<{ npub: string; address: string } | null>(null);
   const [npubCashIdentityError, setNpubCashIdentityError] = useState<string | null>(null);
   const [npubCashClaimStatus, setNpubCashClaimStatus] = useState<"idle" | "checking" | "success" | "error">("idle");
@@ -9187,164 +7393,22 @@ export default function CashuWalletModal({
   const nwcFundInProgress = nwcFundState === "creating" || nwcFundState === "paying" || nwcFundState === "waiting" || nwcFundState === "claiming";
   const nwcWithdrawInProgress = nwcWithdrawState === "requesting" || nwcWithdrawState === "paying";
 
-  // Mint balances sheet
-  const [showMintBalances, setShowMintBalances] = useState(false);
-  // NWC sheet
-  const [showNwcSheet, setShowNwcSheet] = useState(false);
-  const [mintInputSheet, setMintInputSheet] = useState("");
-  const [mintEntries, setMintEntries] = useState<{ url: string; balance: number; count: number }[]>([]);
-  const [mintBackupEnabled, setMintBackupEnabled] = useState<boolean>(() => mintBackupEnabledProp);
-  const [, setMintBackupState] = useState<"idle" | "syncing" | "success" | "error" | "restoring">(
-    "idle",
-  );
-  const [, setMintBackupMessage] = useState("");
-  const [mintBackupCache, setMintBackupCache] = useState<MintBackupPayload | null>(() => loadMintBackupCache());
-  const [mintBackupCandidate, setMintBackupCandidate] = useState<string[]>(() => getMintList());
-
-  useEffect(() => {
-    setMintBackupEnabled(mintBackupEnabledProp);
-  }, [mintBackupEnabledProp]);
-
-  useEffect(() => {
-    try {
-      kvStorage.setItem(LS_MINT_BACKUP_ENABLED, mintBackupEnabled ? "1" : "0");
-    } catch {
-      // ignore persistence errors
-    }
-  }, [mintBackupEnabled]);
-
-  useEffect(() => {
-    if (!mintBackupEnabled) {
-      setMintBackupState("idle");
-      setMintBackupMessage("");
-    }
-  }, [mintBackupEnabled]);
-
-  const persistMintBackupCache = useCallback((payload: MintBackupPayload) => {
-    setMintBackupCache(payload);
-    persistMintBackupCacheToStorage(payload);
-  }, []);
-
-  const refreshMintEntries = useCallback(() => {
-    try {
-      const store = loadStore();
-      const storeEntries = new Map<string, { url: string; proofs: Proof[] }>();
-      Object.entries(store).forEach(([url, proofs]) => {
-        const normalized = normalizeMintUrl(url);
-        if (!normalized) return;
-        storeEntries.set(normalized, {
-          url,
-          proofs: Array.isArray(proofs) ? (proofs as Proof[]) : [],
-        });
-      });
-
-      let trackedMints = getMintList();
-      const trackedSet = new Set<string>();
-      for (const url of trackedMints) {
-        const normalized = normalizeMintUrl(url);
-        if (!normalized) continue;
-        trackedSet.add(normalized);
-      }
-
-      if (mintUrl) {
-        const normalizedActive = normalizeMintUrl(mintUrl);
-        if (normalizedActive && !trackedSet.has(normalizedActive)) {
-          trackedMints = addMintToList(mintUrl);
-          trackedSet.add(normalizedActive);
-        }
-      }
-
-      storeEntries.forEach((payload, normalized) => {
-        const hasBalance = payload.proofs.some((proof) => normalizeProofAmount(proof?.amount) > 0);
-        if (hasBalance && !trackedSet.has(normalized)) {
-          trackedMints = addMintToList(payload.url);
-          trackedSet.add(normalized);
-        }
-      });
-
-      const entries: { url: string; balance: number; count: number }[] = [];
-      const seen = new Set<string>();
-      for (const url of trackedMints) {
-        const normalized = normalizeMintUrl(url);
-        if (!normalized || seen.has(normalized)) continue;
-        const payload = storeEntries.get(normalized);
-        const proofs = payload?.proofs ?? [];
-        const balance = sumProofAmounts(proofs);
-        entries.push({
-          url,
-          balance,
-          count: proofs.length,
-        });
-        seen.add(normalized);
-      }
-
-      entries.sort((a, b) => b.balance - a.balance || a.url.localeCompare(b.url));
-      setMintBackupCandidate(trackedMints);
-      setMintEntries(entries);
-    } catch (error) {
-      console.warn("Failed to refresh mint entries", error);
-      setMintEntries([]);
-    }
-  }, [mintUrl]);
-
-  const syncMintBackup = useCallback(
-    async (overrideMints?: string[]) => {
-      if (!mintBackupEnabled) return;
-      setMintBackupState("syncing");
-      setMintBackupMessage("");
-      try {
-        const relays = defaultNostrRelays
-          .map((url) => (typeof url === "string" ? url.trim() : ""))
-          .filter((url): url is string => !!url);
-        if (!relays.length) {
-          throw new Error("No Nostr relays configured.");
-        }
-        const mnemonic = getWalletSeedMnemonic();
-        const keys = deriveMintBackupKeys(mnemonic);
-        const mintList = (overrideMints ?? getMintList()).map((mint) => mint);
-        if (mintBackupCache && mintListsEqual(mintBackupCache.mints, mintList)) {
-          setMintBackupState("success");
-          setMintBackupMessage("Mint backup already up to date.");
-          return;
-        }
-        const template = await createMintBackupTemplate(mintList, keys, {
-          clientTag: MINT_BACKUP_CLIENT_TAG,
-        });
-        const created_at = Math.max(template.created_at || 0, Math.floor(Date.now() / 1000));
-        const signedEvent = finalizeEvent(
-          { ...template, created_at },
-          hexToBytes(keys.privateKeyHex),
-        );
-        const pool = ensureNostrPool();
-        await safePublish(pool, relays, signedEvent as any);
-        const payload: MintBackupPayload = {
-          mints: mintList,
-          timestamp: signedEvent.created_at || created_at,
-        };
-        persistMintBackupCache(payload);
-        setMintBackupState("success");
-        setMintBackupMessage(
-          `Backed up ${mintList.length} mint${mintList.length === 1 ? "" : "s"}.`,
-        );
-      } catch (error: any) {
-        setMintBackupState("error");
-        setMintBackupMessage(error?.message || "Unable to back up mints.");
-      }
-    },
-    [
-      defaultNostrRelays,
-      ensureNostrPool,
-      mintBackupCache,
-      mintBackupEnabled,
-      persistMintBackupCache,
-      safePublish,
-    ],
-  );
-
-  useEffect(() => {
-    if (!mintBackupEnabled) return;
-    void syncMintBackup(mintBackupCandidate);
-  }, [mintBackupCandidate, mintBackupEnabled, syncMintBackup]);
+  const {
+    showMintBalances,
+    setShowMintBalances,
+    showNwcSheet,
+    setShowNwcSheet,
+    mintInputSheet,
+    setMintInputSheet,
+    mintEntries,
+    refreshMintEntries,
+  } = useMintBackup({
+    defaultNostrRelays,
+    enabledFromSettings: mintBackupEnabledProp,
+    ensureNostrPool,
+    mintUrl,
+    safePublish,
+  });
 
   const resetNwcFundState = useCallback(() => {
     setNwcFundState("idle");
@@ -9877,7 +7941,7 @@ export default function CashuWalletModal({
               ? `Saved ${capitalizedAmountSummary} via npub.cash${crossMintNote}`
               : `Received ${capitalizedAmountSummary} via npub.cash${crossMintNote}`;
             const tokenState = !res.savedForLater
-              ? deriveSpentHistoryTokenStateFromTokenRef.current(normalizedToken, Date.now())
+              ? deriveSpentHistoryTokenStateFromToken(normalizedToken, Date.now())
               : undefined;
             const historyEntry: HistoryEntryInput = {
               id: `npubcash-token-${Date.now()}-${tokenEntryCounter++}`,
@@ -10021,58 +8085,6 @@ export default function CashuWalletModal({
       showToast,
     ],
   );
-
-  useEffect(() => {
-    idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(history));
-  }, [history]);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const syncPending = () => {
-      if (cancelled) return;
-      const now = Date.now();
-      let entries: PendingTokenEntry[] = [];
-      try {
-        entries = listPendingTokens();
-      } catch {
-        entries = [];
-      }
-      const pendingIds = new Set(entries.map((entry) => entry.id));
-      setHistory((prev) => {
-        let changed = false;
-        const next = prev.map((item) => {
-          if (item.pendingTokenId && !pendingIds.has(item.pendingTokenId) && item.pendingStatus !== "redeemed") {
-            changed = true;
-            const amount = item.pendingTokenAmount;
-            const amountNote = amount ? `${amount} sat${amount === 1 ? "" : "s"}` : "Token";
-            const tokenState = item.tokenState
-              ? markHistoryTokenStateSpentRef.current(item.tokenState, now)
-              : typeof item.detail === "string"
-                ? deriveSpentHistoryTokenStateFromTokenRef.current(item.detail, now)
-                : undefined;
-            return {
-              ...item,
-              pendingTokenId: undefined,
-              pendingStatus: "redeemed",
-              ...(tokenState ? { tokenState } : {}),
-              summary: item.summary.includes("saved for later redemption")
-                ? `${amountNote} redeemed automatically`
-                : item.summary,
-            };
-          }
-          return item;
-        });
-        return changed ? next : prev;
-      });
-    };
-    syncPending();
-    const interval = window.setInterval(syncPending, 8000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [open, setHistory]);
 
   useEffect(() => {
     if (!open || !sentTokenStateChecksEnabled) {
@@ -10510,71 +8522,6 @@ export default function CashuWalletModal({
     setNwcUrlInput(nwcConnection?.uri || "");
     setNwcFeedback("");
   }, [showNwcManager, nwcConnection]);
-
-  useEffect(() => {
-    if (!open || !walletConversionEnabled || backgroundSuspended) return;
-    let cancelled = false;
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-    let initialTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const loadPrice = async () => {
-      try {
-        setPriceStatus((prev) => (prev === "loading" ? prev : "loading"));
-        const response = await fetch(COINBASE_SPOT_PRICE_URL, { headers: { Accept: "application/json" } });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload: any = await response.json();
-        const amount = Number(payload?.data?.amount);
-        if (!Number.isFinite(amount) || amount <= 0) throw new Error("Invalid price data");
-        if (cancelled) return;
-        const fetchedAt = Date.now();
-        setBtcUsdPrice(amount);
-        setPriceUpdatedAt(fetchedAt);
-        try {
-          kvStorage.setItem(
-            LS_BTC_USD_PRICE_CACHE,
-            JSON.stringify({ price: amount, updatedAt: fetchedAt })
-          );
-        } catch (error) {
-          console.warn("[wallet] Failed to cache BTC/USD price", error);
-        }
-        setPriceStatus("idle");
-      } catch {
-        if (!cancelled) {
-          setPriceStatus("error");
-        }
-      } finally {
-        if (!cancelled) {
-          refreshTimer = setTimeout(() => {
-            void loadPrice();
-          }, PRICE_REFRESH_MS);
-        }
-      }
-    };
-
-    const trigger = () => {
-      if (!cancelled) {
-        void loadPrice();
-      }
-    };
-
-    if (PRICE_REFRESH_STAGGER_MS > 0) {
-      initialTimer = setTimeout(trigger, PRICE_REFRESH_STAGGER_MS);
-    } else {
-      trigger();
-    }
-
-    return () => {
-      cancelled = true;
-      if (initialTimer) clearTimeout(initialTimer);
-      if (refreshTimer) clearTimeout(refreshTimer);
-    };
-  }, [open, walletConversionEnabled, backgroundSuspended]);
-
-  useEffect(() => {
-    if (!walletConversionEnabled) {
-      setPriceStatus("idle");
-    }
-  }, [walletConversionEnabled]);
 
   const usdFormatterLarge = useMemo(() => new Intl.NumberFormat(undefined, {
     style: "currency",
@@ -13052,7 +10999,7 @@ export default function CashuWalletModal({
           (item) => item.eventId !== entry.eventId,
         );
         const now = Date.now();
-        const tokenState = deriveSpentHistoryTokenStateFromTokenRef.current(entry.token, now);
+        const tokenState = deriveSpentHistoryTokenStateFromToken(entry.token, now);
         setHistory((prev) => [
           buildHistoryEntry({
             id: `payment-request-recv-${entry.eventId}`,
@@ -14855,7 +12802,7 @@ export default function CashuWalletModal({
               ? ` at ${res.mintUrl}`
               : crossMintNote
             : "";
-          const tokenState = deriveSpentHistoryTokenStateFromTokenRef.current(normalizedToken, Date.now());
+          const tokenState = deriveSpentHistoryTokenStateFromToken(normalizedToken, Date.now());
           setHistory((prev) =>
             prev.map((entry) =>
               entry.id === historyId
@@ -15040,7 +12987,7 @@ export default function CashuWalletModal({
         showToast(`${amountNote} redeemed`, 3000);
         const tokenState =
           typeof item.detail === "string"
-            ? deriveSpentHistoryTokenStateFromTokenRef.current(item.detail, Date.now())
+            ? deriveSpentHistoryTokenStateFromToken(item.detail, Date.now())
             : undefined;
         setHistory((prev) =>
           prev.map((entry) =>
