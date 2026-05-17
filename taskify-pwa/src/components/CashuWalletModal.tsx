@@ -143,8 +143,33 @@ import { useLightningFlow, type LnurlPayData } from "../hooks/wallet/useLightnin
 import { useEcashReceiveState } from "../hooks/wallet/useEcashReceiveState";
 import { useEcashSendState } from "../hooks/wallet/useEcashSendState";
 import { usePaymentRequestState } from "../hooks/wallet/usePaymentRequestState";
+import { useNostrPoolState } from "../hooks/wallet/useNostrPoolState";
 import { useDmState, type WalletDmAttachment, type DecryptedNostrDm, type DmReaction, type WalletDmMessage, type WalletDmThread, type PendingDmMessage, type DmThreadListEntry, type DmSyncMeta, MAX_GROUP_MEMBERS, generateGroupId, normalizeDmPeerHex } from "../hooks/wallet/useDmState";
 import { useContactsState, type ContactViewMode, type ContactEditDraft, type Nip05CheckState, type ContactSyncMeta } from "../hooks/wallet/useContactsState";
+import { useManualSendPlan } from "../hooks/wallet/useManualSendPlan";
+import { useDmSubscription } from "../hooks/wallet/useDmSubscription";
+import { useDmSend } from "../hooks/wallet/useDmSend";
+import { useContactsSync } from "../hooks/wallet/useContactsSync";
+import { useDmThreadActions } from "../hooks/wallet/useDmThreadActions";
+import { useContactLookup } from "../hooks/wallet/useContactLookup";
+import { useScannerFlow } from "../hooks/wallet/useScannerFlow";
+import { useEcashRedeem } from "../hooks/wallet/useEcashRedeem";
+import { useSheetManagement } from "../hooks/wallet/useSheetManagement";
+import { useNpubCashClaim } from "../hooks/wallet/useNpubCashClaim";
+import { useHistoryFormatters } from "../hooks/wallet/useHistoryFormatters";
+import { useAmountKeypadHandlers, type LightningSendInputKind } from "../hooks/wallet/useAmountKeypadHandlers";
+import { usePaymentRequestFlow } from "../hooks/wallet/usePaymentRequestFlow";
+import { useContactDetail } from "../hooks/wallet/useContactDetail";
+import { useTokenHistoryActions } from "../hooks/wallet/useTokenHistoryActions";
+import { useDmThreadUtils } from "../hooks/wallet/useDmThreadUtils";
+import { useContactPaymentActions } from "../hooks/wallet/useContactPaymentActions";
+import { useWalletFlowState } from "../hooks/wallet/useWalletFlowState";
+import { useAmountFormatters } from "../hooks/wallet/useAmountFormatters";
+import { useLightningInputDerived } from "../hooks/wallet/useLightningInputDerived";
+import { useHistoryFilter } from "../hooks/wallet/useHistoryFilter";
+import { usePaymentRequestDerived } from "../hooks/wallet/usePaymentRequestDerived";
+import { useDmMessageDerived } from "../hooks/wallet/useDmMessageDerived";
+import { useDmThreadDerived } from "../hooks/wallet/useDmThreadDerived";
 import {
   isSamePaymentRequest,
   type ActivePaymentRequest,
@@ -184,885 +209,81 @@ import {
   tryParseJson,
   type GroupAvatarMember,
 } from "../ui/wallet/walletModalUi";
-
-function yieldToBrowser(): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof window === "undefined") {
-      resolve();
-      return;
-    }
-    window.setTimeout(resolve, 0);
-  });
-}
-
-const LNURL_DECODE_LIMIT = 2048;
-const CONTACT_PANEL_HEIGHT = "min(calc(100dvh - 6.5rem), calc(100vh - 6.5rem))";
-const PROFILE_SHARE_CACHE_KEY = "taskify.profileSharePayload.v1";
-const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
-const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
-const PAYMENT_HISTORY_EVENT_ID_REGEX = /^payment-request-(?:recv|pending)-([a-f0-9]{32,})$/i;
-const CHAT_TIMESTAMP_REVEAL_WIDTH = 92;
-const DM_THREAD_DELETE_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
-const CHAT_ATTACH_TRAY_MIN_HEIGHT = 248;
-const CHAT_ATTACH_TRAY_MAX_HEIGHT = 380;
-const CHAT_ATTACH_TRAY_FALLBACK_RATIO = 0.38;
-
-function measureDefaultChatAttachTrayHeight(): number {
-  if (typeof window === "undefined") return 300;
-  return Math.round(
-    Math.min(
-      CHAT_ATTACH_TRAY_MAX_HEIGHT,
-      Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, window.innerHeight * CHAT_ATTACH_TRAY_FALLBACK_RATIO),
-    ),
-  );
-}
-
-function extractMinibitsPaymentSender(value: string): string | null {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return null;
-  const match = /(?:^|\s)(?:nostr:)?(npub1[0-9a-z]{20,})\s+sent\s+you\b/i.exec(trimmed);
-  return match?.[1] ?? null;
-}
-
-function normalizeCashuTokenCandidate(value: string): string | null {
-  let candidate = (value || "").trim();
-  if (!candidate) return null;
-  candidate = candidate
-    .replace(/^[("'`<\u2018\u2019\u201C\u201D]+/, "")
-    .replace(/[)"'`>\u2018\u2019\u201C\u201D]+$/, "");
-  candidate = candidate.replace(/\u200b|\u200c|\u200d|\uFEFF/g, "").replace(/\s+/g, "");
-  if (!candidate) return null;
-  if (/^cashu:/i.test(candidate)) {
-    candidate = extractCashuUriPayload(candidate);
-    if (!candidate) return null;
-    candidate = candidate.replace(/\u200b|\u200c|\u200d|\uFEFF/g, "").replace(/\s+/g, "");
-  }
-  candidate = candidate.replace(/[)\]}>.,!?;:"'\u2018\u2019\u201C\u201D`]+$/g, "");
-  if (!candidate) return null;
-  return isValidCashuTokenString(candidate) ? candidate : null;
-}
-
-function extractFirstCashuTokenFromText(value: string): string | null {
-  const text = value || "";
-  if (!/cashu/i.test(text)) return null;
-
-  try {
-    if (containsNut16Frame(text)) {
-      const assembled = assembleNut16FromText(text);
-      const normalized = normalizeCashuTokenCandidate(assembled.token);
-      if (normalized) return normalized;
-    }
-  } catch {
-    // fall through to regex extraction
-  }
-
-  const matches = text.match(/cashu:[^\s]+|cashu[A-Za-z0-9_+/=-]{10,}/gi) ?? [];
-  for (const match of matches) {
-    const normalized = normalizeCashuTokenCandidate(match);
-    if (normalized) return normalized;
-  }
-
-  // Some clients wrap long tokens across whitespace/newlines.
-  const parts = text.split(/\s+/).filter(Boolean);
-  const tokenChunkPattern = /^[A-Za-z0-9_+/=-]{10,}[)\]}>.,!?;:"'\u2018\u2019\u201C\u201D`]*$/;
-  for (let i = 0; i < parts.length; i += 1) {
-    const part = parts[i]!;
-    if (!/^cashu/i.test(part)) continue;
-    let combined = part;
-    let normalized = normalizeCashuTokenCandidate(combined);
-    if (normalized) return normalized;
-    for (let j = i + 1; j < parts.length && j < i + 32; j += 1) {
-      const chunk = parts[j]!;
-      if (!tokenChunkPattern.test(chunk)) break;
-      combined += chunk;
-      if (combined.length > 16_384) break;
-      normalized = normalizeCashuTokenCandidate(combined);
-      if (normalized) return normalized;
-    }
-  }
-  return null;
-}
-
-function getWalletMessageStatusLabel(
-  type?: WalletMessageItem["type"],
-  status?: WalletMessageItem["status"],
-): string | null {
-  if (status === "accepted") {
-    if (type === "board") return "Board added";
-    if (type === "contact") return "Contact added";
-    if (type === "task") return "Task added";
-    return "Added";
-  }
-  if (status === "deleted") {
-    if (type === "board") return "Board dismissed";
-    if (type === "contact") return "Contact dismissed";
-    if (type === "task") return "Task dismissed";
-    return "Dismissed";
-  }
-  if (status === "tentative") {
-    if (type === "task") return "Responded: maybe";
-    return "Maybe";
-  }
-  if (status === "declined") {
-    if (type === "task") return "Responded: declined";
-    return "Declined";
-  }
-  return null;
-}
-
-function getCalendarInviteStatusLabel(status?: string | null): string | null {
-  if (status === "accepted") return "Event added";
-  if (status === "tentative") return "Responded: maybe";
-  if (status === "declined") return "Responded: declined";
-  if (status === "dismissed") return "Dismissed";
-  return null;
-}
-
-type SubsetPathEntry = { prevSum: number; noteIndex: number };
-
-function computeSubsetSelectionInfo(
-  notes: { amount: number; secret: string }[],
-  target: number,
-): {
-  exactMatch: string[] | null;
-  closestBelow: number | null;
-  closestBelowSelection: string[] | null;
-  closestAbove: number | null;
-  closestAboveSelection: string[] | null;
-} {
-  const pathMap = new Map<number, SubsetPathEntry | null>();
-  pathMap.set(0, null);
-  notes.forEach((note, noteIndex) => {
-    if (!Number.isFinite(note.amount) || note.amount <= 0) return;
-    const normalizedAmount = Math.floor(note.amount);
-    if (normalizedAmount <= 0) return;
-    const existingSums = Array.from(pathMap.keys()).sort((a, b) => b - a);
-    for (const sum of existingSums) {
-      const nextSum = sum + normalizedAmount;
-      if (pathMap.has(nextSum)) continue;
-      pathMap.set(nextSum, { prevSum: sum, noteIndex });
-    }
-  });
-
-  const positiveSums = Array.from(pathMap.keys())
-    .filter((value) => value > 0)
-    .sort((a, b) => a - b);
-  let closestBelow: number | null = null;
-  let closestAbove: number | null = null;
-  for (const value of positiveSums) {
-    if (value <= target) {
-      closestBelow = value;
-    }
-    if (value >= target && closestAbove === null) {
-      closestAbove = value;
-    }
-    if (closestBelow !== null && closestAbove !== null) {
-      break;
-    }
-  }
-
-  const reconstruct = (sum: number | null): string[] | null => {
-    if (sum === null) return null;
-    if (sum === 0) return [];
-    const secrets: string[] = [];
-    let current = sum;
-    const seen = new Set<number>();
-    while (current > 0) {
-      if (seen.has(current)) {
-        return null;
-      }
-      seen.add(current);
-      const entry = pathMap.get(current);
-      if (!entry) {
-        return null;
-      }
-      const note = notes[entry.noteIndex];
-      if (!note) {
-        return null;
-      }
-      secrets.push(note.secret);
-      current = entry.prevSum;
-    }
-    return secrets.reverse();
-  };
-
-  const exactMatch = pathMap.has(target) ? reconstruct(target) : null;
-
-  return {
-    exactMatch,
-    closestBelow,
-    closestBelowSelection: reconstruct(closestBelow),
-    closestAbove,
-    closestAboveSelection: reconstruct(closestAbove),
-  };
-}
-
-function totalForSelection(
-  notes: { amount: number; secret: string }[],
-  selection: string[] | null | undefined,
-): number {
-  if (!selection?.length) return 0;
-  const amountBySecret = new Map<string, number>();
-  notes.forEach((note) => {
-    amountBySecret.set(note.secret, note.amount);
-  });
-  return selection.reduce((sum, secret) => sum + (amountBySecret.get(secret) ?? 0), 0);
-}
-
-function decodeLnurlString(lnurl: string): string {
-  try {
-    const trimmed = lnurl.trim();
-    const decoded = bech32.decode(trimmed.toLowerCase(), LNURL_DECODE_LIMIT);
-    const bytes = bech32.fromWords(decoded.words);
-    return new TextDecoder().decode(Uint8Array.from(bytes));
-  } catch {
-    throw new Error("Invalid LNURL");
-  }
-}
-
-function encodeContactPayload(payload: ContactSharePayload): string {
-  const json = JSON.stringify(payload);
-  try {
-    if (typeof btoa === "function") {
-      return `taskify:contact:${btoa(unescape(encodeURIComponent(json)))}`;
-    }
-  } catch {
-    // fall through
-  }
-  return `taskify:contact:${encodeURIComponent(json)}`;
-}
-
-function decodeContactPayload(value: string): ContactSharePayload | null {
-  const normalized = value.replace(/^taskify:contact:/i, "");
-  let decoded = normalized;
-  try {
-    if (typeof atob === "function") {
-      decoded = decodeURIComponent(escape(atob(normalized)));
-    } else {
-      decoded = decodeURIComponent(normalized);
-    }
-  } catch {
-    // ignore decode errors
-  }
-  try {
-    const parsed = JSON.parse(decoded);
-    if (parsed && typeof parsed === "object" && parsed.v === 1) {
-      return parsed as ContactSharePayload;
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return null;
-}
-
-function parseProfileContent(content: string): ContactProfile {
-  try {
-    const parsed = JSON.parse(content);
-    if (!parsed || typeof parsed !== "object") return {};
-    const pictureRaw =
-      typeof (parsed as any).picture === "string"
-        ? (parsed as any).picture
-        : typeof (parsed as any).image === "string"
-          ? (parsed as any).image
-          : typeof (parsed as any).avatar === "string"
-            ? (parsed as any).avatar
-            : undefined;
-    return {
-      username: typeof (parsed as any).name === "string" ? (parsed as any).name.trim() : undefined,
-      displayName:
-        typeof (parsed as any).display_name === "string"
-          ? (parsed as any).display_name.trim()
-          : undefined,
-      lud16:
-        typeof (parsed as any).lud16 === "string"
-          ? (parsed as any).lud16.trim()
-          : typeof (parsed as any).lightning_address === "string"
-          ? (parsed as any).lightning_address.trim()
-          : undefined,
-      nip05: typeof (parsed as any).nip05 === "string" ? (parsed as any).nip05.trim() : undefined,
-      about: typeof (parsed as any).about === "string" ? (parsed as any).about.trim() : undefined,
-      picture: typeof pictureRaw === "string" ? pictureRaw.trim() : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-type CachedProfileMetadata = {
-  profile: {
-    username: string;
-    displayName: string;
-    lud16: string;
-    nip05: string;
-    about: string;
-    picture: string;
-  };
-  updatedAt: number | null;
-  eventId: string | null;
-};
-
-function normalizeCachedProfileForm(raw: any): CachedProfileMetadata["profile"] | null {
-  if (!raw || typeof raw !== "object") return null;
-  const username = typeof raw.username === "string" ? raw.username.trim() : "";
-  const displayName = typeof raw.displayName === "string" ? raw.displayName.trim() : "";
-  const lud16 = typeof raw.lud16 === "string" ? raw.lud16.trim() : "";
-  const nip05 = typeof raw.nip05 === "string" ? raw.nip05.trim() : "";
-  const about = typeof raw.about === "string" ? raw.about.trim() : "";
-  const picture = typeof raw.picture === "string" ? raw.picture.trim() : "";
-  return { username, displayName, lud16, nip05, about, picture };
-}
-
-function readProfileMetadataCache(pubkey: string): CachedProfileMetadata | null {
-  if (!pubkey) return null;
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_METADATA_CACHE);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object") return null;
-    const cached = (parsed as Record<string, unknown>)[pubkey];
-    if (!cached || typeof cached !== "object") return null;
-    const profile = normalizeCachedProfileForm((cached as any).profile);
-    if (!profile) return null;
-    const updatedAt = Number.isFinite((cached as any).updatedAt)
-      ? Math.floor((cached as any).updatedAt)
-      : null;
-    const eventId = typeof (cached as any).eventId === "string" ? (cached as any).eventId : null;
-    return { profile, updatedAt, eventId };
-  } catch {
-    return null;
-  }
-}
-
-function persistProfileMetadataCache(pubkey: string, cache: CachedProfileMetadata | null): void {
-  if (!pubkey) return;
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_METADATA_CACHE);
-    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    const next = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? { ...parsed } : {};
-    if (cache) {
-      next[pubkey] = cache;
-    } else {
-      delete next[pubkey];
-    }
-    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_PROFILE_METADATA_CACHE, JSON.stringify(next));
-  } catch {
-    // ignore persistence issues
-  }
-}
-
-type CachedContactProfile = { profile: ContactProfile; updatedAt: number; pictureDataUrl?: string };
-
-function normalizeCachedContactProfile(raw: any): CachedContactProfile | null {
-  if (!raw || typeof raw !== "object") return null;
-  const updatedAt = Number.isFinite((raw as any).updatedAt) ? Math.floor((raw as any).updatedAt) : 0;
-  const profileRaw = (raw as any).profile;
-  if (!profileRaw || typeof profileRaw !== "object") return null;
-  const normalizeString = (value: unknown) => (typeof value === "string" ? value.trim() : "");
-  const normalizeOptionalString = (value: unknown) => {
-    const normalized = normalizeString(value);
-    return normalized || undefined;
-  };
-  const relays = Array.isArray((profileRaw as any).relays)
-    ? Array.from(
-        new Set(
-          (profileRaw as any).relays
-            .map((relay: unknown) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
-      )
-    : undefined;
-  const profile: ContactProfile = {
-    username: normalizeOptionalString((profileRaw as any).username),
-    displayName: normalizeOptionalString((profileRaw as any).displayName),
-    about: normalizeOptionalString((profileRaw as any).about),
-    picture: normalizeOptionalString((profileRaw as any).picture),
-    lud16: normalizeOptionalString((profileRaw as any).lud16),
-    nip05: normalizeOptionalString((profileRaw as any).nip05),
-    relays,
-  };
-  const hasData = Object.values(profile).some((value) => {
-    if (Array.isArray(value)) return value.length > 0;
-    return typeof value === "string" && value.trim().length > 0;
-  });
-  if (!hasData) return null;
-  const pictureDataUrlCandidate =
-    typeof (raw as any).pictureDataUrl === "string" && (raw as any).pictureDataUrl.trim()
-      ? (raw as any).pictureDataUrl.trim()
-      : undefined;
-  const pictureDataUrl = pictureDataUrlCandidate && isDataUrl(pictureDataUrlCandidate)
-    ? pictureDataUrlCandidate
-    : undefined;
-  return { profile, updatedAt, pictureDataUrl };
-}
-
-function loadContactProfileCache(): Record<string, CachedContactProfile> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACT_PROFILE_CACHE);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const next: Record<string, CachedContactProfile> = {};
-    Object.entries(parsed).forEach(([hex, value]) => {
-      const normalized = normalizeCachedContactProfile(value);
-      if (normalized) {
-        next[hex.toLowerCase()] = normalized;
-      }
-    });
-    return next;
-  } catch {
-    return {};
-  }
-}
-
-function persistContactProfileCache(cache: Record<string, CachedContactProfile>): void {
-  try {
-    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACT_PROFILE_CACHE, JSON.stringify(cache));
-  } catch {
-    // ignore persistence issues
-  }
-}
-
-const PROFILE_PHOTO_CACHE_LIMIT_BYTES = 350_000;
-const PROFILE_PHOTO_MAX_DIMENSION = 720;
-
-function estimateDataUrlSize(value: string): number {
-  const parts = value.split(",", 2);
-  if (parts.length < 2) return value.length;
-  const base64 = parts[1];
-  return Math.ceil((base64.length * 3) / 4);
-}
-
-function isDataUrl(value: string): boolean {
-  return /^data:image\//i.test(value.trim());
-}
-
-function pickPreferredProfilePhoto(...candidates: Array<string | null | undefined>): string | undefined {
-  const normalized = candidates
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .filter(Boolean);
-  if (!normalized.length) return undefined;
-  return normalized.find((value) => isDataUrl(value)) || normalized[0];
-}
-
-function shouldCacheProfilePhoto(value: string): boolean {
-  return /^https?:\/\//i.test(value.trim());
-}
-
-async function fetchProfilePhotoDataUrl(url: string, timeoutMs = 8000): Promise<string | null> {
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
-  try {
-    const response = await fetch(url, { signal: controller?.signal, cache: "force-cache" });
-    if (!response.ok) return null;
-    const contentType = response.headers.get("content-type");
-    if (contentType && !contentType.toLowerCase().startsWith("image/")) return null;
-    const blob = await response.blob();
-    if (!blob || blob.size > PROFILE_PHOTO_CACHE_LIMIT_BYTES) return null;
-    const dataUrl = await new Promise<string | null>((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = typeof reader.result === "string" ? reader.result : null;
-        resolve(result && result.trim() ? result : null);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
-    return dataUrl;
-  } catch {
-    return null;
-  } finally {
-    if (timer) {
-      window.clearTimeout(timer);
-    }
-  }
-}
-
-function extractDomain(target: string): string {
-  try {
-    const hostname = new URL(target).hostname;
-    return hostname || target;
-  } catch {
-    return target;
-  }
-}
-
-const CHAT_URL_REGEX = /https?:\/\/[^\s<>"'\]()]+/gi;
-
-function extractUrlsFromText(text: string): string[] {
-  return Array.from(text.matchAll(CHAT_URL_REGEX), (m) => m[0]);
-}
-
-function renderFormattedText(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  const regex = /\*\*(.+?)\*\*|`([^`]+)`|https?:\/\/[^\s<>"'\]()]+/gi;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-    if (match[1] !== undefined) {
-      // **bold**
-      parts.push(<strong key={match.index}>{match[1]}</strong>);
-    } else if (match[2] !== undefined) {
-      // `inline code` — tap to copy
-      const codeText = match[2];
-      parts.push(
-        <code
-          key={match.index}
-          className="chat-inline-code"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigator.clipboard.writeText(codeText);
-          }}
-        >
-          {codeText}
-        </code>
-      );
-    } else {
-      // URL
-      const url = match[0];
-      parts.push(
-        <a
-          key={match.index}
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="chat-link"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {url}
-        </a>
-      );
-    }
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-  return parts.length > 0 ? parts : text;
-}
-
-async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
-  const controller = new AbortController();
-  const { signal, ...rest } = init;
-  if (signal) {
-    if (signal.aborted) {
-      throw new DOMException("Aborted", "AbortError");
-    }
-    signal.addEventListener("abort", () => controller.abort(), { once: true });
-  }
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...rest, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function generatePrivateKey(): { hex: string; bytes: Uint8Array } {
-  let bytes: Uint8Array;
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-  } else {
-    bytes = secp256k1.utils.randomPrivateKey();
-  }
-  const hex = bytesToHex(bytes);
-  return { hex, bytes };
-}
-
-function randomPastTimestampSeconds(maxOffsetSeconds = 2 * 24 * 60 * 60): number {
-  const now = Math.floor(Date.now() / 1000);
-  const offset = Math.floor(Math.random() * maxOffsetSeconds);
-  return Math.max(0, now - offset);
-}
-
-type LnurlWithdrawData = {
-  lnurl: string;
-  callback: string;
-  domain: string;
-  k1: string;
-  minWithdrawable: number;
-  maxWithdrawable: number;
-  defaultDescription?: string;
-};
-
-
-function dmThreadKeyForMessage(message: Pick<WalletDmMessage, "peerPubkey" | "groupId"> | null | undefined): string {
-  return ((message?.groupId || message?.peerPubkey || "") as string).trim().toLowerCase();
-}
-
-function dmThreadKeyForThread(thread: Pick<WalletDmThread, "peerPubkey" | "groupId"> | null | undefined): string {
-  return ((thread?.groupId || thread?.peerPubkey || "") as string).trim().toLowerCase();
-}
-
-type PendingCalendarInvite = {
-  id: string;
-  source: "dm" | "nostr";
-  eventId: string;
-  canonical: string;
-  view: string;
-  eventKey: string;
-  inviteToken: string;
-  title?: string;
-  start?: string;
-  end?: string;
-  relays?: string[];
-  sender?: { pubkey?: string; name?: string; npub?: string };
-  receivedAt: string;
-  status: string;
-};
-
-type SharedContactPreview = {
-  contact: Contact;
-  itemId?: string | null;
-  status?: WalletMessageItem["status"] | "dismissed" | null;
-};
-
-
-type NostrEvent = {
-  id: string;
-  kind: number;
-  pubkey: string;
-  created_at: number;
-  tags: string[][];
-  content: string;
-  sig: string;
-};
-
-type NormalizedIncomingPayment = {
-  token: string;
-  amount: number;
-  mint: string;
-  unit: string;
-};
-
-type NostrIdentity = {
-  secret: string;
-  pubkey: string;
-};
-
-type NostrIdentityInfo = {
-  identity: NostrIdentity | null;
-  reason: string | null;
-};
-
-const EMPTY_NOSTR_IDENTITY_INFO: NostrIdentityInfo = { identity: null, reason: null };
-
-function readStoredNostrIdentity(): NostrIdentityInfo {
-  const raw = nostrSkSync().trim();
-  if (!raw) {
-    return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
-  }
-  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
-    return { identity: null, reason: "Nostr secret key must be 64 hexadecimal characters." };
-  }
-  const normalized = raw.toLowerCase();
-  try {
-    const pubkey = getPublicKey(hexToBytes(normalized));
-    return { identity: { secret: normalized, pubkey }, reason: null };
-  } catch {
-    return { identity: null, reason: "Invalid Nostr secret key." };
-  }
-}
-
-type PublicFollow = {
-  pubkey: string;
-  relay?: string;
-  petname?: string;
-  username?: string;
-  nip05?: string;
-};
-
-type ContactSharePayload = {
-  v: 1;
-  kind: "nostr" | "custom";
-  npub?: string;
-  relays?: string[];
-  name?: string;
-  displayName?: string;
-  lud16?: string;
-  nip05?: string;
-  picture?: string;
-};
-
-
-function isMintTokenAlreadySpentError(err: unknown): boolean {
-  if (!err || typeof err !== "object") {
-    return false;
-  }
-  const anyErr = err as Record<string, unknown>;
-  const code = anyErr?.code;
-  if (typeof code === "number" && code === 11001) {
-    return true;
-  }
-  if (typeof code === "string") {
-    const parsed = Number.parseInt(code, 10);
-    if (Number.isFinite(parsed) && parsed === 11001) {
-      return true;
-    }
-  }
-  const detail = typeof anyErr?.detail === "string" ? anyErr.detail.toLowerCase() : "";
-  if (detail.includes("already spent")) {
-    return true;
-  }
-  const message = typeof anyErr?.message === "string" ? anyErr.message.toLowerCase() : "";
-  if (message.includes("already spent")) {
-    return true;
-  }
-  const responseData =
-    typeof anyErr?.response === "object" && anyErr?.response !== null
-      ? (anyErr.response as Record<string, unknown>).data
-      : null;
-  if (responseData && typeof responseData === "object") {
-    const dataCode = (responseData as Record<string, unknown>).code;
-    if (typeof dataCode === "number" && dataCode === 11001) {
-      return true;
-    }
-    if (typeof dataCode === "string") {
-      const parsed = Number.parseInt(dataCode, 10);
-      if (Number.isFinite(parsed) && parsed === 11001) {
-        return true;
-      }
-    }
-    const dataDetail = (responseData as Record<string, unknown>).detail;
-    if (typeof dataDetail === "string" && dataDetail.toLowerCase().includes("already spent")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-
-function extractPublicFollowsFromTags(rawTags: any): PublicFollow[] {
-  const tags = Array.isArray(rawTags) ? rawTags : [];
-  const byPubkey = new Map<string, PublicFollow>();
-  tags.forEach((tag) => {
-    if (!Array.isArray(tag) || tag[0] !== "p") return;
-    const pubkey = typeof tag[1] === "string" ? tag[1].trim() : "";
-    if (!pubkey) return;
-    const relay = typeof tag[2] === "string" ? tag[2].trim() : "";
-    const petname = typeof tag[3] === "string" ? tag[3].trim() : "";
-    const key = pubkey.toLowerCase();
-    const existing = byPubkey.get(key);
-    if (!existing) {
-      byPubkey.set(key, { pubkey, relay: relay || undefined, petname: petname || undefined });
-      return;
-    }
-    byPubkey.set(key, {
-      pubkey,
-      relay: existing.relay || relay || undefined,
-      petname: existing.petname || petname || undefined,
-      username: existing.username,
-      nip05: existing.nip05,
-    });
-  });
-  return Array.from(byPubkey.values());
-}
-
-async function enrichPublicFollowsWithProfiles(
-  follows: PublicFollow[],
-  relays: string[],
-  pool: SessionPool,
-  options?: { maxLookups?: number },
-): Promise<PublicFollow[]> {
-  const maxLookups = typeof options?.maxLookups === "number" ? options.maxLookups : 64;
-  const missingPubkeys = follows
-    .filter((follow) => !follow.nip05 && !follow.username)
-    .slice(0, maxLookups)
-    .map((follow) => follow.pubkey);
-  if (!missingPubkeys.length) return follows;
-
-  try {
-    const metadataEvents = await pool.list(relays, [{ kinds: [0], authors: missingPubkeys }]);
-    if (!metadataEvents?.length) return follows;
-    const profilesByPubkey = new Map<string, ContactProfile>();
-    metadataEvents.forEach((event) => {
-      if (!event?.pubkey || typeof event.content !== "string") return;
-      try {
-        const profile = parseProfileContent(event.content);
-        profilesByPubkey.set(event.pubkey.toLowerCase(), profile);
-      } catch {
-        // ignore malformed profiles
-      }
-    });
-    if (!profilesByPubkey.size) return follows;
-    return follows.map((follow) => {
-      const profile = profilesByPubkey.get(follow.pubkey.toLowerCase());
-      if (!profile) return follow;
-      return {
-        ...follow,
-        username: follow.username || profile.username,
-        nip05: follow.nip05 || profile.nip05,
-      };
-    });
-  } catch {
-    return follows;
-  }
-}
-
-const BACKGROUND_REFRESH_INTERVAL_MS = 300_000;
-const NPUB_CASH_REFRESH_STAGGER_MS = 20_000;
-const TOKEN_STATE_BACKGROUND_STAGGER_MS = 60_000;
-const TOKEN_STATE_BACKGROUND_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
-const SUBSCRIPTION_RETRY_DELAY_MS = 300_000;
-function buildTokenSpentToastMessage(proofs: Array<{ amount?: number | null }>): string {
-  const totalSat = proofs.reduce(
-    (sum, proof) => sum + normalizeProofAmount(proof.amount),
-    0,
-  );
-  if (totalSat > 0) {
-    return `sent ${totalSat} sat${totalSat === 1 ? "" : "s"}`;
-  }
-  const count = proofs.length;
-  const tokenLabel = `ecash token${count === 1 ? "" : "s"}`;
-  return `${tokenLabel} spent`;
-}
-
-function extractWitnesses(states: ProofState[]): Record<string, string> | undefined {
-  const collected: Record<string, string> = {};
-  for (const entry of states) {
-    if (entry.witness) {
-      collected[entry.Y] = entry.witness;
-    }
-  }
-  return Object.keys(collected).length ? collected : undefined;
-}
-
-function shouldSuppressProofStateChecks(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const anyError = error as { status?: unknown; code?: unknown; name?: unknown; message?: unknown; response?: { status?: unknown } };
-  const rawStatus = typeof anyError.status === "number" ? anyError.status : typeof anyError.response?.status === "number" ? anyError.response.status : null;
-  const status = typeof rawStatus === "number" ? rawStatus : null;
-  const code = typeof anyError.code === "number" ? anyError.code : null;
-  const name = typeof anyError.name === "string" ? anyError.name : "";
-  const message = typeof anyError.message === "string" ? anyError.message : "";
-  if (status === 400 || status === 404) return true;
-  if (code === 11001 || code === 11002) return true;
-  if (name.toLowerCase().includes("mintoperationerror")) return true;
-  if (message && /unknown proof/i.test(message)) return true;
-  return false;
-}
-
-
-function cachedContactProfileToDmProfile(entry: CachedContactProfile): ContactProfile {
-  return {
-    ...entry.profile,
-    picture: pickPreferredProfilePhoto(entry.pictureDataUrl, entry.profile.picture),
-  };
-}
-
-
-function buildWalletMessageSyntheticEventId(item: WalletMessageItem): string {
-  const dmEventId = item.dmEventId?.trim();
-  return dmEventId || `wallet-message-${item.id}`;
-}
-
-function buildCalendarInviteSyntheticEventId(invite: PendingCalendarInvite): string {
-  const eventId = invite.eventId?.trim();
-  return eventId || `calendar-invite-${invite.id}`;
-}
+import {
+  yieldToBrowser,
+  measureDefaultChatAttachTrayHeight,
+  extractMinibitsPaymentSender,
+  normalizeCashuTokenCandidate,
+  extractFirstCashuTokenFromText,
+  getWalletMessageStatusLabel,
+  getCalendarInviteStatusLabel,
+  computeSubsetSelectionInfo,
+  totalForSelection,
+  decodeLnurlString,
+  encodeContactPayload,
+  decodeContactPayload,
+  parseProfileContent,
+  normalizeCachedProfileForm,
+  readProfileMetadataCache,
+  persistProfileMetadataCache,
+  normalizeCachedContactProfile,
+  loadContactProfileCache,
+  persistContactProfileCache,
+  estimateDataUrlSize,
+  isDataUrl,
+  pickPreferredProfilePhoto,
+  shouldCacheProfilePhoto,
+  fetchProfilePhotoDataUrl,
+  extractDomain,
+  extractUrlsFromText,
+  renderFormattedText,
+  fetchWithTimeout,
+  generatePrivateKey,
+  randomPastTimestampSeconds,
+  dmThreadKeyForMessage,
+  dmThreadKeyForThread,
+  isMintTokenAlreadySpentError,
+  extractPublicFollowsFromTags,
+  enrichPublicFollowsWithProfiles,
+  buildTokenSpentToastMessage,
+  extractWitnesses,
+  shouldSuppressProofStateChecks,
+  cachedContactProfileToDmProfile,
+  buildWalletMessageSyntheticEventId,
+  buildCalendarInviteSyntheticEventId,
+  readStoredNostrIdentity,
+  LNURL_DECODE_LIMIT,
+  CONTACT_PANEL_HEIGHT,
+  PROFILE_SHARE_CACHE_KEY,
+  MINT_QUOTE_SUBSCRIPTION_WINDOW_MS,
+  UNPAID_MINT_QUOTE_RETENTION_MS,
+  PAYMENT_HISTORY_EVENT_ID_REGEX,
+  CHAT_TIMESTAMP_REVEAL_WIDTH,
+  DM_THREAD_DELETE_CACHE_TTL_MS,
+  CHAT_ATTACH_TRAY_MIN_HEIGHT,
+  CHAT_ATTACH_TRAY_MAX_HEIGHT,
+  CHAT_ATTACH_TRAY_FALLBACK_RATIO,
+  PROFILE_PHOTO_CACHE_LIMIT_BYTES,
+  PROFILE_PHOTO_MAX_DIMENSION,
+  CHAT_URL_REGEX,
+  BACKGROUND_REFRESH_INTERVAL_MS,
+  NPUB_CASH_REFRESH_STAGGER_MS,
+  TOKEN_STATE_BACKGROUND_STAGGER_MS,
+  TOKEN_STATE_BACKGROUND_WINDOW_MS,
+  SUBSCRIPTION_RETRY_DELAY_MS,
+  EMPTY_NOSTR_IDENTITY_INFO,
+  type CachedProfileMetadata,
+  type CachedContactProfile,
+  type LnurlWithdrawData,
+  type PendingCalendarInvite,
+  type SharedContactPreview,
+  type NostrEvent,
+  type NormalizedIncomingPayment,
+  type NostrIdentity,
+  type NostrIdentityInfo,
+  type PublicFollow,
+  type ContactSharePayload,
+} from "../wallet/walletModalHelpers";
 
 export default function CashuWalletModal({
   open,
@@ -1200,23 +421,6 @@ export default function CashuWalletModal({
   const activeP2pkKey: P2PKKey | null = useMemo(() => {
     return primaryP2pkKey ?? sortedP2pkKeys[0] ?? null;
   }, [primaryP2pkKey, sortedP2pkKeys]);
-
-  type ManualSendNoteGroup = {
-    amount: number;
-    secrets: string[];
-  };
-
-  type ManualSendPlan = {
-    target: number;
-    notes: { secret: string; amount: number }[];
-    groups: ManualSendNoteGroup[];
-    closestBelow: number | null;
-    closestBelowSelection: string[] | null;
-    closestAbove: number | null;
-    closestAboveSelection: string[] | null;
-    exactMatchSelection: string[] | null;
-    lockActive: boolean;
-  };
 
   const [showSendOptions, setShowSendOptions] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
@@ -1410,236 +614,40 @@ export default function CashuWalletModal({
     paymentRequestsEnabled,
     activeP2pkPublicKey: activeP2pkKey?.publicKey ?? null,
   });
-  const [claimingEventIds, setClaimingEventIds] = useState<string[]>([]);
-  const defaultNostrRelays = useMemo(() => Array.from(new Set(DEFAULT_NOSTR_RELAYS)), []);
-  const preferredFileServer = useMemo(
-    () => normalizeFileServerUrl(fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER,
-    [fileStorageServer],
-  );
-  const nostrPoolRef = useRef<SessionPool | null>(null);
-  const nostrPoolClosingRef = useRef(false);
-  const nostrSubscriptionActiveRef = useRef(false);
-  const nostrIdentityRef = useRef<{ secret: string; pubkey: string } | null>(null);
-  const [nostrIdentityInfo, setNostrIdentityInfo] = useState<NostrIdentityInfo>(() =>
-    paymentRequestsEnabled ? readStoredNostrIdentity() : EMPTY_NOSTR_IDENTITY_INFO,
-  );
-
-  const peanutSendToken = useMemo(() => {
-    if (!sendTokenStr.trim()) return null;
-    try {
-      return encodePeanut(sendTokenStr.trim());
-    } catch (error) {
-      console.warn("Failed to encode nut token", error);
-      return null;
-    }
-  }, [sendTokenStr]);
-
-  useEffect(() => {
-    setNutTokenCopied(false);
-  }, [peanutSendToken]);
-
-  useEffect(() => {
-    if (!nutTokenCopied) return;
-    const timer = window.setTimeout(() => setNutTokenCopied(false), 2000);
-    return () => window.clearTimeout(timer);
-  }, [nutTokenCopied]);
-
-  const ensureNostrPool = useCallback(() => {
-    if (!nostrPoolRef.current) {
-      if (walletDebugEnabled) {
-        console.debug("[wallet] Initialising nostr pool", defaultNostrRelays);
-      }
-      nostrPoolRef.current = new SessionPool();
-      nostrPoolClosingRef.current = false;
-    }
-    return nostrPoolRef.current;
-  }, [defaultNostrRelays, walletDebugEnabled]);
-
-  const closeNostrPool = useCallback(
-    async (destroy?: boolean) => {
-      if (nostrPoolClosingRef.current) return;
-      const pool = nostrPoolRef.current;
-      if (!pool) return;
-      nostrPoolClosingRef.current = true;
-      try {
-        if (destroy && typeof (pool as any).destroy === "function") {
-          await (pool as any).destroy();
-        } else if (defaultNostrRelays.length && typeof pool.close === "function") {
-          pool.close(defaultNostrRelays);
-        }
-      } catch (err: any) {
-        const msg = err?.message || "";
-        if (!/closing or closed/i.test(msg)) {
-          console.warn("[wallet] Failed to close Nostr pool", err);
-        }
-      } finally {
-        nostrPoolRef.current = null;
-        nostrPoolClosingRef.current = false;
-      }
-    },
-    [defaultNostrRelays],
-  );
-
-  const isReplaceableRejection = useCallback((err: unknown): boolean => {
-    const msg = typeof (err as any)?.message === "string" ? (err as any).message : "";
-    return /have newer event/i.test(msg) || /already exists/i.test(msg) || /duplicate/i.test(msg);
-  }, []);
-  const safePublish = useCallback(
-    async (pool: SessionPool, relays: string[], event: any) => {
-      const result = pool.publish(relays, event);
-      try {
-        await Promise.resolve(result);
-      } catch (err) {
-        if (!isReplaceableRejection(err)) {
-          throw err;
-        }
-      }
-    },
-    [isReplaceableRejection],
-  );
-
-  const resetSendLockSettings = useCallback(() => {
-    setLockSendToPubkey(false);
-    setSendLockPubkeyInput("");
-    setSendLockError("");
-  }, []);
-
-  const readNostrIdentity = useCallback(readStoredNostrIdentity, []);
-
-  const readProfileEventId = useCallback((pubkey: string): string | null => {
-    if (!pubkey) return null;
-    try {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_EVENT_IDS);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (!parsed || typeof parsed !== "object") return null;
-      const cached = parsed[pubkey];
-      return typeof cached === "string" && cached.trim() ? cached.trim() : null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const persistProfileEventId = useCallback((pubkey: string, eventId: string | null) => {
-    if (!pubkey) return;
-    try {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_EVENT_IDS);
-      const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-      const next = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? { ...parsed } : {};
-      if (eventId && eventId.trim()) {
-        next[pubkey] = eventId.trim();
-      } else {
-        delete next[pubkey];
-      }
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_PROFILE_EVENT_IDS, JSON.stringify(next));
-    } catch {
-      // ignore persistence issues
-    }
-  }, []);
-
-  const ensureNostrIdentity = useCallback((): NostrIdentity | null => {
-    if (nostrIdentityRef.current) return nostrIdentityRef.current;
-    const { identity } = readNostrIdentity();
-    if (identity) {
-      nostrIdentityRef.current = identity;
-      if (walletDebugEnabled) {
-        console.debug("[wallet] Loaded nostr identity", identity.pubkey.slice(0, 8));
-      }
-      return identity;
-    }
-    return null;
-  }, [readNostrIdentity, walletDebugEnabled]);
-
-  const fingerprintIncomingToken = useCallback((token: string | null | undefined) => {
-    if (typeof token !== "string") return null;
-    const trimmed = token.trim();
-    if (!trimmed) return null;
-    let encoder = textEncoderRef.current;
-    if (!encoder) {
-      encoder = new TextEncoder();
-      textEncoderRef.current = encoder;
-    }
-    return bytesToHex(sha256(encoder.encode(trimmed)));
-  }, []);
-
-  const rebuildSpentFingerprints = useCallback(() => {
-    spentIncomingTokenFingerprintsRef.current = new Set(
-      Array.from(spentIncomingPaymentsRef.current.values()).filter(
-        (value): value is string => typeof value === "string" && value.length > 0,
-      ),
-    );
-  }, []);
-
-  const addSpentIncomingPayment = useCallback(
-    (eventId: string, fingerprint: string | null) => {
-      if (!eventId) return;
-      const map = spentIncomingPaymentsRef.current;
-      if (map.has(eventId)) {
-        map.delete(eventId);
-      }
-      map.set(eventId, fingerprint ?? "");
-      while (map.size > 400) {
-        const firstKey = map.keys().next().value as string | undefined;
-        if (!firstKey) break;
-        map.delete(firstKey);
-      }
-      rebuildSpentFingerprints();
-    },
-    [rebuildSpentFingerprints],
-  );
-
-  const isIncomingPaymentSpent = useCallback((eventId?: string | null, fingerprint?: string | null) => {
-    if (eventId) {
-      if (spentIncomingPaymentsRef.current.has(eventId)) {
-        const storedFingerprint = spentIncomingPaymentsRef.current.get(eventId) ?? "";
-        if (!storedFingerprint) {
-          return true;
-        }
-        if (!fingerprint) {
-          return true;
-        }
-        return storedFingerprint === fingerprint;
-      }
-      if (fingerprint && spentIncomingTokenFingerprintsRef.current.has(fingerprint)) {
-        return true;
-      }
-      return false;
-    }
-    if (fingerprint && spentIncomingTokenFingerprintsRef.current.has(fingerprint)) {
-      return true;
-    }
-    return false;
-  }, []);
-
-  useEffect(() => {
-    try {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_SPENT_NOSTR_PAYMENTS);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        const values = parsed
-          .filter((value): value is string => typeof value === "string" && !!value.trim())
-          .slice(-400);
-        const map = new Map<string, string>();
-        for (const entry of values) {
-          const trimmed = entry.trim();
-          if (!trimmed) continue;
-          const [eventIdPart, fingerprintPart] = trimmed.split("::", 2);
-          const eventId = eventIdPart?.trim();
-          if (!eventId) continue;
-          const fingerprint = fingerprintPart?.trim() ?? "";
-          map.set(eventId, fingerprint);
-        }
-        spentIncomingPaymentsRef.current = map;
-        rebuildSpentFingerprints();
-      }
-    } catch (err) {
-      console.warn("Failed to load spent nostr payments", err);
-      spentIncomingPaymentsRef.current = new Map();
-      spentIncomingTokenFingerprintsRef.current = new Set();
-    }
-  }, [rebuildSpentFingerprints]);
-
+  const {
+    claimingEventIds, setClaimingEventIds,
+    defaultNostrRelays,
+    preferredFileServer,
+    nostrPoolRef, nostrPoolClosingRef, nostrSubscriptionActiveRef, nostrIdentityRef,
+    nostrIdentityInfo, setNostrIdentityInfo,
+    peanutSendToken,
+    ensureNostrPool, closeNostrPool,
+    isReplaceableRejection, safePublish,
+    resetSendLockSettings,
+    readNostrIdentity, readProfileEventId, persistProfileEventId,
+    ensureNostrIdentity,
+    fingerprintIncomingToken,
+    rebuildSpentFingerprints, addSpentIncomingPayment, isIncomingPaymentSpent,
+    decryptNostrPaymentMessage, parseIncomingPaymentMessage,
+    resolvePeerPubkey, stopDmSubscription, refreshNostrIdentity,
+  } = useNostrPoolState({
+    walletDebugEnabled,
+    paymentRequestsEnabled,
+    fileStorageServer,
+    sendTokenStr,
+    nutTokenCopied,
+    setNutTokenCopied,
+    setLockSendToPubkey,
+    setSendLockPubkeyInput,
+    setSendLockError,
+    textEncoderRef,
+    spentIncomingPaymentsRef,
+    spentIncomingTokenFingerprintsRef,
+    dmSubscriptionCloseRef,
+    open,
+    receiveMode,
+    sendMode,
+  });
   useEffect(() => {
     if (!paymentRequestLockEnabled) return;
     if (paymentRequestLockPubkey) return;
@@ -1648,259 +656,10 @@ export default function CashuWalletModal({
     }
   }, [paymentRequestLockEnabled, paymentRequestLockPubkey, activeP2pkKey]);
 
-  const PAYMENT_REQUEST_DEBUG = walletDebugEnabled;
   const PAYMENT_REQUEST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60; // 72 hours
   const PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS = 45;
   const PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS = 14 * 24 * 60 * 60; // 14 days
   const DM_SYNC_LOOKBACK_SECONDS = 30 * 24 * 60 * 60; // 30 days of NIP-17/DM history
-  const decryptNostrPaymentMessage = useCallback(
-    async (event: NostrEvent, identityPubkey: string, secretHex: string): Promise<DecryptedNostrDm | null> => {
-      const normalizedIdentity = (identityPubkey || "").toLowerCase();
-      const extractTagPubkeys = (tags: unknown, name: string): string[] => {
-        if (!Array.isArray(tags)) return [];
-        return tags
-          .filter(
-            (tag): tag is string[] =>
-              Array.isArray(tag) &&
-              tag[0] === name &&
-              typeof tag[1] === "string" &&
-              tag[1].trim().length > 0,
-          )
-          .map((tag) => tag[1]!.trim());
-      };
-      try {
-        if (event.kind === 4) {
-          if (PAYMENT_REQUEST_DEBUG) {
-            console.debug("[wallet] payment request DM kind=4", event.id);
-          }
-          const recipientPubkeys = extractTagPubkeys(event.tags, "p");
-          const recipientPubkey = recipientPubkeys[0] ?? null;
-          const normalizedSender = (event.pubkey || "").toLowerCase();
-          const normalizedRecipient = (recipientPubkey || "").toLowerCase();
-          const peerPubkeyForDecrypt =
-            normalizedSender === normalizedIdentity ? recipientPubkey : event.pubkey;
-
-          if (!peerPubkeyForDecrypt) return null;
-          if (normalizedSender !== normalizedIdentity && normalizedRecipient !== normalizedIdentity) {
-            return null;
-          }
-
-          let content: string;
-          try {
-            content = await nip04.decrypt(secretHex, peerPubkeyForDecrypt, event.content);
-          } catch (err) {
-            if (nip44?.v2) {
-              try {
-                const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), peerPubkeyForDecrypt);
-                content = await nip44.v2.decrypt(event.content, dmKey);
-              } catch (inner) {
-                if (PAYMENT_REQUEST_DEBUG) {
-                  console.debug("[wallet] Failed to decrypt DM", event.id, inner);
-                }
-                return null;
-              }
-            } else {
-              if (PAYMENT_REQUEST_DEBUG) {
-                console.debug("[wallet] Failed to decrypt DM", event.id, err);
-              }
-              return null;
-            }
-          }
-
-          return {
-            content,
-            senderPubkey: event.pubkey,
-            recipientPubkey,
-            recipientPubkeys,
-            createdAt:
-              typeof event.created_at === "number" && Number.isFinite(event.created_at) && event.created_at > 0
-                ? Math.floor(event.created_at)
-                : null,
-          };
-        }
-        if (event.kind === 1059 && nip44?.v2) {
-          if (PAYMENT_REQUEST_DEBUG) {
-            console.debug("[wallet] payment request DM kind=1059", event.id);
-          }
-          const wrapRecipients = extractTagPubkeys(event.tags, "p");
-          if (!wrapRecipients.length) {
-            if (PAYMENT_REQUEST_DEBUG) {
-              console.debug("[wallet] kind=1059 missing recipient p tags", event.id);
-            }
-            return null;
-          }
-          const wrapKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), event.pubkey);
-          const sealJson = await nip44.v2.decrypt(event.content, wrapKey);
-          let sealEvent: NostrEvent | null = null;
-          try {
-            sealEvent = JSON.parse(sealJson) as NostrEvent;
-          } catch {
-            sealEvent = null;
-          }
-          if (!sealEvent || sealEvent.kind !== 13 || typeof sealEvent.content !== "string") {
-            return null;
-          }
-          const senderPubkey = typeof sealEvent.pubkey === "string" ? sealEvent.pubkey : null;
-          if (!senderPubkey) return null;
-          const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), senderPubkey);
-          const dmJson = await nip44.v2.decrypt(sealEvent.content, dmKey);
-          let rumor: NostrEvent | null = null;
-          try {
-            rumor = JSON.parse(dmJson) as NostrEvent;
-          } catch {
-            rumor = null;
-          }
-          if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15 && rumor.kind !== 7) || typeof rumor.content !== "string") {
-            return null;
-          }
-          const rumorPubkey = typeof rumor.pubkey === "string" ? rumor.pubkey.trim().toLowerCase() : "";
-          const normalizedSenderPubkey = senderPubkey.trim().toLowerCase();
-          if (!rumorPubkey || rumorPubkey !== normalizedSenderPubkey) {
-            if (PAYMENT_REQUEST_DEBUG) {
-              console.debug("[wallet] kind=1059 sender mismatch between seal and rumor", {
-                eventId: event.id,
-                sealPubkey: normalizedSenderPubkey,
-                rumorPubkey,
-              });
-            }
-            return null;
-          }
-          const rumorRecipients = extractTagPubkeys(rumor.tags, "p");
-          if (!rumorRecipients.length) {
-            if (PAYMENT_REQUEST_DEBUG) {
-              console.debug("[wallet] kind=14 rumor missing recipient p tags", event.id);
-            }
-            return null;
-          }
-          const rumorCreatedAt =
-            typeof rumor.created_at === "number" && Number.isFinite(rumor.created_at) && rumor.created_at > 0
-              ? Math.floor(rumor.created_at)
-              : null;
-          // The inner rumor's id is the canonical cross-client message identifier (NIP-17).
-          // It is the same for all recipients of the same message, unlike the outer giftwrap id.
-          const rumorId =
-            typeof (rumor as any).id === "string" && /^[0-9a-f]{64}$/i.test((rumor as any).id)
-              ? ((rumor as any).id as string)
-              : null;
-          return {
-            content: rumor.content,
-            senderPubkey,
-            recipientPubkey: rumorRecipients[0] ?? null,
-            recipientPubkeys: rumorRecipients,
-            createdAt: rumorCreatedAt,
-            kind: typeof rumor.kind === "number" ? rumor.kind : null,
-            tags: Array.isArray(rumor.tags) ? (rumor.tags as string[][]) : null,
-            rumorId,
-          };
-        }
-      } catch (err) {
-        if (PAYMENT_REQUEST_DEBUG) {
-          console.debug("[wallet] Failed to decrypt payment request message", event.id, err);
-        }
-      }
-      return null;
-    },
-    [PAYMENT_REQUEST_DEBUG],
-  );
-
-  const parseIncomingPaymentMessage = useCallback((plain: string): PaymentRequestPayload | string | null => {
-    const trimmed = (plain || "").trim();
-    if (!trimmed) return null;
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed === "object") {
-        return parsed as PaymentRequestPayload;
-      }
-    } catch {
-      // fall through to string heuristics
-    }
-    const token = extractFirstCashuTokenFromText(trimmed);
-    if (token) return token;
-    return null;
-  }, []);
-
-  const resolvePeerPubkey = useCallback(
-    (event: NostrEvent, identityPubkey: string, senderPubkey?: string | null, recipientPubkey?: string | null): string => {
-      // Always return raw 64-char hex (no "02"/"03" prefix) so peerPubkey is consistent
-      // with the format used in openConversationForPeer.
-      const toRaw = (v: string | null | undefined): string | null => {
-        if (!v) return null;
-        const lc = v.toLowerCase();
-        if (/^(02|03)[0-9a-f]{64}$/.test(lc)) return lc.slice(2);
-        if (/^[0-9a-f]{64}$/.test(lc)) return lc;
-        return null;
-      };
-
-      const normalizedIdentity = normalizeNostrPubkey(identityPubkey) ?? identityPubkey;
-      const normalizedSender = senderPubkey ? normalizeNostrPubkey(senderPubkey) ?? senderPubkey : null;
-      const normalizedRecipient = recipientPubkey ? normalizeNostrPubkey(recipientPubkey) ?? recipientPubkey : null;
-
-      // Normal outgoing: sender is identity, recipient is someone else → peer is recipient
-      if (normalizedRecipient && normalizedRecipient !== normalizedIdentity) {
-        return toRaw(normalizedRecipient) ?? normalizedRecipient;
-      }
-      // Normal incoming: sender is someone else → peer is sender
-      if (normalizedSender && normalizedSender !== normalizedIdentity) {
-        return toRaw(normalizedSender) ?? normalizedSender;
-      }
-      // Self-send (NIP-17 note-to-self): both sender and recipient equal identity.
-      // Do NOT fall through to event.pubkey (that's the ephemeral giftwrap key).
-      if (normalizedSender === normalizedIdentity && normalizedRecipient === normalizedIdentity) {
-        return toRaw(identityPubkey) ?? identityPubkey.toLowerCase();
-      }
-
-      // Fallback: use giftwrap's p-tag recipient if it differs from identity
-      const pTag = Array.isArray(event.tags)
-        ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
-        : null;
-      const peer = pTag?.[1];
-      const normalizedPeer = peer ? normalizeNostrPubkey(peer) ?? peer : null;
-      if (normalizedPeer && normalizedPeer !== normalizedIdentity) {
-        return toRaw(normalizedPeer) ?? normalizedPeer;
-      }
-
-      return toRaw(normalizedSender) ?? toRaw(identityPubkey) ?? identityPubkey.toLowerCase();
-    },
-    [normalizeNostrPubkey],
-  );
-
-  const stopDmSubscription = useCallback(() => {
-    if (dmSubscriptionCloseRef.current) {
-      try {
-        dmSubscriptionCloseRef.current();
-      } catch {
-        // ignore
-      }
-      dmSubscriptionCloseRef.current = null;
-    }
-  }, []);
-
-  const refreshNostrIdentity = useCallback(() => {
-    setNostrIdentityInfo(paymentRequestsEnabled ? readNostrIdentity() : EMPTY_NOSTR_IDENTITY_INFO);
-  }, [paymentRequestsEnabled, readNostrIdentity]);
-
-  useEffect(() => {
-    refreshNostrIdentity();
-  }, [open, receiveMode, refreshNostrIdentity, sendMode]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === LS_NOSTR_SK) {
-        refreshNostrIdentity();
-      }
-    };
-    window.addEventListener(TASKIFY_NOSTR_KEY_UPDATED_EVENT, refreshNostrIdentity);
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener(TASKIFY_NOSTR_KEY_UPDATED_EVENT, refreshNostrIdentity);
-      window.removeEventListener("storage", handleStorage);
-    };
-  }, [refreshNostrIdentity]);
-
-  useEffect(() => {
-    nostrIdentityRef.current = nostrIdentityInfo.identity;
-  }, [nostrIdentityInfo]);
 
   const [recvMsg, setRecvMsg] = useState("");
 
@@ -1961,17 +720,46 @@ export default function CashuWalletModal({
     activeThreadPeer,
     persistProfileEventId,
   });
-  const resetContactForm = useCallback(() => {}, []);
-
-  const [lnurlWithdrawInfo, setLnurlWithdrawInfo] = useState<LnurlWithdrawData | null>(null);
-  const [lnurlWithdrawAmt, setLnurlWithdrawAmt] = useState("");
-  const [lnurlWithdrawState, setLnurlWithdrawState] = useState<"idle" | "creating" | "waiting" | "done" | "error">("idle");
-  const [lnurlWithdrawMessage, setLnurlWithdrawMessage] = useState("");
-  const [lnurlWithdrawInvoice, setLnurlWithdrawInvoice] = useState("");
-
-  const [paymentRequestState, setPaymentRequestState] = useState<{ encoded: string; request: PaymentRequest } | null>(null);
-  const [paymentRequestStatus, setPaymentRequestStatus] = useState<"idle" | "sending" | "done" | "error">("idle");
-  const [paymentRequestMessage, setPaymentRequestMessage] = useState("");
+  const {
+    lnurlWithdrawInfo,
+    setLnurlWithdrawInfo,
+    lnurlWithdrawAmt,
+    setLnurlWithdrawAmt,
+    lnurlWithdrawState,
+    setLnurlWithdrawState,
+    lnurlWithdrawMessage,
+    setLnurlWithdrawMessage,
+    lnurlWithdrawInvoice,
+    setLnurlWithdrawInvoice,
+    paymentRequestState,
+    setPaymentRequestState,
+    paymentRequestStatus,
+    setPaymentRequestStatus,
+    paymentRequestMessage,
+    setPaymentRequestMessage,
+    swapAmount,
+    setSwapAmount,
+    swapFromValue,
+    setSwapFromValue,
+    swapToValue,
+    setSwapToValue,
+    nwcFundState,
+    setNwcFundState,
+    nwcFundMessage,
+    setNwcFundMessage,
+    nwcFundInvoice,
+    setNwcFundInvoice,
+    nwcWithdrawState,
+    setNwcWithdrawState,
+    nwcWithdrawMessage,
+    setNwcWithdrawMessage,
+    nwcWithdrawInvoice,
+    setNwcWithdrawInvoice,
+    mintSwapState,
+    setMintSwapState,
+    mintSwapMessage,
+    setMintSwapMessage,
+  } = useWalletFlowState();
 
   const {
     showNwcManager,
@@ -1999,18 +787,6 @@ export default function CashuWalletModal({
     refreshNwcInfo,
   });
 
-  const [swapAmount, setSwapAmount] = useState("");
-  const [swapFromValue, setSwapFromValue] = useState<string>("");
-  const [swapToValue, setSwapToValue] = useState<string>("");
-  const [nwcFundState, setNwcFundState] = useState<"idle" | "creating" | "paying" | "waiting" | "claiming" | "done" | "error">("idle");
-  const [nwcFundMessage, setNwcFundMessage] = useState("");
-  const [nwcFundInvoice, setNwcFundInvoice] = useState("");
-
-  const [nwcWithdrawState, setNwcWithdrawState] = useState<"idle" | "requesting" | "paying" | "done" | "error">("idle");
-  const [nwcWithdrawMessage, setNwcWithdrawMessage] = useState("");
-  const [nwcWithdrawInvoice, setNwcWithdrawInvoice] = useState("");
-  const [mintSwapState, setMintSwapState] = useState<"idle" | "creating" | "paying" | "waiting" | "claiming" | "done" | "error">("idle");
-  const [mintSwapMessage, setMintSwapMessage] = useState("");
   const {
     history,
     setHistory,
@@ -2036,597 +812,35 @@ export default function CashuWalletModal({
     handleDeleteHistoryEntry,
   } = useWalletHistory({ showToast, captureFiatValueUsd });
   usePendingTokenHistorySync({ open, setHistory });
-  const [manualSendPlan, setManualSendPlan] = useState<ManualSendPlan | null>(null);
-  const [manualSendSelection, setManualSendSelection] = useState<Set<string>>(() => new Set());
-  const [manualSendError, setManualSendError] = useState("");
-  const [manualSendInProgress, setManualSendInProgress] = useState(false);
+  const {
+    manualSendPlan,
+    setManualSendPlan,
+    manualSendSelection,
+    setManualSendSelection,
+    manualSendError,
+    setManualSendError,
+    manualSendInProgress,
+    setManualSendInProgress,
+    manualSelectedTotal,
+    finalizeManualSelection,
+    closeManualSendPlan,
+    applyManualSendSelection,
+    adjustManualSendGroupSelection,
+    manualSelectionMatches,
+  } = useManualSendPlan({
+    createTokenFromProofSelection,
+    setSendTokenStr,
+    setLastSendTokenAmount,
+    setLastSendTokenMint,
+    setLastSendTokenFingerprint,
+    setLastSendTokenLockLabel,
+    setEcashSendView,
+    buildHistoryEntry,
+    setHistory,
+    showToast,
+    mintUrl,
+  });
 
-  const manualSelectedTotal = useMemo(() => {
-    if (!manualSendPlan) return 0;
-    let sum = 0;
-    manualSendPlan.notes.forEach((note) => {
-      if (manualSendSelection.has(note.secret)) {
-        sum += note.amount;
-      }
-    });
-    return sum;
-  }, [manualSendPlan, manualSendSelection]);
-
-  const finalizeManualSelection = useCallback(
-    async (params: { selection: string[]; selectedTotal: number; target: number }) => {
-      const { selection, selectedTotal, target } = params;
-      const res = await createTokenFromProofSelection(selection);
-      setSendTokenStr(res.token);
-      setLastSendTokenAmount(selectedTotal);
-      setLastSendTokenMint(mintUrl ?? null);
-      setLastSendTokenFingerprint(`${selectedTotal}|manual`);
-      setLastSendTokenLockLabel(null);
-      setEcashSendView("token");
-      setHistory((h) => [
-        buildHistoryEntry({
-          id: `token-manual-${Date.now()}`,
-          summary:
-            selectedTotal === target
-              ? `Token for ${selectedTotal} sats`
-              : `Manual token for ${selectedTotal} sats (target ${target} sats)`,
-          detail: res.token,
-          detailKind: "token",
-          revertToken: res.token,
-          type: "ecash",
-          direction: "out",
-          amountSat: selectedTotal,
-          mintUrl: res.mintUrl,
-          tokenState:
-            res.proofs?.length
-              ? {
-                  mintUrl: res.mintUrl,
-                  proofs: res.proofs.map((proof) => {
-                    const stored: StoredProofForState = {
-                      secret: proof.secret,
-                      amount: proof.amount,
-                      id: proof.id,
-                      C: proof.C,
-                    };
-                    if (proof.witness) stored.witness = proof.witness;
-                    const y = computeProofY(proof.secret);
-                    if (y) stored.Y = y;
-                    return stored;
-                  }),
-                  lastState: "UNSPENT",
-                }
-              : undefined,
-        }),
-        ...h,
-      ]);
-      showToast(`Token created for ${selectedTotal} sats`, 3000);
-      return res;
-    },
-    [
-      buildHistoryEntry,
-      createTokenFromProofSelection,
-      mintUrl,
-      setHistory,
-      setLastSendTokenAmount,
-      setLastSendTokenMint,
-      setLastSendTokenFingerprint,
-      setLastSendTokenLockLabel,
-      setSendTokenStr,
-      setEcashSendView,
-      showToast,
-    ],
-  );
-
-  const closeManualSendPlan = useCallback(() => {
-    setManualSendPlan(null);
-    setManualSendSelection(() => new Set());
-    setManualSendError("");
-    setManualSendInProgress(false);
-  }, []);
-
-  const applyManualSendSelection = useCallback(
-    async (secrets: string[] | null, options?: { autoCreate?: boolean }) => {
-      if (!secrets) return;
-      if (options?.autoCreate && manualSendPlan) {
-        setManualSendInProgress(true);
-        setManualSendError("");
-        try {
-          const selectedTotal = totalForSelection(manualSendPlan.notes, secrets);
-          if (!selectedTotal) {
-            setManualSendError("Select at least one note.");
-            return;
-          }
-          await finalizeManualSelection({
-            selection: secrets,
-            selectedTotal,
-            target: manualSendPlan.target,
-          });
-          closeManualSendPlan();
-        } catch (err: any) {
-          setManualSendError(err?.message || String(err));
-        } finally {
-          setManualSendInProgress(false);
-        }
-        return;
-      }
-      setManualSendSelection(() => new Set(secrets));
-      setManualSendError("");
-    },
-    [
-      closeManualSendPlan,
-      finalizeManualSelection,
-      manualSendPlan,
-      setManualSendError,
-      setManualSendInProgress,
-      setManualSendSelection,
-    ],
-  );
-
-  const adjustManualSendGroupSelection = useCallback(
-    (amount: number, delta: number) => {
-      setManualSendSelection((prev) => {
-        if (!manualSendPlan) return prev;
-        const group = manualSendPlan.groups.find((entry) => entry.amount === amount);
-        if (!group) return prev;
-        const next = new Set(prev);
-        if (delta > 0) {
-          const secretToAdd = group.secrets.find((secret) => !next.has(secret));
-          if (!secretToAdd) return prev;
-          next.add(secretToAdd);
-        } else if (delta < 0) {
-          const selectedSecrets = group.secrets.filter((secret) => next.has(secret));
-          const secretToRemove = selectedSecrets[selectedSecrets.length - 1];
-          if (!secretToRemove) return prev;
-          next.delete(secretToRemove);
-        } else {
-          return prev;
-        }
-        return next;
-      });
-    },
-    [manualSendPlan],
-  );
-
-  const manualSelectionMatches = useCallback(
-    (candidate: string[] | null) => {
-      if (!candidate) return false;
-      if (candidate.length !== manualSendSelection.size) return false;
-      return candidate.every((secret) => manualSendSelection.has(secret));
-    },
-    [manualSendSelection],
-  );
-
-  const handleGenerateP2pkKey = useCallback((): P2PKKey | null => {
-    try {
-      const key = generateP2pkKeypair();
-      setPrimaryP2pkKey(key.id);
-      showToast("Generated new P2PK key", 2500);
-      setPendingPrimaryP2pkKeyId(key.id);
-      return key;
-    } catch (err: any) {
-      showToast(err?.message || "Unable to generate key");
-      return null;
-    }
-  }, [generateP2pkKeypair, setPrimaryP2pkKey, showToast]);
-
-  const handleOpenReceiveLock = useCallback(() => {
-    if (!activeP2pkKey) {
-      const generated = handleGenerateP2pkKey();
-      if (!generated) {
-        return;
-      }
-    }
-    setReceiveLockVisible(true);
-  }, [activeP2pkKey, handleGenerateP2pkKey]);
-  const handleRevertHistoryToken = useCallback(
-    async (item: HistoryItem) => {
-      if (!item.revertToken) return;
-      setHistoryRevertState((prev) => ({
-        ...prev,
-        [item.id]: { status: "pending" },
-      }));
-      try {
-        const res = await receiveToken(item.revertToken);
-        if (res.savedForLater) {
-          showToast("Token saved for later redemption. We'll redeem it when you're back online.");
-          setHistoryRevertState((prev) => ({
-            ...prev,
-            [item.id]: { status: "idle" },
-          }));
-          return;
-        }
-        const amt = sumProofAmounts(res.proofs);
-        const crossNote = res.crossMint && res.usedMintUrl ? ` • Stored at ${res.usedMintUrl}` : "";
-        const successMessage = amt
-          ? `Redeemed ${amt} sat${amt === 1 ? "" : "s"}${crossNote}`
-          : `Redeemed token${crossNote}`;
-        const tokenState = deriveSpentHistoryTokenStateFromToken(item.revertToken, Date.now());
-        setHistory((prev) => {
-          const updated = prev.map((entry) =>
-            entry.id === item.id
-              ? {
-                  ...entry,
-                  summary: entry.summary.includes("(reverted)")
-                    ? entry.summary
-                    : `${entry.summary} (reverted)`,
-                  revertToken: undefined,
-                  tokenState: undefined,
-                }
-              : entry,
-          );
-          return [
-            buildHistoryEntry({
-              id: `reverted-${Date.now()}`,
-              summary: amt
-                ? `Reverted token for ${amt} sat${amt === 1 ? "" : "s"}`
-                : "Reverted token",
-              detail: item.revertToken,
-              detailKind: "token",
-              type: "ecash",
-              direction: "in",
-              amountSat: amt || undefined,
-              mintUrl: res.usedMintUrl ?? mintUrl ?? undefined,
-              ...(tokenState ? { tokenState } : {}),
-            }),
-            ...updated,
-          ];
-        });
-        setHistoryCheckStates((prev) => {
-          if (!(item.id in prev)) return prev;
-          const next = { ...prev };
-          delete next[item.id];
-          return next;
-        });
-        setHistoryRevertState((prev) => ({
-          ...prev,
-          [item.id]: { status: "success", message: successMessage },
-        }));
-        showToast(successMessage, 3000);
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        setHistoryRevertState((prev) => ({
-          ...prev,
-          [item.id]: { status: "error", message },
-        }));
-      }
-    },
-    [buildHistoryEntry, mintUrl, receiveToken, showToast]
-  );
-  const mintQuoteClaimingRef = useRef<Set<string>>(new Set());
-  const handleMintQuoteClaimSuccess = useCallback(
-    (historyId: string, amountSat: number, mintHint?: string | null) => {
-      setHistory((prev) => [
-        buildHistoryEntry({
-          id: `mint-${Date.now()}`,
-          summary: `Minted ${amountSat} sats`,
-          type: "lightning",
-          direction: "in",
-          amountSat,
-          mintUrl: mintHint ?? undefined,
-          stateLabel: "Paid",
-        }),
-        ...prev.filter((entry) => entry.id !== historyId),
-      ]);
-      setHistoryMintQuoteStates((prev) => {
-        if (!(historyId in prev)) return prev;
-        const next = { ...prev };
-        delete next[historyId];
-        return next;
-      });
-      showToast(`received ${amountSat} sats`, 3500);
-    },
-    [buildHistoryEntry, setHistory, setHistoryMintQuoteStates, showToast],
-  );
-  const claimMintQuoteById = useCallback(
-    async (
-      quoteId: string,
-      amountSat: number,
-      options?: { historyItemId?: string; mintUrl?: string },
-    ) => {
-      if (!quoteId) return;
-      if (mintQuoteClaimingRef.current.has(quoteId)) return;
-      mintQuoteClaimingRef.current.add(quoteId);
-      const historyKey = options?.historyItemId ?? quoteId;
-      if (historyKey) {
-        setHistoryMintQuoteStates((prev) => ({
-          ...prev,
-          [historyKey]: { status: "pending" },
-        }));
-      }
-      try {
-        const state = await checkMintQuote(quoteId, { mintUrl: options?.mintUrl });
-        if (state === "ISSUED") {
-          throw new Error("Mint quote is already issued. Restore from wallet seed if balance is missing.");
-        }
-        if (state !== "PAID") {
-          throw new Error("Mint invoice is not paid yet");
-        }
-        await claimMint(quoteId, amountSat, { mintUrl: options?.mintUrl });
-        handleMintQuoteClaimSuccess(historyKey, amountSat, options?.mintUrl ?? null);
-      } catch (err: any) {
-        const message = err?.message || String(err ?? "");
-        if (historyKey) {
-          setHistoryMintQuoteStates((prev) => ({
-            ...prev,
-            [historyKey]: { status: "error", message },
-          }));
-        }
-        throw err;
-      } finally {
-        mintQuoteClaimingRef.current.delete(quoteId);
-      }
-    },
-    [checkMintQuote, claimMint, handleMintQuoteClaimSuccess, setHistoryMintQuoteStates],
-  );
-  const performTokenStateCheck = useCallback(
-    async (item: HistoryItem, options?: { silent?: boolean }) => {
-      const tokenState = item.tokenState;
-      if (!tokenState || !tokenState.proofs.length) return;
-      if (!options?.silent) {
-        setHistoryCheckStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "pending" },
-        }));
-      }
-      try {
-        const proofsForCheck: Proof[] = tokenState.proofs.map((proof) => ({
-          amount: proof.amount,
-          secret: proof.secret,
-          id: proof.id,
-          C: proof.C,
-          witness: proof.witness,
-        }));
-        const states = await checkProofStates(tokenState.mintUrl, proofsForCheck);
-        const responseStateWrappers = states.map((state) => ({
-          lastState: sanitizeProofStateValue(state.state),
-        }));
-        const aggregatedFromResponse = aggregateStoredProofStates(responseStateWrappers);
-        const summaryFromResponse = summarizeStoredProofStates(responseStateWrappers);
-        const witnessMap = extractWitnesses(states);
-        let toastMessage: string | null = null;
-        const timestamp = Date.now();
-        setHistory((prev) =>
-          prev.map((entry) => {
-            if (entry.id !== item.id || !entry.tokenState) return entry;
-            const updatedProofs = entry.tokenState.proofs.map((proof, index) => {
-              const stateEntry = states[index];
-              const normalizedState = sanitizeProofStateValue(stateEntry?.state);
-              const yFromResponse = stateEntry?.Y;
-              const witnessFromState = stateEntry?.witness;
-              let nextProof = proof;
-              if (yFromResponse && proof.Y !== yFromResponse) {
-                nextProof = { ...nextProof, Y: yFromResponse };
-              } else if (!proof.Y) {
-                const computed = computeProofY(proof.secret);
-                if (computed) {
-                  nextProof = { ...nextProof, Y: computed };
-                }
-              }
-              if (typeof witnessFromState === "string" && witnessFromState !== proof.witness) {
-                nextProof = { ...nextProof, witness: witnessFromState };
-              }
-              if (normalizedState && normalizedState !== proof.lastState) {
-                nextProof = { ...nextProof, lastState: normalizedState };
-              }
-              return nextProof;
-            });
-            const aggregated =
-              aggregateStoredProofStates(updatedProofs) ?? entry.tokenState.lastState;
-            const summaryValue = summarizeStoredProofStates(updatedProofs);
-            const mergedWitnesses = { ...(entry.tokenState.lastWitnesses ?? {}) };
-            if (witnessMap) {
-              for (const [y, witness] of Object.entries(witnessMap)) {
-                mergedWitnesses[y] = witness;
-              }
-            }
-            const shouldNotify = aggregated === "SPENT" && entry.tokenState.notifiedSpent !== true;
-            if (shouldNotify) {
-              toastMessage = buildTokenSpentToastMessage(updatedProofs);
-            }
-            const mergedWitnessesValue = Object.keys(mergedWitnesses).length
-              ? mergedWitnesses
-              : entry.tokenState.lastWitnesses;
-            const nextTokenState: HistoryTokenState = {
-              ...entry.tokenState,
-              proofs: updatedProofs,
-              lastState: aggregated ?? entry.tokenState.lastState,
-              lastSummary: summaryValue || entry.tokenState.lastSummary,
-              lastCheckedAt: timestamp,
-              lastWitnesses: mergedWitnessesValue,
-              notifiedSpent: aggregated === "SPENT" ? true : entry.tokenState.notifiedSpent,
-            };
-            if (aggregated === "SPENT") {
-              nextTokenState.suppressChecks = true;
-            } else if (entry.tokenState.suppressChecks) {
-              nextTokenState.suppressChecks = entry.tokenState.suppressChecks;
-            } else {
-              delete (nextTokenState as any).suppressChecks;
-            }
-            delete (nextTokenState as any).lastError;
-            delete (nextTokenState as any).lastErrorAt;
-            if (entry.tokenState.errorCount != null) {
-              delete (nextTokenState as any).errorCount;
-            }
-            return {
-              ...entry,
-              summary:
-                aggregated === "SPENT" && !entry.summary.includes("(spent)")
-                  ? `${entry.summary} (spent)`
-                  : entry.summary,
-              tokenState: nextTokenState,
-            };
-          })
-        );
-        if (!options?.silent) {
-          const baseLabel = aggregatedFromResponse ?? item.tokenState.lastState;
-          const summaryLabel = summaryFromResponse || item.tokenState.lastSummary || "";
-          const label = baseLabel ?? (summaryLabel ? "Updated" : "State updated");
-          const message = summaryLabel ? `${label}${label ? " • " : ""}${summaryLabel}` : label ?? "State updated";
-          setHistoryCheckStates((prev) => ({
-            ...prev,
-            [item.id]: { status: "success", message },
-          }));
-        }
-        if (toastMessage) {
-          showToast(toastMessage, 3500);
-        }
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        const timestamp = Date.now();
-        const suppressChecks = shouldSuppressProofStateChecks(err);
-        const alreadySpent = /already spent/i.test(message);
-        setHistory((prev) =>
-          prev.map((entry) => {
-            if (entry.id !== item.id || !entry.tokenState) return entry;
-            if (alreadySpent) {
-              const updatedProofs = entry.tokenState.proofs.map((proof) =>
-                proof.lastState === "SPENT" ? proof : { ...proof, lastState: "SPENT" },
-              );
-              const summaryValue = summarizeStoredProofStates(updatedProofs);
-              const nextTokenState: HistoryTokenState = {
-                ...entry.tokenState,
-                proofs: updatedProofs,
-                lastState: "SPENT",
-                lastSummary: summaryValue || entry.tokenState.lastSummary || "SPENT",
-                lastCheckedAt: timestamp,
-                notifiedSpent: true,
-                suppressChecks: true,
-              };
-              delete (nextTokenState as any).lastError;
-              delete (nextTokenState as any).lastErrorAt;
-              if (nextTokenState.errorCount != null) {
-                delete (nextTokenState as any).errorCount;
-              }
-              return {
-                ...entry,
-                summary:
-                  entry.summary.includes("(spent)")
-                    ? entry.summary
-                    : `${entry.summary} (spent)`,
-                tokenState: nextTokenState,
-              };
-            }
-            const errorCount = (entry.tokenState.errorCount ?? 0) + 1;
-            const nextTokenState: HistoryTokenState = {
-              ...entry.tokenState,
-              lastCheckedAt: timestamp,
-              lastError: message,
-              lastErrorAt: timestamp,
-              errorCount,
-            };
-            if (suppressChecks) {
-              nextTokenState.suppressChecks = true;
-            }
-            return {
-              ...entry,
-              tokenState: nextTokenState,
-            };
-          })
-        );
-        if (!options?.silent) {
-          setHistoryCheckStates((prev) => ({
-            ...prev,
-            [item.id]: alreadySpent
-              ? { status: "success", message: "Token marked spent" }
-              : { status: "error", message },
-          }));
-        }
-        if (alreadySpent && !options?.silent) {
-          showToast("Token marked spent", 3000);
-        }
-      }
-    },
-    [checkProofStates, setHistory, setHistoryCheckStates, showToast]
-  );
-
-  const handleCheckHistoryMintQuote = useCallback(
-    async (item: HistoryItem) => {
-      const mintQuote = item.mintQuote;
-      if (!mintQuote) return;
-      const targetMintRaw = mintQuote.mintUrl || mintUrl || "";
-      const targetMint = targetMintRaw ? normalizeMintUrl(targetMintRaw) : null;
-      if (!targetMint) {
-        setHistoryMintQuoteStates((prev) => ({
-          ...prev,
-          [item.id]: {
-            status: "error",
-            message: "Mint unavailable. Select a mint to claim this invoice.",
-          },
-        }));
-        return;
-      }
-      setHistoryMintQuoteStates((prev) => ({
-        ...prev,
-        [item.id]: { status: "pending" },
-      }));
-      try {
-        const state = await checkMintQuote(mintQuote.quote, { mintUrl: targetMintRaw });
-        if (state === "PAID") {
-          await claimMint(mintQuote.quote, mintQuote.amount, { mintUrl: targetMintRaw });
-          setHistory((prev) => [
-            buildHistoryEntry({
-              id: `mint-${Date.now()}`,
-              summary: `Minted ${mintQuote.amount} sats`,
-              type: "lightning",
-              direction: "in",
-              amountSat: mintQuote.amount,
-              mintUrl: targetMintRaw ?? undefined,
-              stateLabel: "Paid",
-            }),
-            ...prev.filter((entry) => entry.id !== item.id),
-          ]);
-          setHistoryMintQuoteStates((prev) => {
-            const next = { ...prev };
-            delete next[item.id];
-            return next;
-          });
-          showToast(`received ${mintQuote.amount} sats`, 3500);
-          return;
-        }
-        const normalizedState =
-          typeof state === "string" && state ? state.toUpperCase() : String(state ?? "").toUpperCase();
-        setHistory((prev) =>
-          prev.map((entry) =>
-            entry.id === item.id && entry.mintQuote
-              ? { ...entry, mintQuote: { ...entry.mintQuote, state: normalizedState } }
-              : entry,
-          ),
-        );
-        if (normalizedState === "EXPIRED") {
-          setHistory((prev) => prev.filter((entry) => entry.id !== item.id));
-          setHistoryMintQuoteStates((prev) => {
-            const next = { ...prev };
-            delete next[item.id];
-            return next;
-          });
-          showToast("Invoice expired", 3000);
-          return;
-        }
-        if (normalizedState === "ISSUED") {
-          setHistoryMintQuoteStates((prev) => ({
-            ...prev,
-            [item.id]: {
-              status: "error",
-              message: "Quote already issued. Restore from wallet seed if balance is missing.",
-            },
-          }));
-          return;
-        }
-        const message =
-          normalizedState === "UNPAID" ? "Invoice not paid yet" : `Status: ${normalizedState || state || "Unknown"}`;
-        setHistoryMintQuoteStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "success", message },
-        }));
-    } catch (err: any) {
-      const message = err?.message || String(err);
-      setHistoryMintQuoteStates((prev) => ({
-        ...prev,
-        [item.id]: { status: "error", message },
-      }));
-    }
-  },
-  [buildHistoryEntry, checkMintQuote, claimMint, mintUrl, setHistory, setHistoryMintQuoteStates, showToast],
-);
   const [npubCashIdentity, setNpubCashIdentity] = useState<{ npub: string; address: string } | null>(null);
   const [npubCashIdentityError, setNpubCashIdentityError] = useState<string | null>(null);
   const [npubCashClaimStatus, setNpubCashClaimStatus] = useState<"idle" | "checking" | "success" | "error">("idle");
@@ -2642,6 +856,54 @@ export default function CashuWalletModal({
       return "";
     }
   }, [npubCashIdentity?.address]);
+  const {
+    readNip51ContactsMigrated,
+    persistNip51ContactsMigrated,
+    contactPubkeyKey,
+    mergeContactsByPubkey,
+    buildContactSyncEnvelopeFromNip51,
+    loadLegacyContacts,
+    migrateNip51ContactsIfNeeded,
+    syncContactsFromNostr,
+    publishContactsToNostr,
+    applyContactProfileUpdates,
+    refreshContactProfiles,
+    publishProfileMetadata,
+    loadProfileMetadata,
+  } = useContactsSync({
+    contactsSyncEnabled,
+    walletDebugEnabled,
+    nostrMissingReason,
+    setContacts,
+    contactsRef,
+    contactSyncMetaRef,
+    contactSyncMeta,
+    setContactSyncState,
+    contactsPublishQueuedRef,
+    setContactsPublishState,
+    setContactsPublishMessage,
+    contactsFingerprintRef,
+    nip51MigrationInFlightRef,
+    computeContactsFingerprint,
+    persistContactSyncMeta,
+    compressedToRawHex,
+    setProfileStatus,
+    setProfileMessage,
+    setProfileForm,
+    setProfileSharePayload,
+    setProfileUpdatedAt,
+    profileEventIdRef,
+    profileFormRef,
+    formatNpub,
+    setProfilePhotoError,
+    ensureNostrIdentity,
+    defaultNostrRelays,
+    ensureNostrPool,
+    safePublish,
+    persistProfileEventId,
+    readProfileEventId,
+    deriveDefaultLightningAddress,
+  });
   const lightningAddressDisplay = useMemo(() => {
     const address = npubCashIdentity?.address?.trim();
     if (!address) return "";
@@ -2657,18 +919,6 @@ export default function CashuWalletModal({
   }, [npubCashIdentity?.address]);
   const nut16CollectorRef = useRef<Nut16Collector | null>(null);
   const lnRef = useRef<HTMLTextAreaElement | null>(null);
-  const readLightningInput = useCallback(() => {
-    const current = lnRef.current?.value ?? lnInputValueRef.current ?? lnInput;
-    return typeof current === "string" ? current : "";
-  }, [lnInput]);
-  const commitLightningInputFromDom = useCallback(
-    (value?: string) => {
-      const next = typeof value === "string" ? value : readLightningInput();
-      setLnInput(next);
-      return next;
-    },
-    [readLightningInput, setLnInput],
-  );
   useEffect(() => {
     const input = lnRef.current;
     if (!input) return;
@@ -2713,247 +963,78 @@ export default function CashuWalletModal({
     }
   }, [paymentRequestsEnabled]);
 
-  const clearProofStateSubscriptions = useCallback(() => {
-    proofStateSubscriptionsRef.current.forEach((cancel) => {
-      try {
-        cancel();
-      } catch (err) {
-        console.warn("Error closing proof state subscription", err);
-      }
-    });
-    proofStateSubscriptionsRef.current.clear();
-    proofStateSubscriptionMetadataRef.current.clear();
-  }, []);
-  const resetTokenTracking = useCallback(() => {
-    clearProofStateSubscriptions();
-    proofSubscriptionCooldownRef.current.clear();
-    unsupportedProofSubscriptionMintsRef.current.clear();
-    mintQuoteSubscriptionCooldownRef.current.clear();
-    unsupportedMintQuoteSubscriptionMintsRef.current.clear();
-    initialTokenCheckIdsRef.current.clear();
-    tokenStateCheckRunningRef.current = false;
-    setHistoryCheckStates({});
-    setHistoryMintQuoteStates({});
-    setHistory((prev) => {
-      let changed = false;
-      const next = prev.map((entry) => {
-        let nextTokenState = entry.tokenState;
-        let tokenChanged = false;
-        if (nextTokenState) {
-          const suppress = nextTokenState.suppressChecks === true;
-          const hasErrorMeta =
-            !!nextTokenState.lastError ||
-            !!nextTokenState.lastErrorAt ||
-            (nextTokenState.errorCount ?? 0) > 0;
-          if (!suppress || hasErrorMeta) {
-            nextTokenState = {
-              ...nextTokenState,
-              suppressChecks: true,
-            };
-            delete (nextTokenState as any).lastError;
-            delete (nextTokenState as any).lastErrorAt;
-            delete (nextTokenState as any).errorCount;
-            tokenChanged = true;
-          }
-        }
-        let nextMintQuote = entry.mintQuote;
-        let quoteChanged = false;
-        if (nextMintQuote) {
-          const suppress = nextMintQuote.suppressChecks === true;
-          const hasErrorMeta =
-            !!nextMintQuote.lastError ||
-            !!nextMintQuote.lastErrorAt ||
-            (nextMintQuote.errorCount ?? 0) > 0;
-          if (!suppress || hasErrorMeta) {
-            nextMintQuote = {
-              ...nextMintQuote,
-              suppressChecks: true,
-            };
-            delete (nextMintQuote as any).lastError;
-            delete (nextMintQuote as any).lastErrorAt;
-            delete (nextMintQuote as any).errorCount;
-            quoteChanged = true;
-          }
-        }
-        if (!tokenChanged && !quoteChanged) {
-          return entry;
-        }
-        changed = true;
-        return {
-          ...entry,
-          ...(tokenChanged ? { tokenState: nextTokenState! } : {}),
-          ...(quoteChanged ? { mintQuote: nextMintQuote! } : {}),
-        };
-      });
-      return changed ? next : prev;
-    });
-  }, [
+  const {
+    handleRevertHistoryToken,
+    handleMintQuoteClaimSuccess,
+    claimMintQuoteById,
+    performTokenStateCheck,
+    handleCheckHistoryMintQuote,
     clearProofStateSubscriptions,
+    resetTokenTracking,
+    isHistoryEntryPending,
+    expireStaleMintQuotes,
+    pruneStaleUnpaidMintQuotes,
+  } = useTokenHistoryActions({
+    mintUrl,
     setHistory,
     setHistoryCheckStates,
     setHistoryMintQuoteStates,
-  ]);
-  const normalizedLnInput = useMemo(() => lnInput.trim().replace(/^lightning:/i, "").trim(), [lnInput]);
-  const isLnAddress = useMemo(() => /^[^@\s]+@[^@\s]+$/.test(normalizedLnInput), [normalizedLnInput]);
-  const isLnurlInput = useMemo(() => /^lnurl[0-9a-z]+$/i.test(normalizedLnInput), [normalizedLnInput]);
-  const isBolt11Input = useMemo(() => /^ln(bc|tb|sb|bcrt)[0-9]/i.test(normalizedLnInput), [normalizedLnInput]);
-  const lightningSendAddressDisplay = useMemo(() => {
-    if (!isLnAddress) return "";
-    return formatLightningAddressDisplay(normalizedLnInput);
-  }, [isLnAddress, normalizedLnInput]);
-  const lightningDestinationDisplay = useMemo(() => {
-    if (!normalizedLnInput) return "";
-    if (isLnAddress) return lightningSendAddressDisplay;
-    if (isLnurlInput) return `LNURL (${lnurlPayData?.domain || extractDomain(normalizedLnInput)})`;
-    return normalizedLnInput;
-  }, [
+    setHistoryRevertState,
+    proofStateSubscriptionsRef,
+    proofStateSubscriptionMetadataRef,
+    proofSubscriptionCooldownRef,
+    unsupportedProofSubscriptionMintsRef,
+    mintQuoteSubscriptionCooldownRef,
+    unsupportedMintQuoteSubscriptionMintsRef,
+    initialTokenCheckIdsRef,
+    tokenStateCheckRunningRef,
+    buildHistoryEntry,
+    receiveToken,
+    showToast,
+    checkProofStates,
+    checkMintQuote,
+    claimMint,
+    normalizeMintUrl,
+    sumProofAmounts,
+    deriveSpentHistoryTokenStateFromToken,
+    sanitizeProofStateValue,
+    aggregateStoredProofStates,
+    summarizeStoredProofStates,
+    extractWitnesses,
+    computeProofY,
+    buildTokenSpentToastMessage,
+    shouldSuppressProofStateChecks,
+    deriveTimestampFromId,
+    UNPAID_MINT_QUOTE_RETENTION_MS,
+  });
+  const {
+    normalizedLnInput,
     isLnAddress,
     isLnurlInput,
-    lnurlPayData,
+    isBolt11Input,
     lightningSendAddressDisplay,
-    normalizedLnInput,
-  ]);
-  const lightningInvoiceAmountSat = useMemo(
-    () => (isBolt11Input ? estimateInvoiceAmountSat(normalizedLnInput) : null),
-    [isBolt11Input, normalizedLnInput],
-  );
-  const tokenizedHistoryItems = useMemo(
-    () => history.filter((entry) => entry.tokenState && entry.tokenState.proofs.length),
-    [history],
-  );
-  const pendingTokenStateItems = useMemo(() => {
-    const now = Date.now();
-    const earliestAllowed = now - TOKEN_STATE_BACKGROUND_WINDOW_MS;
-    return tokenizedHistoryItems.filter((entry) => {
-      const tokenState = entry.tokenState;
-      if (!tokenState) return false;
-      if (tokenState.lastState === "SPENT") return false;
-      if (tokenState.suppressChecks === true) return false;
-      if (typeof entry.summary === "string" && entry.summary.includes("(spent)")) return false;
-      const createdAt = typeof entry.createdAt === "number" ? entry.createdAt : null;
-      const lastCheckedAt = typeof tokenState.lastCheckedAt === "number" ? tokenState.lastCheckedAt : null;
-      const lastActivity = Math.max(createdAt ?? 0, lastCheckedAt ?? 0);
-      if (lastActivity <= 0) return false;
-      return lastActivity >= earliestAllowed;
-    });
-  }, [tokenizedHistoryItems]);
-  const pendingMintQuoteHistoryItems = useMemo(() => {
-    const normalizedActive = mintUrl ? normalizeMintUrl(mintUrl) : null;
-    const now = Date.now();
-    const earliestAllowed = now - MINT_QUOTE_SUBSCRIPTION_WINDOW_MS;
-    return history.filter((entry) => {
-      const mintQuote = entry.mintQuote;
-      if (!mintQuote) return false;
-      const quoteId = mintQuote.quote?.trim();
-      if (!quoteId) return false;
-      if (mintQuote.suppressChecks) return false;
-      const createdAt =
-        typeof mintQuote.createdAt === "number"
-          ? mintQuote.createdAt
-          : typeof entry.createdAt === "number"
-            ? entry.createdAt
-            : deriveTimestampFromId(entry.id);
-      if (createdAt && Number.isFinite(createdAt) && createdAt < earliestAllowed) return false;
-      if (mintQuote.expiresAt && mintQuote.expiresAt <= now) return false;
-      const targetMint = mintQuote.mintUrl ? normalizeMintUrl(mintQuote.mintUrl) : normalizedActive;
-      if (!targetMint) return false;
-      return true;
-    });
-  }, [history, mintUrl]);
-  const isHistoryEntryPending = useCallback((entry: HistoryItem) => {
-    if (entry.pendingTokenId && entry.pendingStatus !== "redeemed") return true;
-    if (entry.tokenState && entry.tokenState.lastState !== "SPENT") return true;
-    if (entry.mintQuote) return true;
-    return false;
-  }, []);
-  const pendingHistoryItems = useMemo(
-    () => history.filter((entry) => isHistoryEntryPending(entry)),
-    [history, isHistoryEntryPending],
-  );
-  const bountyHistoryItems = useMemo(
-    () => history.filter((entry) => entry.entryKind === "bounty-attachment"),
-    [history],
-  );
-  const filteredHistory = useMemo(() => {
-    if (historyFilter === "pending") {
-      return pendingHistoryItems;
-    }
-    if (historyFilter === "bounty") {
-      return bountyHistoryItems;
-    }
-    return history;
-  }, [history, historyFilter, pendingHistoryItems, bountyHistoryItems]);
-  const hasExpiringMintQuotes = useMemo(
-    () => history.some((entry) => entry.mintQuote?.expiresAt),
-    [history],
-  );
-  const expireStaleMintQuotes = useCallback(() => {
-    setHistory((prev) => {
-      const now = Date.now();
-      let changed = false;
-      const removedIds: string[] = [];
-      const next = prev.filter((entry) => {
-        const expiresAt = entry.mintQuote?.expiresAt;
-        if (!expiresAt) return true;
-        if (expiresAt > now) return true;
-        changed = true;
-        removedIds.push(entry.id);
-        return false;
-      });
-      if (changed) {
-        setHistoryMintQuoteStates((prevStates) => {
-          if (!removedIds.length) return prevStates;
-          const updated = { ...prevStates };
-          removedIds.forEach((id) => {
-            if (id in updated) {
-              delete updated[id];
-            }
-          });
-          return updated;
-        });
-      }
-      return changed ? next : prev;
-    });
-  }, [setHistory, setHistoryMintQuoteStates]);
-  const pruneStaleUnpaidMintQuotes = useCallback(() => {
-    setHistory((prev) => {
-      const now = Date.now();
-      let changed = false;
-      const removedIds: string[] = [];
-      const next = prev.filter((entry) => {
-        const mintQuote = entry.mintQuote;
-        if (!mintQuote) return true;
-        const normalizedState =
-          typeof mintQuote.state === "string" && mintQuote.state
-            ? mintQuote.state.toUpperCase()
-            : "";
-        if (normalizedState === "PAID" || normalizedState === "ISSUED") return true;
-        const createdAt =
-          typeof mintQuote.createdAt === "number"
-            ? mintQuote.createdAt
-            : typeof entry.createdAt === "number"
-              ? entry.createdAt
-              : deriveTimestampFromId(entry.id);
-        if (!Number.isFinite(createdAt) || createdAt <= 0) return true;
-        if (now - createdAt < UNPAID_MINT_QUOTE_RETENTION_MS) return true;
-        changed = true;
-        removedIds.push(entry.id);
-        return false;
-      });
-      if (!changed) return prev;
-      setHistoryMintQuoteStates((prevStates) => {
-        if (!removedIds.some((id) => id in prevStates)) return prevStates;
-        const updated = { ...prevStates };
-        removedIds.forEach((id) => {
-          if (id in updated) {
-            delete updated[id];
-          }
-        });
-        return updated;
-      });
-      return next;
-    });
-  }, [setHistory, setHistoryMintQuoteStates]);
+    lightningDestinationDisplay,
+    lightningInvoiceAmountSat,
+    bolt11Details,
+    lnurlRequiresAmount,
+  } = useLightningInputDerived({ lnInput, lnurlPayData });
+  const {
+    tokenizedHistoryItems,
+    pendingTokenStateItems,
+    pendingMintQuoteHistoryItems,
+    pendingHistoryItems,
+    bountyHistoryItems,
+    filteredHistory,
+    hasExpiringMintQuotes,
+    historyFilterControls,
+  } = useHistoryFilter({
+    history,
+    mintUrl,
+    isHistoryEntryPending,
+    historyFilter,
+    setHistoryFilter,
+    setExpandedHistoryId,
+  });
   useEffect(() => {
     if (!hasExpiringMintQuotes) return;
     expireStaleMintQuotes();
@@ -2965,58 +1046,6 @@ export default function CashuWalletModal({
     const timer = window.setInterval(pruneStaleUnpaidMintQuotes, 60 * 60 * 1000);
     return () => window.clearInterval(timer);
   }, [pruneStaleUnpaidMintQuotes]);
-  const historyFilterControls = useMemo(() => {
-    if (!history.length) return null;
-    return (
-      <div className="history-filter" role="group" aria-label="Filter history">
-        <button
-          type="button"
-          className="history-filter__option"
-          onClick={() => {
-            setHistoryFilter("all");
-            setExpandedHistoryId(null);
-          }}
-          aria-pressed={historyFilter === "all"}
-        >
-          All
-        </button>
-        <span className="history-filter__divider" aria-hidden="true">
-          •
-        </span>
-        <button
-          type="button"
-          className="history-filter__option"
-          onClick={() => {
-            setHistoryFilter("bounty");
-            setExpandedHistoryId(null);
-          }}
-          disabled={!bountyHistoryItems.length}
-          aria-pressed={historyFilter === "bounty"}
-        >
-          Bounties
-          {bountyHistoryItems.length ? (
-            <span className="history-filter__badge">{bountyHistoryItems.length}</span>
-          ) : null}
-        </button>
-        <span className="history-filter__divider" aria-hidden="true">
-          •
-        </span>
-        <button
-          type="button"
-          className="history-filter__option"
-          onClick={() => {
-            setHistoryFilter("pending");
-            setExpandedHistoryId(null);
-          }}
-          disabled={!pendingHistoryItems.length}
-          aria-pressed={historyFilter === "pending"}
-        >
-          Pending
-          <span className="history-filter__badge">{pendingHistoryItems.length}</span>
-        </button>
-      </div>
-    );
-  }, [history.length, historyFilter, pendingHistoryItems.length, bountyHistoryItems.length]);
   useEffect(() => {
     if (historyFilter === "pending" && pendingHistoryItems.length === 0) {
       setHistoryFilter("all");
@@ -3033,241 +1062,25 @@ export default function CashuWalletModal({
       setExpandedHistoryId(null);
     }
   }, [expandedHistoryId, filteredHistory]);
-  const bolt11Details = useMemo(() => {
-    if (!isBolt11Input) return null;
-    try {
-      const { amountMsat } = decodeBolt11Amount(normalizedLnInput);
-      if (amountMsat === null) {
-        return { message: "Invoice amount: not specified" };
-      }
-      return { message: `Invoice amount: ${formatMsatAsSat(amountMsat)}` };
-    } catch (err: any) {
-      return { error: err?.message || "Unable to decode invoice" };
-    }
-  }, [isBolt11Input, normalizedLnInput]);
-  const lnurlRequiresAmount = useMemo(() => {
-    if (!isLnurlInput) return false;
-    if (!lnurlPayData) return true;
-    if (lnurlPayData.lnurl.trim().toLowerCase() !== normalizedLnInput.toLowerCase()) return true;
-    return lnurlPayData.minSendable !== lnurlPayData.maxSendable;
-  }, [isLnurlInput, lnurlPayData, normalizedLnInput]);
-  const messageItemsByEventId = useMemo(() => {
-    const map = new Map<string, WalletMessageItem>();
-    messageItems.forEach((item) => {
-      const key = item.dmEventId?.trim();
-      if (key) map.set(key, item);
-    });
-    return map;
-  }, [messageItems]);
-  const pendingMessageItemsByEventId = useMemo(() => {
-    const map = new Map<string, WalletMessageItem>();
-    (inboxPendingItems || []).forEach((item) => {
-      map.set(buildWalletMessageSyntheticEventId(item), item);
-    });
-    return map;
-  }, [inboxPendingItems]);
-  const pendingCalendarInvitesByEventId = useMemo(() => {
-    const map = new Map<string, PendingCalendarInvite>();
-    (pendingCalendarInvites || []).forEach((invite) => {
-      map.set(buildCalendarInviteSyntheticEventId(invite), invite);
-    });
-    return map;
-  }, [pendingCalendarInvites]);
-  const isUnreadThreadStatus = useCallback((status?: string | null) => {
-    if (!status) return false;
-    return (
-      status !== "accepted" &&
-      status !== "deleted" &&
-      status !== "dismissed" &&
-      status !== "declined" &&
-      status !== "tentative" &&
-      status !== "read"
-    );
-  }, []);
-  const collectUnreadThreadItemEventIds = useCallback(
-    (messages: WalletDmMessage[], peerPubkey?: string | null) => {
-      const unreadIds = new Set<string>();
-      messages.forEach((message) => {
-        const item = messageItemsByEventId.get(message.eventId) || pendingMessageItemsByEventId.get(message.eventId);
-        if (isUnreadThreadStatus(item?.status)) {
-          unreadIds.add(message.eventId);
-        }
-        const invite = pendingCalendarInvitesByEventId.get(message.eventId);
-        if (isUnreadThreadStatus(invite?.status)) {
-          unreadIds.add(message.eventId);
-        }
-      });
-      const normalizedPeer = normalizeDmPeerHex(peerPubkey || messages[0]?.peerPubkey || "");
-      if (normalizedPeer) {
-        (inboxPendingItems || []).forEach((item) => {
-          if (!isUnreadThreadStatus(item.status)) return;
-          const itemPeer = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
-          if (itemPeer !== normalizedPeer) return;
-          unreadIds.add(buildWalletMessageSyntheticEventId(item));
-        });
-        (pendingCalendarInvites || []).forEach((invite) => {
-          if (!isUnreadThreadStatus(invite.status)) return;
-          const invitePeer = normalizeDmPeerHex(invite.sender?.pubkey || invite.sender?.npub);
-          if (invitePeer !== normalizedPeer) return;
-          unreadIds.add(buildCalendarInviteSyntheticEventId(invite));
-        });
-      }
-      return Array.from(unreadIds);
-    },
-    [
-      inboxPendingItems,
-      isUnreadThreadStatus,
-      messageItemsByEventId,
-      pendingCalendarInvites,
-      pendingCalendarInvitesByEventId,
-      pendingMessageItemsByEventId,
-    ],
-  );
-  const syntheticDmMessages = useMemo(() => {
-    void dmDeletedEventsVersion;
-    void dmTempDeletedEventsVersion;
-    const isSuppressedEventId = (eventId: string) =>
-      dmDeletedEventsRef.current.has(eventId) || (dmTempDeletedEventsRef.current.get(eventId) ?? 0) > Date.now();
-    const existingEventIds = new Set(dmMessages.map((message) => message.eventId));
-    const messages: WalletDmMessage[] = [];
-    (inboxPendingItems || []).forEach((item) => {
-      const eventId = buildWalletMessageSyntheticEventId(item);
-      if (existingEventIds.has(eventId)) return;
-      if (isSuppressedEventId(eventId)) return;
-      const peerHex = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
-      if (!peerHex) return;
-      const title = item.title?.trim() || item.task?.title?.trim() || item.boardName?.trim() || "Shared item";
-      const createdAt = parseDateLikeToUnixSeconds(item.receivedAt);
-      const preview =
-        item.type === "board"
-          ? `Shared board: ${item.boardName || title}`
-          : item.type === "contact"
-            ? `Shared contact: ${item.contact?.name || item.contact?.displayName || title}`
-            : item.type === "task"
-              ? `Shared task: ${title}`
-              : title;
-      const attachment: WalletDmAttachment =
-        item.type === "board"
-          ? {
-              type: "board",
-              boardName: item.boardName || title,
-              boardId: item.boardId,
-              taskId: item.id,
-              status: item.status ?? null,
-            }
-          : item.type === "contact"
-            ? {
-                type: "contact",
-                contactName: item.contact?.name || item.contact?.displayName || title,
-                displayName: item.contact?.displayName,
-                username: item.contact?.username,
-                npub: item.contact?.npub,
-                nip05: item.contact?.nip05,
-                address: item.contact?.address,
-                picture: item.contact?.picture,
-                taskId: item.id,
-                status: item.status ?? null,
-              }
-            : item.type === "task"
-              ? {
-                  type: "task",
-                  task: item.task || null,
-                  taskId: item.id,
-                  status: item.status ?? null,
-                }
-              : { type: "text" };
-      messages.push({
-        id: eventId,
-        eventId,
-        peerPubkey: peerHex,
-        isIncoming: true,
-        createdAt,
-        content: item.note?.trim() || title,
-        preview,
-        attachment,
-      });
-    });
-    (pendingCalendarInvites || []).forEach((invite) => {
-      const eventId = buildCalendarInviteSyntheticEventId(invite);
-      if (existingEventIds.has(eventId)) return;
-      if (isSuppressedEventId(eventId)) return;
-      const peerHex = normalizeDmPeerHex(invite.sender?.pubkey || invite.sender?.npub);
-      if (!peerHex) return;
-      const whenLabel = formatCalendarInviteWhen ? formatCalendarInviteWhen(invite) : "";
-      const title = invite.title?.trim() || "Event invite";
-      messages.push({
-        id: eventId,
-        eventId,
-        peerPubkey: peerHex,
-        isIncoming: true,
-        createdAt: parseDateLikeToUnixSeconds(invite.receivedAt || invite.start),
-        content: invite.view?.trim() || invite.canonical?.trim() || title,
-        preview: whenLabel ? `Event invite: ${title} · ${whenLabel}` : `Event invite: ${title}`,
-        attachment: {
-          type: "event",
-          title,
-          start: invite.start,
-          end: invite.end,
-          whenLabel,
-          inviteId: invite.id,
-          status: invite.status,
-          canonical: invite.canonical,
-          view: invite.view,
-        },
-      });
-    });
-    messages.sort((a, b) => a.createdAt - b.createdAt);
-    return messages;
-  }, [
+  const {
+    messageItemsByEventId,
+    pendingMessageItemsByEventId,
+    pendingCalendarInvitesByEventId,
+    syntheticDmMessages,
+    displayDmMessages,
+    paymentHistoryByEventId,
+  } = useDmMessageDerived({
+    messageItems,
+    inboxPendingItems,
+    pendingCalendarInvites,
     dmDeletedEventsVersion,
     dmMessages,
     dmTempDeletedEventsVersion,
     formatCalendarInviteWhen,
-    inboxPendingItems,
-    pendingCalendarInvites,
-  ]);
-  const displayDmMessages = useMemo(() => {
-    void dmDeletedEventsVersion;
-    void dmTempDeletedEventsVersion;
-    const merged = new Map<string, WalletDmMessage>();
-    syntheticDmMessages.forEach((message) => {
-      merged.set(message.eventId, message);
-    });
-    dmMessages.forEach((message) => {
-      if (dmDeletedEventsRef.current.has(message.eventId)) return;
-      if ((dmTempDeletedEventsRef.current.get(message.eventId) ?? 0) > Date.now()) return;
-      merged.set(message.eventId, message);
-    });
-    return Array.from(merged.values()).sort((a, b) => a.createdAt - b.createdAt);
-  }, [
-    dmDeletedEventsVersion,
-    dmMessages,
-    dmTempDeletedEventsVersion,
-    syntheticDmMessages,
-  ]);
-  const paymentHistoryByEventId = useMemo(() => {
-    const map = new Map<string, HistoryItem>();
-    history.forEach((entry) => {
-      const match = PAYMENT_HISTORY_EVENT_ID_REGEX.exec(entry.id);
-      if (match?.[1]) {
-        map.set(match[1].toLowerCase(), entry);
-      }
-    });
-    return map;
-  }, [history]);
-  const dmPreviewForMessage = useCallback(
-    (msg: WalletDmMessage) => {
-      if (msg.attachment?.type === "payment") {
-        const historyEntry = paymentHistoryByEventId.get(msg.eventId.toLowerCase());
-        if (historyEntry?.summary) {
-          return historyEntry.summary;
-        }
-      }
-      return msg.preview;
-    },
-    [paymentHistoryByEventId],
-  );
-
+    history,
+    dmDeletedEventsRef,
+    dmTempDeletedEventsRef,
+  });
   const messageItemStatusRef = useRef<Map<string, WalletMessageItem["status"]>>(new Map());
   useEffect(() => {
     const seenIds = new Set<string>();
@@ -3294,505 +1107,65 @@ export default function CashuWalletModal({
       }
     });
   }, [messageItems, showToast]);
-  const ensurePeerProfile = useCallback(
-    async (pubkey: string) => {
-      const normalized = normalizeNostrPubkey(pubkey);
-      if (!normalized) return null;
-      const peerHex = compressedToRawHex(normalized).toLowerCase();
-      if (dmPeerProfilesRef.current.has(peerHex)) return dmPeerProfilesRef.current.get(peerHex)!;
-      const cachedProfiles = loadContactProfileCache();
-      const cached = cachedProfiles[peerHex];
-      const cachedProfile = cached?.profile ? cachedContactProfileToDmProfile(cached) : null;
-      const contactEntry = contactsRef.current.find((c) => {
-        const cn = normalizeNostrPubkey(c.npub || "");
-        if (!cn) return false;
-        return compressedToRawHex(cn).toLowerCase() === peerHex;
-      });
-      if (contactEntry) {
-        dmPeerProfilesRef.current.set(peerHex, {
-          username: contactEntry.username || contactEntry.name || cachedProfile?.username,
-          displayName: contactDisplayLabel(contactEntry),
-          lud16: contactEntry.address || undefined,
-          paymentRequest: contactEntry.paymentRequest || undefined,
-          nip05: contactEntry.nip05 || cachedProfile?.nip05 || undefined,
-          picture: pickPreferredProfilePhoto(cached?.pictureDataUrl, contactEntry.picture, cachedProfile?.picture),
-          about: contactEntry.about || cachedProfile?.about || undefined,
-          creq: cachedProfile?.creq,
-          relays:
-            Array.isArray(contactEntry.relays) && contactEntry.relays.length
-              ? contactEntry.relays
-              : cachedProfile?.relays,
-        });
-        setDmPeerProfilesVersion((v) => v + 1);
-        if (contactEntry.nip05) {
-          ensureNip05VerificationRef.current?.(
-            `dm-${peerHex}`,
-            contactEntry.nip05,
-            pubkey,
-            contactEntry.updatedAt ?? null,
-          );
-        }
-        return dmPeerProfilesRef.current.get(peerHex)!;
-      }
-      if (cachedProfile) {
-        dmPeerProfilesRef.current.set(peerHex, cachedProfile);
-        setDmPeerProfilesVersion((v) => v + 1);
-        if (cachedProfile.nip05) {
-          ensureNip05VerificationRef.current?.(
-            `dm-${peerHex}`,
-            cachedProfile.nip05,
-            pubkey,
-            cached.updatedAt ?? null,
-          );
-        }
-        return cachedProfile;
-      }
-      if (dmPeerProfileLoadingRef.current.has(peerHex)) return null;
-      dmPeerProfileLoadingRef.current.add(peerHex);
-      try {
-        const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
-        if (!relays.length) return null;
-        const session = await NostrSession.init(relays);
-        const events = await session.fetchEvents([{ kinds: [0], authors: [peerHex] }], relays);
-        const profileEvent = Array.isArray(events)
-          ? events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0]
-          : null;
-        if (profileEvent?.content) {
-          const profile = parseProfileContent(profileEvent.content);
-          const updatedAt = (profileEvent.created_at || 0) * 1000;
-          const pictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
-          const cachedPictureUrl = typeof cached?.profile.picture === "string" ? cached.profile.picture.trim() : "";
-          const immediatePicture = pickPreferredProfilePhoto(
-            pictureUrl && cached?.pictureDataUrl && pictureUrl === cachedPictureUrl ? cached.pictureDataUrl : undefined,
-            profile.picture,
-          );
-          const displayProfile: ContactProfile = {
-            ...profile,
-            picture: immediatePicture,
-          };
-          dmPeerProfilesRef.current.set(peerHex, displayProfile);
-          setDmPeerProfilesVersion((v) => v + 1);
-          persistDmPeerProfileCache(
-            peerHex,
-            profile,
-            updatedAt,
-            immediatePicture && isDataUrl(immediatePicture) ? immediatePicture : undefined,
-          );
-          if (!immediatePicture && pictureUrl && shouldCacheProfilePhoto(pictureUrl)) {
-            void fetchProfilePhotoDataUrl(pictureUrl).then((dataUrl) => {
-              if (!dataUrl) return;
-              const current = dmPeerProfilesRef.current.get(peerHex) || profile;
-              dmPeerProfilesRef.current.set(peerHex, { ...current, picture: dataUrl });
-              setDmPeerProfilesVersion((v) => v + 1);
-              persistDmPeerProfileCache(peerHex, profile, updatedAt, dataUrl);
-            });
-          }
-          if (profile.nip05) {
-            ensureNip05VerificationRef.current?.(
-              `dm-${peerHex}`,
-              profile.nip05,
-              pubkey,
-              updatedAt,
-            );
-          }
-          return displayProfile;
-        }
-      } catch (err) {
-        console.warn("Failed to load DM peer profile", err);
-      } finally {
-        dmPeerProfileLoadingRef.current.delete(peerHex);
-      }
-      return null;
-    },
-    [
-      compressedToRawHex,
-      defaultNostrRelays,
-      normalizeNostrPubkey,
-      parseProfileContent,
-      persistDmPeerProfileCache,
-    ],
-  );
-  const getPeerProfile = useCallback(
-    (pubkey: string): ContactProfile | undefined => {
-      const normalized = normalizeNostrPubkey(pubkey);
-      if (!normalized) return undefined;
-      const peerHex = compressedToRawHex(normalized).toLowerCase();
-      return dmPeerProfilesRef.current.get(peerHex);
-    },
-    [compressedToRawHex, normalizeNostrPubkey],
-  );
-  const handleDmEvent = useCallback(
-    async (event: NostrEvent) => {
-      if (!event?.id) return;
-      if (dmProcessedEventsRef.current.has(event.id)) return;
-      if (dmDeletedEventsRef.current.has(event.id)) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-      const tempDeletedExpiresAt = dmTempDeletedEventsRef.current.get(event.id) ?? 0;
-      if (tempDeletedExpiresAt > Date.now()) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-      if (tempDeletedExpiresAt > 0) {
-        const nextTempDeleted = new Map(dmTempDeletedEventsRef.current);
-        nextTempDeleted.delete(event.id);
-        dmTempDeletedEventsRef.current = nextTempDeleted;
-        persistTempDeletedDmEvents(nextTempDeleted);
-        setDmTempDeletedEventsVersion((v) => v + 1);
-      }
-      const identity = ensureNostrIdentity();
-      if (!identity) return;
-      const decrypted = await decryptNostrPaymentMessage(event, identity.pubkey, identity.secret);
-      if (!decrypted) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-      const tempDeletedRumorExpiresAt = decrypted.rumorId
-        ? dmTempDeletedEventsRef.current.get(decrypted.rumorId) ?? 0
-        : 0;
-      if (tempDeletedRumorExpiresAt > Date.now()) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-      // Handle kind-7 emoji reactions (NIP-25 inside NIP-17 giftwrap)
-      if (decrypted.kind === 7) {
-        const tags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
-        const eTag = tags.find((t) => Array.isArray(t) && t[0] === "e");
-        const reactedToEventId = typeof eTag?.[1] === "string" ? eTag[1] : null;
-        if (reactedToEventId && decrypted.senderPubkey) {
-          const emoji = (decrypted.content || "").trim() || "❤️";
-          const sender = decrypted.senderPubkey.toLowerCase();
-          setDmReactions((prev) => {
-            const next = new Map(prev);
-            const existing = next.get(reactedToEventId) || [];
-            const filtered = existing.filter((r) => r.senderPubkey !== sender);
-            if (emoji !== "-") filtered.push({ emoji, senderPubkey: sender, reactEventId: event.id });
-            next.set(reactedToEventId, filtered);
-            return next;
-          });
-        }
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-      if (!decrypted.content) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-      const peerPubkey = resolvePeerPubkey(
-        event,
-        identity.pubkey,
-        decrypted.senderPubkey,
-        decrypted.recipientPubkey,
-      );
-      const normalizedPeer = (peerPubkey || event.pubkey || "").toLowerCase();
-      if (normalizedPeer && dmBlockedPeersRef.current.has(normalizedPeer)) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-      if (peerPubkey) {
-        void ensurePeerProfile(peerPubkey);
-      }
-
-      let attachment: WalletDmAttachment | undefined;
-      let preview = truncatePreview(decrypted.content, 140);
-      const share = parseShareEnvelope(decrypted.content);
-      const matchedItem = messageItemsRef.current.find((item) => item.dmEventId && item.dmEventId === event.id);
-
-      // 0xchat-compatible encrypted file attachment (kind-15 rumor).
-      // Inner rumor content is the plaintext URL to the encrypted blob; the crypto
-      // parameters live in dedicated tags per nostr-dart nip_017.dart:69-72.
-      const fileAttachment = (() => {
-        if (decrypted.kind !== 15) return null;
-        const tags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
-        let mimeType: string | null = null;
-        let algorithm: string | null = null;
-        let keyHex: string | null = null;
-        let nonceHex: string | null = null;
-        let sha256Tag: string | null = null;
-        let sizeTag: number | null = null;
-        let widthTag: number | null = null;
-        let heightTag: number | null = null;
-        let filenameTag: string | null = null;
-        for (const tag of tags) {
-          if (!Array.isArray(tag) || typeof tag[0] !== "string") continue;
-          const name = tag[0];
-          const value = typeof tag[1] === "string" ? tag[1] : "";
-          if (name === "file-type" && value) mimeType = value;
-          else if (name === "encryption-algorithm" && value) algorithm = value;
-          else if (name === "decryption-key" && value) keyHex = value;
-          else if (name === "decryption-nonce" && value) nonceHex = value;
-          else if (name === "x" && value) sha256Tag = value;
-          else if (name === "size" && value) {
-            const n = Number(value);
-            if (Number.isFinite(n) && n > 0) sizeTag = n;
-          } else if (name === "dim" && value) {
-            const parts = value.split(/x/i);
-            const w = Number(parts[0]);
-            const h = Number(parts[1]);
-            if (Number.isFinite(w) && w > 0) widthTag = w;
-            if (Number.isFinite(h) && h > 0) heightTag = h;
-          } else if (name === "filename" && value) filenameTag = value;
-        }
-        const url = (decrypted.content || "").trim();
-        if (!url || !keyHex || !nonceHex || !algorithm) return null;
-        if (!/^https?:\/\//i.test(url)) return null;
-        return {
-          type: "file" as const,
-          url,
-          mimeType: mimeType || "application/octet-stream",
-          filename: filenameTag,
-          size: sizeTag,
-          width: widthTag,
-          height: heightTag,
-          algorithm,
-          keyHex,
-          nonceHex,
-          sha256: sha256Tag,
-        };
-      })();
-
-      if (fileAttachment) {
-        attachment = fileAttachment;
-        const label = fileAttachment.filename || (isImageMime(fileAttachment.mimeType)
-          ? "Photo"
-          : isVideoMime(fileAttachment.mimeType)
-            ? "Video"
-            : isAudioMime(fileAttachment.mimeType)
-              ? "Audio"
-              : "File");
-        preview = isImageMime(fileAttachment.mimeType)
-          ? `📷 ${label}`
-          : isVideoMime(fileAttachment.mimeType)
-            ? `🎬 ${label}`
-            : isAudioMime(fileAttachment.mimeType)
-              ? `🎵 ${label}`
-              : `📎 ${label}`;
-      } else if (share && share.item.type === "board") {
-        attachment = {
-          type: "board",
-          boardName: share.item.boardName || "Shared board",
-          boardId: share.item.boardId,
-          taskId: matchedItem?.id ?? null,
-          status: matchedItem?.status ?? null,
-        };
-        preview = `Shared board: ${share.item.boardName || "Board"}`;
-      } else if (share && share.item.type === "contact") {
-        const contactNpub = normalizeNostrPubkey(share.item.npub);
-        if (contactNpub) {
-          void ensurePeerProfile(contactNpub);
-        }
-          attachment = {
-            type: "contact",
-            contactName: share.item.name || share.item.displayName || share.item.username || "Shared contact",
-            displayName: share.item.displayName,
-            username: share.item.username,
-            npub: share.item.npub,
-            nip05: share.item.nip05,
-            address: share.item.lud16 || (share.item as any).address || null,
-            picture: share.item.picture,
-            taskId: matchedItem?.id ?? null,
-            status: matchedItem?.status ?? null,
-          };
-        preview = `Shared contact${share.item.name ? `: ${share.item.name}` : ""}`;
-      } else if (share && share.item.type === "task") {
-        attachment = {
-          type: "task",
-          task: share.item,
-          taskId: matchedItem?.id ?? null,
-          status: matchedItem?.status ?? null,
-        };
-        preview = `Shared task${share.item.title ? `: ${share.item.title}` : ""}`;
-      } else {
-        const paymentPayload = parseIncomingPaymentMessage(decrypted.content);
-        if (paymentPayload) {
-          let amountSat: number | null = null;
-          let detail: string | null = null;
-          if (typeof paymentPayload === "object") {
-            const amountRaw =
-              (paymentPayload as any).amount ??
-              (paymentPayload as any).amountSat ??
-              (paymentPayload as any).amountMsat ??
-              (paymentPayload as any).amount_msat;
-            amountSat =
-              typeof amountRaw === "number"
-                ? Math.max(0, Math.floor((amountRaw >= 1_000_000 ? amountRaw / 1000 : amountRaw)))
-                : null;
-            detail = typeof (paymentPayload as any).memo === "string" ? (paymentPayload as any).memo : null;
-          } else if (typeof paymentPayload === "string") {
-            const decodedAmount = amountFromCashuToken(paymentPayload);
-            amountSat = decodedAmount > 0 ? decodedAmount : null;
-          }
-          attachment = {
-            type: "payment",
-            amountSat,
-            detail,
-            raw: decrypted.content,
-          };
-          preview =
-            amountSat && amountSat > 0
-              ? `Received ${amountSat} sats via Nostr`
-              : "Payment token received";
-        }
-      }
-
-      const createdAt =
-        (typeof decrypted.createdAt === "number" && Number.isFinite(decrypted.createdAt) && decrypted.createdAt > 0
-          ? Math.floor(decrypted.createdAt)
-          : 0) ||
-        (typeof event.created_at === "number" && Number.isFinite(event.created_at) && event.created_at > 0
-          ? Math.floor(event.created_at)
-          : 0) ||
-        Math.floor(Date.now() / 1000);
-      const normalizedSender = decrypted.senderPubkey
-        ? normalizeNostrPubkey(decrypted.senderPubkey) ?? decrypted.senderPubkey
-        : null;
-      const normalizedIdentity = normalizeNostrPubkey(identity.pubkey) ?? identity.pubkey;
-      const isIncoming =
-        normalizedSender != null ? normalizedSender !== normalizedIdentity : event.pubkey !== identity.pubkey;
-      if (isIncoming && attachment?.type === "payment") {
-        const handler = handlePaymentRequestEventRef.current;
-        if (handler) {
-          void handler(event, { updateClock: true });
-        }
-      }
-      // Detect group messages: 2+ p-tag recipients in the inner rumor
-      const rumorRecipients = Array.isArray(decrypted.recipientPubkeys)
-        ? decrypted.recipientPubkeys.map((p) => p.toLowerCase())
-        : [];
-      const rumorSender = (decrypted.senderPubkey || "").toLowerCase();
-      const isGroupMessage = rumorRecipients.length >= 2;
-      let groupId: string | undefined;
-      let groupName = "";
-      if (isGroupMessage && rumorSender) {
-        const allMembers = [...new Set([rumorSender, ...rumorRecipients])];
-        groupId = generateGroupId(allMembers);
-        // Extract subject tag for group name
-        const subjectTag = Array.isArray(decrypted.tags)
-          ? decrypted.tags.find((t) => Array.isArray(t) && t[0] === "subject")
-          : null;
-        groupName = typeof subjectTag?.[1] === "string" ? subjectTag[1].trim() : "";
-        // Auto-create or update group metadata
-        const existing = groupChatsRef.current.find((g) => g.groupId === groupId);
-        if (!existing) {
-          upsertGroupChat({
-            groupId,
-            name: groupName || "Group",
-            members: [...new Set([rumorSender, ...rumorRecipients])].sort(),
-            createdAt,
-            ...(groupName ? { nameUpdatedAt: createdAt } : {}),
-          });
-        } else if (groupName) {
-          upsertGroupChat({ ...existing, name: groupName, nameUpdatedAt: createdAt });
-        }
-        // Fetch profiles for all group members
-        for (const member of [rumorSender, ...rumorRecipients]) {
-          void ensurePeerProfile(member);
-        }
-      }
-      const isGroupMetadataOnly =
-        isGroupMessage &&
-        !!groupId &&
-        !!groupName &&
-        !attachment &&
-        !decrypted.content.trim();
-      if (isGroupMetadataOnly) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
-
-      // Extract reply-to event ID from the inner rumor's "e" tags (NIP-17 reply threading)
-      const innerTags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
-      const replyETag = innerTags.find((t) => Array.isArray(t) && t[0] === "e");
-      const replyToEventId = typeof replyETag?.[1] === "string" ? replyETag[1] : undefined;
-
-      const message: WalletDmMessage = {
-        id: crypto.randomUUID(),
-        eventId: event.id,
-        // rumorEventId is the inner rumor's canonical ID — used for cross-client reactions/replies.
-        // The outer giftwrap id (event.id) differs per recipient; the rumor id is the same for all.
-        ...(decrypted.rumorId ? { rumorEventId: decrypted.rumorId } : {}),
-        peerPubkey: isGroupMessage && groupId ? groupId : (peerPubkey || event.pubkey).toLowerCase(),
-        isIncoming,
-        createdAt,
-        content: decrypted.content,
-        preview,
-        attachment: attachment ?? { type: "text" },
-        ...(isGroupMessage && groupId ? { groupId, senderPubkey: rumorSender } : {}),
-        ...(replyToEventId ? { replyToEventId } : {}),
-      };
-
-      dmProcessedEventsRef.current.add(event.id);
-      setDmMessages((prev) => {
-        const existingIndex = prev.findIndex((m) => m.eventId === event.id);
-        const next =
-          existingIndex >= 0
-            ? prev.map((entry, index) =>
-                index === existingIndex ? { ...message, id: entry.id || message.id } : entry,
-              )
-            : [...prev, message];
-        next.sort((a, b) => a.createdAt - b.createdAt);
-        if (next.length > 400) next.shift();
-        return next;
-      });
-    },
-    [
-      decryptNostrPaymentMessage,
-      ensureNostrIdentity,
-      ensurePeerProfile,
-      normalizeNostrPubkey,
-      parseIncomingPaymentMessage,
-      persistTempDeletedDmEvents,
-      resolvePeerPubkey,
-      upsertGroupChat,
-    ],
-  );
-  const startDmSubscription = useCallback(async () => {
-    stopDmSubscription();
-    const identity = ensureNostrIdentity();
-    if (!identity) return;
-    const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
-    if (!relays.length) return;
-    const now = Math.floor(Date.now() / 1000);
-    const lastCompletedSyncAt = Math.floor(dmLastSyncRef.current / 1000);
-    // NIP-17 giftwraps use random past timestamps (up to 2 days back per spec).
-    // Look back 3 days before last sync to ensure all events with jittered timestamps are caught.
-    const incrementalSince = lastCompletedSyncAt > 0 ? Math.max(0, lastCompletedSyncAt - 3 * 24 * 60 * 60) : 0;
-    const since = incrementalSince > 0 ? incrementalSince : Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
-    try {
-      const session = await NostrSession.init(relays);
-      const filters = [
-        { kinds: [4, 1059], "#p": [identity.pubkey], since },
-        { kinds: [4, 1059], authors: [identity.pubkey], since },
-      ];
-      const managed = await session.subscribe(filters, {
-        relayUrls: relays,
-        onEvent: (ev) => {
-          void handleDmEvent(ev as NostrEvent);
-        },
-      });
-      dmSubscriptionCloseRef.current = () => {
-        try {
-          managed.release();
-        } catch {
-          // ignore
-        }
-      };
-
-      const history = await session.fetchEvents(filters, relays);
-      const ordered = history
-        .filter((ev) => ev && (ev.kind === 4 || ev.kind === 1059))
-        .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-      for (const ev of ordered) {
-        await handleDmEvent(ev as NostrEvent);
-      }
-      const completedAt = Date.now();
-      dmLastSyncRef.current = completedAt;
-      persistDmSyncMeta({ lastCompletedSyncAt: completedAt });
-    } catch (err) {
-      console.warn("Failed to sync DMs", err);
-    }
-  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, persistDmSyncMeta, stopDmSubscription]);
+  const { ensurePeerProfile, getPeerProfile, handleDmEvent, startDmSubscription } = useDmSubscription({
+    compressedToRawHex,
+    contactsRef,
+    ensureNip05VerificationRef,
+    dmPeerProfilesRef,
+    dmPeerProfileLoadingRef,
+    setDmPeerProfilesVersion,
+    dmDeletedEventsRef,
+    dmTempDeletedEventsRef,
+    persistTempDeletedDmEvents,
+    setDmTempDeletedEventsVersion,
+    dmProcessedEventsRef,
+    dmSubscriptionCloseRef,
+    dmLastSyncRef,
+    persistDmSyncMeta,
+    dmBlockedPeersRef,
+    messageItemsRef,
+    setDmMessages,
+    setDmReactions,
+    groupChatsRef,
+    upsertGroupChat,
+    decryptNostrPaymentMessage,
+    parseIncomingPaymentMessage,
+    resolvePeerPubkey,
+    stopDmSubscription,
+    ensureNostrIdentity,
+    defaultNostrRelays,
+    handlePaymentRequestEventRef,
+    DM_SYNC_LOOKBACK_SECONDS,
+    persistDmPeerProfileCache,
+    contactDisplayLabel,
+  });
+  const {
+    resolveNip17Timestamp,
+    resolveNip17Relays,
+    publishNip17Giftwraps,
+    handleSendReaction,
+    handleForwardMessage,
+    publishGroupSubjectUpdate,
+    resolveMessengerServerEntry,
+    sendMessengerFileAttachments,
+  } = useDmSend({
+    nip17TimestampMode,
+    walletDebugEnabled,
+    defaultNostrRelays,
+    ensureNostrPool,
+    safePublish,
+    readNostrIdentity,
+    handleDmEvent,
+    setDmReactions,
+    setDmMessageActions,
+    groupChatsRef,
+    setPendingMessages,
+    fileStorageServer,
+    fileServers,
+    encryptedFileStorageServer,
+    encryptedFileServers,
+    showToast,
+  });
   const contactIndex = useMemo(() => {
     const map = new Map<
       string,
@@ -3815,112 +1188,88 @@ export default function CashuWalletModal({
     });
     return map;
   }, [compressedToRawHex, contacts, normalizeNostrPubkey]);
-  const peerLabelFor = useCallback(
-    (peerHex: string) => {
-      const contact = contactIndex.get(peerHex);
-      const profile = dmPeerProfilesRef.current.get(peerHex);
-      const npub = formatNpubDisplay(peerHex);
-      const verifiedNip05 =
-        profile?.nip05 && isNip05VerifiedForRef.current?.(`dm-${peerHex}`, profile.nip05, npub)
-          ? profile.nip05
-          : null;
-      const label =
-        (profile?.displayName && profile.displayName.trim()) ||
-        (contact?.name && contact.name.trim()) ||
-        (verifiedNip05 ? verifiedNip05 : "") ||
-        (profile?.username && profile.username.trim()) ||
-        shortenNpubDisplay(npub) ||
-        peerHex.slice(0, 10);
-      const subtitle = verifiedNip05 || profile?.username || undefined;
-      const picture = pickPreferredProfilePhoto(profile?.picture, contact?.picture);
-      return { label, subtitle, picture, verifiedNip05 };
-    },
-    [contactIndex, formatNpubDisplay],
-  );
-  const sharedContactMetaFor = useCallback(
-    (npub?: string | null, fallbackName?: string | null, fallbackPicture?: string | null) => {
-      const normalized = npub ? normalizeNostrPubkey(npub) : null;
-      const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : null;
-      const profile = hex ? dmPeerProfilesRef.current.get(hex) : undefined;
-      const npubDisplay = hex ? formatNpubDisplay(hex) : formatNpubDisplay(npub);
-      const verifiedNip05 =
-        profile?.nip05 &&
-        hex &&
-        isNip05VerifiedForRef.current?.(`dm-${hex}`, profile.nip05, npubDisplay || npub || hex)
-          ? profile.nip05
-          : null;
-      const label =
-        (profile?.displayName && profile.displayName.trim()) ||
-        (fallbackName && fallbackName.trim()) ||
-        (verifiedNip05 ? verifiedNip05 : "") ||
-        (profile?.username && profile.username.trim()) ||
-        (npubDisplay ? shortenNpubDisplay(npubDisplay, 10, 6) : hex?.slice(0, 12) || "Contact");
-      const subtitle = verifiedNip05 || profile?.username || (npubDisplay || undefined);
-      const picture = pickPreferredProfilePhoto(profile?.picture, fallbackPicture);
-      return {
-        label,
-        subtitle,
-        picture,
-        verifiedNip05,
-        npub: npubDisplay || formatNpubDisplay(npub) || "",
-      };
-    },
-    [compressedToRawHex, formatNpubDisplay, normalizeNostrPubkey],
-  );
-  const buildSharedContactPreview = useCallback(
-    (
-      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
-      item?: WalletMessageItem | null,
-    ): SharedContactPreview | null => {
-      const attachmentNpub = attachment?.npub || item?.contact?.npub || "";
-      const normalizedNpub = normalizeNostrPubkey(attachmentNpub);
-      const contactHex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
-      const profile = contactHex ? dmPeerProfilesRef.current.get(contactHex) : undefined;
-      const normalized = normalizeContact({
-        id: item?.id ? `shared-contact-${item.id}` : makeContactId(),
-        kind: attachmentNpub ? "nostr" : "custom",
-        name:
-          item?.contact?.name ||
-          attachment?.contactName ||
-          attachment?.displayName ||
-          profile?.displayName ||
-          attachment?.username ||
-          profile?.username ||
-          "",
-        displayName: attachment?.displayName || item?.contact?.displayName || profile?.displayName || "",
-        username: attachment?.username || item?.contact?.username || profile?.username || "",
-        address: attachment?.address || item?.contact?.address || profile?.lud16 || "",
-        npub: attachmentNpub,
-        nip05: attachment?.nip05 || item?.contact?.nip05 || profile?.nip05 || "",
-        about: profile?.about || "",
-        picture: pickPreferredProfilePhoto(profile?.picture, attachment?.picture || item?.contact?.picture || null),
-        source: "sync",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      if (!normalized) return null;
-      return {
-        contact: normalized,
-        itemId: item?.id ?? attachment?.taskId ?? null,
-        status: item?.status ?? attachment?.status ?? null,
-      };
-    },
-    [compressedToRawHex, makeContactId, normalizeContact, normalizeNostrPubkey],
-  );
-  const openSharedContactPreview = useCallback(
-    (
-      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
-      item?: WalletMessageItem | null,
-    ) => {
-      const preview = buildSharedContactPreview(attachment, item);
-      if (!preview) {
-        showToast("Unable to open shared contact", 2200);
-        return;
-      }
-      setSharedContactPreview(preview);
-    },
-    [buildSharedContactPreview, showToast],
-  );
+  const {
+    isUnreadThreadStatus,
+    collectUnreadThreadItemEventIds,
+    dmPreviewForMessage,
+    peerLabelFor,
+    sharedContactMetaFor,
+    buildSharedContactPreview,
+    openSharedContactPreview,
+    isArchivedDmThread,
+    matchesDmThreadSearch,
+    openConversationForPeer,
+    openConversationForGroup,
+    buildShareRelayList,
+    sendContactShareToPubkeys,
+    handleShareContactToContact,
+    closeAttachTray,
+    handleToggleAttachTray,
+    handleOpenChatPhotoPicker,
+    handleOpenChatFilePicker,
+    handleOpenChatContactPicker,
+  } = useDmThreadUtils({
+    inboxPendingItems,
+    messageItemsByEventId,
+    pendingMessageItemsByEventId,
+    pendingCalendarInvitesByEventId,
+    pendingCalendarInvites,
+    paymentHistoryByEventId,
+    contactIndex,
+    dmArchivedThreadsVersion,
+    groupChats,
+    dmSearch,
+    displayDmMessages,
+    activeThreadPeer,
+    shareContactSource,
+    profileForm,
+    setSharedContactPreview,
+    setActiveThreadPeer,
+    setDmView,
+    setChatView,
+    setContactView,
+    setActiveContactId,
+    setContactDetailOverride,
+    setContactReturnView,
+    setDmSearch,
+    setDmMessages,
+    setActiveGroupId,
+    setAttachTrayOpen,
+    setShareContactPickerOpen,
+    setShareContactPickerMode,
+    setShareContactSource,
+    setShareContactStatus,
+    setShareContactBusy,
+    dmArchivedThreadsRef,
+    dmPeerProfilesRef,
+    nostrIdentityRef,
+    groupChatsRef,
+    isNip05VerifiedForRef,
+    chatComposeInputRef,
+    chatPhotoInputRef,
+    chatFileInputRef,
+    shareContactOpenedAtPeerRef,
+    normalizeNostrPubkey,
+    compressedToRawHex,
+    formatNpubDisplay,
+    shortenNpubDisplay,
+    pickPreferredProfilePhoto,
+    makeContactId,
+    normalizeContact,
+    dmThreadKeyForThread,
+    formatContactNpub,
+    formatNpub,
+    buildContactShareEnvelope,
+    sendShareMessage,
+    readNostrIdentity,
+    defaultNostrRelays,
+    buildWalletMessageSyntheticEventId,
+    buildCalendarInviteSyntheticEventId,
+    normalizeDmPeerHex,
+    showToast,
+    LS_NOSTR_RELAYS,
+    kvStorage,
+  });
   useEffect(() => {
     if (!displayDmMessages.length) return;
     const targets = new Set<string>();
@@ -3938,64 +1287,35 @@ export default function CashuWalletModal({
       void ensurePeerProfile(pubkey);
     });
   }, [displayDmMessages, ensurePeerProfile]);
-  const dmThreads = useMemo(() => {
-    if (!displayDmMessages.length) return [] as WalletDmThread[];
-    const threads = new Map<string, WalletDmThread>();
-    const contactKeys = new Set(Array.from(contactIndex.keys()));
-    // Use reactive identity pubkey (falls back to ref) so self-chat is never a stranger
-    const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
-    displayDmMessages.forEach((msg) => {
-      const preview = dmPreviewForMessage(msg);
-      const threadKey = msg.groupId || msg.peerPubkey.toLowerCase();
-      const existing = threads.get(threadKey);
-      const base: WalletDmThread =
-        existing ??
-        {
-          peerPubkey: threadKey,
-          messages: [],
-          lastCreatedAt: 0,
-          lastPreview: "",
-          isStranger: msg.groupId ? false : !contactKeys.has(threadKey) && (ownHex === "" || threadKey !== ownHex),
-          ...(msg.groupId ? { groupId: msg.groupId } : {}),
-        };
-      base.messages.push(msg);
-      if (msg.createdAt > base.lastCreatedAt) {
-        base.lastCreatedAt = msg.createdAt;
-        base.lastPreview = preview;
-      }
-      threads.set(threadKey, base);
-    });
-    const ordered = Array.from(threads.values()).map((thread) => ({
-      ...thread,
-      messages: [...thread.messages].sort((a, b) => a.createdAt - b.createdAt),
-    }));
-    ordered.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
-    return ordered;
-  }, [contactIndex, displayDmMessages, dmPreviewForMessage, nostrIdentityInfo]);
-  const activeThread = useMemo(
-    () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
-    [activeThreadPeer, dmThreads],
-  );
-  const activeGroupChat = useMemo(
-    () => (activeThread?.groupId ? groupChats.find((group) => group.groupId === activeThread.groupId) ?? null : null),
-    [activeThread?.groupId, groupChats],
-  );
-  const isArchivedDmThread = useCallback(
-    (thread: WalletDmThread) => {
-      void dmArchivedThreadsVersion;
-      const key = dmThreadKeyForThread(thread);
-      const archivedAt = key ? dmArchivedThreadsRef.current.get(key) ?? 0 : 0;
-      if (archivedAt <= 0) return false;
-      return !thread.messages.some(
-        (message) => !message.eventId.startsWith("draft-") && message.createdAt * 1000 > archivedAt,
-      );
-    },
-    [dmArchivedThreadsVersion],
-  );
-  const visibleDmThreads = useMemo(
-    () => dmThreads.filter((thread) => !isArchivedDmThread(thread)),
-    [dmThreads, isArchivedDmThread],
-  );
+  const {
+    dmThreads,
+    activeThread,
+    activeGroupChat,
+    visibleDmThreads,
+    contactByHex,
+    strangerThreads,
+    dmThreadListEntries,
+    messageSearchResults,
+    activeThreadPendingMessages,
+  } = useDmThreadDerived({
+    displayDmMessages,
+    contactIndex,
+    dmPreviewForMessage,
+    isArchivedDmThread,
+    matchesDmThreadSearch,
+    nostrIdentityInfo,
+    nostrIdentityRef,
+    activeThreadPeer,
+    groupChats,
+    dmSearch,
+    dmView,
+    visiblePendingMessages,
+    contacts,
+    contactsContext,
+    shareContactSource,
+    compressedToRawHex,
+    normalizeNostrPubkey,
+  });
   useEffect(() => {
     if (!dmArchivedThreadsRef.current.size) return;
     const next = new Map(dmArchivedThreadsRef.current);
@@ -4018,85 +1338,8 @@ export default function CashuWalletModal({
     persistArchivedDmThreads(next);
     setDmArchivedThreadsVersion((value) => value + 1);
   }, [dmThreads, persistArchivedDmThreads]);
-  const contactByHex = useMemo(() => {
-    const map = new Map<string, Contact>();
-    contacts.forEach((contact) => {
-      const normalized = normalizeNostrPubkey(contact.npub || "");
-      if (!normalized) return;
-      const compressed = normalized.toLowerCase();
-      const raw = compressedToRawHex(normalized).toLowerCase();
-      map.set(compressed, contact);
-      map.set(raw, contact);
-    });
-    return map;
-  }, [compressedToRawHex, contacts, normalizeNostrPubkey]);
   const activeGroupMuted = !!(activeGroupChat && dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
   const activeGroupLeft = !!(activeGroupChat && dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
-  const strangerThreads = useMemo(
-    () => visibleDmThreads.filter((thread) => thread.isStranger),
-    [visibleDmThreads],
-  );
-  const matchesDmThreadSearch = useCallback(
-    (thread: WalletDmThread) => {
-      if (!dmSearch.trim()) return true;
-      const groupName = thread.groupId ? (groupChats.find((g) => g.groupId === thread.groupId)?.name ?? "") : "";
-      const meta = thread.groupId ? { label: groupName, subtitle: undefined } : peerLabelFor(thread.peerPubkey);
-      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${groupName} ${thread.lastPreview} ${thread.peerPubkey}`.toLowerCase();
-      return haystack.includes(dmSearch.trim().toLowerCase());
-    },
-    [dmSearch, groupChats, peerLabelFor],
-  );
-  const dmThreadListEntries = useMemo<DmThreadListEntry[]>(() => {
-    if (dmSearch.trim()) {
-      return visibleDmThreads
-        .filter(matchesDmThreadSearch)
-        .map((thread) => ({ kind: "thread" as const, thread, lastCreatedAt: thread.lastCreatedAt }));
-    }
-    if (dmView === "strangers") {
-      return strangerThreads.map((thread) => ({
-        kind: "thread" as const,
-        thread,
-        lastCreatedAt: thread.lastCreatedAt,
-      }));
-    }
-    const entries: DmThreadListEntry[] = visibleDmThreads
-      .filter((thread) => !thread.isStranger)
-      .map((thread) => ({ kind: "thread", thread, lastCreatedAt: thread.lastCreatedAt }));
-    if (strangerThreads.length) {
-      const latestStrangerThread = strangerThreads.reduce((latest, thread) =>
-        thread.lastCreatedAt > latest.lastCreatedAt ? thread : latest,
-      );
-      entries.push({
-        kind: "strangers",
-        lastCreatedAt: latestStrangerThread.lastCreatedAt,
-        lastPreview: latestStrangerThread.lastPreview || "New requests",
-      });
-    }
-    entries.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
-    return entries;
-  }, [dmSearch, dmView, matchesDmThreadSearch, strangerThreads, visibleDmThreads]);
-  type MessageSearchResult = { thread: WalletDmThread; message: WalletDmMessage };
-  const messageSearchResults = useMemo<MessageSearchResult[]>(() => {
-    const q = dmSearch.trim().toLowerCase();
-    if (!q) return [];
-    const results: MessageSearchResult[] = [];
-    for (const thread of visibleDmThreads) {
-      for (const msg of thread.messages) {
-        if (!msg.eventId.startsWith("draft-") && msg.content.toLowerCase().includes(q)) {
-          results.push({ thread, message: msg });
-        }
-      }
-    }
-    results.sort((a, b) => b.message.createdAt - a.message.createdAt);
-    return results;
-  }, [dmSearch, visibleDmThreads]);
-  const activeThreadPendingMessages = useMemo(
-    () =>
-      activeThread
-        ? visiblePendingMessages.filter((message) => message.peerPubkey === activeThread.peerPubkey)
-        : [],
-    [activeThread, visiblePendingMessages],
-  );
   useEffect(() => {
     if (!open || !isChatPage || chatView !== "conversation" || !activeThread) {
       dmAutoScrollStateRef.current = { threadPeer: activeThread?.peerPubkey ?? null, itemCount: 0 };
@@ -4151,86 +1394,6 @@ export default function CashuWalletModal({
       });
     });
   }, [scrollToMessageId, chatView, activeThread]);
-  const openConversationForPeer = useCallback(
-    (peerHex: string | null | undefined) => {
-      // Normalise to raw 64-char hex (strip "02"/"03" prefix if present)
-      const raw = (peerHex || "").trim().toLowerCase();
-      const normalizedPeer = /^(02|03)[0-9a-f]{64}$/.test(raw) ? raw.slice(2) : raw;
-      if (!normalizedPeer) return false;
-      // Match regardless of whether stored peerPubkey uses raw or compressed form
-      const peerMatches = (mp: string) => {
-        const lc = mp.toLowerCase();
-        return lc === normalizedPeer || lc === `02${normalizedPeer}` || lc === `03${normalizedPeer}`;
-      };
-      const hasThread = displayDmMessages.some((message) => peerMatches(message.peerPubkey));
-      if (!hasThread) {
-        setDmMessages((prev) => {
-          if (prev.some((message) => peerMatches(message.peerPubkey))) return prev;
-          return [
-            ...prev,
-            {
-              id: `draft-${normalizedPeer}`,
-              eventId: `draft-${normalizedPeer}`,
-              peerPubkey: normalizedPeer,
-              isIncoming: false,
-              createdAt: Math.floor(Date.now() / 1000),
-              content: "",
-              preview: "",
-              attachment: { type: "text" },
-            },
-          ];
-        });
-      }
-      setActiveThreadPeer(normalizedPeer);
-      setDmView("thread");
-      setChatView("conversation");
-      setContactView("list");
-      setActiveContactId(null);
-      setContactDetailOverride(null);
-      setContactReturnView("new-message");
-      setDmSearch("");
-      return true;
-    },
-    [displayDmMessages],
-  );
-  const openConversationForGroup = useCallback(
-    (groupId: string) => {
-      const hasThread = displayDmMessages.some((msg) => msg.groupId === groupId);
-      if (!hasThread) {
-        // Create a placeholder so the thread appears immediately
-        const group = groupChatsRef.current.find((g) => g.groupId === groupId);
-        setDmMessages((prev) => {
-          if (prev.some((msg) => msg.groupId === groupId)) return prev;
-          return [
-            ...prev,
-            {
-              id: `draft-group-${groupId}`,
-              eventId: `draft-group-${groupId}`,
-              peerPubkey: groupId,
-              isIncoming: false,
-              createdAt: Math.floor(Date.now() / 1000),
-              content: "",
-              preview: "",
-              attachment: { type: "text" },
-              groupId,
-              senderPubkey: (nostrIdentityRef.current?.pubkey || "").toLowerCase(),
-            },
-          ];
-        });
-      }
-      setActiveThreadPeer(groupId);
-      setActiveGroupId(groupId);
-      setDmView("thread");
-      setChatView("conversation");
-      setContactView("list");
-      setActiveContactId(null);
-      setContactDetailOverride(null);
-      setContactReturnView("new-message");
-      setDmSearch("");
-      return true;
-    },
-    [displayDmMessages],
-  );
   useEffect(() => {
     if (dmView !== "thread" || activeThread) return;
     setDmView(dmListViewRef.current);
@@ -4249,200 +1412,71 @@ export default function CashuWalletModal({
       setChatView(activeThread ? "conversation" : "threads");
     }
   }, [activeGroupChat, activeThread, chatView]);
-  const persistMutedGroups = useCallback((next: Map<string, number>) => {
-    try {
-      idbKeyValue.setItem(
-        TASKIFY_STORE_NOSTR,
-        LS_GROUP_MUTED,
-        JSON.stringify(Object.fromEntries(Array.from(next.entries()))),
-      );
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  const persistLeftGroups = useCallback(
-    (next: Set<string>) => persistGroupStateSet(LS_GROUP_LEFT, next),
-    [persistGroupStateSet],
-  );
-  const setGroupMutedState = useCallback(
-    (groupId: string, muted: boolean) => {
-      const key = (groupId || "").trim().toLowerCase();
-      if (!key) return;
-      const next = new Map(dmMutedGroupsRef.current);
-      if (muted) {
-        next.set(key, Date.now());
-      } else {
-        next.delete(key);
-      }
-      dmMutedGroupsRef.current = next;
-      persistMutedGroups(next);
-      setDmMutedGroupsVersion((value) => value + 1);
-    },
-    [persistMutedGroups],
-  );
-  const setGroupLeftState = useCallback(
-    (groupId: string, left: boolean) => {
-      const key = (groupId || "").trim().toLowerCase();
-      if (!key) return;
-      const next = new Set(dmLeftGroupsRef.current);
-      if (left) {
-        next.add(key);
-      } else {
-        next.delete(key);
-      }
-      dmLeftGroupsRef.current = next;
-      persistLeftGroups(next);
-      setDmLeftGroupsVersion((value) => value + 1);
-    },
-    [persistLeftGroups],
-  );
-  const markThreadReadThrough = useCallback(
-    (threadKey: string | null | undefined, timestampSeconds: number) => {
-      const normalizedThreadKey = (threadKey || "").trim().toLowerCase();
-      const normalizedTimestamp =
-        Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? Math.floor(timestampSeconds) : 0;
-      if (!normalizedThreadKey || normalizedTimestamp <= 0) return;
-      const existing = dmThreadReadAtRef.current.get(normalizedThreadKey) ?? 0;
-      if (normalizedTimestamp <= existing) return;
-      const next = new Map(dmThreadReadAtRef.current);
-      next.set(normalizedThreadKey, normalizedTimestamp);
-      dmThreadReadAtRef.current = next;
-      persistDmThreadReadState(next);
-      setDmThreadReadAtVersion((value) => value + 1);
-    },
-    [persistDmThreadReadState],
-  );
-  const closeThreadIfActive = useCallback(
-    (thread: WalletDmThread) => {
-      if (activeThreadPeer !== thread.peerPubkey) return;
-      setActiveThreadPeer(null);
-      setActiveGroupId(null);
-      setDmView(dmListViewRef.current);
-      if (isChatPage) {
-        setChatView("threads");
-      }
-    },
-    [activeThreadPeer, isChatPage],
-  );
-  const clearArchivedDmThread = useCallback(
-    (threadKey: string) => {
-      const key = threadKey.trim().toLowerCase();
-      if (!key || !dmArchivedThreadsRef.current.has(key)) return;
-      const next = new Map(dmArchivedThreadsRef.current);
-      next.delete(key);
-      dmArchivedThreadsRef.current = next;
-      persistArchivedDmThreads(next);
-      setDmArchivedThreadsVersion((value) => value + 1);
-    },
-    [persistArchivedDmThreads],
-  );
-  const handleArchiveDmThread = useCallback(
-    (thread: WalletDmThread) => {
-      const key = dmThreadKeyForThread(thread);
-      if (!key) return;
-      const next = new Map(dmArchivedThreadsRef.current);
-      next.set(key, Date.now());
-      dmArchivedThreadsRef.current = next;
-      persistArchivedDmThreads(next);
-      setDmArchivedThreadsVersion((value) => value + 1);
-      const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
-      if (unreadIds.length) {
-        onMarkMessagesRead(unreadIds);
-      }
-      markThreadReadThrough(thread.peerPubkey, Math.floor(Date.now() / 1000));
-      closeThreadIfActive(thread);
-      showToast("Thread archived", 1800);
-    },
-    [
-      closeThreadIfActive,
-      collectUnreadThreadItemEventIds,
-      markThreadReadThrough,
-      onMarkMessagesRead,
-      persistArchivedDmThreads,
-      showToast,
-    ],
-  );
-  const handleDeleteDmThread = useCallback(
-    (thread: WalletDmThread) => {
-      const key = dmThreadKeyForThread(thread);
-      if (!key) return;
-      const now = Date.now();
-      const cutoffMs = now - DM_THREAD_DELETE_CACHE_TTL_MS;
-      const expiresAt = now + DM_THREAD_DELETE_CACHE_TTL_MS;
-      const nextTempDeleted = new Map(
-        Array.from(dmTempDeletedEventsRef.current.entries()).filter(([, expiry]) => expiry > now),
-      );
-      thread.messages.forEach((message) => {
-        if (message.eventId.startsWith("draft-")) return;
-        if (message.createdAt * 1000 < cutoffMs) return;
-        nextTempDeleted.set(message.eventId, expiresAt);
-        if (message.rumorEventId) {
-          nextTempDeleted.set(message.rumorEventId, expiresAt);
-        }
-        dmProcessedEventsRef.current.add(message.eventId);
-      });
-      dmTempDeletedEventsRef.current = nextTempDeleted;
-      persistTempDeletedDmEvents(nextTempDeleted);
-      setDmTempDeletedEventsVersion((value) => value + 1);
-      clearArchivedDmThread(key);
-      const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
-      if (unreadIds.length) {
-        onMarkMessagesRead(unreadIds);
-      }
-      setDmMessages((prev) => prev.filter((message) => dmThreadKeyForMessage(message) !== key));
-      setPendingMessages((prev) =>
-        prev.filter((message) => message.peerPubkey.trim().toLowerCase() !== thread.peerPubkey.toLowerCase()),
-      );
-      setDmExpandedMessages((prev) => {
-        const eventIds = new Set(thread.messages.map((message) => message.eventId));
-        if (!eventIds.size) return prev;
-        const next = new Set(prev);
-        eventIds.forEach((eventId) => next.delete(eventId));
-        return next;
-      });
-      setDmMessageActions((prev) => (prev && thread.messages.some((message) => message.eventId === prev.eventId) ? null : prev));
-      closeThreadIfActive(thread);
-      showToast("Thread deleted", 1800);
-    },
-    [
-      clearArchivedDmThread,
-      closeThreadIfActive,
-      collectUnreadThreadItemEventIds,
-      onMarkMessagesRead,
-      persistTempDeletedDmEvents,
-      showToast,
-    ],
-  );
-  const openActiveGroupInfo = useCallback(() => {
-    if (!activeThread?.groupId) return;
-    setGroupMembersSearch("");
-    setRenameGroupDraft(activeGroupChat?.name || "");
-    setGroupInfoTab("info");
-    setChatView("group-info");
-  }, [activeGroupChat?.name, activeThread?.groupId]);
-  const handleToggleActiveGroupMute = useCallback(() => {
-    if (!activeGroupChat) return;
-    const nextMuted = !dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase());
-    setGroupMutedState(activeGroupChat.groupId, nextMuted);
-    if (!nextMuted && activeThread?.groupId === activeGroupChat.groupId) {
-      markThreadReadThrough(activeGroupChat.groupId, Math.floor(Date.now() / 1000));
-    }
-    showToast(nextMuted ? "Group muted" : "Group unmuted", 2000);
-  }, [activeGroupChat, activeThread?.groupId, markThreadReadThrough, setGroupMutedState, showToast]);
-  const handleToggleActiveGroupMembership = useCallback(() => {
-    if (!activeGroupChat) return;
-    const nextLeft = !dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase());
-    setGroupLeftState(activeGroupChat.groupId, nextLeft);
-    if (nextLeft) {
-      setAttachTrayOpen(false);
-      setShareContactPickerOpen(false);
-      setShareContactPickerMode("recipient");
-      setShareContactSource(null);
-      setShareContactStatus(null);
-      setChatCompose("");
-    }
-    showToast(nextLeft ? "You left the group" : "You rejoined the group", 2400);
-  }, [activeGroupChat, setGroupLeftState, showToast]);
+  const {
+    persistMutedGroups,
+    persistLeftGroups,
+    setGroupMutedState,
+    setGroupLeftState,
+    markThreadReadThrough,
+    closeThreadIfActive,
+    clearArchivedDmThread,
+    handleArchiveDmThread,
+    handleDeleteDmThread,
+    openActiveGroupInfo,
+    handleToggleActiveGroupMute,
+    handleToggleActiveGroupMembership,
+    toggleBlockPeer,
+    handleAddPeerToContacts,
+  } = useDmThreadActions({
+    dmMutedGroupsRef,
+    setDmMutedGroupsVersion,
+    dmLeftGroupsRef,
+    setDmLeftGroupsVersion,
+    dmThreadReadAtRef,
+    persistDmThreadReadState,
+    setDmThreadReadAtVersion,
+    dmArchivedThreadsRef,
+    persistArchivedDmThreads,
+    setDmArchivedThreadsVersion,
+    dmTempDeletedEventsRef,
+    persistTempDeletedDmEvents,
+    setDmTempDeletedEventsVersion,
+    dmProcessedEventsRef,
+    dmBlockedPeersRef,
+    persistBlockedPeers,
+    setDmBlockedPeersVersion,
+    setDmMessageActions,
+    setDmExpandedMessages,
+    setDmMessages,
+    setPendingMessages,
+    cancelDmLongPress,
+    persistGroupStateSet,
+    activeThreadPeer,
+    isChatPage,
+    setActiveThreadPeer,
+    setActiveGroupId,
+    setDmView,
+    dmListViewRef,
+    setChatView,
+    activeGroupChat,
+    activeThread,
+    setRenameGroupDraft,
+    setGroupMembersSearch,
+    setGroupInfoTab,
+    setAttachTrayOpen,
+    setShareContactPickerMode,
+    setShareContactSource,
+    setShareContactStatus,
+    setChatCompose,
+    setShareContactPickerOpen,
+    upsertContact,
+    getPeerProfile,
+    peerLabelFor,
+    formatNpub,
+    collectUnreadThreadItemEventIds,
+    onMarkMessagesRead,
+    showToast,
+  });
   const threadUnreadMap = useMemo(() => {
     const map = new Map<string, number>();
     dmThreads.forEach((thread) => {
@@ -4510,48 +1544,6 @@ export default function CashuWalletModal({
       onMarkMessagesRead(unreadIds);
     }
   }, [activeThread, collectUnreadThreadItemEventIds, markThreadReadThrough, onMarkMessagesRead]);
-  const toggleBlockPeer = useCallback(
-    (peerPubkey: string) => {
-      const key = (peerPubkey || "").toLowerCase().trim();
-      if (!key) return;
-      const next = new Set(dmBlockedPeersRef.current);
-      const isBlocking = !next.has(key);
-      if (isBlocking) {
-        next.add(key);
-      } else {
-        next.delete(key);
-      }
-      dmBlockedPeersRef.current = next;
-      persistBlockedPeers(next);
-      setDmBlockedPeersVersion((v) => v + 1);
-      setDmMessageActions(null);
-      cancelDmLongPress();
-      showToast(isBlocking ? "User blocked" : "User unblocked", isBlocking ? 2000 : 1600);
-    },
-    [cancelDmLongPress, persistBlockedPeers, showToast],
-  );
-  const handleAddPeerToContacts = useCallback(
-    (peerPubkey: string) => {
-      if (!peerPubkey) return;
-      const npub = formatNpub(peerPubkey);
-      const profile = getPeerProfile(peerPubkey);
-      const label = peerLabelFor(peerPubkey);
-      const contact = upsertContact({
-        npub,
-        name: profile?.displayName || profile?.username || label.label,
-        displayName: profile?.displayName || label.label,
-        username: profile?.username,
-        address: profile?.lud16 || "",
-        picture: profile?.picture,
-      });
-      if (contact) {
-        showToast("Added to contacts", 2000);
-      } else {
-        showToast("Unable to add contact", 2400);
-      }
-    },
-    [formatNpub, getPeerProfile, peerLabelFor, showToast, upsertContact],
-  );
   const sortedContacts = useMemo(() => {
     return [...contacts].sort((a, b) => {
       const baseA = (a.name || a.address || a.nip05 || a.npub || "").toLowerCase();
@@ -4571,34 +1563,6 @@ export default function CashuWalletModal({
         : contactHasNpub(contact) || contact.paymentRequest.trim().length > 0,
     );
   }, [contactsContext, sortedContacts]);
-  const buildShareRelayList = useCallback(
-    (relaySource?: string[] | null) => {
-      const storedRelays = (() => {
-        try {
-          const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
-          const parsed = raw ? JSON.parse(raw) : null;
-          if (Array.isArray(parsed)) {
-            return parsed.map((relay) => (typeof relay === "string" ? relay.trim() : "")).filter(Boolean);
-          }
-        } catch {
-          // ignore
-        }
-        return [];
-      })();
-      return Array.from(
-        new Set(
-          [
-            ...(Array.isArray(relaySource) ? relaySource : []),
-            ...(storedRelays.length ? storedRelays : defaultNostrRelays),
-            ...defaultNostrRelays,
-          ]
-            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
-      );
-    },
-    [defaultNostrRelays],
-  );
   const shareRecipientOptions = useMemo(() => {
     const sourceHex = shareContactSource?.npub
       ? compressedToRawHex(
@@ -4615,161 +1579,96 @@ export default function CashuWalletModal({
       return true;
     });
   }, [compressedToRawHex, contacts, normalizeNostrPubkey, shareContactSource]);
-  const sendContactShareToPubkeys = useCallback(
-    async (sourceContact: Contact, recipientPubkeys: string[]) => {
-      const sourceNpub = formatContactNpub(sourceContact.npub);
-      if (!sourceNpub) {
-        return { ok: false as const, error: "This contact is missing a valid npub." };
-      }
-      const { identity, reason } = readNostrIdentity();
-      if (!identity) {
-        return {
-          ok: false as const,
-          error: reason || "Add your Taskify Nostr key in Settings → Nostr.",
-        };
-      }
-      const relayList = buildShareRelayList(sourceContact.relays);
-      if (!relayList.length) {
-        return { ok: false as const, error: "Add at least one relay first." };
-      }
-      const envelope = buildContactShareEnvelope({
-        type: "contact",
-        npub: sourceNpub,
-        relays: sourceContact.relays,
-        sender: {
-          npub: formatNpub(identity.pubkey),
-          name: profileForm.displayName || profileForm.username || undefined,
-        },
-      });
-      for (const recipientPubkey of recipientPubkeys) {
-        await sendShareMessage(envelope, recipientPubkey, identity.secret, relayList);
-      }
-      return { ok: true as const };
-    },
-    [
-      buildShareRelayList,
-      formatContactNpub,
-      formatNpub,
-      profileForm.displayName,
-      profileForm.username,
-      readNostrIdentity,
-    ],
-  );
-  const handleShareContactToContact = useCallback(
-    async (recipient: Contact) => {
-      if (!shareContactSource) {
-        setShareContactStatus("Select a contact to share first.");
-        return;
-      }
-      const normalizedRecipient = normalizeNostrPubkey(recipient.npub);
-      if (!normalizedRecipient) {
-        setShareContactStatus("Recipient contact is missing a valid npub.");
-        return;
-      }
-      setShareContactBusy(true);
-      setShareContactStatus(null);
-      try {
-        const result = await sendContactShareToPubkeys(shareContactSource, [normalizedRecipient]);
-        if (!result.ok) {
-          setShareContactStatus(result.error || "Unable to send contact.");
-          return;
-        }
-        setShareContactPickerOpen(false);
-        setShareContactPickerMode("recipient");
-        setShareContactSource(null);
-        showToast(`Contact sent to ${contactPrimaryName(recipient)}`, 3000);
-      } catch (err: any) {
-        setShareContactStatus(err?.message || "Unable to send contact.");
-      } finally {
-        setShareContactBusy(false);
-      }
-    },
-    [
-      normalizeNostrPubkey,
-      sendContactShareToPubkeys,
-      shareContactSource,
-      showToast,
-    ],
-  );
-  const closeAttachTray = useCallback(() => {
-    setAttachTrayOpen(false);
-  }, []);
-  const handleToggleAttachTray = useCallback(() => {
-    setShareContactPickerOpen(false);
-    setShareContactPickerMode("recipient");
-    setShareContactSource(null);
-    setShareContactStatus(null);
-    setAttachTrayOpen((current) => {
-      const next = !current;
-      if (next) {
-        window.setTimeout(() => {
-          chatComposeInputRef.current?.blur();
-        }, 0);
-      }
-      return next;
-    });
-  }, []);
-  const handleOpenChatPhotoPicker = useCallback(() => {
-    chatPhotoInputRef.current?.click();
-  }, []);
-  const handleOpenChatFilePicker = useCallback(() => {
-    chatFileInputRef.current?.click();
-  }, []);
-  const handleOpenChatContactPicker = useCallback(() => {
-    closeAttachTray();
-    shareContactOpenedAtPeerRef.current = activeThreadPeer;
-    setShareContactPickerMode("chat-source");
-    setShareContactSource(null);
-    setShareContactStatus(null);
-    setShareContactPickerOpen(true);
-  }, [activeThreadPeer, closeAttachTray]);
-  const handleSendChatContactAttachment = useCallback(
-    async (contact: Contact) => {
-      if (!activeThread) {
-        setShareContactStatus("Open a conversation first.");
-        return;
-      }
-      const ownIdentity = readNostrIdentity().identity;
-      const recipients = activeThread.groupId && activeGroupChat
-        ? activeGroupChat.members
-            .map((member) => member.toLowerCase())
-            .filter((member) => member && member !== ownIdentity?.pubkey.toLowerCase())
-        : [activeThread.peerPubkey.toLowerCase()].filter(Boolean);
-      if (!recipients.length) {
-        setShareContactStatus("No recipients available for this conversation.");
-        return;
-      }
-      setShareContactBusy(true);
-      setShareContactStatus(null);
-      try {
-        const result = await sendContactShareToPubkeys(contact, recipients);
-        if (!result.ok) {
-          setShareContactStatus(result.error || "Unable to send contact.");
-          return;
-        }
-        setShareContactPickerOpen(false);
-        setShareContactPickerMode("recipient");
-        setShareContactSource(null);
-        showToast(
-          activeThread.groupId
-            ? `Shared ${contactPrimaryName(contact)} with ${activeGroupChat?.name || "the group"}`
-            : `Sent ${contactPrimaryName(contact)}`,
-          3000,
-        );
-      } catch (err: any) {
-        setShareContactStatus(err?.message || "Unable to send contact.");
-      } finally {
-        setShareContactBusy(false);
-      }
-    },
-    [
-      activeGroupChat,
-      activeThread,
-      readNostrIdentity,
-      sendContactShareToPubkeys,
-      showToast,
-    ],
-  );
+  const {
+    resetContactForm,
+    handleGenerateP2pkKey,
+    handleOpenReceiveLock,
+    readLightningInput,
+    commitLightningInputFromDom,
+    handleSendChatContactAttachment,
+    handlePaymentRequestScan,
+    openContactsFor,
+    closeContactsSheet,
+    applyLightningContact,
+    openGroupNameEditor,
+    handleRenameGroupSubmit,
+    applyEcashContact,
+    handleSelectContact,
+    handleProofStateNotification,
+  } = useContactPaymentActions({
+    mintUrl,
+    info,
+    activeThread,
+    activeGroupChat,
+    renameGroupDraft,
+    activeP2pkKey,
+    lnInput,
+    walletConversionEnabled,
+    walletPrimaryCurrency,
+    sendAmt,
+    btcUsdPrice,
+    lockSendToPubkey,
+    sendLockPubkeyInput,
+    contactsContextRef,
+    lnRef,
+    lnInputValueRef,
+    proofStateSubscriptionMetadataRef,
+    setPaymentRequestState,
+    setPaymentRequestManualAmount,
+    setPaymentRequestStatus,
+    setPaymentRequestMessage,
+    setReceiveMode,
+    setSendMode,
+    setShowSendOptions,
+    setScannerMessage,
+    setContactsContext,
+    setContactsOpen,
+    setLnInput,
+    setLightningSendView,
+    setLnAddrAmt,
+    setLnState,
+    setLnError,
+    setRenameGroupDraft,
+    setChatView,
+    setRenameGroupBusy,
+    setShareContactStatus,
+    setShareContactBusy,
+    setShareContactPickerOpen,
+    setShareContactPickerMode,
+    setShareContactSource,
+    setCreatingSendToken,
+    setSendTokenStr,
+    setLastSendTokenAmount,
+    setLastSendTokenMint,
+    setLastSendTokenFingerprint,
+    setLastSendTokenLockLabel,
+    setEcashSendView,
+    setEcashSendRecipient,
+    setReceiveLockVisible,
+    setPrimaryP2pkKey,
+    setPendingPrimaryP2pkKeyId,
+    setHistory,
+    showToast,
+    generateP2pkKeypair,
+    buildHistoryEntry,
+    formatNpub,
+    compressedToRawHex,
+    createSendToken,
+    computeProofY,
+    buildTokenSpentToastMessage,
+    sanitizeProofStateValue,
+    aggregateStoredProofStates,
+    summarizeStoredProofStates,
+    readNostrIdentity,
+    resolveNip17Relays,
+    ensureNostrPool,
+    safePublish,
+    publishNip17Giftwraps,
+    publishGroupSubjectUpdate,
+    upsertGroupChat,
+    sendContactShareToPubkeys,
+    defaultNostrRelays,
+  });
   const publicFollowOptions = useMemo(
     () => {
       const seen = new Set<string>();
@@ -4924,1231 +1823,40 @@ export default function CashuWalletModal({
     }
   }, [contactsOpen, resetContactForm]);
 
-  const handlePaymentRequestScan = useCallback(async (encodedRequest: string): Promise<boolean> => {
-    const trimmed = encodedRequest?.trim() || "";
-    if (!trimmed) return false;
-    if (!/^creq/i.test(trimmed)) {
-      return false;
-    }
-    try {
-      const request = decodePaymentRequest(trimmed);
-      if (request.mints && request.mints.length) {
-        if (!mintUrl) {
-          throw new Error("Set an active mint before fulfilling payment requests");
-        }
-        const normalizedActive = normalizeMintUrl(mintUrl);
-        const compatible = request.mints.some((m) => normalizeMintUrl(m) === normalizedActive);
-        if (!compatible) {
-          throw new Error("Payment request targets a different mint");
-        }
-      }
-      if (request.unit && info?.unit && request.unit.toLowerCase() !== info.unit.toLowerCase()) {
-        throw new Error(`Payment request unit ${request.unit} does not match active mint unit ${info.unit}`);
-      }
-
-      setPaymentRequestState({ encoded: trimmed, request });
-      const numericAmount = Number(request.amount);
-      setPaymentRequestManualAmount(
-        Number.isFinite(numericAmount) && numericAmount > 0 ? String(Math.floor(numericAmount)) : "",
-      );
-      setPaymentRequestStatus("idle");
-      setPaymentRequestMessage("");
-      setReceiveMode(null);
-      setSendMode("paymentRequest");
-      setShowSendOptions(true);
-      setScannerMessage("");
-      return true;
-    } catch (err: any) {
-      console.warn("Payment request scan failed", err);
-      setPaymentRequestState(null);
-      setPaymentRequestStatus("error");
-      setPaymentRequestMessage("");
-      setPaymentRequestManualAmount("");
-      setScannerMessage(err?.message || "Invalid payment request");
-      return false;
-    }
-  }, [info?.unit, mintUrl]);
-
-  const openContactsFor = useCallback(
-    (context: "lightning" | "ecash") => {
-      contactsContextRef.current = context;
-      setContactsContext(context);
-      setContactsOpen(true);
-    },
-    [setContactsContext, setContactsOpen],
-  );
-
-  const closeContactsSheet = useCallback(() => {
-    setContactsOpen(false);
-  }, []);
-
-  const applyLightningContact = useCallback(
-    (contact: Contact) => {
-      if (!contact.address.trim()) {
-        alert("This contact does not have a lightning address stored.");
-        return false;
-      }
-      setSendMode("lightning");
-      setShowSendOptions(true);
-      setLnInput(contact.address);
-      setLightningSendView("address");
-      setLnAddrAmt("");
-      setLnState("idle");
-      setLnError("");
-      setTimeout(() => {
-        lnRef.current?.focus();
-      }, 0);
-      return true;
-    },
-    [
-      lnRef,
-      setLnAddrAmt,
-      setLnError,
-      setLnInput,
-      setLnState,
-      setLightningSendView,
-      setSendMode,
-      setShowSendOptions,
-    ],
-  );
-
-  const resolveNip17Timestamp = useCallback(() => {
-    if (nip17TimestampMode === "now") {
-      return Math.floor(Date.now() / 1000);
-    }
-    return randomPastTimestampSeconds();
-  }, [nip17TimestampMode]);
-
-  const resolveNip17Relays = useCallback(
-    async (recipientHex: string, fallbackRelays: string[]): Promise<string[]> => {
-      const normalizedFallback = Array.from(
-        new Set(
-          (fallbackRelays || [])
-            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
-      );
-      if (!normalizedFallback.length) return normalizedFallback;
-      const normalizedRecipient = (recipientHex || "").toLowerCase();
-      if (!/^[0-9a-f]{64}$/.test(normalizedRecipient)) return normalizedFallback;
-      try {
-        const session = await NostrSession.init(normalizedFallback);
-        const events = await session.fetchEvents(
-          [{ kinds: [10050], authors: [normalizedRecipient] }],
-          normalizedFallback,
-        );
-        const latest = Array.isArray(events)
-          ? events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0]
-          : null;
-        const inboxRelays = Array.isArray(latest?.tags)
-          ? latest.tags
-              .filter(
-                (tag) =>
-                  Array.isArray(tag) &&
-                  tag[0] === "relay" &&
-                  typeof tag[1] === "string" &&
-                  tag[1].trim(),
-              )
-              .map((tag) => tag[1]!.trim())
-          : [];
-        return Array.from(new Set([...inboxRelays, ...normalizedFallback]));
-      } catch (err) {
-        if (walletDebugEnabled) {
-          console.warn("[wallet] Failed to load NIP-17 inbox relays", err);
-        }
-        return normalizedFallback;
-      }
-    },
-    [walletDebugEnabled],
-  );
-
-  const publishNip17Giftwraps = useCallback(
-    async (options: {
-      content: string;
-      senderHex: string;
-      recipientHex: string;
-      senderSecret: string;
-      publish: (event: NostrEvent) => Promise<void>;
-      kind?: number;
-      extraTags?: string[][];
-      /** For group messages: all recipient hex pubkeys (excluding sender). */
-      recipientHexes?: string[];
-    }) => {
-      const { content, senderHex, senderSecret, publish, kind, extraTags } = options;
-      if (!nip44?.v2) {
-        throw new Error("NIP-44 support is required to send this message");
-      }
-      const normalizedSender = senderHex.toLowerCase();
-      const isGroupSend = Array.isArray(options.recipientHexes) && options.recipientHexes.length > 0;
-      // Support multi-recipient (group) or single-recipient (DM)
-      const allRecipients: string[] = isGroupSend
-        ? [...new Set(options.recipientHexes!.map((h) => h.toLowerCase()))].filter((h) => h !== normalizedSender)
-        : [options.recipientHex.toLowerCase()];
-      const rumorKind = typeof kind === "number" ? kind : 14;
-      // For group messages, include sender in p-tags (0xchat compatibility).
-      // 0xchat includes ALL members (including sender) as p-tags in the inner rumor
-      // and uses p-tag count to distinguish groups from DMs.
-      const combinedTags: string[][] = isGroupSend
-        ? [["p", normalizedSender], ...allRecipients.map((r) => ["p", r])]
-        : allRecipients.map((r) => ["p", r]);
-      if (Array.isArray(extraTags)) {
-        for (const tag of extraTags) {
-          if (Array.isArray(tag) && tag.length > 0) combinedTags.push(tag);
-        }
-      }
-      // The inner kind:14/15 rumor carries the canonical DM timestamp.
-      const rumorCreatedAt = Math.floor(Date.now() / 1000);
-      const rumorBase = {
-        kind: rumorKind,
-        content,
-        tags: combinedTags,
-        created_at: rumorCreatedAt,
-        pubkey: normalizedSender,
-      };
-      const rumor = {
-        ...rumorBase,
-        id: getEventHash(rumorBase),
-      } satisfies Partial<NostrEvent>;
-      // Gift-wrap to each recipient + self
-      const wrapRecipients = Array.from(new Set([...allRecipients, normalizedSender]));
-      let selfWrapEvent: NostrEvent | null = null;
-      for (const wrapRecipient of wrapRecipients) {
-        const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecret), wrapRecipient);
-        const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
-        const sealTemplate: EventTemplate = {
-          kind: 13,
-          content: sealedContent,
-          tags: [],
-          created_at: resolveNip17Timestamp(),
-        };
-        const sealEvent = finalizeEvent(sealTemplate, hexToBytes(senderSecret));
-        const wrapKey = generatePrivateKey();
-        const wrapConversationKey = nip44.v2.utils.getConversationKey(hexToBytes(wrapKey.hex), wrapRecipient);
-        const wrapContent = await nip44.v2.encrypt(JSON.stringify(sealEvent), wrapConversationKey);
-        const wrapTemplate: EventTemplate = {
-          kind: 1059,
-          content: wrapContent,
-          tags: [["p", wrapRecipient]],
-          created_at: resolveNip17Timestamp(),
-        };
-        const wrapEvent = finalizeEvent(wrapTemplate, wrapKey.bytes);
-        await publish(wrapEvent);
-        // Track the self-addressed wrap so callers can immediately process it locally
-        if (wrapRecipient === normalizedSender) {
-          selfWrapEvent = wrapEvent as NostrEvent;
-        }
-      }
-      return { selfWrapEvent };
-    },
-    [resolveNip17Timestamp],
-  );
-  const handleSendReaction = useCallback(
-    async (msg: WalletDmMessage, emoji: string) => {
-      try {
-        const { identity } = readNostrIdentity();
-        if (!identity) return;
-        const senderHex = identity.pubkey.toLowerCase();
-
-        // Optimistic update: immediately show the reaction on the sender's side.
-        // Key by rumorEventId (the canonical NIP-17 inner event ID) so it matches
-        // the key used when the self-wrap is later processed by handleDmEvent.
-        const reactionKey = msg.rumorEventId || msg.eventId;
-        const tempEventId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-        setDmReactions((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(reactionKey) || [];
-          const filtered = existing.filter((r) => r.senderPubkey !== senderHex);
-          if (emoji !== "-") filtered.push({ emoji, senderPubkey: senderHex, reactEventId: tempEventId });
-          next.set(reactionKey, filtered);
-          return next;
-        });
-
-        // Close the action panel immediately
-        setDmMessageActions(null);
-
-        // Now publish the reaction (for the recipient to see)
-        const isGroup = !!msg.groupId;
-        const groupMeta = isGroup ? groupChatsRef.current.find((g) => g.groupId === msg.groupId) : null;
-        const groupRecipients = groupMeta ? groupMeta.members.filter((m) => m !== senderHex) : [];
-        const recipientHex = isGroup ? groupRecipients[0] || "" : msg.peerPubkey.toLowerCase();
-        const relayTargets = isGroup ? groupRecipients : [recipientHex];
-        const allRelays = new Set<string>();
-        for (const target of relayTargets) {
-          const relays = await resolveNip17Relays(target, defaultNostrRelays);
-          relays.forEach((r) => allRelays.add(r));
-        }
-        const publishRelays = Array.from(allRelays);
-        if (!publishRelays.length) return;
-        const pool = ensureNostrPool();
-        const publish = (ev: NostrEvent) => safePublish(pool, publishRelays, ev);
-        const authorPubkey = msg.senderPubkey || (msg.isIncoming ? msg.peerPubkey : senderHex);
-        const { selfWrapEvent } = await publishNip17Giftwraps({
-          content: emoji,
-          senderHex,
-          recipientHex,
-          senderSecret: identity.secret,
-          publish,
-          kind: 7,
-          // Use rumorEventId (inner NIP-17 rumor ID) so other clients (0xchat, etc.) can match
-          // the reaction to the correct message. The outer giftwrap id is ephemeral and differs
-          // per recipient, so it cannot be used as the canonical message reference.
-          extraTags: [["e", msg.rumorEventId || msg.eventId], ["p", authorPubkey]],
-          ...(isGroup ? { recipientHexes: groupRecipients } : {}),
-        });
-        if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
-      } catch (err) {
-        console.warn("[chat] reaction send failed", err);
-      }
-    },
-    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
-  );
-  const handleForwardMessage = useCallback(
-    async (msg: WalletDmMessage, targetPeerPubkey: string) => {
-      try {
-        const { identity } = readNostrIdentity();
-        if (!identity) return;
-        const senderHex = identity.pubkey.toLowerCase();
-        const recipientHex = targetPeerPubkey.toLowerCase();
-        const relays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
-        if (!relays.length) return;
-        const pool = ensureNostrPool();
-        const publish = (ev: NostrEvent) => safePublish(pool, relays, ev);
-        const { selfWrapEvent } = await publishNip17Giftwraps({
-          content: msg.content,
-          senderHex,
-          recipientHex,
-          senderSecret: identity.secret,
-          publish,
-        });
-        if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
-      } catch (err) {
-        console.warn("[chat] forward failed", err);
-      }
-    },
-    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
-  );
-  const publishGroupSubjectUpdate = useCallback(
-    async (group: GroupChat, subject: string) => {
-      const { identity } = readNostrIdentity();
-      if (!identity) return false;
-      const senderHex = identity.pubkey.toLowerCase();
-      const groupRecipients = group.members.filter((member) => member !== senderHex);
-      if (!groupRecipients.length) return false;
-
-      const allRelays = new Set<string>();
-      for (const target of groupRecipients) {
-        try {
-          const relays = await resolveNip17Relays(target, defaultNostrRelays);
-          relays.forEach((relay) => allRelays.add(relay));
-        } catch (err) {
-          console.warn("[chat] group rename relay resolve failed", err);
-        }
-      }
-      const publishRelays = Array.from(allRelays);
-      if (!publishRelays.length) return false;
-
-      const pool = ensureNostrPool();
-      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
-      const { selfWrapEvent } = await publishNip17Giftwraps({
-        content: "",
-        senderHex,
-        recipientHex: groupRecipients[0] || "",
-        senderSecret: identity.secret,
-        publish,
-        extraTags: [["subject", subject]],
-        recipientHexes: groupRecipients,
-      });
-      if (selfWrapEvent) {
-        await handleDmEvent(selfWrapEvent);
-      }
-      return true;
-    },
-    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
-  );
-
-  // Resolve the active file-server entry for encrypted messenger attachments.
-  // Mirrors the task EditModal selection pattern so the user's Settings choice
-  // (originless / blossom / NIP-96) is honored.
-  // Encrypted messenger attachments must go to the ENCRYPTED file server
-  // (same one the task EditModal uses). nostr.build (the default public
-  // server) content-sniffs uploads and returns 500 on opaque ciphertext.
-  // Fall back to the public server only if no encrypted server is set.
-  const resolveMessengerServerEntry = useCallback((): FileServerEntry => {
-    const primaryUrl = encryptedFileStorageServer || fileStorageServer;
-    const primaryServersRaw = encryptedFileServers || fileServers;
-    const servers = parseFileServers(primaryServersRaw);
-    const match = findServerEntry(servers, primaryUrl);
-    if (match) return match;
-    // If we have servers but no URL match, infer the type from the URL.
-    const inferredType: FileServerType = /originless/i.test(primaryUrl)
-      ? "originless"
-      : /blossom/i.test(primaryUrl)
-        ? "blossom"
-        : "nip96";
-    return {
-      url: primaryUrl || DEFAULT_FILE_STORAGE_SERVER,
-      type: inferredType,
-    };
-  }, [encryptedFileServers, encryptedFileStorageServer, fileServers, fileStorageServer]);
-
-  // Send one or more encrypted file attachments as 0xchat-compatible kind-15
-  // gift wraps. Each file produces a separate gift-wrap event (matching how
-  // 0xchat sends multi-file batches) and a separate pending bubble so the user
-  // sees per-file progress.
-  const sendMessengerFileAttachments = useCallback(
-    async (files: File[], peerPubkey: string) => {
-      const trimmedFiles = files.filter((file) => file && file.size > 0);
-      if (!trimmedFiles.length) return;
-      const { identity, reason } = readNostrIdentity();
-      if (!identity) {
-        showToast(reason || "Add your Taskify Nostr key in Settings → Nostr.", 4000);
-        return;
-      }
-      const senderHex = identity.pubkey.toLowerCase();
-      // Detect group thread
-      const groupMeta = groupChatsRef.current.find((g) => g.groupId === peerPubkey);
-      const isGroup = !!groupMeta;
-      const groupRecipients = isGroup ? groupMeta.members.filter((m) => m !== senderHex) : [];
-      const recipientHex = isGroup ? groupRecipients[0] || "" : peerPubkey.toLowerCase();
-      if (!isGroup && !/^[0-9a-f]{64}$/.test(recipientHex)) {
-        showToast("Recipient pubkey is invalid.", 4000);
-        return;
-      }
-      const serverEntry = resolveMessengerServerEntry();
-
-      const allRelays = new Set<string>();
-      const relayTargets = isGroup ? groupRecipients : [recipientHex];
-      for (const target of relayTargets) {
-        try {
-          const relays = await resolveNip17Relays(target, defaultNostrRelays);
-          relays.forEach((r) => allRelays.add(r));
-        } catch (err) {
-          console.warn("[chat] file attach relay resolve failed", err);
-        }
-      }
-      const publishRelays = Array.from(allRelays);
-      if (!publishRelays.length) {
-        showToast("No relays available for NIP-17 inbox.", 4000);
-        return;
-      }
-      const pool = ensureNostrPool();
-      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
-
-      for (const file of trimmedFiles) {
-        const pendingId = crypto.randomUUID();
-        const pendingCreatedAt = Math.floor(Date.now() / 1000);
-        const mimeType = file.type || "application/octet-stream";
-        const filename = file.name || "attachment";
-        const previewUrl = isImageMime(mimeType) ? URL.createObjectURL(file) : undefined;
-
-        setPendingMessages((prev) => [
-          ...prev,
-          {
-            id: pendingId,
-            content: "",
-            peerPubkey: recipientHex,
-            createdAt: pendingCreatedAt,
-            status: "sending",
-            file: {
-              filename,
-              mimeType,
-              size: file.size,
-              previewUrl,
-              progress: 0,
-              phase: "encrypting",
-            },
-          },
-        ]);
-
-        const updatePending = (patch: Partial<PendingDmMessage["file"]> & { status?: PendingDmMessage["status"] }) => {
-          setPendingMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== pendingId) return m;
-              const nextStatus = patch.status ?? m.status;
-              const nextFile = m.file
-                ? { ...m.file, ...patch, status: undefined as any }
-                : m.file;
-              if (nextFile) delete (nextFile as any).status;
-              return { ...m, status: nextStatus, file: nextFile };
-            }),
-          );
-        };
-
-        try {
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          // Probe image dimensions from the plaintext blob before we lose it.
-          const dims = isImageMime(mimeType) ? await probeImageDimensions(file) : null;
-
-          updatePending({ phase: "uploading", progress: 0 });
-
-          const upload = await encryptAndUploadMessengerAttachment({
-            data: bytes,
-            mimeType,
-            filename,
-            serverEntry,
-            nostrSkHex: identity.secret,
-            onProgress: (progress) => updatePending({ progress }),
-            width: dims?.width,
-            height: dims?.height,
-          });
-
-          updatePending({ phase: "sending", progress: 1 });
-
-          // 0xchat-compatible kind-15 rumor tags
-          // (see nostr-dart lib/src/nips/nip_017.dart:69-72)
-          const extraTags: string[][] = [
-            ["file-type", upload.mimeType],
-            ["encryption-algorithm", MESSENGER_ATTACHMENT_ALGO],
-            ["decryption-key", upload.keyHex],
-            ["decryption-nonce", upload.nonceHex],
-          ];
-          // Bonus metadata tags (ignored by 0xchat, useful for our own UI)
-          if (upload.sha256) extraTags.push(["x", upload.sha256]);
-          if (upload.size > 0) extraTags.push(["size", String(upload.size)]);
-          if (upload.width && upload.height) {
-            extraTags.push(["dim", `${upload.width}x${upload.height}`]);
-          }
-          if (filename) extraTags.push(["filename", filename]);
-          if (isGroup && groupMeta?.name) {
-            extraTags.push(["subject", groupMeta.name]);
-          }
-
-          const { selfWrapEvent } = await publishNip17Giftwraps({
-            content: upload.remoteUrl,
-            senderHex,
-            recipientHex,
-            senderSecret: identity.secret,
-            publish,
-            kind: 15,
-            extraTags,
-            ...(isGroup ? { recipientHexes: groupRecipients } : {}),
-          });
-          if (selfWrapEvent) {
-            await handleDmEvent(selfWrapEvent);
-          }
-
-          // Mark sent, then drop the pending entry after a short delay
-          // (the real message from the self-wrap will already be in dmMessages).
-          updatePending({ status: "sent" });
-          setTimeout(() => {
-            setPendingMessages((prev) =>
-              prev.filter((m) => {
-                if (m.id !== pendingId) return true;
-                if (m.file?.previewUrl) URL.revokeObjectURL(m.file.previewUrl);
-                return false;
-              }),
-            );
-          }, 1500);
-        } catch (err: any) {
-          console.warn("[chat] file attach send failed", err);
-          // Detect the nostr.build "won't accept opaque ciphertext" failure
-          // pattern and show an actionable hint instead of the raw server
-          // message. nostr.build scans uploads for valid media and rejects
-          // encrypted blobs at ingest — users need an originless/blossom
-          // server for encrypted attachments.
-          const rawMsg = String(err?.message || "");
-          const serverUrl = (serverEntry?.url || "").toLowerCase();
-          const looksLikeNip96ContentScan =
-            serverEntry?.type === "nip96" &&
-            (/server error, please try again later/i.test(rawMsg) ||
-              /upload failed \(5\d\d\)/i.test(rawMsg));
-          const friendlyMessage = looksLikeNip96ContentScan
-            ? `${serverUrl.replace(/^https?:\/\//, "") || "This NIP-96 server"} rejected the encrypted file. NIP-96 hosts (like nostr.build) scan uploads for valid media and block opaque ciphertext. Switch your encrypted file server to an originless or blossom host in Settings → Storage.`
-            : rawMsg || "Failed to send attachment.";
-          showToast(friendlyMessage, 6000);
-          setPendingMessages((prev) =>
-            prev.filter((m) => {
-              if (m.id !== pendingId) return true;
-              if (m.file?.previewUrl) URL.revokeObjectURL(m.file.previewUrl);
-              return false;
-            }),
-          );
-        }
-      }
-    },
-    [
-      defaultNostrRelays,
-      ensureNostrPool,
-      handleDmEvent,
-      publishNip17Giftwraps,
-      readNostrIdentity,
-      resolveMessengerServerEntry,
-      resolveNip17Relays,
-      safePublish,
-      setPendingMessages,
-      showToast,
-    ],
-  );
-  const openGroupNameEditor = useCallback(() => {
-    if (!activeGroupChat) return;
-    setRenameGroupDraft(activeGroupChat.name || "");
-    setChatView("group-name-edit");
-  }, [activeGroupChat]);
-  const handleRenameGroupSubmit = useCallback(() => {
-    if (!activeGroupChat) return;
-    const nextName = renameGroupDraft.trim();
-    if (!nextName) {
-      showToast("Enter a group name", 2500);
-      return;
-    }
-    const currentName = (activeGroupChat.name || "").trim();
-    if (nextName === currentName) {
-      setChatView("group-info");
-      return;
-    }
-
-    const renameTimestamp = Math.floor(Date.now() / 1000);
-    const updatedGroup = { ...activeGroupChat, name: nextName, nameUpdatedAt: renameTimestamp };
-    upsertGroupChat(updatedGroup);
-    setRenameGroupBusy(true);
-    setChatView("group-info");
-
-    void (async () => {
-      let synced = false;
-      try {
-        synced = await publishGroupSubjectUpdate(updatedGroup, nextName);
-      } catch (err) {
-        console.warn("[chat] group rename publish failed", err);
-      } finally {
-        setRenameGroupBusy(false);
-      }
-
-      showToast(
-        synced ? "Group name updated" : "Group name updated locally. It will sync on your next message.",
-        synced ? 2200 : 4200,
-      );
-    })();
-  }, [activeGroupChat, publishGroupSubjectUpdate, renameGroupDraft, setChatView, showToast, upsertGroupChat]);
-
-  const applyEcashContact = useCallback(
-    async (contact: Contact) => {
-      const { identity, reason } = readNostrIdentity();
-      if (!identity) {
-        showToast(reason || "Add your Taskify Nostr key in Settings → Nostr.", 4000);
-        return false;
-      }
-      const primaryCurrencyForAmount = walletConversionEnabled ? walletPrimaryCurrency : "sat";
-      const unitLabelLocal = primaryCurrencyForAmount === "usd" ? "USD" : "sats";
-      const trimmedSendAmt = sendAmt.trim();
-      let sats = 0;
-      if (trimmedSendAmt) {
-        const numeric = Number(trimmedSendAmt);
-        if (!Number.isFinite(numeric) || numeric <= 0) {
-          showToast(`Enter amount in ${unitLabelLocal}`, 4500);
-          return false;
-        }
-        if (primaryCurrencyForAmount === "usd") {
-          if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
-            showToast("USD price unavailable. Try again in a moment.", 4500);
-            return false;
-          }
-          sats = Math.floor((numeric / btcUsdPrice) * SATS_PER_BTC);
-          if (sats <= 0) {
-            showToast("Amount too small. Increase the USD value.", 4500);
-            return false;
-          }
-        } else {
-          sats = Math.floor(numeric);
-        }
-      }
-      if (!sats) {
-        showToast(`Enter amount in ${unitLabelLocal}`, 3500);
-        return false;
-      }
-
-      let recipientPubkey: string | null = null;
-      let relayHints: string[] | undefined;
-
-      const contactNpub = normalizeNostrPubkey(contact.npub);
-      if (contactNpub) {
-        recipientPubkey = compressedToRawHex(contactNpub).toLowerCase();
-        relayHints = contact.relays;
-      } else {
-        const storedRequest = contact.paymentRequest?.trim?.() ?? "";
-        if (storedRequest) {
-          try {
-            const request = decodePaymentRequest(storedRequest);
-            const transport = request.getTransport(PaymentRequestTransportType.NOSTR) as PaymentRequestTransport | undefined;
-            if (transport?.target) {
-              const decoded = nip19.decode(transport.target);
-              if (decoded.type === "nprofile") {
-                const data = decoded.data as { pubkey?: string; relays?: string[] };
-                if (typeof data.pubkey === "string") {
-                  recipientPubkey = data.pubkey;
-                }
-                if (Array.isArray(data.relays)) {
-                  relayHints = data.relays.filter((r) => typeof r === "string" && r.trim()).map((r) => r.trim());
-                }
-              } else if (decoded.type === "npub") {
-                recipientPubkey = typeof decoded.data === "string" ? decoded.data : null;
-              }
-            }
-          } catch (err) {
-            console.warn("Failed to decode contact payment request for recipient", err);
-          }
-        }
-      }
-
-      if (!recipientPubkey) {
-        showToast("Contact is missing a valid npub.", 3500);
-        return false;
-      }
-
-      const relays = Array.from(
-        new Set(
-          [
-            ...(relayHints || []),
-            ...defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")),
-          ].filter(Boolean),
-        ),
-      );
-      if (!relays.length) {
-        showToast("Add at least one relay to send.", 3500);
-        return false;
-      }
-
-      if (!nip44?.v2) {
-        showToast("NIP-44 support is required to send eCash via NIP-17.", 4500);
-        return false;
-      }
-
-      setCreatingSendToken(true);
-      try {
-        let lockOptions: CreateSendTokenOptions | undefined;
-        if (lockSendToPubkey) {
-          const lockPubkey = normalizeNostrPubkey(sendLockPubkeyInput) || normalizeNostrPubkey(recipientPubkey);
-          if (!lockPubkey) {
-            showToast("Enter a valid npub or 64-character hex key to lock the token.", 4000);
-            return false;
-          }
-          lockOptions = { p2pk: { pubkey: lockPubkey } };
-        }
-
-        const { token, proofs: sentProofs, mintUrl: sentMintUrl, lockInfo } = await createSendToken(sats, lockOptions);
-        setSendTokenStr(token);
-        setLastSendTokenAmount(sats);
-        setLastSendTokenMint(sentMintUrl);
-        setLastSendTokenFingerprint(`${sats}|contact:${recipientPubkey}:${Date.now()}`);
-        if (lockInfo?.type === "p2pk") {
-          const labelSource = Array.isArray(lockInfo.options.pubkey)
-            ? lockInfo.options.pubkey.join(", ")
-            : lockInfo.options.pubkey;
-          setLastSendTokenLockLabel(`Locked to ${labelSource}`);
-        } else {
-          setLastSendTokenLockLabel(null);
-        }
-        setEcashSendView("token");
-        setHistory((h) => [
-          buildHistoryEntry({
-            id: `token-dm-${Date.now()}`,
-            summary: `Sent ${sats} sats to ${contactDisplayLabel(contact)}`,
-            detail: token,
-            detailKind: "token",
-            revertToken: token,
-            type: "ecash",
-            direction: "out",
-            amountSat: sats,
-            mintUrl: sentMintUrl,
-            tokenState:
-              sentProofs?.length
-                ? {
-                    mintUrl: sentMintUrl,
-                    proofs: sentProofs.map((proof) => {
-                      const stored: StoredProofForState = {
-                        secret: proof.secret,
-                        amount: proof.amount,
-                        id: proof.id,
-                        C: proof.C,
-                      };
-                      if (proof.witness) stored.witness = proof.witness;
-                      const y = computeProofY(proof.secret);
-                      if (y) stored.Y = y;
-                      return stored;
-                    }),
-                    lastState: "UNSPENT",
-                  }
-                : undefined,
-          }),
-          ...h,
-        ]);
-
-        const senderNpub = formatNpub(identity.pubkey);
-        const dmPlain = `nostr:${senderNpub} sent you ${sats} SAT from Taskify wallet!\n${token}`;
-        const recipientHex = recipientPubkey.toLowerCase();
-        const senderHex = identity.pubkey.toLowerCase();
-        const publishRelays = await resolveNip17Relays(recipientHex, relays);
-        if (!publishRelays.length) {
-          throw new Error("No relays available for NIP-17 inbox");
-        }
-        const pool = ensureNostrPool();
-        const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
-        await publishNip17Giftwraps({
-          content: dmPlain,
-          senderHex,
-          recipientHex,
-          senderSecret: identity.secret,
-          publish,
-        });
-        showToast(`Sent ${sats} sat${sats === 1 ? "" : "s"} to ${contactDisplayLabel(contact)}`, 3500);
-        return true;
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        console.warn("Failed to send eCash DM", err);
-        showToast(message, 5000);
-        return false;
-      } finally {
-        setCreatingSendToken(false);
-      }
-    },
-    [
-      btcUsdPrice,
-      buildHistoryEntry,
-      compressedToRawHex,
-      contactDisplayLabel,
-      createSendToken,
-      defaultNostrRelays,
-      ensureNostrPool,
-      formatNpub,
-      lockSendToPubkey,
-      normalizeNostrPubkey,
-      readNostrIdentity,
-      publishNip17Giftwraps,
-      resolveNip17Relays,
-      safePublish,
-      sendAmt,
-      sendLockPubkeyInput,
-      setHistory,
-      showToast,
-      walletConversionEnabled,
-      walletPrimaryCurrency,
-    ],
-  );
-
-  const handleSelectContact = useCallback(
-    (contact: Contact) => {
-      const context = contactsContextRef.current;
-      if (context === "lightning") {
-        applyLightningContact(contact);
-      } else if (context === "ecash") {
-        setEcashSendRecipient(contact);
-        setEcashSendView("contact");
-      }
-      setContactsOpen(false);
-      resetContactForm();
-    },
-    [applyLightningContact, resetContactForm],
-  );
-
-  const parseNip05Address = useCallback((input: string | null | undefined) => {
-    const value = input?.trim();
-    if (!value) return null;
-    const atIndex = value.indexOf("@");
-    if (atIndex <= 0 || atIndex === value.length - 1) return null;
-    const name = value.slice(0, atIndex).trim().toLowerCase();
-    const domain = value.slice(atIndex + 1).trim().toLowerCase();
-    if (!name || !domain) return null;
-    return { name, domain, normalized: `${name}@${domain}` };
-  }, []);
-
-  const normalizeNip05 = useCallback(
-    (value: string | null | undefined) => parseNip05Address(value)?.normalized ?? null,
-    [parseNip05Address],
-  );
-
-  const resolveNip05Record = useCallback(
-    async (value: string) => {
-      const parsed = parseNip05Address(value);
-      if (!parsed) {
-        throw new Error("Invalid NIP-05 address.");
-      }
-      const { name, domain, normalized } = parsed;
-      const searchParam = encodeURIComponent(name);
-      const isLocalhost =
-        /^localhost(?::\d+)?$/.test(domain) || /^127\.0\.0\.1(?::\d+)?$/.test(domain) || domain === "[::1]";
-
-      const buildUrls = (scheme: "https" | "http") => [
-        `${scheme}://${domain}/.well-known/nostr.json?name=${searchParam}`,
-        `${scheme}://${domain}/.well-known/nostr.json`,
-      ];
-
-      const urls = [...buildUrls("https"), ...(isLocalhost ? [] : buildUrls("http"))];
-
-      const resolveFromRecord = (
-        record: any,
-      ): { pubkey: string; relays?: string[]; nip05: string } | null => {
-        const names = (record?.names as Record<string, unknown>) || {};
-        const matched = normalizePubkeyCandidate(findPubkey(names));
-        if (!matched) {
-          return null;
-        }
-        let relayHints: string[] | undefined;
-        const relaysRecord =
-          record?.relays && typeof record.relays === "object" ? (record.relays as Record<string, unknown>) : null;
-        if (relaysRecord && matched in relaysRecord) {
-          const relays = relaysRecord[matched];
-          if (Array.isArray(relays)) {
-            relayHints = relays
-              .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-              .filter(Boolean);
-          }
-        }
-        return { pubkey: matched, relays: relayHints, nip05: normalized };
-      };
-
-      const workerBaseUrl =
-        typeof window !== "undefined" && typeof (window as any).__TASKIFY_WORKER_BASE_URL__ === "string"
-          ? (window as any).__TASKIFY_WORKER_BASE_URL__
-          : "";
-
-      const normalizePubkeyCandidate = (candidate: string | null | undefined): string | null => {
-        if (!candidate) return null;
-        const trimmed = candidate.trim();
-        if (!trimmed) return null;
-
-        // Try to decode any bech32 values first (npub/nprofile) to hex
-        if (/^n(profile|pub)1[ac-hj-np-z02-9]+$/i.test(trimmed)) {
-          try {
-            const decoded = nip19.decode(trimmed.toLowerCase());
-            if (decoded.type === "npub" && decoded.data) {
-              if (typeof decoded.data === "string" && /^[0-9a-f]{64}$/i.test(decoded.data)) return decoded.data.toLowerCase();
-              if (decoded.data instanceof Uint8Array) return bytesToHex(decoded.data).toLowerCase();
-            }
-            if (decoded.type === "nprofile" && decoded.data) {
-              const pubkey = (decoded.data as any)?.pubkey;
-              if (typeof pubkey === "string" && /^[0-9a-f]{64}$/i.test(pubkey)) {
-                return pubkey.toLowerCase();
-              }
-            }
-          } catch {
-            // fall through to hex handling
-          }
-        }
-
-        const hexMatch = trimmed.replace(/^0x/i, "");
-        if (/^[0-9a-f]{64}$/i.test(hexMatch)) return hexMatch.toLowerCase();
-        if (/^(02|03)[0-9a-f]{64}$/i.test(hexMatch)) return hexMatch.slice(-64).toLowerCase();
-        return null;
-      };
-
-      const findPubkey = (names: Record<string, unknown>): string | null => {
-        if (!names) return null;
-        const directMatch = names[name];
-        const lowerMatch = names[name.toLowerCase()];
-        const wildcard = names._;
-        const candidate =
-          (typeof directMatch === "string" && directMatch) ||
-          (typeof lowerMatch === "string" && lowerMatch) ||
-          (typeof wildcard === "string" && wildcard);
-        return candidate ? String(candidate) : null;
-      };
-
-      let lastError = "NIP-05 lookup failed";
-
-      const fetchViaWorker = async (): Promise<{ pubkey: string; relays?: string[]; nip05: string } | null> => {
-        const base = workerBaseUrl?.trim().replace(/\/$/, "");
-        if (!base) return null;
-        const workerUrl = `${base}/api/nip05?address=${encodeURIComponent(normalized)}`;
-        try {
-          const res = await fetch(workerUrl, {
-            headers: { Accept: "application/json" },
-            redirect: "follow",
-            mode: "cors",
-          });
-          if (!res.ok) {
-            lastError = `NIP-05 lookup failed (${res.status})`;
-            return null;
-          }
-          const payload = await res.json();
-          const candidate = resolveFromRecord(payload?.record ?? payload);
-          if (candidate) return candidate;
-          lastError = "Name not found in NIP-05 record.";
-          return null;
-        } catch (error: any) {
-          lastError = error?.message || String(error);
-          return null;
-        }
-      };
-
-      const workerResolution = await fetchViaWorker();
-      if (workerResolution) {
-        return workerResolution;
-      }
-
-      for (const url of urls) {
-        try {
-          const res = await fetch(url, {
-            headers: { Accept: "application/json" },
-            redirect: "follow",
-            mode: "cors",
-          });
-          if (!res.ok) {
-            lastError = `NIP-05 lookup failed (${res.status})`;
-            continue;
-          }
-          const data = await res.json();
-          const resolved = resolveFromRecord(data);
-          if (resolved) {
-            return resolved;
-          }
-          lastError = "Name not found in NIP-05 record.";
-        } catch (error: any) {
-          lastError = error?.message || String(error);
-        }
-      }
-      throw new Error(lastError);
-    },
-    [parseNip05Address],
-  );
-
-  const handleLookupContact = useCallback(async (overrideInput?: string) => {
-    if (contactLookupBusy) return;
-    const input = (overrideInput ?? contactLookupInput).trim();
-    if (!input) {
-      setContactLookupError("Enter a npub, hex key, or NIP-05 address.");
-      return;
-    }
-    setContactLookupBusy(true);
-    setContactLookupError("");
-    try {
-      let targetPubkeyHex: string | null = null;
-      let relayHints: string[] | undefined;
-      let resolvedNip05: string | null = null;
-      const normalizedInputNip05 = normalizeNip05(input);
-      if (input.includes("@") && !input.toLowerCase().startsWith("npub")) {
-        const resolution = await resolveNip05Record(input);
-        const normalizedPubkey = normalizeNostrPubkey(resolution.pubkey) ?? resolution.pubkey;
-        targetPubkeyHex = normalizedPubkey;
-        relayHints = resolution.relays;
-        resolvedNip05 = resolution.nip05;
-      } else {
-        const normalized = normalizeNostrPubkey(input);
-        if (!normalized) {
-          throw new Error("Invalid npub or hex key.");
-        }
-        targetPubkeyHex = compressedToRawHex(normalized);
-      }
-      if (!targetPubkeyHex) {
-        throw new Error("Unable to resolve contact key.");
-      }
-      const authorHex = compressedToRawHex(targetPubkeyHex);
-      const pool = ensureNostrPool();
-      const relayList = Array.from(
-        new Set([
-          ...(Array.isArray(relayHints) ? relayHints : []),
-          ...defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")),
-        ].filter(Boolean)),
-      );
-      let profile: ContactProfile = {};
-      if (relayList.length) {
-        try {
-          const profileEvent = await pool.get(relayList, { kinds: [0], authors: [authorHex] });
-          if (profileEvent?.content) {
-            profile = parseProfileContent(profileEvent.content);
-          }
-        } catch {
-          // ignore profile fetch failure
-        }
-      }
-      const newContact = upsertContact({
-        kind: "nostr",
-        npub: formatNpub(authorHex),
-        name: profile.displayName || profile.username || input,
-        displayName: profile.displayName,
-        username: profile.username,
-        address: profile.lud16 || "",
-        nip05: profile.nip05 || resolvedNip05 || normalizedInputNip05 || "",
-        picture: profile.picture,
-        relays: relayHints,
-        source: "profile",
-        updatedAt: Date.now(),
-      });
-      if (!newContact) {
-        throw new Error("Unable to save contact.");
-      }
-      setContactLookupInput("");
-      contactsPublishQueuedRef.current = true;
-      setActiveContactId(newContact.id);
-      setContactView("detail");
-    } catch (err: any) {
-      setContactLookupError(err?.message || "Unable to add contact from profile.");
-    } finally {
-      setContactLookupBusy(false);
-    }
-  }, [
+  const {
+    parseNip05Address,
+    normalizeNip05,
+    resolveNip05Record,
+    handleLookupContact,
+    handleContactImportAction,
+    handleImportPublicFollow,
+    handleScannedContactPayload,
+    handleDeleteContact,
+    buildContactShareValue,
+  } = useContactLookup({
     compressedToRawHex,
     contactLookupBusy,
     contactLookupInput,
+    contactsPublishQueuedRef,
     defaultNostrRelays,
     ensureNostrPool,
     formatNpub,
     setActiveContactId,
+    setContactLookupBusy,
+    setContactLookupError,
+    setContactLookupInput,
     setContactView,
-    normalizeNip05,
-    normalizeNostrPubkey,
-    resolveNip05Record,
-    parseProfileContent,
+    setContacts,
+    setPublicFollowPickerOpen,
+    setScannerMessage,
+    setScannedContact,
+    setShowScanner,
     upsertContact,
-  ]);
+  });
 
-  const handleContactImportAction = useCallback(async () => {
-    if (contactLookupBusy) return;
-    const trimmedInput = contactLookupInput.trim();
-    if (trimmedInput) {
-      await handleLookupContact();
-      return;
-    }
-    try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
-        throw new Error("Clipboard access is not available.");
-      }
-      const pasted = await navigator.clipboard.readText();
-      const nextValue = pasted.trim();
-      if (!nextValue) {
-        setContactLookupError("Clipboard is empty.");
-        return;
-      }
-      setContactLookupError("");
-      setContactLookupInput(nextValue);
-    } catch (err: any) {
-      const message = err?.message || "Unable to read from clipboard.";
-      setContactLookupError(message);
-    }
-  }, [contactLookupBusy, contactLookupInput, handleLookupContact]);
 
-  const handleImportPublicFollow = useCallback(
-    async (npub: string) => {
-      const trimmed = (npub || "").trim();
-      if (!trimmed) return;
-      setPublicFollowPickerOpen(false);
-      setContactLookupInput(trimmed);
-      await handleLookupContact(trimmed);
-    },
-    [handleLookupContact],
-  );
 
-    const handleScannedContactPayload = useCallback(
-      async (payload: ContactSharePayload | { npub?: string; relays?: string[]; name?: string; displayName?: string; lud16?: string; nip05?: string; kind?: string }) => {
-        const relayHints = Array.isArray((payload as any).relays)
-          ? ((payload as any).relays as string[]).filter((r) => typeof r === "string" && r.trim())
-          : undefined;
-      const rawNpub = typeof (payload as any).npub === "string" ? (payload as any).npub.trim() : "";
-      const normalizedHex = rawNpub ? normalizeNostrPubkey(rawNpub) : null;
-      const scannedNpub = normalizedHex
-        ? formatNpub(normalizedHex)
-        : rawNpub.startsWith("npub")
-          ? rawNpub
-          : "";
-      const authorHex = normalizedHex ? compressedToRawHex(normalizedHex) : null;
-      let mergedProfile: ContactProfile = {
-        username: (payload as any).name,
-        displayName: (payload as any).displayName,
-        lud16: (payload as any).lud16,
-        nip05: (payload as any).nip05,
-        picture: (payload as any).picture,
-      };
-      if (authorHex) {
-        const relays = Array.from(
-          new Set(
-            [
-              ...(relayHints || []),
-              ...defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")),
-            ].filter(Boolean),
-          ),
-        );
-        if (relays.length) {
-          try {
-            const pool = ensureNostrPool();
-            const profileEvent = await pool.get(relays, { kinds: [0], authors: [authorHex] });
-            if (profileEvent?.content) {
-              mergedProfile = { ...mergedProfile, ...parseProfileContent(profileEvent.content) };
-            }
-          } catch {
-            // ignore profile fetch failures
-          }
-        }
-      }
-      const candidateContact = normalizeContact({
-        id: makeContactId(),
-        kind: (payload as any).kind === "custom" && !authorHex ? "custom" : "nostr",
-        npub: scannedNpub || (authorHex ? formatNpub(authorHex) : ""),
-        name:
-          mergedProfile.displayName ||
-          mergedProfile.username ||
-          (payload as any).name ||
-          (payload as any).displayName ||
-          rawNpub,
-        displayName: mergedProfile.displayName || (payload as any).displayName,
-        username: mergedProfile.username || (payload as any).name,
-        address: mergedProfile.lud16 || (payload as any).lud16 || "",
-        nip05: mergedProfile.nip05 || (payload as any).nip05,
-        picture: mergedProfile.picture,
-        relays: relayHints,
-        source: "scan",
-        updatedAt: Date.now(),
-      });
-      if (!candidateContact) {
-        setScannerMessage("Contact code is missing usable details.");
-        return;
-      }
-      setScannedContact(candidateContact);
-      setShowScanner(false);
-      setScannerMessage("");
-    },
-    [
-      compressedToRawHex,
-      defaultNostrRelays,
-      ensureNostrPool,
-      formatNpub,
-      parseProfileContent,
-      setScannerMessage,
-      setShowScanner,
-    ],
-  );
 
-  const handleDeleteContact = useCallback((id: string) => {
-    setContacts((prev) => prev.filter((c) => c.id !== id));
-    contactsPublishQueuedRef.current = true;
-  }, []);
-
-  const buildContactShareValue = useCallback(
-    (contact: Contact): string | null => {
-      const rawNpub = contact.npub?.trim() || "";
-      const relays = contact.relays;
-      const normalized = normalizeNostrPubkey(rawNpub);
-      const npub = normalized ? formatNpub(normalized) : rawNpub.startsWith("npub") ? rawNpub : "";
-
-      if (contact.kind === "custom") {
-        const payload: ContactSharePayload = {
-          v: 1,
-          kind: "custom",
-          npub: npub || undefined,
-          relays,
-          name: contact.name?.trim() || undefined,
-          displayName: contact.displayName?.trim() || undefined,
-          lud16: contact.address?.trim() || undefined,
-          nip05: contact.nip05?.trim() || undefined,
-        };
-        return encodeContactPayload(payload);
-      }
-
-      if (npub) {
-        return npub;
-      }
-
-      // Fallback: share whatever fields we have if npub is missing.
-      return encodeContactPayload({
-        v: 1,
-        kind: contact.kind,
-        npub: npub || undefined,
-        relays,
-        name: contact.name?.trim() || undefined,
-        displayName: contact.displayName?.trim() || undefined,
-        lud16: contact.address?.trim() || undefined,
-        nip05: contact.nip05?.trim() || undefined,
-      });
-    },
-    [encodeContactPayload, formatNpub],
-  );
 
   const profileShareValue = useMemo(() => {
     if (profileSharePayload) return profileSharePayload;
@@ -6174,108 +1882,92 @@ export default function CashuWalletModal({
     safePublish,
   });
 
-  const resetNwcFundState = useCallback(() => {
-    setNwcFundState("idle");
-    setNwcFundMessage("");
-    setNwcFundInvoice("");
-  }, []);
-
-  const resetNwcWithdrawState = useCallback(() => {
-    setNwcWithdrawState("idle");
-    setNwcWithdrawMessage("");
-    setNwcWithdrawInvoice("");
-  }, []);
-
-  const closeNwcSheets = useCallback(() => {
-    closeNwcManager();
-    setShowNwcSheet(false);
-    resetNwcFundState();
-    resetNwcWithdrawState();
-    setMintSwapState("idle");
-    setMintSwapMessage("");
-    setSwapAmount("");
-    setSwapFromValue("");
-    setSwapToValue("");
-  }, [closeNwcManager, resetNwcFundState, resetNwcWithdrawState, setShowNwcSheet]);
-
-  const resetLnurlWithdrawView = useCallback(() => {
-    setLnurlWithdrawState("idle");
-    setLnurlWithdrawMessage("");
-    setLnurlWithdrawInvoice("");
-    setLnurlWithdrawAmt("");
-    setLnurlWithdrawInfo(null);
-  }, []);
-
-  const openReceiveEcashSheet = useCallback(() => {
-    setReceiveMode("ecash");
-    setReceiveLockVisible(false);
-    setEcashReceiveView("overview");
-    setEcashRequestAmt("");
-    setEcashRequestMode("multi");
-    setRecvMsg("");
-    setLastCreatedEcashRequest(null);
-  }, []);
-
-  const closeReceiveEcashSheet = useCallback(() => {
-    setReceiveMode(null);
-    setReceiveLockVisible(false);
-    setEcashReceiveView("overview");
-    setEcashRequestAmt("");
-    setEcashRequestMode("multi");
-    setRecvMsg("");
-    setLastCreatedEcashRequest(null);
-  }, []);
-
-  const openReceiveLightningSheet = useCallback(() => {
-    setReceiveMode("lightning");
-    setMintAmt("");
-    setMintQuote(null);
-    setMintStatus(activeMintInvoice ? "waiting" : "idle");
-    setMintError("");
-    if (!npubCashClaimingRef.current) {
-      setNpubCashClaimStatus("idle");
-      setNpubCashClaimMessage("");
-    }
-    const defaultView = activeMintInvoice
-      ? "invoice"
-      : npubCashLightningAddressEnabled
-        ? "address"
-        : "amount";
-    setLightningReceiveView(defaultView);
-    refreshMintEntries();
-  }, [activeMintInvoice, npubCashLightningAddressEnabled, refreshMintEntries]);
-
-  const resetLightningInvoiceState = useCallback(() => {
-    setMintQuote(null);
-    setActiveMintInvoice(null);
-    setMintStatus("idle");
-    setMintError("");
-  }, []);
-
-  const closeReceiveLightningSheet = useCallback(() => {
-    setReceiveMode(null);
-    setMintAmt("");
-    resetLightningInvoiceState();
-    setLightningReceiveView("address");
-    setNpubCashClaimStatus("idle");
-    setNpubCashClaimMessage("");
-  }, [resetLightningInvoiceState]);
-
-  const closeReceiveLnurlWithdrawSheet = useCallback(() => {
-    resetLnurlWithdrawView();
-    setReceiveMode(null);
-  }, [resetLnurlWithdrawView]);
-
-  const resetLightningSendForm = useCallback(() => {
-    setLnInput("");
-    setLnAddrAmt("");
-    setLnState("idle");
-    setLnError("");
-    setLnurlPayData(null);
-    setContactsOpen(false);
-    resetContactForm();
-    setLightningSendView("input");
-  }, [resetContactForm, setLnInput]);
+  const {
+    resetNwcFundState,
+    resetNwcWithdrawState,
+    closeNwcSheets,
+    resetLnurlWithdrawView,
+    openReceiveEcashSheet,
+    closeReceiveEcashSheet,
+    openReceiveLightningSheet,
+    resetLightningInvoiceState,
+    closeReceiveLightningSheet,
+    closeReceiveLnurlWithdrawSheet,
+    resetLightningSendForm,
+    handleRemoveMintEntry,
+    resetEcashSendForm,
+    openLightningSendSheet,
+    closeLightningSendSheet,
+    openEcashSendSheet,
+    openEcashSendToContact,
+    closeEcashSendSheet,
+    closePaymentRequestSheet,
+  } = useSheetManagement({
+    setNwcFundState,
+    setNwcFundMessage,
+    setNwcFundInvoice,
+    setNwcWithdrawState,
+    setNwcWithdrawMessage,
+    setNwcWithdrawInvoice,
+    setShowNwcSheet,
+    refreshMintEntries,
+    closeNwcManager,
+    setMintSwapState,
+    setMintSwapMessage,
+    setSwapAmount,
+    setSwapFromValue,
+    setSwapToValue,
+    setLnurlWithdrawState,
+    setLnurlWithdrawMessage,
+    setLnurlWithdrawInvoice,
+    setLnurlWithdrawAmt,
+    setLnurlWithdrawInfo,
+    setLnInput,
+    setLnAddrAmt,
+    setLnState,
+    setLnError,
+    setLnurlPayData,
+    setLightningSendView,
+    setReceiveLockVisible,
+    setEcashReceiveView,
+    setEcashRequestAmt,
+    setEcashRequestMode,
+    setLastCreatedEcashRequest,
+    setSendAmt,
+    setSendTokenStr,
+    setEcashSendRecipient,
+    setEcashSendView,
+    setLastSendTokenAmount,
+    setLastSendTokenMint,
+    setLastSendTokenFingerprint,
+    setLastSendTokenLockLabel,
+    setCreatingSendToken,
+    setSendLockPubkeyInput,
+    setSendLockError,
+    setLockSendToPubkey,
+    setReceiveMode,
+    setSendMode,
+    setShowSendOptions,
+    setRecvMsg,
+    setContactsOpen,
+    setMintAmt,
+    setMintQuote,
+    setMintStatus,
+    setMintError,
+    setLightningReceiveView,
+    setActiveMintInvoice,
+    activeMintInvoice,
+    npubCashLightningAddressEnabled,
+    setNpubCashClaimStatus,
+    setNpubCashClaimMessage,
+    npubCashClaimingRef,
+    setPaymentRequestState,
+    setPaymentRequestStatus,
+    setPaymentRequestMessage,
+    setPaymentRequestManualAmount,
+    resetSendLockSettings,
+    resetContactForm,
+  });
 
   useEffect(() => {
     const previous = previousReceiveModeRef.current;
@@ -6355,333 +2047,21 @@ export default function CashuWalletModal({
 
   const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
 
-  const handleRemoveMintEntry = useCallback(
-    (url: string) => {
-      removeMintFromList(url);
-      refreshMintEntries();
-    },
-    [refreshMintEntries],
-  );
-
-  const resetEcashSendForm = useCallback(() => {
-    setSendAmt("");
-    setSendTokenStr("");
-    setEcashSendRecipient(null);
-    setEcashSendView("amount");
-    setLastSendTokenAmount(null);
-    setLastSendTokenMint(null);
-    setLastSendTokenFingerprint(null);
-    setLastSendTokenLockLabel(null);
-    resetSendLockSettings();
-    setCreatingSendToken(false);
-  }, [resetSendLockSettings]);
-
-  const openLightningSendSheet = useCallback(() => {
-    resetEcashSendForm();
-    resetLightningSendForm();
-    setSendMode("lightning");
-    setShowSendOptions(false);
-  }, [resetEcashSendForm, resetLightningSendForm]);
-
-  const closeLightningSendSheet = useCallback(() => {
-    setSendMode(null);
-    setShowSendOptions(false);
-    resetLightningSendForm();
-  }, [resetLightningSendForm]);
-
-  const openEcashSendSheet = useCallback(() => {
-    resetEcashSendForm();
-    resetLightningSendForm();
-    setSendMode("ecash");
-    setShowSendOptions(false);
-  }, [resetEcashSendForm, resetLightningSendForm]);
-
-  const openEcashSendToContact = useCallback(
-    (contact: Contact) => {
-      resetEcashSendForm();
-      resetLightningSendForm();
-      setEcashSendRecipient(contact);
-      setEcashSendView("contact");
-      setSendMode("ecash");
-      setShowSendOptions(false);
-    },
-    [resetEcashSendForm, resetLightningSendForm],
-  );
-
-  const closeEcashSendSheet = useCallback(() => {
-    setSendMode(null);
-    setShowSendOptions(false);
-    resetEcashSendForm();
-  }, [resetEcashSendForm]);
-
-  const closePaymentRequestSheet = useCallback(() => {
-    setSendMode(null);
-    setShowSendOptions(false);
-    setPaymentRequestState(null);
-    setPaymentRequestStatus("idle");
-    setPaymentRequestMessage("");
-    setPaymentRequestManualAmount("");
-  }, []);
-
-  const handleClaimNpubCash = useCallback(
-    async (options?: { auto?: boolean }) => {
-      if (!npubCashLightningAddressEnabled) return;
-      if (npubCashClaimingRef.current) return;
-      const auto = options?.auto === true;
-      const storedSk = nostrSkSync();
-      if (!storedSk) {
-        setNpubCashIdentity(null);
-        const message = "Add your Taskify Nostr key in Settings → Nostr to use npub.cash.";
-        setNpubCashIdentityError(message);
-        if (!auto) {
-          setNpubCashClaimStatus("error");
-          setNpubCashClaimMessage(message);
-        }
-        return;
-      }
-
-      let identity: ReturnType<typeof deriveNpubCashIdentity> | null = null;
-      try {
-        identity = deriveNpubCashIdentity(storedSk);
-        setNpubCashIdentity({ npub: identity.npub, address: identity.address });
-        setNpubCashIdentityError(null);
-      } catch (err: any) {
-        const message = err?.message || "Unable to derive npub.cash address.";
-        setNpubCashIdentity(null);
-        setNpubCashIdentityError(message);
-        if (!auto) {
-          setNpubCashClaimStatus("error");
-          setNpubCashClaimMessage(message);
-        }
-        return;
-      }
-
-      if (!mintUrl) {
-        if (!auto) {
-          setNpubCashClaimStatus("error");
-          setNpubCashClaimMessage("Select an active mint before claiming from npub.cash.");
-        }
-        return;
-      }
-
-      if (auto) {
-        backgroundNpubCashClaimRef.current = true;
-      }
-      const controller = new AbortController();
-      npubCashClaimAbortRef.current = controller;
-      npubCashClaimingRef.current = true;
-      setNpubCashClaimStatus("checking");
-      setNpubCashClaimMessage("Checking npub.cash for pending tokens…");
-
-      try {
-        const result = await claimPendingEcashFromNpubCash(storedSk, { signal: controller.signal });
-        const tokens = Array.isArray(result.tokens) ? result.tokens : [];
-        const reportedBalance = Number.isFinite(result.balance)
-          ? Math.max(0, Math.floor(result.balance))
-          : 0;
-        if (reportedBalance > 0) {
-          setNpubCashClaimMessage(
-            `npub.cash reports ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"} ready to claim…`,
-          );
-        }
-        if (!tokens.length) {
-          if (reportedBalance > 0) {
-            setNpubCashClaimStatus("error");
-            setNpubCashClaimMessage(
-              `npub.cash reported ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"}, but no token was returned. Please try again later.`,
-            );
-          } else {
-            setNpubCashClaimStatus("idle");
-            setNpubCashClaimMessage("No pending eCash found.");
-          }
-          return;
-        }
-
-        let successCount = 0;
-        let totalRedeemedSat = 0;
-        let savedForLaterCount = 0;
-        let totalSavedSat = 0;
-        let lastError: string | null = null;
-        const successTokens: string[] = [];
-        const crossMintMints = new Set<string>();
-        const tokenHistoryEntries: HistoryEntryInput[] = [];
-        let tokenEntryCounter = 0;
-        for (const token of tokens) {
-          try {
-            const normalizedToken = typeof token === "string" ? token.trim() : "";
-            if (!normalizedToken) {
-              continue;
-            }
-            let decodedAmount = 0;
-            decodedAmount = amountFromCashuToken(normalizedToken);
-
-            decodedAmount = Math.max(0, Math.floor(decodedAmount));
-
-            const res = await receiveToken(normalizedToken);
-            if (res.savedForLater) {
-              savedForLaterCount += 1;
-              totalSavedSat += decodedAmount;
-            } else {
-              successCount += 1;
-              totalRedeemedSat += decodedAmount;
-            }
-            successTokens.push(normalizedToken);
-            if (res.crossMint && res.usedMintUrl) {
-              crossMintMints.add(res.usedMintUrl);
-            }
-            const resolvedMintUrl = res.usedMintUrl ?? mintUrl ?? undefined;
-            const amountSummary =
-              decodedAmount > 0 ? `${decodedAmount} sat${decodedAmount === 1 ? "" : "s"}` : "token";
-            const capitalizedAmountSummary = decodedAmount > 0 ? amountSummary : "Token";
-            const crossMintNote = res.crossMint && res.usedMintUrl ? ` at ${res.usedMintUrl}` : "";
-            const tokenSummary = res.savedForLater
-              ? `Saved ${capitalizedAmountSummary} via npub.cash${crossMintNote}`
-              : `Received ${capitalizedAmountSummary} via npub.cash${crossMintNote}`;
-            const tokenState = !res.savedForLater
-              ? deriveSpentHistoryTokenStateFromToken(normalizedToken, Date.now())
-              : undefined;
-            const historyEntry: HistoryEntryInput = {
-              id: `npubcash-token-${Date.now()}-${tokenEntryCounter++}`,
-              summary: tokenSummary,
-              detail: normalizedToken,
-              detailKind: "token",
-              type: "ecash",
-              direction: "in",
-              amountSat: decodedAmount || undefined,
-              mintUrl: resolvedMintUrl,
-            };
-            if (tokenState) {
-              historyEntry.tokenState = tokenState;
-            }
-            if (res.savedForLater) {
-              if (res.pendingTokenId) {
-                historyEntry.pendingTokenId = res.pendingTokenId;
-                historyEntry.pendingStatus = "pending";
-              }
-              historyEntry.pendingTokenAmount = decodedAmount || undefined;
-              historyEntry.pendingTokenMint = resolvedMintUrl;
-            }
-            tokenHistoryEntries.push(historyEntry);
-          } catch (err: any) {
-            lastError = err?.message || String(err);
-          }
-        }
-
-        if (lastError) {
-          setNpubCashClaimStatus("error");
-          const prefix = successCount ? `Claimed ${successCount} token${successCount === 1 ? "" : "s"}, but ` : "";
-          setNpubCashClaimMessage(`${prefix}${lastError}`);
-        } else {
-          setNpubCashClaimStatus("success");
-          const mintedNote = crossMintMints.size
-            ? `Stored at ${Array.from(crossMintMints).join(", ")}`
-            : "";
-          const reportNote =
-            reportedBalance > 0 ? `npub.cash reported ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"}` : "";
-          const messageParts: string[] = [];
-          if (successCount > 0) {
-            const satText = totalRedeemedSat
-              ? ` for ${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"}`
-              : "";
-            messageParts.push(`Redeemed ${successCount} token${successCount === 1 ? "" : "s"}${satText}`);
-          }
-          if (savedForLaterCount > 0) {
-            const satText = totalSavedSat
-              ? ` totaling ${totalSavedSat} sat${totalSavedSat === 1 ? "" : "s"}`
-              : "";
-            messageParts.push(
-              `${savedForLaterCount} token${savedForLaterCount === 1 ? "" : "s"} saved for later redemption${satText}`,
-            );
-          }
-          const suffixParts = [mintedNote, reportNote].filter(Boolean);
-          const details = suffixParts.length ? `Details: ${suffixParts.join("; ")}` : "";
-          const summaryMessage = messageParts.length ? messageParts.join(". ") : "No tokens claimed.";
-          setNpubCashClaimMessage([summaryMessage, details].filter(Boolean).join(" \u2022 "));
-          let toastMessage: string;
-          if (successCount > 0) {
-            toastMessage = totalRedeemedSat
-              ? `received ${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"}`
-              : `received ${successCount} token${successCount === 1 ? "" : "s"}`;
-          } else if (savedForLaterCount > 0) {
-            toastMessage = `saved ${savedForLaterCount} token${savedForLaterCount === 1 ? "" : "s"} for later`;
-          } else {
-            toastMessage = "received token";
-          }
-          showToast(toastMessage, 3000);
-          const detailParts = [`Address ${identity.address}`];
-          if (identity.npub) detailParts.push(`npub ${identity.npub}`);
-          if (totalRedeemedSat) {
-            detailParts.push(`${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"}`);
-          }
-          if (savedForLaterCount) {
-            detailParts.push(`Saved ${savedForLaterCount} token${savedForLaterCount === 1 ? "" : "s"} for later`);
-          }
-          if (crossMintMints.size) {
-            detailParts.push(`Stored at ${Array.from(crossMintMints).join(", ")}`);
-          }
-          if (reportedBalance > 0) {
-            detailParts.push(`npub.cash reported ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"}`);
-          }
-          const summary = totalRedeemedSat
-            ? `Claimed ${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"} via npub.cash`
-            : savedForLaterCount
-              ? `Saved ${savedForLaterCount} token${savedForLaterCount === 1 ? "" : "s"} via npub.cash`
-              : `Claimed token via npub.cash`;
-          setHistory((prev) => {
-            const crossMintSummaryUrl =
-              crossMintMints.size === 1
-                ? Array.from(crossMintMints)[0]
-                : crossMintMints.size === 0
-                  ? mintUrl || undefined
-                  : undefined;
-            const summaryEntry: HistoryEntryInput = {
-              id: `npubcash-${Date.now()}`,
-              summary,
-              detail: detailParts.join(" · "),
-              detailKind: "note",
-            };
-            if (crossMintSummaryUrl) {
-              summaryEntry.mintUrl = crossMintSummaryUrl;
-            }
-            const additions: HistoryItem[] = [];
-            if (tokenHistoryEntries.length) {
-              additions.push(...tokenHistoryEntries.map((entry) => buildHistoryEntry(entry)));
-            } else {
-              additions.push(buildHistoryEntry(summaryEntry));
-            }
-            return [...additions, ...prev];
-          });
-        }
-      } catch (err: any) {
-        if (err?.name === "AbortError") return;
-        if (err instanceof NpubCashError && err.status === 504) {
-          const message = err.message || "npub.cash request timed out. Please try again later.";
-          setNpubCashClaimStatus(auto ? "idle" : "error");
-          setNpubCashClaimMessage(message);
-          return;
-        }
-        const message = err?.message || "Unable to claim eCash from npub.cash.";
-        setNpubCashClaimStatus("error");
-        setNpubCashClaimMessage(message);
-      } finally {
-        npubCashClaimingRef.current = false;
-        if (npubCashClaimAbortRef.current === controller) {
-          npubCashClaimAbortRef.current = null;
-        }
-        if (auto) {
-          backgroundNpubCashClaimRef.current = false;
-        }
-      }
-    },
-    [
-      buildHistoryEntry,
-      mintUrl,
-      npubCashLightningAddressEnabled,
-      receiveToken,
-      setHistory,
-      showToast,
-    ],
-  );
+  const { handleClaimNpubCash } = useNpubCashClaim({
+    buildHistoryEntry,
+    mintUrl,
+    npubCashLightningAddressEnabled,
+    receiveToken,
+    setHistory,
+    showToast,
+    setNpubCashIdentity,
+    setNpubCashIdentityError,
+    setNpubCashClaimStatus,
+    setNpubCashClaimMessage,
+    npubCashClaimingRef,
+    backgroundNpubCashClaimRef,
+    npubCashClaimAbortRef,
+  });
 
   useEffect(() => {
     if (!open || !sentTokenStateChecksEnabled) {
@@ -6785,81 +2165,6 @@ export default function CashuWalletModal({
     lastTokenStateResetNonceRef.current = tokenStateResetNonce;
     resetTokenTracking();
   }, [tokenStateResetNonce, resetTokenTracking]);
-
-  const handleProofStateNotification = useCallback(
-    (mintKey: string, payload: ProofState & { proof: Proof }) => {
-      const meta = proofStateSubscriptionMetadataRef.current.get(mintKey);
-      if (!meta) return;
-      const secret = payload.proof?.secret;
-      if (!secret) return;
-      const target = meta.secretToItem.get(secret);
-      if (!target) return;
-      let toastMessageLocal: string | null = null;
-      setHistory((prev) =>
-        prev.map((entry) => {
-          if (entry.id !== target.itemId || !entry.tokenState) return entry;
-          const proofs = entry.tokenState.proofs;
-          if (!proofs[target.proofIndex]) return entry;
-          const nextProofs = proofs.map((stored, idx) => {
-            if (idx !== target.proofIndex) return stored;
-            let updated = stored;
-            if (payload.Y && stored.Y !== payload.Y) {
-              updated = { ...updated, Y: payload.Y };
-            } else if (!stored.Y) {
-              const computed = computeProofY(stored.secret);
-              if (computed) {
-                updated = { ...updated, Y: computed };
-              }
-            }
-            if (payload.witness && payload.witness !== stored.witness) {
-              updated = { ...updated, witness: payload.witness };
-            }
-            const normalizedState = sanitizeProofStateValue(payload.state);
-            if (normalizedState && normalizedState !== stored.lastState) {
-              updated = { ...updated, lastState: normalizedState };
-            }
-            return updated;
-          });
-          const aggregated =
-            aggregateStoredProofStates(nextProofs) ?? entry.tokenState.lastState;
-          const summaryValue = summarizeStoredProofStates(nextProofs);
-          const mergedWitnesses = { ...(entry.tokenState.lastWitnesses ?? {}) };
-          const yKey = payload.Y ?? nextProofs[target.proofIndex]?.Y;
-          if (payload.witness && yKey) {
-            mergedWitnesses[yKey] = payload.witness;
-          }
-          const mergedWitnessesValue = Object.keys(mergedWitnesses).length
-            ? mergedWitnesses
-            : entry.tokenState.lastWitnesses;
-          const shouldNotify = aggregated === "SPENT" && entry.tokenState.notifiedSpent !== true;
-          if (shouldNotify) {
-            toastMessageLocal = buildTokenSpentToastMessage(nextProofs);
-          }
-          const nextTokenState: HistoryTokenState = {
-            ...entry.tokenState,
-            proofs: nextProofs,
-            lastState: aggregated ?? entry.tokenState.lastState,
-            lastSummary: summaryValue || entry.tokenState.lastSummary,
-            lastCheckedAt: Date.now(),
-            lastWitnesses: mergedWitnessesValue,
-            notifiedSpent: aggregated === "SPENT" ? true : entry.tokenState.notifiedSpent,
-          };
-          return {
-            ...entry,
-            summary:
-              aggregated === "SPENT" && !entry.summary.includes("(spent)")
-                ? `${entry.summary} (spent)`
-                : entry.summary,
-            tokenState: nextTokenState,
-          };
-        }),
-      );
-      if (toastMessageLocal) {
-        showToast(toastMessageLocal, 3500);
-      }
-    },
-    [setHistory, showToast],
-  );
 
   useEffect(() => {
     if (!open || !sentTokenStateChecksEnabled) {
@@ -7128,263 +2433,76 @@ export default function CashuWalletModal({
     () => new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }),
     [],
   );
-  const formatRelativeTime = useCallback(
-    (timestamp?: number | null) => {
-      if (!timestamp) return "";
-      const diff = timestamp - Date.now();
-      const absDiff = Math.abs(diff);
-      const minute = 60 * 1000;
-      const hour = 60 * minute;
-      const day = 24 * hour;
-      const week = 7 * day;
-      const month = 30 * day;
-      const year = 365 * day;
-      if (absDiff < minute) {
-        return relativeTimeFormatter.format(Math.round(diff / 1000), "second");
-      }
-      if (absDiff < hour) {
-        return relativeTimeFormatter.format(Math.round(diff / minute), "minute");
-      }
-      if (absDiff < day) {
-        return relativeTimeFormatter.format(Math.round(diff / hour), "hour");
-      }
-      if (absDiff < week) {
-        return relativeTimeFormatter.format(Math.round(diff / day), "day");
-      }
-      if (absDiff < month) {
-        return relativeTimeFormatter.format(Math.round(diff / week), "week");
-      }
-      if (absDiff < year) {
-        return relativeTimeFormatter.format(Math.round(diff / month), "month");
-      }
-      return relativeTimeFormatter.format(Math.round(diff / year), "year");
-    },
-    [relativeTimeFormatter],
-  );
-  const formatHistoryAmount = useCallback(
-    (entry: HistoryItem) => {
-      if (entry.amountSat == null) return "";
-      const prefix = entry.direction === "out" ? "−" : "+";
-      return `${prefix}${satFormatter.format(entry.amountSat)} sat`;
-    },
-    [satFormatter],
-  );
-  const resolveMintDisplay = useCallback(
-    (entry: HistoryItem) => {
-      const target =
-        entry.mintUrl || entry.pendingTokenMint || entry.tokenState?.mintUrl || entry.mintQuote?.mintUrl;
-      if (!target) return "";
-      const normalized = normalizeMintUrl(target);
-      const info = normalized ? mintInfoByUrl[normalized] : undefined;
-      return info?.name || formatMintDisplayName(target);
-    },
-    [mintInfoByUrl],
-  );
-  const deriveHistoryStatus = useCallback((entry: HistoryItem) => {
-    const isLightningEntry = entry.type === "lightning" || entry.detailKind === "invoice";
-    const prefersReceivedLabel = isLightningEntry && entry.direction === "in";
-    if (entry.pendingTokenId && entry.pendingStatus !== "redeemed") {
-      return { label: "Pending redemption", tone: "pending" as const };
-    }
-    if (entry.tokenState) {
-      if (entry.tokenState.lastState === "SPENT") {
-        if (entry.direction === "in") {
-          return { label: "Received", tone: "success" as const };
-        }
-        return { label: "Sent", tone: "success" as const };
-      }
-      if (entry.tokenState.lastSummary) {
-        return { label: entry.tokenState.lastSummary, tone: "pending" as const };
-      }
-      return { label: entry.tokenState.lastState || "Pending", tone: "pending" as const };
-    }
-    if (entry.mintQuote) {
-      const state = entry.mintQuote.state?.toLowerCase();
-      if (state === "expired") {
-        return { label: "Expired", tone: "danger" as const };
-      }
-      if (state === "paid" || state === "issued") {
-        return { label: prefersReceivedLabel ? "Received" : "Paid", tone: "success" as const };
-      }
-      return { label: state ? state.charAt(0).toUpperCase() + state.slice(1) : "Pending", tone: "pending" as const };
-    }
-    if (entry.stateLabel) {
-      const normalized = entry.stateLabel.toLowerCase();
-      if (normalized === "expired") {
-        return { label: entry.stateLabel, tone: "danger" as const };
-      }
-      if (normalized === "paid" || normalized === "completed") {
-        return { label: prefersReceivedLabel ? "Received" : entry.stateLabel, tone: "success" as const };
-      }
-      return { label: entry.stateLabel, tone: undefined };
-    }
-    if (entry.direction === "in") {
-      return { label: "Received", tone: "success" as const };
-    }
-    if (entry.direction === "out") {
-      return { label: "Sent", tone: undefined };
-    }
-    return { label: "Activity", tone: undefined };
-  }, []);
-
-  const paymentRequestUnitLabel = useMemo(
-    () => (paymentRequestState?.request.unit || info?.unit || "sat").toLowerCase(),
-    [paymentRequestState?.request.unit, info?.unit],
-  );
-
-  const paymentRequestFixedAmount = useMemo(() => {
-    if (!paymentRequestState) return null;
-    const value = Number(paymentRequestState.request.amount);
-    if (!Number.isFinite(value) || value <= 0) {
-      return null;
-    }
-    return Math.floor(value);
-  }, [paymentRequestState]);
-
-  const paymentRequestHasFixedAmount = paymentRequestFixedAmount !== null;
-
-  const canToggleCurrency = walletConversionEnabled;
-
-  const paymentRequestInputCurrency =
-    walletConversionEnabled && walletPrimaryCurrency === "usd" ? "usd" : "sat";
-
-  const paymentRequestInputUnitLabel = paymentRequestInputCurrency === "usd" ? "USD" : "sats";
-
-  const canTogglePaymentRequestCurrency = canToggleCurrency && !paymentRequestHasFixedAmount;
-
-  const paymentRequestAmountTextValue = useMemo(() => {
-    if (paymentRequestHasFixedAmount) {
-      if (paymentRequestFixedAmount != null) {
-        return satFormatter.format(paymentRequestFixedAmount);
-      }
-      return "0";
-    }
-    return paymentRequestManualAmount.trim() || "0";
-  }, [
-    paymentRequestHasFixedAmount,
-    paymentRequestFixedAmount,
-    paymentRequestManualAmount,
+  const { formatRelativeTime, formatHistoryAmount, resolveMintDisplay, deriveHistoryStatus } = useHistoryFormatters({
+    mintInfoByUrl,
+    relativeTimeFormatter,
     satFormatter,
-  ]);
+  });
 
-  const paymentRequestPrimaryAmountText = useMemo(() => {
-    if (paymentRequestHasFixedAmount) {
-      return `${paymentRequestAmountTextValue} ${paymentRequestUnitLabel}`;
-    }
-    const trimmed = paymentRequestManualAmount.trim();
-    if (paymentRequestInputCurrency === "usd") {
-      return `$${trimmed || "0.00"}`;
-    }
-    return `${trimmed || "0"} sat`;
-  }, [
-    paymentRequestAmountTextValue,
-    paymentRequestHasFixedAmount,
-    paymentRequestInputCurrency,
-    paymentRequestManualAmount,
+  const {
     paymentRequestUnitLabel,
-  ]);
-
-  const paymentRequestSecondaryAmountText = useMemo(() => {
-    const unitDisplay = paymentRequestUnitLabel === "sat" ? "sats" : paymentRequestUnitLabel;
-    if (paymentRequestHasFixedAmount) {
-      if (paymentRequestFixedAmount != null) {
-        return `Request requires ${satFormatter.format(paymentRequestFixedAmount)} ${unitDisplay}`;
-      }
-      return `Request requires amount in ${unitDisplay}`;
-    }
-    const inputUnitDisplay = paymentRequestInputUnitLabel;
-    const trimmed = paymentRequestManualAmount.trim();
-    if (!trimmed) {
-      return `Enter amount in ${inputUnitDisplay}`;
-    }
-    const numericAmount = Number(trimmed);
-    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-      return `Enter amount in ${inputUnitDisplay}`;
-    }
-    if (paymentRequestInputCurrency === "usd") {
-      if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
-        return `Enter amount in ${inputUnitDisplay}`;
-      }
-      const sats = Math.floor((numericAmount / btcUsdPrice) * SATS_PER_BTC);
-      if (sats <= 0) {
-        return `Enter amount in ${inputUnitDisplay}`;
-      }
-      return `≈ ${satFormatter.format(sats)} sat`;
-    }
-    return `Ready to send ${trimmed} ${inputUnitDisplay}`;
-  }, [
+    paymentRequestFixedAmount,
     paymentRequestHasFixedAmount,
-    paymentRequestManualAmount,
+    canToggleCurrency,
     paymentRequestInputCurrency,
     paymentRequestInputUnitLabel,
-    paymentRequestUnitLabel,
-    paymentRequestFixedAmount,
+    canTogglePaymentRequestCurrency,
+    paymentRequestAmountTextValue,
+    paymentRequestPrimaryAmountText,
+    paymentRequestSecondaryAmountText,
+    paymentRequestPrimaryTransportType,
+    paymentRequestActionLabel,
+    canEditPaymentRequestAmount,
+    paymentRequestAmountButtonEnabled,
+  } = usePaymentRequestDerived({
+    paymentRequestState,
+    info,
+    paymentRequestManualAmount,
     walletConversionEnabled,
+    walletPrimaryCurrency,
     btcUsdPrice,
     satFormatter,
-  ]);
+  });
 
-  const paymentRequestPrimaryTransportType = useMemo(() => {
-    if (!paymentRequestState) return null;
-    const request = paymentRequestState.request;
-    let transports = Array.isArray((request as any)?.transport)
-      ? ((request as any).transport as PaymentRequestTransport[])
-      : [];
-    transports = transports.filter(
-      (entry): entry is PaymentRequestTransport =>
-        !!entry && typeof entry.type === "string" && typeof entry.target === "string",
-    );
-    if (!transports.length) {
-      const fallback = new Map<PaymentRequestTransportType, PaymentRequestTransport>();
-      const nostr = request.getTransport(
-        PaymentRequestTransportType.NOSTR,
-      ) as PaymentRequestTransport | undefined;
-      if (nostr) fallback.set(PaymentRequestTransportType.NOSTR, nostr);
-      const post = request.getTransport(
-        PaymentRequestTransportType.POST,
-      ) as PaymentRequestTransport | undefined;
-      if (post) fallback.set(PaymentRequestTransportType.POST, post);
-      transports = [...fallback.values()];
-    }
-    if (!transports.length) {
-      return null;
-    }
-    return transports[0].type;
-  }, [paymentRequestState]);
+  const {
+    primaryCurrency,
+    unitLabel,
+    amountInputUnitLabel,
+    amountInputPlaceholder,
+    usdBalance,
+    formatUsdAmount,
+    handleTogglePrimary,
+    parseAmountInput,
+    parsedMintAmount,
+    mintAmountSecondaryDisplay,
+    canCreateMintInvoice,
+    parsedLightningSendAmount,
+    lightningSendAmountSecondaryDisplay,
+    lightningSendPrimaryAmountText,
+    lightningSendSecondaryAmountText,
+    lightningInvoiceAmountSecondaryDisplay,
+    lightningPrimaryAmountText,
+    lightningSecondaryAmountText,
+    invoiceAmountSecondary,
+    lightningInvoiceStatusLabel,
+  } = useAmountFormatters({
+    walletConversionEnabled,
+    walletPrimaryCurrency,
+    setWalletPrimaryCurrency,
+    btcUsdPrice,
+    totalBalance,
+    usdFormatterLarge,
+    usdFormatterSmall,
+    satFormatter,
+    mintAmt,
+    lnAddrAmt,
+    mintUrl,
+    activeMintInvoice,
+    lightningInvoiceAmountSat,
+    mintStatus,
+    canToggleCurrency,
+  });
 
-  const paymentRequestActionLabel = useMemo(() => {
-    switch (paymentRequestPrimaryTransportType) {
-      case PaymentRequestTransportType.NOSTR:
-        return "Pay via nostr";
-      case PaymentRequestTransportType.POST:
-        return "Pay via http";
-      default:
-        return "Send";
-    }
-  }, [paymentRequestPrimaryTransportType]);
-
-  const canEditPaymentRequestAmount = !paymentRequestHasFixedAmount;
-
-  const paymentRequestAmountButtonEnabled = canEditPaymentRequestAmount || canTogglePaymentRequestCurrency;
-
-  const formatUsdAmount = useCallback((amount: number | null) => {
-    if (amount == null || !Number.isFinite(amount)) return "—";
-    if (amount <= 0) return "$0.00";
-    if (amount >= 1) return usdFormatterLarge.format(amount);
-    return usdFormatterSmall.format(amount);
-  }, [usdFormatterLarge, usdFormatterSmall]);
-
-  const effectivePrimaryCurrency = walletConversionEnabled ? walletPrimaryCurrency : "sat";
-
-  const usdBalance = useMemo(() => {
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
-    return (totalBalance / SATS_PER_BTC) * btcUsdPrice;
-  }, [walletConversionEnabled, btcUsdPrice, totalBalance]);
-
-  const primaryCurrency = effectivePrimaryCurrency === "usd" ? "usd" : "sat";
-  const unitLabel = primaryCurrency === "usd" ? "USD" : "SAT";
-  const amountInputUnitLabel = primaryCurrency === "usd" ? "USD" : "sats";
-  const amountInputPlaceholder = `Amount (${amountInputUnitLabel})`;
 
   const unitButtonClass = useMemo(
     () => `wallet-modal__unit chip chip-accent${canToggleCurrency ? " pressable" : ""}`,
@@ -7402,639 +2520,64 @@ export default function CashuWalletModal({
     [walletTab],
   );
 
-  const handleTogglePrimary = useCallback(() => {
-    if (!walletConversionEnabled) return;
-    const next = walletPrimaryCurrency === "usd" ? "sat" : "usd";
-    setWalletPrimaryCurrency(next);
-  }, [walletConversionEnabled, walletPrimaryCurrency, setWalletPrimaryCurrency]);
 
-  const parseAmountInput = useCallback((raw: string) => {
-    const trimmed = raw.trim();
-    const unitLabelLocal = primaryCurrency === "usd" ? "USD" : "sats";
-    if (!trimmed) {
-      return { sats: 0, raw: 0 };
-    }
-    const numeric = Number(trimmed);
-    if (!Number.isFinite(numeric) || numeric <= 0) {
-      return { sats: 0, raw: numeric, error: `Enter amount in ${unitLabelLocal}` };
-    }
-    if (primaryCurrency === "usd") {
-      if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
-        return { sats: 0, raw: numeric, error: "USD price unavailable. Try again in a moment." };
-      }
-      const sats = Math.floor((numeric / btcUsdPrice) * SATS_PER_BTC);
-      if (sats <= 0) {
-        return { sats: 0, raw: numeric, error: "Amount too small. Increase the USD value." };
-      }
-      return { sats, raw: numeric, usd: numeric };
-    }
-    const sats = Math.floor(numeric);
-    if (sats <= 0) {
-      return { sats: 0, raw: numeric, error: `Enter amount in ${unitLabelLocal}` };
-    }
-    return { sats, raw: numeric };
-  }, [primaryCurrency, walletConversionEnabled, btcUsdPrice]);
 
-  const parsedMintAmount = useMemo(() => parseAmountInput(mintAmt), [parseAmountInput, mintAmt]);
 
-  const mintAmountSecondaryDisplay = useMemo(() => {
-    if (parsedMintAmount.error || parsedMintAmount.sats <= 0) return null;
-    if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedMintAmount.sats)} sat`;
-    }
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
-    const usdValue = (parsedMintAmount.sats / SATS_PER_BTC) * btcUsdPrice;
-    return `≈ ${formatUsdAmount(usdValue)}`;
-  }, [
-    parsedMintAmount,
-    primaryCurrency,
-    walletConversionEnabled,
+  const {
+    handleCopyLightningAddress,
+    handleOpenLightningAmountView,
+    handleLightningInvoiceBack,
+    handleLightningAmountUnitToggle,
+    handleLightningAmountKeypadInput,
+    handleOpenEcashRequestAmountView,
+    handleEcashRequestKeypadInput,
+    handleLightningSendAmountKeypadInput,
+    evaluateLightningSendInput,
+    handleLightningInputReview,
+    handlePasteLightningInput,
+    handlePaymentRequestKeypadInput,
+    handlePaymentRequestAmountUnitToggle,
+    handleSetEcashRequestMode,
+    handleOpenEcashAmountView,
+    handleEcashAmountKeypadInput,
+  } = useAmountKeypadHandlers({
+    activeMintInvoice,
     btcUsdPrice,
-    satFormatter,
-    formatUsdAmount,
-  ]);
-
-  const canCreateMintInvoice = useMemo(
-    () => parsedMintAmount.sats > 0 && !parsedMintAmount.error && !!mintUrl,
-    [parsedMintAmount, mintUrl],
-  );
-
-  const parsedLightningSendAmount = useMemo(
-    () => parseAmountInput(lnAddrAmt),
-    [parseAmountInput, lnAddrAmt],
-  );
-
-  const lightningSendAmountSecondaryDisplay = useMemo(() => {
-    if (parsedLightningSendAmount.error || parsedLightningSendAmount.sats <= 0) return null;
-    if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedLightningSendAmount.sats)} sat`;
-    }
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
-    const usdValue = (parsedLightningSendAmount.sats / SATS_PER_BTC) * btcUsdPrice;
-    return `≈ ${formatUsdAmount(usdValue)}`;
-  }, [
-    parsedLightningSendAmount,
-    primaryCurrency,
-    walletConversionEnabled,
-    btcUsdPrice,
-    satFormatter,
-    formatUsdAmount,
-  ]);
-
-  const lightningSendPrimaryAmountText = useMemo(() => {
-    const trimmedAmount = lnAddrAmt.trim();
-    if (primaryCurrency === "usd") {
-      return `$${trimmedAmount || "0.00"}`;
-    }
-    return `${trimmedAmount || "0"} sat`;
-  }, [lnAddrAmt, primaryCurrency]);
-
-  const lightningSendSecondaryAmountText = useMemo(() => {
-    if (lightningSendAmountSecondaryDisplay) return lightningSendAmountSecondaryDisplay;
-    const trimmedAmount = lnAddrAmt.trim();
-    if (!trimmedAmount) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    if (!canToggleCurrency) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    const nextCurrency = primaryCurrency === "usd" ? "sat" : "USD";
-    return `Tap to switch to ${nextCurrency}`;
-  }, [
-    lightningSendAmountSecondaryDisplay,
-    lnAddrAmt,
-    amountInputUnitLabel,
     canToggleCurrency,
-    primaryCurrency,
-  ]);
-
-  const lightningInvoiceAmountSecondaryDisplay = useMemo(() => {
-    if (lightningInvoiceAmountSat == null) return null;
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
-    const usdValue = (lightningInvoiceAmountSat / SATS_PER_BTC) * btcUsdPrice;
-    return formatUsdAmount(usdValue);
-  }, [lightningInvoiceAmountSat, walletConversionEnabled, btcUsdPrice, formatUsdAmount]);
-
-  const lightningPrimaryAmountText = useMemo(() => {
-    const trimmedAmount = mintAmt.trim();
-    if (primaryCurrency === "usd") {
-      return `$${trimmedAmount || "0.00"}`;
-    }
-    return `${trimmedAmount || "0"} sat`;
-  }, [mintAmt, primaryCurrency]);
-
-  const lightningSecondaryAmountText = useMemo(() => {
-    if (mintAmountSecondaryDisplay) return mintAmountSecondaryDisplay;
-    const trimmedAmount = mintAmt.trim();
-    if (!trimmedAmount) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    if (!canToggleCurrency) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    const nextCurrency = primaryCurrency === "usd" ? "sat" : "USD";
-    return `Tap to switch to ${nextCurrency}`;
-  }, [
-    amountInputUnitLabel,
-    canToggleCurrency,
-    mintAmt,
-    mintAmountSecondaryDisplay,
-    primaryCurrency,
-  ]);
-
-  const invoiceAmountSecondary = useMemo(() => {
-    if (!activeMintInvoice) return null;
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
-    const usdValue = (activeMintInvoice.amountSat / SATS_PER_BTC) * btcUsdPrice;
-    return formatUsdAmount(usdValue);
-  }, [activeMintInvoice, walletConversionEnabled, btcUsdPrice, formatUsdAmount]);
-
-  const lightningInvoiceStatusLabel = useMemo(() => {
-    switch (mintStatus) {
-      case "waiting":
-        return "Pending";
-      case "minted":
-        return "Received";
-      case "error":
-        return "Error";
-      default:
-        return "Unpaid";
-    }
-  }, [mintStatus]);
-
-  const handleCopyLightningAddress = useCallback(async () => {
-    const address = npubCashIdentity?.address;
-    if (!address) return;
-    try {
-      await navigator.clipboard?.writeText(address);
-      setLightningAddressCopied(true);
-      showToast("Lightning address copied", 2000);
-    } catch (error) {
-      console.warn("Failed to copy lightning address", error);
-    }
-  }, [npubCashIdentity?.address, showToast]);
-
-  const handleOpenLightningAmountView = useCallback(() => {
-    resetLightningInvoiceState();
-    setLightningReceiveView("amount");
-    refreshMintEntries();
-  }, [resetLightningInvoiceState, refreshMintEntries]);
-
-  const handleLightningInvoiceBack = useCallback(() => {
-    resetLightningInvoiceState();
-    setLightningReceiveView("amount");
-  }, [resetLightningInvoiceState]);
-
-  const handleLightningAmountUnitToggle = useCallback(() => {
-    if (!canToggleCurrency) return;
-    const nextCurrency = walletPrimaryCurrency === "usd" ? "sat" : "usd";
-    const satsAmount = parsedMintAmount.error ? 0 : parsedMintAmount.sats;
-    handleTogglePrimary();
-    if (!satsAmount || satsAmount <= 0) {
-      setMintAmt("");
-      return;
-    }
-    if (nextCurrency === "usd") {
-      if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
-        setMintAmt("");
-        return;
-      }
-      const usdValue = (satsAmount / SATS_PER_BTC) * btcUsdPrice;
-      const rounded = Math.round(usdValue * 100) / 100;
-      setMintAmt(rounded.toFixed(2));
-      return;
-    }
-    setMintAmt(String(satsAmount));
-  }, [
-    canToggleCurrency,
-    walletPrimaryCurrency,
-    parsedMintAmount,
-    handleTogglePrimary,
-    walletConversionEnabled,
-    btcUsdPrice,
-  ]);
-
-  const handleLightningAmountKeypadInput = useCallback(
-    (key: string) => {
-      setMintAmt((prev) => {
-        const current = prev || "";
-        if (key === "backspace") {
-          const trimmed = current.slice(0, -1);
-          return trimmed;
-        }
-        if (key === "clear") {
-          return "";
-        }
-        if (key === "decimal") {
-          if (primaryCurrency !== "usd") return current;
-          if (current.includes(".")) return current;
-          return current ? `${current}.` : "0.";
-        }
-        if (/^\d$/.test(key)) {
-          if (primaryCurrency === "usd") {
-            let next = current === "0" && !current.includes(".") ? key : `${current}${key}`;
-            if (current === "" && key === "0") {
-              return "0";
-            }
-            if (!current.includes(".") && /^0\d/.test(next)) {
-              next = String(Number(next));
-            }
-            const decimalPart = next.split(".")[1];
-            if (decimalPart && decimalPart.length > 2) {
-              return current;
-            }
-            return next;
-          }
-          const combined = `${current}${key}`;
-          const normalized = combined.replace(/^0+(?=\d)/, "");
-          return normalized || "0";
-        }
-        return current;
-      });
-      setMintError("");
-      if (mintQuote || activeMintInvoice) {
-        resetLightningInvoiceState();
-      }
-    },
-    [primaryCurrency, mintQuote, activeMintInvoice, resetLightningInvoiceState],
-  );
-
-  const handleOpenEcashRequestAmountView = useCallback(() => {
-    refreshMintEntries();
-    setEcashReceiveView("amount");
-    setRecvMsg("");
-    setPaymentRequestError("");
-    setLastCreatedEcashRequest(null);
-  }, [refreshMintEntries, setPaymentRequestError]);
-
-  const handleEcashRequestKeypadInput = useCallback(
-    (key: string) => {
-      setEcashRequestAmt((prev) => {
-        const current = prev || "";
-        if (key === "backspace") {
-          return current.slice(0, -1);
-        }
-        if (key === "clear") {
-          return "";
-        }
-        if (key === "decimal") {
-          if (primaryCurrency !== "usd") return current;
-          if (current.includes(".")) return current;
-          return current ? `${current}.` : "0.";
-        }
-        if (/^\d$/.test(key)) {
-          if (primaryCurrency === "usd") {
-            let next = current === "0" && !current.includes(".") ? key : `${current}${key}`;
-            if (current === "" && key === "0") {
-              return "0";
-            }
-            if (!current.includes(".") && /^0\d/.test(next)) {
-              next = String(Number(next));
-            }
-            const decimalPart = next.split(".")[1];
-            if (decimalPart && decimalPart.length > 2) {
-              return current;
-            }
-            return next;
-          }
-          const combined = `${current}${key}`;
-          const normalized = combined.replace(/^0+(?=\d)/, "");
-          return normalized || "0";
-        }
-        return current;
-      });
-    },
-    [primaryCurrency],
-  );
-
-  const handleLightningSendAmountKeypadInput = useCallback(
-    (key: string) => {
-      setLnAddrAmt((prev) => {
-        const current = prev || "";
-        if (key === "backspace") {
-          const trimmed = current.slice(0, -1);
-          return trimmed;
-        }
-        if (key === "clear") {
-          return "";
-        }
-        if (key === "decimal") {
-          if (primaryCurrency !== "usd") return current;
-          if (current.includes(".")) return current;
-          return current ? `${current}.` : "0.";
-        }
-        if (/^\d$/.test(key)) {
-          if (primaryCurrency === "usd") {
-            let next = current === "0" && !current.includes(".") ? key : `${current}${key}`;
-            if (current === "" && key === "0") {
-              return "0";
-            }
-            if (!current.includes(".") && /^0\d/.test(next)) {
-              next = String(Number(next));
-            }
-            const decimalPart = next.split(".")[1];
-            if (decimalPart && decimalPart.length > 2) {
-              return current;
-            }
-            return next;
-          }
-          const combined = `${current}${key}`;
-          const normalized = combined.replace(/^0+(?=\d)/, "");
-          return normalized || "0";
-        }
-        return current;
-      });
-    },
-    [primaryCurrency],
-  );
-
-  type LightningSendInputKind = "empty" | "invoice" | "address" | "lnurl" | "unknown";
-
-  const evaluateLightningSendInput = useCallback(
-    (rawValue: string): LightningSendInputKind => {
-      const trimmed = rawValue.trim();
-      if (!trimmed) {
-        setLightningSendView("input");
-        return "empty";
-      }
-      const normalized = trimmed.replace(/^lightning:/i, "").trim();
-      if (/^ln(bc|tb|sb|bcrt)[0-9]/i.test(normalized)) {
-        setLightningSendView("invoice");
-        return "invoice";
-      }
-      if (/^[^@\s]+@[^@\s]+$/.test(normalized)) {
-        setLightningSendView("address");
-        return "address";
-      }
-      if (/^lnurl[0-9a-z]+$/i.test(normalized)) {
-        setLightningSendView("address");
-        return "lnurl";
-      }
-      setLightningSendView("input");
-      return "unknown";
-    },
-    [],
-  );
-
-  const handleLightningInputReview = useCallback(() => {
-    const currentInput = commitLightningInputFromDom();
-    const kind = evaluateLightningSendInput(currentInput);
-    if (kind === "invoice") {
-      setLnAddrAmt("");
-      setLnState("idle");
-      setLnError("");
-    } else if (kind === "address" || kind === "lnurl") {
-      setLnState("idle");
-      setLnError("");
-    } else if (kind === "empty") {
-      setLnError("Paste an invoice or enter a lightning address");
-    } else if (kind === "unknown") {
-      setLnError("Unsupported input. Paste a Lightning invoice, address, or LNURL.");
-    }
-    return kind;
-  }, [commitLightningInputFromDom, evaluateLightningSendInput]);
-
-  const handlePasteLightningInput = useCallback(async () => {
-    try {
-      const text = (await navigator.clipboard?.readText())?.trim() ?? "";
-      if (!text) {
-        alert("Clipboard is empty.");
-        return;
-      }
-      setLnInput(text);
-      const kind = evaluateLightningSendInput(text);
-      setLnState("idle");
-      setLnError("");
-      if (kind === "invoice") {
-        setLnAddrAmt("");
-      } else if (kind === "address" || kind === "lnurl") {
-        setLnAddrAmt("");
-      } else if (kind === "unknown") {
-        alert("Clipboard does not contain a valid Lightning invoice, address, or LNURL.");
-        setLnError("Clipboard does not contain a valid Lightning invoice, address, or LNURL.");
-      }
-    } catch {
-      alert("Unable to read clipboard. Please paste manually.");
-    }
-  }, [evaluateLightningSendInput, setLnInput]);
-
-  const handlePaymentRequestKeypadInput = useCallback((key: string) => {
-    setPaymentRequestManualAmount((prev) => {
-      const current = prev || "";
-      if (key === "backspace") {
-        return current.slice(0, -1);
-      }
-      if (key === "clear") {
-        return "";
-      }
-      if (key === "decimal") {
-        if (primaryCurrency !== "usd") return current;
-        if (current.includes(".")) return current;
-        return current ? `${current}.` : "0.";
-      }
-      if (/^\d$/.test(key)) {
-        if (primaryCurrency === "usd") {
-          let next = current === "0" && !current.includes(".") ? key : `${current}${key}`;
-          if (current === "" && key === "0") {
-            return "0";
-          }
-          if (!current.includes(".") && /^0\d/.test(next)) {
-            next = String(Number(next));
-          }
-          const decimalPart = next.split(".")[1];
-          if (decimalPart && decimalPart.length > 2) {
-            return current;
-          }
-          return next;
-        }
-        const combined = `${current}${key}`;
-        const normalized = combined.replace(/^0+(?=\d)/, "");
-        return normalized || "0";
-      }
-      return current;
-    });
-  }, [primaryCurrency]);
-
-  const handlePaymentRequestAmountUnitToggle = useCallback(() => {
-    if (!canTogglePaymentRequestCurrency) return;
-    const nextCurrency = walletPrimaryCurrency === "usd" ? "sat" : "usd";
-    const trimmed = paymentRequestManualAmount.trim();
-    let satsAmount = 0;
-    if (trimmed) {
-      const numeric = Number(trimmed);
-      if (paymentRequestInputCurrency === "usd") {
-        if (
-          walletConversionEnabled &&
-          btcUsdPrice != null &&
-          btcUsdPrice > 0 &&
-          Number.isFinite(numeric) &&
-          numeric > 0
-        ) {
-          satsAmount = Math.floor((numeric / btcUsdPrice) * SATS_PER_BTC);
-        }
-      } else if (Number.isFinite(numeric) && numeric > 0) {
-        satsAmount = Math.floor(numeric);
-      }
-    }
-    handleTogglePrimary();
-    if (!satsAmount || satsAmount <= 0) {
-      setPaymentRequestManualAmount("");
-      return;
-    }
-    if (nextCurrency === "usd") {
-      if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
-        setPaymentRequestManualAmount("");
-        return;
-      }
-      const usdValue = (satsAmount / SATS_PER_BTC) * btcUsdPrice;
-      const rounded = Math.round(usdValue * 100) / 100;
-      setPaymentRequestManualAmount(rounded.toFixed(2));
-      return;
-    }
-    setPaymentRequestManualAmount(String(satsAmount));
-  }, [
-    btcUsdPrice,
     canTogglePaymentRequestCurrency,
+    commitLightningInputFromDom,
     handleTogglePrimary,
+    mintQuote,
+    npubCashIdentity,
+    parsedMintAmount,
     paymentRequestInputCurrency,
     paymentRequestManualAmount,
+    primaryCurrency,
+    refreshMintEntries,
+    resetLightningInvoiceState,
+    setEcashReceiveView,
+    setEcashRequestAmt,
+    setEcashRequestMode,
+    setEcashSendView,
+    setLastCreatedEcashRequest,
+    setLightningAddressCopied,
+    setLightningReceiveView,
+    setLightningSendView,
+    setLnAddrAmt,
+    setLnError,
+    setLnInput,
+    setLnState,
+    setMintAmt,
+    setMintError,
+    setPaymentRequestError,
+    setPaymentRequestManualAmount,
+    setRecvMsg,
+    setSendAmt,
+    setSendLockError,
+    showToast,
     walletConversionEnabled,
     walletPrimaryCurrency,
-  ]);
-
-  const handleSetEcashRequestMode = useCallback((mode: "multi" | "single") => {
-    setEcashRequestMode(mode);
-    setRecvMsg("");
-  }, []);
-
-  const parsedEcashRequestAmount = useMemo(
-    () => parseAmountInput(ecashRequestAmt),
-    [parseAmountInput, ecashRequestAmt],
-  );
-
-  const ecashRequestAmountSecondaryDisplay = useMemo(() => {
-    if (parsedEcashRequestAmount.error || parsedEcashRequestAmount.sats <= 0) return null;
-    if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedEcashRequestAmount.sats)} sat`;
-    }
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
-    const usdValue = (parsedEcashRequestAmount.sats / SATS_PER_BTC) * btcUsdPrice;
-    return `≈ ${formatUsdAmount(usdValue)}`;
-  }, [
-    parsedEcashRequestAmount,
-    primaryCurrency,
-    walletConversionEnabled,
-    btcUsdPrice,
-    satFormatter,
-    formatUsdAmount,
-  ]);
-
-  const ecashRequestPrimaryAmountText = useMemo(() => {
-    const trimmedAmount = ecashRequestAmt.trim();
-    if (primaryCurrency === "usd") {
-      return `$${trimmedAmount || "0.00"}`;
-    }
-    return `${trimmedAmount || "0"} sat`;
-  }, [ecashRequestAmt, primaryCurrency]);
-
-  const ecashRequestSecondaryAmountText = useMemo(() => {
-    if (ecashRequestMode === "multi") {
-      return "Reusable request";
-    }
-    if (ecashRequestAmountSecondaryDisplay) return ecashRequestAmountSecondaryDisplay;
-    const trimmedAmount = ecashRequestAmt.trim();
-    if (!trimmedAmount) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    if (!canToggleCurrency) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    const nextCurrency = primaryCurrency === "usd" ? "sat" : "USD";
-    return `Tap to switch to ${nextCurrency}`;
-  }, [
-    ecashRequestMode,
-    ecashRequestAmountSecondaryDisplay,
-    ecashRequestAmt,
-    amountInputUnitLabel,
-    canToggleCurrency,
-    primaryCurrency,
-  ]);
-
-  const nostrMissingReason = paymentRequestsEnabled ? nostrIdentityInfo.reason : null;
-
-  const canCreateEcashRequest = useMemo(() => {
-    if (!paymentRequestsEnabled) return false;
-    if (!mintUrl) return false;
-    if (!info?.unit) return false;
-    if (nostrMissingReason) return false;
-    if (ecashRequestMode === "single") {
-      return parsedEcashRequestAmount.sats > 0 && !parsedEcashRequestAmount.error;
-    }
-    return true;
-  }, [
-    paymentRequestsEnabled,
-    mintUrl,
-    info?.unit,
-    nostrMissingReason,
-    ecashRequestMode,
-    parsedEcashRequestAmount,
-  ]);
-
-  const overviewPaymentRequest = useMemo(() => {
-    if (openPaymentRequest && !openPaymentRequest.request.singleUse) {
-      return openPaymentRequest;
-    }
-    if (currentPaymentRequest && !currentPaymentRequest.request.singleUse) {
-      return currentPaymentRequest;
-    }
-    return null;
-  }, [openPaymentRequest, currentPaymentRequest]);
-
-  const handleOpenEcashAmountView = useCallback(() => {
-    refreshMintEntries();
-    setEcashSendView("amount");
-  }, [refreshMintEntries]);
-
-  const handleEcashAmountKeypadInput = useCallback(
-    (key: string) => {
-      setSendAmt((prev) => {
-        const current = prev || "";
-        if (key === "backspace") {
-          return current.slice(0, -1);
-        }
-        if (key === "clear") {
-          return "";
-        }
-        if (key === "decimal") {
-          if (primaryCurrency !== "usd") return current;
-          if (current.includes(".")) return current;
-          return current ? `${current}.` : "0.";
-        }
-        if (/^\d$/.test(key)) {
-          if (primaryCurrency === "usd") {
-            let next = current === "0" && !current.includes(".") ? key : `${current}${key}`;
-            if (current === "" && key === "0") {
-              return "0";
-            }
-            if (!current.includes(".") && /^0\d/.test(next)) {
-              next = String(Number(next));
-            }
-            const decimalPart = next.split(".")[1];
-            if (decimalPart && decimalPart.length > 2) {
-              return current;
-            }
-            return next;
-          }
-          const combined = `${current}${key}`;
-          const normalized = combined.replace(/^0+(?=\d)/, "");
-          return normalized || "0";
-        }
-        return current;
-      });
-      setSendLockError("");
-    },
-    [primaryCurrency],
-  );
+  });
 
   const {
     canSubmitSwap,
@@ -8089,99 +2632,85 @@ export default function CashuWalletModal({
 
   const claimingEventSet = useMemo(() => new Set(claimingEventIds), [claimingEventIds]);
 
-  const persistSpentIncomingEvents = useCallback(() => {
-    try {
-      const entries: string[] = [];
-      for (const [eventId, fingerprint] of spentIncomingPaymentsRef.current.entries()) {
-        if (!eventId) continue;
-        if (fingerprint) {
-          entries.push(`${eventId}::${fingerprint}`);
-        } else {
-          entries.push(eventId);
-        }
-      }
-      const trimmed = entries.slice(-400);
-      idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_SPENT_NOSTR_PAYMENTS, JSON.stringify(trimmed));
-    } catch (err) {
-      console.warn("Failed to persist spent nostr payments", err);
-    }
-  }, []);
-
-  const requestNostrPaymentDeletion = useCallback(
-    async (eventId: string, senderPubkey?: string | null, reason?: string) => {
-      if (!paymentRequestsEnabled) return;
-      const identity = ensureNostrIdentity();
-      if (!identity) return;
-      const relayList = defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter((url): url is string => !!url);
-      if (!relayList.length) return;
-      if (!eventId) return;
-      try {
-        const tags: string[][] = [["e", eventId]];
-        if (senderPubkey && typeof senderPubkey === "string" && senderPubkey.trim()) {
-          tags.push(["p", senderPubkey.trim()]);
-        }
-        const deletionTemplate: EventTemplate = {
-          kind: 5,
-          content: typeof reason === "string" ? reason : "",
-          tags,
-          created_at: Math.floor(Date.now() / 1000),
-        };
-        const deletionEvent = finalizeEvent(deletionTemplate, hexToBytes(identity.secret));
-        const pool = ensureNostrPool();
-        await safePublish(pool, relayList, deletionEvent);
-      } catch (err) {
-        console.warn("Failed to publish nostr deletion", err);
-      }
-    },
-    [defaultNostrRelays, ensureNostrIdentity, ensureNostrPool, paymentRequestsEnabled, safePublish],
+  const parsedEcashRequestAmount = useMemo(
+    () => parseAmountInput(ecashRequestAmt),
+    [parseAmountInput, ecashRequestAmt],
   );
 
-  const loadStoredOpenPaymentRequest = useCallback((): ActivePaymentRequest | null => {
-    if (!mintUrl) return null;
-    try {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_ECASH_OPEN_REQUESTS);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as Record<string, any>;
-      if (!parsed || typeof parsed !== "object") return null;
-      const normalizedMint = normalizeMintUrl(mintUrl);
-      const entry = parsed[normalizedMint];
-      if (!entry || typeof entry.encoded !== "string") return null;
-      let request: PaymentRequest;
-      try {
-        request = PaymentRequest.fromEncodedRequest(entry.encoded);
-      } catch (err) {
-        console.warn("Stored payment request invalid", err);
-        return null;
-      }
-      if (request.singleUse) return null;
-      if (Array.isArray(request.mints) && request.mints.length) {
-        // Stored multi-use requests used to be tied to a specific mint. Regenerate
-        // them so new links accept payments from any mint.
-        return null;
-      }
-      const active: ActivePaymentRequest = {
-        id: typeof entry.id === "string" && entry.id ? entry.id : request.id || normalizedMint,
-        encoded: entry.encoded,
-        request,
-        amountSat:
-          typeof entry.amountSat === "number" && Number.isFinite(entry.amountSat)
-            ? entry.amountSat
-            : typeof request.amount === "number"
-              ? request.amount
-              : undefined,
-        lockPubkey:
-          typeof entry.lockPubkey === "string" && entry.lockPubkey
-            ? entry.lockPubkey
-            : (request.nut10?.d as string | undefined) || null,
-      };
-      return active;
-    } catch (err) {
-      console.warn("Failed to load stored eCash payment request", err);
-      return null;
-    }
-  }, [mintUrl]);
+  const {
+    persistSpentIncomingEvents,
+    requestNostrPaymentDeletion,
+    loadStoredOpenPaymentRequest,
+    persistOpenPaymentRequest,
+    createPaymentRequest,
+    handleCreateEcashRequest,
+    ensureOpenPaymentRequest,
+    handleClaimIncomingPayment,
+    scheduleAutoClaimRun,
+    selectIncomingPaymentFromPayload,
+    processIncomingPaymentPayload,
+    stopPaymentRequestSubscription,
+    startPaymentRequestSubscription,
+    deepSyncDMs,
+  } = usePaymentRequestFlow({
+    info,
+    mintUrl,
+    receiveToken,
+    addSpentIncomingPayment,
+    defaultNostrRelays,
+    ensureNostrIdentity,
+    ensureNostrPool,
+    fingerprintIncomingToken,
+    isIncomingPaymentSpent,
+    nostrSubscriptionActiveRef,
+    safePublish,
+    setClaimingEventIds,
+    currentPaymentRequest,
+    incomingPaymentRequestsRef,
+    openPaymentRequest,
+    setCurrentPaymentRequest,
+    setOpenPaymentRequest,
+    setPaymentRequestError,
+    setPaymentRequestManualAmount,
+    setPaymentRequestStatusMessage,
+    spentIncomingPaymentsRef,
+    ecashRequestAmt,
+    ecashRequestMode,
+    setEcashReceiveView,
+    setEcashRequestAmt,
+    setLastCreatedEcashRequest,
+    buildHistoryEntry,
+    setHistory,
+    compressedToRawHex,
+    contacts,
+    ensurePeerProfile,
+    showToast,
+    normalizeNip05,
+    activeP2pkKey,
+    amountInputUnitLabel,
+    autoClaimQueueRef,
+    claimingEventSet,
+    handlePaymentRequestEventRef,
+    nip05Checks,
+    nostrLastCheckRef,
+    nostrMissingReason,
+    nostrSubscriptionCloserRef,
+    open,
+    parseAmountInput,
+    parsedEcashRequestAmount,
+    paymentRequestLockEnabled,
+    paymentRequestLockPubkey,
+    paymentRequestsBackgroundChecksEnabled,
+    paymentRequestsEnabled,
+    receiveMode,
+    setRecvMsg,
+    walletDebugEnabled,
+    dmPeerProfilesRef,
+    autoClaimRunningRef,
+    PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS,
+    PAYMENT_REQUEST_LOOKBACK_SECONDS,
+    PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS,
+  });
 
   useEffect(() => {
     if (!mintUrl) {
@@ -8220,1092 +2749,6 @@ export default function CashuWalletModal({
       setPaymentRequestStatusMessage("");
     }
   }, [mintUrl, loadStoredOpenPaymentRequest, currentPaymentRequest, openPaymentRequest]);
-
-  const persistOpenPaymentRequest = useCallback(
-    (request: ActivePaymentRequest | null) => {
-      if (!mintUrl) return;
-      const normalizedMint = normalizeMintUrl(mintUrl);
-      try {
-        const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_ECASH_OPEN_REQUESTS);
-        let parsed: Record<string, any> = {};
-        if (raw) {
-          try {
-            parsed = JSON.parse(raw) as Record<string, any>;
-            if (!parsed || typeof parsed !== "object") {
-              parsed = {};
-            }
-          } catch {
-            parsed = {};
-          }
-        }
-        if (request && !request.request.singleUse) {
-          parsed[normalizedMint] = {
-            id: request.id,
-            encoded: request.encoded,
-            amountSat: request.amountSat ?? null,
-            lockPubkey: request.lockPubkey ?? null,
-            singleUse: false,
-            updatedAt: Date.now(),
-          };
-        } else {
-          delete parsed[normalizedMint];
-        }
-        idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_ECASH_OPEN_REQUESTS, JSON.stringify(parsed));
-      } catch (err) {
-        console.warn("Failed to persist eCash payment request", err);
-      }
-    },
-    [mintUrl],
-  );
-
-  const createPaymentRequest = useCallback(
-    async (
-      amountInputRaw: string,
-      options?: {
-        forceNew?: boolean;
-        lockEnabled?: boolean;
-        lockPubkey?: string | null;
-        mode?: "single" | "multi";
-        persistOpen?: boolean;
-      },
-    ) => {
-      if (!paymentRequestsEnabled) return null;
-      setPaymentRequestError("");
-      setPaymentRequestStatusMessage("");
-      try {
-        if (!mintUrl) {
-          throw new Error("Set an active mint first");
-        }
-        if (!info?.unit) {
-          throw new Error("Mint info unavailable. Try switching mints.");
-        }
-        const identity = ensureNostrIdentity();
-        if (!identity) {
-          throw new Error(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
-        }
-        const amountInput = amountInputRaw.trim();
-        let amountSat: number | undefined;
-        if (amountInput) {
-          const { sats, error } = parseAmountInput(amountInputRaw);
-          if (error) throw new Error(error);
-          if (!sats) throw new Error(`Enter amount in ${amountInputUnitLabel}`);
-          amountSat = sats;
-        }
-        const lockEnabled = options?.lockEnabled ?? paymentRequestLockEnabled;
-        let resolvedLockPubkey = options?.lockPubkey ?? paymentRequestLockPubkey ?? "";
-        if (lockEnabled && !resolvedLockPubkey && activeP2pkKey?.publicKey) {
-          resolvedLockPubkey = activeP2pkKey.publicKey;
-        }
-        const wantsLock = lockEnabled && !!resolvedLockPubkey;
-        if (lockEnabled && !resolvedLockPubkey) {
-          throw new Error("Add a P2PK locking key first.");
-        }
-        const requestMode = options?.mode;
-        const persistOpen = options?.persistOpen ?? true;
-        const wantsSingleUse =
-          requestMode === "single"
-            ? true
-            : requestMode === "multi"
-            ? wantsLock
-            : !!amountSat || wantsLock;
-        if (!wantsSingleUse && !options?.forceNew) {
-          const existing =
-            openPaymentRequest && !openPaymentRequest.request.singleUse
-              ? openPaymentRequest
-              : loadStoredOpenPaymentRequest();
-          if (existing) {
-            setOpenPaymentRequest(existing);
-            setCurrentPaymentRequest(existing);
-            setPaymentRequestStatusMessage("");
-            return existing;
-          }
-        }
-        const transport: PaymentRequestTransport = {
-          type: PaymentRequestTransportType.NOSTR,
-          target: nip19.nprofileEncode({ pubkey: identity.pubkey, relays: defaultNostrRelays }),
-          tags: [["n", "17"]],
-        };
-        const rawId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        const requestId = rawId.slice(0, 16);
-        const unit = (info?.unit || "sat").toLowerCase();
-        const nut10Option = wantsLock
-          ? ({
-              kind: "P2PK",
-              data: resolvedLockPubkey,
-              tags: [["sigflag", "SIG_INPUTS"]],
-            } as NonNullable<PaymentRequest["nut10"]>)
-          : undefined;
-        const request = new PaymentRequest(
-          [transport],
-          requestId,
-          amountSat,
-          unit,
-          undefined,
-          undefined,
-          wantsSingleUse,
-          nut10Option,
-        );
-        const encoded = request.toEncodedRequest();
-        const nextRequest: ActivePaymentRequest = {
-          id: requestId,
-          encoded,
-          request,
-          amountSat,
-          lockPubkey: wantsLock ? resolvedLockPubkey : null,
-        };
-        if (!wantsSingleUse && persistOpen) {
-          setOpenPaymentRequest(nextRequest);
-          persistOpenPaymentRequest(nextRequest);
-        }
-        setCurrentPaymentRequest(nextRequest);
-        setPaymentRequestStatusMessage("");
-        return nextRequest;
-      } catch (err: any) {
-        setPaymentRequestError(err?.message || String(err));
-        return null;
-      }
-    }, [
-      paymentRequestsEnabled,
-      mintUrl,
-      info?.unit,
-      ensureNostrIdentity,
-      nostrMissingReason,
-      parseAmountInput,
-      amountInputUnitLabel,
-      paymentRequestLockEnabled,
-      paymentRequestLockPubkey,
-      activeP2pkKey,
-      defaultNostrRelays,
-      openPaymentRequest,
-      loadStoredOpenPaymentRequest,
-      persistOpenPaymentRequest,
-    ]);
-
-  const handleCreateEcashRequest = useCallback(async () => {
-    const trimmedAmount = ecashRequestAmt.trim();
-    let amountInput = trimmedAmount;
-    let persistOpen = ecashRequestMode === "multi";
-    if (ecashRequestMode === "multi") {
-      const isOpenAmount =
-        !trimmedAmount || parsedEcashRequestAmount.error || parsedEcashRequestAmount.sats === 0;
-      if (isOpenAmount) {
-        amountInput = "";
-      } else {
-        persistOpen = false;
-      }
-    } else {
-      persistOpen = false;
-    }
-    const created = await createPaymentRequest(amountInput, {
-      forceNew: true,
-      mode: ecashRequestMode,
-      persistOpen,
-    });
-    if (created) {
-      setLastCreatedEcashRequest(created);
-      setEcashReceiveView("request");
-      if (ecashRequestMode === "single") {
-        setEcashRequestAmt("");
-      }
-      setRecvMsg("");
-    }
-  }, [
-    createPaymentRequest,
-    ecashRequestAmt,
-    ecashRequestMode,
-    parsedEcashRequestAmount,
-  ]);
-
-  const ensureOpenPaymentRequest = useCallback(async () => {
-    if (!paymentRequestsEnabled || !mintUrl || nostrMissingReason) return null;
-    if (openPaymentRequest && !openPaymentRequest.request.singleUse) {
-      if (!currentPaymentRequest || !currentPaymentRequest.request.singleUse) {
-        if (!isSamePaymentRequest(currentPaymentRequest, openPaymentRequest)) {
-          setCurrentPaymentRequest(openPaymentRequest);
-        }
-        setPaymentRequestStatusMessage("");
-      }
-      return openPaymentRequest;
-    }
-    const stored = loadStoredOpenPaymentRequest();
-    if (stored) {
-      if (!isSamePaymentRequest(openPaymentRequest, stored)) {
-        setOpenPaymentRequest(stored);
-      }
-      if (!currentPaymentRequest || !currentPaymentRequest.request.singleUse) {
-        if (!isSamePaymentRequest(currentPaymentRequest, stored)) {
-          setCurrentPaymentRequest(stored);
-        }
-        setPaymentRequestStatusMessage("");
-      }
-      return stored;
-    }
-    const created = await createPaymentRequest("", { forceNew: true });
-    if (created && !created.request.singleUse) {
-      return created;
-    }
-    return null;
-  }, [
-    paymentRequestsEnabled,
-    mintUrl,
-    nostrMissingReason,
-    openPaymentRequest,
-    currentPaymentRequest,
-    loadStoredOpenPaymentRequest,
-    createPaymentRequest,
-  ]);
-
-  const readNip51ContactsMigrated = useCallback((): boolean => {
-    try {
-      return idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_NIP51_CONTACTS_MIGRATED) === "true";
-    } catch {
-      return false;
-    }
-  }, []);
-
-  const persistNip51ContactsMigrated = useCallback((value: boolean) => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_NIP51_CONTACTS_MIGRATED, value ? "true" : "false");
-    } catch {
-      // ignore persistence issues
-    }
-  }, []);
-
-  const contactPubkeyKey = useCallback(
-    (npub: string | null | undefined): string | null => {
-      const normalized = normalizeNostrPubkey(npub || "");
-      if (!normalized) return null;
-      return compressedToRawHex(normalized).toLowerCase();
-    },
-    [compressedToRawHex, normalizeNostrPubkey],
-  );
-
-  const mergeContactsByPubkey = useCallback(
-    (base: Contact[], incoming: Contact[]): Contact[] => {
-      const next = [...base];
-      const seen = new Set<string>();
-      base.forEach((contact) => {
-        const key = contactPubkeyKey(contact.npub);
-        if (key) seen.add(key);
-      });
-      incoming.forEach((contact) => {
-        const key = contactPubkeyKey(contact.npub);
-        if (!key || seen.has(key)) return;
-        seen.add(key);
-        next.push(contact);
-      });
-      return next;
-    },
-    [contactPubkeyKey],
-  );
-
-  const buildContactSyncEnvelopeFromNip51 = useCallback(
-    (privateContacts: Nip51PrivateContact[], updatedAt: number): ContactSyncEnvelope => {
-      return {
-        version: 1,
-        updatedAt,
-        contacts: (privateContacts || []).map((contact) => ({
-          id: makeContactId(),
-          kind: "nostr",
-          npub: formatContactNpub(contact.pubkey),
-          relays: contact.relayHint ? [contact.relayHint] : undefined,
-          name: contact.petname || undefined,
-        })),
-      };
-    },
-    [formatContactNpub, makeContactId],
-  );
-
-  const loadLegacyContacts = useCallback(
-    async (identity: NostrIdentity, relays: string[]): Promise<Contact[]> => {
-      const localContacts = loadContactsFromStorage().filter((contact) => contactHasNpub(contact));
-      let legacyFromEvent: Contact[] = [];
-      if (nip44?.v2) {
-        try {
-          const pool = ensureNostrPool();
-          const legacyEvent = await pool.get(relays, { kinds: [3], authors: [identity.pubkey] });
-          if (legacyEvent?.content?.trim()) {
-            const conversationKey = nip44.v2.utils.getConversationKey(hexToBytes(identity.secret), identity.pubkey);
-            const plaintext = await nip44.v2.decrypt(legacyEvent.content, conversationKey);
-            const parsed = parseContactSyncEnvelope(JSON.parse(plaintext));
-            if (parsed) {
-              legacyFromEvent = mergeContactsFromSync([], parsed).filter((contact) => contactHasNpub(contact));
-            }
-          }
-        } catch (err) {
-          if (walletDebugEnabled) {
-            console.warn("[wallet] Failed to read legacy contacts payload", err);
-          }
-        }
-      }
-      return mergeContactsByPubkey(localContacts, legacyFromEvent);
-    },
-    [
-      contactHasNpub,
-      ensureNostrPool,
-      loadContactsFromStorage,
-      mergeContactsByPubkey,
-      mergeContactsFromSync,
-      parseContactSyncEnvelope,
-      walletDebugEnabled,
-    ],
-  );
-
-  const migrateNip51ContactsIfNeeded = useCallback(
-    async (options?: { silent?: boolean }) => {
-      if (nip51MigrationInFlightRef.current) return;
-      if (readNip51ContactsMigrated()) return;
-      if (!contactsSyncEnabled) return;
-      const identity = ensureNostrIdentity();
-      if (!identity) return;
-      if (!nip44?.v2) return;
-      const relays = defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter(Boolean);
-      if (!relays.length) return;
-
-      nip51MigrationInFlightRef.current = true;
-      try {
-        const legacyContacts = await loadLegacyContacts(identity, relays);
-        if (!legacyContacts.length) {
-          persistNip51ContactsMigrated(true);
-          if (walletDebugEnabled) {
-            console.debug("[wallet] NIP-51 migration: no legacy contacts to migrate");
-          }
-          return;
-        }
-        const merged = mergeContactsByPubkey(contactsRef.current, legacyContacts);
-        if (merged.length !== contactsRef.current.length) {
-          setContacts(merged);
-          saveContactsToStorage(merged);
-          contactsRef.current = merged;
-        }
-
-        const pool = ensureNostrPool();
-        const nip51Event = await publishNip51PrivateContactsList(pool, relays, merged, {
-          privateKeyHex: identity.secret,
-          publicKeyHex: identity.pubkey,
-        });
-        const updatedAt = nip51Event.created_at ? nip51Event.created_at * 1000 : Date.now();
-        const fingerprint = computeContactsFingerprint(merged);
-        contactsFingerprintRef.current = fingerprint;
-        persistContactSyncMeta({
-          lastEventId: nip51Event.id,
-          lastUpdatedAt: updatedAt,
-          fingerprint,
-          publicFollows: contactSyncMetaRef.current.publicFollows,
-        });
-        persistNip51ContactsMigrated(true);
-        if (!options?.silent) {
-          setContactSyncState({
-            status: "success",
-            message: "Contacts migrated to NIP-51",
-            updatedAt,
-          });
-        }
-        if (walletDebugEnabled) {
-          console.debug("[wallet] NIP-51 migration published", nip51Event.id.slice(0, 8));
-        }
-      } catch (err: any) {
-        if (!options?.silent) {
-          setContactSyncState((prev) => ({
-            status: "error",
-            message: err?.message || "Unable to migrate legacy contacts.",
-            updatedAt: prev.updatedAt ?? null,
-          }));
-        }
-        if (walletDebugEnabled) {
-          console.warn("[wallet] NIP-51 migration failed", err);
-        }
-      } finally {
-        nip51MigrationInFlightRef.current = false;
-      }
-    },
-    [
-      computeContactsFingerprint,
-      contactSyncMetaRef,
-      contactsRef,
-      contactsSyncEnabled,
-      defaultNostrRelays,
-      ensureNostrIdentity,
-      ensureNostrPool,
-      loadLegacyContacts,
-      mergeContactsByPubkey,
-      publishNip51PrivateContactsList,
-      persistContactSyncMeta,
-      persistNip51ContactsMigrated,
-      readNip51ContactsMigrated,
-      saveContactsToStorage,
-      setContacts,
-      walletDebugEnabled,
-    ],
-  );
-
-  const syncContactsFromNostr = useCallback(
-    async (options?: { silent?: boolean }) => {
-      const silent = options?.silent === true;
-      if (!contactsSyncEnabled) {
-        contactsPublishQueuedRef.current = false;
-        if (!silent) {
-          setContactSyncState({
-            status: "error",
-            message: "Contact sync is disabled in Settings.",
-            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
-          });
-        }
-        return;
-      }
-      const identity = ensureNostrIdentity();
-      if (!identity) {
-        if (!silent) {
-          setContactSyncState({
-            status: "error",
-            message: nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr to sync contacts.",
-            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
-          });
-        }
-        return;
-      }
-      if (!nip44?.v2) {
-        if (!silent) {
-          setContactSyncState({
-            status: "error",
-            message: "NIP-44 v2 support is required to read contacts.",
-            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
-          });
-        }
-        return;
-      }
-      const relays = defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter(Boolean);
-      if (!relays.length) {
-        if (!silent) {
-          setContactSyncState({
-            status: "error",
-            message: "Add at least one relay to sync contacts.",
-            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
-          });
-        }
-        return;
-      }
-      if (!silent) {
-        setContactSyncState({
-          status: "loading",
-          message: "Syncing contacts…",
-          updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
-        });
-      }
-      try {
-        await migrateNip51ContactsIfNeeded({ silent: true });
-        const pool = ensureNostrPool();
-        const [publicEvent, privateResult] = await Promise.all([
-          pool.get(relays, { kinds: [3], authors: [identity.pubkey] }),
-          fetchLatestPrivateContactsList(pool, relays, identity.pubkey, {
-            privateKeyHex: identity.secret,
-            publicKeyHex: identity.pubkey,
-          }),
-        ]);
-
-        let publicFollows = contactSyncMeta.publicFollows ?? [];
-        if (publicEvent) {
-          const existingFollowsByKey = new Map(
-            (contactSyncMeta.publicFollows || []).map((follow) => [follow.pubkey.toLowerCase(), follow]),
-          );
-          const publicFollowsFromTags = extractPublicFollowsFromTags(publicEvent.tags).map((follow) => {
-            const existing = existingFollowsByKey.get(follow.pubkey.toLowerCase());
-            if (!existing) return follow;
-            return { ...existing, ...follow };
-          });
-          publicFollows = await enrichPublicFollowsWithProfiles(publicFollowsFromTags, relays, pool);
-          persistContactSyncMeta({ publicFollows });
-        }
-
-        if (!privateResult.event) {
-          if (!silent) {
-            setContactSyncState({
-              status: "idle",
-              message: "No private contacts found on relays yet.",
-              updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
-            });
-          }
-          return;
-        }
-
-        const updatedAt = privateResult.event.created_at ? privateResult.event.created_at * 1000 : Date.now();
-        const envelope = buildContactSyncEnvelopeFromNip51(privateResult.contacts, updatedAt);
-        const merged = mergeContactsFromSync(contactsRef.current, envelope);
-        setContacts(merged);
-        saveContactsToStorage(merged);
-        const fingerprint = computeContactsFingerprint(merged);
-        contactsFingerprintRef.current = fingerprint;
-        persistContactSyncMeta({
-          lastEventId: privateResult.event.id,
-          lastUpdatedAt: updatedAt,
-          fingerprint,
-          publicFollows,
-        });
-        contactsPublishQueuedRef.current = false;
-        setContactSyncState({
-          status: "success",
-          message: `Synced ${envelope.contacts.length} contact${envelope.contacts.length === 1 ? "" : "s"}`,
-          updatedAt,
-        });
-      } catch (err: any) {
-        if (!silent) {
-          setContactSyncState({
-            status: "error",
-            message: err?.message || "Failed to sync contacts.",
-            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
-          });
-        }
-      }
-    },
-    [
-      contactsSyncEnabled,
-      contactSyncMeta.lastUpdatedAt,
-      contactSyncMeta.publicFollows,
-      contactsRef,
-      buildContactSyncEnvelopeFromNip51,
-      fetchLatestPrivateContactsList,
-      migrateNip51ContactsIfNeeded,
-      defaultNostrRelays,
-      ensureNostrIdentity,
-      ensureNostrPool,
-      nostrMissingReason,
-      persistContactSyncMeta,
-      setContacts,
-      saveContactsToStorage,
-      mergeContactsFromSync,
-      computeContactsFingerprint,
-    ],
-  );
-
-  const publishContactsToNostr = useCallback(
-    async (options?: { silent?: boolean; publicFollowsOverride?: PublicFollow[] }) => {
-      const silent = options?.silent === true;
-      const meta = contactSyncMetaRef.current;
-      if (!contactsSyncEnabled) {
-        contactsPublishQueuedRef.current = false;
-        setContactsPublishState("idle");
-        if (!silent) {
-          setContactSyncState({
-            status: "error",
-            message: "Contact sync is disabled in Settings.",
-            updatedAt: meta.lastUpdatedAt ?? null,
-          });
-        }
-        return;
-      }
-      const identity = ensureNostrIdentity();
-      if (!identity) {
-        if (!silent) {
-          setContactsPublishState("error");
-          setContactsPublishMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr to sync contacts.");
-        }
-        return;
-      }
-      if (!nip44?.v2) {
-        setContactsPublishState("error");
-        setContactsPublishMessage("NIP-44 v2 support is required to encrypt contacts.");
-        return;
-      }
-      const relays = defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter(Boolean);
-      if (!relays.length) {
-        setContactsPublishState("error");
-        setContactsPublishMessage("Add at least one relay to sync contacts.");
-        return;
-      }
-      const fingerprint = computeContactsFingerprint(contactsRef.current);
-      contactsFingerprintRef.current = fingerprint;
-      const publicFollows = options?.publicFollowsOverride ?? meta.publicFollows ?? [];
-      const shouldPublishPrivateList = !(meta.fingerprint && meta.lastUpdatedAt && meta.fingerprint === fingerprint);
-      const shouldPublishPublicFollows = options?.publicFollowsOverride !== undefined || shouldPublishPrivateList;
-      if (!shouldPublishPrivateList && !shouldPublishPublicFollows) {
-        setContactsPublishState("success");
-        setContactsPublishMessage("Contacts already synced");
-        if (!silent) {
-          setContactSyncState({
-            status: "success",
-            message: "Contacts already synced",
-            updatedAt: meta.lastUpdatedAt,
-          });
-        }
-        contactsPublishQueuedRef.current = false;
-        return;
-      }
-      const updatedAt = Date.now();
-      const publicFollowTags = publicFollows
-        .map((follow) => {
-          const pubkey = (follow.pubkey || "").trim();
-          if (!pubkey) return null;
-          const relay = (follow.relay || "").trim();
-          const petname = (follow.petname || "").trim();
-          const tag: string[] = ["p", pubkey];
-          if (relay || petname) {
-            tag.push(relay);
-          }
-          if (petname) {
-            if (!relay) {
-              tag.push("");
-            }
-            tag.push(petname);
-          }
-          return tag;
-        })
-        .filter(Boolean) as string[][];
-      try {
-        setContactsPublishState("publishing");
-        setContactsPublishMessage("");
-        const pool = ensureNostrPool();
-        const createdAt = Math.floor(updatedAt / 1000);
-        let nip51Event: { id: string; created_at?: number } | null = null;
-        if (shouldPublishPrivateList) {
-          nip51Event = await publishNip51PrivateContactsList(pool, relays, contactsRef.current, {
-            privateKeyHex: identity.secret,
-            publicKeyHex: identity.pubkey,
-          }, {
-            createdAt,
-          });
-          if (walletDebugEnabled) {
-            console.debug("[wallet] Published NIP-51 contacts list", nip51Event.id.slice(0, 8));
-          }
-        }
-        if (shouldPublishPublicFollows) {
-          const template: EventTemplate = {
-            kind: 3,
-            content: "",
-            tags: publicFollowTags,
-            created_at: createdAt,
-          };
-          if (template.content !== "") {
-            throw new Error("Kind:3 content must be empty.");
-          }
-          const signed = finalizeEvent(template, hexToBytes(identity.secret));
-          await safePublish(pool, relays, signed);
-          if (walletDebugEnabled) {
-            console.debug("[wallet] Published kind:3 follows", signed.id.slice(0, 8));
-          }
-        }
-        if (shouldPublishPrivateList && nip51Event) {
-          const publishedAt = nip51Event.created_at ? nip51Event.created_at * 1000 : updatedAt;
-          persistContactSyncMeta({
-            lastEventId: nip51Event.id,
-            lastUpdatedAt: publishedAt,
-            fingerprint,
-            publicFollows,
-          });
-          setContactSyncState({
-            status: "success",
-            message: "Contacts synced",
-            updatedAt: publishedAt,
-          });
-        } else {
-          persistContactSyncMeta({ publicFollows });
-          if (!silent) {
-            setContactSyncState({
-              status: "success",
-              message: "Public follows synced",
-              updatedAt: meta.lastUpdatedAt ?? null,
-            });
-          }
-        }
-        setContactsPublishState("success");
-        setContactsPublishMessage("Contacts synced to relays");
-        contactsPublishQueuedRef.current = false;
-      } catch (err: any) {
-        const message = err?.message || "Unable to sync contacts.";
-        setContactsPublishState("error");
-        setContactsPublishMessage(message);
-        if (!silent) {
-          setContactSyncState((prev) => ({
-            status: "error",
-            message,
-            updatedAt: prev.updatedAt ?? null,
-          }));
-        }
-        contactsPublishQueuedRef.current = false;
-      }
-    },
-    [
-      contactsSyncEnabled,
-      contactsRef,
-      defaultNostrRelays,
-      ensureNostrIdentity,
-      ensureNostrPool,
-      contactSyncMetaRef,
-      computeContactsFingerprint,
-      nostrMissingReason,
-      persistContactSyncMeta,
-      safePublish,
-      walletDebugEnabled,
-      publishNip51PrivateContactsList,
-    ],
-  );
-
-  const applyContactProfileUpdates = useCallback(
-    (
-      profilesByHex: Map<string, CachedContactProfile>,
-      options?: { persistCache?: boolean; existingCache?: Record<string, CachedContactProfile> },
-    ) => {
-      if (!profilesByHex.size) return;
-      setContacts((prev) => {
-        let changed = false;
-        const next = prev.map((contact) => {
-          const normalizedNpub = normalizeNostrPubkey(contact.npub || "");
-          const hex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
-          if (!hex) return contact;
-          const incoming = profilesByHex.get(hex);
-          if (!incoming) return contact;
-          const baseline = contact.updatedAt ?? contact.createdAt ?? 0;
-          const isNewer = incoming.updatedAt > baseline;
-          const fillMissing =
-            !contact.picture ||
-            !contact.displayName ||
-            !contact.username ||
-            !contact.address ||
-            !contact.nip05 ||
-            !contact.about ||
-            !contact.name;
-          if (!isNewer && !fillMissing) return contact;
-          const { profile, updatedAt, pictureDataUrl } = incoming;
-          let updatedContact = contact;
-          let localChanged = false;
-          const preferProfileName = contact.source !== "manual" || !contact.name?.trim();
-          const nextName = profile.displayName || profile.username || contact.name;
-          if (preferProfileName && nextName && nextName !== contact.name) {
-            updatedContact = { ...updatedContact, name: nextName };
-            localChanged = true;
-          }
-          const maybeUpdate = <K extends keyof Contact>(key: K, value: Contact[K] | undefined) => {
-            if (!value) return;
-            const current = updatedContact[key];
-            const shouldUpdate = isNewer || !current || (typeof current === "string" && current.trim() === "");
-            if (shouldUpdate && value !== current) {
-              updatedContact = { ...updatedContact, [key]: value };
-              localChanged = true;
-            }
-          };
-          maybeUpdate("displayName", profile.displayName);
-          maybeUpdate(
-            "username",
-            profile.username ? (sanitizeUsername(profile.username) as Contact["username"]) : updatedContact.username,
-          );
-          maybeUpdate("address", profile.lud16 as Contact["address"] | undefined);
-          maybeUpdate("nip05", profile.nip05 as Contact["nip05"] | undefined);
-          maybeUpdate("about", profile.about as Contact["about"] | undefined);
-          const nextPictureRaw = typeof profile.picture === "string" ? profile.picture.trim() : "";
-          const nextPicture = (pictureDataUrl || nextPictureRaw).trim();
-          if (nextPicture && nextPicture !== (updatedContact.picture || "").trim()) {
-            updatedContact = { ...updatedContact, picture: nextPicture };
-            localChanged = true;
-          }
-          if (!localChanged) return contact;
-          changed = true;
-          return { ...updatedContact, updatedAt: isNewer ? updatedAt : baseline };
-        });
-        return changed ? next : prev;
-      });
-      if (options?.persistCache) {
-        const nextCache = { ...(options.existingCache || {}) };
-        profilesByHex.forEach(({ profile, updatedAt, pictureDataUrl }, hex) => {
-          const existing = nextCache[hex];
-          if (!existing || updatedAt > (existing.updatedAt ?? 0)) {
-            nextCache[hex] = { profile, updatedAt, pictureDataUrl };
-          } else if (pictureDataUrl && !existing.pictureDataUrl) {
-            nextCache[hex] = { ...existing, pictureDataUrl };
-          }
-        });
-        persistContactProfileCache(nextCache);
-      }
-    },
-    [compressedToRawHex, normalizeNostrPubkey, sanitizeUsername],
-  );
-
-  const refreshContactProfiles = useCallback(async () => {
-    const contactsList = contactsRef.current;
-    if (!contactsList.length) return;
-
-    const cachedProfiles = loadContactProfileCache();
-    const cachedProfilesByHex = new Map<string, CachedContactProfile>();
-    Object.entries(cachedProfiles).forEach(([hex, entry]) => {
-      if (!hex || !entry?.profile) return;
-      cachedProfilesByHex.set(hex.toLowerCase(), {
-        profile: entry.profile,
-        updatedAt: entry.updatedAt || 0,
-        pictureDataUrl: entry.pictureDataUrl,
-      });
-    });
-    if (cachedProfilesByHex.size) {
-      applyContactProfileUpdates(cachedProfilesByHex);
-    }
-
-    const authorHexes: string[] = [];
-    const seenAuthors = new Set<string>();
-    const relays = new Set(
-      defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter((url): url is string => !!url),
-    );
-    contactsList.forEach((contact) => {
-      const normalizedNpub = normalizeNostrPubkey(contact.npub);
-      if (!normalizedNpub) return;
-      const authorHex = compressedToRawHex(normalizedNpub).toLowerCase();
-      if (!authorHex) return;
-      if (!seenAuthors.has(authorHex)) {
-        seenAuthors.add(authorHex);
-        authorHexes.push(authorHex);
-      }
-      if (Array.isArray(contact.relays)) {
-        contact.relays.forEach((relay) => {
-          const trimmed = typeof relay === "string" ? relay.trim() : "";
-          if (trimmed) {
-            relays.add(trimmed);
-          }
-        });
-      }
-    });
-    if (!authorHexes.length) return;
-    const relayList = Array.from(relays);
-    if (!relayList.length) return;
-    try {
-      const pool = ensureNostrPool();
-      const events = await pool
-        .querySync(relayList, { kinds: [0], authors: authorHexes })
-        .then((res) => (Array.isArray(res) ? res : []))
-        .catch(() => []);
-      if (!events.length) return;
-      const profilesByHex = new Map<string, CachedContactProfile>();
-      const photoCacheTasks: Promise<void>[] = [];
-      events.forEach((event) => {
-        if (!event?.pubkey || typeof event.content !== "string") return;
-        const hex = compressedToRawHex(event.pubkey).toLowerCase();
-        if (!hex) return;
-        const updatedAt = event.created_at ? event.created_at * 1000 : Date.now();
-        const existing = profilesByHex.get(hex);
-        if (existing && existing.updatedAt >= updatedAt) return;
-        const profile = parseProfileContent(event.content);
-        const cachedProfile = cachedProfiles[hex];
-        const entry: CachedContactProfile = { profile, updatedAt };
-        const pictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
-        const cachedPictureUrl = typeof cachedProfile?.profile?.picture === "string"
-          ? cachedProfile.profile.picture.trim()
-          : "";
-        if (pictureUrl) {
-          if (isDataUrl(pictureUrl)) {
-            entry.pictureDataUrl = pictureUrl;
-          } else if (cachedProfile?.pictureDataUrl && pictureUrl === cachedPictureUrl) {
-            entry.pictureDataUrl = cachedProfile.pictureDataUrl;
-          } else if (shouldCacheProfilePhoto(pictureUrl)) {
-            photoCacheTasks.push(
-              fetchProfilePhotoDataUrl(pictureUrl).then((dataUrl) => {
-                if (!dataUrl) return;
-                const current = profilesByHex.get(hex);
-                if (current && current.updatedAt === updatedAt) {
-                  profilesByHex.set(hex, { ...current, pictureDataUrl: dataUrl });
-                }
-              }),
-            );
-          }
-        }
-        profilesByHex.set(hex, entry);
-      });
-      if (photoCacheTasks.length) {
-        await Promise.allSettled(photoCacheTasks);
-      }
-      if (!profilesByHex.size) return;
-      applyContactProfileUpdates(profilesByHex, { persistCache: true, existingCache: cachedProfiles });
-    } catch (err) {
-      console.warn("Failed to refresh contact profiles", err);
-    }
-  }, [
-    applyContactProfileUpdates,
-    compressedToRawHex,
-    contactsRef,
-    defaultNostrRelays,
-    ensureNostrPool,
-    normalizeNostrPubkey,
-    parseProfileContent,
-  ]);
-
-  const publishProfileMetadata = useCallback(
-    async (draft?: Partial<ContactProfile>) => {
-      if (!contactsSyncEnabled) {
-        setProfileStatus("error");
-        setProfileMessage("Contact sync is disabled in Settings.");
-        return null;
-      }
-      const identity = ensureNostrIdentity();
-      if (!identity) {
-        setProfileStatus("error");
-        setProfileMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
-        return null;
-      }
-      const relays = defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter(Boolean);
-      if (!relays.length) {
-        setProfileStatus("error");
-        setProfileMessage("Add at least one relay to publish your profile.");
-        return null;
-      }
-      if (!profileEventIdRef.current) {
-        profileEventIdRef.current = readProfileEventId(identity.pubkey);
-      }
-      const currentProfile = profileFormRef.current;
-      const username = (draft?.username ?? currentProfile.username ?? "").trim();
-      const displayName = (draft?.displayName ?? currentProfile.displayName ?? "").trim();
-      const lud16 = (draft?.lud16 ?? currentProfile.lud16 ?? "").trim();
-      const nip05 = (draft?.nip05 ?? currentProfile.nip05 ?? "").trim();
-      const about = (draft?.about ?? currentProfile.about ?? "").trim();
-      const hasDraftPicture = draft && "picture" in draft;
-      const picture = (hasDraftPicture ? draft?.picture ?? "" : currentProfile.picture ?? "").trim();
-      if (picture && isDataUrl(picture)) {
-        setProfilePhotoError("Upload your profile photo before publishing.");
-        setProfileStatus("error");
-        setProfileMessage("Upload your profile photo before publishing.");
-        return null;
-      }
-      try {
-        setProfileStatus("publishing");
-        setProfileMessage("");
-        const result = await publishMyProfile(
-          { username, displayName, lud16, nip05, about, picture },
-          {
-            signer: identity.secret,
-            pubkey: identity.pubkey,
-            relays,
-            previousIdHint: profileEventIdRef.current,
-            reason: "superseded profile metadata",
-          },
-        );
-        const event = result.event;
-        const updatedAt = event?.created_at ? event.created_at * 1000 : Date.now();
-        profileEventIdRef.current = event.id || null;
-        persistProfileEventId(identity.pubkey, event.id || null);
-        const nextProfile = { username, displayName, lud16, nip05, about, picture };
-        persistProfileMetadataCache(identity.pubkey, {
-          profile: nextProfile,
-          updatedAt,
-          eventId: event.id || null,
-        });
-        setProfileForm(nextProfile);
-        setProfileUpdatedAt(updatedAt);
-        setProfileStatus("ready");
-        setProfileMessage("Profile saved");
-        setProfileSharePayload(formatNpub(identity.pubkey));
-        return event;
-      } catch (err: any) {
-        setProfileStatus("error");
-        setProfileMessage(err?.message || "Unable to publish profile.");
-        console.warn("[profile] Unable to publish profile metadata", err);
-        return null;
-      }
-    },
-    [
-      contactsSyncEnabled,
-      defaultNostrRelays,
-      ensureNostrIdentity,
-      formatNpub,
-      nostrMissingReason,
-      persistProfileEventId,
-      persistProfileMetadataCache,
-      readProfileEventId,
-      setProfilePhotoError,
-    ],
-  );
-
-  const loadProfileMetadata = useCallback(
-    async () => {
-      if (!contactsSyncEnabled) {
-        setProfileStatus("error");
-        setProfileMessage("Contact sync is disabled in Settings.");
-        return null;
-      }
-      const identity = ensureNostrIdentity();
-      if (!identity) {
-        setProfileStatus("error");
-        setProfileMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
-        return null;
-      }
-      const relays = defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter(Boolean);
-      if (!relays.length) {
-        setProfileStatus("error");
-        setProfileMessage("Add at least one relay to load your profile.");
-        return null;
-      }
-      if (!profileEventIdRef.current) {
-        profileEventIdRef.current = readProfileEventId(identity.pubkey);
-      }
-      const cached = readProfileMetadataCache(identity.pubkey);
-      if (cached?.eventId && !profileEventIdRef.current) {
-        profileEventIdRef.current = cached.eventId;
-        persistProfileEventId(identity.pubkey, cached.eventId);
-      }
-      if (cached?.profile) {
-        setProfileForm(cached.profile);
-        setProfileSharePayload(identity ? formatNpub(identity.pubkey) : null);
-        setProfileUpdatedAt(cached.updatedAt ?? null);
-        setProfileStatus((prev) => (prev === "publishing" ? prev : "ready"));
-        setProfileMessage("Refreshing profile…");
-      } else {
-        setProfileStatus("loading");
-        setProfileMessage("Loading profile…");
-      }
-      try {
-        const event = await loadMyLatestProfileEvent(identity.pubkey, relays, { timeoutMs: 8000 });
-        if (event && typeof event.content === "string") {
-          const meta = parseProfileContent(event.content);
-          const updatedAt = event.created_at ? event.created_at * 1000 : Date.now();
-          profileEventIdRef.current = event.id || null;
-          persistProfileEventId(identity.pubkey, event.id || null);
-          const nextProfile = {
-            username: meta.username || profileFormRef.current.username || "",
-            displayName: meta.displayName || meta.username || profileFormRef.current.displayName || "",
-            lud16: meta.lud16 || profileFormRef.current.lud16 || deriveDefaultLightningAddress(),
-            nip05: meta.nip05 || profileFormRef.current.nip05 || "",
-            about: meta.about || profileFormRef.current.about || "",
-            picture: meta.picture || profileFormRef.current.picture || "",
-          };
-          setProfileForm(nextProfile);
-          setProfileSharePayload(identity ? formatNpub(identity.pubkey) : null);
-          setProfileUpdatedAt(updatedAt);
-          persistProfileMetadataCache(identity.pubkey, {
-            profile: nextProfile,
-            updatedAt,
-            eventId: event.id || null,
-          });
-          setProfileStatus("ready");
-          setProfileMessage("Profile loaded");
-          return meta;
-        }
-        setProfileStatus("ready");
-        setProfileMessage("No profile metadata found yet.");
-        return null;
-      } catch (err: any) {
-        setProfileStatus("error");
-        setProfileMessage(err?.message || "Unable to load profile.");
-        return null;
-      }
-    },
-    [
-      contactsSyncEnabled,
-      defaultNostrRelays,
-      deriveDefaultLightningAddress,
-      ensureNostrIdentity,
-      formatNpub,
-      nostrMissingReason,
-      parseProfileContent,
-      persistProfileMetadataCache,
-      persistProfileEventId,
-      readProfileMetadataCache,
-      readProfileEventId,
-    ],
-  );
 
   useEffect(() => {
     if (!paymentRequestsEnabled) return;
@@ -9414,469 +2857,6 @@ export default function CashuWalletModal({
     panelEl?.scrollTo({ top: 0 });
   }, [activeContactId, contactView, contactsTabOpen]);
 
-  const handleClaimIncomingPayment = useCallback(
-    async (entry: IncomingPaymentRequest) => {
-      if (claimingEventSet.has(entry.eventId)) return;
-      let fingerprint = entry.fingerprint ?? fingerprintIncomingToken(entry.token);
-      if (isIncomingPaymentSpent(entry.eventId, fingerprint)) {
-        return;
-      }
-      setClaimingEventIds((prev) => [...prev, entry.eventId]);
-      try {
-        const res = await receiveToken(entry.token);
-        if (res.savedForLater) {
-          setHistory((prev) => [
-            buildHistoryEntry({
-              id: `payment-request-pending-${entry.eventId}`,
-              summary: `Saved ${entry.amount} sat${entry.amount === 1 ? "" : "s"} payment token for later redemption`,
-              detail: entry.token,
-              detailKind: "token",
-              type: "ecash",
-              direction: "in",
-              amountSat: entry.amount,
-              mintUrl: res.usedMintUrl ?? entry.mint ?? undefined,
-              pendingTokenId: res.pendingTokenId,
-              pendingTokenAmount: entry.amount,
-              pendingTokenMint: res.usedMintUrl ?? entry.mint ?? undefined,
-              pendingStatus: "pending",
-            }),
-            ...prev,
-          ]);
-          if (entry.id && currentPaymentRequest?.id === entry.id) {
-            setPaymentRequestStatusMessage(
-              "Payment received but will be redeemed when your connection returns.",
-            );
-          }
-          showToast(
-            `Saved ${entry.amount} sat${entry.amount === 1 ? "" : "s"} token for later redemption.`,
-            5000,
-          );
-          if (!fingerprint) {
-            fingerprint = fingerprintIncomingToken(entry.token);
-          }
-          if (fingerprint && !entry.fingerprint) {
-            entry.fingerprint = fingerprint;
-          }
-          addSpentIncomingPayment(entry.eventId, fingerprint ?? null);
-          persistSpentIncomingEvents();
-          return;
-        }
-        incomingPaymentRequestsRef.current = incomingPaymentRequestsRef.current.filter(
-          (item) => item.eventId !== entry.eventId,
-        );
-        const now = Date.now();
-        const tokenState = deriveSpentHistoryTokenStateFromToken(entry.token, now);
-        setHistory((prev) => [
-          buildHistoryEntry({
-            id: `payment-request-recv-${entry.eventId}`,
-            summary: `Received ${entry.amount} sats via payment request`,
-            detail: entry.token,
-            detailKind: "token",
-            type: "ecash",
-            direction: "in",
-            amountSat: entry.amount,
-            mintUrl: res.usedMintUrl ?? entry.mint ?? undefined,
-            ...(tokenState ? { tokenState } : {}),
-          }),
-          ...prev,
-        ]);
-        if (entry.id && currentPaymentRequest?.id === entry.id) {
-          setPaymentRequestStatusMessage("Payment received and claimed automatically.");
-        }
-        const amountLabel = `${entry.amount} sat${entry.amount === 1 ? "" : "s"}`;
-        let senderNip05: string | null = null;
-        const normalizedSender = normalizeNostrPubkey(entry.sender);
-        const senderHex = normalizedSender ? compressedToRawHex(normalizedSender).toLowerCase() : entry.sender.toLowerCase();
-        if (senderHex && /^[0-9a-f]{64}$/.test(senderHex)) {
-          const contact = contacts.find((c) => {
-            const npub = normalizeNostrPubkey(c.npub || "");
-            return npub ? compressedToRawHex(npub).toLowerCase() === senderHex : false;
-          });
-          if (contact?.nip05) {
-            const nip05 = contact.nip05.trim();
-            const normalizedNip05 = normalizeNip05(nip05);
-            const check = nip05Checks[contact.id];
-            const contactPubkeyHex = contact.npub
-              ? compressedToRawHex(normalizeNostrPubkey(contact.npub) ?? contact.npub).toLowerCase()
-              : "";
-            if (
-              normalizedNip05 &&
-              check &&
-              check.status === "valid" &&
-              check.nip05 === normalizedNip05 &&
-              check.npub === contactPubkeyHex
-            ) {
-              senderNip05 = nip05;
-            }
-          }
-          if (!senderNip05) {
-            const profile = dmPeerProfilesRef.current.get(senderHex);
-            if (profile?.nip05) {
-              const nip05 = profile.nip05.trim();
-              const normalizedNip05 = normalizeNip05(nip05);
-              const check = nip05Checks[`dm-${senderHex}`];
-              if (
-                normalizedNip05 &&
-                check &&
-                check.status === "valid" &&
-                check.nip05 === normalizedNip05 &&
-                check.npub === senderHex
-              ) {
-                senderNip05 = nip05;
-              }
-            }
-          }
-        }
-        showToast(senderNip05 ? `Received ${amountLabel} from ${senderNip05}` : `Received ${amountLabel}`, 3500);
-        if (res.crossMint) {
-          showToast(`Redeemed to ${res.usedMintUrl}. Switch to view the balance.`, 5000);
-        }
-        if (!fingerprint) {
-          fingerprint = fingerprintIncomingToken(entry.token);
-        }
-        if (fingerprint && !entry.fingerprint) {
-          entry.fingerprint = fingerprint;
-        }
-        addSpentIncomingPayment(entry.eventId, fingerprint ?? null);
-        persistSpentIncomingEvents();
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        console.warn("Failed to claim incoming payment", err);
-        if (isMintTokenAlreadySpentError(err)) {
-          if (!fingerprint) {
-            fingerprint = fingerprintIncomingToken(entry.token);
-          }
-          if (fingerprint && !entry.fingerprint) {
-            entry.fingerprint = fingerprint;
-          }
-          addSpentIncomingPayment(entry.eventId, fingerprint ?? null);
-          incomingPaymentRequestsRef.current = incomingPaymentRequestsRef.current.filter(
-            (item) => item.eventId !== entry.eventId,
-          );
-          persistSpentIncomingEvents();
-          await requestNostrPaymentDeletion(entry.eventId, entry.sender, message);
-        }
-        showToast(message, 5000);
-      } finally {
-        setClaimingEventIds((prev) => prev.filter((id) => id !== entry.eventId));
-      }
-    },
-    [
-      addSpentIncomingPayment,
-      buildHistoryEntry,
-      claimingEventSet,
-      compressedToRawHex,
-      contacts,
-      currentPaymentRequest,
-      fingerprintIncomingToken,
-      isIncomingPaymentSpent,
-      nip05Checks,
-      normalizeNip05,
-      requestNostrPaymentDeletion,
-      persistSpentIncomingEvents,
-      receiveToken,
-      setHistory,
-      setPaymentRequestStatusMessage,
-      showToast,
-    ],
-  );
-
-  const scheduleAutoClaimRun = useCallback(() => {
-    if (autoClaimRunningRef.current) return;
-    autoClaimRunningRef.current = true;
-    const processQueue = async () => {
-      while (autoClaimQueueRef.current.length) {
-        const entry = autoClaimQueueRef.current.shift();
-        if (!entry) continue;
-        let fingerprint = entry.fingerprint;
-        if (!fingerprint) {
-          fingerprint = fingerprintIncomingToken(entry.token);
-          if (fingerprint) {
-            entry.fingerprint = fingerprint;
-          }
-        }
-        if (isIncomingPaymentSpent(entry.eventId, fingerprint)) {
-          continue;
-        }
-        try {
-          await handleClaimIncomingPayment(entry);
-        } catch (err) {
-          console.warn("Auto-claim payment request failed", err);
-        }
-      }
-      autoClaimRunningRef.current = false;
-    };
-    void Promise.resolve().then(processQueue);
-  }, [handleClaimIncomingPayment, fingerprintIncomingToken, isIncomingPaymentSpent]);
-
-  const selectIncomingPaymentFromPayload = useCallback(
-    (
-      rawPayload:
-        | PaymentRequestPayload
-        | Record<string, unknown>
-        | string
-        | null
-        | undefined,
-    ): NormalizedIncomingPayment | null => {
-      const payload = (() => {
-        if (typeof rawPayload !== "string") return rawPayload;
-        const trimmed = rawPayload.trim();
-        if (!trimmed) return null;
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
-        } catch {
-          // fall through to token extraction
-        }
-        const extracted = extractFirstCashuTokenFromText(trimmed);
-        if (!extracted) return null;
-        return { token: extracted } as Record<string, unknown>;
-      })();
-      if (!payload || typeof payload !== "object") return null;
-      const defaultUnit = (info?.unit || "sat").toLowerCase();
-      const normalizedActiveMint = mintUrl ? normalizeMintUrl(mintUrl) : null;
-      const entries: NormalizedIncomingPayment[] = [];
-      const seenEntries = new Set<string>();
-
-      const normalizeProofList = (input: unknown): Proof[] => {
-        if (!Array.isArray(input) || !input.length) return [];
-        const normalized: Proof[] = [];
-        for (const rawProof of input) {
-          if (!rawProof || typeof rawProof !== "object") continue;
-          const rawAmount = (rawProof as any).amount;
-          const amountValue =
-            typeof rawAmount === "number"
-              ? rawAmount
-              : typeof rawAmount === "string"
-                ? Number(rawAmount.trim())
-                : NaN;
-          if (!Number.isFinite(amountValue) || amountValue <= 0) continue;
-          const secret = typeof (rawProof as any).secret === "string" ? (rawProof as any).secret.trim() : "";
-          const C = typeof (rawProof as any).C === "string" ? (rawProof as any).C.trim() : "";
-          const id = typeof (rawProof as any).id === "string" ? (rawProof as any).id.trim() : "";
-          if (!secret || !C || !id) continue;
-          const proof: Proof = {
-            amount: Math.floor(amountValue),
-            secret,
-            C,
-            id,
-          };
-          if ((rawProof as any).dleq) {
-            proof.dleq = (rawProof as any).dleq as Proof["dleq"];
-          }
-          if ((rawProof as any).witness) {
-            proof.witness = (rawProof as any).witness as Proof["witness"];
-          }
-          normalized.push(proof);
-        }
-        return normalized;
-      };
-
-      const pushEntry = (mint: unknown, proofs: unknown, unitHint?: unknown, encodedCandidate?: unknown) => {
-        if (typeof mint !== "string") return;
-        const trimmedMint = mint.trim();
-        if (!trimmedMint) return;
-        const normalizedProofs = normalizeProofList(proofs);
-        if (!normalizedProofs.length) return;
-        const amount = sumProofAmounts(normalizedProofs);
-        if (!amount) return;
-        const resolvedUnit =
-          typeof unitHint === "string" && unitHint.trim() ? unitHint.toLowerCase() : defaultUnit;
-        let encoded = typeof encodedCandidate === "string" ? encodedCandidate.trim() : "";
-        if (encoded) {
-          if (/^cashu:/i.test(encoded)) {
-            encoded = extractCashuUriPayload(encoded);
-          }
-        } else {
-          try {
-            encoded = getEncodedToken({ mint: trimmedMint, proofs: normalizedProofs, unit: resolvedUnit });
-          } catch (err) {
-            console.warn("Failed to encode incoming payment proofs", err);
-            return;
-          }
-        }
-        if (!encoded) return;
-        const key = `${normalizeMintUrl(trimmedMint)}::${encoded}`;
-        if (seenEntries.has(key)) return;
-        seenEntries.add(key);
-        entries.push({ token: encoded, amount, mint: trimmedMint, unit: resolvedUnit });
-      };
-
-      const tokenStrings: string[] = [];
-      const seenTokenStrings = new Set<string>();
-      const pushTokenString = (value: unknown) => {
-        if (typeof value !== "string") return;
-        const trimmed = value.trim();
-        if (!trimmed) return;
-        if (!/cashu/i.test(trimmed)) return;
-        if (seenTokenStrings.has(trimmed)) return;
-        seenTokenStrings.add(trimmed);
-        tokenStrings.push(trimmed);
-      };
-
-      const considerProofLike = (value: unknown, unitHint?: unknown) => {
-        if (!value || typeof value !== "object") return;
-        const maybeMint = (value as any)?.mint;
-        const maybeProofs = (value as any)?.proofs;
-        pushEntry(maybeMint, maybeProofs, (value as any)?.unit ?? unitHint);
-      };
-
-      considerProofLike(payload, (payload as any)?.unit);
-
-      pushTokenString((payload as any)?.token);
-      pushTokenString((payload as any)?.cashu);
-      pushTokenString((payload as any)?.encodedToken);
-      pushTokenString((payload as any)?.encoded_token);
-      pushTokenString((payload as any)?.payment_request);
-      pushTokenString((payload as any)?.request);
-
-      const tokensField = (payload as any)?.tokens;
-      if (Array.isArray(tokensField)) {
-        for (const entry of tokensField) {
-          pushTokenString(entry);
-          considerProofLike(entry, (payload as any)?.unit);
-        }
-      }
-
-      const tokenField = (payload as any)?.token;
-      if (tokenField && typeof tokenField === "object") {
-        considerProofLike(tokenField, (tokenField as any)?.unit ?? (payload as any)?.unit);
-        const nestedTokens = (tokenField as any)?.token;
-        if (typeof nestedTokens === "string") {
-          pushTokenString(nestedTokens);
-        } else if (Array.isArray(nestedTokens)) {
-          for (const nested of nestedTokens) {
-            pushTokenString(nested);
-            considerProofLike(nested, (tokenField as any)?.unit ?? (payload as any)?.unit);
-          }
-        }
-      }
-
-      for (const rawToken of tokenStrings) {
-        let normalizedToken = rawToken;
-        if (/^cashu:/i.test(normalizedToken)) {
-          normalizedToken = extractCashuUriPayload(normalizedToken);
-        }
-        if (!normalizedToken) continue;
-        try {
-          const decoded = decodeCashuTokenLoose(normalizedToken);
-          if (!decoded) continue;
-          const decodedEntries = Array.isArray((decoded as any)?.token)
-            ? (decoded as any).token
-            : (decoded as any)?.mint && Array.isArray((decoded as any)?.proofs)
-              ? [decoded]
-              : [];
-          const decodedUnit = (decoded as any)?.unit;
-          for (const entry of decodedEntries) {
-            considerProofLike(entry, decodedUnit ?? (entry as any)?.unit ?? (payload as any)?.unit);
-            pushEntry(
-              (entry as any)?.mint,
-              (entry as any)?.proofs,
-              decodedUnit ?? (entry as any)?.unit ?? (payload as any)?.unit,
-              normalizedToken,
-            );
-          }
-        } catch (err) {
-          if (walletDebugEnabled) {
-            console.warn("Failed to decode token from payment payload", err);
-          }
-        }
-      }
-
-      if (!entries.length) return null;
-
-      entries.sort((a, b) => {
-        const aMatches = normalizedActiveMint
-          ? normalizeMintUrl(a.mint) === normalizedActiveMint
-          : false;
-        const bMatches = normalizedActiveMint
-          ? normalizeMintUrl(b.mint) === normalizedActiveMint
-          : false;
-        if (aMatches !== bMatches) {
-          return aMatches ? -1 : 1;
-        }
-        if (b.amount !== a.amount) {
-          return b.amount - a.amount;
-        }
-        return a.token.localeCompare(b.token);
-      });
-
-      return entries[0] ?? null;
-    },
-    [info?.unit, mintUrl, walletDebugEnabled],
-  );
-
-  const processIncomingPaymentPayload = useCallback(
-    (
-      payload: PaymentRequestPayload | string,
-      event: NostrEvent,
-      normalizedOverride?: NormalizedIncomingPayment | null,
-      senderOverride?: string | null,
-    ) => {
-      const normalized = normalizedOverride ?? selectIncomingPaymentFromPayload(payload);
-      if (!normalized) return;
-      const { token: encoded, amount, mint, unit } = normalized;
-      const fingerprint = fingerprintIncomingToken(encoded);
-      if (isIncomingPaymentSpent(event.id, fingerprint)) {
-        return;
-      }
-      const receivedAt = (event.created_at || Math.floor(Date.now() / 1000)) * 1000;
-      let createdEntry: IncomingPaymentRequest | null = null;
-      const existing = incomingPaymentRequestsRef.current;
-      if (existing.some((entry) => entry.eventId === event.id)) {
-        return;
-      }
-      const payloadId =
-        payload && typeof payload === "object" && "id" in payload
-          ? ((payload as PaymentRequestPayload).id ?? null)
-          : null;
-      let sender = (event.pubkey || "").toLowerCase();
-      if (senderOverride && typeof senderOverride === "string") {
-        const normalizedSender = normalizeNostrPubkey(senderOverride);
-        if (normalizedSender) {
-          const rawSender = compressedToRawHex(normalizedSender).toLowerCase();
-          if (/^[0-9a-f]{64}$/.test(rawSender)) {
-            sender = rawSender;
-          }
-        }
-      }
-      if (sender) {
-        void ensurePeerProfile(sender);
-      }
-      const nextEntry: IncomingPaymentRequest = {
-        eventId: event.id,
-        id: payloadId,
-        token: encoded,
-        amount,
-        mint,
-        unit,
-        sender,
-        receivedAt,
-        fingerprint,
-      };
-      createdEntry = nextEntry;
-      const combined = [nextEntry, ...existing].sort((a, b) => b.receivedAt - a.receivedAt);
-      incomingPaymentRequestsRef.current = combined.slice(0, 100);
-      if (paymentRequestsEnabled && createdEntry) {
-        autoClaimQueueRef.current.push(createdEntry);
-        scheduleAutoClaimRun();
-      }
-      if (payloadId && currentPaymentRequest?.id === payloadId) {
-        setPaymentRequestStatusMessage("Payment received. Claiming automatically…");
-      }
-    },
-    [
-      compressedToRawHex,
-      currentPaymentRequest,
-      ensurePeerProfile,
-      paymentRequestsEnabled,
-      scheduleAutoClaimRun,
-      selectIncomingPaymentFromPayload,
-      fingerprintIncomingToken,
-      isIncomingPaymentSpent,
-    ],
-  );
-
   const PAYMENT_REQUEST_SEND_TIMEOUT_MS = 8000;
 
   const decryptNostrPaymentMessageRef = useRef(decryptNostrPaymentMessage);
@@ -9979,96 +2959,6 @@ export default function CashuWalletModal({
     handlePaymentRequestEventRef.current = handlePaymentRequestEvent;
   }, [handlePaymentRequestEvent]);
 
-  const stopPaymentRequestSubscription = useCallback(() => {
-    if (nostrSubscriptionCloserRef.current) {
-      try { nostrSubscriptionCloserRef.current(); } catch {}
-      nostrSubscriptionCloserRef.current = null;
-    }
-    nostrSubscriptionActiveRef.current = false;
-  }, []);
-
-  const startPaymentRequestSubscription = useCallback(async () => {
-    if (!paymentRequestsEnabled || nostrSubscriptionActiveRef.current) return;
-    if (!paymentRequestsBackgroundChecksEnabled && !open) return;
-    const identity = ensureNostrIdentity();
-    if (!identity) return;
-    const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
-    if (!relays.length) return;
-    const now = Math.floor(Date.now() / 1000);
-    const initialLastCheck = nostrLastCheckRef.current || now - PAYMENT_REQUEST_LOOKBACK_SECONDS;
-    const normalizedLastCheck = Math.max(0, Math.min(initialLastCheck, now));
-    const since = Math.max(0, normalizedLastCheck - PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS);
-    nostrLastCheckRef.current = normalizedLastCheck;
-    try {
-      const session = await NostrSession.init(relays);
-      if (nostrSubscriptionCloserRef.current) {
-        stopPaymentRequestSubscription();
-      }
-      const managed = await session.subscribe(
-        [{ kinds: [4, 1059], "#p": [identity.pubkey], since }],
-        {
-          relayUrls: relays,
-          onEvent: (ev) => {
-            const handler = handlePaymentRequestEventRef.current;
-            if (handler) {
-              void handler(ev as NostrEvent, { updateClock: true });
-            }
-          },
-        },
-      );
-      nostrSubscriptionCloserRef.current = () => {
-        try { managed.release(); } catch {}
-        nostrSubscriptionActiveRef.current = false;
-      };
-      nostrSubscriptionActiveRef.current = true;
-    } catch (err) {
-      console.warn("Failed to start payment request subscription", err);
-    }
-  }, [
-    PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS,
-    PAYMENT_REQUEST_LOOKBACK_SECONDS,
-    defaultNostrRelays,
-    ensureNostrIdentity,
-    open,
-    paymentRequestsEnabled,
-    paymentRequestsBackgroundChecksEnabled,
-    stopPaymentRequestSubscription,
-  ]);
-
-  const deepSyncDMs = useCallback(async () => {
-    if (!paymentRequestsEnabled) return;
-    const identity = ensureNostrIdentity();
-    if (!identity) return;
-    const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
-    if (!relays.length) return;
-    try {
-      const session = await NostrSession.init(relays);
-      const since = Math.max(
-        0,
-        Math.floor(Date.now() / 1000) - PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS,
-      );
-      const events = await session.fetchEvents(
-        [{ kinds: [4, 1059], "#p": [identity.pubkey], since }],
-        relays,
-      );
-      const ordered = events
-        .filter((event) => event && (event.kind === 4 || event.kind === 1059))
-        .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-      for (const event of ordered) {
-        const handler = handlePaymentRequestEventRef.current;
-        if (handler) {
-          await handler(event, { updateClock: false });
-        }
-      }
-    } catch (err) {
-      console.warn("Deep DM sync failed", err);
-    }
-  }, [
-    PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS,
-    defaultNostrRelays,
-    ensureNostrIdentity,
-    paymentRequestsEnabled,
-  ]);
 
   useEffect(() => {
     deepSyncDMsRef.current = deepSyncDMs;
@@ -10242,323 +3132,41 @@ export default function CashuWalletModal({
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-  const handleScannerError = useCallback((message: string) => {
-    setScannerMessage(message);
-  }, []);
+  const {
+    handleScannerError,
+    handleScannerDetected,
+    handlePasteFromClipboard,
+    handleLnurlScan,
+    openScanner,
+    closeScanner,
+  } = useScannerFlow({
+    decodeContactPayload,
+    formatNpub,
+    handleScannedContactPayload,
+    nut16CollectorRef,
+    resetSendLockSettings,
+    setLnAddrAmt,
+    setLnError,
+    setLnInput,
+    setLnState,
+    setLightningSendView,
+    setLnurlPayData,
+    setLnurlWithdrawAmt,
+    setLnurlWithdrawInfo,
+    setLnurlWithdrawInvoice,
+    setLnurlWithdrawMessage,
+    setLnurlWithdrawState,
+    setLockSendToPubkey,
+    setPendingScan,
+    setReceiveMode,
+    setScannerMessage,
+    setSendLockError,
+    setSendLockPubkeyInput,
+    setSendMode,
+    setShowScanner,
+    setShowSendOptions,
+  });
 
-  const handleScannerDetected = useCallback(async (rawValue: string) => {
-    const text = rawValue.trim();
-    if (!text) return false;
-
-    const compact = text.replace(/\s+/g, "");
-
-    if (/^https?:\/\//i.test(compact) || /^www\./i.test(compact)) {
-      setScannerMessage("Unsupported QR code. Only Cashu tokens and Lightning requests are allowed.");
-      return false;
-    }
-
-    let candidate = compact;
-
-    const collector = nut16CollectorRef.current ?? (nut16CollectorRef.current = new Nut16Collector());
-
-    if (/^bitcoin:/i.test(candidate)) {
-      const [, query = ""] = candidate.split("?");
-      if (query) {
-        const params = new URLSearchParams(query);
-        const lightningParam = params.get("lightning") || params.get("lightning_pay");
-        const tokenParam = params.get("token");
-        if (lightningParam) {
-          try {
-            candidate = decodeURIComponent(lightningParam);
-          } catch {
-            candidate = lightningParam;
-          }
-        } else if (tokenParam?.toLowerCase().startsWith("cashu")) {
-          try {
-            candidate = decodeURIComponent(tokenParam);
-          } catch {
-            candidate = tokenParam;
-          }
-        }
-      }
-    }
-
-    candidate = candidate.replace(/^lightning:/i, "").trim();
-
-    if (/^cashu:/i.test(candidate)) {
-      candidate = extractCashuUriPayload(candidate);
-    }
-
-    const peanutDecoded = extractPeanutToken(candidate);
-    if (peanutDecoded) {
-      candidate = peanutDecoded;
-    }
-
-    candidate = candidate.replace(/^nostr:/i, "").trim();
-
-    const contactPayload = decodeContactPayload(candidate);
-    if (contactPayload) {
-      await handleScannedContactPayload(contactPayload);
-      return true;
-    }
-
-    try {
-      const decoded = nip19.decode(candidate);
-      if (decoded.type === "nprofile") {
-        const data = decoded.data as { pubkey?: string; relays?: string[] };
-        if (data?.pubkey) {
-          await handleScannedContactPayload({
-            npub: formatNpub(data.pubkey),
-            relays: Array.isArray(data.relays)
-              ? data.relays.filter((entry) => typeof entry === "string" && entry.trim())
-              : undefined,
-          });
-          return true;
-        }
-      } else if (decoded.type === "npub") {
-        const npub =
-          typeof decoded.data === "string"
-            ? decoded.data
-            : Array.isArray(decoded.data)
-              ? nip19.npubEncode(Uint8Array.from(decoded.data))
-              : null;
-        if (npub) {
-          await handleScannedContactPayload({ npub });
-          return true;
-        }
-      }
-    } catch {
-      // not a nostr profile
-    }
-
-    const lowerCandidate = candidate.toLowerCase();
-
-    const nut16Frame = parseNut16FrameString(candidate);
-    if (nut16Frame) {
-      const result = collector.addFrame(nut16Frame);
-      if (result.status === "complete") {
-        setPendingScan({ type: "ecash", token: result.token });
-        setShowScanner(false);
-        setScannerMessage("Animated Cashu token assembled.");
-        collector.reset();
-        return true;
-      }
-      if (result.status === "error") {
-        setScannerMessage(result.error.message || "Failed to assemble animated token.");
-        collector.reset();
-        return false;
-      }
-      const received = typeof result.received === "number" ? result.received : nut16Frame.index;
-      const total = typeof result.total === "number" && result.total > 0 ? result.total : nut16Frame.total || 0;
-      const remaining =
-        typeof result.missing === "number"
-          ? result.missing
-          : total > 0
-            ? Math.max(total - received, 0)
-            : null;
-      const progressLabel = total ? `${Math.min(received, total)}/${total}` : `${Math.max(received, 1)}`;
-      const remainingLabel =
-        remaining != null
-          ? `${remaining} frame${remaining === 1 ? "" : "s"} remaining…`
-          : "Processing…";
-      const statusLabel = result.status === "duplicate" ? "Frame already captured" : "Captured frame";
-      setScannerMessage(`${statusLabel} ${progressLabel}. ${remainingLabel}`);
-      return false;
-    }
-
-    if (lowerCandidate.startsWith("cashu")) {
-      setPendingScan({ type: "ecash", token: candidate });
-      setShowScanner(false);
-      return true;
-    }
-
-    if (/^creqa[0-9a-z]+$/i.test(candidate)) {
-      setPendingScan({ type: "paymentRequest", request: candidate });
-      setShowScanner(false);
-      return true;
-    }
-
-    if (/^ln(bc|tb|sb|bcrt)[0-9]/.test(lowerCandidate)) {
-      setPendingScan({ type: "bolt11", invoice: lowerCandidate });
-      setShowScanner(false);
-      return true;
-    }
-
-    if (/^[^@\s]+@[^@\s]+$/.test(candidate)) {
-      setPendingScan({ type: "lightningAddress", address: candidate.toLowerCase() });
-      setShowScanner(false);
-      return true;
-    }
-
-    if (/^lnurl[0-9a-z]+$/i.test(candidate)) {
-      setPendingScan({ type: "lnurl", data: candidate });
-      setShowScanner(false);
-      return true;
-    }
-
-    try {
-      PaymentRequest.fromEncodedRequest(candidate);
-      setPendingScan({ type: "paymentRequest", request: candidate });
-      setShowScanner(false);
-      return true;
-    } catch {
-      // fall through to error message
-    }
-
-    const maybeLockKeyInput = candidate.replace(/^p2pk:/i, "");
-    const normalizedLockKey = normalizeNostrPubkey(maybeLockKeyInput);
-    if (normalizedLockKey) {
-      resetSendLockSettings();
-      setLockSendToPubkey(true);
-      setSendLockPubkeyInput(maybeLockKeyInput);
-      setSendLockError("");
-      setReceiveMode(null);
-      setSendMode("ecash");
-      setShowSendOptions(true);
-      setPendingScan(null);
-      setScannerMessage("");
-      setShowScanner(false);
-      return true;
-    }
-
-    setScannerMessage("Unrecognized code. Scan a Cashu token, Lightning invoice/address, LNURL or payment request.");
-    return false;
-  }, [decodeContactPayload, formatNpub, handleScannedContactPayload, resetSendLockSettings]);
-
-  const handlePasteFromClipboard = useCallback(async () => {
-    setScannerMessage("");
-    try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
-        setScannerMessage("Clipboard access unavailable. Paste the code manually.");
-        return;
-      }
-
-      const pasted = await navigator.clipboard.readText();
-      const trimmed = pasted.trim();
-      if (!trimmed) {
-        setScannerMessage("Clipboard is empty.");
-        return;
-      }
-
-      await handleScannerDetected(trimmed);
-    } catch (err: any) {
-      console.error("Clipboard read failed", err);
-      setScannerMessage(err?.message || "Failed to read from clipboard.");
-    }
-  }, [handleScannerDetected]);
-
-  const handleLnurlScan = useCallback(async (lnurlValue: string) => {
-    try {
-      const url = decodeLnurlString(lnurlValue);
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`LNURL request failed (${res.status})`);
-      const data = await res.json();
-      const tag = String(data?.tag || "").toLowerCase();
-      const domain = extractDomain(url);
-
-      if (tag === "payrequest") {
-        const minSendable = Number(data?.minSendable ?? 0);
-        const maxSendable = Number(data?.maxSendable ?? 0);
-        const commentAllowed = Number(data?.commentAllowed ?? 0);
-        if (!data?.callback) throw new Error("LNURL pay is missing callback URL");
-        if (!minSendable || !maxSendable) throw new Error("LNURL pay missing sendable range");
-
-        const payload: LnurlPayData = {
-          lnurl: lnurlValue.trim(),
-          callback: data.callback,
-          domain,
-          minSendable,
-          maxSendable,
-          commentAllowed,
-          metadata: typeof data?.metadata === "string" ? data.metadata : undefined,
-        };
-
-        setLnurlPayData(payload);
-        setLnurlWithdrawInfo(null);
-        setReceiveMode(null);
-        setSendMode("lightning");
-        setShowSendOptions(true);
-        setLnInput(lnurlValue.trim());
-        setLightningSendView("address");
-        if (minSendable === maxSendable) {
-          setLnAddrAmt(String(Math.floor(minSendable / 1000)));
-        } else {
-          setLnAddrAmt("");
-        }
-        setLnState("idle");
-        setLnError("");
-        setScannerMessage("");
-        return;
-      }
-
-      if (tag === "withdrawrequest") {
-        if (!data?.callback || !data?.k1) throw new Error("LNURL withdraw missing callback parameters");
-        const minWithdrawable = Number(data?.minWithdrawable ?? 0);
-        const maxWithdrawable = Number(data?.maxWithdrawable ?? 0);
-        if (!minWithdrawable || !maxWithdrawable) throw new Error("LNURL withdraw missing withdrawable range");
-
-        const info: LnurlWithdrawData = {
-          lnurl: lnurlValue.trim(),
-          callback: data.callback,
-          domain,
-          k1: data.k1,
-          minWithdrawable,
-          maxWithdrawable,
-          defaultDescription: typeof data?.defaultDescription === "string" ? data.defaultDescription : undefined,
-        };
-
-        setLnurlWithdrawInfo(info);
-        const maxSat = Math.floor(maxWithdrawable / 1000);
-        setLnurlWithdrawAmt(maxSat > 0 ? String(maxSat) : "");
-        setLnurlWithdrawState("idle");
-        setLnurlWithdrawMessage("");
-        setLnurlWithdrawInvoice("");
-        setLnurlPayData(null);
-        setSendMode(null);
-        setShowSendOptions(false);
-        setReceiveMode("lnurlWithdraw");
-        setScannerMessage("");
-        return;
-      }
-
-      throw new Error("Unsupported LNURL tag");
-    } catch (err: any) {
-      console.error("handleLnurlScan failed", err);
-      setScannerMessage(err?.message || String(err));
-    }
-  }, [setLnInput]);
-
-  const openScanner = useCallback(async () => {
-    const constraints: MediaStreamConstraints = {
-      audio: false,
-      video: { facingMode: { ideal: "environment" } },
-    };
-    if (navigator?.mediaDevices?.getUserMedia) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        stream.getTracks().forEach((track) => track.stop());
-      } catch (err: any) {
-        setScannerMessage(err?.message || "Camera permission denied");
-        setPendingScan(null);
-        setShowScanner(true);
-        return;
-      }
-    }
-    nut16CollectorRef.current?.reset();
-    setScannerMessage("");
-    setPendingScan(null);
-    setReceiveMode(null);
-    setShowSendOptions(false);
-    setSendMode(null);
-    setShowScanner(true);
-  }, []);
-
-  const closeScanner = useCallback(() => {
-    setShowScanner(false);
-    setScannerMessage("");
-    setPendingScan(null);
-    nut16CollectorRef.current?.reset();
-  }, []);
 
   async function handleCreateInvoice() {
     if (creatingMintInvoice) return;
@@ -11079,271 +3687,46 @@ export default function CashuWalletModal({
     }
   }
 
-  const handleCopyNutToken = useCallback(async () => {
-    if (!peanutSendToken) return;
-    try {
-      await navigator.clipboard?.writeText(peanutSendToken);
-      setNutTokenCopied(true);
-    } catch (err) {
-      console.warn("Copy nut token failed", err);
-      setNutTokenCopied(false);
-    }
-  }, [peanutSendToken]);
-
-  const handlePasteEcashRequest = useCallback(async () => {
-    try {
-      const text = (await navigator.clipboard?.readText())?.trim() ?? "";
-      if (!text) {
-        alert("Clipboard is empty.");
-        return;
-      }
-      const success = await handlePaymentRequestScan(text);
-      if (!success) {
-        alert("Unable to process eCash payment request. Check the value and try again.");
-      }
-    } catch {
-      alert("Unable to read clipboard. Please paste manually.");
-    }
-  }, [handlePaymentRequestScan]);
-
-  const handlePasteSendLock = useCallback(async () => {
-    try {
-      const text = (await navigator.clipboard?.readText())?.trim() ?? "";
-      if (!text) {
-        alert("Clipboard is empty.");
-        return;
-      }
-      setSendLockPubkeyInput(text);
-      const normalized = normalizeNostrPubkey(text);
-      if (!normalized) {
-        setLockSendToPubkey(false);
-        setSendLockError("Enter a valid npub or 64-character hex key");
-        return;
-      }
-      setLockSendToPubkey(true);
-      setSendLockError("");
-    } catch {
-      alert("Unable to read clipboard. Please paste manually.");
-    }
-  }, []);
-
-  const handlePasteEcashInput = useCallback(async () => {
-    try {
-      const text = (await navigator.clipboard?.readText())?.trim() ?? "";
-      if (!text) {
-        alert("Clipboard is empty.");
-        return;
-      }
-      const requestHandled = await handlePaymentRequestScan(text);
-      if (requestHandled) {
-        return;
-      }
-      setSendLockPubkeyInput(text);
-      const normalized = normalizeNostrPubkey(text);
-      if (normalized) {
-        setLockSendToPubkey(true);
-        setSendLockError("");
-        return;
-      }
-      setLockSendToPubkey(false);
-      setSendLockError("Clipboard does not contain a valid eCash request or locking key");
-      alert("Clipboard does not contain a valid eCash request or locking key.");
-    } catch {
-      alert("Unable to read clipboard. Please paste manually.");
-    }
-  }, [handlePaymentRequestScan]);
-
-  const handleClearSendLock = useCallback(() => {
-    resetSendLockSettings();
-  }, [resetSendLockSettings]);
-
-  type EcashInputInterpretation =
-    | { kind: "empty" }
-    | { kind: "amount"; value: string }
-    | { kind: "token"; value: string }
-    | { kind: "invalid" };
-
-  const interpretEcashInput = useCallback(
-    (raw: string): EcashInputInterpretation => {
-      const trimmed = raw.trim();
-      if (!trimmed) {
-        return { kind: "empty" };
-      }
-      const parsedAmount = parseAmountInput(trimmed);
-      if (!parsedAmount.error && parsedAmount.sats > 0) {
-        return { kind: "amount", value: trimmed };
-      }
-      let normalizedToken = trimmed;
-      const peanutDecoded = extractPeanutToken(normalizedToken);
-      if (peanutDecoded) {
-        normalizedToken = peanutDecoded;
-      }
-      if (/^cashu:/i.test(normalizedToken)) {
-        normalizedToken = extractCashuUriPayload(normalizedToken);
-      }
-      if (!normalizedToken) {
-        return { kind: "invalid" };
-      }
-      try {
-        if (containsNut16Frame(normalizedToken)) {
-          const assembled = assembleNut16FromText(normalizedToken);
-          normalizedToken = assembled.token;
-        }
-      } catch {
-        // fall back to attempting decode with the provided input
-      }
-      if (isValidCashuTokenString(normalizedToken)) {
-        return { kind: "token", value: normalizedToken };
-      }
-      return { kind: "invalid" };
-    },
-    [parseAmountInput],
-  );
-
-  const redeemEcashToken = useCallback(
-    async (tokenInput: string) => {
-      let tokenCandidate = tokenInput.trim();
-      if (!tokenCandidate) throw new Error("Paste a Cashu token");
-      const peanutDecoded = extractPeanutToken(tokenCandidate);
-      if (peanutDecoded) {
-        tokenCandidate = peanutDecoded;
-      }
-      if (/^cashu:/i.test(tokenCandidate)) {
-        tokenCandidate = extractCashuUriPayload(tokenCandidate);
-      }
-      if (!tokenCandidate) throw new Error("Paste a Cashu token");
-      if (containsNut16Frame(tokenCandidate)) {
-        const assembled = assembleNut16FromText(tokenCandidate);
-        tokenCandidate = assembled.token;
-      }
-      const normalizedToken = tokenCandidate;
-      const saved = await savePendingTokenForRedemption(normalizedToken);
-
-      let savedAmount = typeof saved.amountSat === "number" ? saved.amountSat : 0;
-      if (!savedAmount) {
-        savedAmount = amountFromCashuToken(normalizedToken);
-      }
-
-      const amountNote = savedAmount ? `${savedAmount} sat${savedAmount === 1 ? "" : "s"}` : "Token";
-      const crossMintNote = saved.crossMint && saved.mintUrl ? ` at ${saved.mintUrl}` : "";
-      const historyId = `recv-${Date.now()}`;
-
-      setHistory((h) => [
-        buildHistoryEntry({
-          id: historyId,
-          summary: `Received ${amountNote}${crossMintNote} (redeeming…)`,
-          detail: normalizedToken,
-          detailKind: "token",
-          type: "ecash",
-          direction: "in",
-          amountSat: savedAmount || undefined,
-          mintUrl: saved.mintUrl ?? mintUrl ?? undefined,
-          pendingTokenId: saved.id,
-          pendingTokenAmount: savedAmount || undefined,
-          pendingTokenMint: saved.mintUrl ?? mintUrl ?? undefined,
-          pendingStatus: "pending",
-        }),
-        ...h,
-      ]);
-
-      const toastAmount = savedAmount
-        ? `${savedAmount} sat${savedAmount === 1 ? "" : "s"}`
-        : "token";
-      showToast(`Received ${toastAmount}${crossMintNote}`, 3500);
-
-      if (receiveMode === "ecash") {
-        closeReceiveEcashSheet();
-      }
-
-      void (async () => {
-        try {
-          const res = await redeemPendingToken(saved.id);
-          const redeemedAmount = sumProofAmounts(res.proofs);
-          const amountValue = redeemedAmount || savedAmount;
-          const redeemedNote = amountValue
-            ? `${amountValue} sat${amountValue === 1 ? "" : "s"}`
-            : "Token";
-          const mintLabel = saved.crossMint
-            ? res.mintUrl
-              ? ` at ${res.mintUrl}`
-              : crossMintNote
-            : "";
-          const tokenState = deriveSpentHistoryTokenStateFromToken(normalizedToken, Date.now());
-          setHistory((prev) =>
-            prev.map((entry) =>
-              entry.id === historyId
-                ? {
-                    ...entry,
-                    summary: `Received ${redeemedNote}${mintLabel}`,
-                    amountSat: amountValue || undefined,
-                    pendingTokenId: undefined,
-                    pendingTokenAmount: undefined,
-                    pendingTokenMint: undefined,
-                    pendingStatus: "redeemed",
-                    ...(tokenState ? { tokenState } : {}),
-                  }
-                : entry,
-            ),
-          );
-        } catch (err) {
-          console.warn("Cashu wallet: automatic redemption failed", err);
-          setHistory((prev) =>
-            prev.map((entry) =>
-              entry.id === historyId
-                ? {
-                    ...entry,
-                    summary: `${amountNote} saved for later redemption${crossMintNote}`,
-                  }
-                : entry,
-            ),
-          );
-          showToast("Payment received but will be redeemed when your connection returns.", 4000);
-        }
-      })();
-    },
-    [
-      buildHistoryEntry,
-      closeReceiveEcashSheet,
-      mintUrl,
-      receiveMode,
-      redeemPendingToken,
-      savePendingTokenForRedemption,
-      setHistory,
-      showToast,
-    ]
-  );
-
-  const processEcashInput = useCallback(
-    async (raw: string) => {
-      const promptMessage = "please enter amount for request or valid ecash token";
-      setRecvMsg("");
-      const interpretation = interpretEcashInput(raw);
-      if (interpretation.kind === "empty") {
-        setRecvMsg(promptMessage);
-        return false;
-      }
-      if (interpretation.kind === "amount") {
-        const created = await createPaymentRequest(interpretation.value);
-        if (!created) {
-          setRecvMsg(promptMessage);
-          return false;
-        }
-        return true;
-      }
-      if (interpretation.kind === "token") {
-        try {
-          await redeemEcashToken(interpretation.value);
-          return true;
-        } catch (err: any) {
-          setRecvMsg(err?.message || String(err));
-          return false;
-        }
-      }
-      setRecvMsg(promptMessage);
-      return false;
-    },
-    [createPaymentRequest, interpretEcashInput, redeemEcashToken],
-  );
+  const {
+    handleCopyNutToken,
+    handlePasteEcashRequest,
+    handlePasteSendLock,
+    handlePasteEcashInput,
+    handleClearSendLock,
+    interpretEcashInput,
+    redeemEcashToken,
+    processEcashInput,
+    handlePasteEcashClipboard,
+    handleRedeemPendingHistoryItem,
+    handleManualSendConfirm,
+  } = useEcashRedeem({
+    buildHistoryEntry,
+    closeManualSendPlan,
+    closeReceiveEcashSheet,
+    createPaymentRequest,
+    finalizeManualSelection,
+    handlePaymentRequestScan,
+    manualSelectedTotal,
+    manualSendPlan,
+    manualSendSelection,
+    mintUrl,
+    parseAmountInput,
+    peanutSendToken,
+    receiveMode,
+    redeemPendingToken,
+    resetSendLockSettings,
+    savePendingTokenForRedemption,
+    setHistory,
+    setHistoryRedeemStates,
+    setLockSendToPubkey,
+    setManualSendError,
+    setManualSendInProgress,
+    setNutTokenCopied,
+    setRecvMsg,
+    setSendLockError,
+    setSendLockPubkeyInput,
+    showToast,
+  });
 
   useEffect(() => {
     if (!pendingScan) return;
@@ -11426,94 +3809,6 @@ export default function CashuWalletModal({
     setLnInput,
   ]);
 
-  const handlePasteEcashClipboard = useCallback(async () => {
-    try {
-      const text = (await navigator.clipboard?.readText())?.trim() ?? "";
-      if (!text) {
-        alert("Clipboard is empty.");
-        return;
-      }
-      await processEcashInput(text);
-    } catch {
-      alert("Unable to read clipboard. Please paste manually.");
-    }
-  }, [processEcashInput]);
-
-  const handleRedeemPendingHistoryItem = useCallback(
-    async (item: HistoryItem) => {
-      if (!item.pendingTokenId) return;
-      setHistoryRedeemStates((prev) => ({
-        ...prev,
-        [item.id]: { status: "pending" },
-      }));
-      try {
-        const res = await redeemPendingToken(item.pendingTokenId);
-        const amount = sumProofAmounts(res.proofs);
-        const amountNote = amount ? `${amount} sat${amount === 1 ? "" : "s"}` : "Token";
-        showToast(`${amountNote} redeemed`, 3000);
-        const tokenState =
-          typeof item.detail === "string"
-            ? deriveSpentHistoryTokenStateFromToken(item.detail, Date.now())
-            : undefined;
-        setHistory((prev) =>
-          prev.map((entry) =>
-            entry.id === item.id
-              ? {
-                  ...entry,
-                  summary: `${amountNote} redeemed${res.mintUrl ? ` at ${res.mintUrl}` : ""}`,
-                  pendingTokenId: undefined,
-                  pendingTokenAmount: undefined,
-                  pendingTokenMint: undefined,
-                  pendingStatus: "redeemed",
-                  ...(tokenState ? { tokenState } : {}),
-                }
-              : entry,
-          ),
-        );
-        setHistoryRedeemStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "success", message: `${amountNote} redeemed` },
-        }));
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        setHistoryRedeemStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "error", message },
-        }));
-      }
-    },
-    [redeemPendingToken, setHistory, showToast],
-  );
-
-  const handleManualSendConfirm = useCallback(async () => {
-    if (!manualSendPlan) return;
-    const secrets = Array.from(manualSendSelection);
-    if (!secrets.length) {
-      setManualSendError("Select at least one note.");
-      return;
-    }
-    setManualSendInProgress(true);
-    setManualSendError("");
-    try {
-      const selectedTotal = manualSelectedTotal;
-      await finalizeManualSelection({
-        selection: secrets,
-        selectedTotal,
-        target: manualSendPlan.target,
-      });
-      closeManualSendPlan();
-    } catch (err: any) {
-      setManualSendError(err?.message || String(err));
-    } finally {
-      setManualSendInProgress(false);
-    }
-  }, [
-    closeManualSendPlan,
-    finalizeManualSelection,
-    manualSelectedTotal,
-    manualSendPlan,
-    manualSendSelection,
-  ]);
 
   async function handlePayInvoice() {
     setLnState("sending");
@@ -12084,34 +4379,6 @@ export default function CashuWalletModal({
     return avatarInitials(value);
   };
 
-  const contactSubtitle = useCallback(
-    (contact: Contact) => {
-      const nip05 = contact.nip05?.trim() || "";
-      const npub = contact.npub?.trim() || "";
-      const normalizedNip05 = normalizeNip05(nip05);
-      const normalizedNpub = normalizeNostrPubkey(npub);
-      const contactHex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
-      const nip05Check = contact.id && normalizedNip05 ? nip05Checks[contact.id] : undefined;
-      const nip05Verified =
-        !!nip05Check &&
-        nip05Check.status === "valid" &&
-        nip05Check.nip05 === normalizedNip05 &&
-        nip05Check.npub === contactHex;
-      const nip05Display = nip05Verified || (!contactHex && nip05) ? nip05 : "";
-      const hasPaymentRequest = !!contact.paymentRequest.trim();
-
-      return (
-        nip05Display ||
-        contact.address.trim() ||
-        npub ||
-        (hasPaymentRequest ? "Payment request saved" : "") ||
-        contact.displayName?.trim() ||
-        ""
-      );
-    },
-    [compressedToRawHex, nip05Checks, normalizeNip05, normalizeNostrPubkey],
-  );
-
   const myCardUsername = formatContactUsername(profileForm.username);
   const myCardName = profileForm.displayName.trim() || myCardUsername || "My Card";
   const myCardLightning = profileForm.lud16.trim() || deriveDefaultLightningAddress();
@@ -12180,22 +4447,6 @@ export default function CashuWalletModal({
     peerLabelFor,
     sanitizeUsername,
   ]);
-  const handleOpenChatEcash = useCallback(() => {
-    closeAttachTray();
-    if (activeConversationContact && (contactHasNpub(activeConversationContact) || activeConversationContact.paymentRequest.trim().length > 0)) {
-      openEcashSendToContact(activeConversationContact);
-      return;
-    }
-    openEcashSendSheet();
-  }, [activeConversationContact, closeAttachTray, openEcashSendSheet, openEcashSendToContact]);
-  const handleOpenChatLightning = useCallback(() => {
-    closeAttachTray();
-    if (activeConversationContact?.address.trim()) {
-      applyLightningContact(activeConversationContact);
-      return;
-    }
-    openLightningSendSheet();
-  }, [activeConversationContact, applyLightningContact, closeAttachTray, openLightningSendSheet]);
   const chatAttachTrayHeight = useMemo(
     () =>
       Math.min(
@@ -12220,58 +4471,6 @@ export default function CashuWalletModal({
     sortedContacts.forEach(addContact);
     return options;
   }, [formatContactNpub, normalizeNostrPubkey, profileCard, sortedContacts]);
-  const groupAvatarMembersFor = useCallback(
-    (group: GroupChat | null | undefined, thread?: WalletDmThread | null, fallbackLabel?: string): GroupAvatarMember[] => {
-      const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
-      const resolvedMembers = (group?.members || [])
-        .map((memberHex, index) => {
-          const normalizedHex = memberHex.toLowerCase();
-          const isSelf = ownHex !== "" && normalizedHex === ownHex;
-          const meta = isSelf
-            ? { label: myCardName, picture: profileCard.picture?.trim() || undefined }
-            : peerLabelFor(normalizedHex);
-          return {
-            key: normalizedHex,
-            memberHex: normalizedHex,
-            index,
-            label: meta.label,
-            picture: meta.picture?.trim() || undefined,
-          };
-        })
-        .filter((member) => !!member.key);
-      if (!resolvedMembers.length) {
-        return [
-          {
-            key: group?.groupId || fallbackLabel || "group",
-            label: fallbackLabel || group?.name || "Group",
-          },
-        ];
-      }
-      const memberMap = new Map(resolvedMembers.map((member) => [member.memberHex, member]));
-      const recentMemberHexes: string[] = [];
-      const recentSeen = new Set<string>();
-      if (thread) {
-        for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
-          const message = thread.messages[index];
-          const candidateHex = ((message.isIncoming ? message.senderPubkey : ownHex) || "").toLowerCase();
-          if (!candidateHex || recentSeen.has(candidateHex) || !memberMap.has(candidateHex)) continue;
-          recentSeen.add(candidateHex);
-          recentMemberHexes.push(candidateHex);
-          if (recentMemberHexes.length >= 4) break;
-        }
-      }
-      const recentMembers = recentMemberHexes
-        .map((memberHex) => memberMap.get(memberHex))
-        .filter(Boolean);
-      const remainingMembers = resolvedMembers
-        .filter((member) => !recentSeen.has(member.memberHex))
-        .sort((left, right) => Number(Boolean(right.picture)) - Number(Boolean(left.picture)) || left.index - right.index);
-      return [...recentMembers, ...remainingMembers]
-        .slice(0, 4)
-        .map(({ key, label, picture }) => ({ key, label, picture }));
-    },
-    [myCardName, nostrIdentityInfo.identity?.pubkey, peerLabelFor, profileCard.picture],
-  );
   const activeGroupAvatarMembers = useMemo(
     () =>
       activeThread?.groupId
@@ -12357,28 +4556,6 @@ export default function CashuWalletModal({
       `${member.label} ${member.subtitle || ""} ${member.detailContact.npub || ""}`.toLowerCase().includes(query),
     );
   }, [activeGroupMembers, groupMembersSearch]);
-  const openGroupMemberDetail = useCallback(
-    (memberHex: string) => {
-      const member = activeGroupMembers.find((entry) => entry.memberHex === memberHex);
-      if (!member) return;
-      setContactReturnView("group-members");
-      setContactView("detail");
-      setDmSearch("");
-      if (member.isSelf) {
-        setActiveContactId("profile");
-        setContactDetailOverride(null);
-      } else if (member.contactId) {
-        setActiveContactId(member.contactId);
-        setContactDetailOverride(null);
-      } else {
-        setActiveContactId(null);
-        setContactDetailOverride(member.detailContact);
-      }
-      setChatView("new-message");
-    },
-    [activeGroupMembers],
-  );
-
   const activeContact =
     activeContactId && activeContactId !== "profile"
       ? contacts.find((entry) => entry.id === activeContactId) || null
@@ -12391,124 +4568,14 @@ export default function CashuWalletModal({
         ? buildContactShareValue(detailTarget as Contact)
         : null;
   const detailUsername = detailTarget ? formatContactUsername(detailTarget.username) : "";
-  const buildContactFields = useCallback(
-    (contact: Contact | typeof profileCard | null | undefined) => {
-      if (!contact) return [] as { key: string; label: string; value: string; multiline?: boolean }[];
-      const formattedUsername = formatContactUsername(contact.username);
-      const formattedNpub = formatContactNpub(contact.npub);
-      return (
-        [
-          contact.address && { key: "lightning", label: "Lightning", value: contact.address },
-          formattedNpub && { key: "npub", label: "Nostr pubkey", value: formattedNpub },
-          contact.nip05 && { key: "nip05", label: "NIP-05", value: contact.nip05 },
-          formattedUsername && { key: "username", label: "Username", value: formattedUsername },
-          contact.about && { key: "about", label: "About", value: contact.about, multiline: true },
-        ].filter(Boolean) as { key: string; label: string; value: string; multiline?: boolean }[]
-      );
-    },
-    [formatContactNpub, formatContactUsername],
-  );
   const detailFields = buildContactFields(detailTarget);
   const detailHasLightning = activeContact ? contactHasLightning(activeContact) : false;
   const detailCanShare = activeContact ? contactHasNpub(activeContact) : false;
-
-  const verifyContactNip05 = useCallback(
-    async (contactId: string, nip05: string, npub: string, contactUpdatedAt?: number | null) => {
-      const contactPubkeyHex = compressedToRawHex(npub).toLowerCase();
-      setNip05Checks((prev) => ({
-        ...prev,
-        [contactId]: {
-          status: "pending",
-          nip05,
-          npub: contactPubkeyHex,
-          checkedAt: Date.now(),
-          contactUpdatedAt: contactUpdatedAt ?? null,
-        },
-      }));
-      try {
-        const resolution = await resolveNip05Record(nip05);
-        const resolvedPubkey = compressedToRawHex(
-          normalizeNostrPubkey(resolution.pubkey) ?? resolution.pubkey,
-        ).toLowerCase();
-        setNip05Checks((prev) => ({
-          ...prev,
-          [contactId]: {
-            status: resolvedPubkey === contactPubkeyHex ? "valid" : "invalid",
-            nip05,
-            npub: contactPubkeyHex,
-            checkedAt: Date.now(),
-            contactUpdatedAt: contactUpdatedAt ?? null,
-          },
-        }));
-      } catch {
-        setNip05Checks((prev) => ({
-          ...prev,
-          [contactId]: {
-            status: "invalid",
-            nip05,
-            npub: contactPubkeyHex,
-            checkedAt: Date.now(),
-            contactUpdatedAt: contactUpdatedAt ?? null,
-          },
-        }));
-      }
-    },
-    [compressedToRawHex, normalizeNostrPubkey, resolveNip05Record],
-  );
-
-  const ensureNip05Verification = useCallback(
-    (contactId: string, nip05?: string | null, npub?: string | null, contactUpdatedAt?: number | null) => {
-      if (!contactId || !nip05 || !npub) return;
-      const normalizedNip05 = normalizeNip05(nip05);
-      const normalizedNpub = normalizeNostrPubkey(npub);
-      if (!normalizedNip05 || !normalizedNpub) return;
-      const contactPubkeyHex = compressedToRawHex(normalizedNpub).toLowerCase();
-      const existingCheck = nip05Checks[contactId];
-      if (
-        existingCheck &&
-        existingCheck.nip05 === normalizedNip05 &&
-        existingCheck.npub === contactPubkeyHex
-      ) {
-        if (existingCheck.status === "pending") {
-          return;
-        }
-        const cachedUpdatedAt = existingCheck.contactUpdatedAt ?? null;
-        const targetUpdatedAt = contactUpdatedAt ?? null;
-        if (cachedUpdatedAt != null) {
-          if (targetUpdatedAt == null || targetUpdatedAt <= cachedUpdatedAt) {
-            return;
-          }
-        } else if (targetUpdatedAt == null) {
-          return;
-        }
-      }
-      void verifyContactNip05(contactId, normalizedNip05, normalizedNpub, contactUpdatedAt);
-    },
-    [compressedToRawHex, nip05Checks, normalizeNip05, normalizeNostrPubkey, verifyContactNip05],
-  );
 
   useEffect(() => {
     if (!detailTarget?.id) return;
     ensureNip05Verification(detailTarget.id, detailTarget.nip05, detailTarget.npub, detailTarget.updatedAt ?? null);
   }, [detailTarget, ensureNip05Verification]);
-
-  const isNip05VerifiedFor = useCallback(
-    (contactId: string, nip05?: string | null, npub?: string | null) => {
-      if (!contactId) return false;
-      const normalizedNip05 = normalizeNip05(nip05 ?? null);
-      const normalizedNpub = normalizeNostrPubkey(npub ?? null);
-      if (!normalizedNip05 || !normalizedNpub) return false;
-      const nip05Check = nip05Checks[contactId];
-      if (!nip05Check) return false;
-      const contactPubkeyHex = compressedToRawHex(normalizedNpub).toLowerCase();
-      return (
-        nip05Check.status === "valid" &&
-        nip05Check.nip05 === normalizedNip05 &&
-        nip05Check.npub === contactPubkeyHex
-      );
-    },
-    [compressedToRawHex, nip05Checks, normalizeNip05, normalizeNostrPubkey],
-  );
 
   useEffect(() => {
     ensureNip05VerificationRef.current = ensureNip05Verification;
@@ -12619,112 +4686,6 @@ export default function CashuWalletModal({
       setSharedContactPreview(null);
     }, [chatView, isChatPage, open]);
 
-    const handleSaveScannedContact = useCallback(() => {
-      if (!scannedContact || scannedContactSaved) return;
-      const saved = upsertContact({ ...scannedContact, source: scannedContact.source ?? "scan" });
-      if (!saved) {
-        showToast("Unable to add contact", 2500);
-        return;
-      }
-      setScannedContact(saved);
-      contactsPublishQueuedRef.current = true;
-      if (contactsSyncEnabled) {
-        void publishContactsToNostr({ silent: true });
-      }
-      showToast("Contact added", 2000);
-    }, [
-      contactsPublishQueuedRef,
-      contactsSyncEnabled,
-      publishContactsToNostr,
-      scannedContact,
-      scannedContactSaved,
-      showToast,
-      upsertContact,
-    ]);
-    const handleSaveSharedContactPreview = useCallback(() => {
-      if (!sharedContactPreview) return;
-      let nextContact = sharedContactPreview.contact;
-      if (!sharedContactPreviewSaved) {
-        const saved = upsertContact({
-          ...sharedContactPreview.contact,
-          source: sharedContactPreview.contact.source ?? "sync",
-        });
-        if (!saved) {
-          showToast("Unable to add contact", 2500);
-          return;
-        }
-        nextContact = saved;
-        contactsPublishQueuedRef.current = true;
-        if (contactsSyncEnabled) {
-          void publishContactsToNostr({ silent: true });
-        }
-      }
-      if (sharedContactPreview.itemId && sharedContactPreviewCanAccept) {
-        onAcceptMessage(sharedContactPreview.itemId);
-      }
-      setSharedContactPreview((current) =>
-        current
-          ? {
-              ...current,
-              contact: nextContact,
-              status: sharedContactPreviewCanAccept ? "accepted" : current.status,
-            }
-          : current,
-      );
-      showToast("Contact added", 2000);
-    }, [
-      contactsPublishQueuedRef,
-      contactsSyncEnabled,
-      onAcceptMessage,
-      publishContactsToNostr,
-      sharedContactPreview,
-      sharedContactPreviewCanAccept,
-      sharedContactPreviewSaved,
-      showToast,
-      upsertContact,
-    ]);
-
-    const handleToggleFollowScannedContact = useCallback(() => {
-      if (!scannedContact) return;
-      const normalized = normalizeNostrPubkey(scannedContact.npub);
-      if (!normalized) {
-        showToast("Contact is missing a valid npub to follow.", 2500);
-        return;
-      }
-      const pubkeyHex = compressedToRawHex(normalized).toLowerCase();
-      const withoutExisting = (contactSyncMeta.publicFollows || []).filter(
-        (follow) => (follow.pubkey || "").toLowerCase() !== pubkeyHex,
-      );
-      const updatedFollows = scannedContactFollowed
-        ? withoutExisting
-        : [
-            ...withoutExisting,
-            {
-              pubkey: pubkeyHex,
-              username: sanitizeUsername(scannedContact.username || ""),
-              nip05: scannedContact.nip05?.trim() || undefined,
-            },
-          ];
-      const nextMeta = persistContactSyncMeta({ publicFollows: updatedFollows });
-      contactsPublishQueuedRef.current = true;
-      if (contactsSyncEnabled) {
-        const nextFollows = nextMeta?.publicFollows ?? updatedFollows;
-        void publishContactsToNostr({ silent: true, publicFollowsOverride: nextFollows });
-      }
-      showToast(scannedContactFollowed ? "Unfollowed contact" : "Following contact", 2000);
-    }, [
-      compressedToRawHex,
-      contactSyncMeta.publicFollows,
-      contactsPublishQueuedRef,
-      contactsSyncEnabled,
-      normalizeNostrPubkey,
-      persistContactSyncMeta,
-      publishContactsToNostr,
-      sanitizeUsername,
-      scannedContact,
-      scannedContactFollowed,
-      showToast,
-    ]);
 
     const scannedContactHeader = scannedContact ? (
       <div className="contacts-sheet-header contacts-sheet-header--detail">
@@ -12816,45 +4777,6 @@ export default function CashuWalletModal({
     visibleContacts,
   ]);
 
-  const handleStartEditCurrentContact = useCallback(() => {
-    const source = activeContactId === "profile" ? profileCard : activeContact || contactDetailOverride;
-    const isExistingContact = !!activeContact && activeContactId !== "profile";
-    if (!source) {
-      resetContactEditDraft();
-    } else {
-      setContactEditDraft({
-        id: source.id === "profile" || !isExistingContact ? null : source.id,
-        name: source.name || "",
-        displayName: source.displayName || "",
-        username: sanitizeUsername(source.username || ""),
-        address: source.address || "",
-        npub: source.npub || "",
-        nip05: source.nip05 || "",
-        about: source.about || "",
-        picture: source.picture || "",
-        isProfile: activeContactId === "profile",
-      });
-    }
-    setContactEditError("");
-    setProfilePhotoError("");
-    setProfilePhotoBusy(false);
-    profilePhotoUploadRef.current = null;
-    setContactLookupError("");
-    setContactLookupInput("");
-    setShowCustomContactFields(true);
-    setContactView("edit");
-  }, [activeContact, activeContactId, contactDetailOverride, profileCard, resetContactEditDraft]);
-
-    const handleCancelContactEdit = useCallback(() => {
-      setContactEditError("");
-      setContactLookupError("");
-      setShowCustomContactFields(false);
-      if (contactEditDraft.isProfile) {
-        handleReturnToProfileCard();
-        return;
-      }
-      setContactView(detailTarget ? "detail" : "list");
-    }, [contactEditDraft.isProfile, detailTarget, handleReturnToProfileCard]);
 
     const detailTitle = detailTarget ? contactPrimaryName(detailTarget) : "Contact";
     const detailIsNostrContact = useMemo(() => {
@@ -12880,44 +4802,104 @@ export default function CashuWalletModal({
     }, [compressedToRawHex, contactSyncMeta.publicFollows, detailTarget, normalizeNostrPubkey]);
     const detailContactCanFollow = !!detailTarget && detailIsNostrContact && !!detailTarget.npub.trim();
     const detailCanAddContact = !!detailTarget && activeContactId !== "profile" && !activeContact;
-    const handleToggleFollowDetailContact = useCallback(() => {
-      if (!detailTarget) return;
-      const normalized = normalizeNostrPubkey(detailTarget.npub);
-      if (!normalized) return;
-      const pubkeyHex = compressedToRawHex(normalized).toLowerCase();
-      const withoutExisting = (contactSyncMeta.publicFollows || []).filter(
-        (follow) => (follow.pubkey || "").toLowerCase() !== pubkeyHex,
-      );
-      const updatedFollows = detailContactFollowed
-        ? withoutExisting
-        : [
-            ...withoutExisting,
-            {
-              pubkey: pubkeyHex,
-              username: sanitizeUsername(detailTarget.username || ""),
-              nip05: detailTarget.nip05?.trim() || undefined,
-            },
-          ];
-      const nextMeta = persistContactSyncMeta({ publicFollows: updatedFollows });
-      contactsPublishQueuedRef.current = true;
-      if (contactsSyncEnabled) {
-        const nextFollows = nextMeta?.publicFollows ?? updatedFollows;
-        void publishContactsToNostr({ silent: true, publicFollowsOverride: nextFollows });
-      }
-      showToast(detailContactFollowed ? "Unfollowed contact" : "Following contact", 2000);
-    }, [
-      compressedToRawHex,
-      contactSyncMeta.publicFollows,
-      contactsPublishQueuedRef,
-      contactsSyncEnabled,
-      detailContactFollowed,
-      detailTarget,
-      normalizeNostrPubkey,
-      persistContactSyncMeta,
-      publishContactsToNostr,
-      sanitizeUsername,
-      showToast,
-    ]);
+  const {
+    contactSubtitle,
+    handleOpenChatEcash,
+    handleOpenChatLightning,
+    groupAvatarMembersFor,
+    openGroupMemberDetail,
+    buildContactFields,
+    verifyContactNip05,
+    ensureNip05Verification,
+    isNip05VerifiedFor,
+    handleSaveScannedContact,
+    handleSaveSharedContactPreview,
+    handleToggleFollowScannedContact,
+    handleStartEditCurrentContact,
+    handleCancelContactEdit,
+    handleToggleFollowDetailContact,
+    handleCopyContactField,
+    processProfilePhotoFile,
+    handleProfilePhotoChange,
+    handleClearProfilePhoto,
+    handleContactEditSubmit,
+  } = useContactDetail({
+    nip05Checks,
+    contacts,
+    contactsRef,
+    contactSyncMeta,
+    contactsSyncEnabled,
+    scannedContact,
+    sharedContactPreview,
+    contactDetailOverride,
+    activeContactId,
+    contactEditDraft,
+    profileForm,
+    profileUpdatedAt,
+    nostrIdentityInfo,
+    myCardName,
+    profileCard,
+    detailTarget,
+    activeContact,
+    detailContactFollowed,
+    scannedContactSaved,
+    scannedContactFollowed,
+    sharedContactPreviewSaved,
+    sharedContactPreviewCanAccept,
+    activeGroupMembers,
+    activeConversationContact,
+    nostrMissingReason,
+    preferredFileServer,
+    fileServers,
+    profilePhotoBusy,
+    nostrIdentityRef,
+    contactsPublishQueuedRef,
+    profilePhotoUploadRef,
+    setNip05Checks,
+    setScannedContact,
+    setSharedContactPreview,
+    setContactDetailOverride,
+    setActiveContactId,
+    setContactEditDraft,
+    setContactReturnView,
+    setContactView,
+    setDmSearch,
+    setChatView,
+    setContactEditError,
+    setContactLookupError,
+    setContactLookupInput,
+    setShowCustomContactFields,
+    setProfilePhotoError,
+    setProfilePhotoBusy,
+    setProfileStatus,
+    setProfileMessage,
+    setProfileForm,
+    normalizeNip05,
+    normalizeNostrPubkey,
+    compressedToRawHex,
+    resolveNip05Record,
+    upsertContact,
+    publishContactsToNostr,
+    persistContactSyncMeta,
+    sanitizeUsername,
+    formatContactNpub,
+    formatContactUsername,
+    showToast,
+    peerLabelFor,
+    openEcashSendToContact,
+    openEcashSendSheet,
+    openLightningSendSheet,
+    applyLightningContact,
+    closeAttachTray,
+    onAcceptMessage,
+    handleReturnToProfileCard,
+    resetContactEditDraft,
+    ensureNostrIdentity,
+    publishProfileMetadata,
+    deriveDefaultLightningAddress,
+    isDataUrl,
+    estimateDataUrlSize,
+  });
 
     const profileHeaderPhoto = profileCard.picture?.trim();
     const contactsHeaderTitle =
@@ -13047,270 +5029,6 @@ export default function CashuWalletModal({
       </div>
     );
 
-  const handleCopyContactField = useCallback(
-    async (value: string, label: string) => {
-      if (!value) return;
-      try {
-        await navigator.clipboard?.writeText(value);
-        showToast(`${label} copied`, 2000);
-      } catch {
-        showToast("Unable to copy", 2000);
-      }
-    },
-    [showToast],
-  );
-
-  const processProfilePhotoFile = useCallback(
-    async (file: File): Promise<{ dataUrl: string; blob: Blob; contentType: string; name?: string } | null> => {
-      if (!file) return null;
-      if (!file.type?.startsWith("image/")) {
-        setProfilePhotoError("Choose an image file.");
-        return null;
-      }
-      try {
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-          reader.onerror = () => reject(new Error("Unable to read file."));
-          reader.readAsDataURL(file);
-        });
-        const trimmed = dataUrl.trim();
-        if (!trimmed) {
-          setProfilePhotoError("Unable to read image.");
-          return null;
-        }
-        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = () => reject(new Error("Unable to load image."));
-          img.src = trimmed;
-        });
-        const initialSize = estimateDataUrlSize(trimmed);
-        const needsResize =
-          image.width > PROFILE_PHOTO_MAX_DIMENSION || image.height > PROFILE_PHOTO_MAX_DIMENSION;
-        if (!needsResize && initialSize <= PROFILE_PHOTO_CACHE_LIMIT_BYTES) {
-          const blobDirect = await fetch(trimmed).then((res) => res.blob());
-          return {
-            dataUrl: trimmed,
-            blob: blobDirect,
-            contentType: blobDirect.type || file.type || "image/jpeg",
-            name: file.name,
-          };
-        }
-        const maxSide = Math.max(image.width || 1, image.height || 1);
-        const scale = maxSide ? Math.min(1, PROFILE_PHOTO_MAX_DIMENSION / maxSide) : 1;
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round((image.width || PROFILE_PHOTO_MAX_DIMENSION) * scale));
-        canvas.height = Math.max(
-          1,
-          Math.round((image.height || PROFILE_PHOTO_MAX_DIMENSION) * scale),
-        );
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          return trimmed;
-        }
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-        let quality = 0.9;
-        let output = canvas.toDataURL("image/jpeg", quality);
-        let outputSize = estimateDataUrlSize(output);
-        while (outputSize > PROFILE_PHOTO_CACHE_LIMIT_BYTES && quality > 0.55) {
-          quality -= 0.1;
-          output = canvas.toDataURL("image/jpeg", quality);
-          outputSize = estimateDataUrlSize(output);
-        }
-        if (outputSize > PROFILE_PHOTO_CACHE_LIMIT_BYTES) {
-          setProfilePhotoError("Profile photo is too large after compression.");
-          return null;
-        }
-        const blob = await fetch(output).then((res) => res.blob());
-        return {
-          dataUrl: output,
-          blob,
-          contentType: blob.type || file.type || "image/jpeg",
-          name: file.name,
-        };
-      } catch (error: any) {
-        setProfilePhotoError(error?.message || "Unable to process photo.");
-        return null;
-      }
-    },
-    [],
-  );
-
-  const handleProfilePhotoChange = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0] || null;
-      event.target.value = "";
-      if (!file) return;
-      setProfilePhotoError("");
-      setProfilePhotoBusy(true);
-      try {
-        const processed = await processProfilePhotoFile(file);
-        if (!processed) return;
-        profilePhotoUploadRef.current = {
-          blob: processed.blob,
-          name: processed.name,
-          contentType: processed.contentType,
-        };
-        setContactEditDraft((prev) => ({ ...prev, picture: processed.dataUrl }));
-      } finally {
-        setProfilePhotoBusy(false);
-      }
-    },
-    [processProfilePhotoFile],
-  );
-
-  const handleClearProfilePhoto = useCallback(() => {
-    setProfilePhotoError("");
-    setContactEditDraft((prev) => ({ ...prev, picture: "" }));
-    profilePhotoUploadRef.current = null;
-  }, []);
-
-  const handleContactEditSubmit = useCallback(
-    async (event?: React.FormEvent) => {
-      if (event) event.preventDefault();
-      const nickname = contactEditDraft.name.trim();
-      const displayName = contactEditDraft.displayName.trim();
-      const username = sanitizeUsername(contactEditDraft.username);
-      const address = contactEditDraft.address.trim();
-      const npub = contactEditDraft.npub.trim();
-      const nip05 = contactEditDraft.nip05.trim();
-      const about = contactEditDraft.about.trim();
-      const picture = contactEditDraft.picture.trim();
-      const primaryName = contactEditDraft.isProfile
-        ? displayName || username
-        : nickname || displayName || username;
-      if (!primaryName && !address && !npub && !nip05 && !about && !picture) {
-        setContactEditError(
-          contactEditDraft.isProfile
-            ? "Add a display name or another detail to save."
-            : "Add a nickname or another detail to save.",
-        );
-        return;
-      }
-      if (contactEditDraft.isProfile) {
-        const currentDisplayName = displayName || profileForm.displayName;
-        let nextPicture = picture;
-        if (profilePhotoUploadRef.current) {
-          const identity = ensureNostrIdentity();
-          if (!identity) {
-            setProfileStatus("error");
-            setProfileMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
-            setContactEditError(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
-            return;
-          }
-          setProfilePhotoBusy(true);
-          setProfilePhotoError("");
-          setProfileMessage("Uploading profile photo…");
-          try {
-            const servers = parseFileServers(fileServers);
-            const serverEntry = findServerEntry(servers, preferredFileServer)
-              ?? { url: preferredFileServer, type: "nip96" as FileServerType };
-            const upload = await uploadAvatar({
-              serverEntry,
-              file: profilePhotoUploadRef.current.blob,
-              filename: profilePhotoUploadRef.current.name || "avatar.jpg",
-              contentType: profilePhotoUploadRef.current.contentType,
-              signer: identity.secret,
-            });
-            nextPicture = upload.url;
-            profilePhotoUploadRef.current = null;
-          } catch (err: any) {
-            const message = err?.message || "Unable to upload profile photo.";
-            setProfilePhotoError(message);
-            setProfileStatus("error");
-            setProfileMessage(message);
-            console.warn("[profile] Profile photo upload failed", err);
-            return;
-          } finally {
-            setProfilePhotoBusy(false);
-          }
-        } else if (isDataUrl(nextPicture)) {
-          const message = "Upload your profile photo before publishing.";
-          setProfilePhotoError(message);
-          setProfileStatus("error");
-          setProfileMessage(message);
-          return;
-        }
-        const profileDraft = {
-          displayName: currentDisplayName,
-          username,
-          lud16: address || deriveDefaultLightningAddress(),
-          nip05,
-          about,
-          picture: nextPicture,
-        };
-        setProfileForm((prev) => ({
-          ...prev,
-          displayName: profileDraft.displayName || prev.displayName,
-          username: profileDraft.username || prev.username,
-          lud16: profileDraft.lud16 || prev.lud16,
-          nip05: profileDraft.nip05 || prev.nip05,
-          about: profileDraft.about || prev.about,
-          picture: profileDraft.picture ?? prev.picture,
-        }));
-        const published = await publishProfileMetadata(profileDraft);
-        if (published) {
-          setProfilePhotoError("");
-          setContactEditDraft((prev) => ({ ...prev, picture: profileDraft.picture || "" }));
-          setContactEditError("");
-          setContactView("detail");
-          setActiveContactId("profile");
-        }
-        return;
-      }
-      const preservedPaymentRequest = contactEditDraft.id
-        ? (contactsRef.current.find((entry) => entry.id === contactEditDraft.id)?.paymentRequest ?? "")
-        : "";
-      const saved = upsertContact({
-        id: contactEditDraft.id || undefined,
-        name: nickname || displayName || username || address || npub,
-        displayName,
-        username,
-        address,
-        paymentRequest: preservedPaymentRequest,
-        npub,
-        nip05,
-        about,
-        picture,
-        source: "manual",
-        updatedAt: Date.now(),
-      });
-      if (!saved) {
-        setContactEditError("Unable to save contact.");
-        return;
-      }
-      if (contactsSyncEnabled) {
-        contactsPublishQueuedRef.current = true;
-        void publishContactsToNostr({ silent: true });
-      } else {
-        contactsPublishQueuedRef.current = false;
-      }
-      setContactEditError("");
-      setContactView("detail");
-      setActiveContactId(saved.id);
-    },
-    [
-      contactEditDraft,
-      deriveDefaultLightningAddress,
-      contactsSyncEnabled,
-      ensureNostrIdentity,
-      nostrMissingReason,
-      preferredFileServer,
-      fileServers,
-      profileForm,
-      publishContactsToNostr,
-      publishProfileMetadata,
-      setProfileMessage,
-      setProfilePhotoBusy,
-      setProfilePhotoError,
-      setProfileStatus,
-      setProfileForm,
-      upsertContact,
-      uploadAvatar,
-    ],
-  );
 
   const inConversation = isChatPage && chatView === "conversation";
   const hideAppTabSwitcher = isChatPage && chatView !== "threads";
