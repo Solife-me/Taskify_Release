@@ -127,6 +127,28 @@ interface SchedulerController {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+const ASSET_SECURITY_HEADERS: Record<string, string> = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "same-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
+
+// Static assets are served through the worker so these headers are
+// guaranteed — a `_headers` file is not reliably applied to env.ASSETS.
+async function serveAsset(request: Request, env: Env): Promise<Response> {
+  const asset = await env.ASSETS.fetch(request);
+  const response = new Response(asset.body, asset);
+  for (const [name, value] of Object.entries(ASSET_SECURITY_HEADERS)) {
+    response.headers.set(name, value);
+  }
+  if (new URL(request.url).pathname === "/sw.js") {
+    // The service worker must revalidate so app updates reach users.
+    response.headers.set("Cache-Control", "no-cache");
+    response.headers.set("Service-Worker-Allowed", "/");
+  }
+  return response;
+}
+
 
 export default {
   async fetch(request: Request, env: Env, ctx: SchedulerController): Promise<Response> {
@@ -219,7 +241,7 @@ export default {
       return jsonResponse({ error: (err as Error).message || "Internal error" }, 500);
     }
 
-    return env.ASSETS.fetch(request);
+    return serveAsset(request, env);
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: SchedulerController): Promise<void> {
