@@ -8,6 +8,7 @@ import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
+import { pickLatestParsedEvent } from "./shared/latestEvent.js";
 import {
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarEventPayload,
@@ -264,6 +265,34 @@ export type NostrRuntime = {
 
 // ---- Event parsing ----
 
+type DecryptedPayload = Record<string, any>;
+
+async function decryptTaskEventPayload(event: NDKEvent, boardId: string): Promise<DecryptedPayload> {
+  const plaintext = await decryptContent(boardId, event.content);
+  return JSON.parse(plaintext) as DecryptedPayload;
+}
+
+async function decryptCalendarEventPayload(event: NDKEvent, boardId: string): Promise<DecryptedPayload | null> {
+  if (event.kind === TASKIFY_CALENDAR_EVENT_KIND || event.kind === TASKIFY_CALENDAR_VIEW_KIND) {
+    try {
+      const boardKeys = deriveBoardKeyPair(boardId);
+      return await decryptCalendarPayloadForBoard(event.content, boardKeys.skHex, boardKeys.pk) as DecryptedPayload;
+    } catch {
+      try {
+        return await decryptTaskEventPayload(event, boardId);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  try {
+    return await decryptTaskEventPayload(event, boardId);
+  } catch {
+    return null;
+  }
+}
+
 async function parseDecryptedEvent(
   event: NDKEvent,
   boardId: string,
@@ -271,8 +300,7 @@ async function parseDecryptedEvent(
 ): Promise<FullTaskRecord | null> {
   if (!validateEventCompat(event)) return null;
   try {
-    const plaintext = await decryptContent(boardId, event.content);
-    const payload = JSON.parse(plaintext);
+    const payload = await decryptTaskEventPayload(event, boardId);
     const taskId = readTagValue(event.tags, "d") ?? "";
     if (!taskId) return null;
     const statusVal = readStatusTag(event.tags, "open");
@@ -350,31 +378,7 @@ async function parseDecryptedCalendarEvent(
   const statusVal = readStatusTag(event.tags, "open");
   const entityTag = readTagValue(event.tags, "entity");
   try {
-    let raw: Record<string, unknown> | null = null;
-    if (event.kind === TASKIFY_CALENDAR_EVENT_KIND || event.kind === TASKIFY_CALENDAR_VIEW_KIND) {
-      // Try NIP-44 board key decryption (PWA canonical format)
-      try {
-        const boardKeys = deriveBoardKeyPair(boardId);
-        const result = await decryptCalendarPayloadForBoard(event.content, boardKeys.skHex, boardKeys.pk);
-        raw = result as Record<string, unknown>;
-      } catch {
-        // Fallback: try AES-GCM (old CLI format)
-        try {
-          const plaintext = await decryptContent(boardId, event.content);
-          raw = JSON.parse(plaintext) as Record<string, unknown>;
-        } catch {
-          return null;
-        }
-      }
-    } else {
-      // kind 30301 fallback for old-format calendar events
-      try {
-        const plaintext = await decryptContent(boardId, event.content);
-        raw = JSON.parse(plaintext) as Record<string, unknown>;
-      } catch {
-        return null;
-      }
-    }
+    const raw = await decryptCalendarEventPayload(event, boardId);
     if (!raw) return null;
 
     const id = readTagValue(event.tags, "d") ?? "";
@@ -641,6 +645,18 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     // resolveIdentifierReference does an exact-match first, so passing the full
     // recurrence ID will always land on the right instance.
     return resolveIdentifierReference(entries, taskIdOrPrefix)?.id ?? null;
+  }
+
+  async function resolveCalendarEventId(boardId: string, eventIdOrPrefix: string): Promise<string | null> {
+    const exact = eventIdOrPrefix.trim();
+    if (exact.length === 36) return exact;
+
+    const allEvents = await fetchBoardCalendarEvents(boardId);
+    const entries = Array.from(allEvents)
+      .map((event) => ({ id: readTagValue(event.tags, "d") ?? "" }))
+      .filter((entry) => entry.id);
+
+    return resolveIdentifierReference(entries, eventIdOrPrefix)?.id ?? null;
   }
 
   async function publishTaskEvent(
@@ -959,18 +975,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await ensureConnected();
       const matches: FullEventRecord[] = [];
       for (const board of boards) {
-        const resolvedId = await resolveTaskId(board.id, eventId);
+        const resolvedId = await resolveCalendarEventId(board.id, eventId);
         if (!resolvedId) continue;
         const events = await fetchBoardCalendarEvents(board.id, resolvedId);
-        if (events.size === 0) continue;
-        let latest: FullEventRecord | null = null;
-        for (const evt of events) {
-          const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
-          if (!parsed) continue;
-          if (!latest || (parsed.createdAt ?? 0) >= (latest.createdAt ?? 0)) latest = parsed;
-        }
-        if (!latest || latest.deleted) continue;
-        matches.push(latest);
+        const latest = await pickLatestParsedEvent(events, (evt) => parseDecryptedCalendarEvent(evt, board.id, board.name));
+        if (!latest || latest.parsed.deleted) continue;
+        matches.push(latest.parsed);
       }
 
       if (matches.length === 0) return null;
@@ -1047,14 +1057,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
       const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
       for (const entry of boards) {
-        const resolvedId = await resolveTaskId(entry.id, eventId);
+        const resolvedId = await resolveCalendarEventId(entry.id, eventId);
         if (!resolvedId) continue;
         const events = await fetchBoardCalendarEvents(entry.id, resolvedId);
-        if (events.size === 0) continue;
-        const [evt] = events;
-        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
-        if (!existing || existing.deleted) continue;
-        matches.push({ entry, resolvedId, existing });
+        const latest = await pickLatestParsedEvent(events, (evt) => parseDecryptedCalendarEvent(evt, entry.id, entry.name));
+        if (!latest || latest.parsed.deleted) continue;
+        matches.push({ entry, resolvedId, existing: latest.parsed });
       }
 
       if (matches.length === 0) return null;
@@ -1126,14 +1134,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
       const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
       for (const entry of boards) {
-        const resolvedId = await resolveTaskId(entry.id, eventId);
+        const resolvedId = await resolveCalendarEventId(entry.id, eventId);
         if (!resolvedId) continue;
         const events = await fetchBoardCalendarEvents(entry.id, resolvedId);
-        if (events.size === 0) continue;
-        const [evt] = events;
-        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
-        if (!existing || existing.deleted) continue;
-        matches.push({ entry, resolvedId, existing });
+        const latest = await pickLatestParsedEvent(events, (evt) => parseDecryptedCalendarEvent(evt, entry.id, entry.name));
+        if (!latest || latest.parsed.deleted) continue;
+        matches.push({ entry, resolvedId, existing: latest.parsed });
       }
 
       if (matches.length === 0) return null;
@@ -1277,17 +1283,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         assignees: input.assignees ?? null,
         inboxItem: input.inboxItem === true ? true : null,
       };
-      // Resolve column: explicit > week-board today > ""
+      // Resolve column: explicit > first list column > week-board canonical day marker > ""
       let colId = "";
       if (input.columnId !== undefined) {
         colId = input.columnId;
       } else if (entry.kind === "lists" && Array.isArray(entry.columns) && entry.columns.length > 0) {
-        // Prefer the profile's defaultColumn, or fall back to first column
-        const profileCfg = config.profiles?.[config.activeProfile] ?? {};
-        const defaultCol = (profileCfg as any).defaultColumn as string | undefined;
-        colId = defaultCol
-          ? (entry.columns.find(c => c.id === defaultCol || c.name.toLowerCase() === defaultCol.toLowerCase())?.id ?? entry.columns[0].id)
-          : entry.columns[0].id;
+        colId = entry.columns[0].id;
       } else if (entry.kind === "week") {
         colId = "day";
       }
@@ -1337,14 +1338,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (!resolvedId) return null;
       taskId = resolvedId;
       const events = await fetchBoardEvents(entry.id, taskId);
-      if (events.size === 0) return null;
-      const [event] = events;
-      const existing = await parseDecryptedEvent(event, entry.id, entry.name);
-      if (!existing) return null;
-      const plaintext = await decryptContent(entry.id, event.content);
-      const rawPayload = JSON.parse(plaintext);
+      const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, entry.id, entry.name));
+      if (!latest) return null;
+      const { event, parsed: existing } = latest;
+      const rawPayload = await decryptTaskEventPayload(event, entry.id);
       const userPubkey = getUserPubkeyHex(config);
-      const merged = {
+      const merged: DecryptedPayload = {
         ...rawPayload,
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.note !== undefined ? { note: patch.note ?? "" } : {}),
@@ -1410,12 +1409,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (!resolvedId) return null;
       taskId = resolvedId;
       const events = await fetchBoardEvents(entry.id, taskId);
-      if (events.size === 0) return null;
-      const [event] = events;
-      const existing = await parseDecryptedEvent(event, entry.id, entry.name);
-      if (!existing) return null;
-      const plaintext = await decryptContent(entry.id, event.content);
-      const rawPayload = JSON.parse(plaintext);
+      const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, entry.id, entry.name));
+      if (!latest) return null;
+      const { event, parsed: existing } = latest;
+      const rawPayload = await decryptTaskEventPayload(event, entry.id);
       const userPubkey = getUserPubkeyHex(config);
       const completed = status === "done";
       const merged = {
@@ -1447,12 +1444,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (!resolvedId) return null;
       taskId = resolvedId;
       const events = await fetchBoardEvents(entry.id, taskId);
-      if (events.size === 0) return null;
-      const [event] = events;
-      const existing = await parseDecryptedEvent(event, entry.id, entry.name);
-      if (!existing) return null;
-      const plaintext = await decryptContent(entry.id, event.content);
-      const rawPayload = JSON.parse(plaintext);
+      const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, entry.id, entry.name));
+      if (!latest) return null;
+      const { event, parsed: existing } = latest;
+      const rawPayload = await decryptTaskEventPayload(event, entry.id);
       const colTag = event.tags.find((t) => t[0] === "col");
       const colId = colTag?.[1] ?? "";
 
@@ -1498,12 +1493,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (!resolvedId) return null;
       taskId = resolvedId;
       const events = await fetchBoardEvents(entry.id, taskId);
-      if (events.size === 0) return null;
-      const [event] = events;
-      const existing = await parseDecryptedEvent(event, entry.id, entry.name);
-      if (!existing) return null;
-      const plaintext = await decryptContent(entry.id, event.content);
-      const rawPayload = JSON.parse(plaintext);
+      const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, entry.id, entry.name));
+      if (!latest) return null;
+      const { event, parsed: existing } = latest;
+      const rawPayload = await decryptTaskEventPayload(event, entry.id);
       const subtasks: Array<{ id: string; title: string; completed: boolean }> =
         rawPayload.subtasks ?? [];
       // Resolve by 1-based index or title substring
@@ -1540,22 +1533,22 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       for (const board of boards) {
         // Try exact UUID match via #d filter
         const events = await fetchBoardEvents(board.id, taskId);
-        for (const event of events) {
-          const record = await parseDecryptedEvent(event, board.id, board.name);
-          if (record) return record;
-        }
+        const latestExact = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, board.id, board.name));
+        if (latestExact) return latestExact.parsed;
         // UUID prefix match: fetch all and scan
         if (taskId.length < 36) {
           const allEvents = await fetchBoardEvents(board.id);
           const prefix = taskId.toLowerCase().slice(0, 8);
+          const matchingEvents: NDKEvent[] = [];
           for (const event of allEvents) {
             const dTag = event.tags.find((t) => t[0] === "d");
             const dVal = (dTag?.[1] ?? "").toLowerCase();
             if (dVal.startsWith(prefix)) {
-              const record = await parseDecryptedEvent(event, board.id, board.name);
-              if (record) return record;
+              matchingEvents.push(event);
             }
           }
+          const latestPrefix = await pickLatestParsedEvent(matchingEvents, (event) => parseDecryptedEvent(event, board.id, board.name));
+          if (latestPrefix) return latestPrefix.parsed;
         }
       }
       return null;
@@ -1567,12 +1560,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         const resolvedId = await resolveTaskId(entry.id, taskId);
         if (!resolvedId) continue;
         const events = await fetchBoardEvents(entry.id, resolvedId);
-        if (events.size === 0) continue;
-        const [event] = events;
-        const existing = await parseDecryptedEvent(event, entry.id, entry.name);
-        if (!existing) continue;
-        const plaintext = await decryptContent(entry.id, event.content);
-        const rawPayload = JSON.parse(plaintext);
+        const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, entry.id, entry.name));
+        if (!latest) continue;
+        const { event, parsed: existing } = latest;
+        const rawPayload = await decryptTaskEventPayload(event, entry.id);
         const assignees = Array.isArray(rawPayload.assignees) ? rawPayload.assignees : [];
         const idx = assignees.findIndex((a: any) => (typeof a === "string" ? a : a?.pubkey) === senderPubkey);
         const respondedEpoch = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
@@ -1587,7 +1578,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         const nostrStatus = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
         const colId = readTagValue(event.tags, "col") ?? "";
         await publishTaskEvent(entry.id, resolvedId, rawPayload, nostrStatus, colId);
-        return await parseDecryptedEvent(event, entry.id, entry.name);
+        return { ...existing, assignees: assignees as TaskAssignee[] };
       }
       return null;
     },
@@ -1595,20 +1586,19 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     async applyEventRsvpResponse(eventId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullEventRecord | null> {
       await ensureConnected();
       for (const entry of config.boards) {
-        const resolvedId = await resolveTaskId(entry.id, eventId);
+        const resolvedId = await resolveCalendarEventId(entry.id, eventId);
         if (!resolvedId) continue;
-        const events = await fetchBoardEvents(entry.id, resolvedId);
-        if (events.size === 0) continue;
-        const [event] = events;
-        const existing = await parseDecryptedCalendarEvent(event, entry.id, entry.name);
-        if (!existing || existing.deleted) continue;
-        const plaintext = await decryptContent(entry.id, event.content);
-        const rawPayload = JSON.parse(plaintext);
+        const events = await fetchBoardCalendarEvents(entry.id, resolvedId);
+        const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedCalendarEvent(event, entry.id, entry.name));
+        if (!latest || latest.parsed.deleted) continue;
+        const { event, parsed: existing } = latest;
+        const rawPayload = await decryptCalendarEventPayload(event, entry.id);
+        if (!rawPayload) continue;
         rawPayload.rsvpStatus = status;
         rawPayload.rsvpCreatedAt = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
         rawPayload.lastEditedBy = senderPubkey;
-        const colId = readTagValue(event.tags, "col") ?? "";
-        await publishTaskEvent(entry.id, resolvedId, rawPayload, "open", colId);
+        const colId = readTagValue(event.tags, "col") ?? existing.columnId ?? "";
+        await publishCalendarEvent(entry.id, resolvedId, rawPayload, "open", colId);
         return { ...existing, rsvpStatus: status, rsvpCreatedAt: rawPayload.rsvpCreatedAt };
       }
       return null;

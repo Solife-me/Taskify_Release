@@ -11,6 +11,7 @@ test("task add/update expose rich parity flags", () => {
   assert.match(CLI_SOURCE, /\.command\("add\s*<title>"\)[\s\S]*?--recurrence-json/);
   assert.match(CLI_SOURCE, /\.command\("add\s*<title>"\)[\s\S]*?--documents-json/);
   assert.match(CLI_SOURCE, /\.command\("add\s*<title>"\)[\s\S]*?--assignee/);
+  assert.match(CLI_SOURCE, /normalizeAssigneeArgs[\s\S]*?npubOrHexToHex\(value\)/);
   assert.match(CLI_SOURCE, /\.command\("update\s*<taskId>"\)[\s\S]*?--recurrence-json/);
   assert.match(CLI_SOURCE, /\.command\("update\s*<taskId>"\)[\s\S]*?--documents-json/);
   assert.match(CLI_SOURCE, /\.command\("update\s*<taskId>"\)[\s\S]*?--assignee/);

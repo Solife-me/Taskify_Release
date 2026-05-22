@@ -78,6 +78,7 @@ type StoredConfig = {
 // What loadConfig() returns: flat profile fields + metadata
 export type TaskifyConfig = ProfileConfig & {
   activeProfile: string;
+  selectedProfile: string;
   profiles: Record<string, ProfileConfig>;
 };
 
@@ -172,13 +173,15 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
   return {
     ...merged,
     activeProfile: stored.activeProfile,
+    selectedProfile: resolvedProfileName,
     profiles: stored.profiles,
   };
 }
 
-// Updates the active profile from flat cfg fields, then saves
+// Updates the selected profile from flat cfg fields, then saves.
 export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
   mkdirSync(CONFIG_DIR, { recursive: true });
+  const targetProfile = cfg.selectedProfile ?? cfg.activeProfile;
   const profileData: ProfileConfig = {
     nsec: cfg.nsec,
     relays: cfg.relays,
@@ -200,7 +203,7 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     activeProfile: cfg.activeProfile,
     profiles: {
       ...cfg.profiles,
-      [cfg.activeProfile]: profileData,
+      [targetProfile]: profileData,
     },
   };
   await writeFile(CONFIG_PATH, JSON.stringify(stored, null, 2), "utf-8");
