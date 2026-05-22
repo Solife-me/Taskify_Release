@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useCallback } from "react";
-import type { Settings, ChatMessageRetention } from "../../domains/tasks/settingsTypes";
+import type { Settings } from "../../domains/tasks/settingsTypes";
 import { CHAT_RETENTION_OPTIONS } from "../../domains/tasks/settingsTypes";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
