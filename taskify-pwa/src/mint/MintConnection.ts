@@ -1,12 +1,11 @@
 import type {
   GetInfoResponse,
   MeltProofsResponse,
-  MeltQuoteResponse,
-  MintQuoteResponse,
   Proof,
   ProofState,
 } from "@cashu/cashu-ts";
 import { CashuManager, type CreateSendTokenOptions, type SendTokenLockInfo } from "../wallet/CashuManager";
+import type { MeltQuoteResponse, MintQuoteResponse } from "../wallet/cashuTypes";
 import { assertValidProofsDleq } from "../wallet/dleq";
 import { MintRequestCache } from "./MintRequestCache";
 import { MintRateLimiter } from "./MintRateLimiter";
@@ -103,11 +102,42 @@ export class MintConnection {
     return this.manager.wallet;
   }
 
+  private amountToNumber(value: unknown): number {
+    if (typeof value === "number") return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    if (typeof value === "bigint") {
+      if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
+      return Math.max(0, Number(value));
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+    }
+    const amountLike = value as { toNumber?: () => number; toNumberUnsafe?: () => number };
+    try {
+      if (typeof amountLike?.toNumber === "function") {
+        const numeric = amountLike.toNumber();
+        return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+      }
+    } catch {
+      // fall through
+    }
+    try {
+      if (typeof amountLike?.toNumberUnsafe === "function") {
+        const numeric = amountLike.toNumberUnsafe();
+        return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+      }
+    } catch {
+      // fall through
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+  }
+
   validateProofsDleq<T extends Proof[]>(proofs: T): T {
     assertValidProofsDleq(proofs, (proof) => {
       const keysetId = typeof proof?.id === "string" ? proof.id : "";
       if (!keysetId) return null;
-      const amount = typeof proof?.amount === "number" ? Math.floor(proof.amount) : Number(proof?.amount) || 0;
+      const amount = this.amountToNumber((proof as any)?.amount);
       if (!Number.isFinite(amount) || amount <= 0) return null;
       try {
         const keyset = (this.wallet as any).getKeyset?.(keysetId);
@@ -126,6 +156,10 @@ export class MintConnection {
       return null;
     });
     return proofs;
+  }
+
+  decodeToken(encoded: string) {
+    return this.manager.decodeToken(encoded);
   }
 
   async createMintQuote(

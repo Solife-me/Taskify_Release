@@ -70,14 +70,13 @@ export function BoardQrScanner({
       return;
     }
 
-    const video = videoRef.current;
-    if (!video) return;
-
     stopRequestedRef.current = false;
     let cancelled = false;
 
     async function start() {
       try {
+        const video = videoRef.current;
+        if (!video || cancelled) return;
         clearError();
         const scanner = new QrScannerLib(
           video,

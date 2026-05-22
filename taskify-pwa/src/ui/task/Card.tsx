@@ -55,10 +55,12 @@ export function Card({
   isSelected,
   onToggleSelect,
   selectedTaskIds,
+  syncPending,
 }: {
   task: Task;
   meta?: React.ReactNode;
   trailing?: React.ReactNode;
+  syncPending?: boolean;
   onComplete: (from?: DOMRect) => void;
   onEdit: () => void;
   onDropBefore: (dragId: string) => void;
@@ -336,7 +338,19 @@ export function Card({
           )}
           {meta ? <div className="task-card__meta">{meta}</div> : null}
         </div>
-        {trailing ? <div className="flex-shrink-0 pt-0.5">{trailing}</div> : null}
+        {(syncPending || trailing) ? (
+          <div className="task-card__trailing">
+            {syncPending ? (
+              <span
+                className="task-card__sync-spinner"
+                role="status"
+                aria-label="Syncing to relays"
+                title="Syncing to relays"
+              />
+            ) : null}
+            {trailing}
+          </div>
+        ) : null}
       </div>
 
       <TaskMedia task={task} indent onOpenDocument={onOpenDocument} />

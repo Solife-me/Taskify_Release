@@ -26,8 +26,8 @@ export type NostrPool = {
   subscribe: (
     relays: string[],
     filters: any[],
-    onEvent: (ev: NostrEvent, from: string) => void,
-    onEose?: (from: string) => void
+    onEvent: (ev: NostrEvent, from?: string) => void,
+    onEose?: (from?: string) => void
   ) => () => void;
   subscribeMany: (
     relays: string[],
@@ -101,7 +101,12 @@ export function createNostrPool(): NostrPool {
       if (Array.isArray(urls) && urls.length) void NostrSession.init(urls);
     },
     subscribe(relayUrls, filters, onEvent, onEose) {
-      return pool.subscribe(relayUrls, filters, onEvent, onEose);
+      return pool.subscribe(
+        relayUrls,
+        filters,
+        (event, relay) => onEvent(event, relay ?? ""),
+        onEose ? (relay) => onEose(relay ?? "") : undefined,
+      );
     },
     subscribeMany(relayUrls, filter, opts) {
       return pool.subscribeMany(relayUrls, filter, opts);

@@ -1,4 +1,4 @@
-import React from "react";
+import { sanitizeHtml } from "../../../lib/sanitize";
 
 export function SpreadsheetViewer({ html }: { html: string }) {
   return (
@@ -13,7 +13,7 @@ export function SpreadsheetViewer({ html }: { html: string }) {
             white-space: nowrap;
           }
         `}</style>
-        <div className="spreadsheet-viewer inline-block min-w-full rounded-[22px] bg-white p-4 text-[#111827] shadow-2xl" dangerouslySetInnerHTML={{ __html: html }} />
+        <div className="spreadsheet-viewer inline-block min-w-full rounded-[22px] bg-white p-4 text-[#111827] shadow-2xl" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />
       </div>
     </div>
   );

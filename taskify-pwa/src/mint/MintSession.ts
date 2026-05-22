@@ -1,4 +1,5 @@
-import type { MeltQuoteResponse, MintQuoteResponse, Proof, ProofState } from "@cashu/cashu-ts";
+import type { Proof, ProofState } from "@cashu/cashu-ts";
+import type { MeltQuoteResponse, MintQuoteResponse } from "../wallet/cashuTypes";
 import { MintCapabilityStore } from "./MintCapabilityStore";
 import { MintConnection, type MintConnectionOptions, type CreateSendTokenOptions, type SendTokenLockInfo } from "./MintConnection";
 

@@ -1,20 +1,22 @@
-// useCalendarEvents hook extracted from App.tsx
-
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { CalendarEvent, CalendarEventParticipant, CalendarEventBase, DateCalendarEvent, TimeCalendarEvent, Recurrence } from "../tasks/taskTypes";
-import type { CalendarRsvpStatus, CalendarRsvpFb } from "../../lib/privateCalendar";
+import { parseCalendarAddress, type CalendarRsvpStatus, type CalendarRsvpFb } from "../../lib/privateCalendar";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS } from "../../storage/taskifyDb";
 import { LS_CALENDAR_EVENTS, LS_EXTERNAL_CALENDAR_EVENTS } from "../storageKeys";
+import { calendarEventEntityStore, externalCalendarEventEntityStore } from "../../storage/entityStore";
+import { ensureDocumentPreview, normalizeDocumentList } from "../../lib/documents";
+import { sanitizeReminderList, normalizeReminderTime } from "../dateTime/reminderUtils";
+import { normalizeAgentPubkey, normalizeNostrPubkeyHex } from "../tasks/assignmentUtils";
 
-// NOTE: The following helper functions are referenced inside useCalendarEvents.
-// They are imported from the locations where they live in App.tsx (via lib imports).
-// When wiring this hook into the app, ensure these are available in scope or passed in:
-//   normalizeDocumentList, ensureDocumentPreview  - from "../../lib/documents"
-//   sanitizeReminderList, normalizeReminderTime   - from App.tsx helpers
-//   normalizeIsoTimestamp                          - from App.tsx helpers
-//   parseCalendarAddress                           - from "../../lib/privateCalendar"
-//   normalizeNostrPubkeyHex                        - from "../../lib/nostr" / App.tsx
+function normalizeIsoTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Date.parse(trimmed);
+  if (Number.isNaN(parsed)) return undefined;
+  return new Date(parsed).toISOString();
+}
 
 export function useCalendarEvents() {
   const [events, setEvents] = useState<CalendarEvent[]>(() => {
@@ -75,8 +77,12 @@ export function useCalendarEvents() {
       }
     };
 
-    const rawEvents = loadStored(LS_CALENDAR_EVENTS);
-    const rawExternalEvents = loadStored(LS_EXTERNAL_CALENDAR_EVENTS);
+    const rawEvents: any[] = calendarEventEntityStore.size() > 0
+      ? calendarEventEntityStore.getAll()
+      : loadStored(LS_CALENDAR_EVENTS);
+    const rawExternalEvents: any[] = externalCalendarEventEntityStore.size() > 0
+      ? externalCalendarEventEntityStore.getAll()
+      : loadStored(LS_EXTERNAL_CALENDAR_EVENTS);
     const orderMap = new Map<string, number>();
     const todayKey = (() => {
       const now = new Date();
@@ -149,6 +155,8 @@ export function useCalendarEvents() {
         ? rsvpCreatedAtRaw
         : undefined;
       const rsvpFb = normalizeRsvpFb((entry as any).rsvpFb);
+      const createdBy = normalizeAgentPubkey((entry as any).createdBy);
+      const lastEditedBy = normalizeAgentPubkey((entry as any).lastEditedBy) ?? createdBy;
 
       if (external) {
         if (!canonicalAddress || !viewAddress || !eventKey || !boardPubkey) return null;
@@ -157,6 +165,8 @@ export function useCalendarEvents() {
       const base: CalendarEventBase = {
         id,
         boardId,
+        ...(createdBy ? { createdBy } : {}),
+        ...(lastEditedBy ? { lastEditedBy } : {}),
         columnId,
         order: explicitOrder,
         title,
@@ -273,17 +283,5 @@ export function useCalendarEvents() {
 
     return [...boardEvents, ...Array.from(mergedExternalMap.values())];
   });
-
-  useEffect(() => {
-    try {
-      const boardEvents = events.filter((event) => !event.external);
-      const externalEvents = events.filter((event) => event.external);
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(boardEvents));
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS, JSON.stringify(externalEvents));
-    } catch (err) {
-      console.error("Failed to save calendar events", err);
-    }
-  }, [events]);
-
   return [events, setEvents] as const;
 }

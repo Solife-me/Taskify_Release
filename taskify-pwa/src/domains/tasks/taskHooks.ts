@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { Task, Board } from "./taskTypes";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS } from "../../storage/taskifyDb";
@@ -8,26 +8,44 @@ import { dedupeRecurringInstances, normalizeTaskBounty, normalizeHiddenForRecurr
 import { normalizeDocumentList, ensureDocumentPreview } from "../../lib/documents";
 import { sanitizeReminderList, normalizeReminderTime } from "../dateTime/reminderUtils";
 import { normalizeTimeZone } from "../dateTime/dateUtils";
+import { boardEntityStore, taskEntityStore } from "../../storage/entityStore";
+import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
+import { normalizeAgentPubkey, normalizeTaskAssignees } from "./assignmentUtils";
 
 function useBoards() {
   const [boards, setBoards] = useState<Board[]>(() => {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS);
-    if (raw) {
-      const migrated = migrateBoards(JSON.parse(raw));
+    let rawArray: unknown[] | null = null;
+    if (boardEntityStore.size() > 0) {
+      rawArray = boardEntityStore.getAll();
+    } else {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) rawArray = parsed;
+        } catch {}
+      }
+    }
+    if (rawArray) {
+      const migrated = migrateBoards(rawArray);
       if (migrated && migrated.length) return migrated;
     }
-    // default: one Week board
-    return [{ id: "week-default", name: "Week", kind: "week", archived: false, hidden: false, clearCompletedDisabled: false }];
+    return [{
+      id: "week-default",
+      name: "Week",
+      kind: "week",
+      nostr: { boardId: crypto.randomUUID(), relays: Array.from(DEFAULT_NOSTR_RELAYS) },
+      archived: false,
+      hidden: false,
+      clearCompletedDisabled: false,
+    }];
   });
-  useEffect(() => {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(boards));
-  }, [boards]);
   return [boards, setBoards] as const;
 }
 
 function useTasks() {
   const [tasks, setTasks] = useState<Task[]>(() => {
-    const loadStored = (): any[] => {
+    const loadFromBlob = (): any[] => {
       try {
         const current = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS);
         if (current) {
@@ -38,7 +56,9 @@ function useTasks() {
       return [];
     };
 
-    const rawTasks = loadStored();
+    const rawTasks: any[] = taskEntityStore.size() > 0
+      ? taskEntityStore.getAll()
+      : loadFromBlob();
     const orderMap = new Map<string, number>();
     const createdAtFallback = Date.now();
     const normalized = rawTasks
@@ -58,6 +78,12 @@ function useTasks() {
         const dueTimeZone = normalizeTimeZone(dueTimeZoneRaw) ?? undefined;
         const priority = normalizeTaskPriority((entry as any).priority);
         const createdAt = normalizeTaskCreatedAt((entry as any).createdAt) ?? (createdAtFallback + index);
+        const updatedAt =
+          typeof (entry as any).updatedAt === "string" && !Number.isNaN(Date.parse((entry as any).updatedAt))
+            ? new Date((entry as any).updatedAt).toISOString()
+            : undefined;
+        const createdBy = normalizeAgentPubkey((entry as any).createdBy);
+        const lastEditedBy = normalizeAgentPubkey((entry as any).lastEditedBy) ?? createdBy;
         const reminders = sanitizeReminderList((entry as any).reminders);
         const reminderTime = normalizeReminderTime((entry as any).reminderTime);
         const id = typeof (entry as any).id === 'string' ? (entry as any).id : crypto.randomUUID();
@@ -79,6 +105,7 @@ function useTasks() {
           ? (entry as any).scriptureMemoryScheduledAt
           : undefined;
         const documents = normalizeDocumentList((entry as any).documents);
+        const assignees = normalizeTaskAssignees((entry as any).assignees);
         const task: Task = {
           ...(entry as Task),
           id,
@@ -86,7 +113,10 @@ function useTasks() {
           order: explicitOrder,
           dueISO,
           priority,
+          ...(createdBy ? { createdBy } : {}),
+          ...(lastEditedBy ? { lastEditedBy } : {}),
           createdAt,
+          ...(updatedAt ? { updatedAt } : {}),
           ...(typeof dueDateEnabled === 'boolean' ? { dueDateEnabled } : {}),
           ...(typeof dueTimeEnabled === 'boolean' ? { dueTimeEnabled } : {}),
           ...(dueTimeZone ? { dueTimeZone } : {}),
@@ -96,6 +126,7 @@ function useTasks() {
           ...(scriptureMemoryStage !== undefined ? { scriptureMemoryStage } : {}),
           ...(scriptureMemoryPrevReviewISO !== undefined ? { scriptureMemoryPrevReviewISO } : {}),
           ...(scriptureMemoryScheduledAt ? { scriptureMemoryScheduledAt } : {}),
+          ...(assignees ? { assignees } : {}),
         } as Task;
         if (documents) {
           task.documents = documents.map(ensureDocumentPreview);
@@ -129,13 +160,6 @@ function useTasks() {
       .filter((t): t is Task => !!t);
     return dedupeRecurringInstances(normalized);
   });
-  useEffect(() => {
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasks));
-    } catch (err) {
-      console.error('Failed to save tasks', err);
-    }
-  }, [tasks]);
   return [tasks, setTasks] as const;
 }
 

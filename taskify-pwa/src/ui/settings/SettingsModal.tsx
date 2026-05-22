@@ -5,6 +5,7 @@ import {
   LS_LIGHTNING_CONTACTS,
 } from "../../localStorageKeys";
 import { normalizeNostrPubkey } from "../../lib/nostr";
+import { getSkSync } from "../../lib/nostrSkStore";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import {
   buildBoardShareEnvelope,
@@ -33,6 +34,7 @@ import { PushSection } from "./PushSection";
 import { NostrSection } from "./NostrSection";
 import { BackupSection } from "./BackupSection";
 import { GoogleCalendarSection } from "./GoogleCalendarSection";
+import { ChatSection } from "./ChatSection";
 import type { GcalCalendar, GcalConnectionStatus } from "../../hooks/useGoogleCalendar";
 import { ManageBoardModal } from "./ManageBoardModal";
 
@@ -197,10 +199,8 @@ export function SettingsModal({
   }, []);
 
   const readNostrSecret = useCallback((): string | null => {
-    const { kvStorage } = require("../../storage/kvStorage");
-    const { LS_NOSTR_SK } = require("../../nostrKeys");
     try {
-      const raw = kvStorage.getItem(LS_NOSTR_SK);
+      const raw = getSkSync();
       if (raw && /^[0-9a-fA-F]{64}$/.test(raw.trim())) {
         return raw.trim().toLowerCase();
       }
@@ -377,6 +377,12 @@ export function SettingsModal({
           defaultRelays={defaultRelays}
           onReloadNeeded={onReloadNeeded}
           onResetWalletTokenTracking={onResetWalletTokenTracking}
+        />
+
+        {/* Chat */}
+        <ChatSection
+          settings={settings}
+          setSettings={setSettings}
         />
 
         {/* Bible */}

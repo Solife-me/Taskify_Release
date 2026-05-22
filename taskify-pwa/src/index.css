@@ -438,6 +438,78 @@ html.light .glass-panel::after {
   width: 100%;
 }
 
+.sk-backup-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin: 0.4rem auto 0.6rem;
+  padding: 0.65rem 0.85rem;
+  max-width: min(100%, 32rem);
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  border-radius: var(--radius-md, 14px);
+  background: rgba(8, 47, 73, 0.42);
+  color: #cfe9fb;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+}
+
+.sk-backup-banner__body {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.sk-backup-banner__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  margin-top: 0.35rem;
+  border-radius: 999px;
+  background: #38bdf8;
+  box-shadow: 0 0 0 0.2rem rgba(56, 189, 248, 0.14);
+}
+
+.sk-backup-banner__actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.sk-backup-banner__primary,
+.sk-backup-banner__secondary {
+  border-radius: var(--radius-pill);
+  padding: 0.3rem 0.7rem;
+  font-size: 0.74rem;
+  font-weight: 650;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  background: rgba(56, 189, 248, 0.18);
+  color: #cfe9fb;
+}
+
+.sk-backup-banner__secondary {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(207, 233, 251, 0.85);
+}
+
+html.light .sk-backup-banner {
+  background: rgba(240, 249, 255, 0.96);
+  border-color: rgba(2, 132, 199, 0.34);
+  color: #0c4a6e;
+}
+
+html.light .sk-backup-banner__primary {
+  background: rgba(186, 230, 253, 0.7);
+  border-color: rgba(2, 132, 199, 0.42);
+  color: #0c4a6e;
+}
+
+html.light .sk-backup-banner__secondary {
+  border-color: rgba(15, 23, 42, 0.18);
+  color: rgba(15, 23, 42, 0.7);
+}
+
 .app-header__filter-button {
   display: inline-flex;
   align-items: center;
@@ -2448,6 +2520,46 @@ html.light .task-card[data-state="completed"] {
   margin-left: calc(var(--icon-size, 2.2rem) + 0.75rem);
 }
 
+.task-card__trailing {
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  padding-top: 0.18rem;
+}
+
+.task-card__sync-spinner {
+  width: 0.82rem;
+  height: 0.82rem;
+  flex: 0 0 auto;
+  margin-top: 0.38rem;
+  border-radius: 999px;
+  border: 2px solid rgba(245, 158, 11, 0.22);
+  border-top-color: #fbbf24;
+  animation: task-card-sync-spin 0.75s linear infinite;
+  box-shadow: 0 0 0 0.18rem rgba(245, 158, 11, 0.08);
+}
+
+html.light .task-card__sync-spinner {
+  border-color: rgba(217, 119, 6, 0.22);
+  border-top-color: #d97706;
+  box-shadow: 0 0 0 0.18rem rgba(217, 119, 6, 0.08);
+}
+
+@keyframes task-card-sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-card__sync-spinner {
+    animation: none;
+    border-style: dotted;
+  }
+}
+
 .board-list-item {
   position: relative;
   display: flex;
@@ -2875,6 +2987,7 @@ html.light .wallet-balance-card {
 
 .wallet-messages__thread {
   width: 100%;
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 0.75rem;
@@ -2889,6 +3002,7 @@ html.light .wallet-balance-card {
 .chat-thread-swipe {
   position: relative;
   width: 100%;
+  flex-shrink: 0;
   max-height: 7.5rem;
   overflow: hidden;
   border-radius: 14px;

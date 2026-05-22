@@ -8,8 +8,9 @@ import {
   normalizeCompoundChildId,
   findBoardByCompoundChildId,
   parseCompoundChildInput,
+  withBoardOrder,
 } from "../../domains/tasks/boardUtils";
-import { deriveBoardNostrKeys, toNsec } from "../../domains/nostr/nostrKeyUtils";
+import { deriveBoardNostrKeys } from "../../domains/nostr/nostrKeyUtils";
 import { createNostrPool, type NostrEvent } from "../../domains/nostr/nostrPool";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import { boardTag } from "../../boardCrypto";
@@ -377,6 +378,7 @@ export function ManageBoardModal({
           hidden: true,
           clearCompletedDisabled: false,
           indexCardEnabled: false,
+          order: prev.length,
         };
         working = [...prev, stub];
         targetBoard = stub;
@@ -410,10 +412,10 @@ export function ManageBoardModal({
 
       const nb: Board = { ...latestParent, children: [...latestParent.children, resolvedChildId] };
       updated = nb;
-      return working.map((b) => {
+      return withBoardOrder(working.map((b) => {
         if (b.id === boardId && b.kind === "compound") return nb;
         return b;
-      });
+      }));
     });
     if (blocked === "self") {
       showToast("Cannot include a board within itself.");
@@ -481,7 +483,7 @@ export function ManageBoardModal({
         const newId = cleaned[0]?.id || "";
         changeBoard(newId);
       }
-      return cleaned;
+      return withBoardOrder(cleaned);
     });
     updatedCompounds.forEach((brd) => {
       setTimeout(() => onBoardChanged(brd.id, { board: brd }), 0);

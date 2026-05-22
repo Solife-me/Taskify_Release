@@ -5,25 +5,31 @@ import { idbKeyValue } from "../../storage/idbKeyValue";
 import { kvStorage } from "../../storage/kvStorage";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET, TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import {
-  LS_TASKS,
-  LS_CALENDAR_EVENTS,
-  LS_EXTERNAL_CALENDAR_EVENTS,
-  LS_BOARDS,
   LS_SETTINGS,
   LS_BIBLE_TRACKER,
   LS_SCRIPTURE_MEMORY,
   LS_BACKGROUND_IMAGE,
 } from "../storageKeys";
-import { LS_NOSTR_RELAYS, LS_NOSTR_SK } from "../../nostrKeys";
+import { LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../../nostrKeys";
+import { setSk as nostrSkSet } from "../../lib/nostrSkStore";
+import {
+  taskEntityStore,
+  boardEntityStore,
+  calendarEventEntityStore,
+  externalCalendarEventEntityStore,
+} from "../../storage/entityStore";
 import { LS_LIGHTNING_CONTACTS, LS_BTC_USD_PRICE_CACHE, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
 import {
   saveStore as saveProofStore,
   setActiveMint,
   replaceMintList,
   replacePendingTokens,
+  normalizeMintUrl,
   type PendingTokenEntry,
+  type ProofStore,
 } from "../../wallet/storage";
 import { type WalletSeedBackupPayload, restoreWalletSeedBackup } from "../../wallet/seed";
+import type { Proof } from "@cashu/cashu-ts";
 import { getPublicKey, nip19 } from "nostr-tools";
 
 // ---- Constants ----
@@ -33,6 +39,15 @@ export const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1"
 export const CLOUD_BACKUP_MIN_INTERVAL_MS = 60 * 60 * 1000;
 export const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
 export const SATS_PER_BTC = 100_000_000;
+
+function notifyNostrKeyUpdated(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(TASKIFY_NOSTR_KEY_UPDATED_EVENT));
+  } catch {
+    // ignore same-tab notification failures
+  }
+}
 
 // ---- Crypto helpers (self-contained, no external import needed) ----
 
@@ -141,25 +156,57 @@ export function parseBackupJsonPayload(raw: string): Partial<TaskifyBackupPayloa
   return parsed as Partial<TaskifyBackupPayload>;
 }
 
+function normalizeCashuProofStore(raw: unknown): ProofStore | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const store: ProofStore = {};
+  for (const [mintUrl, value] of Object.entries(raw as Record<string, unknown>)) {
+    const mint = normalizeMintUrl(mintUrl);
+    if (!mint || !Array.isArray(value)) continue;
+    const proofs: Proof[] = [];
+    for (const proof of value) {
+      if (!proof || typeof proof !== "object") continue;
+      const candidate = proof as Record<string, unknown>;
+      const id = typeof candidate.id === "string" ? candidate.id : "";
+      const secret = typeof candidate.secret === "string" ? candidate.secret : "";
+      const C = typeof candidate.C === "string" ? candidate.C : "";
+      const amountRaw = candidate.amount;
+      const amount =
+        typeof amountRaw === "number"
+          ? amountRaw
+          : typeof amountRaw === "string" && amountRaw.trim()
+            ? Number.parseFloat(amountRaw)
+            : Number.NaN;
+      if (!id || !secret || !C || !Number.isFinite(amount) || amount <= 0) continue;
+      proofs.push({
+        ...(candidate as Proof),
+        amount: Math.floor(amount) as any,
+      });
+    }
+    if (proofs.length) {
+      store[mint] = proofs;
+    }
+  }
+  return store;
+}
+
 export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
-  if ("tasks" in data && data.tasks !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
+  // Wholesale-replace each per-entity v3 store; the legacy blobs are
+  // deprecated post-migration. Caller must `flush()` each store before
+  // reloading the page so writes are durable.
+  if ("tasks" in data && Array.isArray(data.tasks)) {
+    taskEntityStore.replaceAll(data.tasks as { id: string }[]);
   }
-  if ("calendarEvents" in data && data.calendarEvents !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(data.calendarEvents));
+  if ("calendarEvents" in data && Array.isArray(data.calendarEvents)) {
+    calendarEventEntityStore.replaceAll(data.calendarEvents as { id: string }[]);
   }
-  if ("externalCalendarEvents" in data && data.externalCalendarEvents !== undefined) {
-    idbKeyValue.setItem(
-      TASKIFY_STORE_TASKS,
-      LS_EXTERNAL_CALENDAR_EVENTS,
-      JSON.stringify(data.externalCalendarEvents),
-    );
+  if ("externalCalendarEvents" in data && Array.isArray(data.externalCalendarEvents)) {
+    externalCalendarEventEntityStore.replaceAll(data.externalCalendarEvents as { id: string }[]);
   }
-  if ("boards" in data && data.boards !== undefined) {
-    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(data.boards));
+  if ("boards" in data && Array.isArray(data.boards)) {
+    boardEntityStore.replaceAll(data.boards as { id: string }[]);
   }
   if ("settings" in data && data.settings !== undefined) {
     // Extract backgroundImage from settings and store separately in IndexedDB
@@ -189,12 +236,16 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
     idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
-    kvStorage.setItem(LS_NOSTR_SK, data.nostrSk);
+    void nostrSkSet(data.nostrSk);
+    notifyNostrKeyUpdated();
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
     if ("proofs" in cashuData && cashuData.proofs !== undefined) {
-      saveProofStore(cashuData.proofs);
+      const proofStore = normalizeCashuProofStore(cashuData.proofs);
+      if (proofStore) {
+        saveProofStore(proofStore);
+      }
     }
     if ("activeMint" in cashuData) {
       setActiveMint(cashuData.activeMint || null);

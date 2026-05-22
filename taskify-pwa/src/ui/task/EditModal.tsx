@@ -1813,7 +1813,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 <input
                   ref={documentInputRef}
                   type="file"
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.gif,.mp3,.aac,.m4a,.wav,.mp4,.mov,.webm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/markdown,application/json,text/csv,image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/aac,audio/mp4,audio/wav,video/mp4,video/quicktime,video/webm"
+                  accept=".pdf,.doc,.docx,.xlsx,.txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.gif,.mp3,.aac,.m4a,.wav,.mp4,.mov,.webm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/markdown,application/json,text/csv,image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/aac,audio/mp4,audio/wav,video/mp4,video/quicktime,video/webm"
                   className="hidden"
                   multiple
                   onChange={handleDocumentAttach}

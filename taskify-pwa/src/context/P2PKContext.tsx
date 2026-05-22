@@ -5,7 +5,7 @@ import React, {
   useMemo,
   useState,
 } from "react";
-import { bytesToHex } from "@noble/hashes/utils";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { generateSecretKey, nip19 } from "nostr-tools";
 import { LS_P2PK_KEYS } from "../localStorageKeys";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";

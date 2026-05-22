@@ -1,7 +1,7 @@
 import type { Proof } from "@cashu/cashu-ts";
 import { verifyDLEQProof_reblind } from "@cashu/crypto/modules/client/NUT12";
 import { pointFromHex } from "@cashu/crypto/modules/common";
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes } from "@noble/hashes/utils.js";
 
 type ProofMintPubkeyResolver = (proof: Proof) => string | null;
 

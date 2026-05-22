@@ -15,7 +15,7 @@ import { describe, expect, test } from "vitest";
 // Inline mirror of the gating logic from App.tsx
 // ---------------------------------------------------------------------------
 
-const LS_NOSTR_SK = "nostr_sk";
+const LS_NOSTR_SK = "taskify_nostr_sk_v1";
 const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
 
 function makeStorage(entries: Record<string, string> = {}): { getItem: (k: string) => string | null } {

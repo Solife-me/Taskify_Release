@@ -1,7 +1,7 @@
 export type NostrAppBackupBoard = {
     id: string;
-    nostrId: string;
-    relays: string[];
+    nostrId?: string;
+    relays?: string[];
     name?: string;
     kind?: "week" | "lists" | "compound" | "bible";
     archived?: boolean;
@@ -16,7 +16,13 @@ export type NostrAppBackupBoard = {
     indexCardEnabled?: boolean;
     hideChildBoardNames?: boolean;
 };
-export type WalletSeedBackupPayload = Record<string, unknown>;
+export type WalletSeedBackupPayload = {
+    type: "nut13-wallet-backup";
+    version: 1;
+    mnemonic: string;
+    createdAt?: string;
+    counters: Record<string, Record<string, number>>;
+};
 type RelayNormalizer = (relays: string[] | null | undefined) => string[];
 export type BackupBoardLike = {
     id: string;
@@ -29,6 +35,7 @@ export type BackupBoardLike = {
     archived?: boolean;
     hidden?: boolean;
     clearCompletedDisabled?: boolean;
+    order?: number;
     indexCardEnabled?: boolean;
     hideChildBoardNames?: boolean;
     columns?: {

@@ -1,7 +1,6 @@
-import type { NDKSigner } from "@nostr-dev-kit/ndk";
 import type { EventTemplate, NostrEvent } from "nostr-tools";
 import { normalizeRelayUrls } from "taskify-runtime-nostr";
-import { NostrSession } from "./NostrSession";
+import { NostrSession, type NostrPublishSigner } from "./NostrSession";
 
 export type ProfileMetadataDraft = {
   username?: string;
@@ -69,7 +68,7 @@ export async function loadMyLatestProfileEvent(
 export async function publishMyProfile(
   profileDraft: ProfileMetadataDraft,
   opts: {
-    signer: NDKSigner | Uint8Array | string;
+    signer: NostrPublishSigner;
     pubkey: string;
     relays: string[];
     timeoutMs?: number;
@@ -153,7 +152,7 @@ export async function publishMyProfile(
 
 export async function publishFileServerPreference(
   servers: string[],
-  opts: { signer: NDKSigner | Uint8Array | string; relays: string[] },
+  opts: { signer: NostrPublishSigner; relays: string[] },
 ): Promise<NostrEvent | null> {
   const relayList = normalizeRelayUrls(opts.relays);
   if (!relayList.length) {

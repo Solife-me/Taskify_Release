@@ -1,4 +1,4 @@
-import type { MeltQuoteResponse, MintQuoteResponse } from "@cashu/cashu-ts";
+import type { MeltQuoteResponse, MintQuoteResponse } from "../wallet/cashuTypes";
 import type { MintConnection } from "./MintConnection";
 
 type MintQuoteParams = {

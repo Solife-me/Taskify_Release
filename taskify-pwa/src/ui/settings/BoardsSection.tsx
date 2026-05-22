@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import type { Board, Task, Weekday } from "../../domains/tasks/taskTypes";
-import { compoundChildMatchesBoard } from "../../domains/tasks/boardUtils";
+import type { Board, Task } from "../../domains/tasks/taskTypes";
+import { compoundChildMatchesBoard, withBoardOrder } from "../../domains/tasks/boardUtils";
 import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
@@ -137,7 +137,7 @@ export function BoardsSection({
         nostr: { boardId: nostrBoardId, relays: relayList },
       };
     }
-    setBoards(prev => [...prev, board]);
+    setBoards(prev => withBoardOrder([...prev, board]));
     setNewBoardName("");
     changeBoard(id);
     setNewBoardType("lists");
@@ -189,7 +189,7 @@ export function BoardsSection({
         const newId = cleaned[0]?.id || "";
         changeBoard(newId);
       }
-      return cleaned;
+      return withBoardOrder(cleaned);
     });
     updatedCompounds.forEach((board) => {
       setTimeout(() => onBoardChanged(board.id, { board }), 0);
@@ -207,7 +207,7 @@ export function BoardsSection({
       if (targetIndex === -1) return prev;
       if (!before) targetIndex++;
       list.splice(targetIndex, 0, item);
-      return list;
+      return withBoardOrder(list);
     });
   }
 

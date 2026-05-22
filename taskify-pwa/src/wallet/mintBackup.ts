@@ -1,6 +1,6 @@
 import { mnemonicToSeedSync } from "@scure/bip39";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { getPublicKey, nip44, type EventTemplate } from "nostr-tools";
 import { LS_MINT_BACKUP_CACHE } from "../localStorageKeys";
 import { idbKeyValue } from "../storage/idbKeyValue";
