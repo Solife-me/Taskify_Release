@@ -1,7 +1,6 @@
 // @ts-nocheck
 import { useMemo } from "react";
 import type { Contact } from "../../lib/contacts";
-import { contactHasNpub } from "../../lib/contacts";
 import {
   type WalletDmThread,
   type WalletDmMessage,

@@ -4,7 +4,7 @@ import { nip19 } from "nostr-tools";
 import { Nut16Collector, parseNut16FrameString } from "../../wallet/nut16";
 import { extractPeanutToken } from "../../wallet/peanut";
 import { extractCashuUriPayload } from "../../wallet/cashuProofHelpers";
-import { decodeLnurlString, extractDomain, decodeContactPayload } from "../../wallet/walletModalHelpers";
+import { decodeLnurlString, extractDomain } from "../../wallet/walletModalHelpers";
 import type { LnurlPayData } from "./useLightningFlow";
 import type { LnurlWithdrawData } from "../../wallet/walletModalHelpers";
 import { PaymentRequest } from "@cashu/cashu-ts";

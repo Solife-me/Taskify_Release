@@ -10,7 +10,6 @@ import {
   LS_CONTACTS_SYNC_META,
   LS_CONTACT_NIP05_CACHE,
   LS_PROFILE_METADATA_CACHE,
-  LS_PROFILE_EVENT_IDS,
 } from "../../localStorageKeys";
 import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
 import {

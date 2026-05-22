@@ -9,7 +9,6 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import {
   LS_CONTACT_PROFILE_CACHE,
   LS_PROFILE_METADATA_CACHE,
-  LS_PROFILE_EVENT_IDS,
 } from "../localStorageKeys";
 import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
 import { idbKeyValue } from "../storage/idbKeyValue";

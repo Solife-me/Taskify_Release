@@ -5,7 +5,6 @@ import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import { LS_GROUP_MUTED, LS_GROUP_LEFT } from "../../localStorageKeys";
 import { dmThreadKeyForThread, dmThreadKeyForMessage, DM_THREAD_DELETE_CACHE_TTL_MS } from "../../wallet/walletModalHelpers";
 import type { WalletDmThread } from "../../hooks/wallet/useDmState";
-import type { Contact } from "../../lib/contacts";
 
 export function useDmThreadActions({
   // DM state refs

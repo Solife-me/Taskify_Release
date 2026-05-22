@@ -19,7 +19,6 @@ import {
 } from "../../wallet/walletModalHelpers";
 import {
   generateGroupId,
-  normalizeDmPeerHex,
   type WalletDmMessage,
   type WalletDmAttachment,
 } from "../../hooks/wallet/useDmState";

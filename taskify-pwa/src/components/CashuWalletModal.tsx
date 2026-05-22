@@ -4,92 +4,43 @@
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { bech32 } from "bech32";
 import {
-  decodePaymentRequest,
-  getEncodedToken,
-  PaymentRequest,
   PaymentRequestTransportType,
   type PaymentRequestPayload,
   type PaymentRequestTransport,
   type Proof,
-  type ProofState,
 } from "@cashu/cashu-ts";
-import { secp256k1 } from "@noble/curves/secp256k1";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { finalizeEvent, getEventHash, getPublicKey, nip04, nip19, nip44, type EventTemplate } from "nostr-tools";
+import { nip19, nip44 } from "nostr-tools";
 import { useCashu } from "../context/CashuContext";
 import { useNwc } from "../context/NwcContext";
 import { useToast } from "../context/ToastContext";
 import { useP2PK, type P2PKKey } from "../context/P2PKContext";
 import { EcashGlyph } from "./EcashGlyph";
-import { removeMintFromList } from "../wallet/storage";
 import {
-  assembleNut16FromText,
-  containsNut16Frame,
   Nut16Collector,
-  parseNut16FrameString,
 } from "../wallet/nut16";
-import { encodePeanut, extractPeanutToken } from "../wallet/peanut";
-import { decodeBolt11Amount, estimateInvoiceAmountSat, formatMsatAsSat } from "../wallet/lightning";
-import {
-  LS_LIGHTNING_CONTACTS,
-  LS_ECASH_OPEN_REQUESTS,
-  LS_SPENT_NOSTR_PAYMENTS,
-  LS_CONTACTS_SYNC_META,
-  LS_NIP51_CONTACTS_MIGRATED,
-  LS_CONTACT_NIP05_CACHE,
-  LS_CONTACT_PROFILE_CACHE,
-  LS_DM_ARCHIVED_THREADS,
-  LS_DM_BLOCKED_PEERS,
-  LS_DM_DELETED_EVENTS,
-  LS_DM_MESSAGE_CACHE,
-  LS_DM_THREAD_READ_STATE,
-  LS_DM_SYNC_META,
-  LS_DM_TEMP_DELETED_EVENTS,
-  LS_PROFILE_EVENT_IDS,
-  LS_PROFILE_METADATA_CACHE,
-  LS_GROUP_CHATS,
-  LS_GROUP_LEFT,
-  LS_GROUP_MUTED,
-} from "../localStorageKeys";
+import { decodeBolt11Amount, formatMsatAsSat } from "../wallet/lightning";
+
+
 import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
-import { LS_NOSTR_SK, LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../nostrKeys";
+import { LS_NOSTR_RELAYS } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
-import { idbKeyValue } from "../storage/idbKeyValue";
-import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
-import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../lib/fileStorage";
-import { mergeGroupChats, normalizeGroupChatRecord, type GroupChat } from "../lib/groupChatState";
-import { buildContactShareEnvelope, sendShareMessage, type SharedTaskPayload } from "../lib/shareInbox";
+import { type GroupChat } from "../lib/groupChatState";
+import { buildContactShareEnvelope, sendShareMessage } from "../lib/shareInbox";
 import { normalizeNostrPubkey } from "../lib/nostr";
+
+
 import {
-  fetchLatestPrivateContactsList,
-  publishNip51PrivateContactsList,
-  type Nip51PrivateContact,
-} from "../lib/nip51Contacts";
-import { SessionPool } from "../nostr/SessionPool";
-import { NostrSession } from "../nostr/NostrSession";
-import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePublisher";
-import { uploadAvatar } from "../nostr/Nip96Client";
-import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
-import {
-  encryptAndUploadMessengerAttachment,
   isImageMime,
   isVideoMime,
   isAudioMime,
-  probeImageDimensions,
-  MESSENGER_ATTACHMENT_ALGO,
 } from "../lib/messengerAttachmentCrypto";
 import type { CreateSendTokenOptions } from "../mint/MintSession";
 import {
-  NpubCashError,
-  claimPendingEcashFromNpubCash,
   deriveNpubCashIdentity,
 } from "../wallet/npubCash";
 import { ActionSheet } from "./ActionSheet";
-import type { Contact, ContactProfile, ContactSyncEnvelope } from "../lib/contacts";
+import type { Contact } from "../lib/contacts";
 import {
   contactDisplayLabel,
   contactHasNpub,
@@ -97,25 +48,16 @@ import {
   contactPrimaryName,
   formatContactNpub,
   formatContactUsername,
-  loadContactsFromStorage,
   makeContactId,
-  mergeContactsFromSync,
   normalizeContact,
   sanitizeUsername,
-  parseContactSyncEnvelope,
   saveContactsToStorage,
 } from "../lib/contacts";
-import { parseShareEnvelope } from "../lib/shareInbox";
 import type { WalletMessageItem } from "../types/walletMessages";
-import { chatRetentionCutoffMs } from "../domains/tasks/settingsTypes";
 import {
   aggregateStoredProofStates,
-  amountFromCashuToken,
   computeProofY,
-  decodeCashuTokenLoose,
   deriveTimestampFromId,
-  extractCashuUriPayload,
-  isValidCashuTokenString,
   normalizeMintUrl,
   normalizeProofAmount,
   sanitizeProofStateValue,
@@ -126,9 +68,7 @@ import {
   deriveSpentHistoryTokenStateFromToken,
   isCashuTokenDetail,
   type HistoryDetailKind,
-  type HistoryEntryInput,
   type HistoryItem,
-  type HistoryTokenState,
   type StoredProofForState,
 } from "../wallet/walletHistoryTypes";
 import { useWalletHistory } from "../hooks/wallet/useWalletHistory";
@@ -144,8 +84,8 @@ import { useEcashReceiveState } from "../hooks/wallet/useEcashReceiveState";
 import { useEcashSendState } from "../hooks/wallet/useEcashSendState";
 import { usePaymentRequestState } from "../hooks/wallet/usePaymentRequestState";
 import { useNostrPoolState } from "../hooks/wallet/useNostrPoolState";
-import { useDmState, type WalletDmAttachment, type DecryptedNostrDm, type DmReaction, type WalletDmMessage, type WalletDmThread, type PendingDmMessage, type DmThreadListEntry, type DmSyncMeta, MAX_GROUP_MEMBERS, generateGroupId, normalizeDmPeerHex } from "../hooks/wallet/useDmState";
-import { useContactsState, type ContactViewMode, type ContactEditDraft, type Nip05CheckState, type ContactSyncMeta } from "../hooks/wallet/useContactsState";
+import { useDmState, type WalletDmAttachment, type DmReaction, type WalletDmMessage, MAX_GROUP_MEMBERS, generateGroupId, normalizeDmPeerHex } from "../hooks/wallet/useDmState";
+import { useContactsState } from "../hooks/wallet/useContactsState";
 import { useManualSendPlan } from "../hooks/wallet/useManualSendPlan";
 import { useDmSubscription } from "../hooks/wallet/useDmSubscription";
 import { useDmSend } from "../hooks/wallet/useDmSend";
@@ -158,7 +98,7 @@ import { useSheetManagement } from "../hooks/wallet/useSheetManagement";
 import { useNpubCashClaim } from "../hooks/wallet/useNpubCashClaim";
 import { useHistoryFormatters } from "../hooks/wallet/useHistoryFormatters";
 import { useWalletFormatters } from "../hooks/wallet/useWalletFormatters";
-import { useAmountKeypadHandlers, type LightningSendInputKind } from "../hooks/wallet/useAmountKeypadHandlers";
+import { useAmountKeypadHandlers } from "../hooks/wallet/useAmountKeypadHandlers";
 import { usePaymentRequestFlow } from "../hooks/wallet/usePaymentRequestFlow";
 import { useContactDetail } from "../hooks/wallet/useContactDetail";
 import { useTokenHistoryActions } from "../hooks/wallet/useTokenHistoryActions";
@@ -177,20 +117,16 @@ import { useEcashSendDerived } from "../hooks/wallet/useEcashSendDerived";
 import { useChatGroupDerived } from "../hooks/wallet/useChatGroupDerived";
 import {
   isSamePaymentRequest,
-  type ActivePaymentRequest,
   type IncomingPaymentRequest,
 } from "../wallet/paymentRequestTypes";
 import {
-  AnimatedEllipsis,
   BackIcon,
   CHAT_FILE_PICKER_ACCEPT,
   ChatBubbleIcon,
   CheckIcon,
-  ChevronDownIcon,
   CloseIcon,
   GroupAvatar,
   LightningGlyph,
-  LockIcon,
   MessengerFileBubble,
   PencilIcon,
   PersonIcon,
@@ -204,15 +140,10 @@ import {
   formatDmDateSeparator,
   formatDmDay,
   formatDmTime,
-  formatLightningAddressDisplay,
-  formatMintDisplayName,
   formatShortDate,
   parseDateLikeToUnixSeconds,
   shortenNpubDisplay,
-  trimMintUrlScheme,
-  truncatePreview,
   tryParseJson,
-  type GroupAvatarMember,
 } from "../ui/wallet/walletModalUi";
 import { EcashReceiveSheet } from "../ui/wallet/EcashReceiveSheet";
 import { LightningReceiveSheet } from "../ui/wallet/LightningReceiveSheet";
@@ -225,78 +156,36 @@ import { WalletNwcManagerSheet } from "../ui/wallet/WalletNwcManagerSheet";
 import { PaymentRequestFulfillSheet } from "../ui/wallet/PaymentRequestFulfillSheet";
 import {
   yieldToBrowser,
-  measureDefaultChatAttachTrayHeight,
   extractMinibitsPaymentSender,
-  normalizeCashuTokenCandidate,
-  extractFirstCashuTokenFromText,
   getWalletMessageStatusLabel,
   getCalendarInviteStatusLabel,
   computeSubsetSelectionInfo,
   totalForSelection,
   decodeLnurlString,
-  encodeContactPayload,
   decodeContactPayload,
-  parseProfileContent,
-  normalizeCachedProfileForm,
-  readProfileMetadataCache,
-  persistProfileMetadataCache,
-  normalizeCachedContactProfile,
-  loadContactProfileCache,
-  persistContactProfileCache,
   estimateDataUrlSize,
   isDataUrl,
   pickPreferredProfilePhoto,
-  shouldCacheProfilePhoto,
-  fetchProfilePhotoDataUrl,
   extractDomain,
   extractUrlsFromText,
   renderFormattedText,
   fetchWithTimeout,
-  generatePrivateKey,
-  randomPastTimestampSeconds,
-  dmThreadKeyForMessage,
   dmThreadKeyForThread,
-  isMintTokenAlreadySpentError,
-  extractPublicFollowsFromTags,
-  enrichPublicFollowsWithProfiles,
   buildTokenSpentToastMessage,
   extractWitnesses,
   shouldSuppressProofStateChecks,
-  cachedContactProfileToDmProfile,
   buildWalletMessageSyntheticEventId,
   buildCalendarInviteSyntheticEventId,
-  readStoredNostrIdentity,
-  LNURL_DECODE_LIMIT,
   CONTACT_PANEL_HEIGHT,
-  PROFILE_SHARE_CACHE_KEY,
-  MINT_QUOTE_SUBSCRIPTION_WINDOW_MS,
   UNPAID_MINT_QUOTE_RETENTION_MS,
-  PAYMENT_HISTORY_EVENT_ID_REGEX,
   CHAT_TIMESTAMP_REVEAL_WIDTH,
-  DM_THREAD_DELETE_CACHE_TTL_MS,
-  CHAT_ATTACH_TRAY_MIN_HEIGHT,
-  CHAT_ATTACH_TRAY_MAX_HEIGHT,
-  CHAT_ATTACH_TRAY_FALLBACK_RATIO,
-  PROFILE_PHOTO_CACHE_LIMIT_BYTES,
-  PROFILE_PHOTO_MAX_DIMENSION,
-  CHAT_URL_REGEX,
   BACKGROUND_REFRESH_INTERVAL_MS,
   NPUB_CASH_REFRESH_STAGGER_MS,
   TOKEN_STATE_BACKGROUND_STAGGER_MS,
-  TOKEN_STATE_BACKGROUND_WINDOW_MS,
   SUBSCRIPTION_RETRY_DELAY_MS,
-  EMPTY_NOSTR_IDENTITY_INFO,
-  type CachedProfileMetadata,
-  type CachedContactProfile,
-  type LnurlWithdrawData,
   type PendingCalendarInvite,
   type SharedContactPreview,
   type NostrEvent,
-  type NormalizedIncomingPayment,
-  type NostrIdentity,
-  type NostrIdentityInfo,
-  type PublicFollow,
-  type ContactSharePayload,
 } from "../wallet/walletModalHelpers";
 
 export default function CashuWalletModal({

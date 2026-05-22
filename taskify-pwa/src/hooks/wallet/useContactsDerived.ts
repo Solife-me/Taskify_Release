@@ -1,7 +1,6 @@
 // @ts-nocheck
 import { useMemo } from "react";
 import { contactHasNpub, sanitizeUsername } from "../../lib/contacts";
-import type { Contact } from "../../lib/contacts";
 
 export function useContactsDerived({
   contacts,

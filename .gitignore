@@ -4,6 +4,8 @@ node_modules/
 taskify-ios/build/
 taskify-ios-native/build/
 *.xcuserstate
+.DS_Store
+*.pid
 worker/node_modules/
 dist/
 !taskify-runtime-nostr/dist/
