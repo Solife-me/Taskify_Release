@@ -55,7 +55,7 @@ import {
   LS_GROUP_MUTED,
 } from "../localStorageKeys";
 import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
-import { LS_NOSTR_SK, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../nostrKeys";
+import { LS_NOSTR_SK, LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -157,6 +157,7 @@ import { useEcashRedeem } from "../hooks/wallet/useEcashRedeem";
 import { useSheetManagement } from "../hooks/wallet/useSheetManagement";
 import { useNpubCashClaim } from "../hooks/wallet/useNpubCashClaim";
 import { useHistoryFormatters } from "../hooks/wallet/useHistoryFormatters";
+import { useWalletFormatters } from "../hooks/wallet/useWalletFormatters";
 import { useAmountKeypadHandlers, type LightningSendInputKind } from "../hooks/wallet/useAmountKeypadHandlers";
 import { usePaymentRequestFlow } from "../hooks/wallet/usePaymentRequestFlow";
 import { useContactDetail } from "../hooks/wallet/useContactDetail";
@@ -170,6 +171,10 @@ import { useHistoryFilter } from "../hooks/wallet/useHistoryFilter";
 import { usePaymentRequestDerived } from "../hooks/wallet/usePaymentRequestDerived";
 import { useDmMessageDerived } from "../hooks/wallet/useDmMessageDerived";
 import { useDmThreadDerived } from "../hooks/wallet/useDmThreadDerived";
+import { useThreadUnreadCounts } from "../hooks/wallet/useThreadUnreadCounts";
+import { useContactsDerived } from "../hooks/wallet/useContactsDerived";
+import { useEcashSendDerived } from "../hooks/wallet/useEcashSendDerived";
+import { useChatGroupDerived } from "../hooks/wallet/useChatGroupDerived";
 import {
   isSamePaymentRequest,
   type ActivePaymentRequest,
@@ -209,6 +214,15 @@ import {
   tryParseJson,
   type GroupAvatarMember,
 } from "../ui/wallet/walletModalUi";
+import { EcashReceiveSheet } from "../ui/wallet/EcashReceiveSheet";
+import { LightningReceiveSheet } from "../ui/wallet/LightningReceiveSheet";
+import { EcashSendSheet } from "../ui/wallet/EcashSendSheet";
+import { WalletContactsSheet } from "../ui/wallet/WalletContactsSheet";
+import { LightningSendSheet } from "../ui/wallet/LightningSendSheet";
+import { WalletHistorySheet } from "../ui/wallet/WalletHistorySheet";
+import { WalletSwapSheet } from "../ui/wallet/WalletSwapSheet";
+import { WalletNwcManagerSheet } from "../ui/wallet/WalletNwcManagerSheet";
+import { PaymentRequestFulfillSheet } from "../ui/wallet/PaymentRequestFulfillSheet";
 import {
   yieldToBrowser,
   measureDefaultChatAttachTrayHeight,
@@ -648,6 +662,7 @@ export default function CashuWalletModal({
     receiveMode,
     sendMode,
   });
+  const nostrMissingReason = paymentRequestsEnabled ? nostrIdentityInfo.reason : null;
   useEffect(() => {
     if (!paymentRequestLockEnabled) return;
     if (paymentRequestLockPubkey) return;
@@ -1477,53 +1492,25 @@ export default function CashuWalletModal({
     onMarkMessagesRead,
     showToast,
   });
-  const threadUnreadMap = useMemo(() => {
-    const map = new Map<string, number>();
-    dmThreads.forEach((thread) => {
-      const unreadIds = new Set<string>();
-      const threadKey = thread.peerPubkey.toLowerCase();
-      const mutedSinceMs = thread.groupId ? dmMutedGroupsRef.current.get(thread.groupId.toLowerCase()) ?? null : null;
-      const isLeftGroup = thread.groupId ? dmLeftGroupsRef.current.has(thread.groupId.toLowerCase()) : false;
-      const readAtSeconds = dmThreadReadAtRef.current.get(threadKey) ?? 0;
-      thread.messages.forEach((msg) => {
-        if (!msg.isIncoming) return;
-        if (msg.eventId.startsWith("draft-")) return;
-        if (isLeftGroup) return;
-        if (msg.createdAt <= readAtSeconds) return;
-        if (mutedSinceMs != null && msg.createdAt * 1000 >= mutedSinceMs) return;
-        unreadIds.add(msg.eventId);
-        const item = messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
-        const invite = pendingCalendarInvitesByEventId.get(msg.eventId);
-        const status = item?.status || invite?.status;
-        if (status && !isUnreadThreadStatus(status)) {
-          unreadIds.delete(msg.eventId);
-        }
-      });
-      map.set(thread.peerPubkey, unreadIds.size);
-    });
-    return map;
-  }, [
-    dmLeftGroupsVersion,
-    dmMutedGroupsVersion,
-    dmThreadReadAtVersion,
+  const {
+    threadUnreadMap,
+    strangerUnreadCount,
+    mainUnreadCount,
+  } = useThreadUnreadCounts({
     dmThreads,
-    isUnreadThreadStatus,
     messageItemsByEventId,
-    pendingCalendarInvitesByEventId,
     pendingMessageItemsByEventId,
-  ]);
-  const strangerUnreadCount = useMemo(
-    () =>
-      strangerThreads.reduce((acc, thread) => acc + (threadUnreadMap.get(thread.peerPubkey) || 0), 0),
-    [strangerThreads, threadUnreadMap],
-  );
-  const mainUnreadCount = useMemo(
-    () =>
-      visibleDmThreads.reduce((acc, thread) => {
-        return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
-      }, 0),
-    [threadUnreadMap, visibleDmThreads],
-  );
+    pendingCalendarInvitesByEventId,
+    isUnreadThreadStatus,
+    dmMutedGroupsRef,
+    dmLeftGroupsRef,
+    dmThreadReadAtRef,
+    dmMutedGroupsVersion,
+    dmLeftGroupsVersion,
+    dmThreadReadAtVersion,
+    strangerThreads,
+    visibleDmThreads,
+  });
   useEffect(() => {
     onDmUnreadCountChange?.(mainUnreadCount);
   }, [mainUnreadCount, onDmUnreadCountChange]);
@@ -1544,41 +1531,21 @@ export default function CashuWalletModal({
       onMarkMessagesRead(unreadIds);
     }
   }, [activeThread, collectUnreadThreadItemEventIds, markThreadReadThrough, onMarkMessagesRead]);
-  const sortedContacts = useMemo(() => {
-    return [...contacts].sort((a, b) => {
-      const baseA = (a.name || a.address || a.nip05 || a.npub || "").toLowerCase();
-      const baseB = (b.name || b.address || b.nip05 || b.npub || "").toLowerCase();
-      if (baseA < baseB) return -1;
-      if (baseA > baseB) return 1;
-      const fallbackA = a.address || a.npub || "";
-      const fallbackB = b.address || b.npub || "";
-      return fallbackA.localeCompare(fallbackB);
-    });
-  }, [contacts]);
-  const visibleContacts = useMemo(() => {
-    if (!contactsContext) return sortedContacts;
-    return sortedContacts.filter((contact) =>
-      contactsContext === "lightning"
-        ? contact.address.trim().length > 0
-        : contactHasNpub(contact) || contact.paymentRequest.trim().length > 0,
-    );
-  }, [contactsContext, sortedContacts]);
-  const shareRecipientOptions = useMemo(() => {
-    const sourceHex = shareContactSource?.npub
-      ? compressedToRawHex(
-          normalizeNostrPubkey(shareContactSource.npub) ?? shareContactSource.npub,
-        ).toLowerCase()
-      : null;
-    return contacts.filter((contact) => {
-      if (!contactHasNpub(contact)) return false;
-      const normalized = normalizeNostrPubkey(contact.npub);
-      const contactHex = normalized
-        ? compressedToRawHex(normalized).toLowerCase()
-        : contact.npub.trim().toLowerCase();
-      if (sourceHex && contactHex && contactHex === sourceHex) return false;
-      return true;
-    });
-  }, [compressedToRawHex, contacts, normalizeNostrPubkey, shareContactSource]);
+  const {
+    sortedContacts,
+    visibleContacts,
+    shareRecipientOptions,
+    publicFollowOptions,
+    lightningContactCount,
+  } = useContactsDerived({
+    contacts,
+    contactsContext,
+    shareContactSource,
+    compressedToRawHex,
+    normalizeNostrPubkey,
+    contactSyncMeta,
+    formatNpub,
+  });
   const {
     resetContactForm,
     handleGenerateP2pkKey,
@@ -1669,42 +1636,6 @@ export default function CashuWalletModal({
     sendContactShareToPubkeys,
     defaultNostrRelays,
   });
-  const publicFollowOptions = useMemo(
-    () => {
-      const seen = new Set<string>();
-      return (contactSyncMeta.publicFollows || [])
-        .map((follow) => {
-          const pubkey = (follow.pubkey || "").trim();
-          if (!pubkey) return null;
-          const key = pubkey.toLowerCase();
-          if (seen.has(key)) return null;
-          seen.add(key);
-          const username = sanitizeUsername(follow.username || "");
-          const nip05 = (follow.nip05 || "").trim();
-          return {
-            pubkey,
-            npub: formatNpub(pubkey),
-            relay: (follow.relay || "").trim(),
-            petname: (follow.petname || "").trim(),
-            username: username || undefined,
-            nip05: nip05 || undefined,
-          };
-        })
-        .filter(Boolean) as Array<{
-          pubkey: string;
-          npub: string;
-          relay?: string;
-          petname?: string;
-          username?: string;
-          nip05?: string;
-        }>;
-    },
-    [contactSyncMeta.publicFollows, formatNpub],
-  );
-  const lightningContactCount = useMemo(
-    () => contacts.reduce((count, contact) => (contact.address.trim().length > 0 ? count + 1 : count), 0),
-    [contacts],
-  );
   const truncateContactName = (value: string, maxLength = 32) => {
     const normalized = (value || "").trim();
     if (normalized.length <= maxLength) return normalized || "Contact";
@@ -2045,7 +1976,7 @@ export default function CashuWalletModal({
     swapToValue,
   });
 
-  const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
+  const { satFormatter, usdFormatterLarge, usdFormatterSmall, relativeTimeFormatter } = useWalletFormatters();
 
   const { handleClaimNpubCash } = useNpubCashClaim({
     buildHistoryEntry,
@@ -2415,24 +2346,6 @@ export default function CashuWalletModal({
     refreshMintEntries();
   }, [showMintBalances, mintUrl, refreshMintEntries]);
 
-  const usdFormatterLarge = useMemo(() => new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }), []);
-
-  const usdFormatterSmall = useMemo(() => new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
-  }), []);
-
-  const relativeTimeFormatter = useMemo(
-    () => new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }),
-    [],
-  );
   const { formatRelativeTime, formatHistoryAmount, resolveMintDisplay, deriveHistoryStatus } = useHistoryFormatters({
     mintInfoByUrl,
     relativeTimeFormatter,
@@ -2463,6 +2376,16 @@ export default function CashuWalletModal({
     btcUsdPrice,
     satFormatter,
   });
+
+  const overviewPaymentRequest = useMemo(() => {
+    if (openPaymentRequest && !openPaymentRequest.request.singleUse) {
+      return openPaymentRequest;
+    }
+    if (currentPaymentRequest && !currentPaymentRequest.request.singleUse) {
+      return currentPaymentRequest;
+    }
+    return null;
+  }, [openPaymentRequest, currentPaymentRequest]);
 
   const {
     primaryCurrency,
@@ -2636,6 +2559,51 @@ export default function CashuWalletModal({
     () => parseAmountInput(ecashRequestAmt),
     [parseAmountInput, ecashRequestAmt],
   );
+
+  const ecashRequestAmountSecondaryDisplay = useMemo(() => {
+    if (parsedEcashRequestAmount.error || parsedEcashRequestAmount.sats <= 0) return null;
+    if (primaryCurrency === "usd") {
+      return `≈ ${satFormatter.format(parsedEcashRequestAmount.sats)} sat`;
+    }
+    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
+    const usdValue = (parsedEcashRequestAmount.sats / SATS_PER_BTC) * btcUsdPrice;
+    return `≈ ${formatUsdAmount(usdValue)}`;
+  }, [parsedEcashRequestAmount, primaryCurrency, walletConversionEnabled, btcUsdPrice, satFormatter, formatUsdAmount]);
+
+  const ecashRequestPrimaryAmountText = useMemo(() => {
+    const trimmedAmount = ecashRequestAmt.trim();
+    if (primaryCurrency === "usd") {
+      return `$${trimmedAmount || "0.00"}`;
+    }
+    return `${trimmedAmount || "0"} sat`;
+  }, [ecashRequestAmt, primaryCurrency]);
+
+  const ecashRequestSecondaryAmountText = useMemo(() => {
+    if (ecashRequestMode === "multi") {
+      return "Reusable request";
+    }
+    if (ecashRequestAmountSecondaryDisplay) return ecashRequestAmountSecondaryDisplay;
+    const trimmedAmount = ecashRequestAmt.trim();
+    if (!trimmedAmount) {
+      return `Enter amount in ${amountInputUnitLabel}`;
+    }
+    if (!canToggleCurrency) {
+      return `Enter amount in ${amountInputUnitLabel}`;
+    }
+    const nextCurrency = primaryCurrency === "usd" ? "sat" : "USD";
+    return `Tap to switch to ${nextCurrency}`;
+  }, [ecashRequestMode, ecashRequestAmountSecondaryDisplay, ecashRequestAmt, amountInputUnitLabel, canToggleCurrency, primaryCurrency]);
+
+  const canCreateEcashRequest = useMemo(() => {
+    if (!paymentRequestsEnabled) return false;
+    if (!mintUrl) return false;
+    if (!info?.unit) return false;
+    if (nostrMissingReason) return false;
+    if (ecashRequestMode === "single") {
+      return parsedEcashRequestAmount.sats > 0 && !parsedEcashRequestAmount.error;
+    }
+    return true;
+  }, [paymentRequestsEnabled, mintUrl, info?.unit, nostrMissingReason, ecashRequestMode, parsedEcashRequestAmount]);
 
   const {
     persistSpentIncomingEvents,
@@ -3024,111 +2992,42 @@ export default function CashuWalletModal({
     };
   }, [startDmSubscription, stopDmSubscription]);
 
-  const normalizedSendLockPubkey = useMemo(() => {
-    if (!lockSendToPubkey) return null;
-    return normalizeNostrPubkey(sendLockPubkeyInput);
-  }, [lockSendToPubkey, sendLockPubkeyInput]);
-
-  const parsedSendAmount = useMemo(() => parseAmountInput(sendAmt), [parseAmountInput, sendAmt]);
-
-  const currentSendTokenFingerprint = useMemo(() => {
-    const parsed = parsedSendAmount;
-    if (parsed.error || parsed.sats <= 0) return null;
-    if (lockSendToPubkey) {
-      if (!normalizedSendLockPubkey) return null;
-      return `${parsed.sats}|p2pk:${normalizedSendLockPubkey}`;
-    }
-    return `${parsed.sats}|standard`;
-  }, [lockSendToPubkey, normalizedSendLockPubkey, parsedSendAmount]);
-
-  const tokenAlreadyCreatedForAmount = useMemo(() => {
-    if (!sendTokenStr || !lastSendTokenFingerprint || !currentSendTokenFingerprint) return false;
-    return lastSendTokenFingerprint === currentSendTokenFingerprint;
-  }, [currentSendTokenFingerprint, lastSendTokenFingerprint, sendTokenStr]);
-
-  const ecashPrimaryAmountText = useMemo(() => {
-    const trimmed = sendAmt.trim();
-    if (primaryCurrency === "usd") {
-      return `$${trimmed || "0.00"}`;
-    }
-    return `${trimmed || "0"} sat`;
-  }, [primaryCurrency, sendAmt]);
-
-  const ecashSecondaryAmountText = useMemo(() => {
-    if (parsedSendAmount.error || parsedSendAmount.sats <= 0) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedSendAmount.sats)} sat`;
-    }
-    if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
-      return `Enter amount in ${amountInputUnitLabel}`;
-    }
-    const usdValue = (parsedSendAmount.sats / SATS_PER_BTC) * btcUsdPrice;
-    return `≈ ${formatUsdAmount(usdValue)}`;
-  }, [
-    amountInputUnitLabel,
-    btcUsdPrice,
-    formatUsdAmount,
+  const {
+    normalizedSendLockPubkey,
     parsedSendAmount,
+    currentSendTokenFingerprint,
+    tokenAlreadyCreatedForAmount,
+    ecashPrimaryAmountText,
+    ecashSecondaryAmountText,
+    canCreateSendTokenAmount,
+    primaryAmountDisplay,
+    secondaryAmountDisplay,
+    priceMeta,
+    pendingBalanceDisplay,
+    scannerMessageTone,
+  } = useEcashSendDerived({
+    parseAmountInput,
+    formatUsdAmount,
     primaryCurrency,
+    amountInputUnitLabel,
+    usdBalance,
+    sendAmt,
+    sendTokenStr,
+    lastSendTokenFingerprint,
+    lockSendToPubkey,
+    sendLockPubkeyInput,
     satFormatter,
+    usdFormatterLarge,
+    btcUsdPrice,
     walletConversionEnabled,
-  ]);
-
-  const canCreateSendTokenAmount = useMemo(
-    () => parsedSendAmount.sats > 0 && !parsedSendAmount.error && !!mintUrl,
-    [parsedSendAmount, mintUrl],
-  );
-
-  const primaryAmountDisplay = useMemo(() => {
-    if (primaryCurrency === "usd") {
-      if (usdBalance == null) {
-        if (!walletConversionEnabled) return "$0.00";
-        return priceStatus === "error" ? "USD unavailable" : "Fetching price…";
-      }
-      return formatUsdAmount(usdBalance);
-    }
-    return `${satFormatter.format(Math.max(0, Math.floor(totalBalance)))} sat`;
-  }, [primaryCurrency, usdBalance, walletConversionEnabled, priceStatus, formatUsdAmount, satFormatter, totalBalance]);
-
-  const secondaryAmountDisplay = useMemo(() => {
-    if (!walletConversionEnabled) return null;
-    if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(Math.max(0, Math.floor(totalBalance)))} sat`;
-    }
-    if (usdBalance == null) {
-      return priceStatus === "error" ? "USD unavailable" : "Fetching price…";
-    }
-    return `≈ ${formatUsdAmount(usdBalance)}`;
-  }, [walletConversionEnabled, primaryCurrency, satFormatter, totalBalance, usdBalance, priceStatus, formatUsdAmount]);
-
-  const priceMeta = useMemo(() => {
-    if (!walletConversionEnabled) return null;
-    if (btcUsdPrice == null || btcUsdPrice <= 0) {
-      return priceStatus === "error" ? "BTC/USD price unavailable" : "Fetching BTC/USD price…";
-    }
-    const base = `${usdFormatterLarge.format(btcUsdPrice)} / BTC`;
-    if (priceStatus === "error") {
-      return `${base} • Using last update`;
-    }
-    if (priceUpdatedAt) {
-      const timeStr = new Date(priceUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      return `${base} • Updated ${timeStr}`;
-    }
-    return base;
-  }, [walletConversionEnabled, btcUsdPrice, priceStatus, priceUpdatedAt, usdFormatterLarge]);
-
-  const pendingBalanceDisplay = useMemo(() => {
-    if (pendingBalance <= 0) return null;
-    const pendingSat = Math.max(0, Math.floor(pendingBalance));
-    return `${satFormatter.format(pendingSat)} sat pending redemption`;
-  }, [pendingBalance, satFormatter]);
-
-  const scannerMessageTone = useMemo(() => {
-    if (!scannerMessage) return "info";
-    return /denied|unsupported|not supported|unrecognized|error|unable/i.test(scannerMessage) ? "error" : "info";
-  }, [scannerMessage]);
+    mintUrl,
+    priceStatus,
+    priceUpdatedAt,
+    totalBalance,
+    pendingBalance,
+    scannerMessage,
+    normalizeNostrPubkey,
+  });
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -4403,164 +4302,139 @@ export default function CashuWalletModal({
     picture: profileForm.picture.trim(),
     updatedAt: profileUpdatedAt,
   };
-  const activeConversationContact = useMemo(() => {
-    if (!activeThread || activeThread.groupId) return null;
-    const ownNpub = normalizeNostrPubkey(myCardNpub);
-    const ownHex = ownNpub ? compressedToRawHex(ownNpub).toLowerCase() : "";
-    if (ownHex && activeThread.peerPubkey === ownHex) return null;
-    const peerMeta = getPeerProfile(activeThread.peerPubkey);
-    const peerLabel = peerLabelFor(activeThread.peerPubkey);
-    const existing = contactByHex.get(activeThread.peerPubkey);
-    if (existing) {
-      return {
-        ...existing,
-        address: existing.address.trim() || peerMeta?.lud16?.trim() || "",
-        nip05: existing.nip05?.trim() || peerMeta?.nip05?.trim() || "",
-        displayName: existing.displayName?.trim() || peerMeta?.displayName?.trim() || "",
-        username: existing.username?.trim() || peerMeta?.username?.trim() || "",
-        about: existing.about?.trim() || peerMeta?.about?.trim() || "",
-        picture: existing.picture?.trim() || peerMeta?.picture?.trim() || peerLabel.picture?.trim() || "",
-      } satisfies Contact;
-    }
-    return {
-      id: `chat-peer-${activeThread.peerPubkey}`,
-      kind: "nostr",
-      name: peerMeta?.displayName || peerMeta?.username || peerLabel.label,
-      displayName: peerMeta?.displayName || peerLabel.label,
-      username: sanitizeUsername(peerMeta?.username || ""),
-      address: peerMeta?.lud16 || "",
-      paymentRequest: "",
-      npub: formatNpub(activeThread.peerPubkey) || "",
-      nip05: peerMeta?.nip05 || "",
-      about: peerMeta?.about || "",
-      picture: peerMeta?.picture || peerLabel.picture || "",
-      updatedAt: Date.now(),
-    } satisfies Contact;
-  }, [
+  const {
+    activeConversationContact,
+    chatAttachTrayHeight,
+    chatAttachContactOptions,
+    activeGroupAvatarMembers,
+    activeGroupMembers,
+    filteredActiveGroupMembers,
+    groupAvatarMembersFor,
+  } = useChatGroupDerived({
     activeThread,
-    compressedToRawHex,
-    contactByHex,
-    formatNpub,
-    getPeerProfile,
-    myCardNpub,
-    normalizeNostrPubkey,
-    peerLabelFor,
-    sanitizeUsername,
-  ]);
-  const chatAttachTrayHeight = useMemo(
-    () =>
-      Math.min(
-        CHAT_ATTACH_TRAY_MAX_HEIGHT,
-        Math.max(CHAT_ATTACH_TRAY_MIN_HEIGHT, chatKeyboardHeight || chatKeyboardHeightCache),
-      ),
-    [chatKeyboardHeight, chatKeyboardHeightCache],
-  );
-  const chatAttachContactOptions = useMemo(() => {
-    const options: Contact[] = [];
-    const seen = new Set<string>();
-    const addContact = (contact: Contact) => {
-      const normalizedNpub = formatContactNpub(contact.npub);
-      if (!normalizedNpub) return;
-      const normalizedHex = normalizeNostrPubkey(normalizedNpub) ?? normalizedNpub;
-      const key = normalizedHex.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      options.push({ ...contact, npub: normalizedNpub });
-    };
-    addContact(profileCard as Contact);
-    sortedContacts.forEach(addContact);
-    return options;
-  }, [formatContactNpub, normalizeNostrPubkey, profileCard, sortedContacts]);
-  const activeGroupAvatarMembers = useMemo(
-    () =>
-      activeThread?.groupId
-        ? groupAvatarMembersFor(activeGroupChat, activeThread, activeGroupChat?.name || "Group")
-        : [],
-    [activeGroupChat, activeThread, groupAvatarMembersFor],
-  );
-  const activeGroupMembers = useMemo(() => {
-    if (!activeGroupChat) return [];
-    const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
-    return activeGroupChat.members.map((memberHex, index) => {
-      const normalizedHex = memberHex.toLowerCase();
-      const isSelf = ownHex !== "" && normalizedHex === ownHex;
-      const contact = isSelf ? null : contactByHex.get(normalizedHex) || null;
-      const profile = isSelf ? null : dmPeerProfilesRef.current.get(normalizedHex);
-      const peerMeta = isSelf ? null : peerLabelFor(normalizedHex);
-      const label = isSelf ? myCardName : contact ? contactDisplayLabel(contact) : peerMeta?.label || "Contact";
-      const picture = isSelf
-        ? profileCard.picture?.trim() || undefined
-        : pickPreferredProfilePhoto(profile?.picture, contact?.picture?.trim() || peerMeta?.picture);
-      const npub = isSelf
-        ? myCardNpub || formatNpub(normalizedHex)
-        : contact?.npub?.trim() || formatNpub(normalizedHex);
-      const subtitle = (() => {
-        if (isSelf) {
-          return profileCard.nip05.trim() || formatContactUsername(profileCard.username) || shortenNpubDisplay(myCardNpub);
-        }
-        return (
-          contact?.nip05?.trim() ||
-          profile?.nip05?.trim() ||
-          formatContactUsername(contact?.username || profile?.username || "") ||
-          peerMeta?.subtitle ||
-          shortenNpubDisplay(npub, 12, 8)
-        );
-      })();
-      return {
-        id: contact?.id || `group-member-${normalizedHex}`,
-        contactId: contact?.id || null,
-        memberHex: normalizedHex,
-        isSelf,
-        label,
-        picture,
-        subtitle,
-        detailContact: {
-          id: contact?.id || `group-member-${normalizedHex}`,
-          name: isSelf ? myCardName : contact?.name || label,
-          displayName: isSelf ? profileCard.displayName || myCardName : contact?.displayName || profile?.displayName || label,
-          username: isSelf ? profileCard.username || "" : contact?.username || profile?.username || "",
-          address: isSelf ? profileCard.address || "" : contact?.address || profile?.lud16 || "",
-          npub,
-          nip05: isSelf ? profileCard.nip05 || "" : contact?.nip05 || profile?.nip05 || "",
-          about: isSelf ? profileCard.about || "" : contact?.about || profile?.about || "",
-          picture: picture || "",
-          updatedAt: isSelf ? profileUpdatedAt : contact?.updatedAt ?? null,
-        } as Contact,
-        index,
-      };
-    });
-  }, [
     activeGroupChat,
     contactByHex,
+    sortedContacts,
+    myCardNpub,
+    myCardName,
+    profileCard,
+    groupMembersSearch,
+    chatKeyboardHeight,
+    chatKeyboardHeightCache,
+    nostrIdentityInfo,
+    nostrIdentityRef,
+    dmPeerProfilesRef,
+    getPeerProfile,
+    peerLabelFor,
+    compressedToRawHex,
+    normalizeNostrPubkey,
+    formatNpub,
+    sanitizeUsername,
     contactDisplayLabel,
     formatContactUsername,
-    formatNpub,
-    myCardName,
-    myCardNpub,
-    nostrIdentityInfo.identity?.pubkey,
-    peerLabelFor,
+    formatContactNpub,
     pickPreferredProfilePhoto,
-    profileCard.about,
-    profileCard.address,
-    profileCard.displayName,
-    profileCard.nip05,
-    profileCard.picture,
-    profileCard.username,
-    profileUpdatedAt,
     shortenNpubDisplay,
-  ]);
-  const filteredActiveGroupMembers = useMemo(() => {
-    const query = groupMembersSearch.trim().toLowerCase();
-    if (!query) return activeGroupMembers;
-    return activeGroupMembers.filter((member) =>
-      `${member.label} ${member.subtitle || ""} ${member.detailContact.npub || ""}`.toLowerCase().includes(query),
-    );
-  }, [activeGroupMembers, groupMembersSearch]);
-  const activeContact =
-    activeContactId && activeContactId !== "profile"
-      ? contacts.find((entry) => entry.id === activeContactId) || null
-      : null;
-  const detailTarget = activeContactId === "profile" ? profileCard : activeContact || contactDetailOverride;
+    profileUpdatedAt,
+  });
+  const {
+    activeContact,
+    detailTarget,
+    sharedContactPreviewContact,
+    scannedContactSaved,
+    scannedContactFollowed,
+    sharedContactPreviewSaved,
+    sharedContactPreviewCanAccept,
+    detailContactFollowed,
+    contactSubtitle,
+    handleOpenChatEcash,
+    handleOpenChatLightning,
+    openGroupMemberDetail,
+    buildContactFields,
+    verifyContactNip05,
+    ensureNip05Verification,
+    isNip05VerifiedFor,
+    handleSaveScannedContact,
+    handleSaveSharedContactPreview,
+    handleToggleFollowScannedContact,
+    handleStartEditCurrentContact,
+    handleCancelContactEdit,
+    handleToggleFollowDetailContact,
+    handleCopyContactField,
+    processProfilePhotoFile,
+    handleProfilePhotoChange,
+    handleClearProfilePhoto,
+    handleContactEditSubmit,
+  } = useContactDetail({
+    nip05Checks,
+    contacts,
+    contactsRef,
+    contactSyncMeta,
+    contactsSyncEnabled,
+    scannedContact,
+    sharedContactPreview,
+    contactDetailOverride,
+    activeContactId,
+    contactEditDraft,
+    profileForm,
+    profileUpdatedAt,
+    nostrIdentityInfo,
+    myCardName,
+    profileCard,
+    activeGroupMembers,
+    activeConversationContact,
+    nostrMissingReason,
+    preferredFileServer,
+    fileServers,
+    profilePhotoBusy,
+    nostrIdentityRef,
+    contactsPublishQueuedRef,
+    profilePhotoUploadRef,
+    setNip05Checks,
+    setScannedContact,
+    setSharedContactPreview,
+    setContactDetailOverride,
+    setActiveContactId,
+    setContactEditDraft,
+    setContactReturnView,
+    setContactView,
+    setDmSearch,
+    setChatView,
+    setContactEditError,
+    setContactLookupError,
+    setContactLookupInput,
+    setShowCustomContactFields,
+    setProfilePhotoError,
+    setProfilePhotoBusy,
+    setProfileStatus,
+    setProfileMessage,
+    setProfileForm,
+    normalizeNip05,
+    normalizeNostrPubkey,
+    compressedToRawHex,
+    resolveNip05Record,
+    upsertContact,
+    publishContactsToNostr,
+    persistContactSyncMeta,
+    sanitizeUsername,
+    formatContactNpub,
+    formatContactUsername,
+    showToast,
+    peerLabelFor,
+    openEcashSendToContact,
+    openEcashSendSheet,
+    openLightningSendSheet,
+    applyLightningContact,
+    closeAttachTray,
+    onAcceptMessage,
+    handleReturnToProfileCard,
+    resetContactEditDraft,
+    ensureNostrIdentity,
+    publishProfileMetadata,
+    deriveDefaultLightningAddress,
+    isDataUrl,
+    estimateDataUrlSize,
+  });
   const detailShareValue =
     activeContactId === "profile"
       ? profileShareValue
@@ -4601,31 +4475,7 @@ export default function CashuWalletModal({
     const scannedContactNip05Verified = scannedContact
       ? isNip05VerifiedFor(scannedContact.id, scannedContact.nip05, scannedContact.npub)
       : false;
-    const scannedContactSaved = useMemo(() => {
-      if (!scannedContact) return false;
-      const normalizedTarget = normalizeNostrPubkey(scannedContact.npub || "");
-      const targetHex = normalizedTarget ? compressedToRawHex(normalizedTarget).toLowerCase() : null;
-      return contacts.some((contact) => {
-        if (contact.id === scannedContact.id) return true;
-        if (targetHex) {
-          const normalizedContact = normalizeNostrPubkey(contact.npub || "");
-          const contactHex = normalizedContact ? compressedToRawHex(normalizedContact).toLowerCase() : null;
-          if (contactHex && contactHex === targetHex) return true;
-        }
-        return false;
-      });
-    }, [compressedToRawHex, contacts, normalizeNostrPubkey, scannedContact]);
-    const scannedContactFollowed = useMemo(() => {
-      if (!scannedContact?.npub) return false;
-      const normalized = normalizeNostrPubkey(scannedContact.npub);
-      if (!normalized) return false;
-      const targetHex = compressedToRawHex(normalized).toLowerCase();
-      return (contactSyncMeta.publicFollows || []).some(
-        (follow) => (follow.pubkey || "").toLowerCase() === targetHex,
-      );
-    }, [compressedToRawHex, contactSyncMeta.publicFollows, normalizeNostrPubkey, scannedContact]);
     const scannedContactCanShare = !!scannedContact && contactHasNpub(scannedContact);
-    const scannedContactCanFollow = !!scannedContact && scannedContactSaved && !!scannedContact.npub.trim();
     useEffect(() => {
       if (!scannedContact?.id) return;
       ensureNip05Verification(
@@ -4635,7 +4485,6 @@ export default function CashuWalletModal({
         scannedContact.updatedAt ?? null,
       );
     }, [ensureNip05Verification, scannedContact]);
-    const sharedContactPreviewContact = sharedContactPreview?.contact ?? null;
     const sharedContactPreviewTitle = sharedContactPreviewContact ? contactPrimaryName(sharedContactPreviewContact) : "Contact";
     const sharedContactPreviewUsername = sharedContactPreviewContact
       ? formatContactUsername(sharedContactPreviewContact.username)
@@ -4651,27 +4500,9 @@ export default function CashuWalletModal({
           sharedContactPreviewContact.npub,
         )
       : false;
-    const sharedContactPreviewSaved = useMemo(() => {
-      if (!sharedContactPreviewContact) return false;
-      const normalizedTarget = normalizeNostrPubkey(sharedContactPreviewContact.npub || "");
-      const targetHex = normalizedTarget ? compressedToRawHex(normalizedTarget).toLowerCase() : null;
-      return contacts.some((contact) => {
-        if (contact.id === sharedContactPreviewContact.id) return true;
-        if (targetHex) {
-          const normalizedContact = normalizeNostrPubkey(contact.npub || "");
-          const contactHex = normalizedContact ? compressedToRawHex(normalizedContact).toLowerCase() : null;
-          if (contactHex && contactHex === targetHex) return true;
-        }
-        return false;
-      });
-    }, [compressedToRawHex, contacts, normalizeNostrPubkey, sharedContactPreviewContact]);
+    const scannedContactCanFollow = !!scannedContact && scannedContactSaved && !!scannedContact.npub.trim();
     const sharedContactPreviewCanShare =
       !!sharedContactPreviewContact && contactHasNpub(sharedContactPreviewContact);
-    const sharedContactPreviewCanAccept =
-      !!sharedContactPreview &&
-      sharedContactPreview.status !== "accepted" &&
-      sharedContactPreview.status !== "deleted" &&
-      sharedContactPreview.status !== "dismissed";
     useEffect(() => {
       if (!sharedContactPreviewContact?.id) return;
       ensureNip05Verification(
@@ -4791,115 +4622,8 @@ export default function CashuWalletModal({
       );
       return hasNpub || hasVerifiedNip05;
     }, [detailTarget, isNip05VerifiedFor, normalizeNostrPubkey]);
-    const detailContactFollowed = useMemo(() => {
-      if (!detailTarget?.npub) return false;
-      const normalized = normalizeNostrPubkey(detailTarget.npub);
-      if (!normalized) return false;
-      const targetHex = compressedToRawHex(normalized).toLowerCase();
-      return (contactSyncMeta.publicFollows || []).some(
-        (follow) => (follow.pubkey || "").toLowerCase() === targetHex,
-      );
-    }, [compressedToRawHex, contactSyncMeta.publicFollows, detailTarget, normalizeNostrPubkey]);
     const detailContactCanFollow = !!detailTarget && detailIsNostrContact && !!detailTarget.npub.trim();
     const detailCanAddContact = !!detailTarget && activeContactId !== "profile" && !activeContact;
-  const {
-    contactSubtitle,
-    handleOpenChatEcash,
-    handleOpenChatLightning,
-    groupAvatarMembersFor,
-    openGroupMemberDetail,
-    buildContactFields,
-    verifyContactNip05,
-    ensureNip05Verification,
-    isNip05VerifiedFor,
-    handleSaveScannedContact,
-    handleSaveSharedContactPreview,
-    handleToggleFollowScannedContact,
-    handleStartEditCurrentContact,
-    handleCancelContactEdit,
-    handleToggleFollowDetailContact,
-    handleCopyContactField,
-    processProfilePhotoFile,
-    handleProfilePhotoChange,
-    handleClearProfilePhoto,
-    handleContactEditSubmit,
-  } = useContactDetail({
-    nip05Checks,
-    contacts,
-    contactsRef,
-    contactSyncMeta,
-    contactsSyncEnabled,
-    scannedContact,
-    sharedContactPreview,
-    contactDetailOverride,
-    activeContactId,
-    contactEditDraft,
-    profileForm,
-    profileUpdatedAt,
-    nostrIdentityInfo,
-    myCardName,
-    profileCard,
-    detailTarget,
-    activeContact,
-    detailContactFollowed,
-    scannedContactSaved,
-    scannedContactFollowed,
-    sharedContactPreviewSaved,
-    sharedContactPreviewCanAccept,
-    activeGroupMembers,
-    activeConversationContact,
-    nostrMissingReason,
-    preferredFileServer,
-    fileServers,
-    profilePhotoBusy,
-    nostrIdentityRef,
-    contactsPublishQueuedRef,
-    profilePhotoUploadRef,
-    setNip05Checks,
-    setScannedContact,
-    setSharedContactPreview,
-    setContactDetailOverride,
-    setActiveContactId,
-    setContactEditDraft,
-    setContactReturnView,
-    setContactView,
-    setDmSearch,
-    setChatView,
-    setContactEditError,
-    setContactLookupError,
-    setContactLookupInput,
-    setShowCustomContactFields,
-    setProfilePhotoError,
-    setProfilePhotoBusy,
-    setProfileStatus,
-    setProfileMessage,
-    setProfileForm,
-    normalizeNip05,
-    normalizeNostrPubkey,
-    compressedToRawHex,
-    resolveNip05Record,
-    upsertContact,
-    publishContactsToNostr,
-    persistContactSyncMeta,
-    sanitizeUsername,
-    formatContactNpub,
-    formatContactUsername,
-    showToast,
-    peerLabelFor,
-    openEcashSendToContact,
-    openEcashSendSheet,
-    openLightningSendSheet,
-    applyLightningContact,
-    closeAttachTray,
-    onAcceptMessage,
-    handleReturnToProfileCard,
-    resetContactEditDraft,
-    ensureNostrIdentity,
-    publishProfileMetadata,
-    deriveDefaultLightningAddress,
-    isDataUrl,
-    estimateDataUrlSize,
-  });
 
     const profileHeaderPhoto = profileCard.picture?.trim();
     const contactsHeaderTitle =
@@ -8817,294 +8541,46 @@ export default function CashuWalletModal({
 
         </div>
       )}
-      <ActionSheet
-        open={receiveMode === "ecash"}
-        onClose={closeReceiveEcashSheet}
-        title="Receive eCash"
-        actions={(
-          <button
-            className="ghost-button button-sm pressable"
-            onClick={() => {
-              closeReceiveEcashSheet();
-              openReceiveLightningSheet();
-            }}
-          >
-            Lightning
-          </button>
-        )}
-      >
-        {ecashReceiveView === "overview" ? (
-          <div className="space-y-4">
-            <div className="wallet-section space-y-4">
-              {paymentRequestsEnabled ? (
-                <>
-                  <div className="flex items-center justify-between text-left">
-                    <div className="text-sm font-medium">Payment request</div>
-                    <span className="text-[11px] text-secondary">
-                      {overviewPaymentRequest?.request.singleUse ? "Single-use" : "Multi-use"}
-                    </span>
-                  </div>
-                  {overviewPaymentRequest?.encoded ? (
-                    <>
-                      <div className="flex justify-center">
-                        <QrCodeCard
-                          value={overviewPaymentRequest.encoded}
-                          label="Payment request"
-                          copyLabel="Copy"
-                          size={220}
-                          hideLabel
-                          flat
-                          className="wallet-qr-card--centered"
-                          extraActions={
-                            <div className="flex flex-wrap justify-center gap-2">
-                              <button
-                                className="ghost-button button-sm pressable"
-                                onClick={handleOpenEcashRequestAmountView}
-                              >
-                                Get request
-                              </button>
-                              <button
-                                className="ghost-button button-sm pressable"
-                                onClick={handleOpenReceiveLock}
-                                type="button"
-                              >
-                                Lock
-                              </button>
-                            </div>
-                          }
-                        />
-                      </div>
-                      {paymentRequestStatusMessage && !paymentRequestError && (
-                        <div className="text-[11px] text-secondary text-center">
-                          {paymentRequestStatusMessage}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="text-xs text-secondary text-center">
-                      {nostrMissingReason
-                        ? nostrMissingReason
-                        : "Generate a NUT-18 payment request to collect eCash via Nostr."}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="text-sm text-secondary text-center">
-                  Enable payment requests in Settings to generate a reusable eCash request.
-                </div>
-              )}
-            </div>
-            <button
-              className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-              onClick={() => {
-                void handlePasteEcashClipboard();
-              }}
-            >
-              Paste
-            </button>
-            {paymentRequestError && (
-              <div className="text-[11px] text-rose-500 text-center">{paymentRequestError}</div>
-            )}
-            {recvMsg && <div className="text-xs text-secondary text-center">{recvMsg}</div>}
-          </div>
-        ) : ecashReceiveView === "amount" ? (
-          <div className="space-y-4">
-            <div className="wallet-section wallet-section--compact space-y-4">
-              <div className="space-y-2 text-left">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">Receive to</div>
-                {mintSelectionOptions.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={selectedMintValue}
-                      aria-label="Select mint"
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (next && next !== selectedMintValue) {
-                          void setMintUrl(next);
-                        }
-                      }}
-                    >
-                      {mintSelectionOptions.map((option) => {
-                        const info = mintInfoByUrl[option.normalized];
-                        const label = info?.name || formatMintDisplayName(option.url);
-                        return (
-                          <option key={option.normalized} value={option.normalized}>
-                            {label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input lightning-mint-select__display">
-                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">
-                    Add a mint in Wallet → Mint balances to start receiving.
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
-                onClick={canToggleCurrency ? handleLightningAmountUnitToggle : undefined}
-                disabled={!canToggleCurrency}
-              >
-                <div className="wallet-balance-card__amount lightning-amount-display__primary">
-                  {ecashRequestPrimaryAmountText}
-                </div>
-                <div className="wallet-balance-card__secondary lightning-amount-display__secondary">
-                  {ecashRequestSecondaryAmountText}
-                </div>
-              </button>
-              <div className="grid grid-cols-2 gap-2 text-xs font-semibold">
-                <button
-                  type="button"
-                  className={`glass-panel pressable py-0.5 transition-colors ${
-                    ecashRequestMode === "single"
-                      ? "border border-accent text-accent"
-                      : "border border-transparent text-secondary"
-                  }`}
-                  onClick={() => handleSetEcashRequestMode("single")}
-                >
-                  Single-use
-                </button>
-                <button
-                  type="button"
-                  className={`glass-panel pressable py-0.5 transition-colors ${
-                    ecashRequestMode === "multi"
-                      ? "border border-accent text-accent"
-                      : "border border-transparent text-secondary"
-                  }`}
-                  onClick={() => handleSetEcashRequestMode("multi")}
-                >
-                  Multi-use
-                </button>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                {(primaryCurrency === "usd"
-                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
-                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
-                ).map((key) => {
-                  const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      className="glass-panel pressable py-3 text-lg font-semibold"
-                      onClick={() => handleEcashRequestKeypadInput(handlerKey)}
-                    >
-                      {key === "clear" ? "Clear" : key}
-                    </button>
-                  );
-                })}
-              </div>
-              <button
-                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                onClick={() => {
-                  void handleCreateEcashRequest();
-                }}
-                disabled={!canCreateEcashRequest}
-              >
-                Get request
-              </button>
-              {paymentRequestError && (
-                <div className="text-sm text-rose-400 text-center">{paymentRequestError}</div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {lastCreatedEcashRequest ? (
-              <div className="wallet-section wallet-section--compact space-y-4">
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    className="flex items-center gap-2 text-secondary hover:text-primary transition-colors pressable"
-                    onClick={() => {
-                      handleOpenEcashRequestAmountView();
-                    }}
-                  >
-                    <BackIcon className="h-4 w-4" />
-                    New request
-                  </button>
-                  <div className="text-sm font-medium text-secondary">
-                    {lastCreatedEcashRequest.request.singleUse ? "Single-use" : "Multi-use"}
-                  </div>
-                </div>
-                <div className="flex justify-center">
-                  <QrCodeCard
-                    value={lastCreatedEcashRequest.encoded}
-                    label="Payment request"
-                    copyLabel="Copy request"
-                    size={240}
-                  />
-                </div>
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-secondary">Amount</span>
-                    <span className="font-semibold">
-                      {typeof lastCreatedEcashRequest.amountSat === "number"
-                        ? `${satFormatter.format(lastCreatedEcashRequest.amountSat)} SAT`
-                        : "Open amount"}
-                    </span>
-                  </div>
-                  {walletConversionEnabled &&
-                    btcUsdPrice != null &&
-                    btcUsdPrice > 0 &&
-                    typeof lastCreatedEcashRequest.amountSat === "number" && (
-                      <div className="flex items-center justify-between text-secondary">
-                        <span>USD</span>
-                        <span>
-                          {formatUsdAmount(
-                            (lastCreatedEcashRequest.amountSat / SATS_PER_BTC) * btcUsdPrice,
-                          )}
-                        </span>
-                      </div>
-                    )}
-                  <div className="flex items-center justify-between">
-                    <span className="text-secondary">Mint</span>
-                    <span className="font-medium break-all">{trimMintUrlScheme(mintUrl || "—")}</span>
-                  </div>
-                  {lastCreatedEcashRequest.lockPubkey && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-secondary">Lock</span>
-                      <span className="font-medium break-all">{lastCreatedEcashRequest.lockPubkey}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="wallet-section text-sm text-secondary">Create a request to view its details.</div>
-            )}
-            <div className="flex flex-wrap justify-center gap-2 text-sm">
-              <button
-                type="button"
-                className="ghost-button button-sm pressable"
-                onClick={() => {
-                  handleOpenEcashRequestAmountView();
-                }}
-              >
-                New request
-              </button>
-              <button
-                type="button"
-                className="ghost-button button-sm pressable"
-                onClick={() => {
-                  void ensureOpenPaymentRequest();
-                  setLastCreatedEcashRequest(null);
-                  setEcashReceiveView("overview");
-                }}
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        )}
-      </ActionSheet>
+      <EcashReceiveSheet
+        receiveMode={receiveMode}
+        closeReceiveEcashSheet={closeReceiveEcashSheet}
+        openReceiveLightningSheet={openReceiveLightningSheet}
+        ecashReceiveView={ecashReceiveView}
+        paymentRequestsEnabled={paymentRequestsEnabled}
+        overviewPaymentRequest={overviewPaymentRequest}
+        handleOpenEcashRequestAmountView={handleOpenEcashRequestAmountView}
+        handleOpenReceiveLock={handleOpenReceiveLock}
+        paymentRequestStatusMessage={paymentRequestStatusMessage}
+        paymentRequestError={paymentRequestError}
+        nostrMissingReason={nostrMissingReason}
+        handlePasteEcashClipboard={handlePasteEcashClipboard}
+        recvMsg={recvMsg}
+        mintSelectionOptions={mintSelectionOptions}
+        selectedMintValue={selectedMintValue}
+        setMintUrl={setMintUrl}
+        mintInfoByUrl={mintInfoByUrl}
+        selectedMintLabel={selectedMintLabel}
+        selectedMintBalanceLabel={selectedMintBalanceLabel}
+        canToggleCurrency={canToggleCurrency}
+        handleLightningAmountUnitToggle={handleLightningAmountUnitToggle}
+        ecashRequestPrimaryAmountText={ecashRequestPrimaryAmountText}
+        ecashRequestSecondaryAmountText={ecashRequestSecondaryAmountText}
+        ecashRequestMode={ecashRequestMode}
+        handleSetEcashRequestMode={handleSetEcashRequestMode}
+        primaryCurrency={primaryCurrency}
+        handleEcashRequestKeypadInput={handleEcashRequestKeypadInput}
+        canCreateEcashRequest={canCreateEcashRequest}
+        handleCreateEcashRequest={handleCreateEcashRequest}
+        lastCreatedEcashRequest={lastCreatedEcashRequest}
+        satFormatter={satFormatter}
+        walletConversionEnabled={walletConversionEnabled}
+        btcUsdPrice={btcUsdPrice}
+        formatUsdAmount={formatUsdAmount}
+        mintUrl={mintUrl}
+        ensureOpenPaymentRequest={ensureOpenPaymentRequest}
+        setLastCreatedEcashRequest={setLastCreatedEcashRequest}
+        setEcashReceiveView={setEcashReceiveView}
+      />
 
       <ActionSheet
         open={receiveLockVisible}
@@ -9163,227 +8639,45 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-      <ActionSheet
-        open={receiveMode === "lightning"}
-        onClose={closeReceiveLightningSheet}
-        title="Receive Lightning"
-        actions={(
-          <button
-            className="ghost-button button-sm pressable"
-            onClick={() => {
-              closeReceiveLightningSheet();
-              openReceiveEcashSheet();
-            }}
-          >
-            ecash
-          </button>
-        )}
-      >
-        <div className="space-y-4">
-          {lightningReceiveView === "address" && (
-            <div className="space-y-4">
-              <div className="wallet-section space-y-4 text-center">
-                {npubCashLightningAddressEnabled ? (
-                  npubCashIdentity ? (
-                    <>
-                      <div className="flex justify-center">
-                        <QrCodeCard
-                          value={npubCashIdentity.address}
-                          label="Lightning address"
-                          size={240}
-                          flat
-                          hideCopyButton
-                          className="wallet-qr-card--centered"
-                        />
-                      </div>
-                      <div className="flex justify-center gap-3">
-                        <button
-                          type="button"
-                          className="ghost-button button-sm pressable"
-                          onClick={() => {
-                            void handleClaimNpubCash();
-                          }}
-                          disabled={!npubCashLightningAddressEnabled || npubCashClaimStatus === "checking"}
-                        >
-                          {npubCashClaimStatus === "checking" ? "Checking…" : "Redeem"}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button button-sm pressable"
-                          onClick={handleCopyLightningAddress}
-                          disabled={!npubCashIdentity?.address}
-                        >
-                          {lightningAddressCopied ? "Copied" : "Copy"}
-                        </button>
-                      </div>
-                      <div className="text-sm font-medium text-primary break-words">
-                        {lightningAddressDisplay}
-                      </div>
-                      {npubCashClaimMessage && (
-                        <div
-                          className={`text-sm ${
-                            npubCashClaimStatus === "error"
-                              ? "text-rose-400"
-                              : npubCashClaimStatus === "success"
-                                ? "text-emerald-400"
-                                : "text-secondary"
-                          }`}
-                        >
-                          {npubCashClaimMessage}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="text-sm text-secondary">
-                      {npubCashIdentityError || "Add your Taskify Nostr key to enable npub.cash."}
-                    </div>
-                  )
-                ) : (
-                  <div className="text-sm text-secondary">
-                    Lightning address disabled. Use Amount to create an invoice.
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                onClick={handleOpenLightningAmountView}
-              >
-                Create Invoice
-              </button>
-            </div>
-          )}
-          {lightningReceiveView === "amount" && (
-            <div className="wallet-section space-y-5">
-              <div className="space-y-2 text-left">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">Receive to</div>
-                {mintSelectionOptions.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={selectedMintValue}
-                      aria-label="Select mint"
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (next && next !== selectedMintValue) {
-                          void setMintUrl(next);
-                        }
-                      }}
-                    >
-                      {mintSelectionOptions.map((option) => {
-                        const info = mintInfoByUrl[option.normalized];
-                        const label = info?.name || formatMintDisplayName(option.url);
-                        return (
-                          <option key={option.normalized} value={option.normalized}>
-                            {label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input lightning-mint-select__display">
-                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">
-                    Add a mint in Wallet → Mint balances to start receiving.
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
-                onClick={canToggleCurrency ? handleLightningAmountUnitToggle : undefined}
-                disabled={!canToggleCurrency}
-              >
-                <div className="wallet-balance-card__amount lightning-amount-display__primary">
-                  {lightningPrimaryAmountText}
-                </div>
-                <div className="wallet-balance-card__secondary lightning-amount-display__secondary">
-                  {lightningSecondaryAmountText}
-                </div>
-              </button>
-              <div className="grid grid-cols-3 gap-3">
-                {(primaryCurrency === "usd"
-                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
-                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
-                ).map((key) => {
-                  const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      className="glass-panel pressable py-3 text-lg font-semibold"
-                      onClick={() => handleLightningAmountKeypadInput(handlerKey)}
-                    >
-                      {key === "clear" ? "Clear" : key}
-                    </button>
-                  );
-                })}
-              </div>
-              <button
-                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                onClick={handleCreateInvoice}
-                disabled={!canCreateMintInvoice || creatingMintInvoice}
-              >
-                {creatingMintInvoice ? (
-                  <span className="inline-flex items-center gap-1">
-                    Creating
-                    <AnimatedEllipsis />
-                  </span>
-                ) : (
-                  "Create invoice"
-                )}
-              </button>
-              {mintError && <div className="text-sm text-rose-400 text-center">{mintError}</div>}
-            </div>
-          )}
-          {lightningReceiveView === "invoice" && mintQuote && activeMintInvoice && (
-            <div className="space-y-4">
-              <div className="wallet-section space-y-4">
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    className="flex items-center gap-2 text-secondary hover:text-primary transition-colors pressable"
-                    onClick={handleLightningInvoiceBack}
-                  >
-                    <BackIcon className="h-4 w-4" />
-                    New invoice
-                  </button>
-                  <div className="text-sm font-medium text-secondary">{lightningInvoiceStatusLabel}</div>
-                </div>
-                <div className="flex justify-center">
-                  <QrCodeCard
-                    value={mintQuote.request}
-                    label="Lightning invoice"
-                    copyLabel="Copy invoice"
-                    size={240}
-                  />
-                </div>
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-secondary">Amount</span>
-                    <span className="font-semibold">{satFormatter.format(activeMintInvoice.amountSat)} SAT</span>
-                  </div>
-                  {invoiceAmountSecondary && (
-                    <div className="flex items-center justify-between text-secondary">
-                      <span>USD</span>
-                      <span>{invoiceAmountSecondary}</span>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between">
-                    <span className="text-secondary">Mint</span>
-                    <span className="font-medium break-all">{trimMintUrlScheme(mintUrl || "—")}</span>
-                  </div>
-                </div>
-                {mintError && <div className="text-sm text-rose-400">{mintError}</div>}
-              </div>
-            </div>
-          )}
-        </div>
-      </ActionSheet>
+      <LightningReceiveSheet
+        receiveMode={receiveMode}
+        closeReceiveLightningSheet={closeReceiveLightningSheet}
+        openReceiveEcashSheet={openReceiveEcashSheet}
+        lightningReceiveView={lightningReceiveView}
+        npubCashLightningAddressEnabled={npubCashLightningAddressEnabled}
+        npubCashIdentity={npubCashIdentity}
+        npubCashClaimStatus={npubCashClaimStatus}
+        handleClaimNpubCash={handleClaimNpubCash}
+        handleCopyLightningAddress={handleCopyLightningAddress}
+        lightningAddressCopied={lightningAddressCopied}
+        lightningAddressDisplay={lightningAddressDisplay}
+        npubCashClaimMessage={npubCashClaimMessage}
+        npubCashIdentityError={npubCashIdentityError}
+        handleOpenLightningAmountView={handleOpenLightningAmountView}
+        mintSelectionOptions={mintSelectionOptions}
+        selectedMintValue={selectedMintValue}
+        setMintUrl={setMintUrl}
+        mintInfoByUrl={mintInfoByUrl}
+        selectedMintLabel={selectedMintLabel}
+        selectedMintBalanceLabel={selectedMintBalanceLabel}
+        canToggleCurrency={canToggleCurrency}
+        handleLightningAmountUnitToggle={handleLightningAmountUnitToggle}
+        lightningPrimaryAmountText={lightningPrimaryAmountText}
+        lightningSecondaryAmountText={lightningSecondaryAmountText}
+        primaryCurrency={primaryCurrency}
+        handleLightningAmountKeypadInput={handleLightningAmountKeypadInput}
+        handleCreateInvoice={handleCreateInvoice}
+        canCreateMintInvoice={canCreateMintInvoice}
+        creatingMintInvoice={creatingMintInvoice}
+        mintError={mintError}
+        mintQuote={mintQuote}
+        activeMintInvoice={activeMintInvoice}
+        handleLightningInvoiceBack={handleLightningInvoiceBack}
+        lightningInvoiceStatusLabel={lightningInvoiceStatusLabel}
+        satFormatter={satFormatter}
+        invoiceAmountSecondary={invoiceAmountSecondary}
+        mintUrl={mintUrl}
+      />
 
       <ActionSheet open={receiveMode === "lnurlWithdraw"} onClose={closeReceiveLnurlWithdrawSheet} title="LNURL Withdraw">
         {lnurlWithdrawInfo ? (
@@ -9439,352 +8733,52 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-	      <ActionSheet
-	        open={sendMode === "ecash"}
-	        onClose={closeEcashSendSheet}
-	        header={
-	          ecashSendView === "contact" && ecashSendRecipient ? (
-	            <>
-	              <div className="text-sm font-semibold">
-	                {(() => {
-	                  const nip05 = ecashSendRecipient.nip05?.trim() || "";
-	                  const nip05Verified = nip05 && isNip05VerifiedFor(ecashSendRecipient.id, nip05, ecashSendRecipient.npub);
-	                  const label = nip05Verified ? nip05 : contactPrimaryName(ecashSendRecipient);
-	                  return `Send to ${truncateContactName(label, 34)}`;
-	                })()}
-	              </div>
-	              <div className="flex items-center gap-2 ml-auto">
-	                <button
-	                  className="ghost-button button-sm pressable"
-	                  onClick={() => openContactsFor("ecash")}
-	                >
-	                  Contacts
-	                </button>
-	                <button className="ghost-button button-sm pressable" onClick={closeEcashSendSheet}>
-	                  Close
-	                </button>
-	              </div>
-	            </>
-	          ) : undefined
-	        }
-	        title={
-	          ecashSendView === "contact" && ecashSendRecipient
-	            ? (() => {
-	                const nip05 = ecashSendRecipient.nip05?.trim() || "";
-	                const nip05Verified = nip05 && isNip05VerifiedFor(ecashSendRecipient.id, nip05, ecashSendRecipient.npub);
-	                const label = nip05Verified ? nip05 : contactPrimaryName(ecashSendRecipient);
-	                return `Send to ${truncateContactName(label, 34)}`;
-	              })()
-	            : "Send eCash"
-	        }
-	        actions={
-	          ecashSendView === "contact" ? (
-	            <button
-	              className="ghost-button button-sm pressable"
-	              onClick={() => openContactsFor("ecash")}
-	            >
-	              Contacts
-	            </button>
-	          ) : (
-	            <div className="flex items-center gap-2">
-	              <button
-	                className="glass-panel pressable rounded-full p-2"
-	                type="button"
-	                onClick={() => {
-	                  if (lockSendToPubkey) {
-	                    handleClearSendLock();
-	                  } else {
-	                    void handlePasteSendLock();
-	                  }
-	                }}
-	                title={lockSendToPubkey ? "Clear P2PK lock" : "Paste P2PK locking key"}
-	                aria-label={lockSendToPubkey ? "Clear P2PK lock" : "Paste P2PK locking key"}
-	              >
-	                <LockIcon className={`h-4 w-4 ${lockSendToPubkey ? "text-accent" : "text-white"}`} />
-	              </button>
-	              <button
-	                className="ghost-button button-sm pressable"
-	                onClick={() => {
-	                  closeEcashSendSheet();
-	                  openLightningSendSheet();
-	                }}
-	              >
-	                Lightning
-	              </button>
-	            </div>
-	          )
-	        }
-	        panelClassName={ecashSendView === "contact" ? "sheet-panel--compact" : undefined}
-	      >
-        {ecashSendView === "amount" && (
-          <div className="space-y-4">
-            <div className="wallet-section wallet-section--compact space-y-3">
-              {sendTokenStr && (
-                <button
-                  type="button"
-                  className="ghost-button button-sm pressable w-full justify-between"
-                  onClick={() => setEcashSendView("token")}
-                >
-                  <span>View last token</span>
-                  <span className="text-tertiary">→</span>
-                </button>
-              )}
-              <div className="space-y-2 text-left">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">Send from</div>
-                {mintSelectionOptions.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={selectedMintValue}
-                      aria-label="Select mint"
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (next && next !== selectedMintValue) {
-                          void setMintUrl(next);
-                        }
-                      }}
-                    >
-                      {mintSelectionOptions.map((option) => {
-                        const info = mintInfoByUrl[option.normalized];
-                        const label = info?.name || formatMintDisplayName(option.url);
-                        return (
-                          <option key={option.normalized} value={option.normalized}>
-                            {label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input lightning-mint-select__display">
-                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">
-                    Add a mint in Wallet → Mint balances to start sending.
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
-                onClick={canToggleCurrency ? handleTogglePrimary : undefined}
-                disabled={!canToggleCurrency}
-              >
-                <div className="wallet-balance-card__amount lightning-amount-display__primary">{ecashPrimaryAmountText}</div>
-                <div className="wallet-balance-card__secondary lightning-amount-display__secondary">{ecashSecondaryAmountText}</div>
-              </button>
-              {sendLockError && <div className="text-[11px] text-rose-500">{sendLockError}</div>}
-              <div className="grid grid-cols-2 gap-2 text-xs font-semibold">
-                <button
-                  type="button"
-                  className="glass-panel pressable py-0.5"
-                  onClick={() => openContactsFor("ecash")}
-                >
-                  Contacts
-                </button>
-                <button
-                  type="button"
-                  className="glass-panel pressable py-0.5"
-                  onClick={() => {
-                    void handlePasteEcashInput();
-                  }}
-                >
-                  Paste
-                </button>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {(primaryCurrency === "usd"
-                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
-                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
-                ).map((key) => {
-                  const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      className="glass-panel pressable py-3 text-lg font-semibold"
-                      onClick={() => handleEcashAmountKeypadInput(handlerKey)}
-                    >
-                      {key === "clear" ? "Clear" : key}
-                    </button>
-                  );
-                })}
-              </div>
-              <button
-                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                onClick={handleCreateSendToken}
-                disabled={!mintUrl || creatingSendToken || tokenAlreadyCreatedForAmount || !canCreateSendTokenAmount}
-              >
-                {creatingSendToken ? "Creating…" : "Get token"}
-              </button>
-              {tokenAlreadyCreatedForAmount && (
-                <div className="text-xs text-secondary">
-                  Token already created for this amount with the current lock settings. Update the parameters to mint another.
-                </div>
-              )}
-            </div>
-          </div>
-	        )}
-	        {ecashSendView === "contact" && ecashSendRecipient && (
-	          <div className="space-y-4">
-	            <div className="wallet-section wallet-section--compact space-y-3">
-	              <div className="space-y-2 text-left">
-	                <div className="text-[11px] uppercase tracking-wide text-secondary">Send from</div>
-	                {mintSelectionOptions.length ? (
-	                  <div className="relative">
-	                    <select
-	                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-	                      value={selectedMintValue}
-	                      aria-label="Select mint"
-	                      onChange={(event) => {
-	                        const next = event.target.value;
-	                        if (next && next !== selectedMintValue) {
-	                          void setMintUrl(next);
-	                        }
-	                      }}
-	                    >
-	                      {mintSelectionOptions.map((option) => {
-	                        const info = mintInfoByUrl[option.normalized];
-	                        const label = info?.name || formatMintDisplayName(option.url);
-	                        return (
-	                          <option key={option.normalized} value={option.normalized}>
-	                            {label}
-	                          </option>
-	                        );
-	                      })}
-	                    </select>
-	                    <div className="pill-input lightning-mint-select__display">
-	                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-	                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-	                    </div>
-	                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-	                  </div>
-	                ) : (
-	                  <div className="text-sm text-secondary">Add a mint in Wallet → Mint balances to send eCash.</div>
-	                )}
-	              </div>
-	              <button
-	                type="button"
-	                className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
-	                onClick={canToggleCurrency ? handleTogglePrimary : undefined}
-	                disabled={!canToggleCurrency}
-	              >
-	                <div className="wallet-balance-card__amount lightning-amount-display__primary">
-	                  {ecashPrimaryAmountText}
-	                </div>
-	                <div className="wallet-balance-card__secondary lightning-amount-display__secondary">
-	                  {ecashSecondaryAmountText}
-	                </div>
-	              </button>
-	              {sendLockError && <div className="text-[11px] text-rose-500">{sendLockError}</div>}
-	              <div className="grid grid-cols-3 gap-2">
-	                {(primaryCurrency === "usd"
-	                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
-	                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
-	                ).map((key) => {
-	                  const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
-	                  return (
-	                    <button
-	                      key={key}
-	                      type="button"
-	                      className="glass-panel pressable py-3 text-lg font-semibold"
-	                      onClick={() => handleEcashAmountKeypadInput(handlerKey)}
-	                    >
-	                      {key === "clear" ? "Clear" : key}
-	                    </button>
-	                  );
-	                })}
-	              </div>
-	              <button
-	                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-	                onClick={() => {
-	                  void applyEcashContact(ecashSendRecipient);
-	                }}
-	                disabled={!mintUrl || creatingSendToken || !canCreateSendTokenAmount}
-	              >
-	                {creatingSendToken ? (
-	                  <span className="inline-flex items-center gap-1">
-	                    Sending
-	                    <AnimatedEllipsis />
-	                  </span>
-	                ) : (
-	                  "Pay via nostr"
-	                )}
-	              </button>
-	            </div>
-	          </div>
-	        )}
-        {ecashSendView === "contact" && !ecashSendRecipient && (
-          <div className="wallet-section text-sm text-secondary">Select a contact to continue.</div>
-        )}
-        {ecashSendView === "token" && sendTokenStr && (
-          <div className="space-y-4">
-            <div className="wallet-section space-y-4">
-              <div className="flex items-center justify-between">
-                <button
-                  type="button"
-                  className="flex items-center gap-2 text-secondary hover:text-primary transition-colors pressable"
-                  onClick={handleOpenEcashAmountView}
-                >
-                  <BackIcon className="h-4 w-4" />
-                  New token
-                </button>
-                {lastSendTokenLockLabel && (
-                  <div className="text-sm font-medium text-secondary text-right">{lastSendTokenLockLabel}</div>
-                )}
-              </div>
-              <div className="flex justify-center">
-                <QrCodeCard
-                  className="bg-surface-muted border border-surface rounded-2xl p-3 text-xs"
-                  value={sendTokenStr}
-                  label="Token"
-                  copyLabel="Copy token"
-                  extraActions={
-                    peanutSendToken ? (
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable"
-                        onClick={handleCopyNutToken}
-                        aria-label="Copy nut-encoded token"
-                        title="Copy nut-encoded token"
-                      >
-                        {nutTokenCopied ? "Copied" : "Nut"}
-                      </button>
-                    ) : undefined
-                  }
-                  size={240}
-                  enableNut16Animation
-                />
-              </div>
-              <div className="space-y-2 text-sm">
-                {lastSendTokenAmount != null && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-secondary">Amount</span>
-                    <span className="font-semibold">{satFormatter.format(lastSendTokenAmount)} SAT</span>
-                  </div>
-                )}
-                {walletConversionEnabled && btcUsdPrice != null && btcUsdPrice > 0 && lastSendTokenAmount != null && (
-                  <div className="flex items-center justify-between text-secondary">
-                    <span>USD</span>
-                    <span>{formatUsdAmount((lastSendTokenAmount / SATS_PER_BTC) * btcUsdPrice)}</span>
-                  </div>
-                )}
-                {lastSendTokenMint && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-secondary">Mint</span>
-                    <span className="font-medium break-all">{trimMintUrlScheme(lastSendTokenMint)}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-        {ecashSendView === "token" && !sendTokenStr && (
-          <div className="wallet-section text-sm text-secondary">Create a token to share.</div>
-        )}
-      </ActionSheet>
+      <EcashSendSheet
+        sendMode={sendMode}
+        closeEcashSendSheet={closeEcashSendSheet}
+        openLightningSendSheet={openLightningSendSheet}
+        ecashSendView={ecashSendView}
+        ecashSendRecipient={ecashSendRecipient}
+        isNip05VerifiedFor={isNip05VerifiedFor}
+        truncateContactName={truncateContactName}
+        openContactsFor={openContactsFor}
+        lockSendToPubkey={lockSendToPubkey}
+        handleClearSendLock={handleClearSendLock}
+        handlePasteSendLock={handlePasteSendLock}
+        mintSelectionOptions={mintSelectionOptions}
+        selectedMintValue={selectedMintValue}
+        setMintUrl={setMintUrl}
+        mintInfoByUrl={mintInfoByUrl}
+        selectedMintLabel={selectedMintLabel}
+        selectedMintBalanceLabel={selectedMintBalanceLabel}
+        canToggleCurrency={canToggleCurrency}
+        handleTogglePrimary={handleTogglePrimary}
+        ecashPrimaryAmountText={ecashPrimaryAmountText}
+        ecashSecondaryAmountText={ecashSecondaryAmountText}
+        sendLockError={sendLockError}
+        primaryCurrency={primaryCurrency}
+        handleEcashAmountKeypadInput={handleEcashAmountKeypadInput}
+        sendTokenStr={sendTokenStr}
+        setEcashSendView={setEcashSendView}
+        handleCreateSendToken={handleCreateSendToken}
+        creatingSendToken={creatingSendToken}
+        tokenAlreadyCreatedForAmount={tokenAlreadyCreatedForAmount}
+        canCreateSendTokenAmount={canCreateSendTokenAmount}
+        applyEcashContact={applyEcashContact}
+        handleOpenEcashAmountView={handleOpenEcashAmountView}
+        lastSendTokenLockLabel={lastSendTokenLockLabel}
+        peanutSendToken={peanutSendToken}
+        handleCopyNutToken={handleCopyNutToken}
+        nutTokenCopied={nutTokenCopied}
+        lastSendTokenAmount={lastSendTokenAmount}
+        satFormatter={satFormatter}
+        walletConversionEnabled={walletConversionEnabled}
+        btcUsdPrice={btcUsdPrice}
+        formatUsdAmount={formatUsdAmount}
+        lastSendTokenMint={lastSendTokenMint}
+        handlePasteEcashInput={handlePasteEcashInput}
+        mintUrl={mintUrl}
+      />
 
       <ActionSheet
         open={contactsOpen && contactsContext !== null}
@@ -9799,475 +8793,68 @@ export default function CashuWalletModal({
         )}
       </ActionSheet>
 
-      <ActionSheet
-        open={contactsPanelOpen}
-        onClose={closeContactsTab}
-        header={contactsHeader}
-        stackLevel={contactsPanelInline ? undefined : 70}
-        panelClassName="sheet-panel--tall contacts-panel"
-        inline={contactsPanelInline}
-      >
-        <div
-          ref={contactsPanelRef}
-          className="contacts-shell"
-          aria-busy={contactSyncState.status === "loading" || contactsPublishState === "publishing"}
-        >
-          {contactView === "list" && (
-            <div className="contacts-list-view">
-              {(() => {
-                const profileSubtitleIsNip05 =
-                  !!profileCard.nip05 &&
-                  !!myCardSubtitle &&
-                  normalizeNip05(profileCard.nip05) === normalizeNip05(myCardSubtitle);
-                const profileNip05Verified =
-                  profileSubtitleIsNip05 &&
-                  isNip05VerifiedFor(profileCard.id, profileCard.nip05, profileCard.npub);
-                const profilePhoto = profileCard.picture?.trim();
-
-                return (
-                  <button
-                    type="button"
-                    className="contact-row contact-row--profile pressable"
-                    onClick={() => {
-                      setActiveContactId("profile");
-                      setContactView("detail");
-                    }}
-                  >
-                    <div
-                      className={
-                        profilePhoto
-                          ? "contact-avatar contact-avatar--image contact-avatar--profile"
-                          : "contact-avatar contact-avatar--profile"
-                      }
-                    >
-                      {profilePhoto ? (
-                        <img src={profilePhoto} alt={myCardName} className="contact-avatar__img" />
-                      ) : (
-                        contactInitials(myCardName)
-                      )}
-                    </div>
-                    <div className="contact-row__text">
-                      <div className="contact-row__name">{myCardName}</div>
-                      <div
-                        className={`contact-row__meta${
-                          profileSubtitleIsNip05 ? " contact-row__meta--nip05" : ""
-                        }`}
-                      >
-                        <span className="contact-row__meta-text">{myCardSubtitle}</span>
-                        {profileSubtitleIsNip05 && profileNip05Verified && (
-                          <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
-                        )}
-                      </div>
-                    </div>
-                    <span className="contact-chevron">›</span>
-                  </button>
-                );
-              })()}
-
-              <div className="contact-list">
-                {sortedContacts.length > 0 ? (
-                  sortedContacts.map((contact) => {
-                    const displayName = contactDisplayLabel(contact);
-                    const displayNameTrimmed = truncateContactName(displayName);
-                    const subtitle = contactSubtitle(contact) || "No details added";
-                    const subtitleIsNip05 =
-                      !!contact.nip05 &&
-                      !!subtitle &&
-                      normalizeNip05(contact.nip05) === normalizeNip05(subtitle);
-                    const nip05Verified =
-                      subtitleIsNip05 && isNip05VerifiedFor(contact.id, contact.nip05, contact.npub);
-                    const photo = contact.picture?.trim();
-                    return (
-                      <button
-                        key={contact.id}
-                        type="button"
-                        className="contact-row pressable"
-                        onClick={() => {
-                          setActiveContactId(contact.id);
-                          setContactView("detail");
-                        }}
-                      >
-                        <div className={photo ? "contact-avatar contact-avatar--image" : "contact-avatar"}>
-                          {photo ? (
-                            <img src={photo} alt={displayName} className="contact-avatar__img" />
-                        ) : (
-                          contactInitials(displayName)
-                        )}
-                      </div>
-                      <div className="contact-row__text">
-                        <div className="contact-row__name">{displayNameTrimmed}</div>
-                        <div
-                          className={`contact-row__meta${subtitleIsNip05 ? " contact-row__meta--nip05" : ""}`}
-                        >
-                          <span className="contact-row__meta-text">{subtitle}</span>
-                          {subtitleIsNip05 && nip05Verified && (
-                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
-                          )}
-                        </div>
-                      </div>
-                      <span className="contact-chevron">›</span>
-                    </button>
-                  );
-                })
-                ) : (
-                  <div className="contact-empty text-secondary">No saved contacts yet. Tap + to add one.</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {contactView === "detail" && detailTarget && (
-            <div className="contact-detail-view">
-              <div className="contact-hero">
-                <div className="contact-hero__center">
-                  <div className="contact-qr-wrapper">
-                    {detailShareValue ? (
-                          <QrCodeCard
-                          className="contact-qr-card"
-                          value={detailShareValue}
-                          label={detailTitle}
-                          size={200}
-                          flat
-                          hideLabel
-                          hideCopyButton
-                        />
-                    ) : (
-                      <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
-                    )}
-                  </div>
-                  <div
-                    className={`contact-heading${detailTarget.picture ? "" : " contact-heading--text-only"}`}
-                  >
-                    {detailTarget.picture && (
-                      <img src={detailTarget.picture} alt={detailTitle} className="contact-portrait" />
-                    )}
-                <div className="contact-heading__text">
-                  <div className="flex items-center gap-2">
-                    <div className="contact-name-lg" title={detailTitle}>
-                      {truncateContactName(detailTitle, 34)}
-                    </div>
-                    {activeContactId === "profile" && profileCard.npub && (
-                      <button
-                        type="button"
-                        className="contact-pill contact-pill--circle pressable"
-                        title="Share your npub"
-                        onClick={() => {
-                          setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
-                          setShareContactStatus(null);
-                          setShareContactPickerMode("recipient");
-                          setShareContactPickerOpen(true);
-                        }}
-                      >
-                        <ShareArrowIcon className="contact-pill__icon" />
-                      </button>
-                    )}
-                  </div>
-                  {detailUsername && (
-                    <div className="contact-username" title={detailUsername}>
-                      {truncateContactValue(detailUsername, 33)}
-                    </div>
-                  )}
-                </div>
-                  </div>
-                </div>
-              </div>
-
-              {activeContact &&
-                (detailHasLightning || detailCanShare) && (
-                  <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
-                    {detailHasLightning && (
-                      <button
-                        type="button"
-                        className="contact-pill pressable"
-                        onClick={() => {
-                          applyLightningContact(activeContact);
-                          setContactsTabOpen(false);
-                        }}
-                      >
-                        Pay lightning
-                      </button>
-                    )}
-                    {detailCanShare && (
-                      <button
-                        type="button"
-                        className="contact-pill pressable"
-                        onClick={() => {
-                          openEcashSendToContact(activeContact);
-                          setContactsTabOpen(false);
-                        }}
-                      >
-                        Pay eCash
-                      </button>
-                    )}
-                    {detailCanShare && (
-                      <button
-                        type="button"
-                        className="contact-pill contact-pill--circle pressable"
-                        title="Share contact"
-                        onClick={() => {
-                          setShareContactSource(activeContact);
-                          setShareContactStatus(null);
-                          setShareContactPickerMode("recipient");
-                          setShareContactPickerOpen(true);
-                        }}
-                      >
-                        <ShareArrowIcon className="contact-pill__icon" />
-                      </button>
-                    )}
-                  </div>
-              )}
-
-              <div className="contact-fields">
-                {detailFields.length ? (
-                  detailFields.map((field) => {
-                    const isNip05Field = field.key === "nip05";
-                    return (
-                      <div key={field.key} className="contact-field">
-                        <div className="contact-field__label">{field.label}</div>
-                        <button
-                          type="button"
-                          className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
-                            isNip05Field ? " contact-field__value--nip05" : ""
-                          }`}
-                          onClick={() => handleCopyContactField(field.value, field.label)}
-                          title={field.value}
-                        >
-                          <span className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}>
-                            {field.multiline ? field.value : truncateContactValue(field.value, 36)}
-                          </span>
-                          {isNip05Field && detailNip05Verified && (
-                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
-                          )}
-                        </button>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
-                )}
-              </div>
-
-              {activeContact && (
-                <div className="contact-actions-row">
-                  <button
-                    type="button"
-                    className="contact-pill contact-pill--danger pressable"
-                    onClick={() => {
-                      if (window.confirm("Remove this contact?")) {
-                        handleDeleteContact(activeContact.id);
-                        setContactView("list");
-                        setActiveContactId(null);
-                      }
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {contactView === "detail" && !detailTarget && (
-            <div className="contact-empty text-secondary">
-              Contact not found.{" "}
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 text-primary underline"
-                onClick={() => {
-                  setContactView("list");
-                  setActiveContactId(null);
-                }}
-              >
-                Go back
-              </button>
-            </div>
-          )}
-
-          {contactView === "edit" &&
-            (() => {
-              const profilePhoto = contactEditDraft.picture.trim();
-              const profileInitials =
-                contactEditDraft.displayName ||
-                contactEditDraft.name ||
-                contactEditDraft.username ||
-                myCardName;
-              const showContactFields = contactEditDraft.isProfile || showCustomContactFields;
-
-              return (
-                <form
-                  id="contact-edit-form"
-                  className="contact-edit-view"
-                  onSubmit={(event) => event.preventDefault()}
-                >
-                  {contactEditDraft.isProfile ? (
-                    <div className="contact-photo-card">
-                      <div className="contact-photo-title">Profile photo</div>
-                      <div className="contact-photo-body">
-                        <div
-                          className={
-                            profilePhoto
-                              ? "contact-avatar contact-avatar--image contact-avatar--xl"
-                              : "contact-avatar contact-avatar--xl"
-                          }
-                        >
-                          {profilePhoto ? (
-                            <img src={profilePhoto} alt={profileInitials} className="contact-avatar__img" />
-                          ) : (
-                            contactInitials(profileInitials)
-                          )}
-                        </div>
-                        <div className="contact-photo-actions">
-                          <button
-                            type="button"
-                            className="accent-button pressable contact-photo-upload"
-                            onClick={() => {
-                              setProfilePhotoError("");
-                              profilePhotoInputRef.current?.click();
-                            }}
-                            disabled={profilePhotoBusy}
-                          >
-                            {profilePhotoBusy ? "Processing…" : profilePhoto ? "Replace photo" : "Upload photo"}
-                          </button>
-                          {profilePhoto && (
-                            <button
-                              type="button"
-                              className="ghost-button button-sm pressable contact-photo-remove"
-                              onClick={handleClearProfilePhoto}
-                              disabled={profilePhotoBusy}
-                            >
-                              Remove photo
-                            </button>
-                          )}
-                        </div>
-                        <input
-                          ref={profilePhotoInputRef}
-                          type="file"
-                          accept="image/*"
-                          style={{ display: "none" }}
-                          onChange={handleProfilePhotoChange}
-                        />
-                        {profilePhotoError && <div className="contact-error">{profilePhotoError}</div>}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="contact-import-card">
-                      <div className="contact-import-title">Import from npub / NIP-05</div>
-                      <div className="contact-import-actions contact-import-actions--top">
-                        <button
-                          type="button"
-                          className="ghost-button button-sm pressable contact-import-scan"
-                          onClick={() => {
-                            setShowScanner(true);
-                          }}
-                        >
-                          Scan QR
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button button-sm pressable contact-custom-toggle"
-                          onClick={() => setShowCustomContactFields((prev) => !prev)}
-                        >
-                          {showCustomContactFields ? "Hide custom fields" : "Custom contact"}
-                        </button>
-                        {publicFollowOptions.length > 0 && (
-                          <button
-                            type="button"
-                            className="ghost-button button-sm pressable contact-import-follow"
-                            onClick={() => setPublicFollowPickerOpen(true)}
-                          >
-                            Pick from follows
-                          </button>
-                        )}
-                      </div>
-                      <div className="contact-import-row">
-                        <input
-                          className="contact-edit-input contact-import-input"
-                          placeholder="npub1… or name@example.com"
-                          value={contactLookupInput}
-                          onChange={(e) => setContactLookupInput(e.target.value)}
-                          autoComplete="off"
-                        />
-                        <button
-                          type="button"
-                          className="accent-button pressable contact-import-button"
-                          onClick={async () => {
-                            await handleContactImportAction();
-                          }}
-                          disabled={contactLookupBusy}
-                        >
-                          {contactLookupBusy ? "…" : contactLookupInput.trim() ? "Import" : "Paste"}
-                        </button>
-                      </div>
-                      {contactLookupError && <div className="contact-error">{contactLookupError}</div>}
-                    </div>
-                  )}
-
-                  {showContactFields && (
-                    <div className="contact-edit-grid">
-                      {!contactEditDraft.isProfile && (
-                        <input
-                          className="contact-edit-input"
-                          placeholder="Nickname"
-                          value={contactEditDraft.name}
-                          onChange={(e) => setContactEditDraft((prev) => ({ ...prev, name: e.target.value }))}
-                        />
-                      )}
-                      <input
-                        className="contact-edit-input"
-                        placeholder="Display name"
-                        value={contactEditDraft.displayName}
-                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, displayName: e.target.value }))}
-                      />
-                      <input
-                        className="contact-edit-input"
-                        placeholder="Username"
-                        value={contactEditDraft.username}
-                        onChange={(e) => {
-                          const sanitized = sanitizeUsername(e.target.value);
-                          setContactEditDraft((prev) => ({ ...prev, username: sanitized }));
-                        }}
-                      />
-                      <input
-                        className="contact-edit-input"
-                        placeholder="Lightning address"
-                        autoComplete="off"
-                        value={contactEditDraft.address}
-                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, address: e.target.value }))}
-                      />
-                      <input
-                        className="contact-edit-input"
-                        placeholder="npub or hex pubkey"
-                        autoComplete="off"
-                        value={contactEditDraft.npub}
-                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, npub: e.target.value }))}
-                      />
-                      <input
-                        className="contact-edit-input"
-                        placeholder="NIP-05 (name@example.com)"
-                        autoComplete="off"
-                        value={contactEditDraft.nip05}
-                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, nip05: e.target.value }))}
-                      />
-                      <textarea
-                        className="contact-edit-input contact-edit-textarea"
-                        rows={3}
-                        placeholder="About"
-                        value={contactEditDraft.about}
-                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, about: e.target.value }))}
-                      />
-                    </div>
-                  )}
-
-                  <div className="contact-edit-note text-secondary">
-                    Saving publishes your updates to Nostr (contacts stay encrypted).
-                  </div>
-
-                  {contactEditError && <div className="contact-error">{contactEditError}</div>}
-                </form>
-              );
-            })()}
-        </div>
-      </ActionSheet>
+      <WalletContactsSheet
+        contactsPanelOpen={contactsPanelOpen}
+        closeContactsTab={closeContactsTab}
+        contactsHeader={contactsHeader}
+        contactsPanelInline={contactsPanelInline}
+        contactsPanelRef={contactsPanelRef}
+        contactSyncState={contactSyncState}
+        contactsPublishState={contactsPublishState}
+        contactView={contactView}
+        sortedContacts={sortedContacts}
+        profileCard={profileCard}
+        myCardName={myCardName}
+        myCardSubtitle={myCardSubtitle}
+        normalizeNip05={normalizeNip05}
+        isNip05VerifiedFor={isNip05VerifiedFor}
+        contactInitials={contactInitials}
+        setActiveContactId={setActiveContactId}
+        setContactView={setContactView}
+        detailTarget={detailTarget}
+        detailShareValue={detailShareValue}
+        detailTitle={detailTitle}
+        detailFields={detailFields}
+        detailNip05Verified={detailNip05Verified}
+        activeContact={activeContact}
+        activeContactId={activeContactId}
+        detailHasLightning={detailHasLightning}
+        detailCanShare={detailCanShare}
+        detailUsername={detailUsername}
+        truncateContactName={truncateContactName}
+        truncateContactValue={truncateContactValue}
+        applyLightningContact={applyLightningContact}
+        setContactsTabOpen={setContactsTabOpen}
+        openEcashSendToContact={openEcashSendToContact}
+        setShareContactSource={setShareContactSource}
+        setShareContactStatus={setShareContactStatus}
+        setShareContactPickerMode={setShareContactPickerMode}
+        setShareContactPickerOpen={setShareContactPickerOpen}
+        defaultNostrRelays={defaultNostrRelays}
+        handleDeleteContact={handleDeleteContact}
+        publicFollowOptions={publicFollowOptions}
+        setPublicFollowPickerOpen={setPublicFollowPickerOpen}
+        showCustomContactFields={showCustomContactFields}
+        setShowCustomContactFields={setShowCustomContactFields}
+        contactEditDraft={contactEditDraft}
+        setContactEditDraft={setContactEditDraft}
+        sanitizeUsername={sanitizeUsername}
+        contactLookupInput={contactLookupInput}
+        setContactLookupInput={setContactLookupInput}
+        contactLookupBusy={contactLookupBusy}
+        handleContactImportAction={handleContactImportAction}
+        contactLookupError={contactLookupError}
+        contactEditError={contactEditError}
+        handleProfilePhotoChange={handleProfilePhotoChange}
+        handleClearProfilePhoto={handleClearProfilePhoto}
+        profilePhotoBusy={profilePhotoBusy}
+        profilePhotoError={profilePhotoError}
+        profilePhotoInputRef={profilePhotoInputRef}
+        setProfilePhotoError={setProfilePhotoError}
+        setShowScanner={setShowScanner}
+        contactSubtitle={contactSubtitle}
+        handleCopyContactField={handleCopyContactField}
+      />
 
       <ActionSheet
         open={publicFollowPickerOpen}
@@ -10539,400 +9126,75 @@ export default function CashuWalletModal({
         )}
       </ActionSheet>
 
-      <ActionSheet
-        open={sendMode === "lightning"}
-        onClose={closeLightningSendSheet}
-        title="Pay Lightning"
-        actions={(
-          <button className="ghost-button button-sm pressable" onClick={openEcashSendSheet}>
-            eCash
-          </button>
-        )}
-        panelClassName={isCompactLightningSheetLayout ? "sheet-panel--compact" : undefined}
-      >
-        <div className="space-y-4">
-          {lightningSendView === "input" && (
-            <div className="space-y-4">
-              <div className="wallet-section space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-secondary">
-                  <button
-                    className="ghost-button button-sm pressable"
-                    type="button"
-                    onClick={() => openContactsFor("lightning")}
-                  >
-                    Contacts
-                  </button>
-                  {lightningContactCount === 0 && <span>No saved lightning contacts yet.</span>}
-                </div>
-                <textarea
-                  ref={lnRef}
-                  className="pill-textarea wallet-textarea w-full"
-                  placeholder="Enter invoice or lightning address"
-                  defaultValue={lnInput}
-                  onChange={(event) => {
-                    setLnInput(event.currentTarget.value, { defer: true });
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-                      event.preventDefault();
-                      const current = event.currentTarget.value.trim().replace(/^lightning:/i, "").trim();
-                      const canReviewCurrent =
-                        /^ln(bc|tb|sb|bcrt)[0-9]/i.test(current) ||
-                        /^[^@\s]+@[^@\s]+$/.test(current) ||
-                        /^lnurl[0-9a-z]+$/i.test(current);
-                      if (canReviewCurrent) {
-                        handleLightningInputReview();
-                      }
-                    }
-                  }}
-                />
-                {lnError && <div className="text-xs text-rose-400">{lnError}</div>}
-                {bolt11Details?.message && <div className="text-xs text-secondary">{bolt11Details.message}</div>}
-                {bolt11Details?.error && <div className="text-xs text-rose-400">{bolt11Details.error}</div>}
-              </div>
-              <button
-                type="button"
-                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                onClick={() => {
-                  const current = commitLightningInputFromDom();
-                  if (current.trim()) {
-                    handleLightningInputReview();
-                  } else {
-                    void handlePasteLightningInput();
-                  }
-                }}
-              >
-                {lnInput.trim() ? "Pay" : "Paste"}
-              </button>
-            </div>
-          )}
-          {lightningSendView === "invoice" && (
-            <div className="space-y-4">
-              <div className="wallet-section space-y-5">
-                <div className="space-y-2 text-left">
-                  <div className="text-[11px] uppercase tracking-wide text-secondary">Pay from</div>
-                  {mintSelectionOptions.length ? (
-                    <div className="relative">
-                      <select
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                        value={selectedMintValue}
-                        aria-label="Select mint"
-                        onChange={(event) => {
-                          const next = event.target.value;
-                          if (next && next !== selectedMintValue) {
-                            void setMintUrl(next);
-                          }
-                        }}
-                      >
-                        {mintSelectionOptions.map((option) => {
-                          const info = mintInfoByUrl[option.normalized];
-                          const label = info?.name || formatMintDisplayName(option.url);
-                          return (
-                            <option key={option.normalized} value={option.normalized}>
-                              {label}
-                            </option>
-                          );
-                        })}
-                      </select>
-                      <div className="pill-input lightning-mint-select__display">
-                        <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                        <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                      </div>
-                      <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                    </div>
-                  ) : (
-                    <div className="text-sm text-secondary">
-                      Add a mint in Wallet → Mint balances to start sending.
-                    </div>
-                  )}
-                </div>
-                <div className="rounded-2xl border border-surface bg-surface-muted p-4 space-y-2">
-                  <div className="text-[11px] uppercase tracking-wide text-secondary">Amount</div>
-                  <div className="text-3xl font-semibold text-primary">
-                    {lightningInvoiceAmountSat != null
-                      ? `${satFormatter.format(lightningInvoiceAmountSat)} SAT`
-                      : "Amount not specified"}
-                  </div>
-                  {lightningInvoiceAmountSecondaryDisplay && (
-                    <div className="text-sm text-secondary">≈ {lightningInvoiceAmountSecondaryDisplay}</div>
-                  )}
-                  {lightningInvoiceAmountSat == null && (
-                    <div className="text-sm text-secondary">Invoice does not specify an amount.</div>
-                  )}
-                </div>
-                <div className="space-y-2 text-sm">
-                  <div>
-                    <div className="text-secondary">Invoice</div>
-                    <div className="font-mono text-[11px] break-all">{normalizedLnInput}</div>
-                  </div>
-                  {bolt11Details?.message && <div className="text-xs text-secondary">{bolt11Details.message}</div>}
-                  {bolt11Details?.error && <div className="text-xs text-rose-400">{bolt11Details.error}</div>}
-                </div>
-                <button
-                  className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                  onClick={handlePayInvoice}
-                  disabled={!mintUrl || !lnInput || lnState === "sending"}
-                >
-                  {lnState === "sending" ? (
-                    <span className="inline-flex items-center gap-1">
-                      Paying
-                      <AnimatedEllipsis />
-                    </span>
-                  ) : (
-                    "Pay"
-                  )}
-                </button>
-                {lnState === "error" && <div className="text-xs text-rose-400">{lnError}</div>}
-              </div>
-            </div>
-          )}
-          {lightningSendView === "address" && (
-            <div className="space-y-4">
-              <div className="wallet-section wallet-section--compact space-y-4">
-                <div className="space-y-2 text-left">
-                  <div className="text-[11px] uppercase tracking-wide text-secondary">Pay from</div>
-                  {mintSelectionOptions.length ? (
-                    <div className="relative">
-                      <select
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                        value={selectedMintValue}
-                        aria-label="Select mint"
-                        onChange={(event) => {
-                          const next = event.target.value;
-                          if (next && next !== selectedMintValue) {
-                            void setMintUrl(next);
-                          }
-                        }}
-                      >
-                        {mintSelectionOptions.map((option) => {
-                          const info = mintInfoByUrl[option.normalized];
-                          const label = info?.name || formatMintDisplayName(option.url);
-                          return (
-                            <option key={option.normalized} value={option.normalized}>
-                              {label}
-                            </option>
-                          );
-                        })}
-                      </select>
-                      <div className="pill-input lightning-mint-select__display">
-                        <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                        <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                      </div>
-                      <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                    </div>
-                  ) : (
-                    <div className="text-sm text-secondary">
-                      Add a mint in Wallet → Mint balances to start sending.
-                    </div>
-                  )}
-                </div>
-                <div className="space-y-2 text-left">
-                  <div className="text-[11px] uppercase tracking-wide text-secondary">Send to</div>
-                  <div className="glass-panel px-3 py-2 text-sm font-medium text-primary break-all">
-                    {lightningDestinationDisplay}
-                  </div>
-                </div>
-                {isLnurlInput && lnurlPayData && (
-                  <div className="text-xs text-secondary">
-                    Limits: {Math.ceil(lnurlPayData.minSendable / 1000)} – {Math.floor(lnurlPayData.maxSendable / 1000)} sats
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
-                  onClick={canToggleCurrency ? handleTogglePrimary : undefined}
-                  disabled={!canToggleCurrency}
-                >
-                  <div className="wallet-balance-card__amount lightning-amount-display__primary">
-                    {lightningSendPrimaryAmountText}
-                  </div>
-                  <div className="wallet-balance-card__secondary lightning-amount-display__secondary">
-                    {lightningSendSecondaryAmountText}
-                  </div>
-                </button>
-                <div className="grid grid-cols-3 gap-2">
-                  {(primaryCurrency === "usd"
-                    ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
-                    : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
-                  ).map((key) => {
-                    const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        className="glass-panel wallet-keypad-grid__button pressable py-3 text-lg font-semibold"
-                        onClick={() => handleLightningSendAmountKeypadInput(handlerKey)}
-                      >
-                        {key === "clear" ? "Clear" : key}
-                      </button>
-                    );
-                  })}
-                </div>
-                <button
-                  className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                  onClick={handlePayInvoice}
-                  disabled={
-                    !mintUrl ||
-                    !lnInput ||
-                    ((isLnAddress || lnurlRequiresAmount) && !lnAddrAmt) ||
-                    lnState === "sending"
-                  }
-                >
-                  {lnState === "sending" ? (
-                    <span className="inline-flex items-center gap-1">
-                      Paying
-                      <AnimatedEllipsis />
-                    </span>
-                  ) : (
-                    "Pay"
-                  )}
-                </button>
-                {lnState === "error" && <div className="text-xs text-rose-400">{lnError}</div>}
-              </div>
-            </div>
-          )}
-        </div>
-      </ActionSheet>
+      <LightningSendSheet
+        sendMode={sendMode}
+        closeLightningSendSheet={closeLightningSendSheet}
+        openEcashSendSheet={openEcashSendSheet}
+        isCompactLightningSheetLayout={isCompactLightningSheetLayout}
+        lightningSendView={lightningSendView}
+        openContactsFor={openContactsFor}
+        lightningContactCount={lightningContactCount}
+        lnRef={lnRef}
+        lnInput={lnInput}
+        setLnInput={setLnInput}
+        lnError={lnError}
+        bolt11Details={bolt11Details}
+        commitLightningInputFromDom={commitLightningInputFromDom}
+        handleLightningInputReview={handleLightningInputReview}
+        handlePasteLightningInput={handlePasteLightningInput}
+        mintSelectionOptions={mintSelectionOptions}
+        selectedMintValue={selectedMintValue}
+        setMintUrl={setMintUrl}
+        mintInfoByUrl={mintInfoByUrl}
+        selectedMintLabel={selectedMintLabel}
+        selectedMintBalanceLabel={selectedMintBalanceLabel}
+        satFormatter={satFormatter}
+        lightningInvoiceAmountSat={lightningInvoiceAmountSat}
+        lightningInvoiceAmountSecondaryDisplay={lightningInvoiceAmountSecondaryDisplay}
+        normalizedLnInput={normalizedLnInput}
+        handlePayInvoice={handlePayInvoice}
+        mintUrl={mintUrl}
+        lnState={lnState}
+        canToggleCurrency={canToggleCurrency}
+        handleTogglePrimary={handleTogglePrimary}
+        lightningSendPrimaryAmountText={lightningSendPrimaryAmountText}
+        lightningSendSecondaryAmountText={lightningSendSecondaryAmountText}
+        primaryCurrency={primaryCurrency}
+        handleLightningSendAmountKeypadInput={handleLightningSendAmountKeypadInput}
+        lightningDestinationDisplay={lightningDestinationDisplay}
+        isLnurlInput={isLnurlInput}
+        lnurlPayData={lnurlPayData}
+        isLnAddress={isLnAddress}
+        lnurlRequiresAmount={lnurlRequiresAmount}
+        lnAddrAmt={lnAddrAmt}
+      />
 
-      <ActionSheet
-        open={sendMode === "paymentRequest"}
-        onClose={closePaymentRequestSheet}
-        title="Fulfill eCash Request"
-        actions={(
-          <button
-            className="ghost-button button-sm pressable"
-            onClick={() => {
-              void handlePasteEcashRequest();
-            }}
-          >
-            Paste
-          </button>
-        )}
-      >
-        {paymentRequestState ? (
-          <div className="space-y-4">
-            <div className="wallet-section space-y-5">
-              <div className="space-y-2 text-left">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">Send from</div>
-                {mintSelectionOptions.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={selectedMintValue}
-                      aria-label="Select mint"
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (next && next !== selectedMintValue) {
-                          void setMintUrl(next);
-                        }
-                      }}
-                    >
-                      {mintSelectionOptions.map((option) => {
-                        const info = mintInfoByUrl[option.normalized];
-                        const label = info?.name || formatMintDisplayName(option.url);
-                        return (
-                          <option key={option.normalized} value={option.normalized}>
-                            {label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input lightning-mint-select__display">
-                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">Add a mint in Wallet → Mint balances to send eCash.</div>
-                )}
-              </div>
-              <button
-                type="button"
-                className={`lightning-amount-display glass-panel${paymentRequestAmountButtonEnabled ? " pressable" : ""}`}
-                onClick={
-                  paymentRequestAmountButtonEnabled
-                    ? () => {
-                        if (canTogglePaymentRequestCurrency) {
-                          handlePaymentRequestAmountUnitToggle();
-                        }
-                      }
-                    : undefined
-                }
-                disabled={!paymentRequestAmountButtonEnabled}
-              >
-                <div className="wallet-balance-card__amount lightning-amount-display__primary">
-                  {paymentRequestPrimaryAmountText}
-                </div>
-                <div className="wallet-balance-card__secondary lightning-amount-display__secondary">
-                  {paymentRequestSecondaryAmountText}
-                </div>
-              </button>
-              {!paymentRequestHasFixedAmount && (
-                <div className="grid grid-cols-3 gap-3">
-                  {(primaryCurrency === "usd"
-                    ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
-                    : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
-                  ).map((key) => {
-                    const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        className="glass-panel pressable py-3 text-lg font-semibold"
-                        onClick={() => handlePaymentRequestKeypadInput(handlerKey)}
-                      >
-                        {key === "clear" ? "Clear" : key}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              {(() => {
-                const request = paymentRequestState.request;
-                const detailItems: React.ReactNode[] = [];
-                if (request.description) {
-                  detailItems.push(
-                    <div key="description">Memo: {request.description}</div>,
-                  );
-                }
-                if (request.mints?.length) {
-                  detailItems.push(
-                    <div key="mints">Mint: {request.mints.map(normalizeMintUrl).join(", ")}</div>,
-                  );
-                }
-                return detailItems.length ? (
-                  <div className="space-y-1 text-xs text-secondary">{detailItems}</div>
-                ) : null;
-              })()}
-              <button
-                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-                onClick={handleFulfillPaymentRequest}
-                disabled={
-                  paymentRequestStatus === "sending" ||
-                  (!paymentRequestState.request.amount && !paymentRequestManualAmount.trim())
-                }
-              >
-                {paymentRequestActionLabel}
-              </button>
-              {paymentRequestStatus === "sending" && (
-                <div className="text-xs text-secondary text-center">Sending…</div>
-              )}
-              {paymentRequestStatus === "error" && paymentRequestMessage && (
-                <div className="text-xs text-rose-400 text-center">{paymentRequestMessage}</div>
-              )}
-              {paymentRequestStatus !== "error" && paymentRequestMessage && (
-                <div className="text-xs text-secondary text-center">{paymentRequestMessage}</div>
-              )}
-              {paymentRequestError && (
-                <div className="text-xs text-rose-400 text-center">{paymentRequestError}</div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="wallet-section text-sm text-secondary">Scan an eCash withdrawal request to continue.</div>
-        )}
-      </ActionSheet>
+      <PaymentRequestFulfillSheet
+        sendMode={sendMode}
+        closePaymentRequestSheet={closePaymentRequestSheet}
+        handlePasteEcashRequest={handlePasteEcashRequest}
+        paymentRequestState={paymentRequestState}
+        mintSelectionOptions={mintSelectionOptions}
+        selectedMintValue={selectedMintValue}
+        setMintUrl={setMintUrl}
+        mintInfoByUrl={mintInfoByUrl}
+        selectedMintLabel={selectedMintLabel}
+        selectedMintBalanceLabel={selectedMintBalanceLabel}
+        paymentRequestAmountButtonEnabled={paymentRequestAmountButtonEnabled}
+        canTogglePaymentRequestCurrency={canTogglePaymentRequestCurrency}
+        handlePaymentRequestAmountUnitToggle={handlePaymentRequestAmountUnitToggle}
+        paymentRequestPrimaryAmountText={paymentRequestPrimaryAmountText}
+        paymentRequestSecondaryAmountText={paymentRequestSecondaryAmountText}
+        paymentRequestHasFixedAmount={paymentRequestHasFixedAmount}
+        primaryCurrency={primaryCurrency}
+        handlePaymentRequestKeypadInput={handlePaymentRequestKeypadInput}
+        handleFulfillPaymentRequest={handleFulfillPaymentRequest}
+        paymentRequestStatus={paymentRequestStatus}
+        paymentRequestManualAmount={paymentRequestManualAmount}
+        paymentRequestActionLabel={paymentRequestActionLabel}
+        paymentRequestMessage={paymentRequestMessage}
+        paymentRequestError={paymentRequestError}
+      />
 
       <ActionSheet
         open={showScanner}
@@ -11326,383 +9588,33 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-      <ActionSheet
-        open={showHistory}
-        onClose={() => {
-          setShowHistory(false);
-          setExpandedHistoryId(null);
-        }}
-        title="History"
-        headerEnd={historyFilterControls}
-      >
-        {history.length ? (
-          filteredHistory.length ? (
-            <>
-              {historyFilterControls && (
-                <div className="wallet-history__filters-inline">{historyFilterControls}</div>
-              )}
-              <ul className="wallet-history">
-                {filteredHistory.map((entry, index) => {
-                  const isExpanded = expandedHistoryId === entry.id;
-                  const detailKind = entry.detailKind;
-                  const detailIsToken = isCashuTokenDetail(entry.detail, detailKind);
-                  const resolvedType =
-                    entry.type ?? (detailKind === "invoice" ? "lightning" : detailIsToken ? "ecash" : undefined);
-                  const typeLabel =
-                    resolvedType === "lightning" ? "Lightning" : resolvedType === "ecash" ? "Ecash" : "History";
-                  const timeLabel = formatRelativeTime(entry.createdAt);
-                  const amountLabel = formatHistoryAmount(entry);
-                  const fiatLabel =
-                    walletConversionEnabled && entry.fiatValueUsd != null
-                      ? formatUsdAmount(entry.fiatValueUsd)
-                      : null;
-                  const mintLabel = resolveMintDisplay(entry);
-                  const statusInfo = deriveHistoryStatus(entry);
-                  const detailLabel = detailIsToken
-                    ? "Cashu token"
-                    : detailKind === "invoice"
-                      ? "Lightning invoice"
-                      : undefined;
-                  const copyLabel = detailIsToken
-                    ? "Copy token"
-                    : detailKind === "invoice"
-                      ? "Copy invoice"
-                      : "Copy detail";
-                  const redeemState = historyRedeemStates[entry.id];
-                  const tokenCheckState = historyCheckStates[entry.id];
-                  const mintQuoteState = historyMintQuoteStates[entry.id];
-                  const pendingAction =
-                    entry.pendingTokenId && entry.pendingStatus !== "redeemed"
-                      ? {
-                          ariaLabel: "Redeem saved token",
-                          handler: () => handleRedeemPendingHistoryItem(entry),
-                          busy: redeemState?.status === "pending",
-                          status: redeemState,
-                        }
-                      : entry.mintQuote
-                        ? {
-                            ariaLabel: "Refresh invoice",
-                            handler: () => handleCheckHistoryMintQuote(entry),
-                            busy: mintQuoteState?.status === "pending",
-                            status: mintQuoteState,
-                          }
-                        : entry.tokenState && entry.tokenState.lastState !== "SPENT"
-                          ? {
-                              ariaLabel: "Check token state",
-                              handler: () => performTokenStateCheck(entry),
-                              busy: tokenCheckState?.status === "pending",
-                              status: tokenCheckState,
-                            }
-                          : null;
-                  const showRedeemButton = entry.pendingTokenId && entry.pendingStatus !== "redeemed";
-                  const canMarkTokenSpent = !!entry.tokenState && entry.tokenState.lastState !== "SPENT";
-                  return (
-                    <li
-                      key={`${entry.id}-${index}`}
-                      className={`wallet-history__item${isExpanded ? " wallet-history__item--open" : ""}`}
-                    >
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        className="wallet-history__summary"
-                        onClick={() => setExpandedHistoryId(isExpanded ? null : entry.id)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            setExpandedHistoryId(isExpanded ? null : entry.id);
-                          }
-                        }}
-                        aria-expanded={isExpanded}
-                        aria-label="Toggle history details"
-                      >
-                        <div className="wallet-history__icon" aria-hidden="true">
-                          {resolvedType === "lightning" ? (
-                            <LightningGlyph className="wallet-history__glyph" />
-                          ) : (
-                            <EcashGlyph className="wallet-history__glyph" />
-                          )}
-                        </div>
-                        <div className="wallet-history__body">
-                          <div className="wallet-history__title-row">
-                            <span className="wallet-history__type">{typeLabel}</span>
-                            {timeLabel && <span className="wallet-history__time">{timeLabel}</span>}
-                          </div>
-                          <div className="wallet-history__meta-row">
-                            <span
-                              className={`wallet-history__status${
-                                statusInfo.tone ? ` wallet-history__status--${statusInfo.tone}` : ""
-                              }`}
-                            >
-                              {statusInfo.label}
-                            </span>
-                            {mintLabel && <span className="wallet-history__mint">{mintLabel}</span>}
-                          </div>
-                        </div>
-                        <div className="wallet-history__value">
-                          {amountLabel && (
-                            <span
-                              className={`wallet-history__amount wallet-history__amount--${
-                                entry.direction === "in" ? "in" : "out"
-                              }`}
-                            >
-                              {amountLabel}
-                            </span>
-                          )}
-                          {fiatLabel && <span className="wallet-history__fiat">{fiatLabel}</span>}
-                          {pendingAction && (
-                            <button
-                              type="button"
-                              className="wallet-history__refresh"
-                              disabled={pendingAction.busy}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                pendingAction.handler();
-                              }}
-                              aria-label={pendingAction.ariaLabel}
-                            >
-                              ↻
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      {isExpanded && (
-                        <div className="wallet-history__details">
-                          {detailLabel && entry.detail && (
-                            <QrCodeCard
-                              className="wallet-history__qr"
-                              value={entry.detail}
-                              label={detailLabel}
-                              copyLabel={copyLabel}
-                              size={220}
-                              enableNut16Animation={detailIsToken}
-                            />
-                          )}
-                          <div className="wallet-history__details-grid">
-                            <div className="wallet-history__metric">
-                              <span>Amount</span>
-                              <span className="wallet-history__metric-value">
-                                {entry.amountSat != null ? `${satFormatter.format(entry.amountSat)} sat` : "—"}
-                              </span>
-                            </div>
-                            {walletConversionEnabled && fiatLabel && (
-                              <div className="wallet-history__metric">
-                                <span>Fiat</span>
-                                <span className="wallet-history__metric-value">{fiatLabel}</span>
-                              </div>
-                            )}
-                            {(entry.feeSat ?? 0) > 0 && (
-                              <div className="wallet-history__metric">
-                                <span>Fee paid</span>
-                                <span className="wallet-history__metric-value">
-                                  {satFormatter.format(entry.feeSat ?? 0)} sat
-                                </span>
-                              </div>
-                            )}
-                            <div className="wallet-history__metric">
-                              <span>Status</span>
-                              <span className="wallet-history__metric-value">{statusInfo.label}</span>
-                            </div>
-                            {entry.createdAt && (
-                              <div className="wallet-history__metric">
-                                <span>{entry.direction === "out" ? "Time sent" : "Time received"}</span>
-                                <span className="wallet-history__metric-value">
-                                  {new Date(entry.createdAt).toLocaleString()}
-                                </span>
-                              </div>
-                            )}
-                            {mintLabel && (
-                              <div className="wallet-history__metric">
-                                <span>Mint</span>
-                                <span className="wallet-history__metric-value">{mintLabel}</span>
-                              </div>
-                            )}
-                          </div>
-                          {entry.summary && (
-                            <div className="wallet-history__detail-note">
-                              {entry.summary}
-                              {entry.relatedTaskTitle && (
-                                <div className="wallet-history__detail-task">
-                                  Task: {entry.relatedTaskTitle}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {pendingAction?.status?.message && (
-                            <div
-                              className={`wallet-history__helper${
-                                pendingAction.status.status === "error"
-                                  ? " wallet-history__helper--error"
-                                  : pendingAction.status.status === "success"
-                                    ? " wallet-history__helper--success"
-                                    : ""
-                              }`}
-                            >
-                              {pendingAction.status.message}
-                            </div>
-                          )}
-                          {showRedeemButton && (
-                            <div className="wallet-history__section">
-                              <div className="wallet-history__section-content">
-                                <button
-                                  className="accent-button button-sm pressable"
-                                  onClick={() => handleRedeemPendingHistoryItem(entry)}
-                                  disabled={historyRedeemStates[entry.id]?.status === "pending"}
-                                >
-                                  Redeem
-                                </button>
-                                {historyRedeemStates[entry.id]?.message && (
-                                  <div
-                                    className={`wallet-history__helper${
-                                      historyRedeemStates[entry.id]?.status === "error"
-                                        ? " wallet-history__helper--error"
-                                        : historyRedeemStates[entry.id]?.status === "success"
-                                          ? " wallet-history__helper--success"
-                                          : ""
-                                    }`}
-                                  >
-                                    {historyRedeemStates[entry.id]?.message}
-                                  </div>
-                                )}
-                              </div>
-                              {entry.pendingTokenMint && (
-                                <div className="wallet-history__helper">Saved mint: {entry.pendingTokenMint}</div>
-                              )}
-                            </div>
-                          )}
-                          {entry.tokenState && (
-                            <div className="wallet-history__section space-y-2">
-                              <div className="wallet-history__section-title">Token state</div>
-                              <div className="wallet-history__section-content space-y-2 text-xs text-secondary">
-                                <div className="text-tertiary break-all">Mint: {entry.tokenState.mintUrl}</div>
-                                <div className="flex flex-wrap gap-2 items-center">
-                                  <button
-                                    className="ghost-button button-sm pressable"
-                                    onClick={() => performTokenStateCheck(entry)}
-                                    disabled={historyCheckStates[entry.id]?.status === "pending"}
-                                  >
-                                    Check token state
-                                  </button>
-                                  {historyCheckStates[entry.id]?.status === "pending" && <span>Checking…</span>}
-                                  {historyCheckStates[entry.id]?.status === "success" &&
-                                    historyCheckStates[entry.id]?.message && (
-                                      <span className="text-accent">{historyCheckStates[entry.id]?.message}</span>
-                                    )}
-                                  {historyCheckStates[entry.id]?.status === "error" &&
-                                    historyCheckStates[entry.id]?.message && (
-                                      <span className="text-rose-400">{historyCheckStates[entry.id]?.message}</span>
-                                    )}
-                                </div>
-                                {typeof entry.tokenState.lastCheckedAt === "number" && (
-                                  <div className="text-tertiary">
-                                    Last checked: {new Date(entry.tokenState.lastCheckedAt).toLocaleString()}
-                                  </div>
-                                )}
-                                {entry.tokenState.lastWitnesses && Object.keys(entry.tokenState.lastWitnesses).length > 0 && (
-                                  <div className="space-y-1">
-                                    <div className="text-tertiary">Witness data</div>
-                                    {Object.entries(entry.tokenState.lastWitnesses).map(([y, witness]) => (
-                                      <div key={y} className="break-all">
-                                        <div className="text-tertiary">Y: {y}</div>
-                                        <div>{witness}</div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          {entry.mintQuote && (
-                            <div className="wallet-history__section space-y-2">
-                              <div className="wallet-history__section-title">Invoice</div>
-                              <div className="wallet-history__section-content space-y-1 text-xs text-secondary">
-                                {entry.mintQuote.mintUrl && (
-                                  <div className="text-tertiary break-all">Mint: {entry.mintQuote.mintUrl}</div>
-                                )}
-                                <div className="text-tertiary">Amount: {entry.mintQuote.amount} sats</div>
-                                <div className="flex flex-wrap gap-2 items-center">
-                                  <button
-                                    className="ghost-button button-sm pressable"
-                                    onClick={() => handleCheckHistoryMintQuote(entry)}
-                                    disabled={historyMintQuoteStates[entry.id]?.status === "pending"}
-                                  >
-                                    Check invoice
-                                  </button>
-                                  {historyMintQuoteStates[entry.id]?.status === "pending" && <span>Checking…</span>}
-                                  {historyMintQuoteStates[entry.id]?.status === "success" &&
-                                    historyMintQuoteStates[entry.id]?.message && (
-                                      <span className="text-accent">{historyMintQuoteStates[entry.id]?.message}</span>
-                                    )}
-                                  {historyMintQuoteStates[entry.id]?.status === "error" &&
-                                    historyMintQuoteStates[entry.id]?.message && (
-                                      <span className="text-rose-400">{historyMintQuoteStates[entry.id]?.message}</span>
-                                    )}
-                                </div>
-                                {entry.mintQuote.createdAt && (
-                                  <div className="text-tertiary">
-                                    Created: {new Date(entry.mintQuote.createdAt).toLocaleString()}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          {entry.revertToken && (
-                            <div className="wallet-history__section space-y-2">
-                              <div className="wallet-history__section-title">Revert</div>
-                              <div className="wallet-history__section-content flex flex-wrap gap-2 items-center text-xs text-secondary">
-                                <button
-                                  className="accent-button button-sm pressable"
-                                  onClick={() => handleRevertHistoryToken(entry)}
-                                  disabled={historyRevertState[entry.id]?.status === "pending"}
-                                >
-                                  Revert token
-                                </button>
-                                {historyRevertState[entry.id]?.status === "pending" && <span>Redeeming…</span>}
-                                {historyRevertState[entry.id]?.status === "success" && historyRevertState[entry.id]?.message && (
-                                  <span className="text-accent">{historyRevertState[entry.id]?.message}</span>
-                                )}
-                                {historyRevertState[entry.id]?.status === "error" && historyRevertState[entry.id]?.message && (
-                                  <span className="text-rose-400">{historyRevertState[entry.id]?.message}</span>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          <div className="wallet-history__section space-y-2">
-                            <div className="wallet-history__section-title">Actions</div>
-                            <div className="wallet-history__section-content flex flex-wrap gap-2 items-center text-xs text-secondary">
-                              {canMarkTokenSpent && (
-                                <button
-                                  type="button"
-                                  className="ghost-button button-sm pressable"
-                                  onClick={() => handleMarkHistoryTokenSpent(entry)}
-                                >
-                                  Mark token spent
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className="ghost-button button-sm pressable"
-                                onClick={() => handleDeleteHistoryEntry(entry)}
-                              >
-                                Delete entry
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
-          ) : (
-            <div className="wallet-section text-sm text-secondary">
-              {historyFilter === "pending" ? "No pending entries" : "No history yet"}
-            </div>
-          )
-        ) : (
-          <div className="wallet-section text-sm text-secondary">No history yet</div>
-        )}
-      </ActionSheet>
+      <WalletHistorySheet
+        showHistory={showHistory}
+        setShowHistory={setShowHistory}
+        setExpandedHistoryId={setExpandedHistoryId}
+        historyFilterControls={historyFilterControls}
+        history={history}
+        filteredHistory={filteredHistory}
+        expandedHistoryId={expandedHistoryId}
+        walletConversionEnabled={walletConversionEnabled}
+        formatRelativeTime={formatRelativeTime}
+        formatHistoryAmount={formatHistoryAmount}
+        formatUsdAmount={formatUsdAmount}
+        resolveMintDisplay={resolveMintDisplay}
+        deriveHistoryStatus={deriveHistoryStatus}
+        historyRedeemStates={historyRedeemStates}
+        historyCheckStates={historyCheckStates}
+        historyMintQuoteStates={historyMintQuoteStates}
+        historyRevertState={historyRevertState}
+        handleRedeemPendingHistoryItem={handleRedeemPendingHistoryItem}
+        handleCheckHistoryMintQuote={handleCheckHistoryMintQuote}
+        performTokenStateCheck={performTokenStateCheck}
+        handleRevertHistoryToken={handleRevertHistoryToken}
+        handleMarkHistoryTokenSpent={handleMarkHistoryTokenSpent}
+        handleDeleteHistoryEntry={handleDeleteHistoryEntry}
+        satFormatter={satFormatter}
+        historyFilter={historyFilter}
+      />
 
       {/* Mint balances */}
       <ActionSheet open={showMintBalances} onClose={()=>setShowMintBalances(false)} title="Mint balances">
@@ -11774,230 +9686,60 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-      <ActionSheet
-        open={showNwcSheet}
-        onClose={closeNwcSheets}
-        title="Swap"
-        actions={(
-          <button className="ghost-button button-sm pressable" onClick={openNwcManager}>
-            {hasNwcConnection ? "Manage NWC" : "Connect NWC"}
-          </button>
-        )}
-      >
-        <div className="space-y-4">
-          <div className="wallet-section wallet-section--compact space-y-3">
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="space-y-2">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">From</div>
-                {swapOptionList.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={swapFromValue}
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        setSwapFromValue(next);
-                        if (next && next === swapToValue) {
-                          setSwapToValue("");
-                        }
-                      }}
-                    >
-                      <option value="">Select source</option>
-                      {swapOptionList.map((option) => {
-                        const meta = getSwapOptionMeta(option.value);
-                        return (
-                          <option key={`swap-from-${option.value}`} value={option.value}>
-                            {meta.label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input pill-input--compact lightning-mint-select__display lightning-mint-select__display--compact">
-                      <div className="lightning-mint-select__label">
-                        {swapFromValue ? getSwapOptionMeta(swapFromValue).label : "Select source"}
-                      </div>
-                      <div className="lightning-mint-select__balance">
-                        {swapFromValue ? getSwapOptionMeta(swapFromValue).balanceLabel : "Choose a mint or wallet"}
-                      </div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">Add a mint or connect NWC to start swapping.</div>
-                )}
-              </div>
-              <div className="space-y-2">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">To</div>
-                {swapOptionList.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={swapToValue}
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        setSwapToValue(next);
-                        if (next && next === swapFromValue) {
-                          setSwapFromValue("");
-                        }
-                      }}
-                    >
-                      <option value="">Select destination</option>
-                      {swapOptionList.map((option) => {
-                        const meta = getSwapOptionMeta(option.value);
-                        return (
-                          <option key={`swap-to-${option.value}`} value={option.value}>
-                            {meta.label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input pill-input--compact lightning-mint-select__display lightning-mint-select__display--compact">
-                      <div className="lightning-mint-select__label">
-                        {swapToValue ? getSwapOptionMeta(swapToValue).label : "Select destination"}
-                      </div>
-                      <div className="lightning-mint-select__balance">
-                        {swapToValue ? getSwapOptionMeta(swapToValue).balanceLabel : "Choose a mint or wallet"}
-                      </div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">Choose a destination mint or connect NWC.</div>
-                )}
-              </div>
-            </div>
-            <button
-              type="button"
-              className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
-              onClick={canToggleCurrency ? handleTogglePrimary : undefined}
-              disabled={!canToggleCurrency}
-            >
-              <div className="wallet-balance-card__amount lightning-amount-display__primary">{swapPrimaryAmountText}</div>
-              <div className="wallet-balance-card__secondary lightning-amount-display__secondary">{swapSecondaryAmountText}</div>
-            </button>
-            <div className="grid grid-cols-3 gap-2">
-              {(primaryCurrency === "usd"
-                ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
-                : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
-              ).map((key) => {
-                const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
-                return (
-                  <button
-                    key={`swap-key-${key}`}
-                    type="button"
-                    className="glass-panel pressable py-2 text-lg font-semibold"
-                    onClick={() => handleSwapAmountKeypadInput(handlerKey)}
-                  >
-                    {key === "clear" ? "Clear" : key}
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-              onClick={handleSwapSubmit}
-              disabled={!canSubmitSwap || swapInProgress}
-            >
-              {swapInProgress ? "Working…" : "Transfer"}
-            </button>
-            {swapScenario === "mint-to-mint" && mintSwapState !== "idle" && mintSwapState !== "error" && mintSwapStatusText && (
-              <div className="text-xs text-secondary text-center">{mintSwapStatusText}</div>
-            )}
-            {swapScenario === "nwc-to-mint" && nwcFundInProgress && nwcFundStatusText && (
-              <div className="text-xs text-secondary text-center">{nwcFundStatusText}</div>
-            )}
-            {swapScenario === "mint-to-nwc" && nwcWithdrawInProgress && nwcWithdrawStatusText && (
-              <div className="text-xs text-secondary text-center">{nwcWithdrawStatusText}</div>
-            )}
-            {swapScenario === "mint-to-mint" && mintSwapState === "error" && mintSwapMessage && (
-              <div className="text-xs text-rose-400 text-center">{mintSwapMessage}</div>
-            )}
-            {swapScenario === "nwc-to-mint" && nwcFundState === "error" && nwcFundMessage && (
-              <div className="text-xs text-rose-400 text-center">{nwcFundMessage}</div>
-            )}
-            {swapScenario === "mint-to-nwc" && nwcWithdrawState === "error" && nwcWithdrawMessage && (
-              <div className="text-xs text-rose-400 text-center">{nwcWithdrawMessage}</div>
-            )}
-            {swapScenario === "nwc-to-mint" && nwcFundInvoice && (
-              <QrCodeCard
-                className="bg-surface-muted border border-surface rounded-2xl p-3 text-xs"
-                value={nwcFundInvoice}
-                label="Mint invoice"
-                copyLabel="Copy invoice"
-                size={200}
-              />
-            )}
-            {swapScenario === "mint-to-nwc" && nwcWithdrawInvoice && (
-              <QrCodeCard
-                className="bg-surface-muted border border-surface rounded-2xl p-3 text-xs"
-                value={nwcWithdrawInvoice}
-                label="Wallet invoice"
-                copyLabel="Copy invoice"
-                size={200}
-              />
-            )}
-            {!swapOptionList.length && (
-              <div className="text-xs text-secondary text-center">
-                Add another mint or connect NWC to make a swap.
-              </div>
-            )}
-          </div>
-        </div>
-      </ActionSheet>
+      <WalletSwapSheet
+        showNwcSheet={showNwcSheet}
+        closeNwcSheets={closeNwcSheets}
+        openNwcManager={openNwcManager}
+        hasNwcConnection={hasNwcConnection}
+        swapOptionList={swapOptionList}
+        swapFromValue={swapFromValue}
+        setSwapFromValue={setSwapFromValue}
+        swapToValue={swapToValue}
+        setSwapToValue={setSwapToValue}
+        getSwapOptionMeta={getSwapOptionMeta}
+        canToggleCurrency={canToggleCurrency}
+        handleTogglePrimary={handleTogglePrimary}
+        swapPrimaryAmountText={swapPrimaryAmountText}
+        swapSecondaryAmountText={swapSecondaryAmountText}
+        primaryCurrency={primaryCurrency}
+        handleSwapAmountKeypadInput={handleSwapAmountKeypadInput}
+        handleSwapSubmit={handleSwapSubmit}
+        canSubmitSwap={canSubmitSwap}
+        swapInProgress={swapInProgress}
+        swapScenario={swapScenario}
+        mintSwapState={mintSwapState}
+        mintSwapStatusText={mintSwapStatusText}
+        mintSwapMessage={mintSwapMessage}
+        nwcFundInProgress={nwcFundInProgress}
+        nwcFundStatusText={nwcFundStatusText}
+        nwcFundState={nwcFundState}
+        nwcFundMessage={nwcFundMessage}
+        nwcFundInvoice={nwcFundInvoice}
+        nwcWithdrawInProgress={nwcWithdrawInProgress}
+        nwcWithdrawStatusText={nwcWithdrawStatusText}
+        nwcWithdrawState={nwcWithdrawState}
+        nwcWithdrawMessage={nwcWithdrawMessage}
+        nwcWithdrawInvoice={nwcWithdrawInvoice}
+      />
 
-      <ActionSheet
-        open={showNwcManager}
-        onClose={closeNwcManager}
-        title="Manage NWC"
-      >
-        <div className="space-y-4 text-sm">
-          {hasNwcConnection ? (
-            <div className="wallet-section space-y-2 text-xs text-secondary">
-              {nwcAlias && <div className="text-sm font-semibold text-primary">{nwcAlias}</div>}
-              {nwcConnection?.walletLud16 && <div>{nwcConnection.walletLud16}</div>}
-              <div className="break-all">Wallet npub: {nwcConnection?.walletNpub}</div>
-              <div className="break-all">Client npub: {nwcConnection?.clientNpub}</div>
-              <div className="break-all">Relay{(nwcConnection?.relayUrls?.length || 0) > 1 ? 's' : ''}: {nwcConnection?.relayUrls.join(", ")}</div>
-              {nwcInfo?.methods && nwcInfo.methods.length > 0 && (
-                <div>Methods: {nwcInfo.methods.join(", ")}</div>
-              )}
-              {nwcBalanceSats !== null && <div>Balance: {nwcBalanceSats} sats</div>}
-              <div>Status: {nwcStatusLabel}</div>
-            </div>
-          ) : (
-            <div className="wallet-section text-sm text-secondary">Paste your NWC connection string (nostr+walletconnect://…) to link an external wallet.</div>
-          )}
-
-          <div className="wallet-section space-y-3">
-            <input
-              className="pill-input w-full"
-              placeholder="nostr+walletconnect://npub...?relay=wss://...&secret=..."
-              value={nwcUrlInput}
-              onChange={(e)=>setNwcUrlInput(e.target.value)}
-            />
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleNwcConnect}
-                disabled={nwcBusy || !nwcUrlInput.trim()}
-              >{hasNwcConnection ? "Update connection" : "Connect"}</button>
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={handleNwcTest}
-                disabled={nwcBusy || !hasNwcConnection}
-              >Test</button>
-              <button
-                className="ghost-button button-sm pressable"
-                onClick={handleNwcDisconnect}
-                disabled={nwcBusy || !hasNwcConnection}
-              >Disconnect</button>
-            </div>
-            {nwcBusy && <div className="text-xs text-secondary">Working…</div>}
-            {nwcFeedback && <div className="text-xs text-secondary">{nwcFeedback}</div>}
-            {nwcError && <div className="text-xs text-rose-400">{nwcError}</div>}
-          </div>
-        </div>
-      </ActionSheet>
+      <WalletNwcManagerSheet
+        showNwcManager={showNwcManager}
+        closeNwcManager={closeNwcManager}
+        hasNwcConnection={hasNwcConnection}
+        nwcAlias={nwcAlias}
+        nwcConnection={nwcConnection}
+        nwcInfo={nwcInfo}
+        nwcBalanceSats={nwcBalanceSats}
+        nwcStatusLabel={nwcStatusLabel}
+        nwcUrlInput={nwcUrlInput}
+        setNwcUrlInput={setNwcUrlInput}
+        nwcBusy={nwcBusy}
+        nwcFeedback={nwcFeedback}
+        nwcError={nwcError}
+        handleNwcConnect={handleNwcConnect}
+        handleNwcTest={handleNwcTest}
+        handleNwcDisconnect={handleNwcDisconnect}
+      />
 
       {/* ── Message action overlay (long-press menu) ── */}
       {dmMessageActions && (

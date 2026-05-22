@@ -1,13 +1,11 @@
 // @ts-nocheck
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import type { Contact } from "../../lib/contacts";
-import type { GroupChat } from "../../lib/groupChatState";
-import type { GroupAvatarMember } from "../../ui/wallet/walletModalUi";
-import type { WalletDmThread } from "./useDmState";
 import type { FileServerType } from "../../lib/fileStorage";
 import { contactHasNpub } from "../../lib/contacts";
 import { uploadAvatar } from "../../nostr/Nip96Client";
 import { parseFileServers, findServerEntry } from "../../lib/fileStorage";
+import { useScannedContactDerived } from "./useScannedContactDerived";
 
 const PROFILE_PHOTO_MAX_DIMENSION = 400;
 const PROFILE_PHOTO_CACHE_LIMIT_BYTES = 512 * 1024; // 512 KB
@@ -29,13 +27,6 @@ interface UseContactDetailOptions {
   nostrIdentityInfo: any;
   myCardName: string;
   profileCard: any;
-  detailTarget: Contact | any | null;
-  activeContact: Contact | null;
-  detailContactFollowed: boolean;
-  scannedContactSaved: boolean;
-  scannedContactFollowed: boolean;
-  sharedContactPreviewSaved: boolean;
-  sharedContactPreviewCanAccept: boolean;
   activeGroupMembers: any[];
   activeConversationContact: Contact | null;
   nostrMissingReason: string | null;
@@ -114,13 +105,6 @@ export function useContactDetail(options: UseContactDetailOptions) {
     nostrIdentityInfo,
     myCardName,
     profileCard,
-    detailTarget,
-    activeContact,
-    detailContactFollowed,
-    scannedContactSaved,
-    scannedContactFollowed,
-    sharedContactPreviewSaved,
-    sharedContactPreviewCanAccept,
     activeGroupMembers,
     activeConversationContact,
     nostrMissingReason,
@@ -176,6 +160,45 @@ export function useContactDetail(options: UseContactDetailOptions) {
     estimateDataUrlSize,
   } = options;
 
+  // Compute derived values that used to be passed as parameters
+  const activeContact = useMemo(
+    () =>
+      activeContactId && activeContactId !== "profile"
+        ? contacts.find((entry) => entry.id === activeContactId) || null
+        : null,
+    [activeContactId, contacts],
+  );
+  const detailTarget = useMemo(
+    () => (activeContactId === "profile" ? profileCard : activeContact || contactDetailOverride),
+    [activeContact, activeContactId, contactDetailOverride, profileCard],
+  );
+  const sharedContactPreviewContact = sharedContactPreview?.contact ?? null;
+  const { scannedContactSaved, scannedContactFollowed, sharedContactPreviewSaved } = useScannedContactDerived({
+    scannedContact,
+    contacts,
+    normalizeNostrPubkey,
+    compressedToRawHex,
+    contactSyncMeta,
+    sharedContactPreviewContact,
+  });
+  const sharedContactPreviewCanAccept = useMemo(
+    () =>
+      !!sharedContactPreview &&
+      sharedContactPreview.status !== "accepted" &&
+      sharedContactPreview.status !== "deleted" &&
+      sharedContactPreview.status !== "dismissed",
+    [sharedContactPreview],
+  );
+  const detailContactFollowed = useMemo(() => {
+    if (!detailTarget?.npub) return false;
+    const normalized = normalizeNostrPubkey(detailTarget.npub);
+    if (!normalized) return false;
+    const targetHex = compressedToRawHex(normalized).toLowerCase();
+    return (contactSyncMeta.publicFollows || []).some(
+      (follow) => (follow.pubkey || "").toLowerCase() === targetHex,
+    );
+  }, [compressedToRawHex, contactSyncMeta.publicFollows, detailTarget, normalizeNostrPubkey]);
+
   const contactSubtitle = useCallback(
     (contact: Contact) => {
       const nip05 = contact.nip05?.trim() || "";
@@ -221,59 +244,6 @@ export function useContactDetail(options: UseContactDetailOptions) {
     }
     openLightningSendSheet();
   }, [activeConversationContact, applyLightningContact, closeAttachTray, openLightningSendSheet]);
-
-  const groupAvatarMembersFor = useCallback(
-    (group: GroupChat | null | undefined, thread?: WalletDmThread | null, fallbackLabel?: string): GroupAvatarMember[] => {
-      const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
-      const resolvedMembers = (group?.members || [])
-        .map((memberHex, index) => {
-          const normalizedHex = memberHex.toLowerCase();
-          const isSelf = ownHex !== "" && normalizedHex === ownHex;
-          const meta = isSelf
-            ? { label: myCardName, picture: profileCard.picture?.trim() || undefined }
-            : peerLabelFor(normalizedHex);
-          return {
-            key: normalizedHex,
-            memberHex: normalizedHex,
-            index,
-            label: meta.label,
-            picture: meta.picture?.trim() || undefined,
-          };
-        })
-        .filter((member) => !!member.key);
-      if (!resolvedMembers.length) {
-        return [
-          {
-            key: group?.groupId || fallbackLabel || "group",
-            label: fallbackLabel || group?.name || "Group",
-          },
-        ];
-      }
-      const memberMap = new Map(resolvedMembers.map((member) => [member.memberHex, member]));
-      const recentMemberHexes: string[] = [];
-      const recentSeen = new Set<string>();
-      if (thread) {
-        for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
-          const message = thread.messages[index];
-          const candidateHex = ((message.isIncoming ? message.senderPubkey : ownHex) || "").toLowerCase();
-          if (!candidateHex || recentSeen.has(candidateHex) || !memberMap.has(candidateHex)) continue;
-          recentSeen.add(candidateHex);
-          recentMemberHexes.push(candidateHex);
-          if (recentMemberHexes.length >= 4) break;
-        }
-      }
-      const recentMembers = recentMemberHexes
-        .map((memberHex) => memberMap.get(memberHex))
-        .filter(Boolean);
-      const remainingMembers = resolvedMembers
-        .filter((member) => !recentSeen.has(member.memberHex))
-        .sort((left, right) => Number(Boolean(right.picture)) - Number(Boolean(left.picture)) || left.index - right.index);
-      return [...recentMembers, ...remainingMembers]
-        .slice(0, 4)
-        .map(({ key, label, picture }) => ({ key, label, picture }));
-    },
-    [myCardName, nostrIdentityInfo.identity?.pubkey, peerLabelFor, profileCard.picture],
-  );
 
   const openGroupMemberDetail = useCallback(
     (memberHex: string) => {
@@ -861,10 +831,19 @@ export function useContactDetail(options: UseContactDetailOptions) {
   );
 
   return {
+    // Internally computed (previously passed as params)
+    activeContact,
+    detailTarget,
+    sharedContactPreviewContact,
+    scannedContactSaved,
+    scannedContactFollowed,
+    sharedContactPreviewSaved,
+    sharedContactPreviewCanAccept,
+    detailContactFollowed,
+    // Existing returns
     contactSubtitle,
     handleOpenChatEcash,
     handleOpenChatLightning,
-    groupAvatarMembersFor,
     openGroupMemberDetail,
     buildContactFields,
     verifyContactNip05,
