@@ -5,7 +5,7 @@ import { readFile, writeFile } from "fs/promises";
 import { createInterface } from "readline";
 import { createRequire } from "module";
 import { nip19, getPublicKey, generateSecretKey } from "nostr-tools";
-import { hexToBytes, bytesToHex } from "@noble/hashes/utils";
+import { hexToBytes, bytesToHex } from "@noble/hashes/utils.js";
 import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig, type Contact, type BoardEntry } from "./config.js";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
 import { renderTable, renderTaskCard, renderJson } from "./render.js";

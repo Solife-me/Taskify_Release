@@ -394,7 +394,9 @@ export function useBoardSync({
     pendingRelaysByBoardRef,
     pool,
     relayBatchRef,
+    seenBoardTasksRef,
     setPendingNostrInitialSyncByBoardTag,
+    tagValue,
     verifyUnseenTasks,
   ]);
 }

@@ -19,6 +19,7 @@
 
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
+import { toBlobPart, toBufferSource } from "./binary";
 
 export const MESSENGER_ATTACHMENT_ALGO = "aes-gcm" as const;
 export const MESSENGER_ATTACHMENT_KEY_BYTES = 32;
@@ -47,14 +48,14 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digest = await crypto.subtle.digest("SHA-256", toBufferSource(bytes));
   return bytesToHex(new Uint8Array(digest));
 }
 
 async function importAesKey(keyBytes: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     "raw",
-    keyBytes,
+    toBufferSource(keyBytes),
     { name: "AES-GCM" },
     false,
     ["encrypt", "decrypt"],
@@ -93,9 +94,9 @@ export async function encryptAndUploadMessengerAttachment(opts: {
   // WebCrypto AES-GCM accepts arbitrary-length IVs (spec allows up to 2^64-1 bytes).
   // 0xchat uses 16 bytes, so we pass 16 bytes and get a wire-compatible output.
   const ctBuf = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: nonceBytes, tagLength: 128 },
+    { name: "AES-GCM", iv: toBufferSource(nonceBytes), tagLength: 128 },
     cryptoKey,
-    opts.data,
+    toBufferSource(opts.data),
   );
   const ciphertext = new Uint8Array(ctBuf);
   const ciphertextSha256 = await sha256Hex(ciphertext);
@@ -172,12 +173,12 @@ export async function decryptMessengerAttachment(
     const nonceBytes = hexToBytes(descriptor.nonceHex);
     const cryptoKey = await importAesKey(keyBytes);
     const ptBuf = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: nonceBytes, tagLength: 128 },
+      { name: "AES-GCM", iv: toBufferSource(nonceBytes), tagLength: 128 },
       cryptoKey,
-      ciphertext,
+      toBufferSource(ciphertext),
     );
     const mimeType = descriptor.mimeType || "application/octet-stream";
-    const blob = new Blob([new Uint8Array(ptBuf)], { type: mimeType });
+    const blob = new Blob([toBlobPart(new Uint8Array(ptBuf))], { type: mimeType });
     const objectUrl = URL.createObjectURL(blob);
     return { objectUrl, blob };
   })();

@@ -1,4 +1,4 @@
-import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -49,12 +49,11 @@ import {
   MAX_VERSE_COUNT,
 } from "./components/BibleTracker";
 import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
-import { buildBiblePrintLayout } from "./components/BibleTrackerPrintLayout";
-import { BOARD_PRINT_LAYOUT_VERSION, buildBoardPrintLayout, type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
+import { type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
 import { isPrintPaperSize, type PrintPaperSize } from "./components/printPaper";
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
-import { buildBibleTrackerPrintPdf, buildBoardPrintPdf } from "./lib/printPdf";
+import { toBufferSource } from "./lib/binary";
 import { useCashu } from "./context/CashuContext";
 import { kvStorage } from "./storage/kvStorage";
 import {
@@ -234,7 +233,6 @@ import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
 import { UpcomingSearch } from "./ui/upcoming/UpcomingSearch";
 import { useUpcomingControlsState } from "./ui/upcoming/useUpcomingControlsState";
 import { AppSortSheets } from "./ui/app/AppSortSheets";
-import { AppModalStack } from "./ui/app/AppModalStack";
 import { UpdateToast } from "./ui/app/UpdateToast";
 import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
 import { InlineTaskOverlays } from "./ui/task/InlineTaskOverlays";
@@ -266,14 +264,22 @@ import {
 // ---- UI component imports (extracted subcomponents) ----
 import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
 import { EventCard } from "./ui/calendar/EventCard";
-import { EditModal } from "./ui/task/EditModal";
-import EventEditModal from "./ui/calendar/EventEditModal";
-import { SettingsModal } from "./ui/board/SettingsModal";
 
 import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
+const AppModalStack = lazy(() =>
+  import("./ui/app/AppModalStack").then((module) => ({ default: module.AppModalStack })),
+);
+const EditModal = lazy(() =>
+  import("./ui/task/EditModal").then((module) => ({ default: module.EditModal })),
+);
+const EventEditModal = lazy(() => import("./ui/calendar/EventEditModal"));
+const SettingsModal = lazy(() =>
+  import("./ui/board/SettingsModal").then((module) => ({ default: module.SettingsModal })),
+);
 
 const ADD_BOARD_OPTION_ID = "__add-board__";
+const BOARD_PRINT_LAYOUT_VERSION = "v2";
 const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SPECIAL_CALENDAR_US_HOLIDAYS_LABEL = "US Holidays";
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
@@ -560,7 +566,7 @@ function persistBoardPrintJob(job: BoardPrintJob): void {
 
 /* ================== Crypto helpers (AES-GCM via local Nostr key) ================== */
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const h = await crypto.subtle.digest("SHA-256", data);
+  const h = await crypto.subtle.digest("SHA-256", toBufferSource(data));
   return new Uint8Array(h);
 }
 function hexToBytes(hex: string): Uint8Array {
@@ -592,12 +598,16 @@ async function deriveAesKeyFromLocalSk(): Promise<CryptoKey> {
   const label = new TextEncoder().encode("taskify-ecash-v1");
   const raw = concatBytes(hexToBytes(skHex), label);
   const digest = await sha256(raw);
-  return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt","decrypt"]);
+  return await crypto.subtle.importKey("raw", toBufferSource(digest), "AES-GCM", false, ["encrypt","decrypt"]);
 }
 export async function encryptEcashTokenForFunder(plain: string): Promise<{alg:"aes-gcm-256";iv:string;ct:string}> {
   const key = await deriveAesKeyFromLocalSk();
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
+  const ctBuf = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    toBufferSource(new TextEncoder().encode(plain)),
+  );
   return { alg: "aes-gcm-256", iv: b64encode(iv), ct: b64encode(ctBuf) };
 }
 export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:string;ct:string}): Promise<string> {
@@ -605,7 +615,7 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
   const key = await deriveAesKeyFromLocalSk();
   const iv = b64decode(enc.iv);
   const ct = b64decode(enc.ct);
-  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBufferSource(iv) }, key, toBufferSource(ct));
   return new TextDecoder().decode(new Uint8Array(ptBuf));
 }
 
@@ -1610,7 +1620,6 @@ export default function App() {
   useEffect(() => {
     if (!settings.showFullWeekRecurring) return;
     setTasks(prev => ensureWeekRecurrences(prev));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.showFullWeekRecurring, settings.weekStart]);
 
   // Apply font size setting to root; fall back to default size
@@ -3092,7 +3101,7 @@ export default function App() {
     return cleaned.replace(/^-+|-+$/g, "") || "print";
   }, []);
 
-  const handlePrintBibleWindow = useCallback(() => {
+  const handlePrintBibleWindow = useCallback(async () => {
     if (typeof window === "undefined") return;
     if (!biblePrintMeta || !biblePrintPortal) return;
     const printWindow = window.open("", "_blank");
@@ -3103,6 +3112,7 @@ export default function App() {
     try {
       printWindow.opener = null;
     } catch {}
+    const { buildBiblePrintLayout } = await import("./components/BibleTrackerPrintLayout");
     const layout = buildBiblePrintLayout(biblePrintPaperSize);
     const pageWidthMm = layout.page.widthMm;
     const pageHeightMm = layout.page.heightMm;
@@ -3218,6 +3228,7 @@ export default function App() {
     if (biblePrintPdfBusy) return;
     setBiblePrintPdfBusy(true);
     try {
+      const { buildBibleTrackerPrintPdf } = await import("./lib/printPdf");
       const blob = await buildBibleTrackerPrintPdf({
         state: bibleTrackerRef.current,
         meta: biblePrintMeta,
@@ -4733,7 +4744,7 @@ export default function App() {
     });
   }, []);
 
-  const handlePrintBoardWindow = useCallback(() => {
+  const handlePrintBoardWindow = useCallback(async () => {
     if (typeof window === "undefined") return;
     if (!boardPrintJob || !boardPrintPortal) return;
     const printWindow = window.open("", "_blank");
@@ -4744,6 +4755,7 @@ export default function App() {
     try {
       printWindow.opener = null;
     } catch {}
+    const { buildBoardPrintLayout } = await import("./components/BoardPrintLayout");
     const layout = buildBoardPrintLayout(boardPrintJob.tasks, {
       layoutVersion: boardPrintJob.layoutVersion,
       paperSize: boardPrintJob.paperSize,
@@ -4890,6 +4902,7 @@ export default function App() {
     if (boardPrintPdfBusy) return;
     setBoardPrintPdfBusy(true);
     try {
+      const { buildBoardPrintPdf } = await import("./lib/printPdf");
       const blob = await buildBoardPrintPdf({
         job: boardPrintJob,
         paperSize: boardPrintJob.paperSize,
@@ -7501,7 +7514,7 @@ export default function App() {
       withTimeout(
         registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey,
+          applicationServerKey: toBufferSource(applicationServerKey),
         }),
         PUSH_OPERATION_TIMEOUT_MS,
         'Timed out while creating a push subscription.',
@@ -11499,6 +11512,17 @@ export default function App() {
       <option value={ADD_BOARD_OPTION_ID}>+</option>
     </>
   );
+  const shouldRenderAppModalStack =
+    addBoardOpen ||
+    biblePrintOpen ||
+    bibleScanOpen ||
+    boardPrintOpen ||
+    boardScanOpen ||
+    showFirstRunOnboarding ||
+    !!previewDocument ||
+    !!recurringDeleteEvent ||
+    !!recurringDeleteTask ||
+    !!undoTask;
 
   return (
     <div className="min-h-screen text-primary">
@@ -12554,41 +12578,43 @@ export default function App() {
         />
       )}
       {activePage === "settings" && (
-        <SettingsModal
-          embedded
-          settings={settings}
-          boards={boards}
-          currentBoardId={currentBoardId}
-          setSettings={setSettings}
-          setBoards={setBoards}
-          setTasks={setTasks}
-          changeBoard={changeBoard}
-          shouldReloadForNavigation={shouldReloadForNavigation}
-          defaultRelays={defaultRelays}
-          setDefaultRelays={setDefaultRelays}
-          pubkeyHex={nostrPK}
-          onGenerateKey={rotateNostrKey}
-          onSetKey={setCustomNostrKey}
-          pushWorkState={pushWorkState}
-          pushError={pushError}
-          onEnablePush={enablePushNotifications}
-          onDisablePush={disablePushNotifications}
-          workerBaseUrl={workerBaseUrl}
-          vapidPublicKey={vapidPublicKey}
-          onResetWalletTokenTracking={handleResetWalletTokenTracking}
-          onShareBoard={enableBoardSharing}
-          onJoinBoard={joinSharedBoard}
-          onRegenerateBoardId={regenerateBoardId}
-          onBoardChanged={handleBoardChanged}
-          onClose={closeSettings}
-          gcalStatus={gcalStatus}
-          gcalCalendars={gcalCalendars}
-          gcalLoading={gcalLoading}
-          onGcalConnect={gcalConnect}
-          onGcalDisconnect={gcalDisconnect}
-          onGcalToggleCalendar={gcalToggleCalendar}
-          onGcalSync={gcalSync}
-        />
+        <Suspense fallback={null}>
+          <SettingsModal
+            embedded
+            settings={settings}
+            boards={boards}
+            currentBoardId={currentBoardId}
+            setSettings={setSettings}
+            setBoards={setBoards}
+            setTasks={setTasks}
+            changeBoard={changeBoard}
+            shouldReloadForNavigation={shouldReloadForNavigation}
+            defaultRelays={defaultRelays}
+            setDefaultRelays={setDefaultRelays}
+            pubkeyHex={nostrPK}
+            onGenerateKey={rotateNostrKey}
+            onSetKey={setCustomNostrKey}
+            pushWorkState={pushWorkState}
+            pushError={pushError}
+            onEnablePush={enablePushNotifications}
+            onDisablePush={disablePushNotifications}
+            workerBaseUrl={workerBaseUrl}
+            vapidPublicKey={vapidPublicKey}
+            onResetWalletTokenTracking={handleResetWalletTokenTracking}
+            onShareBoard={enableBoardSharing}
+            onJoinBoard={joinSharedBoard}
+            onRegenerateBoardId={regenerateBoardId}
+            onBoardChanged={handleBoardChanged}
+            onClose={closeSettings}
+            gcalStatus={gcalStatus}
+            gcalCalendars={gcalCalendars}
+            gcalLoading={gcalLoading}
+            onGcalConnect={gcalConnect}
+            onGcalDisconnect={gcalDisconnect}
+            onGcalToggleCalendar={gcalToggleCalendar}
+            onGcalSync={gcalSync}
+          />
+        </Suspense>
       )}
       </div>
 
@@ -12833,59 +12859,63 @@ export default function App() {
       />
 
       {/* Undo Snackbar */}
-      <AppModalStack
-        addBoardOpen={addBoardOpen}
-        biblePrintMeta={biblePrintMeta}
-        biblePrintOpen={biblePrintOpen}
-        biblePrintPaperSize={biblePrintPaperSize}
-        biblePrintPdfBusy={biblePrintPdfBusy}
-        biblePrintPortal={biblePrintPortal}
-        bibleScanOpen={bibleScanOpen}
-        bibleTracker={bibleTracker}
-        boardPrintJob={boardPrintJob}
-        boardPrintOpen={boardPrintOpen}
-        boardPrintPdfBusy={boardPrintPdfBusy}
-        boardPrintPortal={boardPrintPortal}
-        boardScanOpen={boardScanOpen}
-        closeAddBoard={closeAddBoard}
-        completeFirstRunOnboarding={completeFirstRunOnboarding}
-        createBoardFromName={createBoardFromName}
-        deleteCalendarEvent={deleteCalendarEvent}
-        deleteTask={deleteTask}
-        handleApplyBibleScan={handleApplyBibleScan}
-        handleApplyBoardScan={handleApplyBoardScan}
-        handleBiblePaperSizeChange={handleBiblePaperSizeChange}
-        handleBoardPaperSizeChange={handleBoardPaperSizeChange}
-        handleDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
-        handleExportBiblePdf={handleExportBiblePdf}
-        handleExportBoardPdf={handleExportBoardPdf}
-        handleOnboardingEnableNotifications={handleOnboardingEnableNotifications}
-        handleOnboardingGenerateNewKey={handleOnboardingGenerateNewKey}
-        handleOnboardingRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
-        handleOnboardingRestoreFromCloud={handleOnboardingRestoreFromCloud}
-        handleOnboardingUseExistingKey={handleOnboardingUseExistingKey}
-        handlePrintBibleWindow={handlePrintBibleWindow}
-        handlePrintBoardWindow={handlePrintBoardWindow}
-        joinSharedBoard={joinSharedBoard}
-        onboardingPushConfigured={onboardingPushConfigured}
-        onboardingPushSupported={onboardingPushSupported}
-        previewDocument={previewDocument}
-        previewDocumentBoardId={previewDocumentBoardId}
-        recurringDeleteEvent={recurringDeleteEvent}
-        recurringDeleteTask={recurringDeleteTask}
-        setBiblePrintOpen={setBiblePrintOpen}
-        setBibleScanOpen={setBibleScanOpen}
-        setBoardPrintOpen={setBoardPrintOpen}
-        setBoardScanOpen={setBoardScanOpen}
-        setPreviewDocument={setPreviewDocument}
-        setPreviewDocumentBoardId={setPreviewDocumentBoardId}
-        setRecurringDeleteEvent={setRecurringDeleteEvent}
-        setRecurringDeleteTask={setRecurringDeleteTask}
-        showFirstRunOnboarding={showFirstRunOnboarding}
-        undoDelete={undoDelete}
-        undoTask={undoTask}
-        workerBaseUrl={workerBaseUrl}
-      />
+      {shouldRenderAppModalStack && (
+        <Suspense fallback={null}>
+          <AppModalStack
+            addBoardOpen={addBoardOpen}
+            biblePrintMeta={biblePrintMeta}
+            biblePrintOpen={biblePrintOpen}
+            biblePrintPaperSize={biblePrintPaperSize}
+            biblePrintPdfBusy={biblePrintPdfBusy}
+            biblePrintPortal={biblePrintPortal}
+            bibleScanOpen={bibleScanOpen}
+            bibleTracker={bibleTracker}
+            boardPrintJob={boardPrintJob}
+            boardPrintOpen={boardPrintOpen}
+            boardPrintPdfBusy={boardPrintPdfBusy}
+            boardPrintPortal={boardPrintPortal}
+            boardScanOpen={boardScanOpen}
+            closeAddBoard={closeAddBoard}
+            completeFirstRunOnboarding={completeFirstRunOnboarding}
+            createBoardFromName={createBoardFromName}
+            deleteCalendarEvent={deleteCalendarEvent}
+            deleteTask={deleteTask}
+            handleApplyBibleScan={handleApplyBibleScan}
+            handleApplyBoardScan={handleApplyBoardScan}
+            handleBiblePaperSizeChange={handleBiblePaperSizeChange}
+            handleBoardPaperSizeChange={handleBoardPaperSizeChange}
+            handleDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
+            handleExportBiblePdf={handleExportBiblePdf}
+            handleExportBoardPdf={handleExportBoardPdf}
+            handleOnboardingEnableNotifications={handleOnboardingEnableNotifications}
+            handleOnboardingGenerateNewKey={handleOnboardingGenerateNewKey}
+            handleOnboardingRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
+            handleOnboardingRestoreFromCloud={handleOnboardingRestoreFromCloud}
+            handleOnboardingUseExistingKey={handleOnboardingUseExistingKey}
+            handlePrintBibleWindow={handlePrintBibleWindow}
+            handlePrintBoardWindow={handlePrintBoardWindow}
+            joinSharedBoard={joinSharedBoard}
+            onboardingPushConfigured={onboardingPushConfigured}
+            onboardingPushSupported={onboardingPushSupported}
+            previewDocument={previewDocument}
+            previewDocumentBoardId={previewDocumentBoardId}
+            recurringDeleteEvent={recurringDeleteEvent}
+            recurringDeleteTask={recurringDeleteTask}
+            setBiblePrintOpen={setBiblePrintOpen}
+            setBibleScanOpen={setBibleScanOpen}
+            setBoardPrintOpen={setBoardPrintOpen}
+            setBoardScanOpen={setBoardScanOpen}
+            setPreviewDocument={setPreviewDocument}
+            setPreviewDocumentBoardId={setPreviewDocumentBoardId}
+            setRecurringDeleteEvent={setRecurringDeleteEvent}
+            setRecurringDeleteTask={setRecurringDeleteTask}
+            showFirstRunOnboarding={showFirstRunOnboarding}
+            undoDelete={undoDelete}
+            undoTask={undoTask}
+            workerBaseUrl={workerBaseUrl}
+          />
+        </Suspense>
+      )}
 
       <UpdateToast
         handleReloadLater={handleReloadLater}
@@ -12895,116 +12925,120 @@ export default function App() {
 
       {/* Edit Modals */}      {/* Edit Modals */}
       {editing?.type === "task" && (
-        <EditModal
-          task={editing.task}
-          onCancel={() => setEditing(null)}
-          onDelete={() => {
-            if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
-            else deleteTask(editing.originalId);
-            setEditing(null);
-          }}
-          onSave={(updated) => {
-            if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
-            saveEdit(updated);
-          }}
-          onSwitchToEvent={(draftTask) => {
-            const nextEvent = convertTaskToCalendarEvent(draftTask);
-            setEditing({
-              type: "event",
-              originalType: editing.originalType,
-              originalId: editing.originalId,
-              event: nextEvent,
-            });
-          }}
-          weekStart={settings.weekStart}
-          boardKind={editingBoard?.kind ?? currentBoard?.kind ?? "week"}
-          boards={boards}
-          onRedeemCoins={(rect) => flyCoinsToWallet(rect)}
-          onRevealBounty={revealBounty}
-          onTransferBounty={transferBounty}
-          onPreviewDocument={handleOpenDocument}
-          walletConversionEnabled={settings.walletConversionEnabled}
-          walletPrimaryCurrency={settings.walletPrimaryCurrency}
-          bountyListEnabled={bountyListEnabled}
-          bountyListKey={activeBountyListKey}
-          onAddToBountyList={addTaskToBountyList}
-          onRemoveFromBountyList={removeTaskFromBountyList}
-          defaultRelays={defaultRelays}
-          nostrPK={nostrPK}
-          nostrSkHex={nostrSkHex}
-          fileServers={settings.encryptedFileServers || settings.fileServers}
-          fileStorageServer={settings.encryptedFileStorageServer}
-        />
+        <Suspense fallback={null}>
+          <EditModal
+            task={editing.task}
+            onCancel={() => setEditing(null)}
+            onDelete={() => {
+              if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
+              else deleteTask(editing.originalId);
+              setEditing(null);
+            }}
+            onSave={(updated) => {
+              if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
+              saveEdit(updated);
+            }}
+            onSwitchToEvent={(draftTask) => {
+              const nextEvent = convertTaskToCalendarEvent(draftTask);
+              setEditing({
+                type: "event",
+                originalType: editing.originalType,
+                originalId: editing.originalId,
+                event: nextEvent,
+              });
+            }}
+            weekStart={settings.weekStart}
+            boardKind={editingBoard?.kind ?? currentBoard?.kind ?? "week"}
+            boards={boards}
+            onRedeemCoins={(rect) => flyCoinsToWallet(rect)}
+            onRevealBounty={revealBounty}
+            onTransferBounty={transferBounty}
+            onPreviewDocument={handleOpenDocument}
+            walletConversionEnabled={settings.walletConversionEnabled}
+            walletPrimaryCurrency={settings.walletPrimaryCurrency}
+            bountyListEnabled={bountyListEnabled}
+            bountyListKey={activeBountyListKey}
+            onAddToBountyList={addTaskToBountyList}
+            onRemoveFromBountyList={removeTaskFromBountyList}
+            defaultRelays={defaultRelays}
+            nostrPK={nostrPK}
+            nostrSkHex={nostrSkHex}
+            fileServers={settings.encryptedFileServers || settings.fileServers}
+            fileStorageServer={settings.encryptedFileStorageServer}
+          />
+        </Suspense>
       )}
 
       {editing?.type === "event" && (
+        <Suspense fallback={null}>
 	        <EventEditModal
 	          event={editing.event}
-          onCancel={() => setEditing(null)}
-          onDelete={() => {
-            if (editing.originalType === "task") deleteTask(editing.originalId);
-            else deleteCalendarEvent(editing.originalId);
-            setEditing(null);
-          }}
-          onSave={saveCalendarEdit}
-          onSwitchToTask={(draftEvent) => {
-            const nextTask = convertCalendarEventToTask(draftEvent);
-            setEditing({
-              type: "task",
-              originalType: editing.originalType,
-              originalId: editing.originalId,
-              task: nextTask,
-            });
-          }}
-          boards={boards}
-          contacts={shareableContacts}
-          rsvps={activeEventRsvps}
-          nostrPK={nostrPK}
-          nostrSkHex={nostrSkHex}
+            onCancel={() => setEditing(null)}
+            onDelete={() => {
+              if (editing.originalType === "task") deleteTask(editing.originalId);
+              else deleteCalendarEvent(editing.originalId);
+              setEditing(null);
+            }}
+            onSave={saveCalendarEdit}
+            onSwitchToTask={(draftEvent) => {
+              const nextTask = convertCalendarEventToTask(draftEvent);
+              setEditing({
+                type: "task",
+                originalType: editing.originalType,
+                originalId: editing.originalId,
+                task: nextTask,
+              });
+            }}
+            boards={boards}
+            contacts={shareableContacts}
+            rsvps={activeEventRsvps}
+            nostrPK={nostrPK}
+            nostrSkHex={nostrSkHex}
 	          defaultRelays={defaultRelays}
 	          onPreviewDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		          onRsvp={
 	            activeEventRsvpCoord
 	              ? async (status, options) => {
 	                  try {
-                    const relayCandidates = activeEventRsvpRelays.length
-                      ? activeEventRsvpRelays
-                      : [
-                          ...defaultRelays,
-                          ...inboxRelays,
-                          ...Array.from(DEFAULT_NOSTR_RELAYS),
-                        ];
-                    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
-                    const isExternal = editing?.type === "event" ? !!editing.event.external : false;
-                    const publishBoardId = editing?.type === "event" && !isExternal
-                      ? (editing.event.originBoardId ?? editing.event.boardId)
-                      : null;
-                    const boardNostrId = publishBoardId
-                      ? boards.find((b) => b.id === publishBoardId)?.nostr?.boardId
-                      : undefined;
-                    const inviteToken =
-                      editing?.type === "event"
-                        ? editing.event.inviteToken
-                          || (nostrPK ? editing.event.inviteTokens?.[nostrPK] : undefined)
+                      const relayCandidates = activeEventRsvpRelays.length
+                        ? activeEventRsvpRelays
+                        : [
+                            ...defaultRelays,
+                            ...inboxRelays,
+                            ...Array.from(DEFAULT_NOSTR_RELAYS),
+                          ];
+                      const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+                      const isExternal = editing?.type === "event" ? !!editing.event.external : false;
+                      const publishBoardId = editing?.type === "event" && !isExternal
+                        ? (editing.event.originBoardId ?? editing.event.boardId)
+                        : null;
+                      const boardNostrId = publishBoardId
+                        ? boards.find((b) => b.id === publishBoardId)?.nostr?.boardId
                         : undefined;
-                    if ((!inviteToken && !boardNostrId) || !editing || editing.type !== "event") {
-                      showToast("Missing invite token for RSVP.");
-                      return;
-                    }
-                    const nextOptions =
-                      boardNostrId
-                        ? { ...(options ?? {}), boardId: boardNostrId }
-                        : options;
-                    await publishCalendarRsvp(activeEventRsvpCoord, editing.event.id, inviteToken, relays, status, nextOptions);
-                    showToast(`RSVP sent: ${status}`);
-                  } catch (err) {
+                      const inviteToken =
+                        editing?.type === "event"
+                          ? editing.event.inviteToken
+                            || (nostrPK ? editing.event.inviteTokens?.[nostrPK] : undefined)
+                          : undefined;
+                      if ((!inviteToken && !boardNostrId) || !editing || editing.type !== "event") {
+                        showToast("Missing invite token for RSVP.");
+                        return;
+                      }
+                      const nextOptions =
+                        boardNostrId
+                          ? { ...(options ?? {}), boardId: boardNostrId }
+                          : options;
+                      await publishCalendarRsvp(activeEventRsvpCoord, editing.event.id, inviteToken, relays, status, nextOptions);
+                      showToast(`RSVP sent: ${status}`);
+                    } catch (err) {
 	                    console.warn("RSVP publish failed", err);
 	                    showToast("Failed to send RSVP.");
+                    }
                   }
-                }
-              : undefined
-          }
-        />
+                : undefined
+            }
+          />
+        </Suspense>
       )}
 
       <ShareBoardDialogs

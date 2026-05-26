@@ -1,4 +1,4 @@
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { SimplePool, getPublicKey, nip59, type Event } from "nostr-tools";
 import { parseShareEnvelope, type ShareEnvelope } from "taskify-core";
 

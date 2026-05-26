@@ -3,7 +3,7 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PaymentRequestTransportType,
   type PaymentRequestPayload,
@@ -145,15 +145,6 @@ import {
   shortenNpubDisplay,
   tryParseJson,
 } from "../ui/wallet/walletModalUi";
-import { EcashReceiveSheet } from "../ui/wallet/EcashReceiveSheet";
-import { LightningReceiveSheet } from "../ui/wallet/LightningReceiveSheet";
-import { EcashSendSheet } from "../ui/wallet/EcashSendSheet";
-import { WalletContactsSheet } from "../ui/wallet/WalletContactsSheet";
-import { LightningSendSheet } from "../ui/wallet/LightningSendSheet";
-import { WalletHistorySheet } from "../ui/wallet/WalletHistorySheet";
-import { WalletSwapSheet } from "../ui/wallet/WalletSwapSheet";
-import { WalletNwcManagerSheet } from "../ui/wallet/WalletNwcManagerSheet";
-import { PaymentRequestFulfillSheet } from "../ui/wallet/PaymentRequestFulfillSheet";
 import {
   yieldToBrowser,
   extractMinibitsPaymentSender,
@@ -187,6 +178,34 @@ import {
   type SharedContactPreview,
   type NostrEvent,
 } from "../wallet/walletModalHelpers";
+
+const EcashReceiveSheet = lazy(() =>
+  import("../ui/wallet/EcashReceiveSheet").then((module) => ({ default: module.EcashReceiveSheet })),
+);
+const LightningReceiveSheet = lazy(() =>
+  import("../ui/wallet/LightningReceiveSheet").then((module) => ({ default: module.LightningReceiveSheet })),
+);
+const EcashSendSheet = lazy(() =>
+  import("../ui/wallet/EcashSendSheet").then((module) => ({ default: module.EcashSendSheet })),
+);
+const WalletContactsSheet = lazy(() =>
+  import("../ui/wallet/WalletContactsSheet").then((module) => ({ default: module.WalletContactsSheet })),
+);
+const LightningSendSheet = lazy(() =>
+  import("../ui/wallet/LightningSendSheet").then((module) => ({ default: module.LightningSendSheet })),
+);
+const WalletHistorySheet = lazy(() =>
+  import("../ui/wallet/WalletHistorySheet").then((module) => ({ default: module.WalletHistorySheet })),
+);
+const WalletSwapSheet = lazy(() =>
+  import("../ui/wallet/WalletSwapSheet").then((module) => ({ default: module.WalletSwapSheet })),
+);
+const WalletNwcManagerSheet = lazy(() =>
+  import("../ui/wallet/WalletNwcManagerSheet").then((module) => ({ default: module.WalletNwcManagerSheet })),
+);
+const PaymentRequestFulfillSheet = lazy(() =>
+  import("../ui/wallet/PaymentRequestFulfillSheet").then((module) => ({ default: module.PaymentRequestFulfillSheet })),
+);
 
 export default function CashuWalletModal({
   open,
@@ -4173,7 +4192,6 @@ export default function CashuWalletModal({
   const myCardNpub = useMemo(() => {
     const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
     return identity ? formatNpub(identity.pubkey) : "";
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formatNpub, readNostrIdentity, profileSharePayload]);
   const myCardSubtitle =
     myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
@@ -8430,7 +8448,9 @@ export default function CashuWalletModal({
 
         </div>
       )}
-      <EcashReceiveSheet
+      {receiveMode === "ecash" && (
+        <Suspense fallback={null}>
+          <EcashReceiveSheet
         receiveMode={receiveMode}
         closeReceiveEcashSheet={closeReceiveEcashSheet}
         openReceiveLightningSheet={openReceiveLightningSheet}
@@ -8469,7 +8489,9 @@ export default function CashuWalletModal({
         ensureOpenPaymentRequest={ensureOpenPaymentRequest}
         setLastCreatedEcashRequest={setLastCreatedEcashRequest}
         setEcashReceiveView={setEcashReceiveView}
-      />
+          />
+        </Suspense>
+      )}
 
       <ActionSheet
         open={receiveLockVisible}
@@ -8528,7 +8550,9 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-      <LightningReceiveSheet
+      {receiveMode === "lightning" && (
+        <Suspense fallback={null}>
+          <LightningReceiveSheet
         receiveMode={receiveMode}
         closeReceiveLightningSheet={closeReceiveLightningSheet}
         openReceiveEcashSheet={openReceiveEcashSheet}
@@ -8566,7 +8590,9 @@ export default function CashuWalletModal({
         satFormatter={satFormatter}
         invoiceAmountSecondary={invoiceAmountSecondary}
         mintUrl={mintUrl}
-      />
+          />
+        </Suspense>
+      )}
 
       <ActionSheet open={receiveMode === "lnurlWithdraw"} onClose={closeReceiveLnurlWithdrawSheet} title="LNURL Withdraw">
         {lnurlWithdrawInfo ? (
@@ -8622,7 +8648,9 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-      <EcashSendSheet
+      {sendMode === "ecash" && (
+        <Suspense fallback={null}>
+          <EcashSendSheet
         sendMode={sendMode}
         closeEcashSendSheet={closeEcashSendSheet}
         openLightningSendSheet={openLightningSendSheet}
@@ -8667,7 +8695,9 @@ export default function CashuWalletModal({
         lastSendTokenMint={lastSendTokenMint}
         handlePasteEcashInput={handlePasteEcashInput}
         mintUrl={mintUrl}
-      />
+          />
+        </Suspense>
+      )}
 
       <ActionSheet
         open={contactsOpen && contactsContext !== null}
@@ -8682,7 +8712,9 @@ export default function CashuWalletModal({
         )}
       </ActionSheet>
 
-      <WalletContactsSheet
+      {contactsPanelOpen && (
+        <Suspense fallback={null}>
+          <WalletContactsSheet
         contactsPanelOpen={contactsPanelOpen}
         closeContactsTab={closeContactsTab}
         contactsHeader={contactsHeader}
@@ -8743,7 +8775,9 @@ export default function CashuWalletModal({
         setShowScanner={setShowScanner}
         contactSubtitle={contactSubtitle}
         handleCopyContactField={handleCopyContactField}
-      />
+          />
+        </Suspense>
+      )}
 
       <ActionSheet
         open={publicFollowPickerOpen}
@@ -9015,7 +9049,9 @@ export default function CashuWalletModal({
         )}
       </ActionSheet>
 
-      <LightningSendSheet
+      {sendMode === "lightning" && (
+        <Suspense fallback={null}>
+          <LightningSendSheet
         sendMode={sendMode}
         closeLightningSendSheet={closeLightningSendSheet}
         openEcashSendSheet={openEcashSendSheet}
@@ -9056,9 +9092,13 @@ export default function CashuWalletModal({
         isLnAddress={isLnAddress}
         lnurlRequiresAmount={lnurlRequiresAmount}
         lnAddrAmt={lnAddrAmt}
-      />
+          />
+        </Suspense>
+      )}
 
-      <PaymentRequestFulfillSheet
+      {sendMode === "paymentRequest" && (
+        <Suspense fallback={null}>
+          <PaymentRequestFulfillSheet
         sendMode={sendMode}
         closePaymentRequestSheet={closePaymentRequestSheet}
         handlePasteEcashRequest={handlePasteEcashRequest}
@@ -9083,7 +9123,9 @@ export default function CashuWalletModal({
         paymentRequestActionLabel={paymentRequestActionLabel}
         paymentRequestMessage={paymentRequestMessage}
         paymentRequestError={paymentRequestError}
-      />
+          />
+        </Suspense>
+      )}
 
       <ActionSheet
         open={showScanner}
@@ -9477,7 +9519,9 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-      <WalletHistorySheet
+      {showHistory && (
+        <Suspense fallback={null}>
+          <WalletHistorySheet
         showHistory={showHistory}
         setShowHistory={setShowHistory}
         setExpandedHistoryId={setExpandedHistoryId}
@@ -9503,7 +9547,9 @@ export default function CashuWalletModal({
         handleDeleteHistoryEntry={handleDeleteHistoryEntry}
         satFormatter={satFormatter}
         historyFilter={historyFilter}
-      />
+          />
+        </Suspense>
+      )}
 
       {/* Mint balances */}
       <ActionSheet open={showMintBalances} onClose={()=>setShowMintBalances(false)} title="Mint balances">
@@ -9575,7 +9621,9 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
-      <WalletSwapSheet
+      {showNwcSheet && (
+        <Suspense fallback={null}>
+          <WalletSwapSheet
         showNwcSheet={showNwcSheet}
         closeNwcSheets={closeNwcSheets}
         openNwcManager={openNwcManager}
@@ -9609,9 +9657,13 @@ export default function CashuWalletModal({
         nwcWithdrawState={nwcWithdrawState}
         nwcWithdrawMessage={nwcWithdrawMessage}
         nwcWithdrawInvoice={nwcWithdrawInvoice}
-      />
+          />
+        </Suspense>
+      )}
 
-      <WalletNwcManagerSheet
+      {showNwcManager && (
+        <Suspense fallback={null}>
+          <WalletNwcManagerSheet
         showNwcManager={showNwcManager}
         closeNwcManager={closeNwcManager}
         hasNwcConnection={hasNwcConnection}
@@ -9628,7 +9680,9 @@ export default function CashuWalletModal({
         handleNwcConnect={handleNwcConnect}
         handleNwcTest={handleNwcTest}
         handleNwcDisconnect={handleNwcDisconnect}
-      />
+          />
+        </Suspense>
+      )}
 
       {/* ── Message action overlay (long-press menu) ── */}
       {dmMessageActions && (

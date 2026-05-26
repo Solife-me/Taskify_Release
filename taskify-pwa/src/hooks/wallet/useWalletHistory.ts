@@ -4,6 +4,7 @@ import { TASKIFY_STORE_WALLET } from "../../storage/taskifyDb";
 import {
   markHistoryEntrySpentRaw,
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
+  type HistoryEntryRaw,
   type MarkHistoryEntriesOldSpentEventDetail,
 } from "../../lib/walletHistory";
 import { deriveTimestampFromId } from "../../wallet/cashuProofHelpers";
@@ -114,8 +115,8 @@ export function useWalletHistory({ showToast, captureFiatValueUsd }: UseWalletHi
 
   const markHistoryEntryAsSpent = useCallback(
     (entry: HistoryItem, timestamp: number): HistoryItem => {
-      const updated = markHistoryEntrySpentRaw(entry, timestamp);
-      return (updated as HistoryItem) ?? entry;
+      const updated = markHistoryEntrySpentRaw(entry as unknown as HistoryEntryRaw, timestamp);
+      return (updated as unknown as HistoryItem) ?? entry;
     },
     [],
   );

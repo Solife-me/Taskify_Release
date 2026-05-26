@@ -13,7 +13,8 @@ import {
 } from "./cashuProofHelpers";
 import { containsNut16Frame } from "./nut16";
 
-export type StoredProofForState = Pick<Proof, "secret" | "amount" | "id" | "C" | "witness"> & {
+export type StoredProofForState = Omit<Pick<Proof, "secret" | "amount" | "id" | "C" | "witness">, "amount"> & {
+  amount: number;
   Y?: string | null;
   lastState?: ProofStateValue;
 };
@@ -125,7 +126,7 @@ export function deriveHistoryTokenStateFromToken(token: string): HistoryTokenSta
       const mint = typeof entry?.mint === "string" ? normalizeMintUrl(entry.mint) : null;
       const proofsRaw = Array.isArray(entry?.proofs) ? entry.proofs : [];
       const storedProofs = proofsRaw
-        .map((proof: any) => {
+        .map((proof: any): StoredProofForState | null => {
           if (!proof || typeof proof !== "object") return null;
           const secret = typeof proof.secret === "string" ? proof.secret : null;
           const id = typeof proof.id === "string" ? proof.id : null;
@@ -149,7 +150,7 @@ export function deriveHistoryTokenStateFromToken(token: string): HistoryTokenSta
           if (proofState) stored.lastState = proofState;
           return stored;
         })
-        .filter((proof): proof is StoredProofForState => !!proof);
+        .filter((proof: StoredProofForState | null): proof is StoredProofForState => !!proof);
       if (!mint || !storedProofs.length) continue;
       return {
         mintUrl: mint,
@@ -311,7 +312,7 @@ export function parseStoredHistory(parsed: unknown): HistoryItem[] {
         const proofsRaw = Array.isArray(rawTokenState.proofs) ? rawTokenState.proofs : [];
         if (mintUrl && proofsRaw.length) {
           const normalizedProofs = proofsRaw
-            .map((proof: any) => {
+            .map((proof: any): StoredProofForState | null => {
               if (!proof || typeof proof !== "object") return null;
               const secret = typeof proof.secret === "string" ? proof.secret : null;
               const proofId = typeof proof.id === "string" ? proof.id : null;
@@ -330,7 +331,7 @@ export function parseStoredHistory(parsed: unknown): HistoryItem[] {
               }
               return stored;
             })
-            .filter((proof): proof is StoredProofForState => !!proof);
+            .filter((proof: StoredProofForState | null): proof is StoredProofForState => !!proof);
           if (normalizedProofs.length) {
             const tokenState: HistoryTokenState = { mintUrl, proofs: normalizedProofs };
             if (typeof rawTokenState.lastState === "string") {

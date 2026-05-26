@@ -1,5 +1,6 @@
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
+import { toBufferSource } from "./binary";
 
 const aesKeyCache = new Map<string, Promise<CryptoKey>>();
 const decryptDataUrlCache = new Map<string, Promise<string>>();
@@ -9,7 +10,7 @@ function attachmentDebug(event: string, detail?: Record<string, unknown>) {
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digest = await crypto.subtle.digest("SHA-256", toBufferSource(bytes));
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
@@ -70,7 +71,11 @@ export async function encryptAndUploadAttachment(opts: {
   });
   const key = await deriveBoardAesKey(opts.boardId);
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, opts.data);
+  const ctBuf = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    toBufferSource(opts.data),
+  );
   const combined = new Uint8Array(iv.length + ctBuf.byteLength);
   combined.set(iv, 0);
   combined.set(new Uint8Array(ctBuf), iv.length);
@@ -148,7 +153,7 @@ export async function decryptAttachment(opts: {
     const iv = bytes.slice(0, 12);
     const ct = bytes.slice(12);
     const key = await deriveBoardAesKey(opts.boardId);
-    const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBufferSource(iv) }, key, toBufferSource(ct));
     attachmentDebug("decrypt:success", { url: opts.url, plaintextBytes: ptBuf.byteLength, mimeType: opts.mimeType });
     return bytesToDataUrl(new Uint8Array(ptBuf), opts.mimeType || "application/octet-stream");
   })();

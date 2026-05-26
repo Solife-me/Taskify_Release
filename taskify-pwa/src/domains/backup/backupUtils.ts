@@ -2,6 +2,7 @@
 
 import type { TaskifyBackupPayload, WalletHistoryLogEntry } from "./backupTypes";
 import { idbKeyValue } from "../../storage/idbKeyValue";
+import { toBufferSource } from "../../lib/binary";
 import { kvStorage } from "../../storage/kvStorage";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET, TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import {
@@ -52,7 +53,7 @@ function notifyNostrKeyUpdated(): void {
 // ---- Crypto helpers (self-contained, no external import needed) ----
 
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", toBufferSource(data)));
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -91,13 +92,17 @@ const CLOUD_BACKUP_KEY_LABEL = new TextEncoder().encode("taskify-cloud-backup-v1
 async function deriveBackupAesKey(skHex: string): Promise<CryptoKey> {
   const raw = concatBytes(hexToBytes(skHex), CLOUD_BACKUP_KEY_LABEL);
   const digest = await sha256(raw);
-  return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+  return await crypto.subtle.importKey("raw", toBufferSource(digest), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 export async function encryptBackupWithSecretKey(skHex: string, plain: string): Promise<{ iv: string; ciphertext: string }> {
   const key = await deriveBackupAesKey(skHex);
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
+  const ctBuf = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    toBufferSource(new TextEncoder().encode(plain)),
+  );
   return { iv: b64encode(iv), ciphertext: b64encode(ctBuf) };
 }
 
@@ -108,7 +113,7 @@ async function decryptBackupWithSecretKey(
   const key = await deriveBackupAesKey(skHex);
   const iv = b64decode(payload.iv);
   const ct = b64decode(payload.ciphertext);
-  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBufferSource(iv) }, key, toBufferSource(ct));
   return new TextDecoder().decode(new Uint8Array(ptBuf));
 }
 

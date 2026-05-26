@@ -2,7 +2,7 @@
  * NIP-44 calendar encryption/decryption for CLI-side calendar interop with PWA.
  * Ported from taskify-pwa/src/lib/privateCalendar.ts.
  */
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip44 } from "nostr-tools";
 
 function ensureNip44V2() {

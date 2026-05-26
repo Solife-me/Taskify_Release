@@ -42,12 +42,12 @@ export function usePendingTokenHistorySync({
               : typeof item.detail === "string"
                 ? deriveSpentHistoryTokenStateFromToken(item.detail, now)
                 : undefined;
-            return {
-              ...item,
-              pendingTokenId: undefined,
-              pendingStatus: "redeemed",
-              ...(tokenState ? { tokenState } : {}),
-              summary: item.summary.includes("saved for later redemption")
+              return {
+                ...item,
+                pendingTokenId: undefined,
+                pendingStatus: "redeemed" as const,
+                ...(tokenState ? { tokenState } : {}),
+                summary: item.summary.includes("saved for later redemption")
                 ? `${amountNote} redeemed automatically`
                 : item.summary,
             };

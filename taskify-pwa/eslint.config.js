@@ -14,6 +14,13 @@ const legacyUncheckedFiles = [
   'src/ui/task/EditModal.tsx',
 ]
 
+const tsNocheckFiles = [
+  ...legacyUncheckedFiles,
+  'src/hooks/wallet/**/*.{ts,tsx}',
+  'src/ui/wallet/**/*.tsx',
+  'src/wallet/walletModalHelpers.tsx',
+]
+
 export default tseslint.config([
   globalIgnores(['dist']),
   {
@@ -21,10 +28,10 @@ export default tseslint.config([
     extends: [
       js.configs.recommended,
       tseslint.configs.recommended,
-      reactHooks.configs['recommended-latest'],
       reactRefresh.configs.vite,
     ],
     plugins: {
+      'react-hooks': reactHooks,
       'unused-imports': unusedImports,
     },
     languageOptions: {
@@ -41,8 +48,12 @@ export default tseslint.config([
           varsIgnorePattern: '^_',
         },
       ],
+      'no-useless-assignment': 'off',
+      'preserve-caught-error': 'off',
       'no-empty': ['error', { allowEmptyCatch: true }],
       'react-refresh/only-export-components': 'off',
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
       // Defer unused-imports detection to the dedicated plugin which has an
       // autofix; keep `no-unused-vars` for non-import locals only. Conventional
       // opt-out everywhere: prefix the name with `_`.
@@ -60,28 +71,13 @@ export default tseslint.config([
     },
   },
   {
-    // Files marked `// @ts-nocheck` are slated for the App.tsx-extraction
-    // refactor (audit doc item #10). Until then, suppress lint complaints
-    // about unused dead code and the ts-nocheck directive itself —
-    // chasing those down piecemeal in 21k-line files isn't useful.
-    files: [
-      'src/App.tsx',
-      'src/components/CashuWalletModal.tsx',
-      'src/ui/calendar/EventEditModal.tsx',
-      'src/ui/settings/BackupSection.tsx',
-      'src/ui/settings/BibleSection.tsx',
-      'src/ui/settings/BoardsSection.tsx',
-      'src/ui/settings/FileServersSection.tsx',
-      'src/ui/settings/ManageBoardModal.tsx',
-      'src/ui/settings/NostrSection.tsx',
-      'src/ui/settings/PushSection.tsx',
-      'src/ui/settings/SettingsModal.tsx',
-      'src/ui/settings/ViewSection.tsx',
-      'src/ui/settings/WalletSection.tsx',
-      'src/ui/task/EditModal.tsx',
-    ],
+    // Legacy App/wallet extraction files are being cleaned up separately.
+    // Keep hook correctness enabled for normal files, but avoid turning the
+    // dependency update into a broad behavior-changing dependency-array churn.
+    files: tsNocheckFiles,
     rules: {
       '@typescript-eslint/ban-ts-comment': 'off',
+      'react-hooks/exhaustive-deps': 'off',
       'unused-imports/no-unused-vars': 'off',
     },
   },

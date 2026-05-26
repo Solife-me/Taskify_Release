@@ -246,7 +246,7 @@ html.light .glass-panel::after {
 /* Older Android Chrome (<76) and some Android WebViews silently drop     */
 /* backdrop-filter, leaving panels nearly transparent. Give them a solid  */
 /* opaque background instead so content stays readable.                   */
-@supports not (backdrop-filter: blur(1px)) and not (-webkit-backdrop-filter: blur(1px)) {
+@supports (not (backdrop-filter: blur(1px))) and (not (-webkit-backdrop-filter: blur(1px))) {
   .surface-panel {
     background: rgba(18, 20, 28, 0.96);
   }

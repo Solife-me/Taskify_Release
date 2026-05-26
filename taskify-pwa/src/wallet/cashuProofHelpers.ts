@@ -1,5 +1,4 @@
-import { getDecodedToken } from "@cashu/cashu-ts";
-import { secp256k1 } from "@noble/curves/secp256k1";
+import { getDecodedToken, hashToCurve } from "@cashu/cashu-ts";
 import { getCashuTokenMetadata } from "./cashuTokenMetadata";
 
 export const HISTORY_ID_TIMESTAMP_REGEX = /(\d{10,})/;
@@ -162,7 +161,7 @@ export function extractCashuUriPayload(raw: string): string {
 export function computeProofY(secret: string): string | null {
   try {
     if (!secret) return null;
-    return secp256k1.ProjectivePoint.hashToCurve(new TextEncoder().encode(secret)).toHex(true);
+    return hashToCurve(new TextEncoder().encode(secret)).toHex(true);
   } catch {
     return null;
   }

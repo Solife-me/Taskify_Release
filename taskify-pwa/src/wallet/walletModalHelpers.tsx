@@ -66,15 +66,16 @@ export function extractMinibitsPaymentSender(value: string): string | null {
 export function normalizeCashuTokenCandidate(value: string): string | null {
   let candidate = (value || "").trim();
   if (!candidate) return null;
+  const invisibleSeparatorsPattern = new RegExp("\\u200b|\\u200c|\\u200d|\\ufeff", "g");
   candidate = candidate
     .replace(/^[("'`<‘’“”]+/, "")
     .replace(/[)"'`>‘’“”]+$/, "");
-  candidate = candidate.replace(/​|‌|‍|﻿/g, "").replace(/\s+/g, "");
+  candidate = candidate.replace(invisibleSeparatorsPattern, "").replace(/\s+/g, "");
   if (!candidate) return null;
   if (/^cashu:/i.test(candidate)) {
     candidate = extractCashuUriPayload(candidate);
     if (!candidate) return null;
-    candidate = candidate.replace(/​|‌|‍|﻿/g, "").replace(/\s+/g, "");
+    candidate = candidate.replace(invisibleSeparatorsPattern, "").replace(/\s+/g, "");
   }
   candidate = candidate.replace(/[)\]}>.,!?;:"'‘’“”`]+$/g, "");
   if (!candidate) return null;

@@ -671,6 +671,7 @@ export function QrScanner({
 
     const video = videoRef.current;
     if (!video) return;
+    const videoElement: HTMLVideoElement = video;
 
     stopRequestedRef.current = false;
     let cancelled = false;
@@ -679,7 +680,7 @@ export function QrScanner({
       try {
         clearError();
         const scanner = new QrScannerLib(
-          video,
+          videoElement,
           async (result: ScanResult) => {
             const value = result?.data?.trim();
             if (!value || stopRequestedRef.current) return;
@@ -706,11 +707,11 @@ export function QrScanner({
           },
         );
 
-        video.setAttribute("playsinline", "true");
-        video.setAttribute("muted", "true");
-        video.setAttribute("autoplay", "true");
-        video.playsInline = true;
-        video.muted = true;
+        videoElement.setAttribute("playsinline", "true");
+        videoElement.setAttribute("muted", "true");
+        videoElement.setAttribute("autoplay", "true");
+        videoElement.playsInline = true;
+        videoElement.muted = true;
 
         scannerRef.current = scanner;
         await scanner.start();

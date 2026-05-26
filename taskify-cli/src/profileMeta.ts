@@ -5,7 +5,7 @@
 
 import NDK, { NDKPrivateKeySigner, NDKEvent } from "@nostr-dev-kit/ndk";
 import { nip19, getPublicKey } from "nostr-tools";
-import { bytesToHex } from "@noble/hashes/utils";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { normalizeRelayUrls } from "taskify-runtime-nostr";
 import type { NostrEvent } from "nostr-tools";
 
