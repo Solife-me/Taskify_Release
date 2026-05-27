@@ -11,6 +11,7 @@ test("boardTagHash returns deterministic hex", async () => {
 
 test("encryptToBoard/decryptFromBoard round-trip", async () => {
   const ct = await encryptToBoard("board-1", "hello");
-  const pt = await decryptFromBoard("board-1", ct);
-  assert.equal(pt, "hello");
+  const { plaintext, usedLegacyKey } = await decryptFromBoard("board-1", ct);
+  assert.equal(plaintext, "hello");
+  assert.equal(usedLegacyKey, false);
 });

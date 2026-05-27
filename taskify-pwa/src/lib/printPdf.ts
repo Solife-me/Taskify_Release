@@ -3,6 +3,7 @@ import { buildBiblePrintLayout } from "../components/BibleTrackerPrintLayout";
 import { buildBoardPrintLayout, type BoardPrintJob } from "../components/BoardPrintLayout";
 import type { BiblePrintMeta } from "../components/BibleTrackerPrintSheet";
 import type { PrintPaperSize } from "../components/printPaper";
+import { toBlobPart } from "./binary";
 
 const MM_PER_INCH = 25.4;
 const POINTS_PER_INCH = 72;
@@ -528,7 +529,7 @@ export async function buildBibleTrackerPrintPdf(options: {
   }
 
   const pdfBytes = buildImagePdf(pages);
-  return new Blob([pdfBytes], { type: "application/pdf" });
+  return new Blob([toBlobPart(pdfBytes)], { type: "application/pdf" });
 }
 
 export async function buildBoardPrintPdf(options: {
@@ -567,5 +568,5 @@ export async function buildBoardPrintPdf(options: {
   }
 
   const pdfBytes = buildImagePdf(pages);
-  return new Blob([pdfBytes], { type: "application/pdf" });
+  return new Blob([toBlobPart(pdfBytes)], { type: "application/pdf" });
 }

@@ -11,6 +11,7 @@ const NOSTR_MIGRATION_BUFFER_MS = 15000;
 const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000;
 const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 const NOSTR_BOARD_YIELD_INTERVAL = 50;
+const NOSTR_INITIAL_SYNC_FALLBACK_DAYS = 30;
 
 type MutableRef<T> = { current: T };
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
@@ -65,6 +66,7 @@ type UseBoardSyncParams = {
   applyBoardEvent: (ev: BoardSyncNostrEvent) => Promise<void>;
   applyTaskEvent: (ev: BoardSyncNostrEvent) => Promise<void>;
   applyCalendarEvent: (ev: BoardSyncNostrEvent) => Promise<void>;
+  fullHistorySyncNonce?: number;
 };
 
 function relayBatchEventAt(entry: BoardSyncRelayBatchEntry | undefined): number {
@@ -90,6 +92,29 @@ function mergeRelayBatches(
   return combined;
 }
 
+export function buildBoardSyncFilters({
+  bTag,
+  cursor,
+  fullHistory,
+  nowSecs = Math.floor(Date.now() / 1000),
+}: {
+  bTag: string;
+  cursor?: number;
+  fullHistory?: boolean;
+  nowSecs?: number;
+}): Array<Record<string, unknown>> {
+  const sinceFilter = fullHistory
+    ? {}
+    : cursor
+      ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
+      : { since: nowSecs - NOSTR_INITIAL_SYNC_FALLBACK_DAYS * 24 * 3600 };
+  return [
+    { kinds: [30300, 30301], "#b": [bTag], ...sinceFilter },
+    { kinds: [30300], "#d": [bTag], limit: 1 },
+    { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [bTag], ...sinceFilter },
+  ];
+}
+
 export function useBoardSync({
   boards,
   currentBoard,
@@ -113,6 +138,7 @@ export function useBoardSync({
   applyBoardEvent,
   applyTaskEvent,
   applyCalendarEvent,
+  fullHistorySyncNonce = 0,
 }: UseBoardSyncParams): void {
   const nostrBoardsKey = useMemo(() => {
     const items = boards
@@ -131,6 +157,8 @@ export function useBoardSync({
     if (!currentBoard?.nostr?.boardId) return;
     setNostrRefresh((n) => n + 1);
   }, [currentBoard?.nostr?.boardId]);
+
+  const handledFullHistorySyncNonceRef = useRef(0);
 
   const boardEventQueuesRef = useRef<Map<string, { promise: Promise<void>; count: number }>>(new Map());
   const enqueueForBoard = useCallback((boardId: string, fn: () => Promise<void>): Promise<void> => {
@@ -196,27 +224,16 @@ export function useBoardSync({
       seenBoardTasksRef.current.delete(bTag);
       if (!unseenIds.length) return;
 
-      const verifySeen = new Set<string>();
       let verifyUnsub: (() => void) | null = null;
       verifyUnsub = pool.subscribe(
         boardRelays,
         [{ kinds: [30301], "#b": [bTag], "#d": unseenIds }],
         (ev, evRelay) => {
-          const taskId = tagValue(ev, "d");
-          if (taskId) verifySeen.add(taskId);
           ev.__relay = evRelay;
           enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
         },
         () => {
           verifyUnsub?.();
-          const toRemove = unseenIds.filter((id) => !verifySeen.has(id));
-          if (toRemove.length) {
-            const removeSet = new Set(toRemove);
-            setTasks((prev) => {
-              const next = prev.filter((task) => !(task.boardId === boardId && removeSet.has(task.id)));
-              return next.length === prev.length ? prev : (dedupeRecurringInstances(next) as BoardSyncTask[]);
-            });
-          }
         },
       );
       window.setTimeout(() => {
@@ -234,8 +251,6 @@ export function useBoardSync({
       pendingNostrTasksRef,
       pool,
       seenBoardTasksRef,
-      setTasks,
-      tagValue,
       tasksRef,
     ],
   );
@@ -246,6 +261,11 @@ export function useBoardSync({
       parsed = JSON.parse(nostrBoardsKey || "[]") as Array<{ id: string; relays: string }>;
     } catch {
       parsed = [];
+    }
+    const forceFullHistorySync =
+      fullHistorySyncNonce > 0 && fullHistorySyncNonce !== handledFullHistorySyncNonceRef.current;
+    if (forceFullHistorySync) {
+      handledFullHistorySyncNonceRef.current = fullHistorySyncNonce;
     }
     const pendingRelaysByBoard = pendingRelaysByBoardRef.current;
     const unsubs: Array<() => void> = [];
@@ -305,16 +325,11 @@ export function useBoardSync({
       pool.setRelays(relayList);
       ensureMigrationState(item.id);
 
-      const initialSyncFallbackDays = 30;
-      const cursor = boardSyncCursorsRef.current[item.id];
-      const sinceFilter = cursor
-        ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
-        : { since: Math.floor(Date.now() / 1000) - initialSyncFallbackDays * 24 * 3600 };
-      const filters = [
-        { kinds: [30300, 30301], "#b": [item.id], ...sinceFilter },
-        { kinds: [30300], "#d": [item.id], limit: 1 },
-        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [item.id], ...sinceFilter },
-      ];
+      const filters = buildBoardSyncFilters({
+        bTag: item.id,
+        cursor: boardSyncCursorsRef.current[item.id],
+        fullHistory: forceFullHistorySync,
+      });
 
       const unsub = pool.subscribe(
         relayList,
@@ -391,10 +406,13 @@ export function useBoardSync({
     migrateBoardRef,
     nostrBoardsKey,
     nostrRefresh,
+    fullHistorySyncNonce,
     pendingRelaysByBoardRef,
     pool,
     relayBatchRef,
+    seenBoardTasksRef,
     setPendingNostrInitialSyncByBoardTag,
+    tagValue,
     verifyUnseenTasks,
   ]);
 }

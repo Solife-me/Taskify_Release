@@ -14,12 +14,15 @@ test("board CLI exposes list column lifecycle commands", () => {
 });
 
 test("board CLI exposes admin controls", () => {
+  assert.match(CLI_SOURCE, /\.command\("default \[boardIdOrName\]"\)/);
   assert.match(CLI_SOURCE, /\.command\("rename <board> <name>"\)/);
   assert.match(CLI_SOURCE, /\.command\("archive <board>"\)/);
   assert.match(CLI_SOURCE, /\.command\("unarchive <board>"\)/);
   assert.match(CLI_SOURCE, /\.command\("hide <board>"\)/);
   assert.match(CLI_SOURCE, /\.command\("unhide <board>"\)/);
   assert.match(CLI_SOURCE, /\.command\("index-card <board> <state>"\)/);
+  assert.match(CLI_SOURCE, /parseOnOffState\(state\)/);
+  assert.match(CLI_SOURCE, /Invalid state:/);
   assert.match(CLI_SOURCE, /\.command\("clear-completed <board>"\)/);
   assert.match(CLI_SOURCE, /\.command\("share-settings <board> <json>"\)/);
 });

@@ -5,7 +5,7 @@ import { readFile, writeFile } from "fs/promises";
 import { createInterface } from "readline";
 import { createRequire } from "module";
 import { nip19, getPublicKey, generateSecretKey } from "nostr-tools";
-import { hexToBytes, bytesToHex } from "@noble/hashes/utils";
+import { hexToBytes, bytesToHex } from "@noble/hashes/utils.js";
 import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig, type Contact, type BoardEntry } from "./config.js";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
 import { renderTable, renderTaskCard, renderJson } from "./render.js";
@@ -29,6 +29,18 @@ import { resolveBoardForCommand } from "./shared/commandResolution.js";
 import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
 import { sendShareEnvelopeNip17, fetchShareInboxNip17 } from "./shared/shareTransport.js";
 import { resolveBoardColumn, formatAvailableColumns } from "./shared/columnResolution.js";
+import { parseOnOffState } from "./shared/boardState.js";
+import { pickLatestEvent } from "./shared/latestEvent.js";
+import {
+  buildNip51PrivateItems,
+  decryptNip51PrivateItems,
+  encryptNip51PrivateItems,
+  extractNip51PrivateContacts,
+  mergeNip51PrivateContacts,
+  NIP51_CONTACTS_KIND,
+  NIP51_LEGACY_CONTACTS_D_TAG,
+  NIP51_PRIVATE_CONTACTS_D_TAG,
+} from "./shared/nip51Contacts.js";
 import { publishProfile, fetchLatestProfileEvent } from "./profileMeta.js";
 import { uploadImageToNip96 } from "./nip96Upload.js";
 import { buildAttachmentDocuments, decryptAttachmentToDataUrl } from "./attachmentCrypto.js";
@@ -131,7 +143,7 @@ function parseReminderOption(raw: string | undefined): string[] | undefined {
 
 function normalizeAssigneeArgs(values: string[] | undefined): Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }> | undefined {
   if (!values || values.length === 0) return undefined;
-  const normalized = normalizeTaskAssignees(values.map((pubkey) => ({ pubkey })));
+  const normalized = normalizeTaskAssignees(values.map((value) => ({ pubkey: npubOrHexToHex(value) })));
   return normalized as Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }> | undefined;
 }
 
@@ -395,7 +407,7 @@ boardCmd
 
 boardCmd
   .command("column-default <board> <columnIdOrName>")
-  .description("Set the default column for new tasks on the active profile")
+  .description("Set the default column for new tasks on the selected profile")
   .action(async (boardArg: string, colArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const entry = resolveBoardReference(config.boards, boardArg);
@@ -413,29 +425,35 @@ boardCmd
         process.exit(1);
       }
     }
-    // Store on the active profile (local only)
-    const profileCfg = config.profiles?.[config.activeProfile];
+    // Store on the selected profile (local only)
+    const profileCfg = config.profiles?.[config.selectedProfile];
     if (profileCfg) {
       profileCfg.defaultColumn = colId;
     }
+    config.defaultColumn = colId;
     await saveConfig(config);
-    console.log(chalk.green(`✓ Default column for profile "${config.activeProfile}" → "${entry.name}": ${colId}`));
+    console.log(chalk.green(`✓ Default column for profile "${config.selectedProfile}" → "${entry.name}": ${colId}`));
     process.exit(0);
   });
 
 boardCmd
-  .command("default <boardIdOrName>")
+  .command("default [boardIdOrName]")
   .description("Set a board as the default for new tasks")
   .option("--clear", "Clear the default board")
-  .action(async (boardArg: string, opts) => {
+  .action(async (boardArg: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (opts.clear) {
       // Clear defaultBoard reference on all boards (set to empty list or remove defaultBoard setting)
-      const profileCfg = config.profiles?.[config.activeProfile];
+      const profileCfg = config.profiles?.[config.selectedProfile];
       if (profileCfg) delete (profileCfg as any).defaultBoard;
+      delete (config as any).defaultBoard;
       await saveConfig(config);
       console.log(chalk.green("✓ Default board cleared — you'll be prompted to select one when needed"));
       process.exit(0);
+    }
+    if (!boardArg) {
+      console.error(chalk.red("Provide a board id/name, or use --clear to remove the default board."));
+      process.exit(1);
     }
     const entry = resolveBoardReference(config.boards, boardArg);
     if (!entry) {
@@ -443,10 +461,11 @@ boardCmd
       process.exit(1);
     }
     // Store as profile-level defaultBoard so add/list commands auto-resolve to this board
-    const profileCfg = config.profiles?.[config.activeProfile];
+    const profileCfg = config.profiles?.[config.selectedProfile];
     if (profileCfg) {
       (profileCfg as any).defaultBoard = entry.id;
     }
+    config.defaultBoard = entry.id;
     await saveConfig(config);
     console.log(chalk.green(`✓ Default board set to "${entry.name}" (${entry.id})`));
     process.exit(0);
@@ -454,13 +473,13 @@ boardCmd
 
 boardCmd
   .command("defaults")
-  .description("Show all defaults for the active profile (boards, columns)")
+  .description("Show all defaults for the selected profile (boards, columns)")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const profileCfg = config.profiles?.[config.activeProfile];
+    const profileCfg = config.profiles?.[config.selectedProfile];
     if (!profileCfg) {
-      console.error(chalk.red("No active profile found."));
+      console.error(chalk.red("No selected profile found."));
       process.exit(1);
     }
 
@@ -487,6 +506,7 @@ boardCmd
     if (opts.json) {
       renderJson({
         activeProfile: config.activeProfile,
+        selectedProfile: config.selectedProfile,
         defaultBoard: defaultBoardId ? { id: defaultBoardId, name: defaultBoard?.name } : null,
         defaultColumn: defaultColumnId ? {
           board: defaultColumnBoard,
@@ -497,7 +517,7 @@ boardCmd
       process.exit(0);
     }
 
-    console.log(chalk.bold(`Active profile: ${config.activeProfile}`));
+    console.log(chalk.bold(`Selected profile: ${config.selectedProfile}${config.selectedProfile === config.activeProfile ? " (active)" : ""}`));
     console.log("");
 
     if (defaultBoardId) {
@@ -517,6 +537,52 @@ boardCmd
       console.log(chalk.yellow("Default column: (none set — you'll be prompted to select one when needed)"));
       console.log(chalk.dim("  Use: taskify board column-default <board> <column>"));
     }
+    process.exit(0);
+  });
+
+boardCmd
+  .command("columns [board]")
+  .description("List columns for a board")
+  .option("--json", "Output as JSON")
+  .action(async (boardArg: string | undefined, opts: { json?: boolean }) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const entry = boardArg
+      ? resolveBoardReference(config.boards, boardArg)
+      : config.defaultBoard
+        ? resolveBoardReference(config.boards, config.defaultBoard)
+        : null;
+    if (!entry) {
+      const hint = config.boards.length > 0
+        ? `Known boards: ${config.boards.map(b => b.name).join(', ')}`
+        : 'No boards configured. Use: taskify board join <id> --name <name>';
+      console.error(chalk.red(`Board not found: "${boardArg ?? config.defaultBoard}". ${hint}`));
+      process.exit(1);
+    }
+
+    const runtime = initRuntime(config);
+    let columns = entry.columns ?? [];
+    try {
+      const meta = await runtime.syncBoard(entry.id);
+      columns = meta.columns ?? columns;
+    } catch {
+      // Use cached columns when relay metadata is unavailable.
+    }
+
+    if (opts.json) {
+      renderJson({
+        board: { id: entry.id, name: entry.name, kind: entry.kind ?? "lists" },
+        columns,
+      });
+    } else if (columns.length === 0) {
+      console.log(chalk.dim(`No columns found for ${entry.name}.`));
+    } else {
+      console.log(chalk.bold(`Columns for ${entry.name}`));
+      for (const col of columns) {
+        console.log(`  ${chalk.bold(col.name.padEnd(18))} ${chalk.dim(col.id)}`);
+      }
+    }
+
+    await runtime.disconnect();
     process.exit(0);
   });
 
@@ -747,7 +813,11 @@ boardCmd.command("unhide <board>").description("Unhide board").action(async (boa
 });
 
 boardCmd.command("index-card <board> <state>").description("Set index-card mode on/off").action(async (boardArg: string, state: string) => {
-  const enabled = ["on", "true", "1", "enable"].includes(state.toLowerCase());
+  const enabled = parseOnOffState(state);
+  if (enabled === null) {
+    console.error(chalk.red(`Invalid state: "${state}". Use on/off, true/false, yes/no, or 1/0.`));
+    process.exit(1);
+  }
   const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
   try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { indexCardEnabled: enabled }); console.log(chalk.green(`✓ Index-card ${enabled ? "enabled" : "disabled"}`)); process.exit(0); }
   catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
@@ -1603,11 +1673,11 @@ program
         (t) => t.dueDateEnabled === true && t.dueISO && t.dueISO >= todayStr && t.dueISO <= cutoffStr,
       );
 
-      // Sort: primary = dueISO asc, secondary = priority asc (1=highest)
+      // Sort: primary = dueISO asc, secondary = priority desc (3=high)
       upcoming.sort((a, b) => {
         if (a.dueISO < b.dueISO) return -1;
         if (a.dueISO > b.dueISO) return 1;
-        return (a.priority ?? 99) - (b.priority ?? 99);
+        return (a.priority ?? 0) === (b.priority ?? 0) ? 0 : (b.priority ?? 0) - (a.priority ?? 0);
       });
 
       if (opts.json) {
@@ -2608,12 +2678,13 @@ configSet
           + `Saved anyway. Use "taskify board sync" to update columns.`),
       );
     }
-    const profileCfg = config.profiles?.[config.activeProfile];
+    const profileCfg = config.profiles?.[config.selectedProfile];
     if (!profileCfg) {
-      console.error(chalk.red("No active profile found."));
+      console.error(chalk.red("No selected profile found."));
       process.exit(1);
     }
-    profileCfg.defaultList = `${board} ${list}`;
+    config.defaultList = `${board} ${list}`;
+    profileCfg.defaultList = config.defaultList;
     await saveConfig(config);
     console.log(chalk.green(`✓ Default list set: "${resolvedBoard.name}" → ${list}`));
     console.log(chalk.dim(`  In this profile, "taskify list" will now show the "${list}" column.`));
@@ -4407,23 +4478,50 @@ contactCmd
     const NDKPrivateKeySigner = (await import("@nostr-dev-kit/ndk")).NDKPrivateKeySigner;
     const ndk = new NDKMod.default({ explicitRelayUrls: config.relays, signer: new NDKPrivateKeySigner(bytesToHex(userSk)) });
     await ndk.connect();
-    const contacts = config.contacts ?? [];
+    const keys = { privateKeyHex: bytesToHex(userSk), publicKeyHex: userPk };
+    let contacts = [...(config.contacts ?? [])];
     try {
-      // Fetch existing kind 30000 from relay
+      // Fetch latest encrypted PWA-compatible list, plus legacy public CLI list for migration.
       const existing = await ndk.fetchEvents(
-        { kinds: [30000], authors: [userPk], "#d": ["taskify-contacts"], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
+        {
+          kinds: [NIP51_CONTACTS_KIND],
+          authors: [userPk],
+          "#d": [NIP51_PRIVATE_CONTACTS_D_TAG, NIP51_LEGACY_CONTACTS_D_TAG],
+          limit: 5,
+        } as Parameters<typeof ndk.fetchEvents>[0],
         { closeOnEose: true },
       );
-      if (existing.size > 0) {
-        const [evt] = existing;
-        const pTags = evt.tags.filter((t: string[]) => t[0] === "p");
+
+      const hasDTag = (evt: { tags?: string[][] }, dTag: string) =>
+        Array.isArray(evt.tags) && evt.tags.some((tag) => tag[0] === "d" && tag[1] === dTag);
+
+      const latestPrivate = pickLatestEvent(Array.from(existing).filter((evt) => hasDTag(evt, NIP51_PRIVATE_CONTACTS_D_TAG)));
+      if (latestPrivate) {
+        try {
+          const privateItems = await decryptNip51PrivateItems(latestPrivate.content, keys);
+          const privateContacts = extractNip51PrivateContacts(privateItems);
+          contacts = mergeNip51PrivateContacts(
+            contacts,
+            privateContacts,
+            latestPrivate.created_at ?? Math.floor(Date.now() / 1000),
+          );
+        } catch (err) {
+          process.stderr.write(chalk.yellow(`Warning: could not decrypt private contacts list: ${String(err)}\n`));
+        }
+      }
+
+      const latestLegacy = pickLatestEvent(Array.from(existing).filter((evt) => hasDTag(evt, NIP51_LEGACY_CONTACTS_D_TAG)));
+      if (latestLegacy) {
+        const pTags = latestLegacy.tags.filter((t: string[]) => t[0] === "p");
         for (const pTag of pTags) {
           const pk = pTag[1];
           if (pk && !contacts.find((c) => c.pubkey === pk)) {
             contacts.push({
               pubkey: pk,
               npub: nip19.npubEncode(pk),
-              addedAt: evt.created_at ?? Math.floor(Date.now() / 1000),
+              relays: pTag[2] ? [pTag[2]] : undefined,
+              name: pTag[3] || undefined,
+              addedAt: latestLegacy.created_at ?? Math.floor(Date.now() / 1000),
             });
           }
         }
@@ -4431,15 +4529,12 @@ contactCmd
       if (!opts.pull && contacts.length > 0) {
         const NDKEventMod = await import("@nostr-dev-kit/ndk");
         const syncEvent = new NDKEventMod.NDKEvent(ndk);
-        syncEvent.kind = 30000;
-        syncEvent.content = "";
-        syncEvent.tags = [
-          ["d", "taskify-contacts"],
-          ...contacts.map((c): string[] => ["p", c.pubkey, ...(c.relays?.[0] ? [c.relays[0]] : [])]),
-        ];
+        syncEvent.kind = NIP51_CONTACTS_KIND;
+        syncEvent.content = await encryptNip51PrivateItems(buildNip51PrivateItems(contacts), keys);
+        syncEvent.tags = [["d", NIP51_PRIVATE_CONTACTS_D_TAG]];
         await syncEvent.sign();
         await syncEvent.publish();
-        console.log(chalk.green(`✓ Published ${contacts.length} contacts to relay`));
+        console.log(chalk.green(`✓ Published ${contacts.length} encrypted private contacts to relay`));
       }
       config.contacts = contacts;
       await saveConfig(config);
@@ -4467,7 +4562,7 @@ program
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       const ans = await new Promise<string>((resolve) => {
         rl.question(
-          `⚠ Profile "${existing.activeProfile}" already has a private key. This will replace it.\nContinue? [Y/n] `,
+          `⚠ Profile "${existing.selectedProfile}" already has a private key. This will replace it.\nContinue? [Y/n] `,
           resolve,
         );
       });
@@ -4476,7 +4571,7 @@ program
         process.exit(0);
       }
     }
-    await runOnboarding(targetProfile ?? existing.activeProfile);
+    await runOnboarding(targetProfile ?? existing.selectedProfile);
   });
 
 // ---- auto-onboarding trigger + parse ----

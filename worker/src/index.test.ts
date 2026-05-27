@@ -244,6 +244,37 @@ test("GET /api/config returns worker origin and vapid key", async () => {
   assert.equal(body.vapidPublicKey, env.VAPID_PUBLIC_KEY);
 });
 
+test("static assets are served with security headers", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/", { method: "GET" }),
+    env,
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.equal(res.headers.get("Referrer-Policy"), "same-origin");
+  assert.equal(
+    res.headers.get("Permissions-Policy"),
+    "camera=(), microphone=(), geolocation=()",
+  );
+});
+
+test("sw.js is served with no-cache and worker-allowed scope", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/sw.js", { method: "GET" }),
+    env,
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Cache-Control"), "no-cache");
+  assert.equal(res.headers.get("Service-Worker-Allowed"), "/");
+  assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
+});
+
 test("PUT /api/reminders returns 404 for unknown device", async () => {
   const db = new MockD1();
   const env = await makeEnv(db);

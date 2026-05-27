@@ -18,6 +18,8 @@ export function NostrSection({
   onSetKey,
   showAdvanced,
   setShowAdvanced,
+  onResyncBoardHistory,
+  sharedBoardCount = 0,
 }: {
   settings: Settings;
   setSettings: (s: Partial<Settings>) => void;
@@ -28,6 +30,8 @@ export function NostrSection({
   onSetKey: (hex: string) => void;
   showAdvanced: boolean;
   setShowAdvanced: (fn: (prev: boolean) => boolean) => void;
+  onResyncBoardHistory: () => void;
+  sharedBoardCount?: number;
 }) {
   const [customSk, setCustomSk] = useState("");
   const [newDefaultRelay, setNewDefaultRelay] = useState("");
@@ -68,6 +72,11 @@ export function NostrSection({
           className="ghost-button button-sm pressable"
           onClick={()=>setDefaultRelays(DEFAULT_NOSTR_RELAYS.slice())}
         >Reload default relays</button>
+        <button
+          className="ghost-button button-sm pressable"
+          onClick={onResyncBoardHistory}
+          disabled={sharedBoardCount <= 0}
+        >Re-sync board history</button>
       </div>
       {showAdvanced && (
         <>

@@ -41,6 +41,7 @@ test("upcoming fetches only open tasks", () => {
 test("upcoming sorts by dueISO then priority", () => {
   assert.match(CLI, /a\.dueISO.*b\.dueISO/);
   assert.match(CLI, /a\.priority.*b\.priority/);
+  assert.match(CLI, /b\.priority[\s\S]*?a\.priority/);
 });
 
 test("upcoming groups tasks by date using a Map", () => {

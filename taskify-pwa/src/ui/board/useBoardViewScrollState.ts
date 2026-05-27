@@ -146,7 +146,7 @@ export function useBoardViewScrollState({
         });
       }
     }
-  }, [activePage, currentBoardId, currentBoard?.id, currentBoard?.kind, dayChoice, listColumnSources, listColumns, setDayChoice, view]);
+  }, [activePage, currentBoard, currentBoardId, currentBoard?.id, currentBoard?.kind, dayChoice, listColumnSources, listColumns, setDayChoice, view]);
 
   useEffect(() => {
     const board = currentBoard;

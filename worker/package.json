@@ -8,8 +8,8 @@
     "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/index.test.ts"
   },
   "dependencies": {
-    "@noble/curves": "^2.0.1",
-    "link-preview-js": "^3.1.0",
-    "nostr-tools": "^2.23.3"
+    "@noble/curves": "^2.2.0",
+    "link-preview-js": "^4.0.3",
+    "nostr-tools": "^2.23.5"
   }
 }
