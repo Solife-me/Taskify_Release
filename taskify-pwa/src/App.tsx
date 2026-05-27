@@ -1870,6 +1870,7 @@ export default function App() {
   // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  const [boardHistoryResyncNonce, setBoardHistoryResyncNonce] = useState(0);
   // In-memory cursor: tracks the highest created_at seen per board tag this session.
   // Persisted to IDB after EOSE so subsequent opens only fetch new events.
   // NOTE: useRef does NOT lazy-initialize like useState. The previous
@@ -11440,6 +11441,41 @@ export default function App() {
     }))
   ), [boards]);
 
+  const handleResyncBoardHistory = useCallback(() => {
+    const sharedBoardTags = boards
+      .filter((board) => board.nostr?.boardId)
+      .map((board) => boardTag(board.nostr!.boardId));
+    if (!sharedBoardTags.length) {
+      showToast("No shared boards to re-sync.", 2500);
+      return;
+    }
+
+    boardSyncCursorsRef.current = {};
+    relayBatchRef.current.clear();
+    pendingRelaysByBoardRef.current.clear();
+    seenBoardTasksRef.current.clear();
+    completedNostrInitialSyncRef.current.clear();
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify({}));
+    } catch {
+      // non-fatal; the in-memory nonce still forces this session to re-sync
+    }
+    setPendingNostrInitialSyncByBoardTag((prev) => {
+      const next = { ...prev };
+      sharedBoardTags.forEach((tag) => {
+        next[tag] = true;
+      });
+      return next;
+    });
+    setBoardHistoryResyncNonce((nonce) => nonce + 1);
+    showToast(
+      sharedBoardTags.length === 1
+        ? "Re-syncing board history."
+        : `Re-syncing ${sharedBoardTags.length} board histories.`,
+      2500,
+    );
+  }, [boards, showToast]);
+
   useBoardSync({
     boards,
     currentBoard,
@@ -11463,6 +11499,7 @@ export default function App() {
     applyBoardEvent,
     applyTaskEvent,
     applyCalendarEvent,
+    fullHistorySyncNonce: boardHistoryResyncNonce,
   });
 
   const activeView =
@@ -12605,6 +12642,7 @@ export default function App() {
             onJoinBoard={joinSharedBoard}
             onRegenerateBoardId={regenerateBoardId}
             onBoardChanged={handleBoardChanged}
+            onResyncBoardHistory={handleResyncBoardHistory}
             onClose={closeSettings}
             gcalStatus={gcalStatus}
             gcalCalendars={gcalCalendars}
