@@ -58,6 +58,7 @@ export function SettingsModal({
   onJoinBoard,
   onRegenerateBoardId,
   onBoardChanged,
+  onResyncBoardHistory,
   onClose,
   pushWorkState,
   pushError,
@@ -95,6 +96,7 @@ export function SettingsModal({
     boardId: string,
     options?: { republishTasks?: boolean; board?: Board },
   ) => void;
+  onResyncBoardHistory: () => void;
   onClose: () => void;
   pushWorkState: "idle" | "enabling" | "disabling";
   pushError: string | null;
@@ -425,6 +427,8 @@ export function SettingsModal({
           onSetKey={onSetKey}
           showAdvanced={showAdvanced}
           setShowAdvanced={setShowAdvanced}
+          onResyncBoardHistory={onResyncBoardHistory}
+          sharedBoardCount={boards.filter((board) => !!board.nostr?.boardId).length}
         />
 
         {/* Backup & Restore */}

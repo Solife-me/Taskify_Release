@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type WheelEvent } from "react";
 import type { Meridiem } from "../../domains/appTypes";
 import { HOURS_12, MINUTES, MERIDIEMS } from "../../domains/appTypes";
 import { MIN_CUSTOM_REMINDER_MINUTES, MAX_CUSTOM_REMINDER_MINUTES, formatReminderLabel, DEFAULT_DATE_REMINDER_TIME } from "../../domains/dateTime/reminderUtils";
-import { isoDatePart, isoTimePart, isoFromDateTime, normalizeTimeZone, resolveSystemTimeZone, parseTimePickerValue, formatTimePickerValue, scrollWheelColumnToIndex, getWheelNearestIndex, scheduleWheelSnap } from "../../domains/dateTime/dateUtils";
+import { isoDatePart, isoTimePart, isoFromDateTime, normalizeTimeZone, resolveSystemTimeZone, parseTimePickerValue, formatTimePickerValue, scrollWheelColumnToIndex, getWheelNearestIndex, scheduleWheelSnap, handleWheelPickerScroll } from "../../domains/dateTime/dateUtils";
 import { ActionSheet } from "../../components/ActionSheet";
 import { DatePickerCalendar } from "../../domains/dateTime/calendarPickerHook";
 
@@ -235,6 +235,13 @@ function CustomReminderSheet({
       }
     });
   }, [setTimePickerFromParts]);
+  const handleTimePickerWheel = useCallback((event: WheelEvent<HTMLElement>) => {
+    handleWheelPickerScroll(event, [
+      { ref: timePickerHourColumnRef, optionCount: HOURS_12.length },
+      { ref: timePickerMinuteColumnRef, optionCount: MINUTES.length },
+      { ref: timePickerMeridiemColumnRef, optionCount: MERIDIEMS.length },
+    ]);
+  }, []);
 
   const handleApply = useCallback(() => {
     if (!anchorISO || Number.isNaN(Date.parse(anchorISO))) {
@@ -272,7 +279,7 @@ function CustomReminderSheet({
         </div>
         <div className="space-y-2 rounded-2xl border border-border bg-elevated p-4">
           <div className="text-xs text-secondary">Time ({safeTimeZone})</div>
-          <div className="edit-time-picker" role="group" aria-label="Select custom reminder time">
+          <div className="edit-time-picker" role="group" aria-label="Select custom reminder time" onWheel={handleTimePickerWheel}>
             <div
               className="edit-time-picker__column"
               ref={timePickerHourColumnRef}
@@ -287,6 +294,7 @@ function CustomReminderSheet({
                   data-picker-index={idx}
                   role="option"
                   aria-selected={timePickerHour === hour}
+                  onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
                 >
                   {String(hour).padStart(2, "0")}
                 </div>
@@ -309,6 +317,7 @@ function CustomReminderSheet({
                   data-picker-index={idx}
                   role="option"
                   aria-selected={timePickerMinute === minute}
+                  onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
                 >
                   {String(minute).padStart(2, "0")}
                 </div>
@@ -328,6 +337,7 @@ function CustomReminderSheet({
                   data-picker-index={idx}
                   role="option"
                   aria-selected={timePickerMeridiem === label}
+                  onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
                 >
                   {label}
                 </div>

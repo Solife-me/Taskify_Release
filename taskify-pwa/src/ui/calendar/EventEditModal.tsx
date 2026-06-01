@@ -43,6 +43,7 @@ import {
   scrollWheelColumnToIndex,
   getWheelNearestIndex,
   scheduleWheelSnap,
+  handleWheelPickerScroll,
   resolveSystemTimeZone,
   normalizeTimeZone,
   formatTimeLabel,
@@ -724,6 +725,13 @@ function EventEditModal({
       }
     });
   }, [setTimePickerFromParts]);
+  const handleTimePickerWheel = useCallback((event: React.WheelEvent<HTMLElement>) => {
+    handleWheelPickerScroll(event, [
+      { ref: timePickerHourColumnRef, optionCount: HOURS_12.length },
+      { ref: timePickerMinuteColumnRef, optionCount: MINUTES.length },
+      { ref: timePickerMeridiemColumnRef, optionCount: MERIDIEMS.length },
+    ]);
+  }, []);
 
   useEffect(() => {
     if (endDate < startDate) setEndDate(startDate);
@@ -1257,7 +1265,7 @@ function EventEditModal({
 	          )}
 	          {!allDay && whenPicker === "startTime" && (
 	            <div className="edit-card__detail space-y-2">
-	              <div className="edit-time-picker" role="group" aria-label="Select time">
+	              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
 	                <div
 	                  className="edit-time-picker__column"
 	                  ref={timePickerHourColumnRef}
@@ -1272,6 +1280,7 @@ function EventEditModal({
 	                      data-picker-index={idx}
 	                      role="option"
 	                      aria-selected={timePickerHour === hour}
+	                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
 	                    >
 	                      {String(hour).padStart(2, "0")}
 	                    </div>
@@ -1294,6 +1303,7 @@ function EventEditModal({
 	                      data-picker-index={idx}
 	                      role="option"
 	                      aria-selected={timePickerMinute === minute}
+	                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
 	                    >
 	                      {String(minute).padStart(2, "0")}
 	                    </div>
@@ -1313,6 +1323,7 @@ function EventEditModal({
 	                      data-picker-index={idx}
 	                      role="option"
 	                      aria-selected={timePickerMeridiem === label}
+	                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
 	                    >
 	                      {label}
 	                    </div>
@@ -1372,7 +1383,7 @@ function EventEditModal({
 	          )}
 	          {!allDay && whenPicker === "endTime" && (
 	            <div className="edit-card__detail space-y-2">
-	              <div className="edit-time-picker" role="group" aria-label="Select time">
+	              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
 	                <div
 	                  className="edit-time-picker__column"
 	                  ref={timePickerHourColumnRef}
@@ -1387,6 +1398,7 @@ function EventEditModal({
 	                      data-picker-index={idx}
 	                      role="option"
 	                      aria-selected={timePickerHour === hour}
+	                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
 	                    >
 	                      {String(hour).padStart(2, "0")}
 	                    </div>
@@ -1409,6 +1421,7 @@ function EventEditModal({
 	                      data-picker-index={idx}
 	                      role="option"
 	                      aria-selected={timePickerMinute === minute}
+	                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
 	                    >
 	                      {String(minute).padStart(2, "0")}
 	                    </div>
@@ -1428,6 +1441,7 @@ function EventEditModal({
 	                      data-picker-index={idx}
 	                      role="option"
 	                      aria-selected={timePickerMeridiem === label}
+	                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
 	                    >
 	                      {label}
 	                    </div>
@@ -1631,7 +1645,7 @@ function EventEditModal({
                           {reminderTimeLabel}
                         </button>
                         {whenPicker === "reminderTime" && (
-                          <div className="edit-time-picker" role="group" aria-label="Select reminder time">
+                          <div className="edit-time-picker" role="group" aria-label="Select reminder time" onWheel={handleTimePickerWheel}>
                             <div
                               className="edit-time-picker__column"
                               ref={timePickerHourColumnRef}
@@ -1646,6 +1660,7 @@ function EventEditModal({
                                   data-picker-index={idx}
                                   role="option"
                                   aria-selected={timePickerHour === hour}
+                                  onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
                                 >
                                   {String(hour).padStart(2, "0")}
                                 </div>
@@ -1668,6 +1683,7 @@ function EventEditModal({
                                   data-picker-index={idx}
                                   role="option"
                                   aria-selected={timePickerMinute === minute}
+                                  onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
                                 >
                                   {String(minute).padStart(2, "0")}
                                 </div>
@@ -1687,6 +1703,7 @@ function EventEditModal({
                                   data-picker-index={idx}
                                   role="option"
                                   aria-selected={timePickerMeridiem === label}
+                                  onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
                                 >
                                   {label}
                                 </div>

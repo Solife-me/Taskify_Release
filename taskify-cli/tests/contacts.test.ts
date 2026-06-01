@@ -5,6 +5,7 @@ import path from "node:path";
 
 const CLI = readFileSync(path.resolve(import.meta.dirname, "../src/index.ts"), "utf8");
 const CONFIG = readFileSync(path.resolve(import.meta.dirname, "../src/config.ts"), "utf8");
+const NIP51 = readFileSync(path.resolve(import.meta.dirname, "../src/shared/nip51Contacts.ts"), "utf8");
 
 test("Contact type is exported from config.ts", () => {
   assert.match(CONFIG, /export type Contact = \{/);
@@ -24,6 +25,13 @@ test("profileDefaults initializes contacts to empty array", () => {
 
 test("saveConfig persists contacts field", () => {
   assert.match(CONFIG, /contacts: cfg\.contacts/);
+});
+
+test("saveConfig writes flat mutations back to selected profile", () => {
+  assert.match(CONFIG, /selectedProfile: string/);
+  assert.match(CONFIG, /selectedProfile: resolvedProfileName/);
+  assert.match(CONFIG, /const targetProfile = cfg\.selectedProfile \?\? cfg\.activeProfile/);
+  assert.match(CONFIG, /\[targetProfile\]: profileData/);
 });
 
 test("contact command group is registered", () => {
@@ -68,6 +76,11 @@ test("contact fetch fetches kind 0 profile from relays", () => {
   assert.match(CLI, /kinds: \[0\].*authors: \[pubkeyHex\]|kinds.*0.*authors.*pubkeyHex/);
 });
 
-test("contact sync publishes kind 30000 NIP-51 event", () => {
-  assert.match(CLI, /kind.*30000|30000.*taskify-contacts/);
+test("contact sync publishes encrypted private kind 30000 NIP-51 event", () => {
+  assert.match(NIP51, /NIP51_CONTACTS_KIND = 30000/);
+  assert.match(NIP51, /NIP51_PRIVATE_CONTACTS_D_TAG = "Chat-Friends"/);
+  assert.match(NIP51, /encryptNip51PrivateItems/);
+  assert.match(CLI, /syncEvent\.content = await encryptNip51PrivateItems/);
+  assert.match(CLI, /syncEvent\.tags = \[\["d", NIP51_PRIVATE_CONTACTS_D_TAG\]\]/);
+  assert.doesNotMatch(CLI, /\.\.\.contacts\.map\(\(c\): string\[\] => \["p"/);
 });

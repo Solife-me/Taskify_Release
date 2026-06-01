@@ -1,5 +1,6 @@
 import { nip04 } from "nostr-tools";
 import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import { toBufferSource } from "../../lib/binary";
 import {
   sha256,
   bytesHexToBytes as hexToBytes,
@@ -32,13 +33,17 @@ async function deriveAesKeyFromLocalSk(): Promise<CryptoKey> {
   const label = new TextEncoder().encode("taskify-ecash-v1");
   const raw = concatBytes(hexToBytes(skHex), label);
   const digest = await sha256(raw);
-  return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+  return await crypto.subtle.importKey("raw", toBufferSource(digest), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 export async function encryptEcashTokenForFunder(plain: string): Promise<{alg:"aes-gcm-256";iv:string;ct:string}> {
   const key = await deriveAesKeyFromLocalSk();
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
+  const ctBuf = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    toBufferSource(new TextEncoder().encode(plain)),
+  );
   return { alg: "aes-gcm-256", iv: b64encode(iv), ct: b64encode(ctBuf) };
 }
 
@@ -47,7 +52,7 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
   const key = await deriveAesKeyFromLocalSk();
   const iv = b64decode(enc.iv);
   const ct = b64decode(enc.ct);
-  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBufferSource(iv) }, key, toBufferSource(ct));
   return new TextDecoder().decode(new Uint8Array(ptBuf));
 }
 
