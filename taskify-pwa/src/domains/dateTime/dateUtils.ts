@@ -284,6 +284,84 @@ export function getWheelNearestIndex(column: HTMLDivElement | null, totalOptions
   return Math.min(totalOptions - 1, Math.max(0, rawIndex));
 }
 
+export type WheelPickerColumnTarget = {
+  ref: React.RefObject<HTMLDivElement | null>;
+  optionCount: number;
+};
+
+function wheelDeltaYToPixels(event: React.WheelEvent<HTMLElement>, column: HTMLDivElement) {
+  const lineHeight = getWheelMetrics(column)?.optionHeight ?? 40;
+  if (event.deltaMode === 1) return event.deltaY * lineHeight;
+  if (event.deltaMode === 2) return event.deltaY * column.clientHeight;
+  return event.deltaY;
+}
+
+function distanceToRect(rect: DOMRect, x: number, y: number) {
+  const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+  const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+  return dx * dx + dy * dy;
+}
+
+function closestWheelPickerColumn(
+  event: React.WheelEvent<HTMLElement>,
+  columns: WheelPickerColumnTarget[],
+) {
+  const target = event.target instanceof Element ? event.target : null;
+  const containingColumn = target
+    ? columns.find((column) => {
+        const element = column.ref.current;
+        return element ? element.contains(target) : false;
+      })
+    : undefined;
+  if (containingColumn?.ref.current) return containingColumn;
+
+  let nearest: WheelPickerColumnTarget | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const column of columns) {
+    const element = column.ref.current;
+    if (!element) continue;
+    const distance = distanceToRect(element.getBoundingClientRect(), event.clientX, event.clientY);
+    if (distance < nearestDistance) {
+      nearest = column;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
+export function handleWheelPickerScroll(
+  event: React.WheelEvent<HTMLElement>,
+  columns: WheelPickerColumnTarget[],
+) {
+  const targetColumn = closestWheelPickerColumn(event, columns);
+  const column = targetColumn?.ref.current;
+  if (!targetColumn || !column) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const rawDelta = wheelDeltaYToPixels(event, column);
+  if (!Number.isFinite(rawDelta) || Math.abs(rawDelta) < 0.5) return;
+
+  const metrics = getWheelMetrics(column);
+  const maxStep = metrics?.optionHeight ?? 48;
+  const delta = Math.sign(rawDelta) * Math.min(Math.abs(rawDelta), maxStep);
+  const maxScroll = Math.max(0, column.scrollHeight - column.clientHeight);
+  const nextTop = Math.max(0, Math.min(column.scrollTop + delta, maxScroll));
+
+  if (Math.abs(nextTop - column.scrollTop) >= 0.5) {
+    column.scrollTop = nextTop;
+    return;
+  }
+
+  const currentIndex = getWheelNearestIndex(column, targetColumn.optionCount);
+  if (currentIndex == null) return;
+  const nextIndex = Math.max(0, Math.min(targetColumn.optionCount - 1, currentIndex + Math.sign(rawDelta)));
+  if (nextIndex !== currentIndex) {
+    scrollWheelColumnToIndex(column, nextIndex);
+  }
+}
+
 export function scheduleWheelSnap(
   columnRef: React.RefObject<HTMLDivElement | null>,
   snapRef: React.MutableRefObject<number | null>,
