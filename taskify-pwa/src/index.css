@@ -4186,6 +4186,7 @@ html.light .edit-assignee {
 .edit-month-picker,
 .edit-time-picker {
   --month-picker-row-height: 2.4rem;
+  --wheel-picker-edge-padding: calc(var(--month-picker-row-height) * 2);
   position: relative;
   display: flex;
   gap: 0.65rem;
@@ -4223,10 +4224,11 @@ html.light .edit-assignee {
   display: flex;
   flex-direction: column;
   scroll-snap-type: y mandatory;
-  padding: calc(var(--month-picker-row-height) * 3) 0.35rem;
+  scroll-padding-block: var(--wheel-picker-edge-padding);
+  padding: var(--wheel-picker-edge-padding) 0.35rem;
   gap: 0;
   scrollbar-width: none;
-  overscroll-behavior: contain;
+  overscroll-behavior-y: contain;
   touch-action: pan-y;
 }
 
@@ -4239,6 +4241,8 @@ html.light .edit-assignee {
 .edit-time-picker__option {
   width: 100%;
   height: var(--month-picker-row-height);
+  min-height: var(--month-picker-row-height);
+  flex: 0 0 var(--month-picker-row-height);
   display: flex;
   align-items: center;
   justify-content: center;

@@ -53,6 +53,7 @@ import {
   getWheelNearestIndex,
   scrollWheelColumnToIndex,
   scheduleWheelSnap,
+  handleWheelPickerScroll,
   parseTimePickerValue,
   formatTimePickerValue,
   currentTimeValue,
@@ -1499,6 +1500,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       }
     });
   }, [setTimePickerFromParts]);
+  const handleTimePickerWheel = useCallback((event: React.WheelEvent<HTMLElement>) => {
+    handleWheelPickerScroll(event, [
+      { ref: timePickerHourColumnRef, optionCount: HOURS_12.length },
+      { ref: timePickerMinuteColumnRef, optionCount: MINUTES.length },
+      { ref: timePickerMeridiemColumnRef, optionCount: MERIDIEMS.length },
+    ]);
+  }, []);
 
   function handleToggleTime() {
     if (hasDueTime) {
@@ -2075,7 +2083,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           </div>
           {hasDueTime && timeDetailsOpen && (
             <div className="edit-card__detail space-y-2">
-              <div className="edit-time-picker" role="group" aria-label="Select time">
+              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
                 <div
                   className="edit-time-picker__column"
                   ref={timePickerHourColumnRef}
@@ -2090,6 +2098,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                       data-picker-index={idx}
                       role="option"
                       aria-selected={timePickerHour === hour}
+                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
                     >
                       {String(hour).padStart(2, "0")}
                     </div>
@@ -2112,6 +2121,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                       data-picker-index={idx}
                       role="option"
                       aria-selected={timePickerMinute === minute}
+                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
                     >
                       {String(minute).padStart(2, "0")}
                     </div>
@@ -2131,6 +2141,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                       data-picker-index={idx}
                       role="option"
                       aria-selected={timePickerMeridiem === label}
+                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
                     >
                       {label}
                     </div>
@@ -2262,7 +2273,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                         {reminderTimeSummary}
                       </button>
                       {reminderTimeDetailsOpen && (
-                        <div className="edit-time-picker" role="group" aria-label="Select reminder time">
+                        <div className="edit-time-picker" role="group" aria-label="Select reminder time" onWheel={handleTimePickerWheel}>
                           <div
                             className="edit-time-picker__column"
                             ref={timePickerHourColumnRef}
@@ -2277,6 +2288,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                                 data-picker-index={idx}
                                 role="option"
                                 aria-selected={timePickerHour === hour}
+                                onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
                               >
                                 {String(hour).padStart(2, "0")}
                               </div>
@@ -2299,6 +2311,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                                 data-picker-index={idx}
                                 role="option"
                                 aria-selected={timePickerMinute === minute}
+                                onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
                               >
                                 {String(minute).padStart(2, "0")}
                               </div>
@@ -2318,6 +2331,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                                 data-picker-index={idx}
                                 role="option"
                                 aria-selected={timePickerMeridiem === label}
+                                onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
                               >
                                 {label}
                               </div>
