@@ -25,6 +25,8 @@ export type FastingRemindersMode = "weekday" | "random";
 
 // ---- Settings ----
 
+export type StartupView = "main" | "wallet" | "upcoming" | "chat";
+
 export type Settings = {
   weekStart: Weekday;
   newTaskPosition: "top" | "bottom";
@@ -50,7 +52,7 @@ export type Settings = {
   backgroundAccentIndex?: number | null;
   backgroundBlur: "blurred" | "sharp";
   hideCompletedSubtasks: boolean;
-  startupView: "main" | "wallet";
+  startupView: StartupView;
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
   walletSentStateChecksEnabled: boolean;

@@ -83,7 +83,7 @@ describe("isOnboardingActive", () => {
 // Nav-guard tests
 // ---------------------------------------------------------------------------
 
-type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "contacts" | "settings";
+type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings";
 
 function guardedNavigate(isOnboardingActive: boolean, currentPage: ActivePage, requestedPage: ActivePage): ActivePage {
   if (isOnboardingActive) return currentPage;
@@ -112,9 +112,9 @@ describe("nav-guard", () => {
     expect(guardedNavigate(active, "boards", "wallet")).toBe("boards");
   });
 
-  test("navigation to 'contacts' is blocked while onboarding active", () => {
+  test("navigation to 'chat' is blocked while onboarding active", () => {
     const active = computeIsOnboardingActive(makeStorage({}));
-    expect(guardedNavigate(active, "boards", "contacts")).toBe("boards");
+    expect(guardedNavigate(active, "boards", "chat")).toBe("boards");
   });
 
   test("navigation is allowed after onboarding completes", () => {
@@ -154,6 +154,8 @@ describe("startupView guard", () => {
   ): ActivePage {
     if (isOnboardingActive) return currentPage;
     if (startupView === "wallet") return "wallet";
+    if (startupView === "upcoming") return "upcoming";
+    if (startupView === "chat") return "chat";
     return currentPage;
   }
 
@@ -167,5 +169,7 @@ describe("startupView guard", () => {
     const active = computeIsOnboardingActive(makeStorage({ [LS_NOSTR_SK]: VALID_SK }));
     expect(active).toBe(false);
     expect(applyStartupView(active, "wallet", "boards")).toBe("wallet");
+    expect(applyStartupView(active, "upcoming", "boards")).toBe("upcoming");
+    expect(applyStartupView(active, "chat", "boards")).toBe("chat");
   });
 });

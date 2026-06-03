@@ -2816,10 +2816,13 @@ export default function App() {
     startupViewHandledRef.current = true;
     // Do not redirect on startup while onboarding is blocking the app.
     if (isOnboardingActiveRef.current) return;
-    if (settings.startupView === "wallet") {
-      startTransition(() => setActivePage("wallet"));
+    if (settings.startupView === "wallet" || settings.startupView === "upcoming" || settings.startupView === "chat") {
+      if (settings.startupView === "wallet" || settings.startupView === "chat") {
+        prefetchWalletModal();
+      }
+      startTransition(() => setActivePage(settings.startupView));
     }
-  }, [settings.startupView]);
+  }, [prefetchWalletModal, settings.startupView]);
   const { receiveToken } = useCashu();
 
   useEffect(() => {
