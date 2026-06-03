@@ -16,7 +16,7 @@ import { LS_SETTINGS } from "../storageKeys";
 import { kvStorage } from "../../storage/kvStorage";
 import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
 import { CHAT_RETENTION_OPTIONS } from "./settingsTypes";
-import type { ChatMessageRetention, FastingRemindersMode, PushPreferences, Settings } from "./settingsTypes";
+import type { ChatMessageRetention, FastingRemindersMode, PushPreferences, Settings, StartupView } from "./settingsTypes";
 import type { Board, Weekday } from "./taskTypes";
 import { withBoardOrder } from "./boardUtils";
 
@@ -71,6 +71,10 @@ function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, s
   return boards[0]?.id || "";
 }
 
+function normalizeStartupView(value: unknown): StartupView {
+  return value === "wallet" || value === "upcoming" || value === "chat" ? value : "main";
+}
+
 export function useSettingsSync(): readonly [Settings, SetSettingsFn];
 export function useSettingsSync(options: UseSettingsSyncOptions): UseSettingsSyncResult;
 export function useSettingsSync(
@@ -113,7 +117,7 @@ export function useSettingsSync(
       if (parsed?.accent === "green") accent = "green";
       else if (parsed?.accent === "background" && backgroundImage && backgroundAccent) accent = "background";
       const hideCompletedSubtasks = parsed?.hideCompletedSubtasks === true;
-      const startupView = parsed?.startupView === "wallet" ? "wallet" : "main";
+      const startupView = normalizeStartupView(parsed?.startupView);
       const walletConversionEnabled = parsed?.walletConversionEnabled !== false;
       const walletPrimaryCurrency = parsed?.walletPrimaryCurrency === "usd" ? "usd" : "sat";
       const walletSentStateChecksEnabled = parsed?.walletSentStateChecksEnabled !== false;
