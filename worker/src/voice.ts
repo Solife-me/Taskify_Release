@@ -18,7 +18,7 @@ const VOICE_TEST_BYPASS_NPUBS = new Set([
   "npub13p5mg2wszus5nt7seldn8d6dnppvf3xqe5q2vsq076r2ysvh93eqwhgqdm",
   "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g",
 ]);
-const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash-lite-preview";
+const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash-lite";
 const GEMINI_MODEL_FALLBACK_1 = "gemini-3-flash-preview";
 const GEMINI_MODEL_FALLBACK_2 = "gemini-2.5-flash";
 
