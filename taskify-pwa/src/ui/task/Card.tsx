@@ -7,6 +7,39 @@ import { TaskTitle, useTaskPreview } from "./TaskTitle";
 import { TaskMedia } from "./TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
 
+function ReminderBellIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M10.3 21a1.9 1.9 0 0 0 3.4 0" />
+      <path d="M4.8 17h14.4" />
+      <path d="M6.5 17v-5.1a5.5 5.5 0 0 1 11 0V17" />
+      <path d="M9.7 5.1a2.3 2.3 0 0 1 4.6 0" />
+    </svg>
+  );
+}
+
+function ReminderIndicator() {
+  return (
+    <span
+      className="task-card__reminder-indicator"
+      aria-label="Reminder set"
+      title="Reminder set"
+      role="img"
+    >
+      <ReminderBellIcon />
+    </span>
+  );
+}
+
 export function isCardDragEnabled(isSelectionMode?: boolean, isSelected?: boolean) {
   if (isSelectionMode) return !!isSelected;
   return true;
@@ -229,6 +262,7 @@ export function Card({
   const bountyLabel = task.bounty ? bountyStateLabel(task.bounty) : "";
 
   const stackedForm = isStacked || hasDetail;
+  const hasReminder = Array.isArray(task.reminders) && task.reminders.length > 0;
 
   return (
     <div
@@ -332,11 +366,21 @@ export function Card({
               </div>
             )}
           {task.dueTimeEnabled && (
-            <div className="text-xs text-secondary">
-              Due at {formatTimeLabel(task.dueISO, task.dueTimeZone)}
+            <div className="task-card__schedule-row text-xs text-secondary">
+              <span>Due at {formatTimeLabel(task.dueISO, task.dueTimeZone)}</span>
+              {hasReminder ? <ReminderIndicator /> : null}
             </div>
           )}
-          {meta ? <div className="task-card__meta">{meta}</div> : null}
+          {meta ? (
+            <div className="task-card__meta task-card__meta--inline">
+              <span>{meta}</span>
+              {!task.dueTimeEnabled && hasReminder ? <ReminderIndicator /> : null}
+            </div>
+          ) : !task.dueTimeEnabled && hasReminder ? (
+            <div className="task-card__meta task-card__meta--inline">
+              <ReminderIndicator />
+            </div>
+          ) : null}
         </div>
         {(syncPending || trailing) ? (
           <div className="task-card__trailing">

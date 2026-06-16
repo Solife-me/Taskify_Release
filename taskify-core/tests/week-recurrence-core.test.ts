@@ -8,6 +8,43 @@ test("tasksInSameSeries matches by seriesId", () => {
   assert.equal(tasksInSameSeries(a, b), true);
 });
 
+test("tasksInSameSeries treats untilISO as series end metadata", () => {
+  const a = {
+    id: "1",
+    boardId: "b",
+    title: "t",
+    note: "",
+    dueISO: "2026-03-12T00:00:00.000Z",
+    recurrence: { type: "daily", untilISO: "2026-03-12T00:00:00.000Z" },
+  } as SeriesTaskLike;
+  const b = {
+    ...a,
+    id: "2",
+    dueISO: "2026-03-13T00:00:00.000Z",
+    recurrence: { type: "daily" },
+  } as SeriesTaskLike;
+
+  assert.equal(tasksInSameSeries(a, b), true);
+});
+
+test("tasksInSameSeries matches generated instance to seed id", () => {
+  const seed = {
+    id: "seed",
+    boardId: "b",
+    title: "t",
+    dueISO: "2026-03-12T00:00:00.000Z",
+    recurrence: { type: "daily" },
+  } as SeriesTaskLike;
+  const instance = {
+    ...seed,
+    id: "recurrence:seed:2026-03-13",
+    seriesId: "seed",
+    dueISO: "2026-03-13T00:00:00.000Z",
+  } as SeriesTaskLike;
+
+  assert.equal(tasksInSameSeries(seed, instance), true);
+});
+
 test("ensureWeekRecurrencesForCurrentWeek creates clone for current week", () => {
   const task = {
     id: "t1",

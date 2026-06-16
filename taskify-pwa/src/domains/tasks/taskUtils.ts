@@ -207,7 +207,9 @@ export function normalizeHiddenForRecurring(task: Task): Task {
 export function recurrenceSeriesKey(task: Task): string | null {
   if (!task.recurrence) return null;
   if (task.seriesId) return `series:${task.boardId}:${task.seriesId}`;
-  const recurrence = JSON.stringify(task.recurrence);
+  const seriesRecurrence = { ...task.recurrence };
+  delete seriesRecurrence.untilISO;
+  const recurrence = JSON.stringify(seriesRecurrence);
   return `sig:${task.boardId}::${task.title}::${task.note || ""}::${recurrence}`;
 }
 

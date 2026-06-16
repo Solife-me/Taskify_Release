@@ -2529,6 +2529,35 @@ html.light .task-card[data-state="completed"] {
   padding-top: 0.18rem;
 }
 
+.task-card__schedule-row,
+.task-card__meta--inline {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.task-card__schedule-row > span:first-child,
+.task-card__meta--inline > span:first-child {
+  min-width: 0;
+}
+
+.task-card__reminder-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.92rem;
+  height: 0.92rem;
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  opacity: 0.9;
+}
+
+.task-card__reminder-indicator svg {
+  width: 0.82rem;
+  height: 0.82rem;
+}
+
 .task-card__sync-spinner {
   width: 0.82rem;
   height: 0.82rem;

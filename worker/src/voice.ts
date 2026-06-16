@@ -28,6 +28,7 @@ type TaskCandidate = {
   id: string;
   title: string;
   dueText?: string;
+  reminderText?: string;
   boardId?: string;
   subtasks?: string[];
   status: "draft" | "confirmed" | "dismissed";
@@ -37,9 +38,10 @@ type TaskOperation = {
   type: "create_task" | "update_task" | "delete_task" | "mark_uncertain";
   title?: string;
   dueText?: string;
+  reminderText?: string;
   subtasks?: string[];
   targetRef?: string;
-  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId" | "subtasks">>;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "reminderText" | "boardId" | "subtasks">>;
 };
 
 type FinalTask = {
@@ -49,6 +51,8 @@ type FinalTask = {
   notes?: string;
   subtasks?: string[];
   priority?: 1 | 2 | 3;
+  reminderMinutesBeforeDue?: number[];
+  reminderTime?: string;
 };
 
 type VoiceQuotaRow = {
@@ -92,6 +96,8 @@ function isGarbageTaskTitle(title: string): boolean {
 function cleanupTaskTitle(raw: string): string {
   let title = raw.trim();
   title = title.replace(/^(?:and\s+then|and|then|also)\s+/i, "");
+  title = title.replace(/^(?:please\s+)?(?:remind|notify|alert|nudge|ping)\s+me\s+(?:to|about|that)\s*/i, "");
+  title = title.replace(/^(?:set|create|add)\s+(?:a\s+)?(?:reminder|notification|alert)\s+(?:to|for|about)\s*/i, "");
   title = title.replace(/^(?:i\s+need\s+to|i\s+have\s+to|i(?:'| a)?m\s+going\s+to|i\s+can(?:not|'?t)\s+forget\s+to|there(?:'s|\s+is)\s+|we\s+have\s+(?:a\s+)?)\s*/i, "");
   title = title.replace(/^to\s+/i, "");
   title = title.replace(/\s+/g, " ").trim();
@@ -114,6 +120,44 @@ function normalizeSubtasks(input: unknown): string[] | undefined {
     .map((v) => (typeof v === "string" ? v.trim() : ""))
     .filter((v) => v.length > 0);
   return out.length ? out : undefined;
+}
+
+function normalizeReminderText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || /^null$/i.test(trimmed) || /^none$/i.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+function normalizeReminderMinutes(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const entry of value) {
+    const n = typeof entry === "number" ? entry : Number(entry);
+    if (!Number.isFinite(n)) continue;
+    const rounded = Math.round(n);
+    if (seen.has(rounded)) continue;
+    seen.add(rounded);
+    out.push(rounded);
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeReminderTime(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.includes(":")) return undefined;
+  const [hourRaw, minuteRaw] = value.split(":");
+  const hour = Number.parseInt(hourRaw ?? "", 10);
+  const minute = Number.parseInt(minuteRaw ?? "", 10);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return undefined;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return undefined;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function hasExplicitReminderRequest(candidate: TaskCandidate): boolean {
+  if (normalizeReminderText(candidate.reminderText)) return true;
+  const text = `${candidate.title || ""} ${candidate.dueText || ""}`.toLowerCase();
+  return /\b(remind\s+me|set\s+(?:a\s+)?reminder|add\s+(?:a\s+)?reminder|create\s+(?:a\s+)?reminder|alert\s+me|notify\s+me|nudge\s+me|ping\s+me|notification)\b/.test(text);
 }
 
 function dedupe(values: string[] | undefined): string[] | undefined {
@@ -166,6 +210,7 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
     if (isGarbageTaskTitle(title)) continue;
 
     let dueText = typeof t?.dueText === "string" && t.dueText.trim() ? t.dueText.trim() : undefined;
+    const reminderText = normalizeReminderText(t?.reminderText);
     let subtasks = normalizeSubtasks(t?.subtasks);
 
     const groceryContext = /grocery|groceries|store|shopping|supermarket/i.test(`${title} ${dueText ?? ""}`);
@@ -209,7 +254,7 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
     }
 
     if (isGarbageTaskTitle(title)) continue;
-    operations.push({ type: "create_task", title, dueText, subtasks });
+    operations.push({ type: "create_task", title, dueText, reminderText, subtasks });
   }
 
   return operations;
@@ -470,15 +515,20 @@ Transcript: "${transcript}"
 Return ONLY JSON in this exact shape:
 {
   "tasks": [
-    { "title": string, "dueText": string|null, "subtasks": string[] }
+    { "title": string, "dueText": string|null, "reminderText": string|null, "subtasks": string[] }
   ]
 }
 
 Rules:
 - Prefer fewer, high-quality tasks. Do not split one task into fragments.
 - Never keep leading fragments in titles (drop/clean: "I need to", "then", "and then", "then tomorrow", "then Friday", "we have", "there's").
+- Never keep reminder-command wording in titles (drop/clean: "remind me to", "set a reminder to", "alert me to", "notify me to").
 - If user says grocery/shopping item lists, keep ONE parent task and put items in subtasks.
 - Keep relative date/time phrases in dueText (e.g. "tomorrow 2:00 PM", "Friday at noon", "today at 5 PM").
+- reminderText defaults to null. Set reminderText ONLY when the user explicitly asks for a reminder/alert/notification/nudge, such as "remind me", "set a reminder", "alert me", or "notify me".
+- If the user says "remind me" without a reminder offset, set reminderText to "at due time".
+- If the user gives reminder timing, keep it in reminderText (e.g. "15 minutes before", "1 hour before", "tomorrow at 9 AM").
+- Do not infer reminderText from dueText alone.
 - Apply in-sentence corrections: if user says "actually change X to Y", update the earlier task for X.
 - Keep title nouns concise and board-ready.
 - Good title examples: "Go to the grocery store", "Birthday party for Ashley", "Play date", "Dinner after church", "Get dogs from Gran Gran's".
@@ -560,6 +610,7 @@ ${JSON.stringify(
       id: c.id,
       title: c.title,
       dueText: c.dueText ?? null,
+      reminderText: c.reminderText ?? null,
       subtasks: c.subtasks ?? [],
       boardId: c.boardId ?? boardId ?? null,
     })),
@@ -575,7 +626,9 @@ Return ONLY JSON with exact shape:
       "subtasks": string[],
       "notes": string | null,
       "boardId": string | null,
-      "priority": 1 | 2 | 3 | null
+      "priority": 1 | 2 | 3 | null,
+      "reminderMinutesBeforeDue": number[] | null,
+      "reminderTime": string | null
     }
   ]
 }
@@ -584,10 +637,16 @@ Rules:
 - Return one finalized output item for every input candidate id.
 - Fill all fields for each item.
 - If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
+- If dueText contains a date but no task due/start clock time, dueISO MAY be a YYYY-MM-DD date string.
 - Use dueISO null only when there is truly no parseable date/time intent.
 - Priority defaults to null.
 - Only set priority to 1/2/3 when the user language clearly implies urgency/importance.
 - Do NOT infer priority from normal planning language.
+- reminderMinutesBeforeDue defaults to null. Set it ONLY when reminderText is non-null or the candidate/title explicitly asks for a reminder/alert/notification.
+- If a reminder was requested without a lead time, use [0].
+- If reminderText says "15 minutes before", use [15]; "1 hour before" => [60]; "1 day before" => [1440]; "1 week before" => [10080].
+- If the user requested a date-only reminder at a specific clock time, set reminderMinutesBeforeDue to [0] and reminderTime to "HH:MM"; otherwise reminderTime is null.
+- Do not infer reminders from dueText alone.
 - Keep title clean and action-oriented.
 - Preserve checklist-like nouns as subtasks.
 - No markdown, no prose.`;
@@ -611,6 +670,8 @@ Rules:
     let notes: string | undefined;
     let normalizedBoardId = candidate.boardId ?? boardId;
     let priority: 1 | 2 | 3 | undefined;
+    let reminderMinutesBeforeDue: number[] | undefined;
+    let reminderTime: string | undefined;
 
     if (fromBatch && typeof fromBatch.title === "string" && fromBatch.title.trim()) {
       normalizedTitle = fromBatch.title.trim();
@@ -629,6 +690,14 @@ Rules:
     }
     priority = parseTaskPriority(fromBatch?.priority);
     subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
+    const reminderRequested = hasExplicitReminderRequest(candidate);
+    if (reminderRequested) {
+      reminderMinutesBeforeDue = normalizeReminderMinutes(fromBatch?.reminderMinutesBeforeDue);
+      reminderTime = normalizeReminderTime(fromBatch?.reminderTime);
+      if (!reminderMinutesBeforeDue?.length && dueISO) {
+        reminderMinutesBeforeDue = [0];
+      }
+    }
 
     tasks.push({
       title: normalizedTitle,
@@ -637,6 +706,8 @@ Rules:
       notes,
       subtasks,
       priority,
+      reminderMinutesBeforeDue,
+      reminderTime,
     });
   }
 
