@@ -8,6 +8,39 @@ import { stripUrlsFromText } from "../task/TaskTitle";
 import { EventTitle, EventMedia } from "../task/TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
 
+function ReminderBellIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M10.3 21a1.9 1.9 0 0 0 3.4 0" />
+      <path d="M4.8 17h14.4" />
+      <path d="M6.5 17v-5.1a5.5 5.5 0 0 1 11 0V17" />
+      <path d="M9.7 5.1a2.3 2.3 0 0 1 4.6 0" />
+    </svg>
+  );
+}
+
+function ReminderIndicator() {
+  return (
+    <span
+      className="task-card__reminder-indicator"
+      aria-label="Reminder set"
+      title="Reminder set"
+      role="img"
+    >
+      <ReminderBellIcon />
+    </span>
+  );
+}
+
 export function isEventCardDragEnabled(isSelectionMode?: boolean, isDraggable?: boolean) {
   return Boolean(isDraggable) && !isSelectionMode;
 }
@@ -113,6 +146,7 @@ export function EventCard({
   const isInteractive = typeof onEdit === "function";
   const isDraggable = typeof onDragStart === "function";
   const dragEnabled = isEventCardDragEnabled(isSelectionMode, isDraggable);
+  const hasReminder = Array.isArray(event.reminders) && event.reminders.length > 0;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -202,8 +236,22 @@ export function EventCard({
           onKeyDown={isInteractive || isSelectionMode ? handleKeyDown : undefined}
         >
           <div className="task-card__title">{event.title ? <EventTitle event={event} /> : "Untitled"}</div>
-          {timeLabel ? <div className="text-xs text-secondary">{timeLabel}</div> : null}
-          {metaNode ? <div className="task-card__meta">{metaNode}</div> : null}
+          {timeLabel ? (
+            <div className="task-card__schedule-row text-xs text-secondary">
+              <span>{timeLabel}</span>
+              {hasReminder ? <ReminderIndicator /> : null}
+            </div>
+          ) : null}
+          {metaNode ? (
+            <div className="task-card__meta task-card__meta--inline">
+              <span>{metaNode}</span>
+              {!timeLabel && hasReminder ? <ReminderIndicator /> : null}
+            </div>
+          ) : !timeLabel && hasReminder ? (
+            <div className="task-card__meta task-card__meta--inline">
+              <ReminderIndicator />
+            </div>
+          ) : null}
         </div>
         {(syncPending || trailing) ? (
           <div className="task-card__trailing">
