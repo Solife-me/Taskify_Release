@@ -23,6 +23,7 @@ export type FastingRemindersMode = "weekday" | "random";
 // ---- Settings ----
 
 export type StartupView = "main" | "wallet" | "upcoming" | "chat";
+export type LightningAddressProvider = "solife.me" | "npub.cash" | "none";
 
 export type Settings = {
   weekStart: Weekday; // 0=Sun, 1=Mon, 6=Sat
@@ -62,6 +63,7 @@ export type Settings = {
   encryptedFileStorageServer: string;
   fileServers: string; // JSON-serialized FileServerEntry[]
   encryptedFileServers: string; // JSON-serialized FileServerEntry[]
+  lightningAddressProvider: LightningAddressProvider;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;
