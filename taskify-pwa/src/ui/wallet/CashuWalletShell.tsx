@@ -63,8 +63,9 @@ export function CashuWalletShell({
         walletConversionEnabled={settings.walletConversionEnabled}
         walletPrimaryCurrency={settings.walletPrimaryCurrency}
         setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}
+        lightningAddressProvider={settings.lightningAddressProvider}
         npubCashLightningAddressEnabled={settings.npubCashLightningAddressEnabled}
-        npubCashAutoClaim={settings.npubCashLightningAddressEnabled && settings.npubCashAutoClaim}
+        npubCashAutoClaim={settings.lightningAddressProvider === "npub.cash" && settings.npubCashAutoClaim}
         sentTokenStateChecksEnabled={settings.walletSentStateChecksEnabled}
         paymentRequestsEnabled={settings.walletPaymentRequestsEnabled}
         paymentRequestsBackgroundChecksEnabled={

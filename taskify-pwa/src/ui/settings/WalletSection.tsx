@@ -40,6 +40,12 @@ import { SessionPool } from "../../nostr/SessionPool";
 import { useCashu } from "../../context/CashuContext";
 import { useP2PK, type P2PKKey } from "../../context/P2PKContext";
 import { useToast } from "../../context/ToastContext";
+import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import {
+  fetchSolifeAccount,
+  fetchSolifeConfig,
+  updateSolifeLightningAddressMint,
+} from "../../wallet/solife";
 import {
   pillButtonClass,
   hexToBytes,
@@ -99,6 +105,17 @@ export function WalletSection({
   const [p2pkImportLabel, setP2pkImportLabel] = useState("");
   const [p2pkImportError, setP2pkImportError] = useState("");
   const [p2pkKeysExpanded, setP2pkKeysExpanded] = useState(false);
+  const [solifeConfig, setSolifeConfig] = useState<any>(null);
+  const [solifeMintDraft, setSolifeMintDraft] = useState("");
+  const [solifeMintUrl, setSolifeMintUrl] = useState("");
+  const [solifeMintOverride, setSolifeMintOverride] = useState(false);
+  const [solifeMintStatus, setSolifeMintStatus] = useState<"idle" | "loading" | "saving" | "success" | "error">("idle");
+  const [solifeMintMessage, setSolifeMintMessage] = useState("");
+
+  const solifeMintBusy = solifeMintStatus === "loading" || solifeMintStatus === "saving";
+  const solifeCurrentMintDisplay = solifeMintUrl
+    ? solifeMintUrl.replace(/^https?:\/\//i, "")
+    : "Solife default";
 
   const isReplaceableRejection = useCallback((err: unknown): boolean => {
     const msg = typeof (err as any)?.message === "string" ? (err as any).message : "";
@@ -674,6 +691,76 @@ export function WalletSection({
     void syncMintBackup();
   }, [settings.walletMintBackupEnabled, syncMintBackup]);
 
+  useEffect(() => {
+    if (!walletExpanded || settings.lightningAddressProvider !== "solife.me") return;
+    let cancelled = false;
+    const loadSolifeMint = async () => {
+      setSolifeMintStatus("loading");
+      setSolifeMintMessage("");
+      try {
+        const config = await fetchSolifeConfig();
+        if (cancelled) return;
+        setSolifeConfig(config);
+        setSolifeMintUrl(config.mintUrl || "");
+        setSolifeMintOverride(false);
+        const storedSk = nostrSkSync();
+        if (!storedSk) {
+          setSolifeMintStatus("idle");
+          return;
+        }
+        const accountResult = await fetchSolifeAccount(storedSk);
+        if (cancelled) return;
+        setSolifeConfig(accountResult.config);
+        setSolifeMintUrl(accountResult.account.lightningAddressMintUrl || accountResult.config.mintUrl || "");
+        setSolifeMintOverride(accountResult.account.lightningAddressMintOverride === true);
+        setSolifeMintDraft(
+          accountResult.account.lightningAddressMintOverride ? accountResult.account.lightningAddressMintUrl || "" : "",
+        );
+        setSolifeMintStatus("idle");
+      } catch (error: any) {
+        if (cancelled) return;
+        setSolifeMintStatus("error");
+        setSolifeMintMessage(error?.message || "Unable to load Solife mint settings.");
+      }
+    };
+    void loadSolifeMint();
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.lightningAddressProvider, walletExpanded]);
+
+  const handleSaveSolifeMint = useCallback(
+    async (useDefault = false) => {
+      const storedSk = nostrSkSync();
+      if (!storedSk) {
+        setSolifeMintStatus("error");
+        setSolifeMintMessage("Add your Taskify Nostr key in Nostr settings before changing your Solife mint.");
+        return;
+      }
+      setSolifeMintStatus("saving");
+      setSolifeMintMessage(useDefault ? "Resetting to Solife default mint..." : "Saving Solife mint...");
+      try {
+        const result = await updateSolifeLightningAddressMint(
+          storedSk,
+          useDefault ? null : solifeMintDraft.trim() || null,
+        );
+        setSolifeConfig(result.config);
+        setSolifeMintUrl(result.mintUrl);
+        setSolifeMintOverride(result.mintOverride);
+        setSolifeMintDraft(result.mintOverride ? result.mintUrl : "");
+        setSolifeMintStatus("success");
+        setSolifeMintMessage(
+          result.mintOverride ? `Using ${result.mintUrl} for your Solife address.` : "Using the Solife default mint.",
+        );
+        showToast("Solife mint updated", 2500);
+      } catch (error: any) {
+        setSolifeMintStatus("error");
+        setSolifeMintMessage(error?.message || "Unable to update your Solife mint.");
+      }
+    },
+    [showToast, solifeMintDraft],
+  );
+
   return (
         <section className="wallet-section space-y-3">
           <button
@@ -702,20 +789,96 @@ export function WalletSection({
                 </div>
               </div>
               <div>
-                <div className="text-sm font-medium mb-1">npub.cash lightning address</div>
-                <div className="text-xs text-secondary mb-2">Share a lightning address powered by npub.cash using your Taskify Nostr keys.</div>
-                <div className="flex gap-2">
+                <div className="text-sm font-medium mb-1">Lightning Address</div>
+                <div className="text-xs text-secondary mb-2">Choose the address shown when receiving Lightning.</div>
+                <div className="flex flex-wrap gap-2">
                   <button
-                    className={pillButtonClass(settings.npubCashLightningAddressEnabled)}
-                    onClick={() => setSettings({ npubCashLightningAddressEnabled: true })}
-                  >On</button>
+                    className={pillButtonClass(settings.lightningAddressProvider === "solife.me")}
+                    onClick={() =>
+                      setSettings({
+                        lightningAddressProvider: "solife.me",
+                        npubCashLightningAddressEnabled: true,
+                        npubCashAutoClaim: false,
+                      })
+                    }
+                  >solife.me</button>
                   <button
-                    className={pillButtonClass(!settings.npubCashLightningAddressEnabled)}
-                    onClick={() => setSettings({ npubCashLightningAddressEnabled: false, npubCashAutoClaim: false })}
-                  >Off</button>
+                    className={pillButtonClass(settings.lightningAddressProvider === "npub.cash")}
+                    onClick={() =>
+                      setSettings({
+                        lightningAddressProvider: "npub.cash",
+                        npubCashLightningAddressEnabled: true,
+                      })
+                    }
+                  >npub.cash</button>
+                  <button
+                    className={pillButtonClass(settings.lightningAddressProvider === "none")}
+                    onClick={() =>
+                      setSettings({
+                        lightningAddressProvider: "none",
+                        npubCashLightningAddressEnabled: false,
+                        npubCashAutoClaim: false,
+                      })
+                    }
+                  >None</button>
                 </div>
               </div>
-              {settings.npubCashLightningAddressEnabled && (
+              {settings.lightningAddressProvider === "solife.me" && (
+                <div>
+                  <div className="text-sm font-medium mb-1">Solife payment mint</div>
+                  <div className="text-xs text-secondary mb-2">
+                    Current: {solifeCurrentMintDisplay}
+                    {!solifeMintOverride && solifeMintUrl ? " (default)" : ""}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      className="pill-input flex-1 min-w-0"
+                      type="url"
+                      value={solifeMintDraft}
+                      onChange={(event) => setSolifeMintDraft(event.target.value)}
+                      placeholder={solifeConfig?.mintUrl || "https://mint.solife.me"}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      disabled={solifeMintBusy}
+                    />
+                    <button
+                      className="ghost-button button-sm pressable"
+                      onClick={() => {
+                        void handleSaveSolifeMint(false);
+                      }}
+                      disabled={solifeMintBusy}
+                    >
+                      {solifeMintStatus === "saving" ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      className="ghost-button button-sm pressable"
+                      onClick={() => {
+                        void handleSaveSolifeMint(true);
+                      }}
+                      disabled={solifeMintBusy || (!solifeMintOverride && !solifeMintDraft.trim())}
+                    >
+                      Use default
+                    </button>
+                    {solifeMintMessage && (
+                      <span
+                        className={`text-xs ${
+                          solifeMintStatus === "error"
+                            ? "text-rose-400"
+                            : solifeMintStatus === "success"
+                              ? "text-emerald-400"
+                              : "text-secondary"
+                        }`}
+                      >
+                        {solifeMintMessage}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {settings.lightningAddressProvider === "npub.cash" && (
                 <div>
                   <div className="text-sm font-medium mb-1">Auto-claim npub.cash eCash</div>
                   <div className="text-xs text-secondary mb-2">Automatically claim pending npub.cash tokens each time the wallet opens.</div>
