@@ -483,7 +483,6 @@ export default function CashuWalletModal({
     setMintError,
     creatingMintInvoice,
     setCreatingMintInvoice,
-    lightningAddressCopied,
     setLightningAddressCopied,
     lnInput,
     setLnInput,
@@ -8763,24 +8762,9 @@ export default function CashuWalletModal({
         npubCashClaimStatus={npubCashClaimStatus}
         handleClaimNpubCash={handleClaimNpubCash}
         handleCopyLightningAddress={handleCopyLightningAddress}
-        lightningAddressCopied={lightningAddressCopied}
         lightningAddressDisplay={lightningAddressDisplay}
         npubCashClaimMessage={npubCashClaimMessage}
         npubCashIdentityError={npubCashIdentityError}
-        solifeConfig={solifeConfig}
-        solifeCustomHandle={solifeCustomHandle}
-        setSolifeCustomHandle={setSolifeCustomHandle}
-        solifeCustomStatus={solifeCustomStatus}
-        solifeCustomMessage={solifeCustomMessage}
-        solifeCustomAddress={solifeCustomAddress}
-        handlePurchaseSolifeCustomAddress={handlePurchaseSolifeCustomAddress}
-        solifeMintDraft={solifeMintDraft}
-        setSolifeMintDraft={setSolifeMintDraft}
-        solifeMintUrl={solifeMintUrl}
-        solifeMintOverride={solifeMintOverride}
-        solifeMintStatus={solifeMintStatus}
-        solifeMintMessage={solifeMintMessage}
-        handleSaveSolifeMint={handleSaveSolifeMint}
         handleOpenLightningAmountView={handleOpenLightningAmountView}
         mintSelectionOptions={mintSelectionOptions}
         selectedMintValue={selectedMintValue}
