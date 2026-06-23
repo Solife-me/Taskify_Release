@@ -23,24 +23,9 @@ export function LightningReceiveSheet(props) {
     npubCashClaimStatus,
     handleClaimNpubCash,
     handleCopyLightningAddress,
-    lightningAddressCopied,
     lightningAddressDisplay,
     npubCashClaimMessage,
     npubCashIdentityError,
-    solifeConfig,
-    solifeCustomHandle,
-    setSolifeCustomHandle,
-    solifeCustomStatus,
-    solifeCustomMessage,
-    solifeCustomAddress,
-    handlePurchaseSolifeCustomAddress,
-    solifeMintDraft,
-    setSolifeMintDraft,
-    solifeMintUrl,
-    solifeMintOverride,
-    solifeMintStatus,
-    solifeMintMessage,
-    handleSaveSolifeMint,
     handleOpenLightningAmountView,
     mintSelectionOptions,
     selectedMintValue,
@@ -66,15 +51,6 @@ export function LightningReceiveSheet(props) {
     invoiceAmountSecondary,
     mintUrl,
   } = props;
-  const solifePriceSats = Math.max(0, Math.floor(Number(solifeConfig?.customAddressPriceSats) || 0));
-  const solifePriceLabel = solifeConfig
-    ? solifePriceSats > 0
-      ? `${new Intl.NumberFormat().format(solifePriceSats)} sats`
-      : "Free"
-    : "Loading";
-  const solifeClaimBusy = solifeCustomStatus === "loading" || solifeCustomStatus === "purchasing";
-  const solifeMintBusy = solifeMintStatus === "loading" || solifeMintStatus === "saving";
-  const solifeCurrentMintLabel = solifeMintUrl ? trimMintUrlScheme(solifeMintUrl) : "Solife default";
 
   return (
     <ActionSheet
@@ -107,11 +83,13 @@ export function LightningReceiveSheet(props) {
                         size={240}
                         flat
                         hideCopyButton
+                        copyOnQrClick
+                        onCopy={handleCopyLightningAddress}
                         className="wallet-qr-card--centered"
                       />
                     </div>
-                    <div className="flex justify-center gap-3">
-                      {npubCashClaimEnabled && (
+                    {npubCashClaimEnabled && (
+                      <div className="flex justify-center gap-3">
                         <button
                           type="button"
                           className="ghost-button button-sm pressable"
@@ -122,16 +100,8 @@ export function LightningReceiveSheet(props) {
                         >
                           {npubCashClaimStatus === "checking" ? "Checking..." : "Redeem"}
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable"
-                        onClick={handleCopyLightningAddress}
-                        disabled={!npubCashIdentity?.address}
-                      >
-                        {lightningAddressCopied ? "Copied" : "Copy"}
-                      </button>
-                    </div>
+                      </div>
+                    )}
                     <div className="text-sm font-medium text-primary break-words">
                       {lightningAddressDisplay}
                     </div>
@@ -161,112 +131,6 @@ export function LightningReceiveSheet(props) {
                 </div>
               )}
             </div>
-            {lightningAddressProvider === "solife.me" && (
-              <div className="wallet-section space-y-3 text-left">
-                <div className="space-y-2">
-                  <div>
-                    <div className="text-sm font-medium text-primary">Solife payment mint</div>
-                    <div className="text-xs text-secondary">
-                      Current: {solifeCurrentMintLabel}
-                      {!solifeMintOverride && solifeMintUrl ? " (default)" : ""}
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      className="pill-input min-w-0 flex-1"
-                      type="url"
-                      value={solifeMintDraft}
-                      onChange={(event) => setSolifeMintDraft(event.target.value)}
-                      placeholder={solifeConfig?.mintUrl || "https://mint.solife.me"}
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      disabled={solifeMintBusy}
-                    />
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={() => {
-                        void handleSaveSolifeMint(false);
-                      }}
-                      disabled={solifeMintBusy}
-                    >
-                      {solifeMintStatus === "saving" ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={() => {
-                        void handleSaveSolifeMint(true);
-                      }}
-                      disabled={solifeMintBusy || (!solifeMintOverride && !solifeMintDraft.trim())}
-                    >
-                      Use default
-                    </button>
-                    {solifeMintMessage && (
-                      <div
-                        className={`text-xs ${
-                          solifeMintStatus === "error"
-                            ? "text-rose-400"
-                            : solifeMintStatus === "success"
-                              ? "text-emerald-400"
-                              : "text-secondary"
-                        }`}
-                      >
-                        {solifeMintMessage}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium text-primary">Custom Solife address</div>
-                  <div className="text-xs text-secondary">
-                    Claim price: {solifePriceLabel}
-                    {solifeConfig?.mintUrl ? ` from ${trimMintUrlScheme(solifeConfig.mintUrl)}` : ""}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <div className="pill-input flex min-w-0 flex-1 items-center gap-1">
-                    <input
-                      className="min-w-0 flex-1 bg-transparent outline-none"
-                      value={solifeCustomHandle}
-                      onChange={(event) => setSolifeCustomHandle(event.target.value)}
-                      placeholder="name"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      disabled={solifeClaimBusy}
-                    />
-                    <span className="shrink-0 text-xs text-tertiary">@solife.me</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="accent-button button-sm pressable"
-                    onClick={() => {
-                      void handlePurchaseSolifeCustomAddress();
-                    }}
-                    disabled={solifeClaimBusy || !solifeCustomHandle.trim()}
-                  >
-                    {solifeCustomStatus === "purchasing" ? "Claiming..." : "Claim"}
-                  </button>
-                </div>
-                {(solifeCustomMessage || solifeCustomAddress) && (
-                  <div
-                    className={`text-sm ${
-                      solifeCustomStatus === "error"
-                        ? "text-rose-400"
-                        : solifeCustomStatus === "success"
-                          ? "text-emerald-400"
-                          : "text-secondary"
-                    }`}
-                  >
-                    {solifeCustomMessage || solifeCustomAddress}
-                  </div>
-                )}
-              </div>
-            )}
             <button
               type="button"
               className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
