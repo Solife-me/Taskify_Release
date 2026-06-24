@@ -227,6 +227,7 @@ import { BoardUpcomingView, CompletedBoardView } from "./ui/board/BoardSecondary
 import { ShareBoardDialogs } from "./ui/board/ShareBoardDialogs";
 import { useShareBoardState } from "./ui/board/useShareBoardState";
 import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
+import { WalletAddressView } from "./ui/wallet/WalletAddressView";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
 import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
 import { useWalletShellState } from "./ui/wallet/useWalletShellState";
@@ -2553,7 +2554,7 @@ export default function App() {
   // header view
   const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
   const [activePage, setActivePage] = useState<
-    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings"
+    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-address" | "chat" | "settings"
   >("boards");
   const {
     completeFirstRunOnboarding,
@@ -2679,6 +2680,11 @@ export default function App() {
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     startTransition(() => setActivePage("wallet-bounties"));
+  }, [shouldReloadForNavigation]);
+  const openWalletAddress = useCallback(() => {
+    if (isOnboardingActiveRef.current) return;
+    if (shouldReloadForNavigation()) return;
+    startTransition(() => setActivePage("wallet-address"));
   }, [shouldReloadForNavigation]);
   const closeWallet = useCallback(() => {
     startTransition(() => setActivePage("boards"));
@@ -11678,7 +11684,7 @@ export default function App() {
   return (
     <div className="min-h-screen text-primary">
       <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "settings") && (
+        {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "wallet-address" || activePage === "settings") && (
           <header className="app-header">
             {activePage === "boards" && (
               <>
@@ -12020,6 +12026,20 @@ export default function App() {
             {activePage === "wallet-bounties" && (
               <>
                 <div className="app-header__title">Bounties</div>
+                <div className="app-header__right">
+                  <button
+                    type="button"
+                    className="ghost-button button-sm pressable"
+                    onClick={openWallet}
+                  >
+                    Wallet
+                  </button>
+                </div>
+              </>
+            )}
+            {activePage === "wallet-address" && (
+              <>
+                <div className="app-header__title">Address</div>
                 <div className="app-header__right">
                   <button
                     type="button"
@@ -12729,6 +12749,13 @@ export default function App() {
           walletDenominationDisplay={settings.walletDenominationDisplay}
         />
       )}
+      {activePage === "wallet-address" && (
+        <WalletAddressView
+          settings={settings}
+          setSettings={setSettings}
+          defaultRelays={defaultRelays}
+        />
+      )}
       {activePage === "settings" && (
         <Suspense fallback={null}>
           <SettingsModal
@@ -12865,7 +12892,7 @@ export default function App() {
           <button
             ref={walletButtonRef}
             type="button"
-            className={`app-tab-switcher__btn pressable${activePage === "wallet" || activePage === "wallet-bounties" ? " app-tab-switcher__btn--active" : ""}`}
+            className={`app-tab-switcher__btn pressable${activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-address" ? " app-tab-switcher__btn--active" : ""}`}
             onClick={openWallet}
             onPointerEnter={prefetchWalletModal}
             onFocus={prefetchWalletModal}
@@ -13235,6 +13262,7 @@ export default function App() {
         maybeInboxMessage={maybeInboxMessage}
         messagesUnreadCount={messagesUnreadCount}
         openWalletBounties={openWalletBounties}
+        openWalletAddress={openWalletAddress}
         pendingCalendarInvites={pendingCalendarInvites}
         setDmUnreadCount={setDmUnreadCount}
         setSettings={setSettings}

@@ -93,6 +93,13 @@ function normalizeLightningAddressProvider(
   return value === "npub.cash" || value === "none" || value === "solife.me" ? value : fallback;
 }
 
+function normalizeSolifeLightningAddress(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed || /\s/.test(trimmed) || !trimmed.includes("@")) return "";
+  return trimmed.length <= 254 ? trimmed : "";
+}
+
 export function useSettingsSync(): readonly [Settings, SetSettingsFn];
 export function useSettingsSync(options: UseSettingsSyncOptions): UseSettingsSyncResult;
 export function useSettingsSync(
@@ -162,6 +169,7 @@ export function useSettingsSync(
         parsed?.lightningAddressProvider,
         legacyLightningAddressProvider,
       );
+      const solifeLightningAddress = normalizeSolifeLightningAddress(parsed?.solifeLightningAddress);
       const npubCashLightningAddressEnabled = lightningAddressProvider !== "none";
       const npubCashAutoClaim = lightningAddressProvider === "npub.cash" && parsed?.npubCashAutoClaim !== false;
       const fileStorageServer =
@@ -289,6 +297,7 @@ export function useSettingsSync(
           : defaultEncryptedFileServers(),
         walletMintBackupEnabled,
         lightningAddressProvider,
+        solifeLightningAddress,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: lightningAddressProvider === "npub.cash" ? npubCashAutoClaim : false,
         cloudBackupsEnabled: parsed?.cloudBackupsEnabled === true,
@@ -328,6 +337,7 @@ export function useSettingsSync(
         fileServers: defaultPublicFileServers(),
         encryptedFileServers: defaultEncryptedFileServers(),
         lightningAddressProvider: "solife.me",
+        solifeLightningAddress: "",
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: false,
         cloudBackupsEnabled: false,
@@ -447,6 +457,7 @@ export function useSettingsSync(
         next.walletPrimaryCurrency = "sat";
       }
       next.walletDenominationDisplay = normalizeWalletDenominationDisplay(next.walletDenominationDisplay);
+      next.solifeLightningAddress = normalizeSolifeLightningAddress(next.solifeLightningAddress);
       next.lightningAddressProvider = normalizeLightningAddressProvider(
         next.lightningAddressProvider,
         next.npubCashLightningAddressEnabled === false ? "none" : "solife.me",

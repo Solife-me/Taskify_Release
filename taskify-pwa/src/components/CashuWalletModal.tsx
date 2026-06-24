@@ -41,10 +41,6 @@ import {
 } from "../wallet/npubCash";
 import {
   SOLIFE_LIGHTNING_ADDRESS_DOMAIN,
-  claimSolifeCustomAddress,
-  fetchSolifeAccount,
-  fetchSolifeConfig,
-  updateSolifeLightningAddressMint,
 } from "../wallet/solife";
 import { ActionSheet } from "./ActionSheet";
 import type { Contact } from "../lib/contacts";
@@ -217,6 +213,7 @@ const PaymentRequestFulfillSheet = lazy(() =>
 export default function CashuWalletModal({
   open,
   onClose,
+  onOpenAddress,
   onOpenBounties,
   page = "wallet",
   showTabSwitcher = true,
@@ -226,6 +223,7 @@ export default function CashuWalletModal({
   walletDenominationDisplay,
   setWalletPrimaryCurrency,
   lightningAddressProvider = "solife.me",
+  solifeLightningAddress = "",
   npubCashAutoClaim,
   sentTokenStateChecksEnabled,
   paymentRequestsEnabled,
@@ -253,6 +251,7 @@ export default function CashuWalletModal({
 }: {
   open: boolean;
   onClose: () => void;
+  onOpenAddress?: () => void;
   onOpenBounties?: () => void;
   page?: "wallet" | "contacts" | "chat";
   showTabSwitcher?: boolean;
@@ -262,6 +261,7 @@ export default function CashuWalletModal({
   walletDenominationDisplay: "bitcoin-symbol" | "sat";
   setWalletPrimaryCurrency: (currency: "sat" | "usd") => void;
   lightningAddressProvider?: "solife.me" | "npub.cash" | "none";
+  solifeLightningAddress?: string;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   sentTokenStateChecksEnabled: boolean;
@@ -303,6 +303,8 @@ export default function CashuWalletModal({
   const lightningAddressEnabled = activeLightningAddressProvider !== "none";
   const npubCashClaimEnabled = activeLightningAddressProvider === "npub.cash";
   const solifeLightningAddressEnabled = activeLightningAddressProvider === "solife.me";
+  const selectedSolifeLightningAddress =
+    typeof solifeLightningAddress === "string" ? solifeLightningAddress.trim().toLowerCase() : "";
   const nip17TimestampMode: "random" | "now" = (() => {
     try {
       const value = (kvStorage.getItem("taskify.nip17.timestamp") || "").trim().toLowerCase();
@@ -796,18 +798,11 @@ export default function CashuWalletModal({
   const [npubCashIdentityError, setNpubCashIdentityError] = useState<string | null>(null);
   const [npubCashClaimStatus, setNpubCashClaimStatus] = useState<"idle" | "checking" | "success" | "error">("idle");
   const [npubCashClaimMessage, setNpubCashClaimMessage] = useState("");
-  const [solifeConfig, setSolifeConfig] = useState<any>(null);
-  const [solifeCustomHandle, setSolifeCustomHandle] = useState("");
-  const [solifeCustomStatus, setSolifeCustomStatus] = useState<"idle" | "loading" | "purchasing" | "success" | "error">("idle");
-  const [solifeCustomMessage, setSolifeCustomMessage] = useState("");
-  const [solifeCustomAddress, setSolifeCustomAddress] = useState("");
-  const [solifeMintDraft, setSolifeMintDraft] = useState("");
-  const [solifeMintUrl, setSolifeMintUrl] = useState("");
-  const [solifeMintOverride, setSolifeMintOverride] = useState(false);
-  const [solifeMintStatus, setSolifeMintStatus] = useState<"idle" | "loading" | "saving" | "success" | "error">("idle");
-  const [solifeMintMessage, setSolifeMintMessage] = useState("");
   const deriveDefaultLightningAddress = useCallback(() => {
     if (!lightningAddressEnabled) return "";
+    if (solifeLightningAddressEnabled && selectedSolifeLightningAddress) {
+      return selectedSolifeLightningAddress;
+    }
     if (npubCashIdentity?.address) return npubCashIdentity.address;
     const storedSk = nostrSkSync();
     if (!storedSk) return "";
@@ -818,7 +813,12 @@ export default function CashuWalletModal({
     } catch {
       return "";
     }
-  }, [lightningAddressEnabled, npubCashIdentity?.address, solifeLightningAddressEnabled]);
+  }, [
+    lightningAddressEnabled,
+    npubCashIdentity?.address,
+    selectedSolifeLightningAddress,
+    solifeLightningAddressEnabled,
+  ]);
   const {
     readNip51ContactsMigrated,
     persistNip51ContactsMigrated,
@@ -1946,177 +1946,6 @@ export default function CashuWalletModal({
   });
 
   useEffect(() => {
-    if (!open || !solifeLightningAddressEnabled) return;
-    let cancelled = false;
-    const loadSolife = async () => {
-      setSolifeCustomStatus((current) => (current === "purchasing" ? current : "loading"));
-      setSolifeMintStatus((current) => (current === "saving" ? current : "loading"));
-      try {
-        const config = await fetchSolifeConfig();
-        if (cancelled) return;
-        setSolifeConfig(config);
-        setSolifeMintUrl(config.mintUrl || "");
-        setSolifeMintOverride(false);
-        setSolifeCustomStatus((current) => (current === "purchasing" ? current : "idle"));
-        const storedSk = nostrSkSync();
-        if (!storedSk) {
-          setSolifeMintStatus("idle");
-          setSolifeMintMessage("");
-          return;
-        }
-        const accountResult = await fetchSolifeAccount(storedSk);
-        if (cancelled) return;
-        setSolifeConfig(accountResult.config);
-        setSolifeMintUrl(accountResult.account.lightningAddressMintUrl || accountResult.config.mintUrl || "");
-        setSolifeMintOverride(accountResult.account.lightningAddressMintOverride === true);
-        setSolifeMintDraft(
-          accountResult.account.lightningAddressMintOverride ? accountResult.account.lightningAddressMintUrl || "" : "",
-        );
-        setSolifeMintStatus("idle");
-        setSolifeMintMessage("");
-      } catch (err: any) {
-        if (cancelled) return;
-        setSolifeCustomStatus((current) => (current === "purchasing" ? current : "error"));
-        setSolifeCustomMessage(err?.message || "Unable to load Solife address pricing.");
-        setSolifeMintStatus((current) => (current === "saving" ? current : "error"));
-        setSolifeMintMessage(err?.message || "Unable to load Solife mint settings.");
-      }
-    };
-    void loadSolife();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, solifeLightningAddressEnabled]);
-
-  const handlePurchaseSolifeCustomAddress = useCallback(async () => {
-    if (!solifeLightningAddressEnabled) return;
-    const handle = solifeCustomHandle.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9_-]{1,31}$/.test(handle)) {
-      setSolifeCustomStatus("error");
-      setSolifeCustomMessage("Handle must be 2-32 characters using lowercase letters, numbers, _ or -.");
-      return;
-    }
-    const storedSk = nostrSkSync();
-    if (!storedSk) {
-      setSolifeCustomStatus("error");
-      setSolifeCustomMessage("Add your Taskify Nostr key in Settings → Nostr before claiming a Solife address.");
-      return;
-    }
-
-    setSolifeCustomStatus("purchasing");
-    setSolifeCustomMessage("Checking Solife address pricing...");
-    setSolifeCustomAddress("");
-
-    let createdFeeToken = "";
-    let createdFeeTokenMint = "";
-    let createdFeeTokenProofs: Proof[] = [];
-
-    try {
-      const config = solifeConfig || (await fetchSolifeConfig());
-      setSolifeConfig(config);
-      const feeSats = Math.max(0, Math.floor(Number(config.customAddressPriceSats) || 0));
-
-      if (feeSats > 0) {
-        const paymentMint = config.mintUrl;
-        setSolifeCustomMessage(`Creating ${formatSatAmount(feeSats)} fee token from ${paymentMint}...`);
-        const tokenResult = await createSendToken(feeSats, { mintUrl: paymentMint });
-        createdFeeToken = tokenResult.token;
-        createdFeeTokenMint = tokenResult.mintUrl;
-        createdFeeTokenProofs = tokenResult.proofs || [];
-        setHistory((history) => [
-          buildHistoryEntry({
-            id: `solife-custom-fee-${Date.now()}`,
-            summary: `Solife address fee for ${handle}@${SOLIFE_LIGHTNING_ADDRESS_DOMAIN}`,
-            detail: createdFeeToken,
-            detailKind: "token",
-            revertToken: createdFeeToken,
-            type: "ecash",
-            direction: "out",
-            amountSat: feeSats,
-            mintUrl: createdFeeTokenMint,
-            tokenState: createdFeeTokenProofs.length
-              ? {
-                  mintUrl: createdFeeTokenMint,
-                  proofs: createdFeeTokenProofs.map((proof) => {
-                    const stored: StoredProofForState = {
-                      secret: proof.secret,
-                      amount: proof.amount,
-                      id: proof.id,
-                      C: proof.C,
-                    };
-                    if (proof.witness) stored.witness = proof.witness;
-                    const y = computeProofY(proof.secret);
-                    if (y) stored.y = y;
-                    return stored;
-                  }),
-                }
-              : undefined,
-          }),
-          ...history,
-        ]);
-      }
-
-      setSolifeCustomMessage(`Claiming ${handle}@${SOLIFE_LIGHTNING_ADDRESS_DOMAIN}...`);
-      const result = await claimSolifeCustomAddress(storedSk, {
-        handle,
-        token: createdFeeToken,
-        relays: defaultNostrRelays,
-      });
-      setSolifeCustomAddress(result.address.address);
-      setSolifeCustomHandle("");
-      setSolifeCustomStatus("success");
-      setSolifeCustomMessage(`Claimed ${result.address.address}`);
-      showToast(`claimed ${result.address.address}`, 3000);
-    } catch (err: any) {
-      setSolifeCustomStatus("error");
-      const tokenNote = createdFeeToken
-        ? " The fee token was saved to wallet history in case you need to redeem it back."
-        : "";
-      setSolifeCustomMessage(`${err?.message || "Unable to claim Solife address."}${tokenNote}`);
-    }
-  }, [
-    buildHistoryEntry,
-    createSendToken,
-    defaultNostrRelays,
-    setHistory,
-    showToast,
-    solifeConfig,
-    solifeCustomHandle,
-    solifeLightningAddressEnabled,
-  ]);
-
-  const handleSaveSolifeMint = useCallback(
-    async (useDefault = false) => {
-      if (!solifeLightningAddressEnabled) return;
-      const storedSk = nostrSkSync();
-      if (!storedSk) {
-        setSolifeMintStatus("error");
-        setSolifeMintMessage("Add your Taskify Nostr key in Settings → Nostr before changing your Solife mint.");
-        return;
-      }
-      const nextMintUrl = useDefault ? null : solifeMintDraft.trim() || null;
-      setSolifeMintStatus("saving");
-      setSolifeMintMessage(useDefault ? "Resetting to Solife default mint..." : "Saving Solife mint...");
-      try {
-        const result = await updateSolifeLightningAddressMint(storedSk, nextMintUrl);
-        setSolifeConfig(result.config);
-        setSolifeMintUrl(result.mintUrl);
-        setSolifeMintOverride(result.mintOverride);
-        setSolifeMintDraft(result.mintOverride ? result.mintUrl : "");
-        setSolifeMintStatus("success");
-        setSolifeMintMessage(
-          result.mintOverride ? `Using ${result.mintUrl} for your Solife address.` : "Using the Solife default mint.",
-        );
-        showToast("Solife mint updated", 2500);
-      } catch (err: any) {
-        setSolifeMintStatus("error");
-        setSolifeMintMessage(err?.message || "Unable to update your Solife mint.");
-      }
-    },
-    [showToast, solifeLightningAddressEnabled, solifeMintDraft],
-  );
-
-  useEffect(() => {
     if (!open || !sentTokenStateChecksEnabled) {
       initialTokenCheckIdsRef.current.clear();
       return;
@@ -2336,13 +2165,23 @@ export default function CashuWalletModal({
     }
     try {
       const identity = deriveNpubCashIdentity(storedSk, { domain: providerDomain });
-      setNpubCashIdentity({ npub: identity.npub, address: identity.address });
+      setNpubCashIdentity({
+        npub: identity.npub,
+        address: solifeLightningAddressEnabled && selectedSolifeLightningAddress
+          ? selectedSolifeLightningAddress
+          : identity.address,
+      });
       setNpubCashIdentityError(null);
     } catch (err: any) {
       setNpubCashIdentity(null);
       setNpubCashIdentityError(err?.message || `Unable to derive ${providerDomain} address.`);
     }
-  }, [lightningAddressEnabled, open, solifeLightningAddressEnabled]);
+  }, [
+    lightningAddressEnabled,
+    open,
+    selectedSolifeLightningAddress,
+    solifeLightningAddressEnabled,
+  ]);
 
   useEffect(() => {
     if (
@@ -4921,6 +4760,11 @@ export default function CashuWalletModal({
               {onOpenBounties && (
                 <button className="ghost-button button-sm pressable" onClick={onOpenBounties}>
                   Bounties
+                </button>
+              )}
+              {onOpenAddress && (
+                <button className="ghost-button button-sm pressable" onClick={onOpenAddress}>
+                  Address
                 </button>
               )}
             </div>
