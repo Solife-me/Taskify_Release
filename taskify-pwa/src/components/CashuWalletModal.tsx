@@ -6350,9 +6350,13 @@ export default function CashuWalletModal({
                           const amountLabel = historyEntry
                             ? formatHistoryAmount(historyEntry)
                             : paymentAmount != null
-                              ? paymentUnit === "sat"
-                                ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)), { sign: msg.isIncoming ? "+" : "−" })
-                                : `${msg.isIncoming ? "+" : "−"}${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                              ? (() => {
+                                  const amountText =
+                                    paymentUnit === "sat"
+                                      ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)))
+                                      : `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`;
+                                  return msg.isIncoming ? amountText : `(${amountText})`;
+                                })()
                               : null;
                           const fiatValue =
                             historyEntry?.fiatValueUsd != null

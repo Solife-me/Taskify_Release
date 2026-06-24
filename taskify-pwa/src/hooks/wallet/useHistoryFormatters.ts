@@ -52,8 +52,8 @@ export function useHistoryFormatters(opts: UseHistoryFormattersOptions) {
   const formatHistoryAmount = useCallback(
     (entry: HistoryItem) => {
       if (entry.amountSat == null) return "";
-      const prefix = entry.direction === "out" ? "−" : "+";
-      return formatSatAmount(entry.amountSat, { sign: prefix });
+      const amount = formatSatAmount(entry.amountSat);
+      return entry.direction === "out" ? `(${amount})` : amount;
     },
     [formatSatAmount],
   );
