@@ -1,12 +1,22 @@
+function recurrenceSeriesFingerprint(rule) {
+    if (!rule)
+        return "";
+    const seriesRule = { ...rule };
+    delete seriesRule.untilISO;
+    return JSON.stringify(seriesRule);
+}
 export function tasksInSameSeries(a, b) {
-    if (a.seriesId && b.seriesId)
-        return a.seriesId === b.seriesId;
-    return (a.boardId === b.boardId &&
-        a.title === b.title &&
+    if (a.boardId !== b.boardId)
+        return false;
+    const aSeriesId = a.seriesId || a.id;
+    const bSeriesId = b.seriesId || b.id;
+    if ((a.seriesId || b.seriesId) && aSeriesId === bSeriesId)
+        return true;
+    return (a.title === b.title &&
         a.note === b.note &&
         !!a.recurrence &&
         !!b.recurrence &&
-        JSON.stringify(a.recurrence) === JSON.stringify(b.recurrence));
+        recurrenceSeriesFingerprint(a.recurrence) === recurrenceSeriesFingerprint(b.recurrence));
 }
 export function ensureWeekRecurrencesForCurrentWeek(options) {
     const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), } = options;

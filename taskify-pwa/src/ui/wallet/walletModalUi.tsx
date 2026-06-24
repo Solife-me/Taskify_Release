@@ -448,6 +448,7 @@ export function QrCodeCard({
   value,
   label,
   copyLabel = "Copy",
+  onCopy,
   extraActions,
   size = 320,
   className,
@@ -455,10 +456,12 @@ export function QrCodeCard({
   flat = false,
   enableNut16Animation = false,
   hideCopyButton = false,
+  copyOnQrClick = false,
 }: {
   value: string;
   label?: string;
   copyLabel?: string;
+  onCopy?: () => void | Promise<void>;
   extraActions?: React.ReactNode;
   size?: number;
   className?: string;
@@ -466,6 +469,7 @@ export function QrCodeCard({
   flat?: boolean;
   enableNut16Animation?: boolean;
   hideCopyButton?: boolean;
+  copyOnQrClick?: boolean;
 }) {
   const trimmed = value?.trim();
   const [animSpeed, setAnimSpeed] = useState<"S" | "M" | "F">("F");
@@ -509,7 +513,11 @@ export function QrCodeCard({
 
   async function handleCopy() {
     try {
-      await navigator.clipboard?.writeText(trimmed);
+      if (onCopy) {
+        await onCopy();
+      } else {
+        await navigator.clipboard?.writeText(trimmed);
+      }
       setCopied(true);
     } catch (e) {
       console.warn("Copy failed", e);
@@ -541,6 +549,19 @@ export function QrCodeCard({
   const isQrTooLong = qrByteLength > 2953;
 
   const showControls = !!animation && animation.frames.length > 1;
+  const qrCanvasClass = [
+    "wallet-qr-card__canvas",
+    copyOnQrClick ? "wallet-qr-card__canvas--pressable pressable" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const qrCanvasContent = isQrTooLong ? (
+    <div className="wallet-qr-card__fallback" role="status">
+      QR code unavailable
+    </div>
+  ) : (
+    <QRCodeCanvas value={qrValue} size={size} includeMargin={false} className="wallet-qr-card__qr" />
+  );
 
   return (
     <div className={classes.join(" ")}>
@@ -570,15 +591,20 @@ export function QrCodeCard({
         </div>
       )}
       <div className="wallet-qr-card__code" aria-live="polite">
-        <div className="wallet-qr-card__canvas" aria-hidden={isQrTooLong ? undefined : true}>
-          {isQrTooLong ? (
-            <div className="wallet-qr-card__fallback" role="status">
-              QR code unavailable
-            </div>
-          ) : (
-            <QRCodeCanvas value={qrValue} size={size} includeMargin={false} className="wallet-qr-card__qr" />
-          )}
-        </div>
+        {copyOnQrClick ? (
+          <button
+            type="button"
+            className={qrCanvasClass}
+            aria-label={`Copy ${(label || "code").toLowerCase()}`}
+            onClick={handleCopy}
+          >
+            {qrCanvasContent}
+          </button>
+        ) : (
+          <div className={qrCanvasClass} aria-hidden={isQrTooLong ? undefined : true}>
+            {qrCanvasContent}
+          </div>
+        )}
       </div>
       {isQrTooLong && (
         <div className="wallet-qr-card__helper" role="status">

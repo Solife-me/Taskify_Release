@@ -9,6 +9,7 @@ import {
 } from "react";
 import { formatMintDisplayName } from "../../ui/wallet/walletModalUi";
 import { normalizeMintUrl } from "../../wallet/cashuProofHelpers";
+import type { FormatSatAmountOptions } from "../../wallet/denomination";
 import type { MintEntry } from "./useMintBackup";
 
 export type MintInfo = {
@@ -35,6 +36,7 @@ export type SwapOptionMeta = {
 
 export type UseMintSelectionOptions = {
   activeMintInfo?: MintInfo | null;
+  formatSatAmount: (amount: number, options?: FormatSatAmountOptions) => string;
   hasNwcConnection: boolean;
   mintEntries: MintEntry[];
   mintUrl?: string | null;
@@ -72,6 +74,7 @@ async function fetchWithTimeout(
 
 export function useMintSelection({
   activeMintInfo,
+  formatSatAmount,
   hasNwcConnection,
   mintEntries,
   mintUrl,
@@ -87,8 +90,6 @@ export function useMintSelection({
 }: UseMintSelectionOptions) {
   const [mintInfoByUrl, setMintInfoByUrl] = useState<Record<string, MintInfo>>({});
   const pendingMintInfoRef = useRef<Set<string>>(new Set());
-  const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
-
   const ensureMintInfo = useCallback(
     async (url: string) => {
       const normalized = normalizeMintUrl(url);
@@ -222,7 +223,7 @@ export function useMintSelection({
         const label = alias || "NWC wallet";
         const balanceLabel =
           nwcBalanceSats != null
-            ? `${satFormatter.format(nwcBalanceSats)} sat available`
+            ? `${formatSatAmount(nwcBalanceSats)} available`
             : "Balance unknown";
         return { label, balanceLabel };
       }
@@ -231,9 +232,9 @@ export function useMintSelection({
       const fallbackName = entry ? formatMintDisplayName(entry.url) : formatMintDisplayName(value);
       const label = info?.name || fallbackName;
       const balance = entry?.balance ?? 0;
-      return { label, balanceLabel: `${satFormatter.format(balance)} sat available` };
+      return { label, balanceLabel: `${formatSatAmount(balance)} available` };
     },
-    [hasNwcConnection, mintEntriesByNormalized, mintInfoByUrl, nwcAlias, nwcBalanceSats, satFormatter],
+    [formatSatAmount, hasNwcConnection, mintEntriesByNormalized, mintInfoByUrl, nwcAlias, nwcBalanceSats],
   );
 
   useEffect(() => {
@@ -300,7 +301,7 @@ export function useMintSelection({
     : "Select mint";
   const selectedMintBalanceLabel =
     selectedMintBalance > 0
-      ? `${satFormatter.format(selectedMintBalance)} sat available`
+      ? `${formatSatAmount(selectedMintBalance)} available`
       : "No eCash stored yet";
 
   return {

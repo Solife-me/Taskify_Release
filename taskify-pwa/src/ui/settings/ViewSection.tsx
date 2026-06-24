@@ -251,19 +251,31 @@ export function ViewSection({
           </div>
           <div>
             <div className="text-sm font-medium mb-1">Open app to</div>
-            <div className="text-xs text-secondary mb-2">Choose whether Taskify launches to your boards or directly into the wallet.</div>
-            <div className="flex gap-2">
+            <div className="text-xs text-secondary mb-2">Choose which tab Taskify opens first.</div>
+            <div className="flex flex-wrap gap-2">
               <button
                 className={pillButtonClass(settings.startupView === "main")}
                 onClick={() => setSettings({ startupView: "main" })}
               >
-                Main view
+                Boards
+              </button>
+              <button
+                className={pillButtonClass(settings.startupView === "upcoming")}
+                onClick={() => setSettings({ startupView: "upcoming" })}
+              >
+                Upcoming
               </button>
               <button
                 className={pillButtonClass(settings.startupView === "wallet")}
                 onClick={() => setSettings({ startupView: "wallet" })}
               >
                 Wallet
+              </button>
+              <button
+                className={pillButtonClass(settings.startupView === "chat")}
+                onClick={() => setSettings({ startupView: "chat" })}
+              >
+                Messages
               </button>
             </div>
           </div>

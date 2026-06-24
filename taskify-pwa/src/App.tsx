@@ -16,6 +16,7 @@ import {
   isExternalCalendarEvent,
   isListLikeBoard,
   normalizeReminderTime,
+  reminderPresetIdForMode,
   reminderPresetToMinutes,
   sanitizeReminderList,
   type Board,
@@ -2816,10 +2817,14 @@ export default function App() {
     startupViewHandledRef.current = true;
     // Do not redirect on startup while onboarding is blocking the app.
     if (isOnboardingActiveRef.current) return;
-    if (settings.startupView === "wallet") {
-      startTransition(() => setActivePage("wallet"));
+    const startupView = settings.startupView;
+    if (startupView === "wallet" || startupView === "upcoming" || startupView === "chat") {
+      if (startupView === "wallet" || startupView === "chat") {
+        prefetchWalletModal();
+      }
+      startTransition(() => setActivePage(startupView));
     }
-  }, [settings.startupView]);
+  }, [prefetchWalletModal, settings.startupView]);
   const { receiveToken } = useCashu();
 
   useEffect(() => {
@@ -6202,14 +6207,15 @@ export default function App() {
   // Documents still carrying only a dataUrl are encrypted and uploaded.
   // Throws if any upload fails — save must not silently fall back to inline payloads.
   async function prepareAttachmentsForPublish(
-    params: { images?: string[]; documents?: TaskDocument[]; boardId: string }
-  ): Promise<{ images: string[] | null; documents: any[] | null }> {
+    params: { images?: string[]; image?: string; documents?: TaskDocument[]; boardId: string }
+  ): Promise<{ images: string[] | null; image: string | null; documents: any[] | null }> {
     const servers = parseFileServers(settings.encryptedFileServers || settings.fileServers);
-    const serverEntry = findServerEntry(servers, settings.fileStorageServer)
+    const serverEntry = findServerEntry(servers, settings.encryptedFileStorageServer)
+      ?? findServerEntry(servers, settings.fileStorageServer)
       ?? servers[0]
       ?? { url: settings.encryptedFileStorageServer, type: "nip96" as const };
 
-    const nextImages = typeof params.images === "undefined" ? null : await Promise.all((params.images || []).map(async (img, index) => {
+    const uploadInlineImage = async (img: string, filename: string): Promise<string> => {
       if (!img || !img.startsWith("data:")) return img; // already a remote URL
       try {
         const { mimeType, bytes } = parseDataUrl(img);
@@ -6217,7 +6223,7 @@ export default function App() {
           boardId: params.boardId,
           data: bytes,
           mimeType,
-          filename: `task-image-${index + 1}`,
+          filename,
           serverEntry,
           nostrSkHex,
         });
@@ -6225,7 +6231,14 @@ export default function App() {
         console.error("[attachments] Failed to encrypt/upload image", err);
         throw new Error(err?.message || "Failed to upload encrypted image attachment.");
       }
-    }));
+    };
+
+    const nextImages = typeof params.images === "undefined"
+      ? null
+      : await Promise.all((params.images || []).map((img, index) => uploadInlineImage(img, `task-image-${index + 1}`)));
+    const nextImage = typeof params.image === "undefined"
+      ? null
+      : (params.image ? await uploadInlineImage(params.image, "event-image") : "");
 
     const nextDocuments = typeof params.documents === "undefined" ? null : await Promise.all((params.documents || []).map(async (doc) => {
       // Remote-first doc already uploaded at attach-time: strip local blobs, keep metadata + remoteUrl
@@ -6255,8 +6268,35 @@ export default function App() {
       }
     }));
 
-    return { images: nextImages, documents: nextDocuments };
+    return { images: nextImages, image: nextImage, documents: nextDocuments };
   }
+
+  const sameStringList = (a?: string[], b?: string[]) => {
+    const aa = a ?? [];
+    const bb = b ?? [];
+    if (aa.length !== bb.length) return false;
+    return aa.every((value, index) => value === bb[index]);
+  };
+
+  const sameDocumentList = (a?: TaskDocument[], b?: TaskDocument[]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+
+  const taskWithPreparedAttachments = (
+    task: Task,
+    prepared: { images: string[] | null; documents: any[] | null },
+  ): Task => ({
+    ...task,
+    ...(prepared.images === null ? {} : { images: prepared.images.length ? prepared.images : undefined }),
+    ...(prepared.documents === null ? {} : { documents: prepared.documents.length ? prepared.documents as TaskDocument[] : undefined }),
+  });
+
+  const calendarEventWithPreparedAttachments = (
+    event: CalendarEvent,
+    prepared: { image: string | null; documents: any[] | null },
+  ): CalendarEvent => ({
+    ...event,
+    ...(prepared.image === null ? {} : { image: prepared.image || undefined }),
+    ...(prepared.documents === null ? {} : { documents: prepared.documents.length ? prepared.documents as TaskDocument[] : undefined }),
+  });
 
   async function maybePublishTask(
     t: Task,
@@ -6308,6 +6348,7 @@ export default function App() {
       documents: t.documents,
       boardId,
     });
+    const taskForPublish = taskWithPreparedAttachments(t, preparedAttachments);
     body.images = preparedAttachments.images;
     body.documents = preparedAttachments.documents;
     body.bounty = (typeof t.bounty === 'undefined') ? null : (normalizedBounty ?? null);
@@ -6331,6 +6372,24 @@ export default function App() {
         nostrIdxRef.current.taskClock.set(bTag, new Map());
       }
       nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+      if (!sameStringList(taskForPublish.images, t.images) || !sameDocumentList(taskForPublish.documents, t.documents)) {
+        setTasks((prev) =>
+          prev.map((current) => {
+            if (current.id !== t.id || current.boardId !== t.boardId) return current;
+            let changed = false;
+            const next: Task = { ...current };
+            if (preparedAttachments.images !== null && sameStringList(current.images, t.images)) {
+              next.images = taskForPublish.images;
+              changed = true;
+            }
+            if (preparedAttachments.documents !== null && sameDocumentList(current.documents, t.documents)) {
+              next.documents = taskForPublish.documents;
+              changed = true;
+            }
+            return changed ? next : current;
+          }),
+        );
+      }
     } finally {
       pendingNostrTasksRef.current.delete(pendingKey);
       clearOptimisticNostrTaskSyncPending(t.id);
@@ -6398,7 +6457,14 @@ export default function App() {
     };
   };
 
-  const buildCanonicalCalendarPayload = async (event: CalendarEvent, options?: { deleted?: boolean; boardId?: string }) => {
+  const buildCanonicalCalendarPayload = async (
+    event: CalendarEvent,
+    options?: {
+      deleted?: boolean;
+      boardId?: string;
+      preparedAttachments?: { image: string | null; documents: any[] | null };
+    },
+  ) => {
     const eventKey = event.eventKey || generateEventKey();
     const deleted = !!options?.deleted;
     const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
@@ -6448,12 +6514,12 @@ export default function App() {
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
     if (event.documents?.length) {
-      const prepared = options?.boardId
-        ? await prepareAttachmentsForPublish({ boardId: options.boardId, documents: event.documents })
-        : { documents: event.documents };
-      if (prepared.documents?.length) base.documents = prepared.documents;
+      const documents = options?.preparedAttachments?.documents ?? event.documents;
+      if (documents?.length) base.documents = documents;
     }
-    if (event.image) base.image = event.image;
+    const preparedImage = options?.preparedAttachments?.image;
+    const publishImage = preparedImage === null || typeof preparedImage === "undefined" ? event.image : preparedImage;
+    if (publishImage) base.image = publishImage;
     if (event.locations?.length) base.locations = event.locations;
     if (event.geohash) base.geohash = event.geohash;
     if (event.participants?.length) base.participants = event.participants;
@@ -6476,7 +6542,14 @@ export default function App() {
     return base;
   };
 
-  const buildViewCalendarPayload = async (event: CalendarEvent, options?: { deleted?: boolean; boardId?: string }) => {
+  const buildViewCalendarPayload = async (
+    event: CalendarEvent,
+    options?: {
+      deleted?: boolean;
+      boardId?: string;
+      preparedAttachments?: { image: string | null; documents: any[] | null };
+    },
+  ) => {
     const deleted = !!options?.deleted;
     const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
     const lastEditedBy = normalizeAgentPubkey(event.lastEditedBy || nostrPK || createdBy) ?? createdBy;
@@ -6524,12 +6597,12 @@ export default function App() {
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
     if (event.documents?.length) {
-      const prepared = options?.boardId
-        ? await prepareAttachmentsForPublish({ boardId: options.boardId, documents: event.documents })
-        : { documents: event.documents };
-      if (prepared.documents?.length) base.documents = prepared.documents;
+      const documents = options?.preparedAttachments?.documents ?? event.documents;
+      if (documents?.length) base.documents = documents;
     }
-    if (event.image) base.image = event.image;
+    const preparedImage = options?.preparedAttachments?.image;
+    const publishImage = preparedImage === null || typeof preparedImage === "undefined" ? event.image : preparedImage;
+    if (publishImage) base.image = publishImage;
     if (event.locations?.length) base.locations = event.locations;
     if (event.geohash) base.geohash = event.geohash;
     if (event.hashtags?.length) base.hashtags = event.hashtags;
@@ -6648,9 +6721,16 @@ export default function App() {
         setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
       }
 
-      const canonicalPayload = await buildCanonicalCalendarPayload(updatedEvent, { boardId });
+      const preparedAttachments = await prepareAttachmentsForPublish({
+        boardId,
+        documents: updatedEvent.documents,
+        image: updatedEvent.image,
+      });
+      const eventWithPreparedAttachments = calendarEventWithPreparedAttachments(updatedEvent, preparedAttachments);
+
+      const canonicalPayload = await buildCanonicalCalendarPayload(eventWithPreparedAttachments, { boardId, preparedAttachments });
       if (!canonicalPayload) return;
-      const viewPayload = await buildViewCalendarPayload(updatedEvent, { boardId });
+      const viewPayload = await buildViewCalendarPayload(eventWithPreparedAttachments, { boardId, preparedAttachments });
       if (!viewPayload) return;
       const canonicalContent = await encryptCalendarPayloadForBoard(
         canonicalPayload,
@@ -6681,6 +6761,27 @@ export default function App() {
         nostrIdxRef.current.calendarClock.set(bTag, new Map());
       }
       nostrIdxRef.current.calendarClock.get(bTag)!.set(updatedEvent.id, createdAt);
+      if (
+        eventWithPreparedAttachments.image !== updatedEvent.image ||
+        !sameDocumentList(eventWithPreparedAttachments.documents, updatedEvent.documents)
+      ) {
+        setCalendarEvents((prev) =>
+          prev.map((current) => {
+            if (current.id !== updatedEvent.id) return current;
+            let changed = false;
+            let next: CalendarEvent = current;
+            if (preparedAttachments.image !== null && current.image === updatedEvent.image) {
+              next = { ...next, image: eventWithPreparedAttachments.image };
+              changed = true;
+            }
+            if (preparedAttachments.documents !== null && sameDocumentList(current.documents, updatedEvent.documents)) {
+              next = { ...next, documents: eventWithPreparedAttachments.documents };
+              changed = true;
+            }
+            return changed ? next : current;
+          }),
+        );
+      }
     } finally {
       pendingNostrCalendarRef.current.delete(pendingKey);
       clearOptimisticNostrCalendarEventSyncPending(event.id);
@@ -8567,6 +8668,14 @@ export default function App() {
         : dateOnlyParts
           ? new Date(dateOnlyParts.year, dateOnlyParts.month - 1, dateOnlyParts.day).toISOString()
           : new Date(rawVoiceDue).toISOString();
+      const reminderMinutes = Array.isArray(ft.reminderMinutesBeforeDue)
+        ? ft.reminderMinutesBeforeDue.filter((value) => typeof value === "number" && Number.isFinite(value))
+        : [];
+      const reminderValues = sanitizeReminderList(
+        reminderMinutes.map((minutes) =>
+          reminderPresetIdForMode(minutes, hasExplicitVoiceTime ? "timed" : "date")
+        ),
+      );
       const task: Task = {
         id: crypto.randomUUID(),
         boardId: ft.boardId ?? targetBoardId,
@@ -8580,6 +8689,12 @@ export default function App() {
         completed: false,
         order: nextOrder,
       };
+      if (reminderValues?.length && task.dueDateEnabled !== false) {
+        task.reminders = reminderValues;
+        if (!hasExplicitVoiceTime) {
+          task.reminderTime = normalizeReminderTime(ft.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+        }
+      }
       if (Array.isArray(ft.subtasks) && ft.subtasks.length) {
         task.subtasks = ft.subtasks
           .map((title) => (typeof title === "string" ? title.trim() : ""))
@@ -9396,7 +9511,8 @@ export default function App() {
     id: string,
     options?: { skipPrompt?: boolean; scope?: "single" | "future" }
   ) {
-    const t = tasks.find(x => x.id === id);
+    const currentTasks = tasksRef.current;
+    const t = currentTasks.find(x => x.id === id);
     if (!t) return;
     const markRecoverableBountyDelete = (task: Task, deletedAtISO: string): Task => ({
       ...task,
@@ -9421,48 +9537,46 @@ export default function App() {
       const nextUntil = new Date(cutoffTime - MS_PER_DAY).toISOString();
       const toPublish: Task[] = [];
       const toDelete: Task[] = [];
-      setTasks(prev => {
-        let changed = false;
-        const next: Task[] = [];
-        for (const task of prev) {
-          if (!task.recurrence || !sameSeries(task, seriesSeed)) {
-            next.push(task);
-            continue;
-          }
-          const dueTime = startOfDay(new Date(task.dueISO)).getTime();
-          if (Number.isNaN(dueTime)) {
-            next.push(task);
-            continue;
-          }
-          if (dueTime >= cutoffTime) {
-            if (task.bounty) {
-              const archived = markRecoverableBountyDelete(task, deletedAtISO);
-              next.push(archived);
-              toPublish.push(archived);
-            } else {
-              toDelete.push(task);
-            }
-            changed = true;
-            continue;
-          }
-          const untilTime = task.recurrence.untilISO
-            ? startOfDay(new Date(task.recurrence.untilISO)).getTime()
-            : null;
-          if (!untilTime || untilTime > cutoffTime - MS_PER_DAY) {
-            const updated: Task = {
-              ...task,
-              seriesId: task.seriesId || seriesId,
-              recurrence: { ...task.recurrence, untilISO: nextUntil },
-            };
-            next.push(updated);
-            toPublish.push(updated);
-            changed = true;
-            continue;
-          }
-          next.push(task);
+      let changed = false;
+      const nextTasks: Task[] = [];
+      for (const task of currentTasks) {
+        if (!task.recurrence || !sameSeries(task, seriesSeed)) {
+          nextTasks.push(task);
+          continue;
         }
-        return changed ? next : prev;
-      });
+        const dueTime = startOfDay(new Date(task.dueISO)).getTime();
+        if (Number.isNaN(dueTime)) {
+          nextTasks.push(task);
+          continue;
+        }
+        if (dueTime >= cutoffTime) {
+          if (task.bounty) {
+            const archived = markRecoverableBountyDelete(task, deletedAtISO);
+            nextTasks.push(archived);
+            toPublish.push(archived);
+          } else {
+            toDelete.push(task);
+          }
+          changed = true;
+          continue;
+        }
+        const untilTime = task.recurrence.untilISO
+          ? startOfDay(new Date(task.recurrence.untilISO)).getTime()
+          : null;
+        if (!untilTime || untilTime > cutoffTime - MS_PER_DAY) {
+          const updated: Task = {
+            ...task,
+            seriesId: task.seriesId || seriesId,
+            recurrence: { ...task.recurrence, untilISO: nextUntil },
+          };
+          nextTasks.push(updated);
+          toPublish.push(updated);
+          changed = true;
+          continue;
+        }
+        nextTasks.push(task);
+      }
+      if (changed) setTasks(nextTasks);
       toPublish.forEach(task => maybePublishTask(task).catch(() => {}));
       toDelete.forEach(task => publishTaskDeleted(task).catch(() => {}));
       if (toPublish.some((task) => isRecoverableBountyTask(task))) {
@@ -12612,6 +12726,7 @@ export default function App() {
           setEditing={setEditing}
           addTaskToBountyList={addTaskToBountyList}
           removeTaskFromBountyList={removeTaskFromBountyList}
+          walletDenominationDisplay={settings.walletDenominationDisplay}
         />
       )}
       {activePage === "settings" && (

@@ -30,7 +30,7 @@ export function LightningSendSheet(props) {
     mintInfoByUrl,
     selectedMintLabel,
     selectedMintBalanceLabel,
-    satFormatter,
+    formatSatAmount,
     lightningInvoiceAmountSat,
     lightningInvoiceAmountSecondaryDisplay,
     normalizedLnInput,
@@ -163,7 +163,7 @@ export function LightningSendSheet(props) {
                 <div className="text-[11px] uppercase tracking-wide text-secondary">Amount</div>
                 <div className="text-3xl font-semibold text-primary">
                   {lightningInvoiceAmountSat != null
-                    ? `${satFormatter.format(lightningInvoiceAmountSat)} SAT`
+                    ? formatSatAmount(lightningInvoiceAmountSat)
                     : "Amount not specified"}
                 </div>
                 {lightningInvoiceAmountSecondaryDisplay && (
@@ -247,7 +247,7 @@ export function LightningSendSheet(props) {
               </div>
               {isLnurlInput && lnurlPayData && (
                 <div className="text-xs text-secondary">
-                  Limits: {Math.ceil(lnurlPayData.minSendable / 1000)} – {Math.floor(lnurlPayData.maxSendable / 1000)} sats
+                  Limits: {formatSatAmount(Math.ceil(lnurlPayData.minSendable / 1000))} – {formatSatAmount(Math.floor(lnurlPayData.maxSendable / 1000))}
                 </div>
               )}
               <button

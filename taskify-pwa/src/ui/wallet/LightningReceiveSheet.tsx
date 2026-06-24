@@ -16,12 +16,13 @@ export function LightningReceiveSheet(props) {
     closeReceiveLightningSheet,
     openReceiveEcashSheet,
     lightningReceiveView,
+    lightningAddressProvider,
     npubCashLightningAddressEnabled,
+    npubCashClaimEnabled,
     npubCashIdentity,
     npubCashClaimStatus,
     handleClaimNpubCash,
     handleCopyLightningAddress,
-    lightningAddressCopied,
     lightningAddressDisplay,
     npubCashClaimMessage,
     npubCashIdentityError,
@@ -46,7 +47,7 @@ export function LightningReceiveSheet(props) {
     activeMintInvoice,
     handleLightningInvoiceBack,
     lightningInvoiceStatusLabel,
-    satFormatter,
+    formatSatAmount,
     invoiceAmountSecondary,
     mintUrl,
   } = props;
@@ -82,29 +83,25 @@ export function LightningReceiveSheet(props) {
                         size={240}
                         flat
                         hideCopyButton
+                        copyOnQrClick
+                        onCopy={handleCopyLightningAddress}
                         className="wallet-qr-card--centered"
                       />
                     </div>
-                    <div className="flex justify-center gap-3">
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable"
-                        onClick={() => {
-                          void handleClaimNpubCash();
-                        }}
-                        disabled={!npubCashLightningAddressEnabled || npubCashClaimStatus === "checking"}
-                      >
-                        {npubCashClaimStatus === "checking" ? "Checking…" : "Redeem"}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable"
-                        onClick={handleCopyLightningAddress}
-                        disabled={!npubCashIdentity?.address}
-                      >
-                        {lightningAddressCopied ? "Copied" : "Copy"}
-                      </button>
-                    </div>
+                    {npubCashClaimEnabled && (
+                      <div className="flex justify-center gap-3">
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable"
+                          onClick={() => {
+                            void handleClaimNpubCash();
+                          }}
+                          disabled={!npubCashLightningAddressEnabled || npubCashClaimStatus === "checking"}
+                        >
+                          {npubCashClaimStatus === "checking" ? "Checking..." : "Redeem"}
+                        </button>
+                      </div>
+                    )}
                     <div className="text-sm font-medium text-primary break-words">
                       {lightningAddressDisplay}
                     </div>
@@ -124,7 +121,8 @@ export function LightningReceiveSheet(props) {
                   </>
                 ) : (
                   <div className="text-sm text-secondary">
-                    {npubCashIdentityError || "Add your Taskify Nostr key to enable npub.cash."}
+                    {npubCashIdentityError ||
+                      `Add your Taskify Nostr key to enable ${lightningAddressProvider === "solife.me" ? "solife.me" : "npub.cash"}.`}
                   </div>
                 )
               ) : (
@@ -254,7 +252,7 @@ export function LightningReceiveSheet(props) {
               <div className="space-y-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-secondary">Amount</span>
-                  <span className="font-semibold">{satFormatter.format(activeMintInvoice.amountSat)} SAT</span>
+                  <span className="font-semibold">{formatSatAmount(activeMintInvoice.amountSat)}</span>
                 </div>
                 {invoiceAmountSecondary && (
                   <div className="flex items-center justify-between text-secondary">

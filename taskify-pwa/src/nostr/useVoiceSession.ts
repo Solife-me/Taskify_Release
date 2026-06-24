@@ -16,6 +16,7 @@ export type TaskCandidate = {
   id: string;
   title: string;
   dueText?: string;
+  reminderText?: string;
   boardId?: string;
   subtasks?: string[];
   status: "draft" | "confirmed" | "dismissed";
@@ -25,9 +26,10 @@ export type TaskOperation = {
   type: "create_task" | "update_task" | "delete_task" | "mark_uncertain";
   title?: string;
   dueText?: string;
+  reminderText?: string;
   subtasks?: string[];
   targetRef?: string;
-  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId" | "subtasks">>;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "reminderText" | "boardId" | "subtasks">>;
 };
 
 export type FinalTask = {
@@ -37,6 +39,8 @@ export type FinalTask = {
   notes?: string;
   subtasks?: string[];
   priority?: 1 | 2 | 3;
+  reminderMinutesBeforeDue?: number[];
+  reminderTime?: string;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,6 +98,7 @@ function applyOperation(candidates: TaskCandidate[], op: TaskOperation): TaskCan
         id: generateId(),
         title: op.title ?? "",
         dueText: op.dueText,
+        reminderText: op.reminderText,
         subtasks: op.subtasks,
         boardId: op.changes?.boardId,
         status: "confirmed",
@@ -111,11 +116,13 @@ function applyOperation(candidates: TaskCandidate[], op: TaskOperation): TaskCan
           ...c,
           ...(op.changes?.title !== undefined ? { title: op.changes.title } : {}),
           ...(op.changes?.dueText !== undefined ? { dueText: op.changes.dueText } : {}),
+          ...(op.changes?.reminderText !== undefined ? { reminderText: op.changes.reminderText } : {}),
           ...(op.changes?.boardId !== undefined ? { boardId: op.changes.boardId } : {}),
           ...(op.changes?.subtasks !== undefined ? { subtasks: op.changes.subtasks } : {}),
           // top-level title/dueText/subtasks fields on the op also apply
           ...(op.title !== undefined ? { title: op.title } : {}),
           ...(op.dueText !== undefined ? { dueText: op.dueText } : {}),
+          ...(op.reminderText !== undefined ? { reminderText: op.reminderText } : {}),
           ...(op.subtasks !== undefined ? { subtasks: op.subtasks } : {}),
         };
       });

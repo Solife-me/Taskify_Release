@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { FormatSatAmountOptions } from "../../wallet/denomination";
 import type { ParsedNwcUri } from "../../wallet/nwc";
 
 type NwcStatus = "idle" | "connecting" | "connected" | "error";
@@ -16,6 +17,7 @@ type NwcInfo = {
 type UseNwcManagerOptions = {
   connectNwc: (uri: string) => Promise<void>;
   disconnectNwc: () => void;
+  formatSatAmount: (amount: number, options?: FormatSatAmountOptions) => string;
   getNwcBalanceMsat: () => Promise<number | null>;
   nwcConnection: ParsedNwcUri | null;
   nwcInfo: NwcInfo | null;
@@ -27,6 +29,7 @@ type UseNwcManagerOptions = {
 export function useNwcManager({
   connectNwc,
   disconnectNwc,
+  formatSatAmount,
   getNwcBalanceMsat,
   nwcConnection,
   nwcInfo,
@@ -107,7 +110,7 @@ export function useNwcManager({
       const latest = await refreshNwcInfo().catch(() => null);
       const balanceMsat = await getNwcBalanceMsat().catch(() => latest?.balanceMsat ?? null);
       if (typeof balanceMsat === "number") {
-        setNwcFeedback(`Balance: ${Math.floor(balanceMsat / 1000)} sats`);
+        setNwcFeedback(`Balance: ${formatSatAmount(Math.floor(balanceMsat / 1000))}`);
       } else {
         setNwcFeedback("Connection OK");
       }
@@ -116,7 +119,7 @@ export function useNwcManager({
     } finally {
       setNwcBusy(false);
     }
-  }, [getNwcBalanceMsat, refreshNwcInfo]);
+  }, [formatSatAmount, getNwcBalanceMsat, refreshNwcInfo]);
 
   const handleNwcDisconnect = useCallback(() => {
     disconnectNwc();

@@ -85,6 +85,7 @@ export interface UsePaymentRequestFlowOptions {
 
   // From useToast
   showToast: (msg: string, ms?: number) => void;
+  formatSatAmount: (amount: number) => string;
 
   // From useContactLookup
   normalizeNip05: (nip05: string | null | undefined) => any;
@@ -151,6 +152,7 @@ export function usePaymentRequestFlow({
   contacts,
   ensurePeerProfile,
   showToast,
+  formatSatAmount,
   normalizeNip05,
   activeP2pkKey,
   amountInputUnitLabel,
@@ -540,7 +542,7 @@ export function usePaymentRequestFlow({
             );
           }
           showToast(
-            `Saved ${entry.amount} sat${entry.amount === 1 ? "" : "s"} token for later redemption.`,
+            `Saved ${formatSatAmount(entry.amount)} token for later redemption.`,
             5000,
           );
           if (!fingerprint) {
@@ -575,7 +577,7 @@ export function usePaymentRequestFlow({
         if (entry.id && currentPaymentRequest?.id === entry.id) {
           setPaymentRequestStatusMessage("Payment received and claimed automatically.");
         }
-        const amountLabel = `${entry.amount} sat${entry.amount === 1 ? "" : "s"}`;
+        const amountLabel = formatSatAmount(entry.amount);
         let senderNip05: string | null = null;
         const normalizedSender = normalizeNostrPubkey(entry.sender);
         const senderHex = normalizedSender ? compressedToRawHex(normalizedSender).toLowerCase() : entry.sender.toLowerCase();
@@ -661,6 +663,7 @@ export function usePaymentRequestFlow({
       contacts,
       currentPaymentRequest,
       fingerprintIncomingToken,
+      formatSatAmount,
       isIncomingPaymentSpent,
       nip05Checks,
       normalizeNip05,

@@ -22,6 +22,10 @@ export type FastingRemindersMode = "weekday" | "random";
 
 // ---- Settings ----
 
+export type StartupView = "main" | "wallet" | "upcoming" | "chat";
+export type LightningAddressProvider = "solife.me" | "npub.cash" | "none";
+export type WalletDenominationDisplay = "bitcoin-symbol" | "sat";
+
 export type Settings = {
   weekStart: Weekday; // 0=Sun, 1=Mon, 6=Sat
   newTaskPosition: "top" | "bottom";
@@ -48,9 +52,10 @@ export type Settings = {
   backgroundAccentIndex?: number | null;
   backgroundBlur: "blurred" | "sharp";
   hideCompletedSubtasks: boolean;
-  startupView: "main" | "wallet";
+  startupView: StartupView;
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
+  walletDenominationDisplay: WalletDenominationDisplay;
   walletSentStateChecksEnabled: boolean;
   walletPaymentRequestsEnabled: boolean;
   walletPaymentRequestsBackgroundChecksEnabled: boolean;
@@ -60,6 +65,7 @@ export type Settings = {
   encryptedFileStorageServer: string;
   fileServers: string; // JSON-serialized FileServerEntry[]
   encryptedFileServers: string; // JSON-serialized FileServerEntry[]
+  lightningAddressProvider: LightningAddressProvider;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;

@@ -847,6 +847,64 @@ test("POST /api/voice/extract applies correction phrases to prior task dueText",
   }
 });
 
+test("POST /api/voice/extract preserves explicit reminder requests", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      tasks: [
+                        {
+                          title: "Remind me to call dentist",
+                          dueText: "tomorrow at 2 PM",
+                          reminderText: "at due time",
+                          subtasks: [],
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "remind me to call dentist tomorrow at 2 PM",
+        candidates: [],
+        sessionDurationSeconds: 10,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.equal(body.operations[0].title, "call dentist");
+    assert.equal(body.operations[0].dueText, "tomorrow at 2 PM");
+    assert.equal(body.operations[0].reminderText, "at due time");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // ── Test 8: POST /api/voice/finalize — 501 when GEMINI_API_KEY missing ──────────
 test("POST /api/voice/finalize returns 501 when GEMINI_API_KEY not configured", async () => {
   const db = new MockD1WithVoice();
@@ -947,6 +1005,77 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
     assert.equal(body.tasks.length, 1, "only confirmed candidates returned");
     assert.equal(body.tasks[0].title, "Call Dentist");
     assert.equal(body.tasks[0].dueISO, "2026-03-25T14:00:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("POST /api/voice/finalize only returns reminders for explicit reminder requests", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [{
+            content: {
+              parts: [{
+                text: JSON.stringify({
+                  tasks: [
+                    {
+                      id: "c1",
+                      title: "Call Dentist",
+                      dueISO: "2026-03-25T14:00:00.000Z",
+                      subtasks: [],
+                      notes: null,
+                      boardId: null,
+                      priority: null,
+                      reminderMinutesBeforeDue: [15],
+                      reminderTime: null,
+                    },
+                    {
+                      id: "c2",
+                      title: "Pay Water Bill",
+                      dueISO: "2026-03-26T17:00:00.000Z",
+                      subtasks: [],
+                      notes: null,
+                      boardId: null,
+                      priority: null,
+                      reminderMinutesBeforeDue: [60],
+                      reminderTime: null,
+                    },
+                  ],
+                }),
+              }],
+            },
+          }],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [
+          { id: "c1", title: "call dentist", dueText: "tomorrow 2pm", reminderText: "15 minutes before", status: "confirmed" },
+          { id: "c2", title: "pay water bill", dueText: "Thursday at 5pm", status: "confirmed" },
+        ],
+        referenceDate: "2026-03-24T18:00:00.000Z",
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.deepEqual(body.tasks[0].reminderMinutesBeforeDue, [15]);
+    assert.equal(body.tasks[1].reminderMinutesBeforeDue, undefined);
   } finally {
     globalThis.fetch = originalFetch;
   }

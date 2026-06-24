@@ -136,6 +136,38 @@ describe("normalizeDocumentList – remote-first documents", () => {
     expect(remote.remoteUrl).toBe("https://cdn.example.com/remote.enc");
     expect(remote.encrypted).toBe(true);
   });
+
+  test("accepts remote-first media attachments", () => {
+    const result = normalizeDocumentList([
+      {
+        id: "image",
+        name: "photo.png",
+        mimeType: "image/png",
+        kind: "png",
+        remoteUrl: "https://cdn.example.com/photo.enc",
+        encrypted: true,
+      },
+      {
+        id: "audio",
+        name: "memo.mp3",
+        mimeType: "audio/mpeg",
+        kind: "mp3",
+        remoteUrl: "https://cdn.example.com/memo.enc",
+        encrypted: true,
+      },
+      {
+        id: "video",
+        name: "clip.mp4",
+        mimeType: "video/mp4",
+        kind: "mp4",
+        remoteUrl: "https://cdn.example.com/clip.enc",
+        encrypted: true,
+      },
+    ]);
+
+    expect(result?.map((doc) => doc.kind)).toEqual(["png", "mp3", "mp4"]);
+    expect(result?.every((doc) => doc.remoteUrl && doc.encrypted === true)).toBe(true);
+  });
 });
 
 describe("normalizeDocumentList – edge cases", () => {

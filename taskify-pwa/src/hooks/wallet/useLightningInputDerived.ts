@@ -1,15 +1,16 @@
 // @ts-nocheck
 import { useMemo } from "react";
-import { estimateInvoiceAmountSat, decodeBolt11Amount, formatMsatAsSat } from "../../wallet/lightning";
+import { estimateInvoiceAmountSat, decodeBolt11Amount } from "../../wallet/lightning";
 import { formatLightningAddressDisplay } from "../../ui/wallet/walletModalUi";
 import { extractDomain } from "../../wallet/walletModalHelpers";
 
 export interface UseLightningInputDerivedOptions {
+  formatSatAmount: (amount: number) => string;
   lnInput: string;
   lnurlPayData: any;
 }
 
-export function useLightningInputDerived({ lnInput, lnurlPayData }: UseLightningInputDerivedOptions) {
+export function useLightningInputDerived({ formatSatAmount, lnInput, lnurlPayData }: UseLightningInputDerivedOptions) {
   const normalizedLnInput = useMemo(() => lnInput.trim().replace(/^lightning:/i, "").trim(), [lnInput]);
   const isLnAddress = useMemo(() => /^[^@\s]+@[^@\s]+$/.test(normalizedLnInput), [normalizedLnInput]);
   const isLnurlInput = useMemo(() => /^lnurl[0-9a-z]+$/i.test(normalizedLnInput), [normalizedLnInput]);
@@ -35,11 +36,11 @@ export function useLightningInputDerived({ lnInput, lnurlPayData }: UseLightning
       if (amountMsat === null) {
         return { message: "Invoice amount: not specified" };
       }
-      return { message: `Invoice amount: ${formatMsatAsSat(amountMsat)}` };
+      return { message: `Invoice amount: ${formatSatAmount(Number(amountMsat / 1000n))}` };
     } catch (err: any) {
       return { error: err?.message || "Unable to decode invoice" };
     }
-  }, [isBolt11Input, normalizedLnInput]);
+  }, [formatSatAmount, isBolt11Input, normalizedLnInput]);
   const lnurlRequiresAmount = useMemo(() => {
     if (!isLnurlInput) return false;
     if (!lnurlPayData) return true;

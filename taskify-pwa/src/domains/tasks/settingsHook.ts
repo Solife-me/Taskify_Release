@@ -15,8 +15,19 @@ import type { ScriptureMemoryFrequency, ScriptureMemorySort } from "../scripture
 import { LS_SETTINGS } from "../storageKeys";
 import { kvStorage } from "../../storage/kvStorage";
 import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
+import {
+  DEFAULT_WALLET_DENOMINATION_DISPLAY,
+  normalizeWalletDenominationDisplay,
+} from "../../wallet/denomination";
 import { CHAT_RETENTION_OPTIONS } from "./settingsTypes";
-import type { ChatMessageRetention, FastingRemindersMode, PushPreferences, Settings } from "./settingsTypes";
+import type {
+  ChatMessageRetention,
+  FastingRemindersMode,
+  LightningAddressProvider,
+  PushPreferences,
+  Settings,
+  StartupView,
+} from "./settingsTypes";
 import type { Board, Weekday } from "./taskTypes";
 import { withBoardOrder } from "./boardUtils";
 
@@ -71,6 +82,17 @@ function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, s
   return boards[0]?.id || "";
 }
 
+function normalizeStartupView(value: unknown): StartupView {
+  return value === "wallet" || value === "upcoming" || value === "chat" ? value : "main";
+}
+
+function normalizeLightningAddressProvider(
+  value: unknown,
+  fallback: LightningAddressProvider = "solife.me",
+): LightningAddressProvider {
+  return value === "npub.cash" || value === "none" || value === "solife.me" ? value : fallback;
+}
+
 export function useSettingsSync(): readonly [Settings, SetSettingsFn];
 export function useSettingsSync(options: UseSettingsSyncOptions): UseSettingsSyncResult;
 export function useSettingsSync(
@@ -113,9 +135,10 @@ export function useSettingsSync(
       if (parsed?.accent === "green") accent = "green";
       else if (parsed?.accent === "background" && backgroundImage && backgroundAccent) accent = "background";
       const hideCompletedSubtasks = parsed?.hideCompletedSubtasks === true;
-      const startupView = parsed?.startupView === "wallet" ? "wallet" : "main";
+      const startupView = normalizeStartupView(parsed?.startupView);
       const walletConversionEnabled = parsed?.walletConversionEnabled !== false;
       const walletPrimaryCurrency = parsed?.walletPrimaryCurrency === "usd" ? "usd" : "sat";
+      const walletDenominationDisplay = normalizeWalletDenominationDisplay(parsed?.walletDenominationDisplay);
       const walletSentStateChecksEnabled = parsed?.walletSentStateChecksEnabled !== false;
       const walletPaymentRequestsEnabled = parsed?.walletPaymentRequestsEnabled !== false;
       const walletPaymentRequestsBackgroundChecksEnabled =
@@ -129,8 +152,18 @@ export function useSettingsSync(
         }
       }
       const walletContactsSyncEnabled = parsed?.walletContactsSyncEnabled !== false;
-      const npubCashLightningAddressEnabled = parsed?.npubCashLightningAddressEnabled !== false;
-      const npubCashAutoClaim = npubCashLightningAddressEnabled && parsed?.npubCashAutoClaim !== false;
+      const legacyLightningAddressProvider: LightningAddressProvider =
+        typeof parsed?.npubCashLightningAddressEnabled === "boolean"
+          ? parsed.npubCashLightningAddressEnabled
+            ? "npub.cash"
+            : "none"
+          : "solife.me";
+      const lightningAddressProvider = normalizeLightningAddressProvider(
+        parsed?.lightningAddressProvider,
+        legacyLightningAddressProvider,
+      );
+      const npubCashLightningAddressEnabled = lightningAddressProvider !== "none";
+      const npubCashAutoClaim = lightningAddressProvider === "npub.cash" && parsed?.npubCashAutoClaim !== false;
       const fileStorageServer =
         normalizeFileServerUrl(
           typeof parsed?.fileStorageServer === "string" && parsed.fileStorageServer.trim()
@@ -239,6 +272,7 @@ export function useSettingsSync(
         startupView,
         walletConversionEnabled,
         walletPrimaryCurrency: walletConversionEnabled ? walletPrimaryCurrency : "sat",
+        walletDenominationDisplay,
         walletSentStateChecksEnabled,
         walletPaymentRequestsEnabled,
         walletPaymentRequestsBackgroundChecksEnabled: walletPaymentRequestsEnabled
@@ -254,8 +288,9 @@ export function useSettingsSync(
           ? parsed.encryptedFileServers.trim()
           : defaultEncryptedFileServers(),
         walletMintBackupEnabled,
+        lightningAddressProvider,
         npubCashLightningAddressEnabled,
-        npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
+        npubCashAutoClaim: lightningAddressProvider === "npub.cash" ? npubCashAutoClaim : false,
         cloudBackupsEnabled: parsed?.cloudBackupsEnabled === true,
         nostrBackupEnabled,
         nostrBackupMetadataEnabled,
@@ -282,6 +317,7 @@ export function useSettingsSync(
         startupView: "main",
         walletConversionEnabled: true,
         walletPrimaryCurrency: "sat",
+        walletDenominationDisplay: DEFAULT_WALLET_DENOMINATION_DISPLAY,
         walletMintBackupEnabled: true,
         walletSentStateChecksEnabled: true,
         walletPaymentRequestsEnabled: true,
@@ -291,8 +327,9 @@ export function useSettingsSync(
         encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
         fileServers: defaultPublicFileServers(),
         encryptedFileServers: defaultEncryptedFileServers(),
+        lightningAddressProvider: "solife.me",
         npubCashLightningAddressEnabled: true,
-        npubCashAutoClaim: true,
+        npubCashAutoClaim: false,
         cloudBackupsEnabled: false,
         nostrBackupEnabled: true,
         nostrBackupMetadataEnabled: true,
@@ -409,8 +446,18 @@ export function useSettingsSync(
       } else if (next.walletPrimaryCurrency !== "usd") {
         next.walletPrimaryCurrency = "sat";
       }
-      if (!next.npubCashLightningAddressEnabled) {
+      next.walletDenominationDisplay = normalizeWalletDenominationDisplay(next.walletDenominationDisplay);
+      next.lightningAddressProvider = normalizeLightningAddressProvider(
+        next.lightningAddressProvider,
+        next.npubCashLightningAddressEnabled === false ? "none" : "solife.me",
+      );
+      if (next.lightningAddressProvider === "none") {
         next.npubCashLightningAddressEnabled = false;
+        next.npubCashAutoClaim = false;
+      } else {
+        next.npubCashLightningAddressEnabled = true;
+      }
+      if (next.lightningAddressProvider !== "npub.cash") {
         next.npubCashAutoClaim = false;
       } else if (next.npubCashAutoClaim !== true && next.npubCashAutoClaim !== false) {
         next.npubCashAutoClaim = true;

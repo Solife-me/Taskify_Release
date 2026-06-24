@@ -22,15 +22,24 @@ export type SeriesTaskLike = {
   reminders?: unknown[];
 };
 
+function recurrenceSeriesFingerprint(rule: RecurrenceLike | undefined): string {
+  if (!rule) return "";
+  const seriesRule = { ...rule };
+  delete seriesRule.untilISO;
+  return JSON.stringify(seriesRule);
+}
+
 export function tasksInSameSeries<TTask extends SeriesTaskLike>(a: TTask, b: TTask): boolean {
-  if (a.seriesId && b.seriesId) return a.seriesId === b.seriesId;
+  if (a.boardId !== b.boardId) return false;
+  const aSeriesId = a.seriesId || a.id;
+  const bSeriesId = b.seriesId || b.id;
+  if ((a.seriesId || b.seriesId) && aSeriesId === bSeriesId) return true;
   return (
-    a.boardId === b.boardId &&
     a.title === b.title &&
     a.note === b.note &&
     !!a.recurrence &&
     !!b.recurrence &&
-    JSON.stringify(a.recurrence) === JSON.stringify(b.recurrence)
+    recurrenceSeriesFingerprint(a.recurrence) === recurrenceSeriesFingerprint(b.recurrence)
   );
 }
 

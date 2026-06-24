@@ -22,6 +22,7 @@ export function useTokenHistoryActions({
   buildHistoryEntry,
   receiveToken,
   showToast,
+  formatSatAmount,
   checkProofStates,
   checkMintQuote,
   claimMint,
@@ -61,7 +62,7 @@ export function useTokenHistoryActions({
         const amt = sumProofAmounts(res.proofs);
         const crossNote = res.crossMint && res.usedMintUrl ? ` • Stored at ${res.usedMintUrl}` : "";
         const successMessage = amt
-          ? `Redeemed ${amt} sat${amt === 1 ? "" : "s"}${crossNote}`
+          ? `Redeemed ${formatSatAmount(amt)}${crossNote}`
           : `Redeemed token${crossNote}`;
         const tokenState = deriveSpentHistoryTokenStateFromToken(item.revertToken, Date.now());
         setHistory((prev) => {
@@ -113,7 +114,7 @@ export function useTokenHistoryActions({
         }));
       }
     },
-    [buildHistoryEntry, mintUrl, receiveToken, showToast],
+    [buildHistoryEntry, formatSatAmount, mintUrl, receiveToken, showToast],
   );
 
   const handleMintQuoteClaimSuccess = useCallback(
@@ -136,9 +137,9 @@ export function useTokenHistoryActions({
         delete next[historyId];
         return next;
       });
-      showToast(`received ${amountSat} sats`, 3500);
+      showToast(`received ${formatSatAmount(amountSat)}`, 3500);
     },
-    [buildHistoryEntry, setHistory, setHistoryMintQuoteStates, showToast],
+    [buildHistoryEntry, formatSatAmount, setHistory, setHistoryMintQuoteStates, showToast],
   );
 
   const claimMintQuoteById = useCallback(
@@ -401,7 +402,7 @@ export function useTokenHistoryActions({
             delete next[item.id];
             return next;
           });
-          showToast(`received ${mintQuote.amount} sats`, 3500);
+          showToast(`received ${formatSatAmount(mintQuote.amount)}`, 3500);
           return;
         }
         const normalizedState =
@@ -447,7 +448,7 @@ export function useTokenHistoryActions({
         }));
       }
     },
-    [buildHistoryEntry, checkMintQuote, claimMint, mintUrl, setHistory, setHistoryMintQuoteStates, showToast],
+    [buildHistoryEntry, checkMintQuote, claimMint, formatSatAmount, mintUrl, setHistory, setHistoryMintQuoteStates, showToast],
   );
 
   const clearProofStateSubscriptions = useCallback(() => {
