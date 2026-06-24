@@ -52,7 +52,7 @@ export function EcashSendSheet(props) {
     handleCopyNutToken,
     nutTokenCopied,
     lastSendTokenAmount,
-    satFormatter,
+    formatSatAmount,
     walletConversionEnabled,
     btcUsdPrice,
     formatUsdAmount,
@@ -385,7 +385,7 @@ export function EcashSendSheet(props) {
               {lastSendTokenAmount != null && (
                 <div className="flex items-center justify-between">
                   <span className="text-secondary">Amount</span>
-                  <span className="font-semibold">{satFormatter.format(lastSendTokenAmount)} SAT</span>
+                  <span className="font-semibold">{formatSatAmount(lastSendTokenAmount)}</span>
                 </div>
               )}
               {walletConversionEnabled && btcUsdPrice != null && btcUsdPrice > 0 && lastSendTokenAmount != null && (

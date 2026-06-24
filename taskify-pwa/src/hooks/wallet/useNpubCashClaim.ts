@@ -14,6 +14,7 @@ import {
 
 interface UseNpubCashClaimOptions {
   buildHistoryEntry: (opts: any) => any;
+  formatSatAmount: (amount: number) => string;
   mintUrl: string | null;
   npubCashLightningAddressEnabled: boolean;
   receiveToken: (token: string) => Promise<any>;
@@ -31,6 +32,7 @@ interface UseNpubCashClaimOptions {
 export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
   const {
     buildHistoryEntry,
+    formatSatAmount,
     mintUrl,
     npubCashLightningAddressEnabled,
     receiveToken,
@@ -103,14 +105,14 @@ export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
           : 0;
         if (reportedBalance > 0) {
           setNpubCashClaimMessage(
-            `npub.cash reports ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"} ready to claim…`,
+            `npub.cash reports ${formatSatAmount(reportedBalance)} ready to claim…`,
           );
         }
         if (!tokens.length) {
           if (reportedBalance > 0) {
             setNpubCashClaimStatus("error");
             setNpubCashClaimMessage(
-              `npub.cash reported ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"}, but no token was returned. Please try again later.`,
+              `npub.cash reported ${formatSatAmount(reportedBalance)}, but no token was returned. Please try again later.`,
             );
           } else {
             setNpubCashClaimStatus("idle");
@@ -199,17 +201,17 @@ export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
             ? `Stored at ${Array.from(crossMintMints).join(", ")}`
             : "";
           const reportNote =
-            reportedBalance > 0 ? `npub.cash reported ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"}` : "";
+            reportedBalance > 0 ? `npub.cash reported ${formatSatAmount(reportedBalance)}` : "";
           const messageParts: string[] = [];
           if (successCount > 0) {
             const satText = totalRedeemedSat
-              ? ` for ${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"}`
+              ? ` for ${formatSatAmount(totalRedeemedSat)}`
               : "";
             messageParts.push(`Redeemed ${successCount} token${successCount === 1 ? "" : "s"}${satText}`);
           }
           if (savedForLaterCount > 0) {
             const satText = totalSavedSat
-              ? ` totaling ${totalSavedSat} sat${totalSavedSat === 1 ? "" : "s"}`
+              ? ` totaling ${formatSatAmount(totalSavedSat)}`
               : "";
             messageParts.push(
               `${savedForLaterCount} token${savedForLaterCount === 1 ? "" : "s"} saved for later redemption${satText}`,
@@ -222,7 +224,7 @@ export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
           let toastMessage: string;
           if (successCount > 0) {
             toastMessage = totalRedeemedSat
-              ? `received ${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"}`
+              ? `received ${formatSatAmount(totalRedeemedSat)}`
               : `received ${successCount} token${successCount === 1 ? "" : "s"}`;
           } else if (savedForLaterCount > 0) {
             toastMessage = `saved ${savedForLaterCount} token${savedForLaterCount === 1 ? "" : "s"} for later`;
@@ -233,7 +235,7 @@ export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
           const detailParts = [`Address ${identity.address}`];
           if (identity.npub) detailParts.push(`npub ${identity.npub}`);
           if (totalRedeemedSat) {
-            detailParts.push(`${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"}`);
+            detailParts.push(formatSatAmount(totalRedeemedSat));
           }
           if (savedForLaterCount) {
             detailParts.push(`Saved ${savedForLaterCount} token${savedForLaterCount === 1 ? "" : "s"} for later`);
@@ -242,7 +244,7 @@ export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
             detailParts.push(`Stored at ${Array.from(crossMintMints).join(", ")}`);
           }
           if (reportedBalance > 0) {
-            detailParts.push(`npub.cash reported ${reportedBalance} sat${reportedBalance === 1 ? "" : "s"}`);
+            detailParts.push(`npub.cash reported ${formatSatAmount(reportedBalance)}`);
           }
           const summary = totalRedeemedSat
             ? `Claimed ${totalRedeemedSat} sat${totalRedeemedSat === 1 ? "" : "s"} via npub.cash`
@@ -297,6 +299,7 @@ export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
     },
     [
       buildHistoryEntry,
+      formatSatAmount,
       mintUrl,
       npubCashLightningAddressEnabled,
       receiveToken,

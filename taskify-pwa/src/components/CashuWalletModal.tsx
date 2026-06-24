@@ -19,7 +19,7 @@ import { EcashGlyph } from "./EcashGlyph";
 import {
   Nut16Collector,
 } from "../wallet/nut16";
-import { decodeBolt11Amount, formatMsatAsSat } from "../wallet/lightning";
+import { decodeBolt11Amount } from "../wallet/lightning";
 
 
 import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
@@ -223,6 +223,7 @@ export default function CashuWalletModal({
   showBottomNav = false,
   walletConversionEnabled,
   walletPrimaryCurrency,
+  walletDenominationDisplay,
   setWalletPrimaryCurrency,
   lightningAddressProvider = "solife.me",
   npubCashAutoClaim,
@@ -258,6 +259,7 @@ export default function CashuWalletModal({
   showBottomNav?: boolean;
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
+  walletDenominationDisplay: "bitcoin-symbol" | "sat";
   setWalletPrimaryCurrency: (currency: "sat" | "usd") => void;
   lightningAddressProvider?: "solife.me" | "npub.cash" | "none";
   npubCashLightningAddressEnabled: boolean;
@@ -699,6 +701,16 @@ export default function CashuWalletModal({
   } = useWalletFlowState();
 
   const {
+    formatSatAmount,
+    satDisplayUnitLabel,
+    satFormatter,
+    satInputUnitLabel,
+    usdFormatterLarge,
+    usdFormatterSmall,
+    relativeTimeFormatter,
+  } = useWalletFormatters(walletDenominationDisplay);
+
+  const {
     showNwcManager,
     openNwcManager,
     closeNwcManager,
@@ -716,6 +728,7 @@ export default function CashuWalletModal({
   } = useNwcManager({
     connectNwc,
     disconnectNwc,
+    formatSatAmount,
     getNwcBalanceMsat,
     nwcConnection,
     nwcInfo,
@@ -776,6 +789,7 @@ export default function CashuWalletModal({
     setHistory,
     showToast,
     mintUrl,
+    formatSatAmount,
   });
 
   const [npubCashIdentity, setNpubCashIdentity] = useState<{ npub: string; address: string } | null>(null);
@@ -940,6 +954,7 @@ export default function CashuWalletModal({
     buildHistoryEntry,
     receiveToken,
     showToast,
+    formatSatAmount,
     checkProofStates,
     checkMintQuote,
     claimMint,
@@ -966,7 +981,7 @@ export default function CashuWalletModal({
     lightningInvoiceAmountSat,
     bolt11Details,
     lnurlRequiresAmount,
-  } = useLightningInputDerived({ lnInput, lnurlPayData });
+  } = useLightningInputDerived({ formatSatAmount, lnInput, lnurlPayData });
   const {
     tokenizedHistoryItems,
     pendingTokenStateItems,
@@ -1506,6 +1521,8 @@ export default function CashuWalletModal({
     lnInput,
     walletConversionEnabled,
     walletPrimaryCurrency,
+    satInputUnitLabel,
+    formatSatAmount,
     sendAmt,
     btcUsdPrice,
     lockSendToPubkey,
@@ -1896,6 +1913,7 @@ export default function CashuWalletModal({
     selectedMintBalanceLabel,
   } = useMintSelection({
     activeMintInfo: info,
+    formatSatAmount,
     hasNwcConnection,
     mintEntries,
     mintUrl,
@@ -1910,10 +1928,9 @@ export default function CashuWalletModal({
     swapToValue,
   });
 
-  const { satFormatter, usdFormatterLarge, usdFormatterSmall, relativeTimeFormatter } = useWalletFormatters();
-
   const { handleClaimNpubCash } = useNpubCashClaim({
     buildHistoryEntry,
+    formatSatAmount,
     mintUrl,
     npubCashLightningAddressEnabled: npubCashClaimEnabled,
     receiveToken,
@@ -2001,7 +2018,7 @@ export default function CashuWalletModal({
 
       if (feeSats > 0) {
         const paymentMint = config.mintUrl;
-        setSolifeCustomMessage(`Creating ${feeSats} sat fee token from ${paymentMint}...`);
+        setSolifeCustomMessage(`Creating ${formatSatAmount(feeSats)} fee token from ${paymentMint}...`);
         const tokenResult = await createSendToken(feeSats, { mintUrl: paymentMint });
         createdFeeToken = tokenResult.token;
         createdFeeTokenMint = tokenResult.mintUrl;
@@ -2453,6 +2470,7 @@ export default function CashuWalletModal({
   }, [showMintBalances, mintUrl, refreshMintEntries]);
 
   const { formatRelativeTime, formatHistoryAmount, resolveMintDisplay, deriveHistoryStatus } = useHistoryFormatters({
+    formatSatAmount,
     mintInfoByUrl,
     relativeTimeFormatter,
     satFormatter,
@@ -2480,7 +2498,9 @@ export default function CashuWalletModal({
     walletConversionEnabled,
     walletPrimaryCurrency,
     btcUsdPrice,
+    formatSatAmount,
     satFormatter,
+    satInputUnitLabel,
   });
 
   const overviewPaymentRequest = useMemo(() => {
@@ -2522,7 +2542,9 @@ export default function CashuWalletModal({
     totalBalance,
     usdFormatterLarge,
     usdFormatterSmall,
-    satFormatter,
+    formatSatAmount,
+    satDisplayUnitLabel,
+    satInputUnitLabel,
     mintAmt,
     lnAddrAmt,
     mintUrl,
@@ -2629,6 +2651,7 @@ export default function CashuWalletModal({
     claimMint,
     closeNwcSheets,
     createMintInvoice,
+    formatSatAmount,
     formatUsdAmount,
     getNwcBalanceMsat,
     getSwapOptionMeta,
@@ -2669,20 +2692,20 @@ export default function CashuWalletModal({
   const ecashRequestAmountSecondaryDisplay = useMemo(() => {
     if (parsedEcashRequestAmount.error || parsedEcashRequestAmount.sats <= 0) return null;
     if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedEcashRequestAmount.sats)} sat`;
+      return `≈ ${formatSatAmount(parsedEcashRequestAmount.sats)}`;
     }
     if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
     const usdValue = (parsedEcashRequestAmount.sats / SATS_PER_BTC) * btcUsdPrice;
     return `≈ ${formatUsdAmount(usdValue)}`;
-  }, [parsedEcashRequestAmount, primaryCurrency, walletConversionEnabled, btcUsdPrice, satFormatter, formatUsdAmount]);
+  }, [parsedEcashRequestAmount, primaryCurrency, walletConversionEnabled, btcUsdPrice, formatSatAmount, formatUsdAmount]);
 
   const ecashRequestPrimaryAmountText = useMemo(() => {
     const trimmedAmount = ecashRequestAmt.trim();
     if (primaryCurrency === "usd") {
       return `$${trimmedAmount || "0.00"}`;
     }
-    return `${trimmedAmount || "0"} sat`;
-  }, [ecashRequestAmt, primaryCurrency]);
+    return formatSatAmount(Number(trimmedAmount || "0"));
+  }, [ecashRequestAmt, formatSatAmount, primaryCurrency]);
 
   const ecashRequestSecondaryAmountText = useMemo(() => {
     if (ecashRequestMode === "multi") {
@@ -2696,9 +2719,9 @@ export default function CashuWalletModal({
     if (!canToggleCurrency) {
       return `Enter amount in ${amountInputUnitLabel}`;
     }
-    const nextCurrency = primaryCurrency === "usd" ? "sat" : "USD";
+    const nextCurrency = primaryCurrency === "usd" ? satDisplayUnitLabel : "USD";
     return `Tap to switch to ${nextCurrency}`;
-  }, [ecashRequestMode, ecashRequestAmountSecondaryDisplay, ecashRequestAmt, amountInputUnitLabel, canToggleCurrency, primaryCurrency]);
+  }, [ecashRequestMode, ecashRequestAmountSecondaryDisplay, ecashRequestAmt, amountInputUnitLabel, canToggleCurrency, primaryCurrency, satDisplayUnitLabel]);
 
   const canCreateEcashRequest = useMemo(() => {
     if (!paymentRequestsEnabled) return false;
@@ -2759,6 +2782,7 @@ export default function CashuWalletModal({
     contacts,
     ensurePeerProfile,
     showToast,
+    formatSatAmount,
     normalizeNip05,
     activeP2pkKey,
     amountInputUnitLabel,
@@ -3123,6 +3147,7 @@ export default function CashuWalletModal({
     lockSendToPubkey,
     sendLockPubkeyInput,
     satFormatter,
+    formatSatAmount,
     usdFormatterLarge,
     btcUsdPrice,
     walletConversionEnabled,
@@ -3709,6 +3734,7 @@ export default function CashuWalletModal({
     closeManualSendPlan,
     closeReceiveEcashSheet,
     createPaymentRequest,
+    formatSatAmount,
     finalizeManualSelection,
     handlePaymentRequestScan,
     manualSelectedTotal,
@@ -3873,7 +3899,7 @@ export default function CashuWalletModal({
         if (amountMsat < minSendable || amountMsat > maxSendable) {
           const minSat = Math.ceil(minSendable / 1000);
           const maxSat = Math.floor(maxSendable / 1000);
-          throw new Error(`Amount must be between ${minSat} and ${maxSat} sats`);
+          throw new Error(`Amount must be between ${formatSatAmount(minSat)} and ${formatSatAmount(maxSat)}`);
         }
         const amountParam = String(amountMsat);
         const callbackUrl = (() => {
@@ -3919,7 +3945,7 @@ export default function CashuWalletModal({
         }
         const paymentResult = await payMintInvoice(paymentRequest);
         const amountSat = Math.floor(amountMsat / 1000);
-        toastLabel = String(amountSat);
+        toastLabel = formatSatAmount(amountSat);
         const historyAddress = `${namePartLower}@${domainLower}`;
         setHistory((h) => [
           buildHistoryEntry({
@@ -3975,7 +4001,7 @@ export default function CashuWalletModal({
             })();
         if (!amountSat) throw new Error(`Enter amount in ${amountInputUnitLabel}`);
         if (amountSat < minSat || amountSat > maxSat) {
-          throw new Error(`Amount must be between ${minSat} and ${maxSat} sats`);
+          throw new Error(`Amount must be between ${formatSatAmount(minSat)} and ${formatSatAmount(maxSat)}`);
         }
         const params = new URLSearchParams({ amount: String(amountSat * 1000) });
         const invoiceRes = await fetch(`${payData.callback}?${params.toString()}`);
@@ -3983,7 +4009,7 @@ export default function CashuWalletModal({
         const invoice = await invoiceRes.json();
         if (invoice?.status === "ERROR") throw new Error(invoice?.reason || "LNURL pay error");
         const paymentResult = await payMintInvoice(invoice.pr);
-        toastLabel = String(amountSat);
+        toastLabel = formatSatAmount(amountSat);
         setHistory((h) => [
           buildHistoryEntry({
             id: `paid-lnurl-${Date.now()}`,
@@ -4007,8 +4033,7 @@ export default function CashuWalletModal({
           const { amountMsat } = decodeBolt11Amount(normalized);
           if (amountMsat !== null) {
             boltAmountSat = Number(amountMsat / 1000n);
-            const amountLabel = formatMsatAsSat(amountMsat).replace(/\s*sat$/, "");
-            toastLabel = amountLabel;
+            toastLabel = formatSatAmount(boltAmountSat);
           }
         } catch {
           // ignore amount parse errors
@@ -4035,7 +4060,7 @@ export default function CashuWalletModal({
       setLnInput("");
       setLnAddrAmt("");
       if (toastLabel) {
-        showToast(`sent ${toastLabel} sats`, 3500);
+        showToast(`sent ${toastLabel}`, 3500);
       } else {
         showToast("sent payment", 3500);
       }
@@ -4061,7 +4086,7 @@ export default function CashuWalletModal({
       const minSat = Math.ceil(lnurlWithdrawInfo.minWithdrawable / 1000);
       const maxSat = Math.floor(lnurlWithdrawInfo.maxWithdrawable / 1000);
       if (amountSat < minSat || amountSat > maxSat) {
-        throw new Error(`Amount must be between ${minSat} and ${maxSat} sats`);
+        throw new Error(`Amount must be between ${formatSatAmount(minSat)} and ${formatSatAmount(maxSat)}`);
       }
       if (!mintUrl) throw new Error("Set an active mint first");
 
@@ -4112,7 +4137,7 @@ export default function CashuWalletModal({
             }),
             ...h,
           ]);
-          showToast(`received ${amountSat} sats`, 3500);
+          showToast(`received ${formatSatAmount(amountSat)}`, 3500);
           if (receiveMode === "lnurlWithdraw") {
             closeReceiveLnurlWithdrawSheet();
           }
@@ -4354,7 +4379,7 @@ export default function CashuWalletModal({
         }),
         ...h,
       ]);
-      showToast(`sent ${amount} sats`, 3500);
+      showToast(`sent ${formatSatAmount(amount)}`, 3500);
       if (sendMode === "paymentRequest") {
         closePaymentRequestSheet();
       }
@@ -5186,7 +5211,9 @@ export default function CashuWalletModal({
                       paymentHistoryEntry?.amountSat != null
                         ? formatHistoryAmount(paymentHistoryEntry)
                         : paymentAmount != null
-                        ? `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                        ? paymentUnit === "sat"
+                          ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)))
+                          : `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
                         : "Payment request received";
                     const paymentStatusInfo = paymentHistoryEntry ? deriveHistoryStatus(paymentHistoryEntry) : null;
                     const paymentSubtitle =
@@ -5263,7 +5290,9 @@ export default function CashuWalletModal({
                       paymentHistoryEntry?.amountSat != null
                         ? formatHistoryAmount(paymentHistoryEntry)
                         : paymentAmount != null
-                          ? `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                          ? paymentUnit === "sat"
+                            ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)))
+                            : `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
                           : null;
                     const paymentStatusLabel = paymentStatusInfo?.label;
                     const paymentSummary = paymentHistoryEntry?.summary;
@@ -6321,7 +6350,9 @@ export default function CashuWalletModal({
                           const amountLabel = historyEntry
                             ? formatHistoryAmount(historyEntry)
                             : paymentAmount != null
-                              ? `${msg.isIncoming ? "+" : "−"}${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                              ? paymentUnit === "sat"
+                                ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)), { sign: msg.isIncoming ? "+" : "−" })
+                                : `${msg.isIncoming ? "+" : "−"}${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
                               : null;
                           const fiatValue =
                             historyEntry?.fiatValueUsd != null
@@ -6393,7 +6424,11 @@ export default function CashuWalletModal({
                               msg.attachment?.detail ||
                               (paymentMintLabel ? `${statusInfo.label} ${paymentMintLabel}` : null),
                             amountSatLabel:
-                              paymentAmount != null ? `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} sat` : "—",
+                              paymentAmount != null
+                                ? paymentUnit === "sat"
+                                  ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)))
+                                  : `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                                : "—",
                             createdLabel: new Date(paymentCreatedAtMs).toLocaleString(),
                             showRedeemButton: !!(historyEntry?.pendingTokenId && historyEntry.pendingStatus !== "redeemed"),
                             canMarkTokenSpent: !!historyEntry?.tokenState && historyEntry.tokenState.lastState !== "SPENT",
@@ -6867,7 +6902,7 @@ export default function CashuWalletModal({
                                                 </div>
                                               )}
                                               <div className="text-tertiary">
-                                                Amount: {paymentState.historyEntry.mintQuote.amount} sats
+                                                Amount: {formatSatAmount(paymentState.historyEntry.mintQuote.amount)}
                                               </div>
                                               <div className="flex flex-wrap gap-2 items-center">
                                                 <button
@@ -8680,6 +8715,7 @@ export default function CashuWalletModal({
         handleCreateEcashRequest={handleCreateEcashRequest}
         lastCreatedEcashRequest={lastCreatedEcashRequest}
         satFormatter={satFormatter}
+        formatSatAmount={formatSatAmount}
         walletConversionEnabled={walletConversionEnabled}
         btcUsdPrice={btcUsdPrice}
         formatUsdAmount={formatUsdAmount}
@@ -8787,6 +8823,7 @@ export default function CashuWalletModal({
         handleLightningInvoiceBack={handleLightningInvoiceBack}
         lightningInvoiceStatusLabel={lightningInvoiceStatusLabel}
         satFormatter={satFormatter}
+        formatSatAmount={formatSatAmount}
         invoiceAmountSecondary={invoiceAmountSecondary}
         mintUrl={mintUrl}
           />
@@ -8798,7 +8835,7 @@ export default function CashuWalletModal({
           <div className="wallet-section space-y-3">
             <div className="text-xs text-secondary">Source: {lnurlWithdrawInfo.domain}</div>
             <div className="text-xs text-secondary">
-              Limits: {Math.ceil(lnurlWithdrawInfo.minWithdrawable / 1000)} – {Math.floor(lnurlWithdrawInfo.maxWithdrawable / 1000)} sats
+              Limits: {formatSatAmount(Math.ceil(lnurlWithdrawInfo.minWithdrawable / 1000))} – {formatSatAmount(Math.floor(lnurlWithdrawInfo.maxWithdrawable / 1000))}
             </div>
             {lnurlWithdrawInvoice && (
               <QrCodeCard
@@ -8829,7 +8866,7 @@ export default function CashuWalletModal({
             </div>
           </div>
         ) : (
-          <div className="wallet-section text-sm text-secondary">Scan an LNURL withdraw QR code to pull sats into your wallet.</div>
+          <div className="wallet-section text-sm text-secondary">Scan an LNURL withdraw QR code to pull funds into your wallet.</div>
         )}
       </ActionSheet>
 
@@ -8888,6 +8925,7 @@ export default function CashuWalletModal({
         nutTokenCopied={nutTokenCopied}
         lastSendTokenAmount={lastSendTokenAmount}
         satFormatter={satFormatter}
+        formatSatAmount={formatSatAmount}
         walletConversionEnabled={walletConversionEnabled}
         btcUsdPrice={btcUsdPrice}
         formatUsdAmount={formatUsdAmount}
@@ -9131,15 +9169,15 @@ export default function CashuWalletModal({
                 ? "Exact offline match selected automatically. Adjust the notes if you'd like a different amount."
                 : "Exact offline match unavailable. Select notes to build your token."}
             </div>
-            <div className="text-xs text-secondary">Target: {manualSendPlan.target} sats</div>
+            <div className="text-xs text-secondary">Target: {formatSatAmount(manualSendPlan.target)}</div>
             {(manualSendPlan.closestBelow !== null || manualSendPlan.closestAbove !== null) && (
               <div className="space-y-2">
                 <div className="space-y-1 text-[11px] text-secondary">
                   {manualSendPlan.closestBelow !== null && (
-                    <div>Closest below: {manualSendPlan.closestBelow} sats</div>
+                    <div>Closest below: {formatSatAmount(manualSendPlan.closestBelow)}</div>
                   )}
                   {manualSendPlan.closestAbove !== null && (
-                    <div>Closest above: {manualSendPlan.closestAbove} sats</div>
+                    <div>Closest above: {formatSatAmount(manualSendPlan.closestAbove)}</div>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2 text-xs">
@@ -9149,7 +9187,7 @@ export default function CashuWalletModal({
                       className={`${manualSelectionMatches(manualSendPlan.exactMatchSelection) ? "accent-button" : "ghost-button"} button-sm pressable`}
                       onClick={() => applyManualSendSelection(manualSendPlan.exactMatchSelection)}
                     >
-                      Exact match ({manualSendPlan.target} sats)
+                      Exact match ({formatSatAmount(manualSendPlan.target)})
                     </button>
                   )}
                   {manualSendPlan.closestBelowSelection && manualSendPlan.closestBelow !== null && (
@@ -9160,7 +9198,7 @@ export default function CashuWalletModal({
                         applyManualSendSelection(manualSendPlan.closestBelowSelection, { autoCreate: true })
                       }
                     >
-                      Closest below ({manualSendPlan.closestBelow} sats)
+                      Closest below ({formatSatAmount(manualSendPlan.closestBelow)})
                     </button>
                   )}
                   {manualSendPlan.closestAboveSelection && manualSendPlan.closestAbove !== null && (
@@ -9171,7 +9209,7 @@ export default function CashuWalletModal({
                         applyManualSendSelection(manualSendPlan.closestAboveSelection, { autoCreate: true })
                       }
                     >
-                      Closest above ({manualSendPlan.closestAbove} sats)
+                      Closest above ({formatSatAmount(manualSendPlan.closestAbove)})
                     </button>
                   )}
                 </div>
@@ -9191,7 +9229,7 @@ export default function CashuWalletModal({
                     className="flex items-center justify-between gap-3 rounded-2xl border border-surface bg-surface-muted px-3 py-2"
                   >
                     <div className="text-xs">
-                      <div className="font-semibold text-primary">{group.amount} sats ×{totalCount}</div>
+                      <div className="font-semibold text-primary">{formatSatAmount(group.amount)} ×{totalCount}</div>
                       <div className="text-[11px] text-secondary">Selected: {selectedCount}</div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -9200,7 +9238,7 @@ export default function CashuWalletModal({
                         className="ghost-button button-sm pressable"
                         onClick={() => adjustManualSendGroupSelection(group.amount, -1)}
                         disabled={selectedCount === 0}
-                        aria-label={`Remove a ${group.amount} sat note`}
+                        aria-label={`Remove a ${formatSatAmount(group.amount)} note`}
                       >
                         −
                       </button>
@@ -9212,7 +9250,7 @@ export default function CashuWalletModal({
                         className="ghost-button button-sm pressable"
                         onClick={() => adjustManualSendGroupSelection(group.amount, 1)}
                         disabled={selectedCount === totalCount}
-                        aria-label={`Add a ${group.amount} sat note`}
+                        aria-label={`Add a ${formatSatAmount(group.amount)} note`}
                       >
                         +
                       </button>
@@ -9221,7 +9259,7 @@ export default function CashuWalletModal({
                 );
               })}
             </div>
-            <div className="text-sm font-semibold text-primary">Selected: {manualSelectedTotal} sats</div>
+            <div className="text-sm font-semibold text-primary">Selected: {formatSatAmount(manualSelectedTotal)}</div>
             {manualSendPlan.lockActive && (
               <div className="text-[11px] text-secondary">
                 Receiver locking isn't applied when manually selecting notes.
@@ -9273,6 +9311,7 @@ export default function CashuWalletModal({
         selectedMintLabel={selectedMintLabel}
         selectedMintBalanceLabel={selectedMintBalanceLabel}
         satFormatter={satFormatter}
+        formatSatAmount={formatSatAmount}
         lightningInvoiceAmountSat={lightningInvoiceAmountSat}
         lightningInvoiceAmountSecondaryDisplay={lightningInvoiceAmountSecondaryDisplay}
         normalizedLnInput={normalizedLnInput}
@@ -9745,6 +9784,7 @@ export default function CashuWalletModal({
         handleMarkHistoryTokenSpent={handleMarkHistoryTokenSpent}
         handleDeleteHistoryEntry={handleDeleteHistoryEntry}
         satFormatter={satFormatter}
+        formatSatAmount={formatSatAmount}
         historyFilter={historyFilter}
           />
         </Suspense>
@@ -9793,7 +9833,7 @@ export default function CashuWalletModal({
                     </div>
                     <div className="text-right space-y-1">
                       <div className="text-xs text-secondary">Balance</div>
-                      <div className="font-semibold">{m.balance} sat</div>
+                      <div className="font-semibold">{formatSatAmount(m.balance)}</div>
                     </div>
                     <div className="flex flex-col gap-2 w-full sm:w-auto">
                       {m.url !== mintUrl && (
@@ -9876,6 +9916,7 @@ export default function CashuWalletModal({
         nwcBusy={nwcBusy}
         nwcFeedback={nwcFeedback}
         nwcError={nwcError}
+        formatSatAmount={formatSatAmount}
         handleNwcConnect={handleNwcConnect}
         handleNwcTest={handleNwcTest}
         handleNwcDisconnect={handleNwcDisconnect}

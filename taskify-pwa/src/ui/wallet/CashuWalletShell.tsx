@@ -62,6 +62,7 @@ export function CashuWalletShell({
         showBottomNav
         walletConversionEnabled={settings.walletConversionEnabled}
         walletPrimaryCurrency={settings.walletPrimaryCurrency}
+        walletDenominationDisplay={settings.walletDenominationDisplay}
         setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}
         lightningAddressProvider={settings.lightningAddressProvider}
         npubCashLightningAddressEnabled={settings.npubCashLightningAddressEnabled}

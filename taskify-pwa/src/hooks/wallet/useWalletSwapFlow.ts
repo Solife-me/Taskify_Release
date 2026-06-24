@@ -7,6 +7,7 @@ import {
 import { SATS_PER_BTC } from "./useWalletPrice";
 import type { MintEntry } from "./useMintBackup";
 import type { SwapOptionMeta } from "./useMintSelection";
+import type { FormatSatAmountOptions } from "../../wallet/denomination";
 import type {
   HistoryEntryInput,
   HistoryItem,
@@ -48,6 +49,7 @@ type UseWalletSwapFlowOptions = {
     memo?: string,
     options?: { mintUrl?: string },
   ) => Promise<MintInvoiceQuote>;
+  formatSatAmount: (amount: number, options?: FormatSatAmountOptions) => string;
   formatUsdAmount: (amount: number | null) => string;
   getNwcBalanceMsat: () => Promise<number | null>;
   getSwapOptionMeta: (value: string) => SwapOptionMeta;
@@ -88,6 +90,7 @@ export function useWalletSwapFlow({
   claimMint,
   closeNwcSheets,
   createMintInvoice,
+  formatSatAmount,
   formatUsdAmount,
   getNwcBalanceMsat,
   getSwapOptionMeta,
@@ -117,7 +120,6 @@ export function useWalletSwapFlow({
   nwcFundState,
   nwcWithdrawState,
 }: UseWalletSwapFlowOptions) {
-  const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
   const nwcFundInProgress =
     nwcFundState === "creating" ||
     nwcFundState === "paying" ||
@@ -180,15 +182,15 @@ export function useWalletSwapFlow({
     if (primaryCurrency === "usd") {
       return `$${trimmed || "0.00"}`;
     }
-    return `${trimmed || "0"} sat`;
-  }, [swapAmount, primaryCurrency]);
+    return formatSatAmount(Number(trimmed || "0"));
+  }, [formatSatAmount, swapAmount, primaryCurrency]);
 
   const swapSecondaryAmountText = useMemo(() => {
     if (parsedSwapAmount.error || parsedSwapAmount.sats <= 0) {
       return `Enter amount in ${amountInputUnitLabel}`;
     }
     if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedSwapAmount.sats)} sat`;
+      return `≈ ${formatSatAmount(parsedSwapAmount.sats)}`;
     }
     if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
       return `Enter amount in ${amountInputUnitLabel}`;
@@ -198,10 +200,10 @@ export function useWalletSwapFlow({
   }, [
     amountInputUnitLabel,
     btcUsdPrice,
+    formatSatAmount,
     formatUsdAmount,
     parsedSwapAmount,
     primaryCurrency,
-    satFormatter,
     walletConversionEnabled,
   ]);
 
@@ -350,7 +352,7 @@ export function useWalletSwapFlow({
             ]);
             setNwcFundInvoice("");
             await getNwcBalanceMsat().catch(() => null);
-            showToast(`received ${amount} sats`, 3500);
+            showToast(`received ${formatSatAmount(amount)}`, 3500);
             closeNwcSheets();
             return;
           }
@@ -368,6 +370,7 @@ export function useWalletSwapFlow({
       claimMint,
       closeNwcSheets,
       createMintInvoice,
+      formatSatAmount,
       getNwcBalanceMsat,
       hasNwcConnection,
       mintEntriesByNormalized,
@@ -412,7 +415,7 @@ export function useWalletSwapFlow({
         setNwcWithdrawState("done");
         setNwcWithdrawMessage("");
         await getNwcBalanceMsat().catch(() => null);
-        showToast(`sent ${amount} sats`, 3500);
+        showToast(`sent ${formatSatAmount(amount)}`, 3500);
         closeNwcSheets();
       } catch (e: any) {
         setNwcWithdrawState("error");
@@ -422,6 +425,7 @@ export function useWalletSwapFlow({
     [
       buildHistoryEntry,
       closeNwcSheets,
+      formatSatAmount,
       getNwcBalanceMsat,
       hasNwcConnection,
       makeNwcInvoice,
@@ -488,7 +492,7 @@ export function useWalletSwapFlow({
               }),
               ...h,
             ]);
-            showToast(`swapped ${amount} sats`, 3500);
+            showToast(`swapped ${formatSatAmount(amount)}`, 3500);
             closeNwcSheets();
             return;
           }
@@ -506,6 +510,7 @@ export function useWalletSwapFlow({
       claimMint,
       closeNwcSheets,
       createMintInvoice,
+      formatSatAmount,
       getSwapOptionMeta,
       mintEntriesByNormalized,
       payMintInvoice,

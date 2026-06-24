@@ -47,7 +47,7 @@ export function LightningReceiveSheet(props) {
     activeMintInvoice,
     handleLightningInvoiceBack,
     lightningInvoiceStatusLabel,
-    satFormatter,
+    formatSatAmount,
     invoiceAmountSecondary,
     mintUrl,
   } = props;
@@ -252,7 +252,7 @@ export function LightningReceiveSheet(props) {
               <div className="space-y-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-secondary">Amount</span>
-                  <span className="font-semibold">{satFormatter.format(activeMintInvoice.amountSat)} SAT</span>
+                  <span className="font-semibold">{formatSatAmount(activeMintInvoice.amountSat)}</span>
                 </div>
                 {invoiceAmountSecondary && (
                   <div className="flex items-center justify-between text-secondary">

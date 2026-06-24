@@ -789,6 +789,20 @@ export function WalletSection({
                 </div>
               </div>
               <div>
+                <div className="text-sm font-medium mb-1">Bitcoin denomination</div>
+                <div className="text-xs text-secondary mb-2">Choose how sat amounts are labeled in the wallet.</div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className={pillButtonClass(settings.walletDenominationDisplay !== "sat")}
+                    onClick={() => setSettings({ walletDenominationDisplay: "bitcoin-symbol" })}
+                  >₿42,778</button>
+                  <button
+                    className={pillButtonClass(settings.walletDenominationDisplay === "sat")}
+                    onClick={() => setSettings({ walletDenominationDisplay: "sat" })}
+                  >42,778 sat</button>
+                </div>
+              </div>
+              <div>
                 <div className="text-sm font-medium mb-1">Lightning Address</div>
                 <div className="text-xs text-secondary mb-2">Choose the address shown when receiving Lightning.</div>
                 <div className="flex flex-wrap gap-2">

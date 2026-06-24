@@ -13,7 +13,7 @@ export function useEcashSendDerived({
   lastSendTokenFingerprint,
   lockSendToPubkey,
   sendLockPubkeyInput,
-  satFormatter,
+  formatSatAmount,
   usdFormatterLarge,
   btcUsdPrice,
   walletConversionEnabled,
@@ -52,15 +52,15 @@ export function useEcashSendDerived({
     if (primaryCurrency === "usd") {
       return `$${trimmed || "0.00"}`;
     }
-    return `${trimmed || "0"} sat`;
-  }, [primaryCurrency, sendAmt]);
+    return formatSatAmount(Number(trimmed || "0"));
+  }, [formatSatAmount, primaryCurrency, sendAmt]);
 
   const ecashSecondaryAmountText = useMemo(() => {
     if (parsedSendAmount.error || parsedSendAmount.sats <= 0) {
       return `Enter amount in ${amountInputUnitLabel}`;
     }
     if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedSendAmount.sats)} sat`;
+      return `≈ ${formatSatAmount(parsedSendAmount.sats)}`;
     }
     if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
       return `Enter amount in ${amountInputUnitLabel}`;
@@ -71,9 +71,9 @@ export function useEcashSendDerived({
     amountInputUnitLabel,
     btcUsdPrice,
     formatUsdAmount,
+    formatSatAmount,
     parsedSendAmount,
     primaryCurrency,
-    satFormatter,
     walletConversionEnabled,
   ]);
 
@@ -90,19 +90,19 @@ export function useEcashSendDerived({
       }
       return formatUsdAmount(usdBalance);
     }
-    return `${satFormatter.format(Math.max(0, Math.floor(totalBalance)))} sat`;
-  }, [primaryCurrency, usdBalance, walletConversionEnabled, priceStatus, formatUsdAmount, satFormatter, totalBalance]);
+    return formatSatAmount(Math.max(0, Math.floor(totalBalance)));
+  }, [formatSatAmount, primaryCurrency, usdBalance, walletConversionEnabled, priceStatus, formatUsdAmount, totalBalance]);
 
   const secondaryAmountDisplay = useMemo(() => {
     if (!walletConversionEnabled) return null;
     if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(Math.max(0, Math.floor(totalBalance)))} sat`;
+      return `≈ ${formatSatAmount(Math.max(0, Math.floor(totalBalance)))}`;
     }
     if (usdBalance == null) {
       return priceStatus === "error" ? "USD unavailable" : "Fetching price…";
     }
     return `≈ ${formatUsdAmount(usdBalance)}`;
-  }, [walletConversionEnabled, primaryCurrency, satFormatter, totalBalance, usdBalance, priceStatus, formatUsdAmount]);
+  }, [walletConversionEnabled, primaryCurrency, formatSatAmount, totalBalance, usdBalance, priceStatus, formatUsdAmount]);
 
   const priceMeta = useMemo(() => {
     if (!walletConversionEnabled) return null;
@@ -123,8 +123,8 @@ export function useEcashSendDerived({
   const pendingBalanceDisplay = useMemo(() => {
     if (pendingBalance <= 0) return null;
     const pendingSat = Math.max(0, Math.floor(pendingBalance));
-    return `${satFormatter.format(pendingSat)} sat pending redemption`;
-  }, [pendingBalance, satFormatter]);
+    return `${formatSatAmount(pendingSat)} pending redemption`;
+  }, [formatSatAmount, pendingBalance]);
 
   const scannerMessageTone = useMemo(() => {
     if (!scannerMessage) return "info";

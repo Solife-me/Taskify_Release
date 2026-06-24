@@ -30,7 +30,7 @@ export function WalletHistorySheet(props) {
     handleRevertHistoryToken,
     handleMarkHistoryTokenSpent,
     handleDeleteHistoryEntry,
-    satFormatter,
+    formatSatAmount,
     historyFilter,
   } = props;
 
@@ -190,7 +190,7 @@ export function WalletHistorySheet(props) {
                           <div className="wallet-history__metric">
                             <span>Amount</span>
                             <span className="wallet-history__metric-value">
-                              {entry.amountSat != null ? `${satFormatter.format(entry.amountSat)} sat` : "—"}
+                              {entry.amountSat != null ? formatSatAmount(entry.amountSat) : "—"}
                             </span>
                           </div>
                           {walletConversionEnabled && fiatLabel && (
@@ -203,7 +203,7 @@ export function WalletHistorySheet(props) {
                             <div className="wallet-history__metric">
                               <span>Fee paid</span>
                               <span className="wallet-history__metric-value">
-                                {satFormatter.format(entry.feeSat ?? 0)} sat
+                                {formatSatAmount(entry.feeSat ?? 0)}
                               </span>
                             </div>
                           )}
@@ -327,7 +327,7 @@ export function WalletHistorySheet(props) {
                               {entry.mintQuote.mintUrl && (
                                 <div className="text-tertiary break-all">Mint: {entry.mintQuote.mintUrl}</div>
                               )}
-                              <div className="text-tertiary">Amount: {entry.mintQuote.amount} sats</div>
+                              <div className="text-tertiary">Amount: {formatSatAmount(entry.mintQuote.amount)}</div>
                               <div className="flex flex-wrap gap-2 items-center">
                                 <button
                                   className="ghost-button button-sm pressable"

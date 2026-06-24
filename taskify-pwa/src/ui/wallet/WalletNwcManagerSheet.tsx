@@ -17,6 +17,7 @@ export function WalletNwcManagerSheet(props) {
     nwcBusy,
     nwcFeedback,
     nwcError,
+    formatSatAmount,
     handleNwcConnect,
     handleNwcTest,
     handleNwcDisconnect,
@@ -39,7 +40,7 @@ export function WalletNwcManagerSheet(props) {
             {nwcInfo?.methods && nwcInfo.methods.length > 0 && (
               <div>Methods: {nwcInfo.methods.join(", ")}</div>
             )}
-            {nwcBalanceSats !== null && <div>Balance: {nwcBalanceSats} sats</div>}
+            {nwcBalanceSats !== null && <div>Balance: {formatSatAmount(nwcBalanceSats)}</div>}
             <div>Status: {nwcStatusLabel}</div>
           </div>
         ) : (
