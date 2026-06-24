@@ -10,7 +10,9 @@ export interface UseAmountFormattersOptions {
   totalBalance: number;
   usdFormatterLarge: Intl.NumberFormat;
   usdFormatterSmall: Intl.NumberFormat;
-  satFormatter: Intl.NumberFormat;
+  formatSatAmount: (amount: number, options?: Record<string, unknown>) => string;
+  satDisplayUnitLabel: string;
+  satInputUnitLabel: string;
   mintAmt: string;
   lnAddrAmt: string;
   mintUrl: string;
@@ -28,7 +30,9 @@ export function useAmountFormatters({
   totalBalance,
   usdFormatterLarge,
   usdFormatterSmall,
-  satFormatter,
+  formatSatAmount,
+  satDisplayUnitLabel,
+  satInputUnitLabel,
   mintAmt,
   lnAddrAmt,
   mintUrl,
@@ -39,8 +43,8 @@ export function useAmountFormatters({
 }: UseAmountFormattersOptions) {
   const effectivePrimaryCurrency = walletConversionEnabled ? walletPrimaryCurrency : "sat";
   const primaryCurrency = effectivePrimaryCurrency === "usd" ? "usd" : "sat";
-  const unitLabel = primaryCurrency === "usd" ? "USD" : "SAT";
-  const amountInputUnitLabel = primaryCurrency === "usd" ? "USD" : "sats";
+  const unitLabel = primaryCurrency === "usd" ? "USD" : satDisplayUnitLabel;
+  const amountInputUnitLabel = primaryCurrency === "usd" ? "USD" : satInputUnitLabel;
   const amountInputPlaceholder = `Amount (${amountInputUnitLabel})`;
 
   const usdBalance = useMemo(() => {
@@ -63,7 +67,7 @@ export function useAmountFormatters({
 
   const parseAmountInput = useCallback((raw: string) => {
     const trimmed = raw.trim();
-    const unitLabelLocal = primaryCurrency === "usd" ? "USD" : "sats";
+    const unitLabelLocal = primaryCurrency === "usd" ? "USD" : satInputUnitLabel;
     if (!trimmed) {
       return { sats: 0, raw: 0 };
     }
@@ -86,14 +90,14 @@ export function useAmountFormatters({
       return { sats: 0, raw: numeric, error: `Enter amount in ${unitLabelLocal}` };
     }
     return { sats, raw: numeric };
-  }, [primaryCurrency, walletConversionEnabled, btcUsdPrice]);
+  }, [primaryCurrency, satInputUnitLabel, walletConversionEnabled, btcUsdPrice]);
 
   const parsedMintAmount = useMemo(() => parseAmountInput(mintAmt), [parseAmountInput, mintAmt]);
 
   const mintAmountSecondaryDisplay = useMemo(() => {
     if (parsedMintAmount.error || parsedMintAmount.sats <= 0) return null;
     if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedMintAmount.sats)} sat`;
+      return `≈ ${formatSatAmount(parsedMintAmount.sats)}`;
     }
     if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
     const usdValue = (parsedMintAmount.sats / SATS_PER_BTC) * btcUsdPrice;
@@ -103,7 +107,7 @@ export function useAmountFormatters({
     primaryCurrency,
     walletConversionEnabled,
     btcUsdPrice,
-    satFormatter,
+    formatSatAmount,
     formatUsdAmount,
   ]);
 
@@ -120,7 +124,7 @@ export function useAmountFormatters({
   const lightningSendAmountSecondaryDisplay = useMemo(() => {
     if (parsedLightningSendAmount.error || parsedLightningSendAmount.sats <= 0) return null;
     if (primaryCurrency === "usd") {
-      return `≈ ${satFormatter.format(parsedLightningSendAmount.sats)} sat`;
+      return `≈ ${formatSatAmount(parsedLightningSendAmount.sats)}`;
     }
     if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) return null;
     const usdValue = (parsedLightningSendAmount.sats / SATS_PER_BTC) * btcUsdPrice;
@@ -130,7 +134,7 @@ export function useAmountFormatters({
     primaryCurrency,
     walletConversionEnabled,
     btcUsdPrice,
-    satFormatter,
+    formatSatAmount,
     formatUsdAmount,
   ]);
 
@@ -139,8 +143,8 @@ export function useAmountFormatters({
     if (primaryCurrency === "usd") {
       return `$${trimmedAmount || "0.00"}`;
     }
-    return `${trimmedAmount || "0"} sat`;
-  }, [lnAddrAmt, primaryCurrency]);
+    return formatSatAmount(Number(trimmedAmount || "0"));
+  }, [formatSatAmount, lnAddrAmt, primaryCurrency]);
 
   const lightningSendSecondaryAmountText = useMemo(() => {
     if (lightningSendAmountSecondaryDisplay) return lightningSendAmountSecondaryDisplay;
@@ -151,7 +155,7 @@ export function useAmountFormatters({
     if (!canToggleCurrency) {
       return `Enter amount in ${amountInputUnitLabel}`;
     }
-    const nextCurrency = primaryCurrency === "usd" ? "sat" : "USD";
+    const nextCurrency = primaryCurrency === "usd" ? satDisplayUnitLabel : "USD";
     return `Tap to switch to ${nextCurrency}`;
   }, [
     lightningSendAmountSecondaryDisplay,
@@ -159,6 +163,7 @@ export function useAmountFormatters({
     amountInputUnitLabel,
     canToggleCurrency,
     primaryCurrency,
+    satDisplayUnitLabel,
   ]);
 
   const lightningInvoiceAmountSecondaryDisplay = useMemo(() => {
@@ -173,8 +178,8 @@ export function useAmountFormatters({
     if (primaryCurrency === "usd") {
       return `$${trimmedAmount || "0.00"}`;
     }
-    return `${trimmedAmount || "0"} sat`;
-  }, [mintAmt, primaryCurrency]);
+    return formatSatAmount(Number(trimmedAmount || "0"));
+  }, [formatSatAmount, mintAmt, primaryCurrency]);
 
   const lightningSecondaryAmountText = useMemo(() => {
     if (mintAmountSecondaryDisplay) return mintAmountSecondaryDisplay;
@@ -185,11 +190,12 @@ export function useAmountFormatters({
     if (!canToggleCurrency) {
       return `Enter amount in ${amountInputUnitLabel}`;
     }
-    const nextCurrency = primaryCurrency === "usd" ? "sat" : "USD";
+    const nextCurrency = primaryCurrency === "usd" ? satDisplayUnitLabel : "USD";
     return `Tap to switch to ${nextCurrency}`;
   }, [
     amountInputUnitLabel,
     canToggleCurrency,
+    satDisplayUnitLabel,
     mintAmt,
     mintAmountSecondaryDisplay,
     primaryCurrency,

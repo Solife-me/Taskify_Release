@@ -15,6 +15,10 @@ import type { ScriptureMemoryFrequency, ScriptureMemorySort } from "../scripture
 import { LS_SETTINGS } from "../storageKeys";
 import { kvStorage } from "../../storage/kvStorage";
 import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
+import {
+  DEFAULT_WALLET_DENOMINATION_DISPLAY,
+  normalizeWalletDenominationDisplay,
+} from "../../wallet/denomination";
 import { CHAT_RETENTION_OPTIONS } from "./settingsTypes";
 import type {
   ChatMessageRetention,
@@ -134,6 +138,7 @@ export function useSettingsSync(
       const startupView = normalizeStartupView(parsed?.startupView);
       const walletConversionEnabled = parsed?.walletConversionEnabled !== false;
       const walletPrimaryCurrency = parsed?.walletPrimaryCurrency === "usd" ? "usd" : "sat";
+      const walletDenominationDisplay = normalizeWalletDenominationDisplay(parsed?.walletDenominationDisplay);
       const walletSentStateChecksEnabled = parsed?.walletSentStateChecksEnabled !== false;
       const walletPaymentRequestsEnabled = parsed?.walletPaymentRequestsEnabled !== false;
       const walletPaymentRequestsBackgroundChecksEnabled =
@@ -267,6 +272,7 @@ export function useSettingsSync(
         startupView,
         walletConversionEnabled,
         walletPrimaryCurrency: walletConversionEnabled ? walletPrimaryCurrency : "sat",
+        walletDenominationDisplay,
         walletSentStateChecksEnabled,
         walletPaymentRequestsEnabled,
         walletPaymentRequestsBackgroundChecksEnabled: walletPaymentRequestsEnabled
@@ -311,6 +317,7 @@ export function useSettingsSync(
         startupView: "main",
         walletConversionEnabled: true,
         walletPrimaryCurrency: "sat",
+        walletDenominationDisplay: DEFAULT_WALLET_DENOMINATION_DISPLAY,
         walletMintBackupEnabled: true,
         walletSentStateChecksEnabled: true,
         walletPaymentRequestsEnabled: true,
@@ -439,6 +446,7 @@ export function useSettingsSync(
       } else if (next.walletPrimaryCurrency !== "usd") {
         next.walletPrimaryCurrency = "sat";
       }
+      next.walletDenominationDisplay = normalizeWalletDenominationDisplay(next.walletDenominationDisplay);
       next.lightningAddressProvider = normalizeLightningAddressProvider(
         next.lightningAddressProvider,
         next.npubCashLightningAddressEnabled === false ? "none" : "solife.me",

@@ -1,17 +1,19 @@
 // @ts-nocheck
 import { useCallback } from "react";
 import { normalizeMintUrl } from "../../wallet/cashuProofHelpers";
+import type { FormatSatAmountOptions } from "../../wallet/denomination";
 import { formatMintDisplayName } from "../../ui/wallet/walletModalUi";
 import type { HistoryItem } from "../../wallet/walletHistoryTypes";
 
 interface UseHistoryFormattersOptions {
+  formatSatAmount: (amount: number, options?: FormatSatAmountOptions) => string;
   mintInfoByUrl: Record<string, any>;
   relativeTimeFormatter: Intl.RelativeTimeFormat;
   satFormatter: Intl.NumberFormat;
 }
 
 export function useHistoryFormatters(opts: UseHistoryFormattersOptions) {
-  const { mintInfoByUrl, relativeTimeFormatter, satFormatter } = opts;
+  const { formatSatAmount, mintInfoByUrl, relativeTimeFormatter } = opts;
 
   const formatRelativeTime = useCallback(
     (timestamp?: number | null) => {
@@ -51,9 +53,9 @@ export function useHistoryFormatters(opts: UseHistoryFormattersOptions) {
     (entry: HistoryItem) => {
       if (entry.amountSat == null) return "";
       const prefix = entry.direction === "out" ? "−" : "+";
-      return `${prefix}${satFormatter.format(entry.amountSat)} sat`;
+      return formatSatAmount(entry.amountSat, { sign: prefix });
     },
-    [satFormatter],
+    [formatSatAmount],
   );
 
   const resolveMintDisplay = useCallback(

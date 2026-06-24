@@ -14,6 +14,8 @@ export interface UsePaymentRequestDerivedOptions {
   walletPrimaryCurrency: string;
   btcUsdPrice: number | null;
   satFormatter: Intl.NumberFormat;
+  formatSatAmount: (amount: number) => string;
+  satInputUnitLabel: string;
 }
 
 export function usePaymentRequestDerived({
@@ -24,6 +26,8 @@ export function usePaymentRequestDerived({
   walletPrimaryCurrency,
   btcUsdPrice,
   satFormatter,
+  formatSatAmount,
+  satInputUnitLabel,
 }: UsePaymentRequestDerivedOptions) {
   const paymentRequestUnitLabel = useMemo(
     () => (paymentRequestState?.request.unit || info?.unit || "sat").toLowerCase(),
@@ -46,7 +50,7 @@ export function usePaymentRequestDerived({
   const paymentRequestInputCurrency =
     walletConversionEnabled && walletPrimaryCurrency === "usd" ? "usd" : "sat";
 
-  const paymentRequestInputUnitLabel = paymentRequestInputCurrency === "usd" ? "USD" : "sats";
+  const paymentRequestInputUnitLabel = paymentRequestInputCurrency === "usd" ? "USD" : satInputUnitLabel;
 
   const canTogglePaymentRequestCurrency = canToggleCurrency && !paymentRequestHasFixedAmount;
 
@@ -67,15 +71,20 @@ export function usePaymentRequestDerived({
 
   const paymentRequestPrimaryAmountText = useMemo(() => {
     if (paymentRequestHasFixedAmount) {
+      if (paymentRequestUnitLabel === "sat" && paymentRequestFixedAmount != null) {
+        return formatSatAmount(paymentRequestFixedAmount);
+      }
       return `${paymentRequestAmountTextValue} ${paymentRequestUnitLabel}`;
     }
     const trimmed = paymentRequestManualAmount.trim();
     if (paymentRequestInputCurrency === "usd") {
       return `$${trimmed || "0.00"}`;
     }
-    return `${trimmed || "0"} sat`;
+    return formatSatAmount(Number(trimmed || "0"));
   }, [
+    formatSatAmount,
     paymentRequestAmountTextValue,
+    paymentRequestFixedAmount,
     paymentRequestHasFixedAmount,
     paymentRequestInputCurrency,
     paymentRequestManualAmount,
@@ -83,10 +92,12 @@ export function usePaymentRequestDerived({
   ]);
 
   const paymentRequestSecondaryAmountText = useMemo(() => {
-    const unitDisplay = paymentRequestUnitLabel === "sat" ? "sats" : paymentRequestUnitLabel;
+    const unitDisplay = paymentRequestUnitLabel === "sat" ? satInputUnitLabel : paymentRequestUnitLabel;
     if (paymentRequestHasFixedAmount) {
       if (paymentRequestFixedAmount != null) {
-        return `Request requires ${satFormatter.format(paymentRequestFixedAmount)} ${unitDisplay}`;
+        return paymentRequestUnitLabel === "sat"
+          ? `Request requires ${formatSatAmount(paymentRequestFixedAmount)}`
+          : `Request requires ${satFormatter.format(paymentRequestFixedAmount)} ${unitDisplay}`;
       }
       return `Request requires amount in ${unitDisplay}`;
     }
@@ -107,7 +118,7 @@ export function usePaymentRequestDerived({
       if (sats <= 0) {
         return `Enter amount in ${inputUnitDisplay}`;
       }
-      return `≈ ${satFormatter.format(sats)} sat`;
+      return `≈ ${formatSatAmount(sats)}`;
     }
     return `Ready to send ${trimmed} ${inputUnitDisplay}`;
   }, [
@@ -119,6 +130,8 @@ export function usePaymentRequestDerived({
     paymentRequestFixedAmount,
     walletConversionEnabled,
     btcUsdPrice,
+    formatSatAmount,
+    satInputUnitLabel,
     satFormatter,
   ]);
 

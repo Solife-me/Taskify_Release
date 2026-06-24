@@ -30,6 +30,7 @@ export interface UseEcashRedeemOptions {
   closeManualSendPlan: () => void;
   closeReceiveEcashSheet: () => void;
   createPaymentRequest: (amount: string, opts?: any) => Promise<boolean>;
+  formatSatAmount: (amount: number) => string;
   finalizeManualSelection: (opts: { selection: string[]; selectedTotal: number; target: any }) => Promise<void>;
   handlePaymentRequestScan: (text: string) => Promise<boolean>;
   manualSelectedTotal: number;
@@ -59,6 +60,7 @@ export function useEcashRedeem({
   closeManualSendPlan,
   closeReceiveEcashSheet,
   createPaymentRequest,
+  formatSatAmount,
   finalizeManualSelection,
   handlePaymentRequestScan,
   manualSelectedTotal,
@@ -221,7 +223,7 @@ export function useEcashRedeem({
         savedAmount = amountFromCashuToken(normalizedToken);
       }
 
-      const amountNote = savedAmount ? `${savedAmount} sat${savedAmount === 1 ? "" : "s"}` : "Token";
+      const amountNote = savedAmount ? formatSatAmount(savedAmount) : "Token";
       const crossMintNote = saved.crossMint && saved.mintUrl ? ` at ${saved.mintUrl}` : "";
       const historyId = `recv-${Date.now()}`;
 
@@ -244,7 +246,7 @@ export function useEcashRedeem({
       ]);
 
       const toastAmount = savedAmount
-        ? `${savedAmount} sat${savedAmount === 1 ? "" : "s"}`
+        ? formatSatAmount(savedAmount)
         : "token";
       showToast(`Received ${toastAmount}${crossMintNote}`, 3500);
 
@@ -258,7 +260,7 @@ export function useEcashRedeem({
           const redeemedAmount = sumProofAmounts(res.proofs);
           const amountValue = redeemedAmount || savedAmount;
           const redeemedNote = amountValue
-            ? `${amountValue} sat${amountValue === 1 ? "" : "s"}`
+            ? formatSatAmount(amountValue)
             : "Token";
           const mintLabel = saved.crossMint
             ? res.mintUrl
@@ -306,6 +308,7 @@ export function useEcashRedeem({
       redeemPendingToken,
       savePendingTokenForRedemption,
       setHistory,
+      formatSatAmount,
       showToast,
     ]
   );
@@ -365,7 +368,7 @@ export function useEcashRedeem({
       try {
         const res = await redeemPendingToken(item.pendingTokenId);
         const amount = sumProofAmounts(res.proofs);
-        const amountNote = amount ? `${amount} sat${amount === 1 ? "" : "s"}` : "Token";
+        const amountNote = amount ? formatSatAmount(amount) : "Token";
         showToast(`${amountNote} redeemed`, 3000);
         const tokenState =
           typeof item.detail === "string"
@@ -398,7 +401,7 @@ export function useEcashRedeem({
         }));
       }
     },
-    [redeemPendingToken, setHistory, showToast],
+    [formatSatAmount, redeemPendingToken, setHistory, showToast],
   );
 
   const handleManualSendConfirm = useCallback(async () => {

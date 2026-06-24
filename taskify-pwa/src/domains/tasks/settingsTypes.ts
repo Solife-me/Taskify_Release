@@ -24,6 +24,7 @@ export type FastingRemindersMode = "weekday" | "random";
 
 export type StartupView = "main" | "wallet" | "upcoming" | "chat";
 export type LightningAddressProvider = "solife.me" | "npub.cash" | "none";
+export type WalletDenominationDisplay = "bitcoin-symbol" | "sat";
 
 export type Settings = {
   weekStart: Weekday; // 0=Sun, 1=Mon, 6=Sat
@@ -54,6 +55,7 @@ export type Settings = {
   startupView: StartupView;
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
+  walletDenominationDisplay: WalletDenominationDisplay;
   walletSentStateChecksEnabled: boolean;
   walletPaymentRequestsEnabled: boolean;
   walletPaymentRequestsBackgroundChecksEnabled: boolean;

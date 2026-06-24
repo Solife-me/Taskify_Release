@@ -36,7 +36,7 @@ export function EcashReceiveSheet(props) {
     canCreateEcashRequest,
     handleCreateEcashRequest,
     lastCreatedEcashRequest,
-    satFormatter,
+    formatSatAmount,
     walletConversionEnabled,
     btcUsdPrice,
     formatUsdAmount,
@@ -278,7 +278,7 @@ export function EcashReceiveSheet(props) {
                   <span className="text-secondary">Amount</span>
                   <span className="font-semibold">
                     {typeof lastCreatedEcashRequest.amountSat === "number"
-                      ? `${satFormatter.format(lastCreatedEcashRequest.amountSat)} SAT`
+                      ? formatSatAmount(lastCreatedEcashRequest.amountSat)
                       : "Open amount"}
                   </span>
                 </div>

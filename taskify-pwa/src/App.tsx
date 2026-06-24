@@ -12726,6 +12726,7 @@ export default function App() {
           setEditing={setEditing}
           addTaskToBountyList={addTaskToBountyList}
           removeTaskFromBountyList={removeTaskFromBountyList}
+          walletDenominationDisplay={settings.walletDenominationDisplay}
         />
       )}
       {activePage === "settings" && (

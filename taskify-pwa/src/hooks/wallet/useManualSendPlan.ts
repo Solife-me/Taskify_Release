@@ -33,6 +33,7 @@ export function useManualSendPlan({
   setHistory,
   showToast,
   mintUrl,
+  formatSatAmount,
 }) {
   const [manualSendPlan, setManualSendPlan] = useState<ManualSendPlan | null>(null);
   const [manualSendSelection, setManualSendSelection] = useState<Set<string>>(() => new Set());
@@ -96,12 +97,13 @@ export function useManualSendPlan({
         }),
         ...h,
       ]);
-      showToast(`Token created for ${selectedTotal} sats`, 3000);
+      showToast(`Token created for ${formatSatAmount(selectedTotal)}`, 3000);
       return res;
     },
     [
       buildHistoryEntry,
       createTokenFromProofSelection,
+      formatSatAmount,
       mintUrl,
       setHistory,
       setLastSendTokenAmount,

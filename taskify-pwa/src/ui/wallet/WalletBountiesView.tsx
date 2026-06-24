@@ -7,11 +7,16 @@
 // (`fundedBountyTasks`, `pinnedBountyTasks`, `openBountyTasks`) and passed
 // pre-flattened as `tasks`.
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { TaskTitle } from "../task/TaskTitle";
 import type { Board, Task } from "../../domains/tasks/taskTypes";
+import type { WalletDenominationDisplay } from "../../domains/tasks/settingsTypes";
 import { taskHasBountyList, bountyStateLabel, PINNED_BOUNTY_LIST_KEY } from "../../domains/tasks/taskUtils";
 import type { EditingState } from "../../domains/tasks/taskTypes";
+import {
+  formatSatAmount,
+  normalizeWalletDenominationDisplay,
+} from "../../wallet/denomination";
 
 type WalletBountiesTab = "open" | "funded" | "pinned";
 
@@ -24,6 +29,7 @@ export type WalletBountiesViewProps = {
   setEditing: (state: EditingState) => void;
   addTaskToBountyList: (taskId: string) => void;
   removeTaskFromBountyList: (taskId: string) => void;
+  walletDenominationDisplay: WalletDenominationDisplay;
 };
 
 export function WalletBountiesView({
@@ -35,8 +41,15 @@ export function WalletBountiesView({
   setEditing,
   addTaskToBountyList,
   removeTaskFromBountyList,
+  walletDenominationDisplay,
 }: WalletBountiesViewProps) {
   const [walletBountiesTab, setWalletBountiesTab] = useState<WalletBountiesTab>("pinned");
+  const normalizedWalletDenominationDisplay = normalizeWalletDenominationDisplay(walletDenominationDisplay);
+  const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
+  const formatBountyAmount = useCallback(
+    (amount: number) => formatSatAmount(amount, satFormatter, normalizedWalletDenominationDisplay),
+    [normalizedWalletDenominationDisplay, satFormatter],
+  );
 
   const visibleTasks =
     walletBountiesTab === "funded"
@@ -97,7 +110,7 @@ export function WalletBountiesView({
                 : parsedDue.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
               const amountLabel =
                 bounty && typeof bounty.amount === "number"
-                  ? `${bounty.amount} sats`
+                  ? formatBountyAmount(bounty.amount)
                   : "Amount unknown";
               return (
                 <li

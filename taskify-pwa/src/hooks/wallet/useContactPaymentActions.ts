@@ -29,6 +29,8 @@ export function useContactPaymentActions({
   lnInput,
   walletConversionEnabled,
   walletPrimaryCurrency,
+  satInputUnitLabel,
+  formatSatAmount,
   sendAmt,
   btcUsdPrice,
   lockSendToPubkey,
@@ -105,6 +107,8 @@ export function useContactPaymentActions({
   lnInput: string;
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: string;
+  satInputUnitLabel: string;
+  formatSatAmount: (amount: number) => string;
   sendAmt: string;
   btcUsdPrice: number | null;
   lockSendToPubkey: boolean;
@@ -396,7 +400,7 @@ export function useContactPaymentActions({
         return false;
       }
       const primaryCurrencyForAmount = walletConversionEnabled ? walletPrimaryCurrency : "sat";
-      const unitLabelLocal = primaryCurrencyForAmount === "usd" ? "USD" : "sats";
+      const unitLabelLocal = primaryCurrencyForAmount === "usd" ? "USD" : satInputUnitLabel;
       const trimmedSendAmt = sendAmt.trim();
       let sats = 0;
       if (trimmedSendAmt) {
@@ -541,7 +545,7 @@ export function useContactPaymentActions({
         ]);
 
         const senderNpub = formatNpub(identity.pubkey);
-        const dmPlain = `nostr:${senderNpub} sent you ${sats} SAT from Taskify wallet!\n${token}`;
+        const dmPlain = `nostr:${senderNpub} sent you ${formatSatAmount(sats)} from Taskify wallet!\n${token}`;
         const recipientHex = recipientPubkey.toLowerCase();
         const senderHex = identity.pubkey.toLowerCase();
         const publishRelays = await resolveNip17Relays(recipientHex, relays);
@@ -557,7 +561,7 @@ export function useContactPaymentActions({
           senderSecret: identity.secret,
           publish,
         });
-        showToast(`Sent ${sats} sat${sats === 1 ? "" : "s"} to ${contactDisplayLabel(contact)}`, 3500);
+        showToast(`Sent ${formatSatAmount(sats)} to ${contactDisplayLabel(contact)}`, 3500);
         return true;
       } catch (err: any) {
         const message = err?.message || String(err);
@@ -576,6 +580,7 @@ export function useContactPaymentActions({
       createSendToken,
       defaultNostrRelays,
       ensureNostrPool,
+      formatSatAmount,
       formatNpub,
       lockSendToPubkey,
       normalizeNostrPubkey,
@@ -583,6 +588,7 @@ export function useContactPaymentActions({
       publishNip17Giftwraps,
       resolveNip17Relays,
       safePublish,
+      satInputUnitLabel,
       sendAmt,
       sendLockPubkeyInput,
       setHistory,
