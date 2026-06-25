@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Proof } from "@cashu/cashu-ts";
 import type { Settings } from "../../domains/tasks/settingsTypes";
 import { useCashu } from "../../context/CashuContext";
 import { useToast } from "../../context/ToastContext";
@@ -11,15 +10,16 @@ import {
   fetchSolifeConfig,
   SOLIFE_LIGHTNING_ADDRESS_DOMAIN,
   updateSolifeLightningAddressMint,
+  verifySolifeAddressPurchase,
+  type SolifeAddress,
   type SolifeAccount,
+  type SolifeAddressPurchase,
   type SolifeConfig,
 } from "../../wallet/solife";
 import {
   formatSatAmount,
   normalizeWalletDenominationDisplay,
 } from "../../wallet/denomination";
-import { computeProofY } from "../../wallet/cashuProofHelpers";
-import type { StoredProofForState } from "../../wallet/walletHistoryTypes";
 import { useWalletHistory } from "../../hooks/wallet/useWalletHistory";
 
 type WalletAddressViewProps = {
@@ -46,17 +46,24 @@ function normalizeAddress(value: string | null | undefined): string {
   return (value || "").trim().toLowerCase();
 }
 
-function proofStateFromProof(proof: Proof): StoredProofForState {
-  const stored: StoredProofForState = {
-    secret: proof.secret,
-    amount: Number(proof.amount) || 0,
-    id: proof.id,
-    C: proof.C,
-  };
-  if (proof.witness) stored.witness = proof.witness;
-  const y = computeProofY(proof.secret);
-  if (y) stored.Y = y;
-  return stored;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
+function isSettledSolifePurchase(purchase: SolifeAddressPurchase): boolean {
+  return purchase.status === "address_claimed" || purchase.status === "expired" || purchase.status === "error";
+}
+
+async function verifySolifePurchaseUntilSettled(
+  secretKey: string,
+  purchaseId: string,
+): Promise<SolifeAddressPurchase> {
+  let latest = (await verifySolifeAddressPurchase(secretKey, purchaseId)).purchase;
+  for (let attempt = 0; attempt < 5 && !isSettledSolifePurchase(latest); attempt += 1) {
+    await sleep(1500);
+    latest = (await verifySolifeAddressPurchase(secretKey, purchaseId)).purchase;
+  }
+  return latest;
 }
 
 export function WalletAddressView({
@@ -65,7 +72,7 @@ export function WalletAddressView({
   defaultRelays,
 }: WalletAddressViewProps) {
   const { show: showToast } = useToast();
-  const { mintUrl, createSendToken } = useCashu();
+  const { mintUrl, payInvoice } = useCashu();
   const { setHistory, buildHistoryEntry } = useWalletHistory({
     showToast,
     captureFiatValueUsd: () => undefined,
@@ -98,6 +105,10 @@ export function WalletAddressView({
     (account?.addresses || []).some((address) => normalizeAddress(address.address) === selectedSolifeAddress)
       ? selectedSolifeAddress
       : defaultSolifeAddress;
+  const activeSolifeAddressRecord = useMemo(
+    () => (account?.addresses || []).find((address) => normalizeAddress(address.address) === activeSolifeAddress) || null,
+    [account?.addresses, activeSolifeAddress],
+  );
 
   const refreshMintChoices = useCallback(() => {
     const choices = new Set<string>();
@@ -165,6 +176,11 @@ export function WalletAddressView({
 
   const handleSelectSolifeMint = useCallback(
     async (nextValue: string) => {
+      if (!activeSolifeAddressRecord) {
+        setStatus("error");
+        setMessage("Select a custom Solife address before changing its payment mint.");
+        return;
+      }
       const storedSk = nostrSkSync();
       if (!storedSk) {
         setStatus("error");
@@ -176,18 +192,20 @@ export function WalletAddressView({
       setStatus("saving");
       setMessage(normalized ? `Saving ${compactMintLabel(normalized)}...` : "Resetting to Solife default mint...");
       try {
-        const result = await updateSolifeLightningAddressMint(storedSk, normalized);
+        const result = await updateSolifeLightningAddressMint(storedSk, {
+          handle: activeSolifeAddressRecord.handle,
+          mintUrl: normalized,
+        });
         setConfig(result.config);
         setAccount((current) =>
           current
             ? {
                 ...current,
-                lightningAddressMintUrl: result.mintUrl,
-                lightningAddressMintOverride: result.mintOverride,
                 addresses: current.addresses.map((address) => ({
                   ...address,
-                  mintUrl: result.mintUrl,
-                  mintOverride: result.mintOverride,
+                  ...(address.handle === activeSolifeAddressRecord.handle
+                    ? { mintUrl: result.mintUrl, mintOverride: result.mintOverride }
+                    : {}),
                 })),
               }
             : current,
@@ -205,7 +223,7 @@ export function WalletAddressView({
         setMessage(error?.message || "Unable to update your Solife mint.");
       }
     },
-    [refreshSolife, showToast],
+    [activeSolifeAddressRecord, refreshSolife, showToast],
   );
 
   const handlePurchaseCustomAddress = useCallback(async () => {
@@ -223,89 +241,97 @@ export function WalletAddressView({
     }
 
     setPurchaseStatus("purchasing");
-    setPurchaseMessage("Checking Solife address pricing...");
-    let createdFeeToken = "";
-    let createdFeeTokenMint = "";
-    let createdFeeTokenProofs: Proof[] = [];
+    setPurchaseMessage("Creating Solife address purchase...");
 
     try {
       const nextConfig = config || (await fetchSolifeConfig());
       setConfig(nextConfig);
       const feeSats = Math.max(0, Math.floor(Number(nextConfig.customAddressPriceSats) || 0));
-
-      if (feeSats > 0) {
-        setPurchaseMessage(`Creating ${formatSats(feeSats)} fee token from ${compactMintLabel(nextConfig.mintUrl)}...`);
-        const tokenResult = await createSendToken(feeSats, { mintUrl: nextConfig.mintUrl });
-        createdFeeToken = tokenResult.token;
-        createdFeeTokenMint = tokenResult.mintUrl;
-        createdFeeTokenProofs = tokenResult.proofs || [];
-        setHistory((history) => [
-          buildHistoryEntry({
-            id: `solife-custom-fee-${Date.now()}`,
-            summary: `Solife address fee for ${handle}@${configuredDomain}`,
-            detail: createdFeeToken,
-            detailKind: "token",
-            revertToken: createdFeeToken,
-            type: "ecash",
-            direction: "out",
-            amountSat: feeSats,
-            mintUrl: createdFeeTokenMint,
-            tokenState: createdFeeTokenProofs.length
-              ? {
-                  mintUrl: createdFeeTokenMint,
-                  proofs: createdFeeTokenProofs.map(proofStateFromProof),
-                }
-              : undefined,
-          }),
-          ...history,
-        ]);
+      if (feeSats > 0 && nextConfig.lnbitsConfigured === false) {
+        throw new Error("Paid Solife address claims are temporarily unavailable.");
       }
 
       setPurchaseMessage(`Claiming ${handle}@${nextConfig.domain || configuredDomain}...`);
       const result = await claimSolifeCustomAddress(storedSk, {
         handle,
-        token: createdFeeToken,
         relays: defaultRelays,
       });
+      let claimedAddress: string;
+      if (result.claim.kind === "purchase") {
+        const purchase = result.claim.purchase;
+        if (!purchase.bolt11) {
+          throw new Error("Solife did not return a payment invoice for this address claim.");
+        }
+        const priceSats = purchase.priceSats || feeSats;
+        setPurchaseMessage(`Paying ${formatSats(priceSats)} Solife invoice...`);
+        const paymentResult = await payInvoice(purchase.bolt11);
+        setHistory((history) => [
+          buildHistoryEntry({
+            id: `solife-custom-fee-${Date.now()}`,
+            summary: `Solife address fee for ${purchase.address || `${handle}@${nextConfig.domain || configuredDomain}`}`,
+            detail: purchase.bolt11,
+            detailKind: "invoice",
+            type: "lightning",
+            direction: "out",
+            amountSat: priceSats || undefined,
+            feeSat: paymentResult?.feeReserveSat ?? undefined,
+            mintUrl: paymentResult?.mintUrl ?? mintUrl ?? undefined,
+          }),
+          ...history,
+        ]);
+        setPurchaseMessage("Verifying Solife payment...");
+        const verified = await verifySolifePurchaseUntilSettled(storedSk, purchase.purchaseId);
+        if (verified.status === "expired") {
+          throw new Error(`Solife invoice expired for ${verified.address || purchase.address}.`);
+        }
+        if (verified.status === "error") {
+          throw new Error(verified.error || `Solife could not claim ${verified.address || purchase.address}.`);
+        }
+        if (verified.status !== "address_claimed") {
+          throw new Error(`Payment sent, but Solife has not confirmed ${verified.address || purchase.address} yet.`);
+        }
+        claimedAddress = verified.address || purchase.address;
+      } else {
+        const address = result.claim.address as SolifeAddress;
+        claimedAddress = address.address;
+      }
       setCustomHandle("");
       setPurchaseStatus("success");
-      setPurchaseMessage(`Claimed ${result.address.address}`);
-      setSettings({ solifeLightningAddress: normalizeAddress(result.address.address) });
-      showToast(`Claimed ${result.address.address}`, 3000);
+      setPurchaseMessage(`Claimed ${claimedAddress}`);
+      setSettings({ solifeLightningAddress: normalizeAddress(claimedAddress) });
+      showToast(`Claimed ${claimedAddress}`, 3000);
       void refreshSolife();
       setCustomPageOpen(false);
     } catch (error: any) {
-      const tokenNote = createdFeeToken
-        ? " The fee token was saved to wallet history in case you need to redeem it back."
-        : "";
       setPurchaseStatus("error");
-      setPurchaseMessage(`${error?.message || "Unable to claim Solife address."}${tokenNote}`);
+      setPurchaseMessage(error?.message || "Unable to claim Solife address.");
     }
   }, [
     buildHistoryEntry,
     config,
     configuredDomain,
-    createSendToken,
     customHandle,
     defaultRelays,
     formatSats,
+    mintUrl,
+    payInvoice,
     refreshSolife,
     setHistory,
     setSettings,
     showToast,
   ]);
 
-  const currentSolifeMintValue = account?.lightningAddressMintOverride
-    ? normalizeMintUrl(account.lightningAddressMintUrl)
+  const currentSolifeMintValue = activeSolifeAddressRecord?.mintOverride
+    ? normalizeMintUrl(activeSolifeAddressRecord.mintUrl)
     : "__default__";
   const mintOptions = useMemo(() => {
     const options = mintList.map((url) => normalizeMintUrl(url)).filter(Boolean);
-    const current = account?.lightningAddressMintUrl ? normalizeMintUrl(account.lightningAddressMintUrl) : "";
-    if (current && account?.lightningAddressMintOverride && !options.includes(current)) {
+    const current = activeSolifeAddressRecord?.mintUrl ? normalizeMintUrl(activeSolifeAddressRecord.mintUrl) : "";
+    if (current && activeSolifeAddressRecord?.mintOverride && !options.includes(current)) {
       options.unshift(current);
     }
     return options;
-  }, [account?.lightningAddressMintOverride, account?.lightningAddressMintUrl, mintList]);
+  }, [activeSolifeAddressRecord?.mintOverride, activeSolifeAddressRecord?.mintUrl, mintList]);
 
   const addressChoices = useMemo(() => {
     const choices = defaultSolifeAddress ? [{ address: defaultSolifeAddress, label: "Default npub address" }] : [];
@@ -495,7 +521,7 @@ export function WalletAddressView({
               onChange={(event) => {
                 void handleSelectSolifeMint(event.target.value);
               }}
-              disabled={status === "loading" || status === "saving"}
+              disabled={!activeSolifeAddressRecord || status === "loading" || status === "saving"}
             >
               <option value="__default__">
                 Solife default{config?.mintUrl ? ` (${compactMintLabel(config.mintUrl)})` : ""}
@@ -506,6 +532,9 @@ export function WalletAddressView({
                 </option>
               ))}
             </select>
+            {!activeSolifeAddressRecord && (
+              <div className="text-xs text-secondary">Choose a custom Solife address to change its payment mint.</div>
+            )}
             {!mintOptions.length && (
               <div className="text-xs text-secondary">Add mints in Wallet &gt; Mints to choose a wallet mint here.</div>
             )}
