@@ -15,12 +15,12 @@
   "peerDependencies": {
     "@noble/hashes": "^2.2.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "nostr-tools": "^2.23.5"
+    "nostr-tools": "^2.23.9"
   },
   "devDependencies": {
     "@noble/hashes": "^2.2.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "nostr-tools": "^2.23.5",
+    "nostr-tools": "^2.23.9",
     "typescript": "^6.0.3"
   }
 }
