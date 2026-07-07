@@ -1,4 +1,4 @@
-import { secp256k1 } from "@noble/curves/secp256k1";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, getEventHash, getPublicKey, nip19, nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
 
@@ -196,7 +196,7 @@ function resolveNip17Timestamp(): number {
 }
 
 function generatePrivateKey(): { hex: string; bytes: Uint8Array } {
-  const bytes = secp256k1.utils.randomPrivateKey();
+  const bytes = secp256k1.utils.randomSecretKey();
   const hex = bytesToHex(bytes);
   return { hex, bytes: hexToBytes(hex) };
 }

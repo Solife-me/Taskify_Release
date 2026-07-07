@@ -1,9 +1,9 @@
 // Helper for signing Worker API requests for Google Calendar endpoints.
 // Uses the same Nostr privkey the app already holds.
 
-import { schnorr } from "@noble/curves/secp256k1";
+import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -113,8 +113,9 @@ export async function signGcalHeaders(
   const ts = Math.floor(Date.now() / 1000).toString();
   const payload = `${ts}.${body}`;
   const msgHash = sha256(new TextEncoder().encode(payload));
-  const sigBytes = schnorr.sign(msgHash, privkeyHex);
-  const pubkey = bytesToHex(schnorr.getPublicKey(privkeyHex));
+  const privkeyBytes = hexToBytes(privkeyHex);
+  const sigBytes = schnorr.sign(msgHash, privkeyBytes);
+  const pubkey = bytesToHex(schnorr.getPublicKey(privkeyBytes));
   return {
     "X-Taskify-Npub": pubkey,
     "X-Taskify-Timestamp": ts,
