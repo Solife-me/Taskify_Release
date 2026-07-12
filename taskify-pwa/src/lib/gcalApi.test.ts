@@ -146,6 +146,14 @@ describe("gcalEventToCalendarEvent", () => {
     const result = gcalEventToCalendarEvent(allDay);
     expect(result.kind).toBe("date");
     expect((result as any).startDate).toBe("2026-03-26");
+    expect((result as any).endDate).toBeUndefined();
+  });
+
+  it("converts Google's exclusive multi-day end to Taskify's inclusive end", () => {
+    const allDay = { ...baseEvent, allDay: true, startISO: "2026-03-26", endISO: "2026-03-29" };
+    const result = gcalEventToCalendarEvent(allDay);
+    expect(result.kind).toBe("date");
+    expect((result as any).endDate).toBe("2026-03-28");
   });
 
   it("cancelled events have readOnly:true", () => {

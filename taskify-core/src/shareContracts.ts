@@ -176,9 +176,37 @@ export function normalizeTaskDocuments(value: unknown): SharedTaskPayload["docum
 
 export function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"] | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const rawType = (value as any).type;
-  if (typeof rawType !== "string" || !rawType.trim()) return undefined;
-  return { ...(value as any), type: rawType.trim() };
+  const raw = value as Record<string, unknown>;
+  const type = typeof raw.type === "string" ? raw.type.trim() : "";
+  const untilISO = typeof raw.untilISO === "string" && raw.untilISO.trim()
+    ? raw.untilISO.trim()
+    : undefined;
+  const withUntil = <T extends Record<string, unknown>>(rule: T): T & { untilISO?: string } => (
+    untilISO ? { ...rule, untilISO } : rule
+  );
+  if (type === "none" || type === "daily") return withUntil({ type });
+  if (type === "weekly") {
+    if (!Array.isArray(raw.days)) return undefined;
+    const days = Array.from(new Set(raw.days.filter(
+      (day): day is number => Number.isInteger(day) && Number(day) >= 0 && Number(day) <= 6,
+    ).map(Number)));
+    return days.length ? withUntil({ type, days }) : undefined;
+  }
+  if (type === "every") {
+    const n = Number(raw.n);
+    const unit = raw.unit;
+    if (!Number.isSafeInteger(n) || n <= 0) return undefined;
+    if (unit !== "hour" && unit !== "day" && unit !== "week") return undefined;
+    return withUntil({ type, n, unit });
+  }
+  if (type === "monthlyDay") {
+    const day = Number(raw.day);
+    const interval = raw.interval === undefined ? undefined : Number(raw.interval);
+    if (!Number.isInteger(day) || day < 1 || day > 31) return undefined;
+    if (interval !== undefined && (!Number.isSafeInteger(interval) || interval <= 0)) return undefined;
+    return withUntil({ type, day, ...(interval === undefined ? {} : { interval }) });
+  }
+  return undefined;
 }
 
 export function normalizeTaskId(value: unknown): string | undefined {

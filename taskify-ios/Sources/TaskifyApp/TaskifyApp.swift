@@ -7,8 +7,6 @@
 //
 
 import SwiftUI
-import WebKit
-import TaskifyCore
 
 // MARK: - Config
 
@@ -21,8 +19,6 @@ private enum TaskAppConfig {
 
 @main
 struct TaskifyApp: App {
-    @StateObject private var bridge = NativeBridge()
-
     var body: some Scene {
         WindowGroup {
             Group {
@@ -40,26 +36,6 @@ struct TaskifyApp: App {
                     }
                 }
             }
-            .onAppear {
-                Task { await bridge.bootstrap() }
-            }
         }
-    }
-}
-
-// MARK: - NativeBridge (bridge to TaskifyCore services)
-
-@MainActor
-final class NativeBridge: ObservableObject {
-    @Published var secureStorage: SecureStorage = .default
-
-    /// Bootstrap any background services (e.g., relay pool warm-up, profile load).
-    func bootstrap() async {
-        // Seed the relay pool with default relays so it's ready when the PWA loads.
-        for url in RelayPool.defaultRelays {
-            await RelayPool.addRelay(url)
-        }
-        // No-op for now — the app is purely a WKWebView shell; identity operations
-        // flow through the crypto layer when the user signs in via the PWA.
     }
 }

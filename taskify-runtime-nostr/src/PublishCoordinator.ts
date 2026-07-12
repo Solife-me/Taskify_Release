@@ -196,8 +196,14 @@ export class PublishCoordinator {
       this.clearOutboxRetry(outboxId);
       return;
     }
-    await this.outboxStore.put(next).catch(() => undefined);
-    this.scheduleOutboxRetry(outboxId, 0);
+    // A resolved publish may still acknowledge only a subset of the intended
+    // relays. Treat that as a retryable partial result, not as an invitation to
+    // spin the outbox immediately. Without a due time the retry timer used to
+    // drain the same row at zero delay indefinitely while a relay was offline.
+    const delay = this.retryDelayMs(next.attempts);
+    const retryAt = Date.now() + delay;
+    await this.outboxStore.put({ ...next, nextAttemptAt: retryAt }).catch(() => undefined);
+    this.scheduleOutboxRetry(outboxId, delay);
   }
 
   private async markOutboxFailure(outboxId: string, error: unknown): Promise<void> {

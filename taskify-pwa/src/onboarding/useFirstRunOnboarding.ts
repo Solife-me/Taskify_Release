@@ -12,7 +12,6 @@ import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
 import { kvStorage } from "../storage/kvStorage";
 import {
   applyBackupDataToStorage,
-  loadCloudBackupPayload,
   parseBackupJsonPayload,
 } from "../domains/backup/backupUtils";
 import {
@@ -101,17 +100,6 @@ export function useFirstRunOnboarding({
     ]);
     completeOnboardingWithReload();
   }, [completeOnboardingWithReload]);
-  const handleOnboardingRestoreFromCloud = useCallback(async (value: string) => {
-    const parsed = await loadCloudBackupPayload(workerBaseUrl, value);
-    applyBackupDataToStorage(parsed);
-    await Promise.all([
-      taskEntityStore.flush(),
-      boardEntityStore.flush(),
-      calendarEventEntityStore.flush(),
-      externalCalendarEventEntityStore.flush(),
-    ]);
-    completeOnboardingWithReload();
-  }, [completeOnboardingWithReload, workerBaseUrl]);
   const handleOnboardingEnableNotifications = useCallback(async () => {
     const platform = pushPlatform === "android" ? "android" : detectPushPlatformFromNavigator();
     await enablePushNotifications(platform);
@@ -136,7 +124,6 @@ export function useFirstRunOnboarding({
     handleOnboardingEnableNotifications,
     handleOnboardingGenerateNewKey,
     handleOnboardingRestoreFromBackupFile,
-    handleOnboardingRestoreFromCloud,
     handleOnboardingUseExistingKey,
     isOnboardingActive,
     isOnboardingActiveRef,

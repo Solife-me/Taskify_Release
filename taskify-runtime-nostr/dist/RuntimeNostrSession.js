@@ -224,7 +224,10 @@ export class RuntimeNostrSession {
         });
     }
     drainOutbox(reason) {
-        void this.publisher.drainOutbox({ force: true }).catch((err) => {
+        // Relay lifecycle events can arrive in quick succession (connect, ready,
+        // auth). Respect each row's persisted retry deadline so those events do not
+        // bypass backoff and hammer a relay that just returned a partial result.
+        void this.publisher.drainOutbox().catch((err) => {
             if (this.isDev)
                 console.debug("[nostr] outbox drain failed", reason, err);
         });

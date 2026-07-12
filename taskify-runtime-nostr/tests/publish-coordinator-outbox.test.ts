@@ -132,6 +132,41 @@ test("PublishCoordinator keeps partial failures and drains only pending relays",
   }
 });
 
+test("PublishCoordinator backs off when a successful publish only acknowledges some relays", async () => {
+  const store = new MemoryOutboxStore();
+  const coordinator = buildCoordinator(store);
+  const originalPublish = NDKEvent.prototype.publish;
+  let publishCalls = 0;
+
+  NDKEvent.prototype.publish = async function publishMock() {
+    publishCalls += 1;
+    return new Set([relay("wss://relay.one")]) as never;
+  };
+
+  try {
+    await coordinator.publish(template, {
+      relayUrls: ["wss://relay.one", "wss://relay.two"],
+      signer: generateSecretKey(),
+    });
+
+    assert.equal(publishCalls, 1);
+    assert.equal(store.rows.size, 1);
+    const [row] = Array.from(store.rows.values());
+    assert.deepEqual(row.ackedRelays, ["wss://relay.one"]);
+    assert.deepEqual(row.pendingRelays, ["wss://relay.two"]);
+    assert.equal(row.attempts, 1);
+    assert.ok((row.nextAttemptAt || 0) >= Date.now() + 59_000);
+
+    // A routine drain must honor the persisted due time rather than retrying
+    // the partial acknowledgement in a zero-delay loop.
+    await coordinator.drainOutbox();
+    assert.equal(publishCalls, 1);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    coordinator.shutdown();
+  }
+});
+
 test("PublishCoordinator publishes only the latest replaceable event for a debounced key", async () => {
   const store = new MemoryOutboxStore();
   const coordinator = buildCoordinator(store);

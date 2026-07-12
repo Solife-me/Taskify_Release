@@ -24,7 +24,6 @@ import {
   processDueReminders,
 } from "./reminders.ts";
 import { handleNip05Lookup } from "./nip05.ts";
-import { handleSaveBackup, handleLoadBackup, cleanupExpiredBackups } from "./backups.ts";
 import type { Env, D1Database } from "./lib.ts";
 import { jsonResponse, requireDb } from "./lib.ts";
 // Re-export shared lib for trailing test re-exports that import from "./index.ts".
@@ -118,6 +117,15 @@ async function ensureSchema(env: Env): Promise<void> {
   return ready;
 }
 
+function routeUsesDatabase(pathname: string): boolean {
+  return pathname === "/api/devices"
+    || pathname.startsWith("/api/devices/")
+    || pathname === "/api/reminders"
+    || pathname === "/api/reminders/poll"
+    || pathname.startsWith("/api/voice/")
+    || pathname.startsWith("/api/gcal/");
+}
+
 interface ScheduledEvent {
   scheduledTime: number;
   cron: string;
@@ -158,7 +166,7 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type,Authorization",
+          "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Taskify-Subscription,X-Taskify-Npub,X-Taskify-Timestamp,X-Taskify-Sig",
           "Access-Control-Max-Age": "86400",
         },
       });
@@ -166,9 +174,13 @@ export default {
 
     const url = new URL(request.url);
 
-    await ensureSchema(env);
-
     try {
+      // Static assets, config, link previews, and NIP-05 lookups do not touch
+      // D1. Avoid running schema DDL on those hot paths and on static assets.
+      if (routeUsesDatabase(url.pathname)) {
+        await ensureSchema(env);
+      }
+
       if (url.pathname === "/api/config" && request.method === "GET") {
         return jsonResponse({
           workerBaseUrl: url.origin,
@@ -186,19 +198,13 @@ export default {
       }
       if (url.pathname.startsWith("/api/devices/") && request.method === "DELETE") {
         const deviceId = decodeURIComponent(url.pathname.substring("/api/devices/".length));
-        return await handleDeleteDevice(deviceId, env);
+        return await handleDeleteDevice(request, deviceId, env);
       }
       if (url.pathname === "/api/reminders" && request.method === "PUT") {
         return await handleSaveReminders(request, env);
       }
       if (url.pathname === "/api/reminders/poll" && request.method === "POST") {
         return await handlePollReminders(request, env);
-      }
-      if (url.pathname === "/api/backups" && request.method === "PUT") {
-        return await handleSaveBackup(request, env);
-      }
-      if (url.pathname === "/api/backups" && request.method === "GET") {
-        return await handleLoadBackup(url, env);
       }
       if (url.pathname === "/api/voice/extract" && request.method === "POST") {
         return await handleVoiceExtract(request, env);
@@ -241,6 +247,11 @@ export default {
       return jsonResponse({ error: (err as Error).message || "Internal error" }, 500);
     }
 
+    // Do not serve the PWA shell for removed or misspelled API routes.
+    if (url.pathname.startsWith("/api/")) {
+      return jsonResponse({ error: "Not found" }, 404);
+    }
+
     return serveAsset(request, env);
   },
 
@@ -249,7 +260,6 @@ export default {
       try {
         await ensureSchema(env);
         await processDueReminders(env);
-        await cleanupExpiredBackups(env);
         await gcalRenewExpiredWatches(env);
         await gcalRetryFailedSyncs(env);
       } catch (err) {

@@ -81,7 +81,6 @@ async function bootstrapApp(): Promise<void> {
   ]);
 
   const storagePromise = initializeStorageBoundaries();
-  let storageTimedOut = false;
   try {
     // Guard against occasional startup hangs in storage bootstrap.
     // 10s gives large backups (1000s of tasks) enough time to read from IDB on
@@ -89,8 +88,16 @@ async function bootstrapApp(): Promise<void> {
     // resolves as soon as IDB is ready — the timeout is only the upper bound.
     await withTimeout(storagePromise, 10_000);
   } catch (err) {
-    console.warn('Storage bootstrap fallback (continuing with in-memory behavior)', err);
-    storageTimedOut = true;
+    // Never mount an editable empty app while IndexedDB is still loading: a
+    // user edit in that state can reconcile the eventual real dataset as
+    // deletions. Keep the UI read-only and wait for the original load instead.
+    console.warn('Storage bootstrap is taking longer than expected', err);
+    root.render(
+      <div style={{ padding: 20, fontFamily: '-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif', color: '#111' }}>
+        Taskify is still loading your local data. Keep the app open; your data will appear as soon as storage is ready.
+      </div>,
+    );
+    await storagePromise;
   }
 
   const [
@@ -124,27 +131,6 @@ async function bootstrapApp(): Promise<void> {
   );
 
   setupServiceWorkers();
-
-  // If IDB timed out but eventually succeeds, reload once so components pick up
-  // the real data instead of showing empty state for the entire session.
-  // NOTE: use localStorage (not sessionStorage) — on iOS, the PWA process can be
-  // terminated and relaunched by the OS, which clears sessionStorage and causes an
-  // infinite reload loop when IDB is slow (e.g. after a large backup restore).
-  // A 60-second guard prevents rapid repeated reloads on slow devices.
-  if (storageTimedOut) {
-    storagePromise
-      .then(() => {
-        const RELOAD_KEY = 'taskify_storage_late_reload';
-        try {
-          const last = Number(localStorage.getItem(RELOAD_KEY) || '0');
-          if (Date.now() - last > 60_000) {
-            localStorage.setItem(RELOAD_KEY, String(Date.now()));
-            window.location.reload();
-          }
-        } catch {}
-      })
-      .catch(() => {});
-  }
 }
 async function recoverFromBootstrapFailure(err: unknown): Promise<boolean> {
   const message = err instanceof Error ? err.message : String(err);

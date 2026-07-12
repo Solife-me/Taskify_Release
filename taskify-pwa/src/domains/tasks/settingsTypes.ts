@@ -69,7 +69,6 @@ export type Settings = {
   solifeLightningAddress: string;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
-  cloudBackupsEnabled: boolean;
   nostrBackupEnabled: boolean;
   // Metadata sync is controlled by nostrBackupEnabled; kept for backwards compat
   nostrBackupMetadataEnabled: boolean;

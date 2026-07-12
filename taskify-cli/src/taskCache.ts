@@ -1,9 +1,17 @@
 // Task cache for fast completions and repeated list calls.
 // Cache file: ~/.config/taskify/cache.json
 
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import type { ReminderPreset, Subtask, TaskAssignee } from "./shared/taskTypes.js";
 
 export const CACHE_DIR = join(homedir(), ".config", "taskify");
 export const CACHE_PATH = join(CACHE_DIR, "cache.json");
@@ -21,21 +29,29 @@ export type CachedTask = {
   dueISO?: string;
   dueDateEnabled?: boolean;
   dueTimeEnabled?: boolean;
+  dueTimeZone?: string;
   priority?: 1 | 2 | 3;
   completed?: boolean;
   completedAt?: string;
+  completedBy?: string;
   createdAt?: number;
   createdBy?: string;
   lastEditedBy?: string;
   column?: string;
-  subtasks?: Array<{ id: string; title: string; completed: boolean }>;
+  subtasks?: Subtask[];
   recurrence?: unknown;
   bounty?: object;
-  reminders?: string[];
+  reminders?: ReminderPreset[];
   inboxItem?: boolean;
-  assignees?: Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }>;
+  assignees?: TaskAssignee[];
   documents?: Record<string, unknown>[];
+  hiddenUntilISO?: string;
+  streak?: number;
+  longestStreak?: number;
+  seriesId?: string;
+  images?: string[];
   deleted?: boolean;
+  nostrEventId?: string;
 };
 
 export type BoardCache = {
@@ -59,10 +75,15 @@ export function readCache(): TaskCache {
 }
 
 export function writeCache(cache: TaskCache): void {
+  const tempPath = `${CACHE_PATH}.${process.pid}.tmp`;
   try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2), "utf-8");
+    mkdirSync(CACHE_DIR, { recursive: true, mode: 0o700 });
+    chmodSync(CACHE_DIR, 0o700);
+    writeFileSync(tempPath, JSON.stringify(cache, null, 2), { encoding: "utf-8", mode: 0o600 });
+    renameSync(tempPath, CACHE_PATH);
+    chmodSync(CACHE_PATH, 0o600);
   } catch {
+    try { unlinkSync(tempPath); } catch { /* already absent */ }
     // Non-fatal: cache writes are best-effort
   }
 }
@@ -77,6 +98,15 @@ export function clearCache(): void {
 
 export function isCacheFresh(boardCache: BoardCache): boolean {
   return Date.now() - boardCache.fetchedAt < CACHE_TTL_MS;
+}
+
+export function incrementalSyncSince(
+  boardCache: BoardCache | undefined,
+  options: { refresh?: boolean; noCache?: boolean; lookbackSeconds?: number } = {},
+): number | undefined {
+  if (options.refresh === true || options.noCache === true) return undefined;
+  if (!boardCache?.lastSyncAt || boardCache.tasks.length === 0) return undefined;
+  return Math.max(0, boardCache.lastSyncAt - (options.lookbackSeconds ?? 300));
 }
 
 /** Read open task IDs from cache synchronously for shell completions. */

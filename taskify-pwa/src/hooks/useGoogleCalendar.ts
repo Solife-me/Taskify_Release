@@ -50,8 +50,8 @@ function normalizeCalendars(input: unknown): GcalCalendar[] {
     out.push({
       id,
       name,
-      primary_cal: raw.primary_cal === 1 ? 1 : 0,
-      selected: raw.selected === 1 ? 1 : 0,
+      primary_cal: raw.primary_cal === true || raw.primary_cal === 1 ? 1 : 0,
+      selected: raw.selected === true || raw.selected === 1 ? 1 : 0,
       color: typeof raw.color === "string" ? raw.color : null,
       timezone: typeof raw.timezone === "string" ? raw.timezone : null,
     });

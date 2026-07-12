@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 // that EntityStore actually uses: getAll for load, transaction for the
 // readwrite path with put/delete/clear, plus the transaction wrapper that
 // runs an inline function.
-const stores: Record<string, Map<string, { id: string }>> = {};
+type StoredRow = { id: string; [key: string]: unknown };
+const stores: Record<string, Map<string, StoredRow>> = {};
+let transactionFailuresRemaining = 0;
 
-function getStore(name: string): Map<string, { id: string }> {
+function getStore(name: string): Map<string, StoredRow> {
   if (!stores[name]) stores[name] = new Map();
   return stores[name];
 }
@@ -19,10 +21,14 @@ vi.mock("./idbStorage", () => ({
     delete: vi.fn(),
     getAll: vi.fn(async (_db: unknown, name: string) => Array.from(getStore(name).values())),
     transaction: vi.fn(async (_db: unknown, name: string, _mode: unknown, fn: (tx: unknown) => unknown) => {
+      if (transactionFailuresRemaining > 0) {
+        transactionFailuresRemaining -= 1;
+        throw new Error("transient IndexedDB failure");
+      }
       const store = getStore(name);
       const tx = {
         objectStore: () => ({
-          put: (entity: { id: string }) => store.set(entity.id, entity),
+          put: (entity: StoredRow) => store.set(entity.id, entity),
           delete: (id: string) => store.delete(id),
           clear: () => store.clear(),
         }),
@@ -42,6 +48,7 @@ type Row = { id: string; n: number };
 let s: EntityStore<Row>;
 
 beforeEach(() => {
+  transactionFailuresRemaining = 0;
   for (const name of Object.keys(stores)) stores[name].clear();
   s = new EntityStore<Row>(STORE_TASKS_V2);
 });
@@ -95,6 +102,23 @@ describe("EntityStore", () => {
     const idbStore = getStore(STORE_TASKS_V2);
     expect(idbStore.has("a")).toBe(true);
     expect(idbStore.has("b")).toBe(false);
+  });
+
+  test("syncWith retries transient write failures before reporting success", async () => {
+    transactionFailuresRemaining = 1;
+    const row: Row = { id: "a", n: 1 };
+    s.syncWith([row]);
+
+    await expect(s.flush()).resolves.toBeUndefined();
+    expect(getStore(STORE_TASKS_V2).get("a")).toEqual(row);
+  });
+
+  test("flush rejects after repeated write failures", async () => {
+    transactionFailuresRemaining = 3;
+    s.syncWith([{ id: "a", n: 1 }]);
+
+    await expect(s.flush()).rejects.toThrow("transient IndexedDB failure");
+    expect(getStore(STORE_TASKS_V2).has("a")).toBe(false);
   });
 
   test("getAll returns the in-memory cache after sync", async () => {
@@ -159,13 +183,12 @@ describe("EntityStore", () => {
   });
 
   test("entries without a string id are silently dropped", async () => {
-    s.syncWith([
+    const invalidRows: unknown[] = [
       { id: "a", n: 1 },
-      // @ts-expect-error -- intentional bad input
       { id: 42, n: 2 },
-      // @ts-expect-error -- intentional bad input
       null,
-    ] as Row[]);
+    ];
+    s.syncWith(invalidRows as Row[]);
     await s.flush();
     expect(s.size()).toBe(1);
     expect(s.getById("a")).toEqual({ id: "a", n: 1 });

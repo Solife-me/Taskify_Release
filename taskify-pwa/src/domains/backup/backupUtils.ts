@@ -2,7 +2,6 @@
 
 import type { TaskifyBackupPayload, WalletHistoryLogEntry } from "./backupTypes";
 import { idbKeyValue } from "../../storage/idbKeyValue";
-import { toBufferSource } from "../../lib/binary";
 import { kvStorage } from "../../storage/kvStorage";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET, TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import {
@@ -31,14 +30,9 @@ import {
 } from "../../wallet/storage";
 import { type WalletSeedBackupPayload, restoreWalletSeedBackup } from "../../wallet/seed";
 import type { Proof } from "@cashu/cashu-ts";
-import { getPublicKey, nip19 } from "nostr-tools";
 
 // ---- Constants ----
 
-export const LS_LAST_CLOUD_BACKUP = "taskify_cloud_backup_last_v1";
-export const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1";
-export const CLOUD_BACKUP_MIN_INTERVAL_MS = 60 * 60 * 1000;
-export const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
 export const SATS_PER_BTC = 100_000_000;
 
 function notifyNostrKeyUpdated(): void {
@@ -48,102 +42,6 @@ function notifyNostrKeyUpdated(): void {
   } catch {
     // ignore same-tab notification failures
   }
-}
-
-// ---- Crypto helpers (self-contained, no external import needed) ----
-
-async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", toBufferSource(data)));
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) out[i / 2] = parseInt(hex.slice(i, i + 2), 16);
-  return out;
-}
-
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
-}
-
-function concatBytes(a: Uint8Array, b: Uint8Array) {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function b64encode(buf: ArrayBuffer | Uint8Array): string {
-  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let bin = "";
-  for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
-  return btoa(bin);
-}
-
-function b64decode(s: string): Uint8Array {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-const CLOUD_BACKUP_KEY_LABEL = new TextEncoder().encode("taskify-cloud-backup-v1");
-
-async function deriveBackupAesKey(skHex: string): Promise<CryptoKey> {
-  const raw = concatBytes(hexToBytes(skHex), CLOUD_BACKUP_KEY_LABEL);
-  const digest = await sha256(raw);
-  return await crypto.subtle.importKey("raw", toBufferSource(digest), "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-export async function encryptBackupWithSecretKey(skHex: string, plain: string): Promise<{ iv: string; ciphertext: string }> {
-  const key = await deriveBackupAesKey(skHex);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: toBufferSource(iv) },
-    key,
-    toBufferSource(new TextEncoder().encode(plain)),
-  );
-  return { iv: b64encode(iv), ciphertext: b64encode(ctBuf) };
-}
-
-async function decryptBackupWithSecretKey(
-  skHex: string,
-  payload: { iv: string; ciphertext: string },
-): Promise<string> {
-  const key = await deriveBackupAesKey(skHex);
-  const iv = b64decode(payload.iv);
-  const ct = b64decode(payload.ciphertext);
-  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBufferSource(iv) }, key, toBufferSource(ct));
-  return new TextDecoder().decode(new Uint8Array(ptBuf));
-}
-
-function deriveNpubFromSecretKeyHex(skHex: string): string | null {
-  try {
-    const pkHex = getPublicKey(hexToBytes(skHex));
-    if (typeof (nip19 as any)?.npubEncode === "function") {
-      return (nip19 as any).npubEncode(pkHex);
-    }
-    return pkHex;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeSecretKeyInput(raw: string): string | null {
-  if (typeof raw !== "string") return null;
-  let value = raw.trim();
-  if (!value) return null;
-  if (value.startsWith("nsec")) {
-    try {
-      const dec = nip19.decode(value);
-      if (dec.type !== "nsec") return null;
-      value = typeof dec.data === "string" ? dec.data : bytesToHex(dec.data as Uint8Array);
-    } catch {
-      return null;
-    }
-  }
-  if (!/^[0-9a-fA-F]{64}$/.test(value)) return null;
-  return value.toLowerCase();
 }
 
 // ---- Backup functions ----
@@ -275,47 +173,6 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
     if ("walletSeed" in cashuData && cashuData.walletSeed) {
       restoreWalletSeedBackup(cashuData.walletSeed as WalletSeedBackupPayload);
     }
-  }
-}
-
-export async function loadCloudBackupPayload(
-  workerBaseUrl: string,
-  secretKeyInput: string,
-): Promise<Partial<TaskifyBackupPayload>> {
-  if (!workerBaseUrl) {
-    throw new Error("Cloud backup service is unavailable.");
-  }
-  const normalized = normalizeSecretKeyInput(secretKeyInput);
-  if (!normalized) {
-    throw new Error("Enter a valid nsec or 64-hex private key.");
-  }
-  if (typeof crypto === "undefined" || !crypto.subtle) {
-    throw new Error("Browser crypto APIs are unavailable.");
-  }
-  const npub = deriveNpubFromSecretKeyHex(normalized);
-  if (!npub) {
-    throw new Error("Unable to derive npub from the provided key.");
-  }
-  const res = await fetch(`${workerBaseUrl}/api/backups?npub=${encodeURIComponent(npub)}`);
-  if (res.status === 404) {
-    throw new Error("No cloud backup found for that key.");
-  }
-  if (!res.ok) {
-    throw new Error(`Backup request failed (${res.status})`);
-  }
-  const body = await res.json();
-  const backup = body?.backup;
-  if (!backup || typeof backup !== "object" || typeof backup.ciphertext !== "string" || typeof backup.iv !== "string") {
-    throw new Error("Invalid backup payload received.");
-  }
-  const decrypted = await decryptBackupWithSecretKey(normalized, {
-    ciphertext: backup.ciphertext,
-    iv: backup.iv,
-  });
-  try {
-    return parseBackupJsonPayload(decrypted);
-  } catch {
-    throw new Error("Cloud backup could not be decoded.");
   }
 }
 

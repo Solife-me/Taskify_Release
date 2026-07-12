@@ -26,7 +26,8 @@ export class NostrSession {
   }
 
   static async init(relays: string[]): Promise<PwaRuntimeSession> {
-    if (!this.singleton) {
+    const isNewSession = !this.singleton;
+    if (isNewSession) {
       const relayInfoCache = new RelayInfoCache();
       const relayHealth = new RelayHealthTracker();
       const relayInfoCacheAdapter: RelayInfoCacheLike = {
@@ -62,11 +63,17 @@ export class NostrSession {
       });
       this.installBrowserDrainHooks();
     }
-    await this.singleton.init(relays);
-    void this.singleton.publisher.drainOutbox({ force: true }).catch((err) => {
-      if ((import.meta as any)?.env?.DEV) console.warn("[nostr] outbox startup drain failed", err);
-    });
-    return this.singleton;
+    const session = this.singleton;
+    if (!session) throw new Error("NostrSession failed to initialise");
+    await session.init(relays);
+    // init() is called by many feature modules. Drain once when the singleton
+    // is created; relay/browser lifecycle hooks handle subsequent retries.
+    if (isNewSession) {
+      void session.publisher.drainOutbox().catch((err) => {
+        if ((import.meta as any)?.env?.DEV) console.warn("[nostr] outbox startup drain failed", err);
+      });
+    }
+    return session;
   }
 
   static async shutdown(): Promise<void> {
@@ -79,7 +86,7 @@ export class NostrSession {
     if (this.browserDrainHooksInstalled) return;
     if (typeof window === "undefined") return;
     const drain = () => {
-      void this.singleton?.publisher.drainOutbox({ force: true }).catch((err) => {
+      void this.singleton?.publisher.drainOutbox().catch((err) => {
         if ((import.meta as any)?.env?.DEV) console.warn("[nostr] outbox drain failed", err);
       });
     };

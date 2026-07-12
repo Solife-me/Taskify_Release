@@ -9,15 +9,21 @@ import SwiftUI
 import WebKit
 import TaskifyCore
 
-// MARK: - PWAWebView (UIViewRepresentable)
+// MARK: - PWAWebView
 
-struct PWAWebView: UIViewRepresentable {
+#if os(iOS)
+private typealias PlatformWebViewRepresentable = UIViewRepresentable
+#else
+private typealias PlatformWebViewRepresentable = NSViewRepresentable
+#endif
+
+struct PWAWebView: PlatformWebViewRepresentable {
     let url: URL
     @StateObject private var bridge = NativeScriptBridge()
 
-    func makeUIView(context: Context) -> WKWebView {
+    private func makeWebView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.preferences.javaScriptEnabled = true
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.userContentController.add(bridge, name: "TaskifyNativeBridge")
         #if os(iOS)
         config.allowsInlineMediaPlayback = true
@@ -33,18 +39,31 @@ struct PWAWebView: UIViewRepresentable {
         webView.scrollView.backgroundColor = .clear
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         #else
-        webView.backgroundColor = NSColor.black
+        webView.wantsLayer = true
+        webView.layer?.backgroundColor = NSColor.black.cgColor
         #endif
 
-        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+        webView.load(URLRequest(url: url, cachePolicy: .useProtocolCachePolicy))
         return webView
     }
 
+    #if os(iOS)
+    func makeUIView(context: Context) -> WKWebView { makeWebView(context: context) }
+
     func updateUIView(_ webView: WKWebView, context: Context) {
         if webView.url?.absoluteString != url.absoluteString {
-            webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+            webView.load(URLRequest(url: url, cachePolicy: .useProtocolCachePolicy))
         }
     }
+    #else
+    func makeNSView(context: Context) -> WKWebView { makeWebView(context: context) }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        if webView.url?.absoluteString != url.absoluteString {
+            webView.load(URLRequest(url: url, cachePolicy: .useProtocolCachePolicy))
+        }
+    }
+    #endif
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -155,14 +174,8 @@ final class NativeScriptBridge: NSObject, ObservableObject, WKScriptMessageHandl
         case "publish":
             let event = payload["event"] as? [String: Any]
             guard let evt = event else { sendError("Missing event"); return }
-            Task {
-                // Wire this to a NostrEvent model when ready
-                let kind = evt["kind"] as? Int ?? 0
-                RelayPool.defaultRelays.forEach { url in
-                    // RelayPool.add(url: url) // TODO
-                }
-                sendResponse(["type": "relaysUpdated", "count": evt["kind"] as? Int ?? 0])
-            }
+            // Wire this to a NostrEvent model when native publishing is enabled.
+            sendResponse(["type": "relaysUpdated", "count": evt["kind"] as? Int ?? 0])
 
         case "relays":
             let relays = payload["relays"] as? [String] ?? []
@@ -181,7 +194,7 @@ final class NativeScriptBridge: NSObject, ObservableObject, WKScriptMessageHandl
 
         case "identity":
             let nsec = payload["nsec"] as? String
-            guard let nsecStr = nsec, let nsecData = Data(base64Encoded: nsecStr) else {
+            guard let nsecStr = nsec, Data(base64Encoded: nsecStr) != nil else {
                 sendError("Invalid nsec"); return
             }
             // TODO: Create identity for UI
@@ -198,10 +211,6 @@ final class NativeScriptBridge: NSObject, ObservableObject, WKScriptMessageHandl
         Task { @MainActor in
             guard let data = try? JSONSerialization.data(withJSONObject: object),
                   let json = String(data: data, encoding: .utf8) else { return }
-            let safeJson = json
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "\n", with: "\\n")
             print("[NativeBridge] Sending: \(json)")
         }
     }

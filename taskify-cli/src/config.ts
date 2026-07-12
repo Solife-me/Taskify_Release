@@ -1,7 +1,7 @@
-import { readFile, writeFile } from "fs/promises";
-import { mkdirSync } from "fs";
+import { chmod, mkdir, open, readFile, rename, unlink } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 import type { ReminderPreset } from "./shared/taskTypes.js";
 
 export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = "https://nostr.build";
@@ -118,12 +118,47 @@ function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
   };
 }
 
+function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+async function ensurePrivateConfigDirectory(): Promise<void> {
+  await mkdir(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  await chmod(CONFIG_DIR, 0o700);
+}
+
+async function writeStoredConfig(stored: StoredConfig): Promise<void> {
+  await ensurePrivateConfigDirectory();
+  const tempPath = `${CONFIG_PATH}.${process.pid}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(tempPath, "wx", 0o600);
+    await handle.writeFile(JSON.stringify(stored, null, 2), "utf-8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(tempPath, CONFIG_PATH);
+    await chmod(CONFIG_PATH, 0o600);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await unlink(tempPath).catch(() => {});
+    throw error;
+  }
+}
+
 export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
   let stored: StoredConfig;
 
   try {
     const raw = await readFile(CONFIG_PATH, "utf-8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`Config file is malformed; refusing to overwrite ${CONFIG_PATH}`, { cause: error });
+    }
+    await ensurePrivateConfigDirectory();
+    await chmod(CONFIG_PATH, 0o600);
 
     // Migration: detect old flat format (has nsec or relays at top level, no profiles key)
     if (!parsed.profiles && (parsed.nsec !== undefined || Array.isArray(parsed.relays))) {
@@ -133,8 +168,7 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
         profiles: { default: profile },
       };
       // Save migrated config
-      mkdirSync(CONFIG_DIR, { recursive: true });
-      await writeFile(CONFIG_PATH, JSON.stringify(stored, null, 2), "utf-8");
+      await writeStoredConfig(stored);
       process.stderr.write("✓ Config migrated to multi-profile format\n");
     } else if (parsed.profiles && parsed.activeProfile) {
       stored = parsed as unknown as StoredConfig;
@@ -145,7 +179,10 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
         profiles: { default: { ...DEFAULT_PROFILE } },
       };
     }
-  } catch {
+  } catch (error) {
+    if (!isFileSystemError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
     stored = {
       activeProfile: "default",
       profiles: { default: { ...DEFAULT_PROFILE } },
@@ -180,7 +217,6 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
 
 // Updates the selected profile from flat cfg fields, then saves.
 export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
-  mkdirSync(CONFIG_DIR, { recursive: true });
   const targetProfile = cfg.selectedProfile ?? cfg.activeProfile;
   const profileData: ProfileConfig = {
     nsec: cfg.nsec,
@@ -206,7 +242,7 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
       [targetProfile]: profileData,
     },
   };
-  await writeFile(CONFIG_PATH, JSON.stringify(stored, null, 2), "utf-8");
+  await writeStoredConfig(stored);
 }
 
 // Save the raw profiles structure (for profile management commands — does NOT rewrite active profile from flat fields)
@@ -214,8 +250,7 @@ export async function saveProfiles(
   activeProfile: string,
   profiles: Record<string, ProfileConfig>,
 ): Promise<void> {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify({ activeProfile, profiles }, null, 2), "utf-8");
+  await writeStoredConfig({ activeProfile, profiles });
 }
 
 export function getActiveProfile(cfg: TaskifyConfig): ProfileConfig {

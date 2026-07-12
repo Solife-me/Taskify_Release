@@ -63,7 +63,6 @@ export type Settings = {
   fileStorageServer: string;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
-  cloudBackupsEnabled: boolean;
   nostrBackupEnabled: boolean;
   nostrBackupMetadataEnabled: boolean;
   pushNotifications: PushPreferences;

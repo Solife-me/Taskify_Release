@@ -37,7 +37,7 @@ Taskify has three runtime surfaces that collaborate:
 │                      │   │                          │
 │  - Push notify subs  │   │  - Task/board events     │
 │  - Reminder cron     │   │  - App state sync        │
-│  - R2 backup store   │   │  - Profile metadata      │
+│  - Google Calendar   │   │  - Profile metadata      │
 │  - Static PWA assets │   │  - Wallet events (NWC)   │
 │  - D1: device/remind │   │                          │
 │  - KV: device/remind │   │                          │
@@ -46,7 +46,7 @@ Taskify has three runtime surfaces that collaborate:
 
 ### Key Principle
 
-Tasks and app state are **not stored in the Worker** — they live in the user's local IndexedDB and are synced peer-to-peer via Nostr events. The Worker's job is limited to: serving the PWA static assets, handling Web Push subscriptions/delivery, and storing encrypted backups in R2.
+Tasks and app state are **not stored in the Worker** — they live in the user's local IndexedDB and are synced peer-to-peer via encrypted Nostr events. The Worker serves PWA assets, handles Web Push delivery, and coordinates Google Calendar integration.
 
 ---
 
@@ -205,7 +205,7 @@ All Worker logic is in a single file (~98KB). Responsibilities:
 | **Reminder scheduling** | `PUT /api/reminders` — upserts reminder rows in D1 (`reminders` table) per device |
 | **Reminder delivery polling** | `POST /api/reminders/poll` — drains pending reminder rows for clients that poll after push wake-up |
 | **Cron handler** | Runs every minute; reads due reminders from D1, appends pending notifications, sends Web Push ping |
-| **R2 backups** | `PUT /api/backups` and `GET /api/backups?npub=...` — stores encrypted backup blobs in `TASKIFY_BACKUPS` bucket |
+| **Google Calendar** | Browser-bound OAuth plus calendar/watch/event synchronization in D1 |
 | **VAPID signing** | Signs Web Push requests using P-256 ECDSA; private key resolved from `VAPID_PRIVATE_KEY` env/KV binding |
 
 **Cloudflare bindings** (`wrangler.toml`):
@@ -214,7 +214,6 @@ All Worker logic is in a single file (~98KB). Responsibilities:
 - `TASKIFY_REMINDERS` KV (optional) — legacy reminder storage keyspace
 - `TASKIFY_PENDING` KV (optional) — legacy pending-notification keyspace
 - `VAPID_PRIVATE_KEY` env or KV binding — VAPID signing key material
-- `TASKIFY_BACKUPS` R2 — encrypted backup objects
 
 ---
 

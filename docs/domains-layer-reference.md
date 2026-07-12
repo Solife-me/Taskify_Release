@@ -151,15 +151,14 @@ Why it matters:
 ### Responsibilities
 - Backup payload typing and schema safety
 - Backup serialization/deserialization helpers
-- Encryption/decryption orchestration helpers (through shared crypto utilities)
+- Manual file backup serialization and restore helpers
 
 ### Data touched
-- Encrypted backup payloads destined for Worker/R2
-- Restore payloads rehydrating local task/app state
+- Local file payloads used to restore task/app state
 
 ### Key integration points
 - Settings backup/restore actions
-- Worker API integration (`/api/backups`)
+- Encrypted Nostr backup synchronization is handled separately by `useNostrAppBackupSync`
 
 ---
 

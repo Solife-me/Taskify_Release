@@ -136,7 +136,5 @@ export async function initializeStorageBoundaries(): Promise<void> {
     externalCalendarEventEntityStore.migrateFromBlob(
       idbKeyValue.getItem(TASKIFY_STORE_TASKS, EXTERNAL_EVENTS_KEY),
     ),
-  ]).catch((err) => {
-    console.warn("entity store migration failed", err);
-  });
+  ]);
 }

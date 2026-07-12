@@ -5,7 +5,8 @@
 /// Two distinct schemes are used:
 ///
 /// 1. TASK EVENTS (kind 30301)
-///    Key derivation: SHA-256(UTF8(boardId)) → raw AES-256-GCM key
+///    Key derivation: SHA-256("taskify-board-aes-v1" || UTF8(boardId))
+///                    → raw AES-256-GCM key
 ///    Encryption:     AES-256-GCM, random 12-byte IV prepended to ciphertext → base64
 ///    Source:         taskify-core/src/boardCrypto.ts  (encryptToBoard / decryptFromBoard)
 ///
@@ -36,10 +37,11 @@ public func boardTagHash(_ boardId: String) -> String {
 // MARK: - Task Event Crypto (AES-256-GCM)
 
 /// Derives the AES-256-GCM key for task events on a given board.
-/// Key = SHA-256(UTF8(boardId))
+/// Key = SHA-256("taskify-board-aes-v1" || UTF8(boardId))
 private func deriveBoardAESKey(_ boardId: String) throws -> SymmetricKey {
-    let data = Data(boardId.utf8)
-    let digest = SHA256.hash(data: data)
+    var material = Data("taskify-board-aes-v1".utf8)
+    material.append(Data(boardId.utf8))
+    let digest = SHA256.hash(data: material)
     return SymmetricKey(data: digest)
 }
 

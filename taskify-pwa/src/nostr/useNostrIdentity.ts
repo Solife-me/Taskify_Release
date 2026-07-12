@@ -186,7 +186,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
       }
       lastNostrCreated.current.set(signerKey, createdAt);
       const ev = finalizeEvent({ ...template, created_at: createdAt }, signerBytes);
-      pool.publishEvent(relays, ev as unknown as NostrEvent);
+      await pool.publishEvent(relays, ev as unknown as NostrEvent);
       lastNostrSentMs.current = Date.now();
       return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;
     };

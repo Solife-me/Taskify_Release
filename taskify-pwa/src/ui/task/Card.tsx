@@ -7,6 +7,83 @@ import { TaskTitle, useTaskPreview } from "./TaskTitle";
 import { TaskMedia } from "./TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
 
+type CardResizeHandler = () => void;
+
+const cardResizeHandlers = new Map<Element, Set<CardResizeHandler>>();
+const pendingCardResizeHandlers = new Set<CardResizeHandler>();
+let sharedCardResizeObserver: ResizeObserver | null = null;
+let sharedResizeFrame = 0;
+let fallbackWindowListenerAttached = false;
+
+function flushCardResizeHandlers(): void {
+  sharedResizeFrame = 0;
+  const handlers = Array.from(pendingCardResizeHandlers);
+  pendingCardResizeHandlers.clear();
+  handlers.forEach((handler) => {
+    try {
+      handler();
+    } catch {
+      // A stale or detached card must not prevent other cards from measuring.
+    }
+  });
+}
+
+function scheduleCardResizeHandler(handler: CardResizeHandler): void {
+  pendingCardResizeHandlers.add(handler);
+  if (sharedResizeFrame || typeof window === "undefined") return;
+  sharedResizeFrame = window.requestAnimationFrame(flushCardResizeHandlers);
+}
+
+function handleFallbackWindowResize(): void {
+  cardResizeHandlers.forEach((handlers) => {
+    handlers.forEach(scheduleCardResizeHandler);
+  });
+}
+
+function getSharedCardResizeObserver(): ResizeObserver | null {
+  if (typeof ResizeObserver === "undefined") return null;
+  if (!sharedCardResizeObserver) {
+    sharedCardResizeObserver = new ResizeObserver((entries) => {
+      entries.forEach((entry) => {
+        cardResizeHandlers.get(entry.target)?.forEach(scheduleCardResizeHandler);
+      });
+    });
+  }
+  return sharedCardResizeObserver;
+}
+
+function observeCardTitle(element: Element, handler: CardResizeHandler): () => void {
+  let handlers = cardResizeHandlers.get(element);
+  if (!handlers) {
+    handlers = new Set();
+    cardResizeHandlers.set(element, handlers);
+
+    const observer = getSharedCardResizeObserver();
+    if (observer) {
+      observer.observe(element);
+    } else if (!fallbackWindowListenerAttached && typeof window !== "undefined") {
+      window.addEventListener("resize", handleFallbackWindowResize);
+      fallbackWindowListenerAttached = true;
+    }
+  }
+  handlers.add(handler);
+  scheduleCardResizeHandler(handler);
+
+  return () => {
+    pendingCardResizeHandlers.delete(handler);
+    const current = cardResizeHandlers.get(element);
+    current?.delete(handler);
+    if (current?.size === 0) {
+      cardResizeHandlers.delete(element);
+      sharedCardResizeObserver?.unobserve(element);
+    }
+    if (cardResizeHandlers.size === 0 && fallbackWindowListenerAttached && typeof window !== "undefined") {
+      window.removeEventListener("resize", handleFallbackWindowResize);
+      fallbackWindowListenerAttached = false;
+    }
+  };
+}
+
 function ReminderBellIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
     <svg
@@ -69,7 +146,7 @@ export function getDraggedTaskIds(dataTransfer: DataTransfer | null | undefined)
   try { return JSON.parse(raw); } catch { return null; }
 }
 
-export function Card({
+function CardComponent({
   task,
   meta,
   trailing,
@@ -138,7 +215,6 @@ export function Card({
     const el = titleRef.current;
     if (!el) return;
 
-    let raf = 0;
     const compute = () => {
       const styles = window.getComputedStyle(el);
       const lineHeight = parseFloat(styles.lineHeight || '0');
@@ -150,18 +226,10 @@ export function Card({
       setIsStacked(lines > 1);
     };
 
-    compute();
-
-    // Use a single debounced resize listener instead of per-card ResizeObserver
-    const onResize = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(compute);
-    };
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      cancelAnimationFrame(raf);
-    };
+    // A single module-level ResizeObserver serves every task card. Browsers
+    // without ResizeObserver use one shared window listener rather than one
+    // listener per rendered card.
+    return observeCardTitle(el, compute);
   }, [task.title, task.priority, task.note, task.images?.length, task.documents?.length, visibleSubtasks.length]);
 
   function handleDragStart(e: React.DragEvent) {
@@ -443,3 +511,9 @@ export function Card({
     </div>
   );
 }
+
+// Default shallow comparison is intentional: task objects are immutable, and
+// callback props are still compared so memoization never captures stale
+// behavior. Callers with stable props now avoid unrelated board rerenders.
+export const Card = React.memo(CardComponent);
+Card.displayName = "Card";

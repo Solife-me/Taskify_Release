@@ -433,9 +433,6 @@ export function SettingsModal({
 
         {/* Backup & Restore */}
         <BackupSection
-          settings={settings}
-          setSettings={setSettings}
-          workerBaseUrl={workerBaseUrl}
           onReloadNeeded={onReloadNeeded}
         />
 

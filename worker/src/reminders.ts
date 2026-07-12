@@ -7,8 +7,16 @@
 //   - VAPID-authenticated Web Push delivery
 //   - PEM/JSON key resolution for the VAPID private key
 
-import type { Env, D1Database } from "./lib.ts";
-import { requireDb, jsonResponse, base64UrlEncode, base64UrlDecode, parseJson, JSON_HEADERS } from "./lib.ts";
+import type { Env, D1Database, D1PreparedStatement, KVNamespace } from "./lib.ts";
+import {
+  requireDb,
+  jsonResponse,
+  base64UrlEncode,
+  base64UrlDecode,
+  parseJson,
+  JSON_HEADERS,
+  MINUTE_MS,
+} from "./lib.ts";
 
 // ---- Module-level state (caches + key-lookup constants) ----
 
@@ -93,7 +101,7 @@ type PendingRow = {
 
 async function handleRegisterDevice(request: Request, env: Env): Promise<Response> {
   const body = await parseJson(request);
-  const { deviceId, platform, subscription } = body || {};
+  const { deviceId, platform, subscription, subscriptionId } = body || {};
   if (!deviceId || typeof deviceId !== "string") {
     return jsonResponse({ error: "deviceId is required" }, 400);
   }
@@ -111,6 +119,13 @@ async function handleRegisterDevice(request: Request, env: Env): Promise<Respons
 
   let resolvedDeviceId = deviceId;
   const existingById = await getDeviceRecord(env, deviceId);
+  if (
+    existingById
+    && !constantTimeEqual(endpointHash, existingById.endpointHash)
+    && (typeof subscriptionId !== "string" || !constantTimeEqual(subscriptionId, existingById.endpointHash))
+  ) {
+    return jsonResponse({ error: "Device not found" }, 404);
+  }
   if (!existingById) {
     const existingByEndpoint = await findDeviceIdByEndpoint(env, subscription.endpoint);
     if (existingByEndpoint) {
@@ -137,16 +152,25 @@ async function handleRegisterDevice(request: Request, env: Env): Promise<Respons
 
 
 
-async function handleDeleteDevice(deviceId: string, env: Env): Promise<Response> {
+async function handleDeleteDevice(request: Request, deviceId: string, env: Env): Promise<Response> {
+  const subscriptionId = request.headers.get("X-Taskify-Subscription");
+  const device = await getDeviceRecord(env, deviceId);
+  if (!device || !subscriptionId || !constantTimeEqual(subscriptionId, device.endpointHash)) {
+    return jsonResponse({ error: "Device not found" }, 404);
+  }
+
+  await deleteDeviceData(deviceId, env, device.endpointHash);
+  return new Response(null, { status: 204, headers: JSON_HEADERS });
+}
+
+async function deleteDeviceData(deviceId: string, env: Env, knownEndpointHash?: string): Promise<void> {
   const db = requireDb(env);
-  const existing = await db
+  const endpointHash = knownEndpointHash ?? (await db
     .prepare<{ endpoint_hash: string | null }>(
-      `SELECT endpoint_hash
-       FROM devices
-       WHERE device_id = ?`,
+      `SELECT endpoint_hash FROM devices WHERE device_id = ?`,
     )
     .bind(deviceId)
-    .first<{ endpoint_hash: string | null }>();
+    .first<{ endpoint_hash: string | null }>())?.endpoint_hash;
 
   await db.batch([
     db.prepare("DELETE FROM pending_notifications WHERE device_id = ?").bind(deviceId),
@@ -156,7 +180,6 @@ async function handleDeleteDevice(deviceId: string, env: Env): Promise<Response>
 
   if (env.TASKIFY_DEVICES) {
     await env.TASKIFY_DEVICES.delete(deviceKey(deviceId)).catch(() => {});
-    const endpointHash = existing?.endpoint_hash;
     if (endpointHash) {
       await env.TASKIFY_DEVICES.delete(endpointKey(endpointHash)).catch(() => {});
     }
@@ -164,16 +187,19 @@ async function handleDeleteDevice(deviceId: string, env: Env): Promise<Response>
   await env.TASKIFY_REMINDERS?.delete(remindersKey(deviceId)).catch(() => {});
   await env.TASKIFY_PENDING?.delete(pendingKey(deviceId)).catch(() => {});
 
-  return new Response(null, { status: 204, headers: JSON_HEADERS });
 }
 
 async function handleSaveReminders(request: Request, env: Env): Promise<Response> {
   const body = await parseJson(request);
-  const { deviceId, reminders } = body || {};
+  const { deviceId, subscriptionId, reminders } = body || {};
   if (!deviceId || typeof deviceId !== "string") {
     return jsonResponse({ error: "deviceId is required" }, 400);
   }
-  if (!(await getDeviceRecord(env, deviceId))) {
+  const device = await getDeviceRecord(env, deviceId);
+  if (!device) {
+    return jsonResponse({ error: "Unknown device" }, 404);
+  }
+  if (typeof subscriptionId !== "string" || !constantTimeEqual(subscriptionId, device.endpointHash)) {
     return jsonResponse({ error: "Unknown device" }, 404);
   }
   if (!Array.isArray(reminders)) {
@@ -231,14 +257,13 @@ async function handleSaveReminders(request: Request, env: Env): Promise<Response
   }
 
   await db.batch(statements);
-  await db.prepare("DELETE FROM pending_notifications WHERE device_id = ?").bind(deviceId).run();
 
   return new Response(null, { status: 204, headers: JSON_HEADERS });
 }
 
 async function handlePollReminders(request: Request, env: Env): Promise<Response> {
   const body = await parseJson(request);
-  const { endpoint, deviceId } = body || {};
+  const { endpoint, deviceId, subscriptionId, acknowledgeIds, ackOnly } = body || {};
   let resolvedDeviceId = typeof deviceId === "string" ? deviceId : undefined;
   if (!resolvedDeviceId && typeof endpoint === "string") {
     resolvedDeviceId = await findDeviceIdByEndpoint(env, endpoint);
@@ -246,7 +271,32 @@ async function handlePollReminders(request: Request, env: Env): Promise<Response
   if (!resolvedDeviceId) {
     return jsonResponse({ error: "Device not registered" }, 404);
   }
+  if (typeof deviceId === "string") {
+    const device = await getDeviceRecord(env, deviceId);
+    if (!device || typeof subscriptionId !== "string" || !constantTimeEqual(subscriptionId, device.endpointHash)) {
+      return jsonResponse({ error: "Device not registered" }, 404);
+    }
+  }
   const db = requireDb(env);
+
+  if (acknowledgeIds !== undefined) {
+    if (!Array.isArray(acknowledgeIds) || acknowledgeIds.length > 256) {
+      return jsonResponse({ error: "acknowledgeIds must be an array of at most 256 IDs" }, 400);
+    }
+    const ids = Array.from(new Set(
+      acknowledgeIds.filter((id): id is number => Number.isSafeInteger(id) && id > 0),
+    ));
+    if (ids.length > 0) {
+      await db.batch(ids.map((id) =>
+        db.prepare("DELETE FROM pending_notifications WHERE id = ? AND device_id = ?")
+          .bind(id, resolvedDeviceId),
+      ));
+    }
+    if (ackOnly === true) {
+      return new Response(null, { status: 204, headers: JSON_HEADERS });
+    }
+  }
+
   const pendingRows = await db
     .prepare<PendingRow>(
       `SELECT id, task_id, board_id, title, due_iso, minutes
@@ -261,11 +311,10 @@ async function handlePollReminders(request: Request, env: Env): Promise<Response
   if (!rows.length) {
     return jsonResponse([]);
   }
-  const deleteStatements = rows.map((row) => db.prepare("DELETE FROM pending_notifications WHERE id = ?").bind(row.id));
-  await db.batch(deleteStatements);
 
   return jsonResponse(
     rows.map((row) => ({
+      notificationId: row.id,
       taskId: row.task_id,
       boardId: row.board_id ?? undefined,
       title: row.title,
@@ -277,7 +326,9 @@ async function handlePollReminders(request: Request, env: Env): Promise<Response
 
 async function processDueReminders(env: Env): Promise<void> {
   const now = Date.now();
-  const batchSize = 256;
+  // Each live reminder produces one pending insert and one source delete.
+  // Keep the pair count within D1's batch statement limit.
+  const batchSize = 50;
   const db = requireDb(env);
 
   // Process in batches to keep cron executions bounded.
@@ -298,13 +349,6 @@ async function processDueReminders(env: Env): Promise<void> {
       break;
     }
 
-    const deleteStatements = dueReminders.map((reminder) =>
-      db
-        .prepare("DELETE FROM reminders WHERE device_id = ? AND reminder_key = ?")
-        .bind(reminder.device_id, reminder.reminder_key),
-    );
-    await db.batch(deleteStatements);
-
     const grouped = new Map<string, ReminderRow[]>();
     for (const reminder of dueReminders) {
       const existing = grouped.get(reminder.device_id);
@@ -315,12 +359,56 @@ async function processDueReminders(env: Env): Promise<void> {
       }
     }
 
-    for (const [deviceId, reminders] of grouped) {
-      const device = await getDeviceRecord(env, deviceId);
+    const deviceGroups = await mapWithConcurrency(
+      Array.from(grouped.entries()),
+      8,
+      async ([deviceId, reminders]) => ({
+        deviceId,
+        reminders,
+        device: await getDeviceRecord(env, deviceId),
+      }),
+    );
+
+    const deliveryStatements: D1PreparedStatement[] = [];
+    for (const { deviceId, reminders, device } of deviceGroups) {
       if (!device) {
-        await db.prepare("DELETE FROM pending_notifications WHERE device_id = ?").bind(deviceId).run();
+        for (const reminder of reminders) {
+          deliveryStatements.push(
+            db.prepare("DELETE FROM reminders WHERE device_id = ? AND reminder_key = ?")
+              .bind(deviceId, reminder.reminder_key),
+          );
+        }
         continue;
       }
+      for (const reminder of reminders) {
+        // Insertion precedes deletion. D1 executes batch() transactionally, so
+        // a failed pending write cannot consume the source reminder.
+        deliveryStatements.push(
+          db
+            .prepare(
+              `INSERT INTO pending_notifications (device_id, task_id, board_id, title, due_iso, minutes, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .bind(
+              deviceId,
+              reminder.task_id,
+              reminder.board_id,
+              reminder.title,
+              reminder.due_iso,
+              reminder.minutes,
+              now,
+            ),
+          db.prepare("DELETE FROM reminders WHERE device_id = ? AND reminder_key = ?")
+            .bind(deviceId, reminder.reminder_key),
+        );
+      }
+    }
+    await db.batch(deliveryStatements);
+
+    // The durable pending rows now exist. Push is only a wake-up signal; a
+    // failed push leaves the notifications available for a later poll.
+    await mapWithConcurrency(deviceGroups, 8, async ({ deviceId, reminders, device }) => {
+      if (!device) return;
       const pendingNotifications: PendingReminder[] = reminders.map((reminder) => ({
         taskId: reminder.task_id,
         boardId: reminder.board_id ?? undefined,
@@ -328,10 +416,9 @@ async function processDueReminders(env: Env): Promise<void> {
         dueISO: reminder.due_iso,
         minutes: reminder.minutes,
       }));
-      await appendPending(env, deviceId, pendingNotifications);
       const ttlSeconds = computeReminderTTL(pendingNotifications, now);
       await sendPushPing(env, device, deviceId, ttlSeconds);
-    }
+    });
 
     if (dueReminders.length < batchSize) {
       break;
@@ -629,7 +716,7 @@ async function sendPushPing(env: Env, device: DeviceRecord, deviceId: string, tt
 
     if (response.status === 404 || response.status === 410) {
       console.warn("Subscription expired", deviceId);
-      await handleDeleteDevice(deviceId, env);
+      await deleteDeviceData(deviceId, env, device.endpointHash);
       return;
     }
 
@@ -674,9 +761,10 @@ async function getPrivateKey(env: Env): Promise<CryptoKey> {
   }
 
   try {
+    const pkcs8 = new Uint8Array(keyBytes).buffer;
     cachedPrivateKey = await crypto.subtle.importKey(
       "pkcs8",
-      keyBytes,
+      pkcs8,
       { name: "ECDSA", namedCurve: "P-256" },
       false,
       ["sign"],
@@ -813,6 +901,35 @@ function normalizeVapidSubject(subjectRaw: string): string {
   }
 
   return trimmed;
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const maxLength = Math.max(left.length, right.length);
+  let difference = left.length ^ right.length;
+  for (let index = 0; index < maxLength; index += 1) {
+    difference |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
+  }
+  return difference === 0;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (!items.length) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  }));
+  return results;
 }
 
 

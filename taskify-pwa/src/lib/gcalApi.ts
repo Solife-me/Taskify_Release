@@ -95,9 +95,19 @@ export function gcalEventToCalendarEvent(ev: GcalExternalEvent): GcalCalendarEve
   };
 
   if (ev.allDay) {
-    // All-day: use date strings, never treat as midnight UTC
+    // Google represents all-day ranges with an exclusive end date; Taskify's
+    // DateCalendarEvent uses an inclusive end date.
     const startDate = ev.startISO.slice(0, 10);
-    const endDate = ev.endISO ? ev.endISO.slice(0, 10) : undefined;
+    let endDate: string | undefined;
+    const exclusiveEnd = ev.endISO?.slice(0, 10);
+    if (exclusiveEnd && /^\d{4}-\d{2}-\d{2}$/.test(exclusiveEnd)) {
+      const date = new Date(`${exclusiveEnd}T00:00:00.000Z`);
+      if (!Number.isNaN(date.getTime())) {
+        date.setUTCDate(date.getUTCDate() - 1);
+        const inclusiveEnd = date.toISOString().slice(0, 10);
+        if (inclusiveEnd > startDate) endDate = inclusiveEnd;
+      }
+    }
     return { ...base, kind: "date", startDate, endDate };
   }
 

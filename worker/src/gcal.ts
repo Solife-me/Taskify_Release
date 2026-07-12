@@ -2,10 +2,16 @@
 // Handles OAuth, calendar/event sync, push webhooks, and AES-256-GCM token encryption.
 
 import { schnorr } from "@noble/curves/secp256k1.js";
-import type { Env, D1Database } from "./lib.ts";
+import type { Env, D1Database, D1PreparedStatement } from "./lib.ts";
 import { requireDb, jsonResponse, base64UrlEncode, base64UrlDecode, parseJson } from "./lib.ts";
 
 // =============================================================================
+
+const GCAL_OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const GCAL_OAUTH_COOKIE = "__Host-taskify_gcal_oauth";
+const GCAL_OAUTH_COOKIE_ATTRIBUTES = "Path=/; HttpOnly; Secure; SameSite=Lax";
+const GCAL_SYNC_CONCURRENCY = 4;
+const D1_BATCH_SIZE = 100;
 
 // --- gcalCrypto helpers -------------------------------------------------------
 
@@ -259,6 +265,20 @@ async function ensureGcalSchema(env: Env): Promise<void> {
   await db.prepare(
     `CREATE INDEX IF NOT EXISTS idx_gcal_events_start ON gcal_events(npub, start_iso)`,
   ).run();
+
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS gcal_oauth_states (
+       state_hash          TEXT    PRIMARY KEY,
+       npub                TEXT    NOT NULL,
+       browser_nonce_hash  TEXT    NOT NULL,
+       redirect_uri        TEXT    NOT NULL,
+       expires_at          INTEGER NOT NULL,
+       created_at          INTEGER NOT NULL DEFAULT (unixepoch())
+     )`,
+  ).run();
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_gcal_oauth_states_expiry ON gcal_oauth_states(expires_at)`,
+  ).run();
 }
 
 // --- GCal DB row types -------------------------------------------------------
@@ -460,7 +480,6 @@ async function syncCalendarEvents(
   const sevenDaysAgo = new Date((nowSec - 7 * 86400) * 1000).toISOString();
   const sixMonthsAhead = new Date((nowSec + 180 * 86400) * 1000).toISOString();
 
-  let pageToken: string | undefined;
   let syncToken: string | undefined;
 
   const doSync = async (url: string): Promise<void> => {
@@ -492,8 +511,11 @@ async function syncCalendarEvents(
         nextSyncToken?: string;
       };
 
-      for (const item of data.items ?? []) {
-        await upsertGcalEvent(npub, calendarId, item, db);
+      const upserts = (data.items ?? []).map((item) =>
+        prepareGcalEventUpsert(npub, calendarId, item, db),
+      );
+      for (let offset = 0; offset < upserts.length; offset += D1_BATCH_SIZE) {
+        await db.batch(upserts.slice(offset, offset + D1_BATCH_SIZE));
       }
 
       nextPageToken = data.nextPageToken;
@@ -516,8 +538,6 @@ async function syncCalendarEvents(
       .bind(syncToken, nowSec, calendarId, npub)
       .run();
   }
-
-  void pageToken; // suppress unused var warning
 }
 
 type GoogleCalendarEvent = {
@@ -531,19 +551,19 @@ type GoogleCalendarEvent = {
   htmlLink?: string;
 };
 
-async function upsertGcalEvent(
+function prepareGcalEventUpsert(
   npub: string,
   calendarId: string,
   item: GoogleCalendarEvent,
   db: D1Database,
-): Promise<void> {
+): D1PreparedStatement {
   const nowSec = Math.floor(Date.now() / 1000);
   const allDay = !item.start?.dateTime ? 1 : 0;
   const startIso = item.start?.dateTime ?? item.start?.date ?? "";
   const endIso = item.end?.dateTime ?? item.end?.date ?? "";
   const eventId = crypto.randomUUID();
 
-  await db
+  return db
     .prepare(
       `INSERT INTO gcal_events
          (id, npub, calendar_id, provider_event_id, title, description, location,
@@ -566,8 +586,27 @@ async function upsertGcalEvent(
       startIso, endIso, allDay,
       item.status ?? "confirmed", item.htmlLink ?? null,
       nowSec, nowSec,
-    )
-    .run();
+    );
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (!items.length) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  }));
+  return results;
 }
 
 // --- fetchAndSyncCalendars ---------------------------------------------------
@@ -592,10 +631,10 @@ async function fetchAndSyncCalendars(npub: string, accessToken: string, env: Env
     }>;
   };
 
-  for (const cal of data.items ?? []) {
+  const providerCalendars = data.items ?? [];
+  const calendarUpserts = providerCalendars.map((cal) => {
     const calId = crypto.randomUUID();
-
-    await db
+    return db
       .prepare(
         `INSERT INTO gcal_calendars
            (id, npub, provider_cal_id, name, primary_cal, selected, color, timezone, created_at, updated_at)
@@ -615,18 +654,24 @@ async function fetchAndSyncCalendars(npub: string, accessToken: string, env: Env
         cal.backgroundColor ?? null,
         cal.timeZone ?? null,
         nowSec, nowSec,
-      )
-      .run();
+      );
+  });
+  for (let offset = 0; offset < calendarUpserts.length; offset += D1_BATCH_SIZE) {
+    await db.batch(calendarUpserts.slice(offset, offset + D1_BATCH_SIZE));
+  }
 
-    // Fetch the actual calendar row to get its id (may differ from calId on conflict)
-    const calRow = await db
-      .prepare<GcalCalendarRow>(`SELECT * FROM gcal_calendars WHERE npub = ? AND provider_cal_id = ?`)
-      .bind(npub, cal.id)
-      .first<GcalCalendarRow>();
-    if (!calRow) continue;
+  // Read the rows once after the batch so conflict-generated existing IDs are
+  // used for watches and event sync.
+  const calendarRowsResult = await db
+    .prepare<GcalCalendarRow>(`SELECT * FROM gcal_calendars WHERE npub = ?`)
+    .bind(npub)
+    .all<GcalCalendarRow>();
+  const providerIds = new Set(providerCalendars.map((cal) => cal.id));
+  const calendarRows = (calendarRowsResult.results ?? []).filter((cal) => providerIds.has(cal.provider_cal_id));
 
+  await mapWithConcurrency(calendarRows, GCAL_SYNC_CONCURRENCY, async (calRow) => {
     try {
-      await registerGcalWatch(npub, calRow.id, cal.id, accessToken, env);
+      await registerGcalWatch(npub, calRow.id, calRow.provider_cal_id, accessToken, env);
     } catch (err) {
       console.warn("registerGcalWatch error", { calendarId: calRow.id, error: (err as Error).message });
     }
@@ -636,7 +681,7 @@ async function fetchAndSyncCalendars(npub: string, accessToken: string, env: Env
     } catch (err) {
       console.warn("syncCalendarEvents error", { calendarId: calRow.id, error: (err as Error).message });
     }
-  }
+  });
 
   await db
     .prepare(`UPDATE gcal_connections SET last_sync_at = ?, updated_at = ? WHERE npub = ?`)
@@ -646,21 +691,79 @@ async function fetchAndSyncCalendars(npub: string, accessToken: string, env: Env
 
 // --- Route handlers ----------------------------------------------------------
 
+function randomBase64Url(byteLength = 32): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readCookie(request: Request, name: string): string | null {
+  const cookieHeader = request.headers.get("Cookie");
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() === name) {
+      return part.slice(separator + 1).trim() || null;
+    }
+  }
+  return null;
+}
+
+function oauthCookie(value: string, maxAge: number): string {
+  return `${GCAL_OAUTH_COOKIE}=${value}; ${GCAL_OAUTH_COOKIE_ATTRIBUTES}; Max-Age=${maxAge}`;
+}
+
+function oauthError(message: string, status: number): Response {
+  return new Response(message, {
+    status,
+    headers: { "Set-Cookie": oauthCookie("", 0), "Cache-Control": "no-store" },
+  });
+}
+
 async function handleGcalAuthUrl(request: Request, env: Env): Promise<Response> {
   const auth = await verifyGcalAuth(request);
   if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
 
-  const state = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ npub: auth.npub })));
+  const state = randomBase64Url();
+  const browserNonce = randomBase64Url();
+  const [stateHash, browserNonceHash] = await Promise.all([
+    sha256Hex(state),
+    sha256Hex(browserNonce),
+  ]);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expiresAt = nowSec + GCAL_OAUTH_STATE_TTL_SECONDS;
+  const redirectUri = `${new URL(request.url).origin}/api/gcal/auth/callback`;
+  const db = requireDb(env);
+
+  await db.batch([
+    db.prepare(`DELETE FROM gcal_oauth_states WHERE expires_at < ?`).bind(nowSec),
+    db
+      .prepare(
+        `INSERT INTO gcal_oauth_states
+           (state_hash, npub, browser_nonce_hash, redirect_uri, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(stateHash, auth.npub, browserNonceHash, redirectUri, expiresAt, nowSec),
+  ]);
+
   const params = new URLSearchParams({
     client_id: env.GCAL_CLIENT_ID,
-    redirect_uri: "https://taskify.solife.me/api/gcal/auth/callback",
+    redirect_uri: redirectUri,
     response_type: "code",
     scope: "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email",
     access_type: "offline",
     prompt: "consent",
     state,
   });
-  return jsonResponse({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
+  const response = jsonResponse({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
+  response.headers.append("Set-Cookie", oauthCookie(browserNonce, GCAL_OAUTH_STATE_TTL_SECONDS));
+  return response;
 }
 
 async function handleGcalAuthCallback(request: Request, env: Env): Promise<Response> {
@@ -668,17 +771,36 @@ async function handleGcalAuthCallback(request: Request, env: Env): Promise<Respo
   const code = url.searchParams.get("code");
   const stateRaw = url.searchParams.get("state");
   if (!code || !stateRaw) {
-    return new Response("Missing code or state", { status: 400 });
+    return oauthError("Missing code or state", 400);
   }
 
-  let npub: string;
-  try {
-    const decoded = JSON.parse(new TextDecoder().decode(base64UrlDecode(stateRaw)));
-    npub = decoded.npub;
-    if (!npub) throw new Error("no npub");
-  } catch {
-    return new Response("Invalid state", { status: 400 });
+  const browserNonce = readCookie(request, GCAL_OAUTH_COOKIE);
+  if (!browserNonce) {
+    return oauthError("Invalid or expired state", 400);
   }
+
+  const [stateHash, browserNonceHash] = await Promise.all([
+    sha256Hex(stateRaw),
+    sha256Hex(browserNonce),
+  ]);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const db = requireDb(env);
+  // DELETE ... RETURNING makes state consumption a single atomic operation.
+  // Only the browser that initiated the flow has the matching HttpOnly cookie.
+  const oauthState = await db
+    .prepare<{ npub: string; redirect_uri: string }>(
+      `DELETE FROM gcal_oauth_states
+        WHERE state_hash = ?
+          AND browser_nonce_hash = ?
+          AND expires_at >= ?
+        RETURNING npub, redirect_uri`,
+    )
+    .bind(stateHash, browserNonceHash, nowSec)
+    .first<{ npub: string; redirect_uri: string }>();
+  if (!oauthState?.npub || !oauthState.redirect_uri) {
+    return oauthError("Invalid or expired state", 400);
+  }
+  const { npub, redirect_uri: redirectUri } = oauthState;
 
   // Exchange code for tokens
   const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
@@ -688,12 +810,12 @@ async function handleGcalAuthCallback(request: Request, env: Env): Promise<Respo
       code,
       client_id: env.GCAL_CLIENT_ID,
       client_secret: env.GCAL_CLIENT_SECRET,
-      redirect_uri: "https://taskify.solife.me/api/gcal/auth/callback",
+      redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
   });
   if (!tokenResp.ok) {
-    return new Response("Token exchange failed", { status: 502 });
+    return oauthError("Token exchange failed", 502);
   }
   const tokens = (await tokenResp.json()) as {
     access_token: string;
@@ -701,7 +823,7 @@ async function handleGcalAuthCallback(request: Request, env: Env): Promise<Respo
     expires_in?: number;
   };
   if (!tokens.access_token || !tokens.refresh_token) {
-    return new Response("Incomplete token response", { status: 502 });
+    return oauthError("Incomplete token response", 502);
   }
 
   // Get Google email
@@ -709,12 +831,11 @@ async function handleGcalAuthCallback(request: Request, env: Env): Promise<Respo
     headers: { Authorization: `Bearer ${tokens.access_token}` },
   });
   if (!userResp.ok) {
-    return new Response("Failed to get userinfo", { status: 502 });
+    return oauthError("Failed to get userinfo", 502);
   }
   const userInfo = (await userResp.json()) as { email?: string };
   const googleEmail = userInfo.email ?? "";
 
-  const nowSec = Math.floor(Date.now() / 1000);
   const keyVersion = gcalCurrentKeyVersion(env);
   const keyHex = env.GCAL_TOKEN_ENC_KEY;
 
@@ -722,7 +843,6 @@ async function handleGcalAuthCallback(request: Request, env: Env): Promise<Respo
   const encRef = await gcalEncryptToken(tokens.refresh_token, keyHex);
   const tokenExpiry = nowSec + (tokens.expires_in ?? 3600);
 
-  const db = requireDb(env);
   await db
     .prepare(
       `INSERT INTO gcal_connections
@@ -765,7 +885,14 @@ async function handleGcalAuthCallback(request: Request, env: Env): Promise<Respo
       .run();
   }
 
-  return Response.redirect("https://taskify.solife.me?gcal=connected", 302);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: `${url.origin}?gcal=connected`,
+      "Set-Cookie": oauthCookie("", 0),
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 async function handleGcalDisconnect(request: Request, env: Env): Promise<Response> {
@@ -878,6 +1005,7 @@ async function handleGcalEvents(request: Request, env: Env): Promise<Response> {
          FROM gcal_events e
          JOIN gcal_calendars c ON c.id = e.calendar_id AND c.npub = e.npub
         WHERE e.npub = ?
+          AND c.selected = 1
           AND e.start_iso >= ?
           AND e.start_iso <= ?
           AND e.status != 'cancelled'
@@ -933,17 +1061,20 @@ async function handleGcalSync(request: Request, env: Env): Promise<Response> {
     .bind(auth.npub)
     .all<GcalCalendarRow>();
 
-  let synced = 0;
-  const errors: string[] = [];
-
-  for (const cal of calendarsResult.results ?? []) {
+  const outcomes = await mapWithConcurrency(
+    calendarsResult.results ?? [],
+    GCAL_SYNC_CONCURRENCY,
+    async (cal) => {
     try {
       await syncCalendarEvents(auth.npub, cal.id, accessToken, env);
-      synced++;
+      return { ok: true as const, name: cal.name };
     } catch (err) {
-      errors.push(`${cal.name}: ${(err as Error).message}`);
+      return { ok: false as const, error: `${cal.name}: ${(err as Error).message}` };
     }
-  }
+    },
+  );
+  const synced = outcomes.filter((outcome) => outcome.ok).length;
+  const errors = outcomes.flatMap((outcome) => outcome.ok ? [] : [outcome.error]);
 
   const nowSec = Math.floor(Date.now() / 1000);
   await db
@@ -1003,14 +1134,24 @@ async function gcalRenewExpiredWatches(env: Env): Promise<void> {
     .bind(nowSec + 86400)
     .all<GcalCalendarRow>();
 
-  for (const cal of result.results ?? []) {
+  const tokenPromises = new Map<string, Promise<string>>();
+  const accessTokenFor = (npub: string): Promise<string> => {
+    let tokenPromise = tokenPromises.get(npub);
+    if (!tokenPromise) {
+      tokenPromise = refreshGcalTokenIfNeeded(npub, env);
+      tokenPromises.set(npub, tokenPromise);
+    }
+    return tokenPromise;
+  };
+
+  await mapWithConcurrency(result.results ?? [], GCAL_SYNC_CONCURRENCY, async (cal) => {
     try {
-      const accessToken = await refreshGcalTokenIfNeeded(cal.npub, env);
+      const accessToken = await accessTokenFor(cal.npub);
       await registerGcalWatch(cal.npub, cal.id, cal.provider_cal_id, accessToken, env);
     } catch (err) {
       console.error("gcalRenewExpiredWatches error", { calId: cal.id, error: (err as Error).message });
     }
-  }
+  });
 }
 
 async function gcalRetryFailedSyncs(env: Env): Promise<void> {
@@ -1022,7 +1163,7 @@ async function gcalRetryFailedSyncs(env: Env): Promise<void> {
     )
     .all<GcalConnectionRow>();
 
-  for (const conn of result.results ?? []) {
+  await mapWithConcurrency(result.results ?? [], GCAL_SYNC_CONCURRENCY, async (conn) => {
     try {
       const accessToken = await refreshGcalTokenIfNeeded(conn.npub, env);
       await fetchAndSyncCalendars(conn.npub, accessToken, env);
@@ -1037,7 +1178,7 @@ async function gcalRetryFailedSyncs(env: Env): Promise<void> {
         .bind((err as Error).message, Math.floor(Date.now() / 1000), conn.npub)
         .run();
     }
-  }
+  });
 }
 
 export {

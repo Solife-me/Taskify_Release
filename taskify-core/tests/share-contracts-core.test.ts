@@ -6,6 +6,7 @@ import {
   buildTaskAssignmentResponseEnvelope,
   normalizeTaskPriority,
   normalizeTaskAssignees,
+  normalizeTaskRecurrence,
 } from "../dist/shareContracts.js";
 
 test("buildBoardShareEnvelope + parseShareEnvelope round-trip", () => {
@@ -13,6 +14,16 @@ test("buildBoardShareEnvelope + parseShareEnvelope round-trip", () => {
   const parsed = parseShareEnvelope(JSON.stringify(envelope));
   assert.equal(parsed?.item.type, "board");
   assert.equal((parsed?.item as any).boardId, "board-1");
+});
+
+test("normalizeTaskRecurrence rejects non-progressing intervals", () => {
+  assert.equal(normalizeTaskRecurrence({ type: "every", n: 0, unit: "day" }), undefined);
+  assert.equal(normalizeTaskRecurrence({ type: "every", n: -1, unit: "week" }), undefined);
+  assert.deepEqual(normalizeTaskRecurrence({ type: "every", n: 2, unit: "day" }), {
+    type: "every",
+    n: 2,
+    unit: "day",
+  });
 });
 
 test("parseShareEnvelope returns null for invalid payload", () => {

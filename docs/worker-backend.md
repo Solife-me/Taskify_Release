@@ -2,7 +2,7 @@
 
 This guide documents the **current production backend flow** implemented in `worker/src/index.ts`.
 
-It is written for contributors/agents who need to safely modify reminder delivery, push registration, or encrypted backup behavior without introducing silent regressions.
+It is written for contributors/agents who need to safely modify reminder delivery, push registration, Google Calendar sync, or OAuth behavior without introducing silent regressions.
 
 ---
 
@@ -11,7 +11,7 @@ It is written for contributors/agents who need to safely modify reminder deliver
 The Worker is responsible for three backend concerns:
 
 1. **Push device + reminder orchestration** (HTTP APIs + cron)
-2. **Encrypted backup object persistence**
+2. **Google Calendar OAuth and synchronization**
 3. **Static PWA asset serving** (`ASSETS` binding fallback)
 
 Primary entry points:
@@ -27,7 +27,6 @@ Primary entry points:
 
 - Cron cadence: `*/1 * * * *` (`wrangler.toml:16–17`)
 - D1: `TASKIFY_DB` (`wrangler.toml:47–52`)
-- R2: `TASKIFY_BACKUPS` (`wrangler.toml:42–45`)
 - KV (legacy/compat): `TASKIFY_DEVICES`, `TASKIFY_REMINDERS`, `TASKIFY_PENDING` (`wrangler.toml:26–36`)
 - VAPID key binding: `VAPID_PRIVATE_KEY` as string secret or KV namespace (`wrangler.toml:38–40`)
 
@@ -50,9 +49,7 @@ Router dispatch in `fetch()`:
 - `PUT /api/devices` → register/update push device
 - `DELETE /api/devices/:deviceId` → delete device + associated reminder/pending rows
 - `PUT /api/reminders` → replace reminder set for a device
-- `POST /api/reminders/poll` → drain pending reminder notifications for endpoint
-- `PUT /api/backups` → write encrypted backup blob to R2
-- `GET /api/backups?npub=...` → load backup blob metadata+payload
+- `POST /api/reminders/poll` → fetch and acknowledge pending reminder notifications
 
 Reference: `worker/src/index.ts:290–307`.
 
@@ -66,9 +63,7 @@ Use this table before changing handler logic so caller contracts stay aligned.
 | `PUT /api/devices` | `{ deviceId, platform, subscription{endpoint,keys{auth,p256dh}} }` | `{ subscriptionId, deviceId }` | `taskify-pwa/src/App.tsx:13237` | `worker/src/index.ts:608` (`handleRegisterDevice`) |
 | `DELETE /api/devices/:deviceId` | path param `deviceId` | `204` empty body | `taskify-pwa/src/App.tsx:13321` | `worker/src/index.ts:2305` (`handleDeleteDevice`) |
 | `PUT /api/reminders` | `{ deviceId, reminders[] }` | `204` empty body | reminder sync in PWA | `worker/src/index.ts:2335` (`handleSaveReminders`) |
-| `POST /api/reminders/poll` | `{ endpoint }` or `{ deviceId }` | `PendingReminder[]` and drains rows | `taskify-pwa/public/sw.js:213` | `worker/src/index.ts:2404` (`handlePollReminders`) |
-| `PUT /api/backups` | `{ npub, ciphertext, iv, version?, createdAt? }` | `{ ok: true }` | onboarding backup save | `worker/src/index.ts:347` (`handleSaveBackup`) |
-| `GET /api/backups?npub=...` | query `npub` | `{ backup }` (payload has `ciphertext`, `iv`, metadata) | onboarding restore | `taskify-pwa/src/App.tsx:2295` | `worker/src/index.ts:381` (`handleLoadBackup`) |
+| `POST /api/reminders/poll` | `{ endpoint }` or authenticated `{ deviceId, subscriptionId }`; optional acknowledgement IDs | `PendingReminder[]` | `taskify-pwa/public/sw.js` | `worker/src/reminders.ts` (`handlePollReminders`) |
 
 ---
 
@@ -87,7 +82,7 @@ Use this table before changing handler logic so caller contracts stay aligned.
 
 Reference: `worker/src/index.ts:174–233`, plus migration baseline `worker/migrations/0001_init.sql`.
 
-**Important invariant:** reminder rows are deleted once moved into pending notifications during cron processing; pending rows are later deleted on poll read.
+**Important invariant:** moving due reminders into `pending_notifications` and deleting the source rows is transactional. Pending rows remain until the client displays and acknowledges them.
 
 ---
 
@@ -158,28 +153,6 @@ Reference: `worker/src/index.ts:608+`.
 - legacy KV mirrors (best-effort)
 
 Reference: `worker/src/index.ts:2305–2333`.
-
----
-
-## 7) Backup storage flow (R2)
-
-### Save (`PUT /api/backups`)
-
-`handleSaveBackup`:
-- Validates `npub`, `ciphertext`, `iv`
-- Writes JSON envelope to `TASKIFY_BACKUPS` object key
-- Stores metadata (`updatedAt`, etc.)
-
-Reference: `worker/src/index.ts:347+`.
-
-### Load (`GET /api/backups?npub=...`)
-
-`handleLoadBackup`:
-- Validates `npub`
-- Reads object from R2
-- Returns parsed backup payload
-
-Reference: `worker/src/index.ts:381+`.
 
 ---
 
@@ -291,9 +264,7 @@ Use this when changing validation/handler behavior so clients and service worker
 | `PUT /api/devices` | `200` JSON `{ subscriptionId, deviceId }` | `400` (`deviceId`/`platform`/`subscription` validation), `500` (router-level catch) | Validation in `handleRegisterDevice` (`worker/src/index.ts:608–622`) |
 | `DELETE /api/devices/:deviceId` | `204` empty body | `500` (unexpected DB/runtime error via router catch) | Delete is idempotent in practice; missing rows still return `204` (`worker/src/index.ts:2305–2333`) |
 | `PUT /api/reminders` | `204` empty body | `400` (`deviceId` missing, `reminders` not array), `404` (unknown device), `500` (router catch) | Existing reminders are replaced, then pending queue is cleared (`worker/src/index.ts:2335–2401`) |
-| `POST /api/reminders/poll` | `200` JSON (`[]` or `PendingReminder[]`) | `404` (`Device not registered`), `500` (router catch) | Poll drains `pending_notifications` rows in same request (`worker/src/index.ts:2404–2441`) |
-| `PUT /api/backups` | `200` JSON `{ ok: true }` | `400` (`npub`/`ciphertext`/`iv` validation), `501` (R2 not configured), `500` (router catch) | Writes backup envelope with timestamps (`worker/src/index.ts:347–379`) |
-| `GET /api/backups?npub=...` | `200` JSON `{ backup }` | `400` (invalid `npub`), `404` (not found), `500` (read/parse corruption), `501` (R2 not configured) | Updates `lastReadAt` best-effort before returning payload (`worker/src/index.ts:381–429`) |
+| `POST /api/reminders/poll` | `200` JSON (`[]` or `PendingReminder[]`), or `204` for acknowledgement-only | `400` (invalid acknowledgement list), `404` (unknown/unauthorized device), `500` (router catch) | Rows remain durable until explicitly acknowledged after display (`worker/src/reminders.ts`) |
 
 Implementation detail worth preserving:
 - Handler-level validation returns stable 4xx codes used by callers to differentiate user/actionable failures vs transient failures.
@@ -380,65 +351,13 @@ Anchors:
 
 - A successful KV migration must leave D1 authoritative and remove migrated KV keys.
 - Endpoint-hash lookup must remain consistent across register (`upsertDevice`) and poll (`findDeviceIdByEndpoint`).
-- Poll drain behavior must continue deleting exactly fetched `pending_notifications` row ids.
+- Poll acknowledgement must delete only explicitly acknowledged `pending_notifications` row IDs for the authenticated device/endpoint.
 - Device deletion must continue clearing D1 + best-effort KV mirrors to avoid zombie registrations.
 
 Quick re-check anchors:
 - Upsert with endpoint hash: `worker/src/index.ts:2530–2555`
 - Poll read+delete ids: `worker/src/index.ts:2415–2431`
 - Delete fan-out: `worker/src/index.ts:2305–2333`
-
-## 14) Backup retention + cleanup sweep contract (agent verification chunk)
-
-Cloud backup cleanup is **age-based, scheduled, and state-throttled** (not per-request).
-
-### 14.1 Trigger + throttling
-
-`cleanupExpiredBackups(env)` runs from the scheduled path and gates expensive R2 scans via a state object:
-
-- State key: `backups-cleanup-state.json`
-- Reads `lastRunAt` from that object
-- Skips the sweep if last run is less than one week ago (`ONE_WEEK_MS`)
-
-Anchors:
-- State key constant: `worker/src/index.ts:161`
-- Cleanup entry + throttle check: `worker/src/index.ts:491–519`
-
-### 14.2 Sweep semantics
-
-When sweep runs, it lists `TASKIFY_BACKUPS` with:
-
-- `prefix: "backups/"`
-- `limit: 1000`
-- cursor pagination until `truncated` is false
-
-For each object, Worker attempts parse + timestamp extraction and deletes objects that are:
-
-- empty/unreadable
-- invalid JSON/object shape
-- stale (`max(lastReadAt, updatedAt, createdAt) < now - THREE_MONTHS_MS`)
-
-Anchors:
-- List + pagination: `worker/src/index.ts:527–590`
-- Timestamp comparison + delete conditions: `worker/src/index.ts:566–579`
-
-### 14.3 Metadata update invariants
-
-- `GET /api/backups` updates `lastReadAt` (best-effort) before returning payload.
-- Sweep updates cleanup state key with new `lastRunAt` only when a scan attempt occurred.
-- Cleanup state write failures are logged but do not fail request/scheduled handling.
-
-Anchors:
-- Read path metadata touch: `worker/src/index.ts:403–428`
-- Cleanup state writeback: `worker/src/index.ts:592–607`
-
-### 14.4 Safe-edit guardrails
-
-If you touch cleanup logic, preserve these invariants:
-
-- Keep age cutoff based on backup payload timestamps, not object listing metadata alone.
-- Keep cursor pagination (do not assume all keys fit one list call).
-- Keep cleanup state throttling to avoid weekly full scans on every schedule tick.
 
 ## 15) Scheduled execution ordering + failure isolation (agent verification chunk)
 
@@ -450,11 +369,11 @@ Within `scheduled()`, the runner currently executes in strict sequence:
 
 1. `ensureSchema(env)`
 2. `processDueReminders(env)`
-3. `cleanupExpiredBackups(env)`
+3. Google Calendar watch renewal and failed-sync retry
 
 Anchor: `worker/src/index.ts:317–323`
 
-Implication: backup cleanup is skipped if reminder processing throws before step 3.
+Independent scheduled jobs should remain failure-isolated so one integration cannot starve another.
 
 ### 15.2 waitUntil compatibility behavior
 

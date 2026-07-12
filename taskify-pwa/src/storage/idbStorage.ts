@@ -140,6 +140,29 @@ export const idbStorage = {
   },
 
   /**
+   * Reads several values from one object store in a single transaction.
+   * Keeping all requests in the same transaction substantially reduces
+   * startup overhead compared with opening one readonly transaction per key.
+   * Results preserve the order of `keys`.
+   */
+  async getMany<T = unknown>(
+    db: IDBDatabase,
+    storeName: string,
+    keys: readonly IDBValidKey[],
+  ): Promise<Array<T | undefined>> {
+    if (keys.length === 0) return [];
+    return await idbStorage.transaction(db, storeName, "readonly", (tx) => {
+      const store = tx.objectStore(storeName);
+      // Enqueue every request synchronously so the transaction cannot become
+      // inactive between individual reads.
+      const requests = keys.map((key) =>
+        requestToPromise<T | undefined>(store.get(key) as IDBRequest<T | undefined>),
+      );
+      return Promise.all(requests);
+    });
+  },
+
+  /**
    * Writes a value to an object store (insert or update).
    */
   async put<T = unknown>(

@@ -9,11 +9,9 @@ type OnboardingPage = "home" | "sign-in" | "create" | "restore" | "notifications
 type FirstRunOnboardingProps = {
   pushSupported: boolean;
   pushConfigured: boolean;
-  cloudRestoreAvailable: boolean;
   onUseExistingKey: (value: string) => boolean;
   onGenerateNewKey: () => GeneratedBackup | null;
   onRestoreFromBackupFile: (file: File) => Promise<void>;
-  onRestoreFromCloud: (value: string) => Promise<void>;
   onEnableNotifications: () => Promise<void>;
   onComplete: () => void;
 };
@@ -21,22 +19,19 @@ type FirstRunOnboardingProps = {
 export function FirstRunOnboarding({
   pushSupported,
   pushConfigured,
-  cloudRestoreAvailable,
   onUseExistingKey,
   onGenerateNewKey,
   onRestoreFromBackupFile,
-  onRestoreFromCloud,
   onEnableNotifications,
   onComplete,
 }: FirstRunOnboardingProps) {
   const [page, setPage] = useState<OnboardingPage>("home");
   const [existingKeyInput, setExistingKeyInput] = useState("");
   const [createdNsec, setCreatedNsec] = useState("");
-  const [cloudRestoreInput, setCloudRestoreInput] = useState("");
   const [signInError, setSignInError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
-  const [restoreBusy, setRestoreBusy] = useState<null | "file" | "cloud">(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [createMessage, setCreateMessage] = useState<string | null>(null);
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [notificationError, setNotificationError] = useState<string | null>(null);
@@ -114,28 +109,14 @@ export function FirstRunOnboarding({
     event.target.value = "";
     if (!file) return;
     setRestoreError(null);
-    setRestoreBusy("file");
+    setRestoreBusy(true);
     try {
       await onRestoreFromBackupFile(file);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to restore backup file.";
       setRestoreError(message);
     } finally {
-      setRestoreBusy(null);
-    }
-  };
-
-  const handleRestoreFromCloud = async () => {
-    if (restoreBusy) return;
-    setRestoreError(null);
-    setRestoreBusy("cloud");
-    try {
-      await onRestoreFromCloud(cloudRestoreInput);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to restore cloud backup.";
-      setRestoreError(message);
-    } finally {
-      setRestoreBusy(null);
+      setRestoreBusy(false);
     }
   };
 
@@ -285,7 +266,7 @@ export function FirstRunOnboarding({
           <div className="space-y-2 rounded-xl border border-surface bg-surface-muted p-3">
             <div className="text-sm font-medium text-primary">Restore from file</div>
             <label className="ghost-button button-sm pressable inline-flex cursor-pointer">
-              {restoreBusy === "file" ? "Restoring..." : "Choose backup file"}
+              {restoreBusy ? "Restoring..." : "Choose backup file"}
               <input
                 type="file"
                 accept="application/json"
@@ -296,31 +277,6 @@ export function FirstRunOnboarding({
                 disabled={!!restoreBusy}
               />
             </label>
-          </div>
-          <div className="space-y-2 rounded-xl border border-surface bg-surface-muted p-3">
-            <div className="text-sm font-medium text-primary">Restore from cloud</div>
-            <input
-              className="pill-input w-full"
-              placeholder="nsec1... or 64-character key"
-              value={cloudRestoreInput}
-              onChange={(event) => setCloudRestoreInput(event.target.value)}
-              disabled={!!restoreBusy}
-            />
-            <button
-              type="button"
-              className="ghost-button button-sm pressable"
-              onClick={() => {
-                void handleRestoreFromCloud();
-              }}
-              disabled={!cloudRestoreAvailable || !!restoreBusy}
-            >
-              {restoreBusy === "cloud" ? "Restoring..." : "Restore from cloud"}
-            </button>
-            {!cloudRestoreAvailable && (
-              <div className="text-xs text-secondary">
-                Cloud backup service is unavailable in this app build.
-              </div>
-            )}
           </div>
           {restoreError && <div className="text-xs text-rose-400">{restoreError}</div>}
           <div>

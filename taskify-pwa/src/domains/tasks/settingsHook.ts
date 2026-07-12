@@ -300,7 +300,6 @@ export function useSettingsSync(
         solifeLightningAddress,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: lightningAddressProvider === "npub.cash" ? npubCashAutoClaim : false,
-        cloudBackupsEnabled: parsed?.cloudBackupsEnabled === true,
         nostrBackupEnabled,
         nostrBackupMetadataEnabled,
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
@@ -340,7 +339,6 @@ export function useSettingsSync(
         solifeLightningAddress: "",
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: false,
-        cloudBackupsEnabled: false,
         nostrBackupEnabled: true,
         nostrBackupMetadataEnabled: true,
         scriptureMemoryEnabled: false,
@@ -472,9 +470,6 @@ export function useSettingsSync(
         next.npubCashAutoClaim = false;
       } else if (next.npubCashAutoClaim !== true && next.npubCashAutoClaim !== false) {
         next.npubCashAutoClaim = true;
-      }
-      if (next.cloudBackupsEnabled !== true) {
-        next.cloudBackupsEnabled = false;
       }
       next.nostrBackupEnabled = next.nostrBackupEnabled !== false;
       next.nostrBackupMetadataEnabled = next.nostrBackupEnabled;
