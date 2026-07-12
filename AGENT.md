@@ -154,6 +154,8 @@ npx wrangler dev
 | Test File | Domain | What It Covers |
 |---|---|---|
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
+| `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
+| `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 
 Additional tests exist on feature branches and are being promoted into `New_Features_Fixes`:
 

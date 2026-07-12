@@ -122,6 +122,22 @@ import {
   normalizeTaskAssignees,
 } from "./domains/tasks/assignmentUtils";
 import { useBoards, useTasks } from "./domains/tasks/taskHooks";
+import {
+  reserveTaskMutationTimestamp,
+  TaskPublishVersionTracker,
+  taskMovePersistencePlan,
+} from "./domains/tasks/taskMovePersistence";
+import {
+  RECURRING_SERIES_CUTOFFS_KEY,
+  applyRecurringSeriesCutoff,
+  applyRecurringSeriesCutoffs,
+  capRecurringTaskAt,
+  detachCancelledRecurringTask,
+  parseRecurringSeriesCutoffs,
+  recurringSeriesCutoffBefore,
+  serializeRecurringSeriesCutoffs,
+  updateRecurringSeriesCutoff,
+} from "./domains/tasks/recurrenceCutoffs";
 import { useCalendarEvents } from "./domains/calendar/calendarHook";
 import {
   useCalendarInvites,
@@ -173,6 +189,7 @@ import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/setti
 import { withBoardOrder } from "./domains/tasks/boardUtils";
 import {
   ensureWeekRecurrencesForCurrentWeek,
+  recurringSeriesId,
   tasksInSameSeries,
 } from "./lib/app/weekRecurrenceDomain";
 import { isoForWeekdayLocal, startOfWeekLocal } from "./lib/app/weekBoardDate";
@@ -1101,6 +1118,25 @@ export default function App() {
   const visibleBoards = useMemo(() => boards.filter(b => !b.archived && !b.hidden), [boards]);
 
   const [tasks, setTasks] = useTasks();
+  const recurringSeriesCutoffsRef = useRef(
+    parseRecurringSeriesCutoffs(
+      idbKeyValue.getItem(TASKIFY_STORE_TASKS, RECURRING_SERIES_CUTOFFS_KEY),
+    ),
+  );
+  const recordRecurringSeriesCutoff = useCallback((task: Task, cutoffISO: string) => {
+    const current = recurringSeriesCutoffsRef.current;
+    const next = updateRecurringSeriesCutoff(current, task, cutoffISO);
+    if (next === current) return;
+    recurringSeriesCutoffsRef.current = next;
+    idbKeyValue.setItem(
+      TASKIFY_STORE_TASKS,
+      RECURRING_SERIES_CUTOFFS_KEY,
+      serializeRecurringSeriesCutoffs(next),
+    );
+  }, []);
+  const sanitizeRecurringTasks = useCallback(<TTask extends Task,>(items: TTask[]): TTask[] => (
+    applyRecurringSeriesCutoffs(items, recurringSeriesCutoffsRef.current)
+  ), []);
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
   const {
     clearSelection,
@@ -1421,13 +1457,15 @@ export default function App() {
         }
         return updated;
       });
-      const hasActive = nextTasks.some((task) => !task.completed && task.seriesId === SCRIPTURE_MEMORY_SERIES_ID);
+      const boundedTasks = sanitizeRecurringTasks(nextTasks);
+      if (boundedTasks !== nextTasks) changed = true;
+      const hasActive = boundedTasks.some((task) => !task.completed && task.seriesId === SCRIPTURE_MEMORY_SERIES_ID);
       if (hasActive) {
-        return changed ? nextTasks : prev;
+        return changed ? boundedTasks : prev;
       }
-      const order = nextOrderForBoard(targetBoard.id, nextTasks, settings.newTaskPosition);
+      const order = nextOrderForBoard(targetBoard.id, boundedTasks, settings.newTaskPosition);
       if (targetBoard.kind === "lists" && (!targetBoard.columns || targetBoard.columns.length === 0)) {
-        return changed ? nextTasks : prev;
+        return changed ? boundedTasks : prev;
       }
       const newTask: Task = {
         id: crypto.randomUUID(),
@@ -1449,11 +1487,13 @@ export default function App() {
         newTask.column = "day";
       } else if (targetBoard.kind === "lists") {
         const firstColumn = targetBoard.columns?.[0];
-        if (!firstColumn) return changed ? nextTasks : prev;
+        if (!firstColumn) return changed ? boundedTasks : prev;
         newTask.columnId = firstColumn.id;
       }
-      createdTask = newTask;
-      return [...nextTasks, newTask];
+      const boundedNewTask = applyRecurringSeriesCutoff(newTask, recurringSeriesCutoffsRef.current);
+      if (!boundedNewTask) return changed ? boundedTasks : prev;
+      createdTask = boundedNewTask;
+      return [...boundedTasks, boundedNewTask];
     });
     if (createdTask) {
       const publishPromise = maybePublishTaskRef.current?.(createdTask);
@@ -1469,6 +1509,7 @@ export default function App() {
     settings.newTaskPosition,
     setTasks,
     maybePublishTaskRef,
+    sanitizeRecurringTasks,
     setScriptureMemory,
   ]);
 
@@ -1867,6 +1908,7 @@ export default function App() {
   }, [flushTombstonesPersist]);
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
+  const taskPublishVersionsRef = useRef(new TaskPublishVersionTracker());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
   const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
   // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
@@ -6064,11 +6106,17 @@ export default function App() {
   function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
     if (!taskId || !board?.nostr?.boardId) return null;
     const bTag = boardTag(board.nostr.boardId);
-    const optimisticAt = Math.floor(Date.now() / 1000);
     if (!nostrIdxRef.current.taskClock.has(bTag)) {
       nostrIdxRef.current.taskClock.set(bTag, new Map());
     }
-    nostrIdxRef.current.taskClock.get(bTag)!.set(taskId, optimisticAt);
+    const taskClock = nostrIdxRef.current.taskClock.get(bTag)!;
+    const persistedTaskAt = tasksRef.current.find((task) => (
+      task.id === taskId &&
+      (task.boardId === board.id || task.boardId === board.nostr?.boardId)
+    ))?._nostrAt ?? 0;
+    const current = Math.max(taskClock.get(taskId) ?? 0, persistedTaskAt);
+    const optimisticAt = reserveTaskMutationTimestamp(Math.floor(Date.now() / 1000), current);
+    taskClock.set(taskId, optimisticAt);
     pendingNostrTasksRef.current.add(`${bTag}::${taskId}`);
     markNostrTaskSyncPending(taskId);
     return optimisticAt;
@@ -6151,12 +6199,13 @@ export default function App() {
     }
   }
   async function publishTaskDeleted(t: Task) {
-    const b = boards.find((x) => x.id === t.boardId);
+    const b = findBoardByCompoundChildId(boards, t.boardId);
     if (!b || !isShared(b) || !b.nostr) return;
     const relays = getBoardRelays(b);
     const boardId = b.nostr.boardId;
     const bTag = boardTag(boardId);
     const pendingKey = `${bTag}::${t.id}`;
+    const publishVersion = taskPublishVersionsRef.current.reserve(pendingKey);
     // Protect against stale relay events re-creating the task while the
     // deletion publish is in-flight.
     const optimisticAt = markTaskRelayPublishPending(t.id, b) ?? Math.floor(Date.now() / 1000);
@@ -6165,8 +6214,9 @@ export default function App() {
     // Without this, a failed/in-flight publish followed by reload would let
     // the original CREATE event from the relay re-add the task on next sync.
     recordTaskTombstone(bTag, t.id, optimisticAt);
-    const boardKeys = await deriveBoardNostrKeys(boardId);
     try {
+      const boardKeys = await deriveBoardNostrKeys(boardId);
+      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
       await publishBoardMetadata(b);
       const colTag = (b.kind === "week") ? "day" : (t.columnId || "");
       const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status","deleted"]];
@@ -6175,6 +6225,9 @@ export default function App() {
         priority: t.priority ?? null,
         note: t.note || "",
         dueISO: t.dueISO,
+        dueDateEnabled: t.dueDateEnabled,
+        dueTimeEnabled: t.dueTimeEnabled,
+        dueTimeZone: t.dueTimeZone,
         completedAt: t.completedAt,
         recurrence: t.recurrence,
         hiddenUntilISO: t.hiddenUntilISO,
@@ -6187,24 +6240,28 @@ export default function App() {
         inboxItem: t.inboxItem ?? null,
       });
       const content = await encryptToBoard(boardId, raw);
+      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
       const createdAt = await nostrPublish(relays, {
         kind: 30301,
         tags,
         content,
-        created_at: Math.floor(Date.now() / 1000),
+        created_at: optimisticAt,
       }, { sk: boardKeys.sk });
       await publishTaskDeletionRequest(boardKeys, relays, t.id);
       if (!nostrIdxRef.current.taskClock.has(bTag)) {
         nostrIdxRef.current.taskClock.set(bTag, new Map());
       }
-      nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+      const taskClock = nostrIdxRef.current.taskClock.get(bTag)!;
+      taskClock.set(t.id, Math.max(taskClock.get(t.id) ?? 0, createdAt));
       // Bump the tombstone to the actual relay-confirmed timestamp so any
       // post-reload comparisons use the same clock value the relay will
       // report when it round-trips this deletion.
       recordTaskTombstone(bTag, t.id, createdAt);
     } finally {
-      pendingNostrTasksRef.current.delete(pendingKey);
-      clearOptimisticNostrTaskSyncPending(t.id);
+      if (taskPublishVersionsRef.current.finish(pendingKey, publishVersion)) {
+        pendingNostrTasksRef.current.delete(pendingKey);
+        clearOptimisticNostrTaskSyncPending(t.id);
+      }
     }
   }
   // Ensure all images and documents for a shared board are stored remotely (encrypted).
@@ -6309,12 +6366,13 @@ export default function App() {
     boardOverride?: Board,
     options?: { skipBoardMetadata?: boolean }
   ) {
-    const b = boardOverride || boards.find((x) => x.id === t.boardId);
+    const b = boardOverride || findBoardByCompoundChildId(boards, t.boardId);
     if (!b || !isShared(b) || !b.nostr) return;
     const relays = getBoardRelays(b);
     const boardId = b.nostr.boardId;
     const bTag = boardTag(boardId);
     const pendingKey = `${bTag}::${t.id}`;
+    const publishVersion = taskPublishVersionsRef.current.reserve(pendingKey);
     // Protect optimistic state: advance the task clock and mark pending BEFORE
     // any async work so relay events arriving while the publish is in-flight
     // are rejected by the clock check in applyTaskEvent / flushRelayBatch.
@@ -6362,22 +6420,27 @@ export default function App() {
     body.assignees = (typeof t.assignees === "undefined") ? null : t.assignees;
     body.inboxItem = typeof t.inboxItem === "undefined" ? null : t.inboxItem ?? null;
     try {
+      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
       if (!options?.skipBoardMetadata) {
         await publishBoardMetadata(b);
       }
       const raw = JSON.stringify(body);
       const content = await encryptToBoard(boardId, raw);
+      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
       const createdAt = await nostrPublish(relays, {
         kind: 30301,
         tags,
         content,
-        created_at: Math.floor(Date.now() / 1000),
+        created_at: optimisticAt,
       }, { sk: boardKeys.sk });
       // Update local task clock so immediate refreshes don't revert state
       if (!nostrIdxRef.current.taskClock.has(bTag)) {
         nostrIdxRef.current.taskClock.set(bTag, new Map());
       }
-      nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+      const taskClock = nostrIdxRef.current.taskClock.get(bTag)!;
+      const confirmedAt = Math.max(taskClock.get(t.id) ?? 0, createdAt);
+      taskClock.set(t.id, confirmedAt);
+      t._nostrAt = Math.max(t._nostrAt ?? 0, confirmedAt);
       if (!sameStringList(taskForPublish.images, t.images) || !sameDocumentList(taskForPublish.documents, t.documents)) {
         setTasks((prev) =>
           prev.map((current) => {
@@ -6397,8 +6460,10 @@ export default function App() {
         );
       }
     } finally {
-      pendingNostrTasksRef.current.delete(pendingKey);
-      clearOptimisticNostrTaskSyncPending(t.id);
+      if (taskPublishVersionsRef.current.finish(pendingKey, publishVersion)) {
+        pendingNostrTasksRef.current.delete(pendingKey);
+        clearOptimisticNostrTaskSyncPending(t.id);
+      }
     }
   }
 
@@ -7304,6 +7369,13 @@ export default function App() {
       }
     }
     else if (lb.kind === "lists") base.columnId = col || (lb.columns[0]?.id || "");
+    if (base.recurrence?.untilISO && !Number.isNaN(Date.parse(base.recurrence.untilISO))) {
+      const seriesEndKey = isoDatePart(base.recurrence.untilISO, base.dueTimeZone);
+      const occurrenceKey = isoDatePart(base.dueISO, base.dueTimeZone);
+      if (seriesEndKey < occurrenceKey) {
+        recordRecurringSeriesCutoff(base, base.recurrence.untilISO);
+      }
+    }
     // Key used for both the live setTasks path and the batch Map path.
     const taskKey = `${lb.id}::${taskId}`;
 
@@ -7537,10 +7609,10 @@ export default function App() {
       setTasks(prev => {
         let result = prev;
         for (const updater of b.updaters) result = updater(result);
-        return result;
+        return sanitizeRecurringTasks(result);
       });
     }, LIVE_BATCH_MS);
-  }, [setTasks, settings.newTaskPosition, tagValue, ensureMigrationState]);
+  }, [ensureMigrationState, recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
 
   const maybeMigrateBoardToDedicatedKey = useCallback(async (bTag: string) => {
     const state = ensureMigrationState(bTag);
@@ -7837,9 +7909,11 @@ export default function App() {
   }
 
   function ensureWeekRecurrences(arr: Task[], sources?: Task[]): Task[] {
-    return ensureWeekRecurrencesForCurrentWeek({
-      tasks: arr,
-      sources,
+    const boundedTasks = sanitizeRecurringTasks(arr);
+    const boundedSources = sources ? sanitizeRecurringTasks(sources) : undefined;
+    const ensured = ensureWeekRecurrencesForCurrentWeek({
+      tasks: boundedTasks,
+      sources: boundedSources,
       weekStart: settings.weekStart,
       newTaskPosition: settings.newTaskPosition,
       dedupeRecurringInstances,
@@ -7852,6 +7926,7 @@ export default function App() {
       nextOrderForBoard,
       maybePublishTask,
     });
+    return sanitizeRecurringTasks(ensured);
   }
   const ensureWeekRecurrencesRef = useRef(ensureWeekRecurrences);
   ensureWeekRecurrencesRef.current = ensureWeekRecurrences;
@@ -9534,13 +9609,14 @@ export default function App() {
       return;
     }
     if (options?.scope === "future") {
-      const seriesId = t.seriesId || t.id;
-      const seriesSeed = t.seriesId ? t : { ...t, seriesId };
-      const cutoffDate = startOfDay(new Date(t.dueISO));
-      if (Number.isNaN(cutoffDate.getTime())) return;
-      const cutoffTime = cutoffDate.getTime();
+      const seriesId = recurringSeriesId(t);
+      const seriesSeed = t.seriesId === seriesId ? t : { ...t, seriesId };
+      if (Number.isNaN(Date.parse(t.dueISO))) return;
+      const cutoffKey = isoDatePart(t.dueISO, t.dueTimeZone);
       const deletedAtISO = new Date().toISOString();
-      const nextUntil = new Date(cutoffTime - MS_PER_DAY).toISOString();
+      const nextUntil = recurringSeriesCutoffBefore(t);
+      if (!nextUntil) return;
+      recordRecurringSeriesCutoff(seriesSeed, nextUntil);
       const toPublish: Task[] = [];
       const toDelete: Task[] = [];
       let changed = false;
@@ -9550,31 +9626,26 @@ export default function App() {
           nextTasks.push(task);
           continue;
         }
-        const dueTime = startOfDay(new Date(task.dueISO)).getTime();
-        if (Number.isNaN(dueTime)) {
+        recordRecurringSeriesCutoff(task, nextUntil);
+        if (Number.isNaN(Date.parse(task.dueISO))) {
           nextTasks.push(task);
           continue;
         }
-        if (dueTime >= cutoffTime) {
+        const dueKey = isoDatePart(task.dueISO, t.dueTimeZone);
+        if (dueKey >= cutoffKey) {
+          const terminated = capRecurringTaskAt(task, nextUntil);
           if (task.bounty) {
-            const archived = markRecoverableBountyDelete(task, deletedAtISO);
+            const archived = markRecoverableBountyDelete(terminated, deletedAtISO);
             nextTasks.push(archived);
             toPublish.push(archived);
           } else {
-            toDelete.push(task);
+            toDelete.push(terminated);
           }
           changed = true;
           continue;
         }
-        const untilTime = task.recurrence.untilISO
-          ? startOfDay(new Date(task.recurrence.untilISO)).getTime()
-          : null;
-        if (!untilTime || untilTime > cutoffTime - MS_PER_DAY) {
-          const updated: Task = {
-            ...task,
-            seriesId: task.seriesId || seriesId,
-            recurrence: { ...task.recurrence, untilISO: nextUntil },
-          };
+        const updated = capRecurringTaskAt(task, nextUntil);
+        if (updated !== task) {
           nextTasks.push(updated);
           toPublish.push(updated);
           changed = true;
@@ -9582,7 +9653,7 @@ export default function App() {
         }
         nextTasks.push(task);
       }
-      if (changed) setTasks(nextTasks);
+      if (changed) setTasks(sanitizeRecurringTasks(nextTasks));
       toPublish.forEach(task => maybePublishTask(task).catch(() => {}));
       toDelete.forEach(task => publishTaskDeleted(task).catch(() => {}));
       if (toPublish.some((task) => isRecoverableBountyTask(task))) {
@@ -9661,6 +9732,7 @@ export default function App() {
     if (!t) return;
     const toPublish: Task[] = [];
     const recurringStreak =
+      !isRecoverableBountyTask(t) &&
       settings.streaksEnabled &&
       t.recurrence &&
       isFrequentRecurrence(t.recurrence) &&
@@ -9676,7 +9748,7 @@ export default function App() {
         }, -1) + 1;
       const arr = prev.map(x => {
         if (x.id !== id) return x;
-        const upd: Task = {
+        const restored: Task = {
           ...x,
           completed: false,
           completedAt: undefined,
@@ -9689,6 +9761,7 @@ export default function App() {
           longestStreak: mergeLongestStreak(x, newStreak),
           order: bottomOrder,
         };
+        const upd = detachCancelledRecurringTask(restored, recurringSeriesCutoffsRef.current);
         toPublish.push(upd);
         return upd;
       });
@@ -11237,13 +11310,17 @@ export default function App() {
     if (beforeId && beforeId === id) return;
     const pendingTask = tasksRef.current.find((task) => task.id === id);
     if (pendingTask) {
+      const pendingSourceBoard = findBoardByCompoundChildId(boardsRef.current, pendingTask.boardId);
       const pendingBoard =
         target.type === "day"
-          ? boardsRef.current.find((board) => board.id === pendingTask.boardId)
+          ? pendingSourceBoard
           : (() => {
               const source = listColumnSources.get(target.columnId);
               return source ? boardsRef.current.find((board) => board.id === source.boardId) : undefined;
             })();
+      if (pendingSourceBoard && pendingSourceBoard.id !== pendingBoard?.id) {
+        markTaskRelayPublishPending(id, pendingSourceBoard);
+      }
       markTaskRelayPublishPending(id, pendingBoard);
     }
     setTasks(prev => {
@@ -11368,9 +11445,13 @@ export default function App() {
       } else {
         arr.push(updated);
       }
-      publishSet.add(updated);
+      const persistencePlan = taskMovePersistencePlan(task, updated);
+      publishSet.add(persistencePlan.targetToPublish);
 
       try {
+        if (persistencePlan.sourceToDelete) {
+          publishTaskDeleted(persistencePlan.sourceToDelete).catch(() => {});
+        }
         publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
       } catch {}
 
@@ -11479,9 +11560,13 @@ export default function App() {
 
       const updatedIdx = arr.findIndex((t) => t.id === updated.id);
       if (updatedIdx >= 0) arr[updatedIdx] = updated;
-      publishSet.add(updated);
+      const persistencePlan = taskMovePersistencePlan(task, updated);
+      publishSet.add(persistencePlan.targetToPublish);
 
       try {
+        if (persistencePlan.sourceToDelete) {
+          publishTaskDeleted(persistencePlan.sourceToDelete).catch(() => {});
+        }
         publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
       } catch {}
 
@@ -11520,15 +11605,20 @@ export default function App() {
           const idx = prev.findIndex((t) => t.id === task.id);
           if (idx < 0) return prev;
           const copy = [...prev];
+          const source = copy[idx];
           const updated: Task = {
-            ...copy[idx],
+            ...source,
             boardId,
             column: undefined,
             columnId,
-            lastEditedBy: editorPubkey || copy[idx].lastEditedBy || copy[idx].createdBy,
+            lastEditedBy: editorPubkey || source.lastEditedBy || source.createdBy,
           };
           copy[idx] = updated;
-          maybePublishTask(updated).catch(() => {});
+          const persistencePlan = taskMovePersistencePlan(source, updated);
+          if (persistencePlan.sourceToDelete) {
+            publishTaskDeleted(persistencePlan.sourceToDelete).catch(() => {});
+          }
+          maybePublishTask(persistencePlan.targetToPublish).catch(() => {});
           return copy;
         });
       });
@@ -11602,6 +11692,7 @@ export default function App() {
     boardsRef,
     tasksRef,
     setTasks,
+    sanitizeTasks: sanitizeRecurringTasks,
     pool,
     getBoardRelays,
     nostrIdxRef,

@@ -16,6 +16,7 @@
  * 10. _nostrAt stamped on relay batch entries — stored for future merge comparison.
  */
 import { test, expect } from "vitest";
+import { reserveTaskMutationTimestamp } from "../domains/tasks/taskMovePersistence";
 
 
 // ---------------------------------------------------------------------------
@@ -477,6 +478,38 @@ test("queued live update rechecks taskClock before applying after a local move",
 
   expect(batch.renderedStates.get("board1")?.[0]?.columnId).toBe("doing");
   expect(batch.renderedStates.get("board1")?.[0]?.title).toBe("Dropped locally");
+});
+
+test("a future-dated relay clock stays ahead of a stale origin-column event", async () => {
+  const batch = new LiveMicroBatch();
+  const initialTasks: Task[] = [makeTask("t1", "board1", 200, { columnId: "todo" })];
+  const taskClock = new Map([["t1", 200]]);
+  const pendingTasks = new Set<string>();
+  batch.renderedStates.set("board1", initialTasks);
+
+  batch.enqueue(
+    "board1",
+    clockGuardedLiveUpdater(
+      "board1",
+      "t1",
+      200,
+      taskClock,
+      pendingTasks,
+      (prev) => prev.map((task) => task.id === "t1" ? { ...task, columnId: "todo" } : task),
+    ),
+    initialTasks,
+  );
+
+  taskClock.set("t1", reserveTaskMutationTimestamp(150, taskClock.get("t1")));
+  pendingTasks.add("board1::t1");
+  batch.renderedStates.set("board1", [
+    makeTask("t1", "board1", 200, { columnId: "doing" }),
+  ]);
+
+  await wait(LIVE_BATCH_MS + 50);
+
+  expect(taskClock.get("t1")).toBe(201);
+  expect(batch.renderedStates.get("board1")?.[0]?.columnId).toBe("doing");
 });
 
 // ---------------------------------------------------------------------------

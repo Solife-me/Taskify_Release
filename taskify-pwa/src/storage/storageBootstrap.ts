@@ -22,6 +22,7 @@ import {
   LS_GROUP_LEFT,
 } from "../localStorageKeys";
 import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
+import { RECURRING_SERIES_CUTOFFS_KEY } from "../domains/tasks/recurrenceCutoffs";
 
 import { getTaskifyDb, TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./taskifyDb";
 import { idbKeyValue } from "./idbKeyValue";
@@ -86,6 +87,7 @@ export async function initializeStorageBoundaries(): Promise<void> {
 
       BOARD_SYNC_CURSORS_KEY, // relay sync cursors — must preload so repeat opens skip limit:500
       TASK_TOMBSTONES_KEY, // persistent deletion tombstones — must preload so first sync hydrates clock
+      RECURRING_SERIES_CUTOFFS_KEY, // durable delete-all-future series cutoffs
     ]),
     idbKeyValue.initStore(TASKIFY_STORE_WALLET, [
       CASHU_PROOFS_KEY,
