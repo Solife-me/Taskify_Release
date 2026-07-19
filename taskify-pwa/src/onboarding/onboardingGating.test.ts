@@ -83,7 +83,7 @@ describe("isOnboardingActive", () => {
 // Nav-guard tests
 // ---------------------------------------------------------------------------
 
-type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings";
+type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-address" | "chat" | "settings";
 
 function guardedNavigate(isOnboardingActive: boolean, currentPage: ActivePage, requestedPage: ActivePage): ActivePage {
   if (isOnboardingActive) return currentPage;
@@ -131,7 +131,7 @@ describe("snap-back", () => {
   });
 
   test("activePage forced to 'boards' from any non-boards page", () => {
-    const pages: ActivePage[] = ["upcoming", "wallet", "wallet-bounties", "contacts", "settings"];
+    const pages: ActivePage[] = ["upcoming", "wallet", "wallet-bounties", "wallet-address", "settings"];
     for (const page of pages) {
       expect(snapBackActivePage(true, page)).toBe("boards");
     }

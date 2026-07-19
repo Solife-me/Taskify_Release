@@ -66,6 +66,7 @@ export type Settings = {
   fileServers: string; // JSON-serialized FileServerEntry[]
   encryptedFileServers: string; // JSON-serialized FileServerEntry[]
   lightningAddressProvider: LightningAddressProvider;
+  solifeLightningAddress: string;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;

@@ -49,6 +49,7 @@ type UseBoardSyncParams = {
   boardsRef: MutableRef<Board[]>;
   tasksRef: MutableRef<BoardSyncTask[]>;
   setTasks: StateSetter<BoardSyncTask[]>;
+  sanitizeTasks?: (tasks: BoardSyncTask[]) => BoardSyncTask[];
   pool: BoardSyncNostrPool;
   getBoardRelays: (board: Board) => string[];
   nostrIdxRef: MutableRef<BoardSyncNostrIndex>;
@@ -121,6 +122,7 @@ export function useBoardSync({
   boardsRef,
   tasksRef,
   setTasks,
+  sanitizeTasks,
   pool,
   getBoardRelays,
   nostrIdxRef,
@@ -192,10 +194,11 @@ export function useBoardSync({
           if ("_deleted" in entry) merged.delete(key);
           else merged.set(key, entry);
         }
-        return dedupeRecurringInstances(Array.from(merged.values())) as BoardSyncTask[];
+        const deduped = dedupeRecurringInstances(Array.from(merged.values())) as BoardSyncTask[];
+        return sanitizeTasks ? sanitizeTasks(deduped) : deduped;
       });
     },
-    [nostrIdxRef, setTasks],
+    [nostrIdxRef, sanitizeTasks, setTasks],
   );
 
   const verifyUnseenTasks = useCallback(

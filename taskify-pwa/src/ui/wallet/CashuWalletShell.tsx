@@ -18,6 +18,7 @@ type CashuWalletShellProps = {
   maybeInboxMessage: (id: string) => void;
   messagesUnreadCount: number;
   markInboxMessagesRead: (ids: string[]) => void;
+  openWalletAddress: () => void;
   openWalletBounties: () => void;
   pendingCalendarInvites: CalendarInvite[];
   setDmUnreadCount: (count: number) => void;
@@ -41,6 +42,7 @@ export function CashuWalletShell({
   maybeInboxMessage,
   messagesUnreadCount,
   markInboxMessagesRead,
+  openWalletAddress,
   openWalletBounties,
   pendingCalendarInvites,
   setDmUnreadCount,
@@ -56,6 +58,7 @@ export function CashuWalletShell({
       <CashuWalletModal
         open={showWalletShell}
         onClose={closeWallet}
+        onOpenAddress={openWalletAddress}
         onOpenBounties={openWalletBounties}
         page={showChat ? "chat" : "wallet"}
         showTabSwitcher={false}
@@ -65,6 +68,7 @@ export function CashuWalletShell({
         walletDenominationDisplay={settings.walletDenominationDisplay}
         setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}
         lightningAddressProvider={settings.lightningAddressProvider}
+        solifeLightningAddress={settings.solifeLightningAddress}
         npubCashLightningAddressEnabled={settings.npubCashLightningAddressEnabled}
         npubCashAutoClaim={settings.lightningAddressProvider === "npub.cash" && settings.npubCashAutoClaim}
         sentTokenStateChecksEnabled={settings.walletSentStateChecksEnabled}

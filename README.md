@@ -6,7 +6,7 @@ Taskify is a privacy-first, local-first task manager with Nostr-based sync and a
 
 - **Offline-first PWA** (React 19 + Vite) with service worker caching
 - **Nostr-native sync**: tasks, boards, and app state published as signed NIP-01 events
-- **Cashu ecash wallet**: send/receive tokens, P2PK locks, Lightning payments via NWC
+- **Cashu ecash wallet**: send/receive tokens, P2PK locks, Lightning payments via NWC, and wallet-managed Lightning Address settings
 - **Agent Mode**: programmatic task manipulation via a JSON command API (`?agent=1`)
 - **Web Push reminders**: scheduled via Cloudflare Worker cron (every minute)
 - **No account required**: identity is a Nostr keypair generated or imported at first run
@@ -20,7 +20,7 @@ Taskify is a privacy-first, local-first task manager with Nostr-based sync and a
 | **Tasks** | Create, edit, complete tasks with due dates, priorities, notes, subtasks, recurrence | `src/domains/tasks/`, `src/ui/task/` |
 | **Boards** | Week view, list columns, compound boards; per-board encryption | `src/domains/tasks/boardUtils.ts`, `src/ui/board/` |
 | **Upcoming** | Calendar-style view of tasks by date | `src/domains/calendar/` |
-| **Wallet** | Cashu ecash: send, receive, P2PK locks, NWC (NIP-47), Lightning | `src/wallet/`, `src/mint/`, `src/context/CashuContext.tsx` |
+| **Wallet** | Cashu ecash: send, receive, P2PK locks, NWC (NIP-47), Lightning, Address page | `src/wallet/`, `src/mint/`, `src/context/CashuContext.tsx`, `src/ui/wallet/` |
 | **Contacts** | Nostr-based contact list (NIP-51) | `src/lib/contacts.ts`, `src/lib/nip51Contacts.ts` |
 | **Settings** | Relays, push notifications, theme, startup view, backups | `src/ui/settings/` |
 | **Onboarding** | Key generation/import, agent mode setup, hard navigation gating | `src/onboarding/` |

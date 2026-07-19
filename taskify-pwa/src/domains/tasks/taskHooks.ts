@@ -11,6 +11,11 @@ import { normalizeTimeZone } from "../dateTime/dateUtils";
 import { boardEntityStore, taskEntityStore } from "../../storage/entityStore";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import { normalizeAgentPubkey, normalizeTaskAssignees } from "./assignmentUtils";
+import {
+  RECURRING_SERIES_CUTOFFS_KEY,
+  applyRecurringSeriesCutoffs,
+  parseRecurringSeriesCutoffs,
+} from "./recurrenceCutoffs";
 
 function useBoards() {
   const [boards, setBoards] = useState<Board[]>(() => {
@@ -158,7 +163,10 @@ function useTasks() {
         return normalizeTaskBounty(normalizeHiddenForRecurring(task));
       })
       .filter((t): t is Task => !!t);
-    return dedupeRecurringInstances(normalized);
+    const cutoffs = parseRecurringSeriesCutoffs(
+      idbKeyValue.getItem(TASKIFY_STORE_TASKS, RECURRING_SERIES_CUTOFFS_KEY),
+    );
+    return applyRecurringSeriesCutoffs(dedupeRecurringInstances(normalized), cutoffs);
   });
   return [tasks, setTasks] as const;
 }

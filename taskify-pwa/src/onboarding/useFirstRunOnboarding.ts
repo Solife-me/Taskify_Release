@@ -26,7 +26,7 @@ import { detectPushPlatformFromNavigator, type PushPlatform } from "../domains/p
 
 const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
 
-type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "chat" | "settings";
+type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-address" | "chat" | "settings";
 
 type UseFirstRunOnboardingParams = {
   activePage: ActivePage;

@@ -3,7 +3,7 @@ import React from "react";
 import { bech32 } from "bech32";
 import { type ProofState } from "@cashu/cashu-ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { secp256k1 } from "@noble/curves/secp256k1";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { getPublicKey } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import {
@@ -618,7 +618,7 @@ export function generatePrivateKey(): { hex: string; bytes: Uint8Array } {
     bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
   } else {
-    bytes = secp256k1.utils.randomPrivateKey();
+    bytes = secp256k1.utils.randomSecretKey();
   }
   const hex = bytesToHex(bytes);
   return { hex, bytes };

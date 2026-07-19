@@ -2,14 +2,14 @@
 // Run with: npm test (vitest)
 import { describe, it, expect } from "vitest";
 import { signGcalHeaders } from "./gcalApi";
-import { schnorr } from "@noble/curves/secp256k1";
+import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeKeypair() {
-  const privkey = schnorr.utils.randomPrivateKey();
+  const privkey = schnorr.utils.randomSecretKey();
   const pubkey = schnorr.getPublicKey(privkey);
   return { privkeyHex: bytesToHex(privkey), pubkeyHex: bytesToHex(pubkey) };
 }

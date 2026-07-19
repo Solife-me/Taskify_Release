@@ -22,21 +22,60 @@ export type SeriesTaskLike = {
   reminders?: unknown[];
 };
 
+function stableRecurrenceValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stableRecurrenceValue);
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, stableRecurrenceValue(entry)]),
+  );
+}
+
 function recurrenceSeriesFingerprint(rule: RecurrenceLike | undefined): string {
   if (!rule) return "";
   const seriesRule = { ...rule };
   delete seriesRule.untilISO;
-  return JSON.stringify(seriesRule);
+  return JSON.stringify(stableRecurrenceValue(seriesRule));
+}
+
+/**
+ * Return the stable root id for a recurring series.
+ *
+ * Older generated tasks can be missing `seriesId`, but their deterministic id
+ * still contains the root as `recurrence:<root>:<date-or-datetime>`. Parse the
+ * suffix from the right so roots containing colons continue to work.
+ */
+export function recurringSeriesId(task: Pick<SeriesTaskLike, "id" | "seriesId">): string {
+  const recoverRoot = (value: string): string => {
+    let current = value.trim();
+    const seen = new Set<string>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const generated = /^recurrence:(.+):(\d{4}-\d{2}-\d{2}(?:T.*)?)$/.exec(current);
+      const parent = generated?.[1]?.trim() ?? "";
+      if (!parent) break;
+      current = parent;
+    }
+    return current;
+  };
+
+  const explicit = typeof task.seriesId === "string" ? recoverRoot(task.seriesId) : "";
+  if (explicit) return explicit;
+  return typeof task.id === "string" ? recoverRoot(task.id) : "";
 }
 
 export function tasksInSameSeries<TTask extends SeriesTaskLike>(a: TTask, b: TTask): boolean {
   if (a.boardId !== b.boardId) return false;
-  const aSeriesId = a.seriesId || a.id;
-  const bSeriesId = b.seriesId || b.id;
-  if ((a.seriesId || b.seriesId) && aSeriesId === bSeriesId) return true;
+  const aSeriesId = recurringSeriesId(a);
+  const bSeriesId = recurringSeriesId(b);
+  if (aSeriesId && aSeriesId === bSeriesId) return true;
   return (
     a.title === b.title &&
-    a.note === b.note &&
+    (a.note || "") === (b.note || "") &&
     !!a.recurrence &&
     !!b.recurrence &&
     recurrenceSeriesFingerprint(a.recurrence) === recurrenceSeriesFingerprint(b.recurrence)
@@ -98,7 +137,7 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
   for (const task of src) {
     if (!task.recurrence || !isFrequentRecurrence(task.recurrence)) continue;
 
-    const seriesId = task.seriesId || task.id;
+    const seriesId = recurringSeriesId(task);
     if (!task.seriesId) {
       const index = out.findIndex((candidate) => candidate.id === task.id);
       if (index >= 0 && out[index].seriesId !== seriesId) {

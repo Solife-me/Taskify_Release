@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@noble/curves": "^2.2.0",
-    "link-preview-js": "^4.0.3",
-    "nostr-tools": "^2.23.5"
+    "link-preview-js": "^4.0.4",
+    "nostr-tools": "^2.23.9"
   }
 }
