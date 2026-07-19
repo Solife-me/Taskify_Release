@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ensureWeekRecurrencesForCurrentWeek, tasksInSameSeries, type SeriesTaskLike } from "../dist/weekRecurrence.js";
+import {
+  ensureWeekRecurrencesForCurrentWeek,
+  recurringSeriesId,
+  tasksInSameSeries,
+  type SeriesTaskLike,
+} from "../dist/weekRecurrence.js";
 
 test("tasksInSameSeries matches by seriesId", () => {
   const a = { id: "1", boardId: "b", title: "t", dueISO: "2026-03-12T00:00:00.000Z", seriesId: "s1" } as SeriesTaskLike;
@@ -43,6 +48,51 @@ test("tasksInSameSeries matches generated instance to seed id", () => {
   } as SeriesTaskLike;
 
   assert.equal(tasksInSameSeries(seed, instance), true);
+});
+
+test("recurringSeriesId recovers a legacy generated instance without seriesId", () => {
+  assert.equal(
+    recurringSeriesId({
+      id: "recurrence:seed-task:2026-03-13",
+      boardId: "b",
+      title: "Renamed occurrence",
+      dueISO: "2026-03-13T00:00:00.000Z",
+    }),
+    "seed-task",
+  );
+});
+
+test("recurringSeriesId repairs a legacy generated id stored as seriesId", () => {
+  assert.equal(
+    recurringSeriesId({
+      id: "recurrence:recurrence:seed-task:2026-03-13:2026-03-14",
+      seriesId: "recurrence:seed-task:2026-03-13",
+      boardId: "b",
+      title: "Legacy chain",
+      dueISO: "2026-03-14T00:00:00.000Z",
+    }),
+    "seed-task",
+  );
+});
+
+test("tasksInSameSeries uses the generated instance id even when occurrence details changed", () => {
+  const seed = {
+    id: "seed-task",
+    boardId: "b",
+    title: "Original title",
+    note: undefined,
+    dueISO: "2026-03-12T00:00:00.000Z",
+    recurrence: { type: "daily" },
+  } as SeriesTaskLike;
+  const legacyInstance = {
+    ...seed,
+    id: "recurrence:seed-task:2026-03-13",
+    title: "Edited title",
+    note: "",
+    dueISO: "2026-03-13T00:00:00.000Z",
+  } as SeriesTaskLike;
+
+  assert.equal(tasksInSameSeries(seed, legacyInstance), true);
 });
 
 test("ensureWeekRecurrencesForCurrentWeek creates clone for current week", () => {

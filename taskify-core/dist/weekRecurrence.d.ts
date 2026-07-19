@@ -20,6 +20,14 @@ export type SeriesTaskLike = {
     subtasks?: Array<Record<string, unknown>>;
     reminders?: unknown[];
 };
+/**
+ * Return the stable root id for a recurring series.
+ *
+ * Older generated tasks can be missing `seriesId`, but their deterministic id
+ * still contains the root as `recurrence:<root>:<date-or-datetime>`. Parse the
+ * suffix from the right so roots containing colons continue to work.
+ */
+export declare function recurringSeriesId(task: Pick<SeriesTaskLike, "id" | "seriesId">): string;
 export declare function tasksInSameSeries<TTask extends SeriesTaskLike>(a: TTask, b: TTask): boolean;
 type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
     tasks: TTask[];
