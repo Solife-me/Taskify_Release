@@ -1,10 +1,14 @@
-# Native iOS ↔ PWA Shell Parity Map (Pre-Slice 8)
+# Native iOS ↔ PWA Shell Parity Map (Historical Pre-Restart Record)
+
+> This document describes the abandoned native experiment and is retained only as PWA research. It is not evidence that the listed native slices still exist. The clean July 2026 implementation status is tracked in `taskify-ios-native/README.md` and `docs/native-ios-parity-execution-strategy.md`.
+
+Current clean-build note: the replacement now has the five-tab shell, weekly board selector/columns, quick add, completion/deletion, Upcoming, Settings board management, and the first PWA-compatible Nostr sync foundation. The detailed gaps below remain useful for board-mode, list-column, header-action, and drag/drop work.
 
 Purpose: lock UI/interaction parity targets before additional native implementation.
 
 Repo context:
 - PWA source of truth: `taskify-pwa/src/App.tsx`
-- Native iOS source (active migration workspace): `taskify-ios-native/Sources/TaskifyApp/TaskifyApp.swift`
+- Historical native source at the time of this map: `taskify-ios-native/Sources/TaskifyApp/TaskifyApp.swift`
 - Legacy webwrapper app (kept stable during migration): `taskify-ios/`
 
 ---
@@ -155,9 +159,9 @@ For every new native shell/UI slice:
 - tests must encode behavior, not just render scaffolding
 - keep file placement in PWA-style domains (`App/`, `Features/Boards`, `Features/Upcoming`, `Features/Settings`, `Features/Auth`); avoid returning to monolithic app files
 
-## Architecture parity baseline (now enforced)
+## Historical architecture parity baseline
 
-Active native codebase `taskify-ios-native/Sources/TaskifyApp` is organized as:
+The abandoned native codebase was organized as:
 - `App/` — entrypoint, root routing, auth orchestration
 - `Features/Auth/` — sign-in UI flow
 - `Features/Boards/` — board shell, board mode pane, board detail pane

@@ -1,47 +1,29 @@
 // swift-tools-version: 5.9
-// The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
-    name: "TaskifyiOS",
+    name: "TaskifyNative",
     platforms: [
         .iOS(.v17),
+        .macOS(.v14),
     ],
     products: [
-        .library(
-            name: "TaskifyCore",
-            targets: ["TaskifyCore"]),
-        .executable(
-            name: "TaskifyApp",
-            targets: ["TaskifyApp"]),
+        .library(name: "TaskifyCore", targets: ["TaskifyCore"]),
     ],
     dependencies: [
         .package(
-            url: "https://github.com/nostr-sdk/nostr-sdk-ios",
-            from: "0.8.0"
-        ),
-        .package(
-            url: "https://github.com/zeugmaster/CashuSwift",
-            from: "0.1.0"
+            url: "https://github.com/21-DOT-DEV/swift-secp256k1.git",
+            exact: "0.21.1"
         ),
     ],
     targets: [
         .target(
             name: "TaskifyCore",
             dependencies: [
-                "NostrSDK",
-                "CashuSwift",
+                .product(name: "P256K", package: "swift-secp256k1"),
             ],
-            path: "Sources/TaskifyCore",
-            resources: [
-                .process("Resources"),
-            ]
-        ),
-        .executableTarget(
-            name: "TaskifyApp",
-            dependencies: ["TaskifyCore"],
-            path: "Sources/TaskifyApp"
+            path: "Sources/TaskifyCore"
         ),
         .testTarget(
             name: "TaskifyCoreTests",

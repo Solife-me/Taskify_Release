@@ -53,15 +53,27 @@ This defines the default implementation loop for rebuilding Taskify as a native 
 
 ---
 
-## Initial Slice Started (Milestone A)
+## Current Restart Baseline (July 2026)
 
-Started with Keychain identity/profile storage domain:
-- Added `ProfileIdentityStore` with injectable `SecureStore`
-- Added tests for profile lifecycle semantics:
-  - save active profile
-  - track profile names
-  - append unique profile names
-  - delete profile updates names/active pointer
-- Kept `KeychainStore` as production facade backed by Keychain Security APIs
+The earlier native experiment was not functional and is no longer treated as an implementation baseline. The active replacement lives in `taskify-ios-native/`; the release WebView app remains in `taskify-ios/`.
 
-This establishes the baseline TDD/parity pattern for remaining slices.
+The clean first vertical slice now provides:
+
+- a buildable SwiftUI application and custom PWA-shaped five-tab shell
+- weekly board selection, quick task entry, completion, and deletion
+- Upcoming date grouping, search, and task entry
+- local weekly board creation
+- atomic offline JSON persistence
+- tests for default state, task mutations, date resolution, and persistence round trips
+
+The next native sync slice now adds:
+
+- automatic native Nostr identity generation plus nsec/hex import, stored only in Keychain
+- the PWA's deterministic board signing key, board tag, AES-256-GCM key, and event layout
+- kind `30300` board metadata, kind `30301` task state/tombstones, and kind `5` deletion requests
+- WebSocket relay subscriptions across the PWA default relay set
+- per-relay startup buffering until EOSE, followed by clock-protected task merges
+- immediate offline mutations backed by a persistent publish outbox, relay acknowledgements, and retry after reconnect
+- golden Swift tests built from fixed PWA signing, key derivation, and encrypted-content fixtures
+
+This is an implemented compatibility foundation, not a claim of production sync parity. A real PWA/iOS two-client convergence pass is still required, and high-volume cursoring/live micro-batching remains stabilization work. Wallet, chat, recurrence, reminders, attachments, list/compound boards, and calendar parity remain later slices.

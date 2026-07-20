@@ -1,0 +1,81 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 71;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B00000000000000000000101 /* TaskifyNativeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000201 /* TaskifyNativeApp.swift */; };
+		B00000000000000000000102 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000202 /* AppModel.swift */; };
+		B00000000000000000000103 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000203 /* RootTabView.swift */; };
+		B00000000000000000000104 /* TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* TaskifyTheme.swift */; };
+		B00000000000000000000105 /* BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* BoardsView.swift */; };
+		B00000000000000000000106 /* UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* UpcomingView.swift */; };
+		B00000000000000000000107 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* SettingsView.swift */; };
+		B00000000000000000000108 /* MigrationPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000208 /* MigrationPlaceholderView.swift */; };
+		B00000000000000000000109 /* KeychainIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000209 /* KeychainIdentityStore.swift */; };
+		B00000000000000000000120 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000601 /* TaskifyCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B00000000000000000000201 /* TaskifyNativeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyNativeApp.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000202 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModel.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000203 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/RootTabView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000204 /* TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000205 /* BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000206 /* UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000207 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000208 /* MigrationPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000209 /* KeychainIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Security/KeychainIdentityStore.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000220 /* TaskifyNative.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskifyNative.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B00000000000000000000301 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000120 /* TaskifyCore in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		B00000000000000000000401 = {isa = PBXGroup; children = (B00000000000000000000402 /* App Sources */, B00000000000000000000403 /* Products */,); sourceTree = "<group>"; };
+		B00000000000000000000402 /* App Sources */ = {isa = PBXGroup; children = (B00000000000000000000201, B00000000000000000000202, B00000000000000000000203, B00000000000000000000204, B00000000000000000000205, B00000000000000000000206, B00000000000000000000207, B00000000000000000000208, B00000000000000000000209,); name = "App Sources"; sourceTree = "<group>"; };
+		B00000000000000000000403 /* Products */ = {isa = PBXGroup; children = (B00000000000000000000220 /* TaskifyNative.app */,); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B00000000000000000000501 /* TaskifyNative */ = {isa = PBXNativeTarget; buildConfigurationList = B00000000000000000000801; buildPhases = (B00000000000000000000302 /* Sources */, B00000000000000000000301 /* Frameworks */, B00000000000000000000303 /* Resources */,); buildRules = (); dependencies = (); name = TaskifyNative; packageProductDependencies = (B00000000000000000000601 /* TaskifyCore */,); productName = TaskifyNative; productReference = B00000000000000000000220 /* TaskifyNative.app */; productType = "com.apple.product-type.application"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B00000000000000000000500 /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2600; LastUpgradeCheck = 2600; TargetAttributes = {B00000000000000000000501 = {CreatedOnToolsVersion = 26.3;};};}; buildConfigurationList = B00000000000000000000800; compatibilityVersion = "Xcode 16.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = B00000000000000000000401; packageReferences = (B00000000000000000000600 /* Local package */,); productRefGroup = B00000000000000000000403; projectDirPath = ""; projectRoot = ""; targets = (B00000000000000000000501 /* TaskifyNative */,); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		B00000000000000000000303 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B00000000000000000000302 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000101, B00000000000000000000102, B00000000000000000000103, B00000000000000000000104, B00000000000000000000105, B00000000000000000000106, B00000000000000000000107, B00000000000000000000108, B00000000000000000000109,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		B00000000000000000000700 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Taskify; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.1; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Debug; };
+		B00000000000000000000701 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Taskify; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.1; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Release; };
+		B00000000000000000000710 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; DEVELOPMENT_TEAM = JUH98962T7; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_OPTIMIZATION_LEVEL = 0; ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
+		B00000000000000000000711 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; DEVELOPMENT_TEAM = JUH98962T7; GCC_C_LANGUAGE_STANDARD = gnu17; SWIFT_COMPILATION_MODE = wholemodule; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B00000000000000000000800 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000710, B00000000000000000000711,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		B00000000000000000000801 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000700, B00000000000000000000701,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B00000000000000000000600 /* Local package */ = {isa = XCLocalSwiftPackageReference; relativePath = ""; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B00000000000000000000601 /* TaskifyCore */ = {isa = XCSwiftPackageProductDependency; package = B00000000000000000000600; productName = TaskifyCore; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = B00000000000000000000500 /* Project object */;
+}

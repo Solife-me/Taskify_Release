@@ -1,0 +1,68 @@
+import SwiftUI
+
+enum TaskifyTheme {
+    static let accent = Color(red: 0.04, green: 0.52, blue: 1.0)
+    static let backgroundTop = Color(red: 0.10, green: 0.20, blue: 0.33)
+    static let backgroundMid = Color(red: 0.035, green: 0.075, blue: 0.12)
+    static let backgroundBottom = Color.black
+    static let primaryText = Color(red: 0.97, green: 0.97, blue: 0.99)
+    static let secondaryText = Color(red: 0.78, green: 0.81, blue: 0.88)
+    static let tertiaryText = Color(red: 0.62, green: 0.65, blue: 0.72)
+    static let panelFill = Color.white.opacity(0.075)
+    static let raisedFill = Color.white.opacity(0.11)
+    static let border = Color.white.opacity(0.12)
+
+    static var background: LinearGradient {
+        LinearGradient(
+            colors: [backgroundTop, backgroundMid, backgroundBottom],
+            startPoint: .topLeading,
+            endPoint: .bottom
+        )
+    }
+}
+
+struct GlassPanel: ViewModifier {
+    var cornerRadius: CGFloat = 24
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(TaskifyTheme.panelFill)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(TaskifyTheme.border, lineWidth: 1)
+            )
+    }
+}
+
+extension View {
+    func taskifyGlass(cornerRadius: CGFloat = 24) -> some View {
+        modifier(GlassPanel(cornerRadius: cornerRadius))
+    }
+}
+
+struct HeaderIconButton: View {
+    let systemName: String
+    var accent = false
+    var accessibilityLabel: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 42, height: 42)
+                .foregroundStyle(accent ? .white : TaskifyTheme.primaryText)
+                .background(
+                    Circle()
+                        .fill(accent ? TaskifyTheme.accent : TaskifyTheme.raisedFill)
+                )
+                .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}

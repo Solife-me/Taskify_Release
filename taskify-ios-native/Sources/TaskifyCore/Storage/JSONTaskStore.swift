@@ -1,0 +1,44 @@
+import Foundation
+
+public actor JSONTaskStore {
+    public static var defaultURL: URL {
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return applicationSupport
+            .appendingPathComponent("TaskifyNative", isDirectory: true)
+            .appendingPathComponent("taskify.json", isDirectory: false)
+    }
+
+    private let fileURL: URL
+
+    public init(fileURL: URL = JSONTaskStore.defaultURL) {
+        self.fileURL = fileURL
+    }
+
+    public func load() throws -> TaskifySnapshot {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return .empty
+        }
+
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        var snapshot = try decoder.decode(TaskifySnapshot.self, from: data)
+        snapshot.repairSelection()
+        return snapshot
+    }
+
+    public func save(_ snapshot: TaskifySnapshot) throws {
+        let directoryURL = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(snapshot)
+        try data.write(to: fileURL, options: .atomic)
+    }
+}
