@@ -1,10 +1,14 @@
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import SwiftUI
 import TaskifyCore
+import UIKit
 
 struct BoardsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showCompleted = false
     @State private var showingAddList = false
+    @State private var showingBoardShare = false
     @State private var newListName = ""
 
     var body: some View {
@@ -26,6 +30,11 @@ struct BoardsView: View {
         } message: {
             Text("Create another column on \(model.selectedBoard?.name ?? "this board").")
         }
+        .sheet(isPresented: $showingBoardShare) {
+            if let board = model.selectedBoard {
+                BoardShareSheet(board: board)
+            }
+        }
     }
 
     @ViewBuilder
@@ -38,8 +47,9 @@ struct BoardsView: View {
                 ListBoardView(board: board, showCompleted: showCompleted)
             }
         case .compound:
-            ContentUnavailableView("Compound board migration pending", systemImage: "square.stack.3d.up")
-                .foregroundStyle(TaskifyTheme.secondaryText)
+            if let board = model.selectedBoard {
+                CompoundBoardView(board: board, showCompleted: showCompleted)
+            }
         case .bible:
             ContentUnavailableView("Bible board migration pending", systemImage: "book.closed")
                 .foregroundStyle(TaskifyTheme.secondaryText)
@@ -51,32 +61,52 @@ struct BoardsView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Menu {
-                ForEach(model.visibleBoards) { board in
-                    Button {
-                        model.selectBoard(board.id)
-                    } label: {
-                        if board.id == model.selectedBoardID {
-                            Label(board.name, systemImage: "checkmark")
-                        } else {
-                            Text(board.name)
+            HStack(spacing: 0) {
+                Menu {
+                    ForEach(model.visibleBoards) { board in
+                        Button {
+                            model.selectBoard(board.id)
+                        } label: {
+                            if board.id == model.selectedBoardID {
+                                Label(board.name, systemImage: "checkmark")
+                            } else {
+                                Text(board.name)
+                            }
                         }
                     }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(model.selectedBoard?.name ?? "Boards")
+                            .font(.system(size: 17, weight: .semibold))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 11)
+                    .frame(height: 42)
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    Text(model.selectedBoard?.name ?? "Boards")
-                        .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .bold))
+
+                Rectangle()
+                    .fill(TaskifyTheme.border)
+                    .frame(width: 1, height: 23)
+
+                Button {
+                    showingBoardShare = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 42, height: 42)
+                        .contentShape(Rectangle())
                 }
                 .foregroundStyle(TaskifyTheme.primaryText)
-                .padding(.horizontal, 16)
-                .frame(height: 42)
-                .background(TaskifyTheme.raisedFill, in: Capsule())
-                .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
+                .buttonStyle(.plain)
+                .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
             }
+            .background(TaskifyTheme.raisedFill, in: Capsule())
+            .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
+            .layoutPriority(1)
 
             Spacer(minLength: 4)
 
@@ -110,6 +140,255 @@ struct BoardsView: View {
     }
 }
 
+private struct BoardShareSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+    let board: Board
+
+    @State private var shareMode = ShareMode.board
+    @State private var copied = false
+    @State private var templateShare: BoardTemplateShareResult?
+    @State private var templateError: String?
+    @State private var isGeneratingTemplate = false
+    @State private var requestedTemplate = false
+
+    private enum ShareMode: String, CaseIterable, Identifiable {
+        case board = "Board"
+        case template = "Template"
+
+        var id: String { rawValue }
+    }
+
+    private var activeShareBoard: Board? {
+        switch shareMode {
+        case .board: board
+        case .template: templateShare?.board
+        }
+    }
+
+    private var sharePayload: String? {
+        guard let activeShareBoard else { return nil }
+        return (try? BoardShareContract.encode(board: activeShareBoard))
+            ?? activeShareBoard.effectiveNostrBoardID
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    Picker("Share mode", selection: $shareMode) {
+                        ForEach(ShareMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    VStack(spacing: 5) {
+                        Label(
+                            shareMode == .board ? "Live board" : "Independent copy",
+                            systemImage: shareMode == .board
+                                ? "arrow.triangle.2.circlepath"
+                                : "square.on.square"
+                        )
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(TaskifyTheme.accent)
+                        Text(
+                            shareMode == .board
+                                ? "Changes remain synced for everyone who joins this board."
+                                : "Creates a snapshot with a new board ID. Future changes won't sync between the two boards."
+                        )
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    if let sharePayload {
+                        Button(action: copyBoardID) {
+                            VStack(spacing: 11) {
+                                TaskifyQRCode(value: sharePayload)
+                                    .frame(width: 250, height: 250)
+                                    .padding(10)
+                                    .background(.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+                                Label(copied ? "Board ID copied" : "Tap QR to copy board ID", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(copied ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(copied ? "Board ID copied" : "Copy board ID")
+                    } else {
+                        VStack(spacing: 14) {
+                            if isGeneratingTemplate {
+                                ProgressView()
+                                    .controlSize(.large)
+                                    .tint(TaskifyTheme.accent)
+                                Text("Creating a template snapshot…")
+                            } else {
+                                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                                    .font(.system(size: 34, weight: .medium))
+                                Text(templateError ?? "The template isn't ready yet.")
+                                Button("Try again", action: generateTemplate)
+                                    .buttonStyle(.bordered)
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .frame(width: 270, height: 270)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 22).stroke(TaskifyTheme.border, lineWidth: 1))
+                    }
+
+                    if let templateShare, shareMode == .template {
+                        Label(templateStatus(templateShare), systemImage: templateShare.failedTaskCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(templateShare.failedTaskCount == 0 ? Color.green : Color.orange)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    if let activeShareBoard {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(shareMode == .board ? "BOARD ID" : "TEMPLATE BOARD ID")
+                                .font(.system(size: 10, weight: .bold))
+                                .tracking(1.2)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                            Text(activeShareBoard.effectiveNostrBoardID)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(14)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 17).stroke(TaskifyTheme.border, lineWidth: 1))
+                    }
+
+                    if let sharePayload {
+                        HStack(spacing: 10) {
+                            Button(action: copyBoardID) {
+                                Label(copied ? "Copied" : "Copy ID", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 48)
+                            }
+                            .buttonStyle(.bordered)
+
+                            ShareLink(
+                                item: sharePayload,
+                                subject: Text(shareSubject),
+                                preview: SharePreview(shareSubject)
+                            ) {
+                                Label("Share", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 48)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Relays")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                        ForEach(board.effectiveRelayURLs, id: \.self) { relay in
+                            Label(relay, systemImage: "antenna.radiowaves.left.and.right")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(20)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Share \(board.name)")
+            .navigationBarTitleDisplayMode(.inline)
+            .onChange(of: shareMode) { _, mode in
+                copied = false
+                guard mode == .template,
+                      templateShare == nil,
+                      !requestedTemplate else { return }
+                generateTemplate()
+            }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func copyBoardID() {
+        guard let activeShareBoard else { return }
+        UIPasteboard.general.string = activeShareBoard.effectiveNostrBoardID
+        withAnimation(.snappy) { copied = true }
+    }
+
+    private var shareSubject: String {
+        shareMode == .board
+            ? "Join \(board.name) in Taskify"
+            : "Copy \(board.name) in Taskify"
+    }
+
+    private func templateStatus(_ result: BoardTemplateShareResult) -> String {
+        if result.failedTaskCount > 0 {
+            return "Template ready, but \(result.failedTaskCount) task\(result.failedTaskCount == 1 ? "" : "s") could not be added."
+        }
+        if result.publishedTaskCount == 0 {
+            return "Empty template ready to share."
+        }
+        return "Template ready with \(result.publishedTaskCount) task\(result.publishedTaskCount == 1 ? "" : "s")."
+    }
+
+    private func generateTemplate() {
+        guard !isGeneratingTemplate else { return }
+        requestedTemplate = true
+        templateError = nil
+        isGeneratingTemplate = true
+        copied = false
+
+        Task { @MainActor in
+            do {
+                templateShare = try await model.createTemplateShare(for: board.id)
+            } catch {
+                templateError = error.localizedDescription
+            }
+            isGeneratingTemplate = false
+        }
+    }
+}
+
+private struct TaskifyQRCode: View {
+    let value: String
+
+    private static let context = CIContext()
+
+    var body: some View {
+        if let image = image {
+            Image(decorative: image, scale: 1)
+                .interpolation(.none)
+                .resizable()
+        } else {
+            Image(systemName: "qrcode")
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.black)
+                .padding(35)
+        }
+    }
+
+    private var image: CGImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(value.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)) else {
+            return nil
+        }
+        return Self.context.createCGImage(output, from: output.extent)
+    }
+}
+
 private struct ListBoardView: View {
     let board: Board
     let showCompleted: Bool
@@ -140,23 +419,96 @@ private struct ListBoardView: View {
     }
 }
 
-private struct ListColumnView: View {
+private struct CompoundBoardView: View {
     @EnvironmentObject private var model: AppModel
-    let column: BoardColumn
+    let board: Board
     let showCompleted: Bool
+
+    private var columns: [CompoundColumnReference] {
+        model.compoundChildBoards(for: board.id).flatMap { child in
+            child.columns
+                .sorted {
+                    if $0.order != $1.order { return $0.order < $1.order }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+                .map { CompoundColumnReference(board: child, column: $0) }
+        }
+    }
+
+    var body: some View {
+        if columns.isEmpty {
+            ContentUnavailableView(
+                "No linked lists",
+                systemImage: "square.stack.3d.up",
+                description: Text("Add list boards to this compound board from Settings.")
+            )
+            .foregroundStyle(TaskifyTheme.secondaryText)
+        } else {
+            GeometryReader { proxy in
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 16) {
+                        ForEach(columns) { reference in
+                            CompoundColumnView(
+                                reference: reference,
+                                hideBoardName: board.hideChildBoardNames,
+                                showCompleted: showCompleted
+                            )
+                            .frame(width: min(330, proxy.size.width - 50))
+                        }
+                    }
+                    .scrollTargetLayout()
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 10)
+                }
+                .scrollIndicators(.hidden)
+                .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            }
+        }
+    }
+}
+
+private struct CompoundColumnReference: Identifiable {
+    let board: Board
+    let column: BoardColumn
+
+    var id: String { "\(board.id)::\(column.id)" }
+}
+
+private struct CompoundColumnView: View {
+    @EnvironmentObject private var model: AppModel
+    let reference: CompoundColumnReference
+    let hideBoardName: Bool
+    let showCompleted: Bool
+
     @State private var draft = ""
 
     private var tasks: [TaskItem] {
-        model.tasks(forColumnID: column.id, includeCompleted: showCompleted)
+        model.tasks(
+            boardID: reference.board.id,
+            columnID: reference.column.id,
+            includeCompleted: showCompleted
+        )
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(column.name)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if !hideBoardName {
+                        Text(reference.board.name.uppercased())
+                            .font(.system(size: 9, weight: .bold))
+                            .tracking(1)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .lineLimit(1)
+                    }
+                    Text(reference.column.name)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
                 Spacer()
+
                 Text("\(tasks.count)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(TaskifyTheme.tertiaryText)
@@ -193,11 +545,197 @@ private struct ListColumnView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Add task to \(reference.board.name), \(reference.column.name)")
+            }
+        }
+        .padding(10)
+        .taskifyGlass(cornerRadius: 22)
+    }
+
+    private func addTask() {
+        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        model.addQuickTask(
+            title: draft,
+            boardID: reference.board.id,
+            columnID: reference.column.id
+        )
+        draft = ""
+    }
+}
+
+private struct ListColumnView: View {
+    @EnvironmentObject private var model: AppModel
+    let column: BoardColumn
+    let showCompleted: Bool
+    @State private var draft = ""
+    @State private var renameDraft = ""
+    @State private var showingRename = false
+    @State private var showingDeleteConfirmation = false
+
+    private var tasks: [TaskItem] {
+        model.tasks(forColumnID: column.id, includeCompleted: showCompleted)
+    }
+
+    private var allTasks: [TaskItem] {
+        model.tasks(forColumnID: column.id, includeCompleted: true)
+    }
+
+    private var orderedColumns: [BoardColumn] {
+        guard let board = model.selectedBoard, board.kind == .list else { return [] }
+        return board.columns.sorted {
+            if $0.order != $1.order { return $0.order < $1.order }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private var columnIndex: Int? {
+        orderedColumns.firstIndex(where: { $0.id == column.id })
+    }
+
+    private var moveDestination: BoardColumn? {
+        guard let columnIndex else { return nil }
+        if columnIndex > 0 { return orderedColumns[columnIndex - 1] }
+        let nextIndex = columnIndex + 1
+        return orderedColumns.indices.contains(nextIndex) ? orderedColumns[nextIndex] : nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(column.name)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                Spacer()
+                Text("\(tasks.count)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(TaskifyTheme.raisedFill, in: Capsule())
+
+                Menu {
+                    Button {
+                        renameDraft = column.name
+                        showingRename = true
+                    } label: {
+                        Label("Rename list", systemImage: "pencil")
+                    }
+
+                    Divider()
+
+                    Button {
+                        withAnimation(.snappy) {
+                            _ = model.moveListColumn(columnID: column.id, direction: -1)
+                        }
+                    } label: {
+                        Label("Move left", systemImage: "arrow.left")
+                    }
+                    .disabled(columnIndex == 0)
+
+                    Button {
+                        withAnimation(.snappy) {
+                            _ = model.moveListColumn(columnID: column.id, direction: 1)
+                        }
+                    } label: {
+                        Label("Move right", systemImage: "arrow.right")
+                    }
+                    .disabled(columnIndex == nil || columnIndex == orderedColumns.count - 1)
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        showingDeleteConfirmation = true
+                    } label: {
+                        Label("Delete list", systemImage: "trash")
+                    }
+                    .disabled(orderedColumns.count <= 1)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .frame(width: 34, height: 34)
+                        .background(TaskifyTheme.raisedFill, in: Circle())
+                        .contentShape(Circle())
+                }
+                .accessibilityLabel("Manage \(column.name) list")
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 9) {
+                    ForEach(tasks) { task in
+                        TaskCardView(task: task)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+
+            HStack(spacing: 8) {
+                TextField("New Task", text: $draft)
+                    .textInputAutocapitalization(.sentences)
+                    .submitLabel(.done)
+                    .onSubmit(addTask)
+                    .padding(.horizontal, 16)
+                    .frame(height: 46)
+                    .background(Color.black.opacity(0.26), in: Capsule())
+                    .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
+
+                Button(action: addTask) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 18, weight: .bold))
+                        .frame(width: 46, height: 46)
+                        .foregroundStyle(.white)
+                        .background(TaskifyTheme.accent, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel("Add task to \(column.name)")
             }
         }
         .padding(10)
         .taskifyGlass(cornerRadius: 22)
+        .alert("Rename list", isPresented: $showingRename) {
+            TextField("List name", text: $renameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                _ = model.renameListColumn(columnID: column.id, name: renameDraft)
+            }
+            .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("The new name will sync with everyone sharing this board.")
+        }
+        .confirmationDialog(
+            "Delete \(column.name)?",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            if let moveDestination, !allTasks.isEmpty {
+                Button("Move \(taskCountLabel) to \(moveDestination.name)") {
+                    _ = model.removeListColumn(
+                        columnID: column.id,
+                        moveTasksTo: moveDestination.id
+                    )
+                }
+            }
+
+            Button(
+                allTasks.isEmpty ? "Delete empty list" : "Delete list and \(taskCountLabel)",
+                role: .destructive
+            ) {
+                _ = model.removeListColumn(columnID: column.id, moveTasksTo: nil)
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if allTasks.isEmpty {
+                Text("This removes the list from the shared board.")
+            } else {
+                Text("Choose whether to keep its tasks or delete them. This change syncs to everyone sharing the board.")
+            }
+        }
+    }
+
+    private var taskCountLabel: String {
+        "\(allTasks.count) task\(allTasks.count == 1 ? "" : "s")"
     }
 
     private func addTask() {
@@ -406,14 +944,23 @@ struct TaskCardView: View {
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("Edit \(displayTitle)")
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .zIndex(1)
 
             if hasMedia {
                 TaskMediaView(task: task, boardID: mediaBoardID, compact: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipped()
+                    .contentShape(Rectangle())
+                    .zIndex(0)
             }
         }
         .padding(.horizontal, hasMedia ? 10 : 13)

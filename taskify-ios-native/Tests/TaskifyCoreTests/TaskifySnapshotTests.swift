@@ -11,6 +11,23 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.selectedBoard?.columns.count, 7)
     }
 
+    func testScannedBoardShareJoinsWithNameAndRelays() throws {
+        let rawShare = #"{"v":1,"kind":"taskify-share","item":{"type":"board","boardId":"4f35858d-066b-4f2d-a2f4-235794c77780","boardName":"Family Week","relays":["wss://relay.solife.me","wss://nos.lol"]}}"#
+        let share = try XCTUnwrap(BoardShareContract.decode(rawShare))
+        var snapshot = TaskifySnapshot.empty
+
+        let board = try XCTUnwrap(snapshot.joinWeekBoard(
+            nostrBoardID: share.boardID,
+            name: share.boardName ?? "Shared Board",
+            relayURLs: share.relayURLs
+        ))
+
+        XCTAssertEqual(board.name, "Family Week")
+        XCTAssertEqual(board.nostrBoardID, "4f35858d-066b-4f2d-a2f4-235794c77780")
+        XCTAssertEqual(board.effectiveRelayURLs, ["wss://relay.solife.me", "wss://nos.lol"])
+        XCTAssertEqual(snapshot.selectedBoardID, board.id)
+    }
+
     func testQuickAddCreatesTrimmedTaskInRequestedDay() {
         var snapshot = TaskifySnapshot.empty
         let now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -72,6 +89,176 @@ final class TaskifySnapshotTests: XCTestCase {
             columnID: firstColumn.id,
             includeCompleted: true
         ).isEmpty)
+    }
+
+    func testCompoundBoardAggregatesOrderedListBoardsAndManagesChildren() throws {
+        var snapshot = TaskifySnapshot.empty
+        let projects = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        _ = try XCTUnwrap(snapshot.addListColumn(boardID: projects.id, name: "Doing"))
+        let home = try XCTUnwrap(snapshot.createListBoard(name: "Home"))
+        let compound = try XCTUnwrap(snapshot.createCompoundBoard(
+            name: "Everything",
+            childBoardIDs: [home.id, projects.id]
+        ))
+
+        XCTAssertEqual(snapshot.selectedBoard?.kind, .compound)
+        XCTAssertEqual(
+            compound.children,
+            [home.effectiveNostrBoardID, projects.effectiveNostrBoardID]
+        )
+        XCTAssertEqual(
+            snapshot.compoundChildBoards(for: compound.id).map(\.name),
+            ["Home", "Projects"]
+        )
+        XCTAssertTrue(snapshot.moveCompoundChild(
+            boardID: compound.id,
+            childBoardID: projects.id,
+            direction: -1
+        ))
+        XCTAssertEqual(
+            snapshot.compoundChildBoards(for: compound.id).map(\.name),
+            ["Projects", "Home"]
+        )
+        XCTAssertTrue(snapshot.setCompoundChild(
+            boardID: compound.id,
+            childBoardID: home.id,
+            included: false
+        ))
+        XCTAssertEqual(snapshot.compoundChildBoards(for: compound.id).map(\.name), ["Projects"])
+        XCTAssertTrue(snapshot.setCompoundHideChildBoardNames(boardID: compound.id, hidden: true))
+        XCTAssertTrue(snapshot.selectedBoard?.hideChildBoardNames == true)
+    }
+
+    func testRemoteCompoundCreatesHiddenSyncableChildStubs() throws {
+        let parent = Board(
+            id: "local-compound",
+            name: "Shared compound",
+            kind: .compound,
+            children: ["child-a", "child-b"],
+            nostrBoardID: "parent-board",
+            relayURLs: ["wss://relay.solife.me"]
+        )
+        var snapshot = TaskifySnapshot(
+            boards: [parent],
+            tasks: [],
+            selectedBoardID: parent.id
+        )
+
+        XCTAssertEqual(snapshot.visibleBoards.map(\.id), [parent.id])
+        XCTAssertEqual(Set(snapshot.boardsForSync.map(\.effectiveNostrBoardID)), Set([
+            "parent-board",
+            "child-a",
+            "child-b",
+        ]))
+
+        let child = try XCTUnwrap(snapshot.boards.first(where: { $0.effectiveNostrBoardID == "child-a" }))
+        XCTAssertTrue(child.hidden)
+        XCTAssertTrue(child.archived)
+        XCTAssertEqual(child.kind, .list)
+        let column = try XCTUnwrap(child.columns.first)
+        XCTAssertNotNil(snapshot.addTask(
+            title: "Added through compound",
+            boardID: child.id,
+            columnID: column.id,
+            dueDate: nil
+        ))
+    }
+
+    func testListColumnsRenameAndReorderWithoutMovingTasks() throws {
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let first = try XCTUnwrap(board.columns.first)
+        let second = try XCTUnwrap(snapshot.addListColumn(boardID: board.id, name: "Doing"))
+        let third = try XCTUnwrap(snapshot.addListColumn(boardID: board.id, name: "Done"))
+        let task = try XCTUnwrap(snapshot.addTask(
+            title: "Keep placement",
+            boardID: board.id,
+            columnID: second.id,
+            dueDate: nil
+        ))
+
+        XCTAssertTrue(snapshot.renameListColumn(boardID: board.id, columnID: second.id, name: "  In progress  "))
+        XCTAssertTrue(snapshot.reorderListColumns(
+            boardID: board.id,
+            orderedColumnIDs: [third.id, first.id, second.id]
+        ))
+
+        let updated = try XCTUnwrap(snapshot.boards.first(where: { $0.id == board.id }))
+        XCTAssertEqual(updated.columns.map(\.id), [third.id, first.id, second.id])
+        XCTAssertEqual(updated.columns.map(\.order), [0, 1, 2])
+        XCTAssertEqual(updated.columns.last?.name, "In progress")
+        XCTAssertEqual(snapshot.tasks.first(where: { $0.id == task.id })?.columnID, second.id)
+        XCTAssertFalse(snapshot.renameListColumn(boardID: board.id, columnID: second.id, name: "   "))
+    }
+
+    func testRemovingListCanMoveTasksToNeighbor() throws {
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let destination = try XCTUnwrap(board.columns.first)
+        let source = try XCTUnwrap(snapshot.addListColumn(boardID: board.id, name: "Doing"))
+        _ = try XCTUnwrap(snapshot.addTask(
+            title: "Already there",
+            boardID: board.id,
+            columnID: destination.id,
+            dueDate: nil
+        ))
+        let firstMoved = try XCTUnwrap(snapshot.addTask(
+            title: "First moved",
+            boardID: board.id,
+            columnID: source.id,
+            dueDate: nil
+        ))
+        let secondMoved = try XCTUnwrap(snapshot.addTask(
+            title: "Second moved",
+            boardID: board.id,
+            columnID: source.id,
+            dueDate: nil
+        ))
+
+        let result = try XCTUnwrap(snapshot.removeListColumn(
+            boardID: board.id,
+            columnID: source.id,
+            strategy: .moveTasks(toColumnID: destination.id),
+            editorPublicKey: "editor"
+        ))
+
+        XCTAssertEqual(result.movedTaskIDs, [firstMoved.id, secondMoved.id])
+        XCTAssertTrue(result.deletedTaskIDs.isEmpty)
+        XCTAssertEqual(snapshot.selectedBoard?.columns.map(\.id), [destination.id])
+        let movedTasks = snapshot.tasks
+            .filter { result.movedTaskIDs.contains($0.id) }
+            .sorted { $0.order < $1.order }
+        XCTAssertEqual(movedTasks.map(\.columnID), [destination.id, destination.id])
+        XCTAssertEqual(movedTasks.map(\.order), [1, 2])
+        XCTAssertEqual(movedTasks.map(\.lastEditedBy), ["editor", "editor"])
+    }
+
+    func testRemovingListCanDeleteTasksButProtectsFinalList() throws {
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let finalColumn = try XCTUnwrap(board.columns.first)
+        let deletedColumn = try XCTUnwrap(snapshot.addListColumn(boardID: board.id, name: "Discard"))
+        let task = try XCTUnwrap(snapshot.addTask(
+            title: "Delete with list",
+            boardID: board.id,
+            columnID: deletedColumn.id,
+            dueDate: nil
+        ))
+
+        let result = try XCTUnwrap(snapshot.removeListColumn(
+            boardID: board.id,
+            columnID: deletedColumn.id,
+            strategy: .deleteTasks
+        ))
+
+        XCTAssertEqual(result.deletedTaskIDs, [task.id])
+        XCTAssertTrue(snapshot.tasks.first(where: { $0.id == task.id })?.isDeleted == true)
+        XCTAssertNil(snapshot.removeListColumn(
+            boardID: board.id,
+            columnID: finalColumn.id,
+            strategy: .deleteTasks
+        ))
+        XCTAssertEqual(snapshot.selectedBoard?.columns.map(\.id), [finalColumn.id])
     }
 
     func testRichTaskEditMovesListAndNormalizesSubtasks() throws {

@@ -83,48 +83,208 @@ private struct BottomTabBar: View {
     @Binding var selectedTab: AppTab
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(AppTab.allCases) { tab in
-                Button {
-                    selectedTab = tab
-                } label: {
-                    VStack(spacing: 3) {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: tab.icon)
-                                .font(.system(size: 18, weight: .medium))
-                                .frame(width: 42, height: 34)
-                                .background(
-                                    Capsule()
-                                        .fill(selectedTab == tab ? Color.white.opacity(0.12) : .clear)
-                                )
+        Group {
+            if #available(iOS 26.0, *) {
+                NativeLiquidGlassTabBar(
+                    selectedTab: $selectedTab,
+                    upcomingCount: model.upcomingTasks().count
+                )
+            } else {
+                MaterialGlassTabBar(
+                    selectedTab: $selectedTab,
+                    upcomingCount: model.upcomingTasks().count
+                )
+            }
+        }
+        .padding(.horizontal, 14)
+    }
+}
 
-                            if tab == .upcoming {
-                                let count = model.upcomingTasks().count
-                                if count > 0 {
-                                    Text(count > 99 ? "99+" : "\(count)")
-                                        .font(.system(size: 8, weight: .bold))
-                                        .padding(.horizontal, 4)
-                                        .frame(minWidth: 15, minHeight: 15)
-                                        .background(TaskifyTheme.accent, in: Capsule())
-                                        .offset(x: 5, y: -2)
-                                }
+@available(iOS 26.0, *)
+private struct NativeLiquidGlassTabBar: View {
+    @Binding var selectedTab: AppTab
+    let upcomingCount: Int
+
+    @Namespace private var glassNamespace
+
+    var body: some View {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 0) {
+                ForEach(AppTab.allCases) { tab in
+                    Button {
+                        withAnimation(.bouncy(duration: 0.36, extraBounce: 0.04)) {
+                            selectedTab = tab
+                        }
+                    } label: {
+                        Group {
+                            if selectedTab == tab {
+                                BottomTabItem(
+                                    tab: tab,
+                                    isSelected: true,
+                                    upcomingCount: upcomingCount
+                                )
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .contentShape(Capsule())
+                                .glassEffect(
+                                    .regular
+                                        .tint(TaskifyTheme.accent.opacity(0.14))
+                                        .interactive(),
+                                    in: Capsule()
+                                )
+                                .glassEffectID("selected-tab", in: glassNamespace)
+                                .glassEffectTransition(.matchedGeometry)
+                            } else {
+                                BottomTabItem(
+                                    tab: tab,
+                                    isSelected: false,
+                                    upcomingCount: upcomingCount
+                                )
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .contentShape(Capsule())
                             }
                         }
-
-                        Text(tab.title)
-                            .font(.system(size: 9, weight: selectedTab == tab ? .bold : .medium))
                     }
-                    .foregroundStyle(selectedTab == tab ? TaskifyTheme.primaryText : TaskifyTheme.secondaryText)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(tab.title)
+                    .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+                }
+            }
+            .padding(5)
+        }
+        .glassEffect(
+            .regular.tint(Color.black.opacity(0.10)).interactive(),
+            in: Capsule()
+        )
+        .overlay {
+            Capsule()
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.32), Color.white.opacity(0.08)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.8
+                )
+                .allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 8)
+    }
+}
+
+private struct MaterialGlassTabBar: View {
+    @Binding var selectedTab: AppTab
+    let upcomingCount: Int
+
+    @Namespace private var selectionNamespace
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(AppTab.allCases) { tab in
+                Button {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    BottomTabItem(
+                        tab: tab,
+                        isSelected: selectedTab == tab,
+                        upcomingCount: upcomingCount
+                    )
                     .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .contentShape(Capsule())
+                    .background {
+                        if selectedTab == tab {
+                            Capsule()
+                                .fill(.thinMaterial)
+                                .overlay {
+                                    Capsule()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    Color.white.opacity(0.16),
+                                                    TaskifyTheme.accent.opacity(0.08),
+                                                    Color.black.opacity(0.10)
+                                                ],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                }
+                                .overlay {
+                                    Capsule()
+                                        .stroke(
+                                            LinearGradient(
+                                                colors: [Color.white.opacity(0.30), Color.white.opacity(0.06)],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            ),
+                                            lineWidth: 0.8
+                                        )
+                                }
+                                .matchedGeometryEffect(id: "selected-tab", in: selectionNamespace)
+                                .shadow(color: TaskifyTheme.accent.opacity(0.12), radius: 9)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(5)
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
-        .padding(.horizontal, 14)
+        .background(Color.black.opacity(0.12), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.26), TaskifyTheme.border.opacity(0.75)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.8
+                )
+                .allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 8)
+    }
+}
+
+private struct BottomTabItem: View {
+    let tab: AppTab
+    let isSelected: Bool
+    let upcomingCount: Int
+
+    var body: some View {
+        VStack(spacing: 3) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
+                    .frame(width: 42, height: 30)
+
+                if tab == .upcoming, upcomingCount > 0 {
+                    Text(upcomingCount > 99 ? "99+" : "\(upcomingCount)")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .frame(minWidth: 15, minHeight: 15)
+                        .background(TaskifyTheme.accent, in: Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.42), lineWidth: 0.6))
+                        .offset(x: 5, y: -3)
+                }
+            }
+
+            Text(tab.title)
+                .font(.system(size: 9, weight: isSelected ? .bold : .medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(
+            isSelected
+                ? Color(red: 0.66, green: 0.80, blue: 1.0)
+                : TaskifyTheme.primaryText
+        )
     }
 }

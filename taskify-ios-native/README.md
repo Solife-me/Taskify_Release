@@ -8,12 +8,14 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Boards, Upcoming, Wallet, Chat, and Settings navigation
 - Weekly board columns with quick task entry
 - List-board creation, custom list columns, and list-scoped quick task entry
+- Advanced list management with synced rename/reorder controls and guarded deletion that can preserve tasks by moving them to a neighboring list
 - Local task completion and deletion
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks
 - PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, and next-instance generation on completion
 - Multiple relative reminders, exact custom reminder times, and local iOS notification scheduling
 - Upcoming tasks grouped by date with search and add flow
 - Local board creation and selection
+- Native compound-board creation and management with ordered child list boards, aggregated task columns, optional child-board labels, and PWA-compatible linked-board sync
 - Atomic JSON persistence in Application Support
 - Keychain-backed Nostr identity creation and nsec import
 - PWA-compatible deterministic board keys, AES-256-GCM task payloads, and signed Nostr events
@@ -26,9 +28,10 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - PWA-familiar stacked image and document previews with media overflow labels, retry states, and readable file metadata
 - Native Photos and Files attachment controls with PWA-compatible AES-GCM encryption, remote-first Originless uploads, and task-level removal
 - Cached native rich link cards generated from URLs in task titles and notes, with duplicate inline URLs suppressed in task-card presentation
+- Native live-board and independent template sharing with PWA-compatible QR payloads, board-ID copy, the iOS share sheet, camera scanning, review-before-join, and automatic board-name/relay import
 - Core unit and interoperability tests for state, persistence, recurrence, reminder timing, PWA task/attachment cryptography fixtures, signing, merge clocks, and outbox behavior
 
-Wallet, Chat, calendar integrations, sharing, compound boards, and advanced list management are intentionally marked as migration work instead of being backed by the abandoned native implementation. Board and task relay sync has been manually confirmed in both directions between the native app and PWA. Synced PWA attachments are readable on iOS, and native additions/removals use the PWA's encrypted remote attachment contract and default encrypted file server.
+Wallet, Chat, calendar integrations, and contact delivery are intentionally marked as migration work instead of being backed by the abandoned native implementation. Board and task relay sync has been manually confirmed in both directions between the native app and PWA. Compound boards retain their PWA child-board references and ordering, including hidden linked-board placeholders that continue syncing without cluttering the visible board picker. Synced PWA attachments are readable on iOS, native additions/removals use the PWA's encrypted remote attachment contract and default encrypted file server, and template shares publish a separate board/task snapshot that does not follow later live-board changes.
 
 ## Open and build
 
@@ -64,7 +67,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
 
 1. Native shell and offline task vertical slice (complete)
 2. Nostr identity, Keychain, relay session, offline outbox, PWA-compatible task events, relay health UI, and two-way board/task interop (complete for the current slice)
-3. Rich task editing, list-board mode, recurrence, native reminders, polished link/media previews, and encrypted attachment read/write support (complete); sharing, compound boards, and calendar parity remain
+3. Rich task editing, advanced list-board management, compound boards, recurrence, native reminders, polished link/media previews, encrypted attachment read/write, live-board sharing/scanning, and independent template sharing (complete); contact delivery and calendar parity remain
 4. Wallet and Chat
 5. Widgets, App Intents, background sync, accessibility/performance soak
 6. Switch the production target only after PWA/native interop and parity sign-off

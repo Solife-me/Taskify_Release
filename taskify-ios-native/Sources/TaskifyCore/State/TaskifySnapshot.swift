@@ -1,7 +1,24 @@
 import Foundation
 
+public enum ListColumnRemovalStrategy: Equatable, Sendable {
+    case moveTasks(toColumnID: String)
+    case deleteTasks
+}
+
+public struct ListColumnRemovalResult: Equatable, Sendable {
+    public var removedColumnID: String
+    public var movedTaskIDs: [String]
+    public var deletedTaskIDs: [String]
+
+    public init(removedColumnID: String, movedTaskIDs: [String] = [], deletedTaskIDs: [String] = []) {
+        self.removedColumnID = removedColumnID
+        self.movedTaskIDs = movedTaskIDs
+        self.deletedTaskIDs = deletedTaskIDs
+    }
+}
+
 public struct TaskifySnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 4
+    public static let currentSchemaVersion = 5
 
     public var schemaVersion: Int
     public var boards: [Board]
@@ -32,6 +49,17 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
     public var selectedBoard: Board? {
         visibleBoards.first { $0.id == selectedBoardID } ?? visibleBoards.first
+    }
+
+    public var boardsForSync: [Board] {
+        let visible = visibleBoards
+        var includedIDs = Set(visible.map(\.id))
+        for compound in visible where compound.kind == .compound {
+            for child in compoundChildBoards(for: compound.id) {
+                includedIDs.insert(child.id)
+            }
+        }
+        return boards.filter { includedIDs.contains($0.id) }
     }
 
     public mutating func selectBoard(_ boardID: String) {
@@ -82,6 +110,117 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func createCompoundBoard(
+        name: String,
+        childBoardIDs: [String] = [],
+        now: Date = Date()
+    ) -> Board? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return nil }
+
+        let children = normalizedCompoundChildReferences(childBoardIDs)
+        let board = Board(
+            name: trimmedName,
+            kind: .compound,
+            children: children,
+            createdAt: now
+        )
+        boards.append(board)
+        selectedBoardID = board.id
+        return board
+    }
+
+    public func compoundChildBoards(for boardID: String) -> [Board] {
+        guard let compound = boards.first(where: { $0.id == boardID && $0.kind == .compound }) else {
+            return []
+        }
+        var seen = Set<String>()
+        return compound.children.compactMap { reference in
+            guard let child = boards.first(where: { $0.matchesReference(reference) && $0.kind == .list }),
+                  seen.insert(child.id).inserted else { return nil }
+            return child
+        }
+    }
+
+    @discardableResult
+    public mutating func setCompoundChild(
+        boardID: String,
+        childBoardID: String,
+        included: Bool
+    ) -> Bool {
+        guard let parentIndex = boards.firstIndex(where: { $0.id == boardID && $0.kind == .compound && $0.isVisible }),
+              let child = boards.first(where: { $0.matchesReference(childBoardID) && $0.kind == .list }) else {
+            return false
+        }
+        let existingIndex = boards[parentIndex].children.firstIndex(where: { child.matchesReference($0) })
+        if included {
+            guard existingIndex == nil else { return true }
+            boards[parentIndex].children.append(child.effectiveNostrBoardID)
+        } else {
+            guard existingIndex != nil else { return true }
+            boards[parentIndex].children.removeAll { child.matchesReference($0) }
+        }
+        return true
+    }
+
+    @discardableResult
+    public mutating func moveCompoundChild(
+        boardID: String,
+        childBoardID: String,
+        direction: Int
+    ) -> Bool {
+        guard let parentIndex = boards.firstIndex(where: { $0.id == boardID && $0.kind == .compound && $0.isVisible }),
+              let child = boards.first(where: { $0.matchesReference(childBoardID) && $0.kind == .list }),
+              let currentIndex = boards[parentIndex].children.firstIndex(where: { child.matchesReference($0) }) else {
+            return false
+        }
+        let destinationIndex = currentIndex + direction
+        guard boards[parentIndex].children.indices.contains(destinationIndex) else { return false }
+        boards[parentIndex].children.swapAt(currentIndex, destinationIndex)
+        return true
+    }
+
+    @discardableResult
+    public mutating func setCompoundHideChildBoardNames(
+        boardID: String,
+        hidden: Bool
+    ) -> Bool {
+        guard let index = boards.firstIndex(where: { $0.id == boardID && $0.kind == .compound && $0.isVisible }) else {
+            return false
+        }
+        boards[index].hideChildBoardNames = hidden
+        return true
+    }
+
+    @discardableResult
+    public mutating func ensureCompoundChildBoards(parentBoardID: String) -> Bool {
+        guard let parent = boards.first(where: { $0.id == parentBoardID && $0.kind == .compound }) else {
+            return false
+        }
+        var addedStub = false
+        for rawReference in parent.children {
+            let reference = rawReference.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !reference.isEmpty,
+                  !parent.matchesReference(reference),
+                  !boards.contains(where: { $0.matchesReference(reference) }) else { continue }
+            boards.append(Board(
+                id: reference,
+                name: "Linked board",
+                kind: .list,
+                columns: [BoardColumn(id: UUID().uuidString, name: "Items", order: 0)],
+                archived: true,
+                hidden: true,
+                indexCardEnabled: false,
+                createdAt: parent.createdAt,
+                nostrBoardID: reference,
+                relayURLs: parent.effectiveRelayURLs
+            ))
+            addedStub = true
+        }
+        return addedStub
+    }
+
+    @discardableResult
     public mutating func addListColumn(boardID: String, name: String) -> BoardColumn? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty,
@@ -93,6 +232,96 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         let column = BoardColumn(id: UUID().uuidString, name: trimmedName, order: nextOrder)
         boards[boardIndex].columns.append(column)
         return column
+    }
+
+    @discardableResult
+    public mutating func renameListColumn(boardID: String, columnID: String, name: String) -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty,
+              let boardIndex = boards.firstIndex(where: { $0.id == boardID && $0.kind == .list && $0.isVisible }),
+              let columnIndex = boards[boardIndex].columns.firstIndex(where: { $0.id == columnID }) else {
+            return false
+        }
+        boards[boardIndex].columns[columnIndex].name = trimmedName
+        return true
+    }
+
+    @discardableResult
+    public mutating func reorderListColumns(boardID: String, orderedColumnIDs: [String]) -> Bool {
+        guard let boardIndex = boards.firstIndex(where: { $0.id == boardID && $0.kind == .list && $0.isVisible }) else {
+            return false
+        }
+        let currentColumns = boards[boardIndex].columns
+        guard orderedColumnIDs.count == currentColumns.count,
+              Set(orderedColumnIDs).count == orderedColumnIDs.count,
+              Set(orderedColumnIDs) == Set(currentColumns.map(\.id)) else {
+            return false
+        }
+        let columnsByID = Dictionary(uniqueKeysWithValues: currentColumns.map { ($0.id, $0) })
+        boards[boardIndex].columns = orderedColumnIDs.enumerated().compactMap { order, columnID in
+            guard var column = columnsByID[columnID] else { return nil }
+            column.order = order
+            return column
+        }
+        return true
+    }
+
+    @discardableResult
+    public mutating func removeListColumn(
+        boardID: String,
+        columnID: String,
+        strategy: ListColumnRemovalStrategy,
+        editorPublicKey: String? = nil
+    ) -> ListColumnRemovalResult? {
+        guard let boardIndex = boards.firstIndex(where: { $0.id == boardID && $0.kind == .list && $0.isVisible }),
+              boards[boardIndex].columns.count > 1,
+              boards[boardIndex].columns.contains(where: { $0.id == columnID }) else {
+            return nil
+        }
+
+        let affectedIndices = tasks.indices.filter {
+            tasks[$0].boardID == boardID && tasks[$0].columnID == columnID && !tasks[$0].isDeleted
+        }
+        var result = ListColumnRemovalResult(removedColumnID: columnID)
+
+        switch strategy {
+        case .moveTasks(let destinationColumnID):
+            guard destinationColumnID != columnID,
+                  boards[boardIndex].columns.contains(where: { $0.id == destinationColumnID }) else {
+                return nil
+            }
+            var nextOrder = (tasks
+                .filter { $0.boardID == boardID && $0.columnID == destinationColumnID && !$0.isDeleted }
+                .map(\.order)
+                .max() ?? -1) + 1
+            for taskIndex in affectedIndices.sorted(by: { tasks[$0].order < tasks[$1].order }) {
+                tasks[taskIndex].columnID = destinationColumnID
+                tasks[taskIndex].order = nextOrder
+                tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
+                nextOrder += 1
+                result.movedTaskIDs.append(tasks[taskIndex].id)
+            }
+        case .deleteTasks:
+            for taskIndex in affectedIndices {
+                tasks[taskIndex].deleted = true
+                tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
+                result.deletedTaskIDs.append(tasks[taskIndex].id)
+            }
+        }
+
+        boards[boardIndex].columns.removeAll { $0.id == columnID }
+        boards[boardIndex].columns = boards[boardIndex].columns
+            .sorted {
+                if $0.order != $1.order { return $0.order < $1.order }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            .enumerated()
+            .map { order, column in
+                var normalized = column
+                normalized.order = order
+                return normalized
+            }
+        return result
     }
 
     @discardableResult
@@ -139,7 +368,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     ) -> TaskItem? {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return nil }
-        guard let board = boards.first(where: { $0.id == boardID && $0.isVisible }) else { return nil }
+        guard let board = boards.first(where: { $0.id == boardID }),
+              board.isVisible || isLinkedCompoundChild(board) else { return nil }
         if board.kind == .list {
             guard let columnID, board.columns.contains(where: { $0.id == columnID }) else { return nil }
         }
@@ -184,7 +414,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
               let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
-              let board = boards.first(where: { $0.id == tasks[taskIndex].boardID && $0.isVisible }) else {
+              let board = boards.first(where: { $0.id == tasks[taskIndex].boardID }),
+              board.isVisible || isLinkedCompoundChild(board) else {
             return false
         }
         guard !dueDateEnabled || dueDate != nil else { return false }
@@ -495,6 +726,21 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 boards[index].relayURLs = TaskifyRelayDefaults.urls
             }
         }
+        for index in boards.indices where boards[index].kind == .compound {
+            let compound = boards[index]
+            var seen = Set<String>()
+            boards[index].children = compound.children.compactMap { rawReference in
+                let reference = rawReference.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !reference.isEmpty,
+                      !compound.matchesReference(reference),
+                      seen.insert(reference).inserted else { return nil }
+                return reference
+            }
+        }
+        let compoundIDs = boards
+            .filter { $0.kind == .compound && $0.isVisible }
+            .map(\.id)
+        compoundIDs.forEach { _ = ensureCompoundChildBoards(parentBoardID: $0) }
         schemaVersion = Self.currentSchemaVersion
 
         guard !visibleBoards.isEmpty else {
@@ -506,6 +752,23 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         guard visibleBoards.contains(where: { $0.id == selectedBoardID }) else {
             selectedBoardID = visibleBoards[0].id
             return
+        }
+    }
+
+    private func normalizedCompoundChildReferences(_ references: [String]) -> [String] {
+        var seen = Set<String>()
+        return references.compactMap { reference in
+            guard let child = boards.first(where: { $0.matchesReference(reference) && $0.kind == .list && $0.isVisible }),
+                  seen.insert(child.id).inserted else { return nil }
+            return child.effectiveNostrBoardID
+        }
+    }
+
+    private func isLinkedCompoundChild(_ board: Board) -> Bool {
+        boards.contains { parent in
+            parent.kind == .compound &&
+                parent.isVisible &&
+                parent.children.contains(where: { board.matchesReference($0) })
         }
     }
 }

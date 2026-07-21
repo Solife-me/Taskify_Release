@@ -120,7 +120,7 @@ public actor TaskSyncEngine {
     }
 
     public func configure(boards: [Board]) async {
-        self.boards = boards.filter(\.isVisible)
+        self.boards = boards
         let wantedRelays = Set(self.boards.flatMap(\.effectiveRelayURLs))
 
         for relayURL in Set(connections.keys).subtracting(wantedRelays) {

@@ -8,6 +8,93 @@ public enum TaskifyRelayDefaults {
     ]
 }
 
+public struct BoardSharePayload: Equatable, Sendable {
+    public var boardID: String
+    public var boardName: String?
+    public var relayURLs: [String]
+
+    public init(boardID: String, boardName: String? = nil, relayURLs: [String] = []) {
+        self.boardID = boardID
+        self.boardName = boardName
+        self.relayURLs = relayURLs
+    }
+}
+
+public enum BoardShareContract {
+    public static func encode(board: Board) throws -> String {
+        let envelope = BoardShareEnvelope(
+            v: 1,
+            kind: "taskify-share",
+            item: BoardShareItem(
+                type: "board",
+                boardID: board.effectiveNostrBoardID,
+                boardName: board.name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                relayURLs: normalizedRelays(board.effectiveRelayURLs)
+            )
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return String(decoding: try encoder.encode(envelope), as: UTF8.self)
+    }
+
+    public static func decode(_ rawValue: String) -> BoardSharePayload? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let data = trimmed.data(using: .utf8),
+           let envelope = try? JSONDecoder().decode(BoardShareEnvelope.self, from: data),
+           envelope.v == 1,
+           envelope.kind == "taskify-share",
+           envelope.item.type == "board" {
+            let boardID = envelope.item.boardID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !boardID.isEmpty else { return nil }
+            return BoardSharePayload(
+                boardID: boardID,
+                boardName: envelope.item.boardName?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nilIfEmpty,
+                relayURLs: normalizedRelays(envelope.item.relayURLs ?? [])
+            )
+        }
+
+        guard UUID(uuidString: trimmed) != nil else { return nil }
+        return BoardSharePayload(boardID: trimmed)
+    }
+
+    private static func normalizedRelays(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
+    }
+}
+
+private struct BoardShareEnvelope: Codable {
+    var v: Int
+    var kind: String
+    var item: BoardShareItem
+}
+
+private struct BoardShareItem: Codable {
+    var type: String
+    var boardID: String
+    var boardName: String?
+    var relayURLs: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case boardID = "boardId"
+        case boardName
+        case relayURLs = "relays"
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 public enum BoardKind: String, Codable, CaseIterable, Sendable {
     case week
     case list = "lists"
@@ -45,9 +132,11 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
     public var name: String
     public var kind: BoardKind
     public var columns: [BoardColumn]
+    public var children: [String]
     public var archived: Bool
     public var hidden: Bool
     public var indexCardEnabled: Bool
+    public var hideChildBoardNames: Bool
     public var clearCompletedDisabled: Bool
     public var createdAt: Date
     public var nostrBoardID: String?
@@ -59,9 +148,11 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         name: String,
         kind: BoardKind = .week,
         columns: [BoardColumn] = [],
+        children: [String] = [],
         archived: Bool = false,
         hidden: Bool = false,
         indexCardEnabled: Bool = true,
+        hideChildBoardNames: Bool = false,
         clearCompletedDisabled: Bool = false,
         createdAt: Date = Date(),
         nostrBoardID: String? = UUID().uuidString,
@@ -72,14 +163,51 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         self.name = name
         self.kind = kind
         self.columns = columns
+        self.children = children
         self.archived = archived
         self.hidden = hidden
         self.indexCardEnabled = indexCardEnabled
+        self.hideChildBoardNames = hideChildBoardNames
         self.clearCompletedDisabled = clearCompletedDisabled
         self.createdAt = createdAt
         self.nostrBoardID = nostrBoardID
         self.relayURLs = relayURLs
         self.nostrUpdatedAt = nostrUpdatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case kind
+        case columns
+        case children
+        case archived
+        case hidden
+        case indexCardEnabled
+        case hideChildBoardNames
+        case clearCompletedDisabled
+        case createdAt
+        case nostrBoardID
+        case relayURLs
+        case nostrUpdatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Board"
+        kind = try container.decodeIfPresent(BoardKind.self, forKey: .kind) ?? .week
+        columns = try container.decodeIfPresent([BoardColumn].self, forKey: .columns) ?? []
+        children = try container.decodeIfPresent([String].self, forKey: .children) ?? []
+        archived = try container.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        indexCardEnabled = try container.decodeIfPresent(Bool.self, forKey: .indexCardEnabled) ?? true
+        hideChildBoardNames = try container.decodeIfPresent(Bool.self, forKey: .hideChildBoardNames) ?? false
+        clearCompletedDisabled = try container.decodeIfPresent(Bool.self, forKey: .clearCompletedDisabled) ?? false
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        nostrBoardID = try container.decodeIfPresent(String.self, forKey: .nostrBoardID)
+        relayURLs = try container.decodeIfPresent([String].self, forKey: .relayURLs)
+        nostrUpdatedAt = try container.decodeIfPresent(Int.self, forKey: .nostrUpdatedAt)
     }
 
     public var isVisible: Bool {
@@ -93,6 +221,23 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
     public var effectiveRelayURLs: [String] {
         let configured = relayURLs?.filter { !$0.isEmpty } ?? []
         return configured.isEmpty ? TaskifyRelayDefaults.urls : configured
+    }
+
+    public func matchesReference(_ reference: String) -> Bool {
+        id == reference || effectiveNostrBoardID == reference
+    }
+
+    public func templateSnapshot(
+        boardID: String = UUID().uuidString
+    ) -> Board {
+        var template = self
+        template.id = "template-\(boardID)"
+        template.archived = false
+        template.hidden = false
+        template.nostrBoardID = boardID
+        template.relayURLs = effectiveRelayURLs
+        template.nostrUpdatedAt = nil
+        return template
     }
 
     public static func week(id: String = "week-default", name: String = "Week") -> Board {

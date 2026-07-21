@@ -2,6 +2,26 @@ import Foundation
 import SwiftUI
 import TaskifyCore
 
+struct BoardTemplateShareResult: Sendable {
+    let board: Board
+    let publishedTaskCount: Int
+    let failedTaskCount: Int
+}
+
+enum BoardTemplateShareError: LocalizedError {
+    case boardUnavailable
+    case unsupportedBoard
+
+    var errorDescription: String? {
+        switch self {
+        case .boardUnavailable:
+            "That board is no longer available."
+        case .unsupportedBoard:
+            "Template sharing currently supports week and list boards."
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var snapshot = TaskifySnapshot.empty
@@ -57,7 +77,7 @@ final class AppModel: ObservableObject {
     }
 
     func board(withID boardID: String) -> Board? {
-        snapshot.boards.first { $0.id == boardID && $0.isVisible }
+        snapshot.boards.first { $0.id == boardID }
     }
 
     func tasks(for weekday: WeekdayColumn, includeCompleted: Bool) -> [TaskItem] {
@@ -76,6 +96,18 @@ final class AppModel: ObservableObject {
             columnID: columnID,
             includeCompleted: includeCompleted
         )
+    }
+
+    func tasks(boardID: String, columnID: String, includeCompleted: Bool) -> [TaskItem] {
+        snapshot.tasks(
+            boardID: boardID,
+            columnID: columnID,
+            includeCompleted: includeCompleted
+        )
+    }
+
+    func compoundChildBoards(for boardID: String) -> [Board] {
+        snapshot.compoundChildBoards(for: boardID)
     }
 
     func upcomingTasks(searchText: String = "") -> [TaskItem] {
@@ -118,16 +150,36 @@ final class AppModel: ObservableObject {
         synchronizeTask(task.id)
     }
 
+    func addQuickTask(title: String, boardID: String, columnID: String) {
+        guard let board = snapshot.boards.first(where: { $0.id == boardID && $0.kind == .list }),
+              board.columns.contains(where: { $0.id == columnID }) else { return }
+        guard let task = snapshot.addTask(
+            title: title,
+            boardID: board.id,
+            columnID: columnID,
+            dueDate: nil,
+            authorPublicKey: identityPublicKey.nilIfEmpty
+        ) else { return }
+        synchronizeTask(task.id)
+    }
+
     func addTask(title: String, dueDate: Date) {
-        guard let board = selectedBoard else { return }
+        guard let selectedBoard else { return }
+        let board: Board
         let columnID: String?
-        switch board.kind {
+        switch selectedBoard.kind {
         case .week:
+            board = selectedBoard
             columnID = WeekdayColumn.containing(dueDate).rawValue
         case .list:
-            columnID = board.columns.sorted { $0.order < $1.order }.first?.id
-        case .compound, .bible:
-            columnID = nil
+            board = selectedBoard
+            columnID = selectedBoard.columns.sorted { $0.order < $1.order }.first?.id
+        case .compound:
+            guard let child = snapshot.compoundChildBoards(for: selectedBoard.id).first else { return }
+            board = child
+            columnID = child.columns.sorted { $0.order < $1.order }.first?.id
+        case .bible:
+            return
         }
         guard let task = snapshot.addTask(
             title: title,
@@ -248,6 +300,52 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
+    func createCompoundBoard(name: String, childBoardIDs: [String]) -> Bool {
+        guard let board = snapshot.createCompoundBoard(
+            name: name,
+            childBoardIDs: childBoardIDs
+        ) else { return false }
+        scheduleSave()
+        reconfigureSync()
+        publishBoard(board)
+        return true
+    }
+
+    @discardableResult
+    func setCompoundChild(boardID: String, childBoardID: String, included: Bool) -> Bool {
+        guard snapshot.setCompoundChild(
+            boardID: boardID,
+            childBoardID: childBoardID,
+            included: included
+        ), let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
+        scheduleSave()
+        reconfigureSync()
+        publishBoard(board)
+        return true
+    }
+
+    @discardableResult
+    func moveCompoundChild(boardID: String, childBoardID: String, direction: Int) -> Bool {
+        guard snapshot.moveCompoundChild(
+            boardID: boardID,
+            childBoardID: childBoardID,
+            direction: direction
+        ), let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
+        scheduleSave()
+        publishBoard(board)
+        return true
+    }
+
+    @discardableResult
+    func setCompoundHideChildBoardNames(boardID: String, hidden: Bool) -> Bool {
+        guard snapshot.setCompoundHideChildBoardNames(boardID: boardID, hidden: hidden),
+              let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
+        scheduleSave()
+        publishBoard(board)
+        return true
+    }
+
+    @discardableResult
     func addListColumn(name: String) -> Bool {
         guard let board = selectedBoard,
               snapshot.addListColumn(boardID: board.id, name: name) != nil,
@@ -260,11 +358,142 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
+    func renameListColumn(columnID: String, name: String) -> Bool {
+        guard let board = selectedBoard,
+              snapshot.renameListColumn(boardID: board.id, columnID: columnID, name: name),
+              let updatedBoard = snapshot.boards.first(where: { $0.id == board.id }) else {
+            return false
+        }
+        scheduleSave()
+        publishBoard(updatedBoard)
+        return true
+    }
+
+    @discardableResult
+    func moveListColumn(columnID: String, direction: Int) -> Bool {
+        guard let board = selectedBoard, board.kind == .list else { return false }
+        var orderedIDs = board.columns
+            .sorted {
+                if $0.order != $1.order { return $0.order < $1.order }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            .map(\.id)
+        guard let currentIndex = orderedIDs.firstIndex(of: columnID) else { return false }
+        let destinationIndex = currentIndex + direction
+        guard orderedIDs.indices.contains(destinationIndex) else { return false }
+        orderedIDs.swapAt(currentIndex, destinationIndex)
+        guard snapshot.reorderListColumns(boardID: board.id, orderedColumnIDs: orderedIDs),
+              let updatedBoard = snapshot.boards.first(where: { $0.id == board.id }) else {
+            return false
+        }
+        scheduleSave()
+        publishBoard(updatedBoard)
+        return true
+    }
+
+    @discardableResult
+    func removeListColumn(columnID: String, moveTasksTo destinationColumnID: String?) -> Bool {
+        guard let board = selectedBoard, board.kind == .list else { return false }
+        let strategy: ListColumnRemovalStrategy = destinationColumnID.map {
+            .moveTasks(toColumnID: $0)
+        } ?? .deleteTasks
+        guard let result = snapshot.removeListColumn(
+            boardID: board.id,
+            columnID: columnID,
+            strategy: strategy,
+            editorPublicKey: identityPublicKey.nilIfEmpty
+        ), let updatedBoard = snapshot.boards.first(where: { $0.id == board.id }) else {
+            errorMessage = "A list board must keep at least one list."
+            return false
+        }
+
+        scheduleSave()
+        publishBoard(updatedBoard)
+        result.movedTaskIDs.forEach { synchronizeTask($0) }
+        result.deletedTaskIDs.forEach { synchronizeTask($0, includeDeletionEvent: true) }
+        if !result.deletedTaskIDs.isEmpty {
+            refreshNotifications(requestPermission: false)
+        }
+        return true
+    }
+
+    @discardableResult
     func joinWeekBoard(boardID: String, name: String) -> Bool {
         guard snapshot.joinWeekBoard(nostrBoardID: boardID, name: name) != nil else { return false }
         scheduleSave()
         reconfigureSync()
         return true
+    }
+
+    @discardableResult
+    func joinSharedBoard(shareText: String, name: String) -> Bool {
+        guard let share = BoardShareContract.decode(shareText) else {
+            errorMessage = "Paste a valid Taskify board share or board ID."
+            return false
+        }
+        let customName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = customName.isEmpty ? (share.boardName ?? "Shared Board") : customName
+        let relays = share.relayURLs.isEmpty ? TaskifyRelayDefaults.urls : share.relayURLs
+        guard snapshot.joinWeekBoard(
+            nostrBoardID: share.boardID,
+            name: resolvedName,
+            relayURLs: relays
+        ) != nil else {
+            return false
+        }
+        scheduleSave()
+        reconfigureSync()
+        return true
+    }
+
+    func createTemplateShare(for boardID: String) async throws -> BoardTemplateShareResult {
+        guard let sourceBoard = board(withID: boardID) else {
+            throw BoardTemplateShareError.boardUnavailable
+        }
+        guard sourceBoard.kind == .week || sourceBoard.kind == .list else {
+            throw BoardTemplateShareError.unsupportedBoard
+        }
+
+        let templateBoard = sourceBoard.templateSnapshot()
+        let boardEvent = try TaskEventCodec.boardEvent(
+            board: templateBoard,
+            createdAt: nextNostrTimestamp()
+        )
+        try await syncEngine.publish(
+            boardEvent,
+            board: templateBoard,
+            taskID: "_board"
+        )
+
+        let boardTasks = snapshot.tasks.filter {
+            $0.boardID == sourceBoard.id && !$0.isDeleted
+        }
+        var publishedTaskCount = 0
+        var failedTaskCount = 0
+
+        for task in boardTasks {
+            do {
+                let event = try TaskEventCodec.taskEvent(
+                    task: task,
+                    board: templateBoard,
+                    createdAt: nextNostrTimestamp()
+                )
+                try await syncEngine.publish(
+                    event,
+                    board: templateBoard,
+                    taskID: task.id
+                )
+                publishedTaskCount += 1
+            } catch {
+                failedTaskCount += 1
+            }
+        }
+
+        return BoardTemplateShareResult(
+            board: templateBoard,
+            publishedTaskCount: publishedTaskCount,
+            failedTaskCount: failedTaskCount
+        )
     }
 
     @discardableResult
@@ -315,7 +544,7 @@ final class AppModel: ObservableObject {
     }
 
     private func reconfigureSync() {
-        let boards = snapshot.visibleBoards
+        let boards = snapshot.boardsForSync
         Task { [syncEngine] in
             await syncEngine.configure(boards: boards)
         }
@@ -326,6 +555,10 @@ final class AppModel: ObservableObject {
         case .board(let record):
             lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
             if snapshot.mergeRemoteBoard(record.board, eventCreatedAt: record.eventCreatedAt) {
+                if record.board.kind == .compound {
+                    _ = snapshot.ensureCompoundChildBoards(parentBoardID: record.board.id)
+                    reconfigureSync()
+                }
                 scheduleSave()
             }
         case .task(let record):

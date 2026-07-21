@@ -252,6 +252,8 @@ private struct TaskDocumentTile: View {
             )
         }
         .buttonStyle(.plain)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .disabled(source == nil || isLoading)
         .task(id: "\(document.id)::\(source ?? "missing")") {
             await loadThumbnailIfNeeded()
@@ -555,6 +557,8 @@ private struct TaskLinkPreviewCard: View {
             )
         }
         .buttonStyle(.plain)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityLabel("Open link: \(title)")
         .task(id: url) {
             await model.load(url)

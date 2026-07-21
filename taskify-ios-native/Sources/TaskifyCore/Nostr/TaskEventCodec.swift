@@ -109,8 +109,10 @@ public struct BoardSyncPayload: Codable, Equatable, Sendable {
     public var name: String?
     public var kind: BoardKind?
     public var columns: [BoardColumn]?
+    public var children: [String]?
     public var clearCompletedDisabled: Bool?
     public var listIndex: Bool?
+    public var hideBoardNames: Bool?
 }
 
 public enum TaskEventCodec {
@@ -149,8 +151,14 @@ public enum TaskEventCodec {
             name: nil,
             kind: nil,
             columns: board.kind == .list ? board.columns : nil,
+            children: board.kind == .compound ? board.children : nil,
             clearCompletedDisabled: board.clearCompletedDisabled,
-            listIndex: board.kind == .list ? board.indexCardEnabled : nil
+            listIndex: board.kind == .list || board.kind == .compound
+                ? board.indexCardEnabled
+                : nil,
+            hideBoardNames: board.kind == .compound
+                ? board.hideChildBoardNames
+                : nil
         )
         let encryptedContent = try BoardCrypto.encrypt(
             JSONEncoder().encode(payload),
@@ -219,13 +227,35 @@ public enum TaskEventCodec {
                 order: column.order >= 0 ? column.order : index
             )
         }
+        let incomingChildren = payload.children ?? board.children
+        var seenChildren = Set<String>()
+        let normalizedChildren = incomingChildren.compactMap { rawChild -> String? in
+            let child = rawChild.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !child.isEmpty,
+                  !board.matchesReference(child),
+                  seenChildren.insert(child).inserted else { return nil }
+            return child
+        }
 
         var updated = board
         updated.name = resolvedName
         updated.kind = resolvedKind
-        updated.columns = resolvedKind == .list ? normalizedColumns : board.columns
+        switch resolvedKind {
+        case .list:
+            updated.columns = normalizedColumns
+        case .week:
+            updated.columns = board.kind == .week ? board.columns : Board.week().columns
+        case .compound, .bible:
+            updated.columns = []
+        }
+        updated.children = resolvedKind == .compound ? normalizedChildren : []
         updated.clearCompletedDisabled = payload.clearCompletedDisabled ?? board.clearCompletedDisabled
-        updated.indexCardEnabled = payload.listIndex ?? board.indexCardEnabled
+        if resolvedKind == .list || resolvedKind == .compound {
+            updated.indexCardEnabled = payload.listIndex ?? board.indexCardEnabled
+        }
+        updated.hideChildBoardNames = resolvedKind == .compound
+            ? (payload.hideBoardNames ?? board.hideChildBoardNames)
+            : false
         updated.nostrUpdatedAt = event.createdAt
         return BoardRelayRecord(board: updated, eventCreatedAt: event.createdAt)
     }

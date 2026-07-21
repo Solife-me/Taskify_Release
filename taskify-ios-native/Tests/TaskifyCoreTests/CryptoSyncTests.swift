@@ -3,6 +3,92 @@ import XCTest
 @testable import TaskifyCore
 
 final class CryptoSyncTests: XCTestCase {
+    func testBoardShareContractEncodesPWAEnvelope() throws {
+        let board = Board(
+            id: "local-board",
+            name: "Family Week",
+            nostrBoardID: "4f35858d-066b-4f2d-a2f4-235794c77780",
+            relayURLs: ["wss://relay.solife.me", "wss://nos.lol"]
+        )
+
+        let encoded = try BoardShareContract.encode(board: board)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any]
+        )
+        let item = try XCTUnwrap(object["item"] as? [String: Any])
+
+        XCTAssertEqual(object["v"] as? Int, 1)
+        XCTAssertEqual(object["kind"] as? String, "taskify-share")
+        XCTAssertEqual(item["type"] as? String, "board")
+        XCTAssertEqual(item["boardId"] as? String, board.nostrBoardID)
+        XCTAssertEqual(item["boardName"] as? String, "Family Week")
+        XCTAssertEqual(item["relays"] as? [String], ["wss://relay.solife.me", "wss://nos.lol"])
+    }
+
+    func testBoardShareContractDecodesPWAEnvelope() throws {
+        let fixture = #"{"v":1,"kind":"taskify-share","item":{"type":"board","boardId":"4f35858d-066b-4f2d-a2f4-235794c77780","boardName":"Family Week","relays":[" wss://relay.solife.me ","wss://relay.solife.me","wss://nos.lol"]}}"#
+
+        let decoded = try XCTUnwrap(BoardShareContract.decode(fixture))
+
+        XCTAssertEqual(decoded.boardID, "4f35858d-066b-4f2d-a2f4-235794c77780")
+        XCTAssertEqual(decoded.boardName, "Family Week")
+        XCTAssertEqual(decoded.relayURLs, ["wss://relay.solife.me", "wss://nos.lol"])
+    }
+
+    func testBoardShareContractAcceptsRawUUIDButRejectsOtherText() {
+        let boardID = "4f35858d-066b-4f2d-a2f4-235794c77780"
+
+        XCTAssertEqual(BoardShareContract.decode(boardID)?.boardID, boardID)
+        XCTAssertNil(BoardShareContract.decode("not a Taskify board share"))
+    }
+
+    func testTemplateSnapshotUsesAnIndependentBoardKeyAndPreservesTasks() throws {
+        let source = Board(
+            id: "local-family-board",
+            name: "Family Week",
+            kind: .week,
+            nostrBoardID: "4f35858d-066b-4f2d-a2f4-235794c77780",
+            relayURLs: ["wss://relay.solife.me"]
+        )
+        let templateID = "f1a75d28-1ce5-489a-b53a-1e2a447b0cf7"
+        let template = source.templateSnapshot(boardID: templateID)
+        let task = TaskItem(
+            id: "task-1",
+            boardID: source.id,
+            title: "Pack lunches",
+            note: "Independent template content",
+            dueDate: Date(timeIntervalSince1970: 1_753_056_000),
+            dueDateEnabled: true,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            columnID: WeekdayColumn.sunday.rawValue
+        )
+
+        XCTAssertEqual(template.id, "template-\(templateID)")
+        XCTAssertEqual(template.effectiveNostrBoardID, templateID)
+        XCTAssertNotEqual(template.effectiveNostrBoardID, source.effectiveNostrBoardID)
+        XCTAssertEqual(template.name, source.name)
+        XCTAssertEqual(template.kind, source.kind)
+        XCTAssertEqual(template.effectiveRelayURLs, source.effectiveRelayURLs)
+
+        let boardEvent = try TaskEventCodec.boardEvent(board: template, createdAt: 1_700_000_100)
+        let taskEvent = try TaskEventCodec.taskEvent(task: task, board: template, createdAt: 1_700_000_101)
+        let joinedTemplate = Board(
+            id: "joined-template",
+            name: "Shared Board",
+            kind: .week,
+            nostrBoardID: templateID,
+            relayURLs: template.effectiveRelayURLs
+        )
+
+        let decodedBoard = try TaskEventCodec.decodeBoardEvent(boardEvent, board: joinedTemplate)
+        let decodedTask = try TaskEventCodec.decodeTaskEvent(taskEvent, board: joinedTemplate)
+
+        XCTAssertEqual(decodedBoard.board.name, source.name)
+        XCTAssertEqual(decodedTask.task.boardID, joinedTemplate.id)
+        XCTAssertEqual(decodedTask.task.title, task.title)
+        XCTAssertEqual(decodedTask.task.note, task.note)
+    }
+
     func testBoardDerivationMatchesPWAReference() throws {
         let boardID = "test-board-id"
 
@@ -312,6 +398,48 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertFalse(record.board.indexCardEnabled)
     }
 
+    func testPWACompoundMetadataConvertsJoinedBoard() throws {
+        let joinedBoard = Board(
+            id: "local-compound",
+            name: "Pending metadata",
+            kind: .week,
+            columns: Board.week().columns,
+            nostrBoardID: "compound-board-id"
+        )
+        let payload: [String: Any] = [
+            "children": ["child-a", "child-b", "child-a", ""],
+            "clearCompletedDisabled": true,
+            "listIndex": true,
+            "hideBoardNames": true,
+        ]
+        let content = try BoardCrypto.encrypt(
+            JSONSerialization.data(withJSONObject: payload),
+            boardID: joinedBoard.effectiveNostrBoardID
+        )
+        let event = try NostrEvent.signed(
+            privateKey: BoardCrypto.signingPrivateKey(for: joinedBoard.effectiveNostrBoardID),
+            createdAt: 1_700_000_791,
+            kind: TaskEventCodec.boardEventKind,
+            tags: [
+                ["d", BoardCrypto.boardTag(for: joinedBoard.effectiveNostrBoardID)],
+                ["b", BoardCrypto.boardTag(for: joinedBoard.effectiveNostrBoardID)],
+                ["k", "compound"],
+                ["name", "All Projects"],
+            ],
+            content: content
+        )
+
+        let record = try TaskEventCodec.decodeBoardEvent(event, board: joinedBoard)
+
+        XCTAssertEqual(record.board.kind, .compound)
+        XCTAssertEqual(record.board.name, "All Projects")
+        XCTAssertEqual(record.board.children, ["child-a", "child-b"])
+        XCTAssertTrue(record.board.clearCompletedDisabled)
+        XCTAssertTrue(record.board.indexCardEnabled)
+        XCTAssertTrue(record.board.hideChildBoardNames)
+        XCTAssertTrue(record.board.columns.isEmpty)
+    }
+
     func testListColumnTagSurvivesBeforeBoardMetadataArrives() throws {
         let joinedBoard = Board(
             id: "local-board",
@@ -389,6 +517,36 @@ final class CryptoSyncTests: XCTestCase {
         try await store.markAccepted(eventID: second.id)
         let remainingEntries = await store.allEntries()
         XCTAssertTrue(remainingEntries.isEmpty)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testTemplateOutboxEntriesDoNotReplaceLiveBoardEntries() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-template-outbox-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let liveEvent = try referenceEvent(content: "live", createdAt: 1)
+        let templateEvent = try referenceEvent(content: "template", createdAt: 2)
+        let liveBoard = Board(id: "live-local", name: "Live")
+        let templateBoard = liveBoard.templateSnapshot(
+            boardID: "f1a75d28-1ce5-489a-b53a-1e2a447b0cf7"
+        )
+
+        try await store.enqueue(NostrOutboxEntry(
+            event: liveEvent,
+            relayURLs: liveBoard.effectiveRelayURLs,
+            boardLocalID: liveBoard.id,
+            taskID: "task"
+        ))
+        try await store.enqueue(NostrOutboxEntry(
+            event: templateEvent,
+            relayURLs: templateBoard.effectiveRelayURLs,
+            boardLocalID: templateBoard.id,
+            taskID: "task"
+        ))
+
+        let queuedEntries = await store.allEntries()
+        XCTAssertEqual(queuedEntries.count, 2)
+        XCTAssertEqual(Set(queuedEntries.map(\.boardLocalID)), Set([liveBoard.id, templateBoard.id]))
         try? FileManager.default.removeItem(at: directory)
     }
 
