@@ -5,6 +5,30 @@ public enum ListColumnRemovalStrategy: Equatable, Sendable {
     case deleteTasks
 }
 
+public struct TaskMoveResult: Equatable, Sendable {
+    public let taskID: String
+    public let sourceBoardID: String
+    public let sourceColumnID: String?
+    public let targetBoardID: String
+    public let targetColumnID: String
+
+    public init(
+        taskID: String,
+        sourceBoardID: String,
+        sourceColumnID: String?,
+        targetBoardID: String,
+        targetColumnID: String
+    ) {
+        self.taskID = taskID
+        self.sourceBoardID = sourceBoardID
+        self.sourceColumnID = sourceColumnID
+        self.targetBoardID = targetBoardID
+        self.targetColumnID = targetColumnID
+    }
+
+    public var crossedBoards: Bool { sourceBoardID != targetBoardID }
+}
+
 public struct ListColumnRemovalResult: Equatable, Sendable {
     public var removedColumnID: String
     public var movedTaskIDs: [String]
@@ -478,6 +502,64 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func moveTask(
+        taskID: String,
+        toBoardID targetBoardID: String,
+        columnID targetColumnID: String,
+        beforeTaskID: String? = nil,
+        editorPublicKey: String? = nil
+    ) -> TaskMoveResult? {
+        guard let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
+              let targetBoard = boards.first(where: { $0.id == targetBoardID && $0.kind == .list }),
+              targetBoard.isVisible || isLinkedCompoundChild(targetBoard),
+              targetBoard.columns.contains(where: { $0.id == targetColumnID }) else {
+            return nil
+        }
+
+        if let beforeTaskID, beforeTaskID == taskID { return nil }
+
+        let sourceBoardID = tasks[taskIndex].boardID
+        let sourceColumnID = tasks[taskIndex].columnID
+        let sourceKey = "\(sourceBoardID)::\(sourceColumnID ?? "")"
+        let targetKey = "\(targetBoardID)::\(targetColumnID)"
+
+        var movedTask = tasks.remove(at: taskIndex)
+        movedTask.boardID = targetBoardID
+        movedTask.columnID = targetColumnID
+        movedTask.hiddenUntilDate = nil
+        movedTask.completed = false
+        movedTask.completedAt = nil
+        movedTask.lastEditedBy = editorPublicKey ?? movedTask.lastEditedBy
+
+        if sourceKey != targetKey {
+            normalizeTaskOrder(boardID: sourceBoardID, columnID: sourceColumnID)
+        }
+
+        let targetIndices = orderedTaskIndices(boardID: targetBoardID, columnID: targetColumnID)
+        let insertionIndex = beforeTaskID.flatMap { beforeID in
+            targetIndices.firstIndex(where: { tasks[$0].id == beforeID })
+        } ?? targetIndices.count
+
+        var targetTasks = targetIndices.map { tasks[$0] }
+        targetTasks.insert(movedTask, at: insertionIndex)
+        let targetIDs = Set(targetTasks.map(\.id))
+        tasks.removeAll { targetIDs.contains($0.id) }
+        tasks.append(contentsOf: targetTasks.enumerated().map { order, task in
+            var normalized = task
+            normalized.order = order
+            return normalized
+        })
+
+        return TaskMoveResult(
+            taskID: taskID,
+            sourceBoardID: sourceBoardID,
+            sourceColumnID: sourceColumnID,
+            targetBoardID: targetBoardID,
+            targetColumnID: targetColumnID
+        )
+    }
+
+    @discardableResult
     public mutating func replaceTaskAttachments(
         taskID: String,
         images: [String],
@@ -769,6 +851,27 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             parent.kind == .compound &&
                 parent.isVisible &&
                 parent.children.contains(where: { board.matchesReference($0) })
+        }
+    }
+
+    private func orderedTaskIndices(boardID: String, columnID: String?) -> [Int] {
+        tasks.indices
+            .filter {
+                tasks[$0].boardID == boardID &&
+                    tasks[$0].columnID == columnID &&
+                    !tasks[$0].isDeleted
+            }
+            .sorted {
+                let lhs = tasks[$0]
+                let rhs = tasks[$1]
+                if lhs.order != rhs.order { return lhs.order < rhs.order }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    private mutating func normalizeTaskOrder(boardID: String, columnID: String?) {
+        for (order, index) in orderedTaskIndices(boardID: boardID, columnID: columnID).enumerated() {
+            tasks[index].order = order
         }
     }
 }

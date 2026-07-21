@@ -1,8 +1,117 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import CoreTransferable
 import SwiftUI
 import TaskifyCore
 import UIKit
+import UniformTypeIdentifiers
+
+private extension UTType {
+    static let taskifyTask = UTType(exportedAs: "me.solife.taskify.task")
+}
+
+private struct TaskDragPayload: Codable, Hashable, Transferable {
+    let taskID: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .taskifyTask)
+    }
+}
+
+private enum TaskDropTargetStyle: Equatable {
+    case card
+    case column
+}
+
+private struct TaskDropTargetModifier: ViewModifier {
+    @EnvironmentObject private var model: AppModel
+    let boardID: String
+    let columnID: String
+    let beforeTaskID: String?
+    let style: TaskDropTargetStyle
+    @State private var isTargeted = false
+
+    func body(content: Content) -> some View {
+        content
+            .dropDestination(for: TaskDragPayload.self) { payloads, _ in
+                guard let payload = payloads.first else { return false }
+                if beforeTaskID == payload.taskID { return true }
+                return model.moveTask(
+                    payload.taskID,
+                    toBoardID: boardID,
+                    columnID: columnID,
+                    beforeTaskID: beforeTaskID
+                )
+            } isTargeted: { targeted in
+                withAnimation(.easeOut(duration: 0.14)) {
+                    isTargeted = targeted
+                }
+            }
+            .overlay(alignment: style == .card ? .top : .center) {
+                if isTargeted {
+                    switch style {
+                    case .card:
+                        Capsule()
+                            .fill(TaskifyTheme.accent)
+                            .frame(height: 4)
+                            .padding(.horizontal, 10)
+                            .offset(y: -5)
+                            .allowsHitTesting(false)
+                    case .column:
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(TaskifyTheme.accent, lineWidth: 2)
+                            .padding(2)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+    }
+}
+
+private struct TaskDragSourceModifier: ViewModifier {
+    let payload: TaskDragPayload?
+    let title: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let payload {
+            content
+                .draggable(payload) {
+                    Label(title, systemImage: "rectangle.stack.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(1)
+                        .padding(.horizontal, 16)
+                        .frame(height: 48)
+                        .frame(maxWidth: 260, alignment: .leading)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(TaskifyTheme.border, lineWidth: 1)
+                        )
+                }
+                .accessibilityHint("Touch and hold, then drag to another list")
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func taskDropTarget(
+        boardID: String,
+        columnID: String,
+        beforeTaskID: String? = nil,
+        style: TaskDropTargetStyle
+    ) -> some View {
+        modifier(TaskDropTargetModifier(
+            boardID: boardID,
+            columnID: columnID,
+            beforeTaskID: beforeTaskID,
+            style: style
+        ))
+    }
+}
 
 struct BoardsView: View {
     @EnvironmentObject private var model: AppModel
@@ -520,7 +629,13 @@ private struct CompoundColumnView: View {
             ScrollView {
                 LazyVStack(spacing: 9) {
                     ForEach(tasks) { task in
-                        TaskCardView(task: task)
+                        TaskCardView(task: task, allowsDragging: true)
+                            .taskDropTarget(
+                                boardID: reference.board.id,
+                                columnID: reference.column.id,
+                                beforeTaskID: task.id,
+                                style: .card
+                            )
                     }
                 }
             }
@@ -550,6 +665,11 @@ private struct CompoundColumnView: View {
         }
         .padding(10)
         .taskifyGlass(cornerRadius: 22)
+        .taskDropTarget(
+            boardID: reference.board.id,
+            columnID: reference.column.id,
+            style: .column
+        )
     }
 
     private func addTask() {
@@ -663,7 +783,13 @@ private struct ListColumnView: View {
             ScrollView {
                 LazyVStack(spacing: 9) {
                     ForEach(tasks) { task in
-                        TaskCardView(task: task)
+                        TaskCardView(task: task, allowsDragging: true)
+                            .taskDropTarget(
+                                boardID: model.selectedBoardID,
+                                columnID: column.id,
+                                beforeTaskID: task.id,
+                                style: .card
+                            )
                     }
                 }
             }
@@ -693,6 +819,11 @@ private struct ListColumnView: View {
         }
         .padding(10)
         .taskifyGlass(cornerRadius: 22)
+        .taskDropTarget(
+            boardID: model.selectedBoardID,
+            columnID: column.id,
+            style: .column
+        )
         .alert("Rename list", isPresented: $showingRename) {
             TextField("List name", text: $renameDraft)
             Button("Cancel", role: .cancel) {}
@@ -839,7 +970,13 @@ private struct DayColumnView: View {
 struct TaskCardView: View {
     @EnvironmentObject private var model: AppModel
     let task: TaskItem
+    let allowsDragging: Bool
     @State private var showingEditor = false
+
+    init(task: TaskItem, allowsDragging: Bool = false) {
+        self.task = task
+        self.allowsDragging = allowsDragging
+    }
 
     private var subtaskProgress: String? {
         guard let subtasks = task.subtasks, !subtasks.isEmpty else { return nil }
@@ -979,6 +1116,10 @@ struct TaskCardView: View {
         )
         .shadow(color: Color.black.opacity(0.22), radius: 8, y: 5)
         .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+        .modifier(TaskDragSourceModifier(
+            payload: allowsDragging ? TaskDragPayload(taskID: task.id) : nil,
+            title: displayTitle
+        ))
         .accessibilityAction(named: "Edit task") { showingEditor = true }
         .contextMenu {
             Button {

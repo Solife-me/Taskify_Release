@@ -9,6 +9,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Weekly board columns with quick task entry
 - List-board creation, custom list columns, and list-scoped quick task entry
 - Advanced list management with synced rename/reorder controls and guarded deletion that can preserve tasks by moving them to a neighboring list
+- Long-press task dragging between list columns, including insertion feedback, local reordering, and cross-child movement within compound boards
 - Local task completion and deletion
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks
 - PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, and next-instance generation on completion
@@ -21,7 +22,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - PWA-compatible deterministic board keys, AES-256-GCM task payloads, and signed Nostr events
 - Shared-board join flow, default relay subscriptions, EOSE startup batching, and clock-based merges
 - Encrypted PWA-compatible list-board metadata sync, including conversion of joined boards to their remote type and columns
-- Disk-backed offline publish outbox with relay acknowledgement handling and reconnect retries
+- Disk-backed offline publish outbox with per-relay acknowledgements, stale-event suppression, paced burst delivery, adaptive NIP-01 rate-limit backoff, and reconnect retries
 - Aggregate Nostr health reporting with per-relay status, queued-change visibility, and manual/foreground retry
 - PWA-compatible task image/document metadata sync that survives native edits and recurrence
 - Native decryption and display of current and legacy PWA encrypted attachments, with image zoom and Quick Look document viewing
@@ -29,7 +30,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Native Photos and Files attachment controls with PWA-compatible AES-GCM encryption, remote-first Originless uploads, and task-level removal
 - Cached native rich link cards generated from URLs in task titles and notes, with duplicate inline URLs suppressed in task-card presentation
 - Native live-board and independent template sharing with PWA-compatible QR payloads, board-ID copy, the iOS share sheet, camera scanning, review-before-join, and automatic board-name/relay import
-- Core unit and interoperability tests for state, persistence, recurrence, reminder timing, PWA task/attachment cryptography fixtures, signing, merge clocks, and outbox behavior
+- Core unit and interoperability tests for state, persistence, list movement, recurrence, reminder timing, PWA task/attachment cryptography fixtures, signing, merge clocks, and outbox behavior
 
 Wallet, Chat, calendar integrations, and contact delivery are intentionally marked as migration work instead of being backed by the abandoned native implementation. Board and task relay sync has been manually confirmed in both directions between the native app and PWA. Compound boards retain their PWA child-board references and ordering, including hidden linked-board placeholders that continue syncing without cluttering the visible board picker. Synced PWA attachments are readable on iOS, native additions/removals use the PWA's encrypted remote attachment contract and default encrypted file server, and template shares publish a separate board/task snapshot that does not follow later live-board changes.
 

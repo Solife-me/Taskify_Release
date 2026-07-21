@@ -514,10 +514,80 @@ final class CryptoSyncTests: XCTestCase {
 
         let queuedEntries = await store.allEntries()
         XCTAssertEqual(queuedEntries.map(\.event.id), [second.id])
-        try await store.markAccepted(eventID: second.id)
+        let staleVersionPending = await store.isPending(
+            eventID: first.id,
+            relayURL: TaskifyRelayDefaults.urls[0]
+        )
+        let currentVersionPending = await store.isPending(
+            eventID: second.id,
+            relayURL: TaskifyRelayDefaults.urls[0]
+        )
+        XCTAssertFalse(staleVersionPending)
+        XCTAssertTrue(currentVersionPending)
+        for relayURL in TaskifyRelayDefaults.urls {
+            try await store.markAccepted(eventID: second.id, relayURL: relayURL)
+        }
         let remainingEntries = await store.allEntries()
         XCTAssertTrue(remainingEntries.isEmpty)
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testOutboxKeepsEventUntilEveryRelayAcknowledgesIt() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-relay-acks-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let event = try referenceEvent(content: "multi-relay", createdAt: 3)
+        let relays = ["wss://one.example", "wss://two.example"]
+
+        try await store.enqueue(NostrOutboxEntry(
+            event: event,
+            relayURLs: relays,
+            boardLocalID: "board",
+            taskID: "task"
+        ))
+        try await store.markAccepted(eventID: event.id, relayURL: relays[0])
+
+        var queuedEntries = await store.allEntries()
+        XCTAssertEqual(queuedEntries.count, 1)
+        XCTAssertEqual(queuedEntries[0].pendingRelayURLs, [relays[1]])
+        let acknowledgedRelayPending = await store.isPending(
+            eventID: event.id,
+            relayURL: relays[0]
+        )
+        let unacknowledgedRelayPending = await store.isPending(
+            eventID: event.id,
+            relayURL: relays[1]
+        )
+        XCTAssertFalse(acknowledgedRelayPending)
+        XCTAssertTrue(unacknowledgedRelayPending)
+
+        try await store.markAccepted(eventID: event.id, relayURL: relays[1])
+        queuedEntries = await store.allEntries()
+        XCTAssertTrue(queuedEntries.isEmpty)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testRelayPublishPacerSpacesBurstsAndBacksOffPerRelay() {
+        var pacer = RelayPublishPacer(
+            defaultInterval: 0.5,
+            baseBackoff: 2,
+            maximumBackoff: 30
+        )
+
+        XCTAssertEqual(pacer.delayBeforePublish(at: 100), 0, accuracy: 0.001)
+        pacer.recordPublish(at: 100)
+        XCTAssertEqual(pacer.delayBeforePublish(at: 100.1), 0.4, accuracy: 0.001)
+
+        let firstBackoff = pacer.recordRateLimit(at: 100.1)
+        XCTAssertEqual(firstBackoff, 2, accuracy: 0.001)
+        XCTAssertEqual(pacer.delayBeforePublish(at: 101), 1.1, accuracy: 0.001)
+        XCTAssertTrue(NostrRelayRejection.isRateLimited("rate-limited: slow down"))
+        XCTAssertTrue(NostrRelayRejection.isRateLimited(" RATE-LIMITED: burst "))
+        XCTAssertFalse(NostrRelayRejection.isRateLimited("blocked: not allowed"))
+
+        let secondBackoff = pacer.recordRateLimit(at: 102.1)
+        XCTAssertEqual(secondBackoff, 4, accuracy: 0.001)
+        XCTAssertEqual(pacer.delayBeforePublish(at: 103), 3.1, accuracy: 0.001)
     }
 
     func testTemplateOutboxEntriesDoNotReplaceLiveBoardEntries() async throws {

@@ -129,6 +129,115 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertTrue(snapshot.selectedBoard?.hideChildBoardNames == true)
     }
 
+    func testDraggingTaskMovesAndReordersWithinListBoard() throws {
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let backlog = try XCTUnwrap(board.columns.first)
+        let doing = try XCTUnwrap(snapshot.addListColumn(boardID: board.id, name: "Doing"))
+        let moved = try XCTUnwrap(snapshot.addTask(
+            title: "Moved",
+            boardID: board.id,
+            columnID: backlog.id,
+            dueDate: nil
+        ))
+        let first = try XCTUnwrap(snapshot.addTask(
+            title: "First",
+            boardID: board.id,
+            columnID: doing.id,
+            dueDate: nil
+        ))
+        let last = try XCTUnwrap(snapshot.addTask(
+            title: "Last",
+            boardID: board.id,
+            columnID: doing.id,
+            dueDate: nil
+        ))
+        let movedIndex = try XCTUnwrap(snapshot.tasks.firstIndex(where: { $0.id == moved.id }))
+        snapshot.tasks[movedIndex].completed = true
+        snapshot.tasks[movedIndex].completedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        snapshot.tasks[movedIndex].hiddenUntilDate = Date.distantFuture
+
+        let result = try XCTUnwrap(snapshot.moveTask(
+            taskID: moved.id,
+            toBoardID: board.id,
+            columnID: doing.id,
+            beforeTaskID: last.id,
+            editorPublicKey: "editor"
+        ))
+
+        XCTAssertFalse(result.crossedBoards)
+        XCTAssertEqual(
+            snapshot.tasks(boardID: board.id, columnID: doing.id, includeCompleted: true).map(\.id),
+            [first.id, moved.id, last.id]
+        )
+        let updated = try XCTUnwrap(snapshot.tasks.first(where: { $0.id == moved.id }))
+        XCTAssertFalse(updated.completed)
+        XCTAssertNil(updated.completedAt)
+        XCTAssertNil(updated.hiddenUntilDate)
+        XCTAssertEqual(updated.lastEditedBy, "editor")
+
+        XCTAssertNotNil(snapshot.moveTask(
+            taskID: last.id,
+            toBoardID: board.id,
+            columnID: doing.id,
+            beforeTaskID: first.id
+        ))
+        XCTAssertEqual(
+            snapshot.tasks(boardID: board.id, columnID: doing.id, includeCompleted: true).map(\.id),
+            [last.id, first.id, moved.id]
+        )
+    }
+
+    func testDraggingAcrossCompoundChildrenChangesSourceBoard() throws {
+        var snapshot = TaskifySnapshot.empty
+        let personal = try XCTUnwrap(snapshot.createListBoard(name: "Personal"))
+        let personalColumn = try XCTUnwrap(personal.columns.first)
+        let work = try XCTUnwrap(snapshot.createListBoard(name: "Work"))
+        let workColumn = try XCTUnwrap(work.columns.first)
+        let compound = try XCTUnwrap(snapshot.createCompoundBoard(
+            name: "Everything",
+            childBoardIDs: [personal.id, work.id]
+        ))
+        let moved = try XCTUnwrap(snapshot.addTask(
+            title: "Move me",
+            boardID: personal.id,
+            columnID: personalColumn.id,
+            dueDate: nil
+        ))
+        let existing = try XCTUnwrap(snapshot.addTask(
+            title: "Existing",
+            boardID: work.id,
+            columnID: workColumn.id,
+            dueDate: nil
+        ))
+
+        let result = try XCTUnwrap(snapshot.moveTask(
+            taskID: moved.id,
+            toBoardID: work.id,
+            columnID: workColumn.id,
+            beforeTaskID: existing.id
+        ))
+
+        XCTAssertTrue(result.crossedBoards)
+        XCTAssertEqual(result.sourceBoardID, personal.id)
+        XCTAssertEqual(result.targetBoardID, work.id)
+        XCTAssertEqual(
+            snapshot.tasks(boardID: work.id, columnID: workColumn.id, includeCompleted: true).map(\.id),
+            [moved.id, existing.id]
+        )
+        XCTAssertTrue(snapshot.tasks(
+            boardID: personal.id,
+            columnID: personalColumn.id,
+            includeCompleted: true
+        ).isEmpty)
+        XCTAssertEqual(snapshot.compoundChildBoards(for: compound.id).map(\.id), [personal.id, work.id])
+        XCTAssertNil(snapshot.moveTask(
+            taskID: moved.id,
+            toBoardID: "week-default",
+            columnID: WeekdayColumn.monday.rawValue
+        ))
+    }
+
     func testRemoteCompoundCreatesHiddenSyncableChildStubs() throws {
         let parent = Board(
             id: "local-compound",

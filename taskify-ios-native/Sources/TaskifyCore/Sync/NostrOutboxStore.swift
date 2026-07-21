@@ -7,19 +7,27 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
     public var boardLocalID: String
     public var taskID: String
     public var queuedAt: Date
+    public var acceptedRelayURLs: [String]?
 
     public init(
         event: NostrEvent,
         relayURLs: [String],
         boardLocalID: String,
         taskID: String,
-        queuedAt: Date = Date()
+        queuedAt: Date = Date(),
+        acceptedRelayURLs: [String]? = nil
     ) {
         self.event = event
         self.relayURLs = relayURLs
         self.boardLocalID = boardLocalID
         self.taskID = taskID
         self.queuedAt = queuedAt
+        self.acceptedRelayURLs = acceptedRelayURLs
+    }
+
+    public var pendingRelayURLs: [String] {
+        let accepted = Set(acceptedRelayURLs ?? [])
+        return relayURLs.filter { !accepted.contains($0) }
     }
 }
 
@@ -51,6 +59,12 @@ public actor NostrOutboxStore {
         entries.sorted { $0.queuedAt < $1.queuedAt }
     }
 
+    public func isPending(eventID: String, relayURL: String) -> Bool {
+        entries.first(where: { $0.event.id == eventID })?
+            .pendingRelayURLs
+            .contains(relayURL) == true
+    }
+
     public func enqueue(_ entry: NostrOutboxEntry) throws {
         entries.removeAll {
             $0.boardLocalID == entry.boardLocalID && $0.taskID == entry.taskID
@@ -59,8 +73,16 @@ public actor NostrOutboxStore {
         try persist()
     }
 
-    public func markAccepted(eventID: String) throws {
-        entries.removeAll { $0.event.id == eventID }
+    public func markAccepted(eventID: String, relayURL: String) throws {
+        guard let index = entries.firstIndex(where: { $0.event.id == eventID }),
+              entries[index].relayURLs.contains(relayURL) else { return }
+
+        var accepted = Set(entries[index].acceptedRelayURLs ?? [])
+        accepted.insert(relayURL)
+        entries[index].acceptedRelayURLs = entries[index].relayURLs.filter { accepted.contains($0) }
+        if entries[index].pendingRelayURLs.isEmpty {
+            entries.remove(at: index)
+        }
         try persist()
     }
 

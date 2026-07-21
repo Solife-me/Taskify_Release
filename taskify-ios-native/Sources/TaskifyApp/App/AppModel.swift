@@ -163,6 +163,36 @@ final class AppModel: ObservableObject {
         synchronizeTask(task.id)
     }
 
+    @discardableResult
+    func moveTask(
+        _ taskID: String,
+        toBoardID targetBoardID: String,
+        columnID targetColumnID: String,
+        beforeTaskID: String? = nil
+    ) -> Bool {
+        guard let sourceTask = task(withID: taskID),
+              let sourceBoard = board(withID: sourceTask.boardID),
+              let result = snapshot.moveTask(
+                taskID: taskID,
+                toBoardID: targetBoardID,
+                columnID: targetColumnID,
+                beforeTaskID: beforeTaskID,
+                editorPublicKey: identityPublicKey.nilIfEmpty
+              ) else { return false }
+
+        if result.crossedBoards {
+            synchronizeTaskMove(
+                taskID,
+                sourceTask: sourceTask,
+                sourceBoard: sourceBoard
+            )
+        } else {
+            synchronizeTask(taskID)
+        }
+        refreshNotifications(requestPermission: false)
+        return true
+    }
+
     func addTask(title: String, dueDate: Date) {
         guard let selectedBoard else { return }
         let board: Board
@@ -642,6 +672,86 @@ final class AppModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.errorMessage = "Taskify could not queue this task for Nostr sync."
+                }
+            }
+        }
+    }
+
+    private func synchronizeTaskMove(
+        _ taskID: String,
+        sourceTask: TaskItem,
+        sourceBoard: Board
+    ) {
+        guard let index = snapshot.tasks.firstIndex(where: { $0.id == taskID }),
+              let targetBoard = snapshot.boards.first(where: { $0.id == snapshot.tasks[index].boardID }) else {
+            scheduleSave()
+            return
+        }
+
+        let sourceTombstoneTimestamp = nextNostrTimestamp()
+        let sourceDeletionTimestamp = nextNostrTimestamp()
+        let targetTimestamp = nextNostrTimestamp()
+        snapshot.tasks[index].nostrUpdatedAt = targetTimestamp
+        let targetTask = snapshot.tasks[index]
+        var sourceTombstone = sourceTask
+        sourceTombstone.deleted = true
+        sourceTombstone.lastEditedBy = identityPublicKey.nilIfEmpty ?? sourceTombstone.lastEditedBy
+        scheduleSave()
+
+        Task { [syncEngine] in
+            do {
+                let sourceBoardEvent = try TaskEventCodec.boardEvent(
+                    board: sourceBoard,
+                    createdAt: sourceTombstoneTimestamp
+                )
+                try await syncEngine.publish(
+                    sourceBoardEvent,
+                    board: sourceBoard,
+                    taskID: "_board"
+                )
+                let sourceTaskEvent = try TaskEventCodec.taskEvent(
+                    task: sourceTombstone,
+                    board: sourceBoard,
+                    createdAt: sourceTombstoneTimestamp
+                )
+                try await syncEngine.publish(
+                    sourceTaskEvent,
+                    board: sourceBoard,
+                    taskID: sourceTombstone.id
+                )
+                let sourceDeletion = try TaskEventCodec.deletionEvent(
+                    taskID: sourceTombstone.id,
+                    board: sourceBoard,
+                    createdAt: sourceDeletionTimestamp
+                )
+                try await syncEngine.publish(
+                    sourceDeletion,
+                    board: sourceBoard,
+                    taskID: "deletion:\(sourceTombstone.id)"
+                )
+
+                let targetBoardEvent = try TaskEventCodec.boardEvent(
+                    board: targetBoard,
+                    createdAt: targetTimestamp
+                )
+                try await syncEngine.publish(
+                    targetBoardEvent,
+                    board: targetBoard,
+                    taskID: "_board"
+                )
+                let targetTaskEvent = try TaskEventCodec.taskEvent(
+                    task: targetTask,
+                    board: targetBoard,
+                    createdAt: targetTimestamp
+                )
+                try await syncEngine.publish(
+                    targetTaskEvent,
+                    board: targetBoard,
+                    taskID: targetTask.id
+                )
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Taskify could not queue this task move for Nostr sync."
                 }
             }
         }
