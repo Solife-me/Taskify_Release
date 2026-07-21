@@ -28,10 +28,22 @@ public struct TaskRelayRecord: Equatable, Sendable {
     }
 }
 
+public struct BoardRelayRecord: Equatable, Sendable {
+    public let board: Board
+    public let eventCreatedAt: Int
+
+    public init(board: Board, eventCreatedAt: Int) {
+        self.board = board
+        self.eventCreatedAt = eventCreatedAt
+    }
+}
+
 public struct TaskSyncPayload: Codable, Equatable, Sendable {
     public var title: String
     public var priority: Int?
     public var note: String?
+    public var images: [String]?
+    public var documents: [TaskDocument]?
     public var dueISO: String?
     public var completedAt: String?
     public var completedBy: String?
@@ -42,6 +54,10 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
     public var streak: Int?
     public var longestStreak: Int?
     public var seriesId: String?
+    public var subtasks: [TaskSubtask]?
+    public var recurrence: TaskRecurrence?
+    public var reminders: [TaskReminder]?
+    public var reminderTime: String?
     public var dueDateEnabled: Bool?
     public var dueTimeEnabled: Bool?
     public var dueTimeZone: String?
@@ -50,16 +66,22 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
         title = task.title
         priority = task.priority?.rawValue
         note = task.note.isEmpty ? nil : task.note
+        images = task.images
+        documents = task.documents
         dueISO = task.dueDate.map(Self.format)
         completedAt = task.completedAt.map(Self.format)
         completedBy = task.completed ? task.lastEditedBy : nil
-        hiddenUntilISO = nil
+        hiddenUntilISO = task.hiddenUntilDate.map(Self.format)
         createdBy = task.createdBy
         lastEditedBy = task.lastEditedBy
         createdAt = Int64(task.createdAt.timeIntervalSince1970 * 1_000)
         streak = nil
         longestStreak = nil
-        seriesId = nil
+        seriesId = task.seriesID
+        subtasks = task.subtasks
+        recurrence = task.recurrence
+        reminders = task.reminders
+        reminderTime = task.reminderTime
         dueDateEnabled = task.dueDateEnabled
         dueTimeEnabled = task.dueTimeEnabled
         dueTimeZone = task.dueTimeZone
@@ -84,10 +106,11 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
 }
 
 public struct BoardSyncPayload: Codable, Equatable, Sendable {
-    public var name: String
-    public var kind: BoardKind
-    public var columns: [BoardColumn]
-    public var clearCompletedDisabled: Bool
+    public var name: String?
+    public var kind: BoardKind?
+    public var columns: [BoardColumn]?
+    public var clearCompletedDisabled: Bool?
+    public var listIndex: Bool?
 }
 
 public enum TaskEventCodec {
@@ -123,10 +146,11 @@ public enum TaskEventCodec {
         let boardID = board.effectiveNostrBoardID
         let boardTag = BoardCrypto.boardTag(for: boardID)
         let payload = BoardSyncPayload(
-            name: board.name,
-            kind: board.kind,
-            columns: board.columns,
-            clearCompletedDisabled: board.clearCompletedDisabled
+            name: nil,
+            kind: nil,
+            columns: board.kind == .list ? board.columns : nil,
+            clearCompletedDisabled: board.clearCompletedDisabled,
+            listIndex: board.kind == .list ? board.indexCardEnabled : nil
         )
         let encryptedContent = try BoardCrypto.encrypt(
             JSONEncoder().encode(payload),
@@ -162,6 +186,50 @@ public enum TaskEventCodec {
         )
     }
 
+    public static func decodeBoardEvent(
+        _ event: NostrEvent,
+        board: Board
+    ) throws -> BoardRelayRecord {
+        guard event.kind == boardEventKind else { throw TaskEventCodecError.wrongKind }
+        let boardID = board.effectiveNostrBoardID
+        let boardTag = BoardCrypto.boardTag(for: boardID)
+        guard event.firstTagValue(named: "b") == boardTag else { throw TaskEventCodecError.wrongBoard }
+        let expectedPublicKey = try BoardCrypto.signingPublicKey(for: boardID).hexString
+        guard event.publicKey.lowercased() == expectedPublicKey, event.verify() else {
+            throw TaskEventCodecError.invalidAuthor
+        }
+
+        let plaintext = try BoardCrypto.decrypt(event.content, boardID: boardID)
+        guard let payload = try? JSONDecoder().decode(BoardSyncPayload.self, from: plaintext) else {
+            throw TaskEventCodecError.invalidPayload
+        }
+
+        let taggedName = event.firstTagValue(named: "name")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payloadName = payload.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = payloadName?.isEmpty == false
+            ? payloadName!
+            : (taggedName?.isEmpty == false ? taggedName! : board.name)
+        let taggedKind = event.firstTagValue(named: "k").flatMap(BoardKind.init(rawValue:))
+        let resolvedKind = payload.kind ?? taggedKind ?? board.kind
+        let incomingColumns = payload.columns ?? board.columns
+        let normalizedColumns = incomingColumns.enumerated().map { index, column in
+            BoardColumn(
+                id: column.id,
+                name: column.name,
+                order: column.order >= 0 ? column.order : index
+            )
+        }
+
+        var updated = board
+        updated.name = resolvedName
+        updated.kind = resolvedKind
+        updated.columns = resolvedKind == .list ? normalizedColumns : board.columns
+        updated.clearCompletedDisabled = payload.clearCompletedDisabled ?? board.clearCompletedDisabled
+        updated.indexCardEnabled = payload.listIndex ?? board.indexCardEnabled
+        updated.nostrUpdatedAt = event.createdAt
+        return BoardRelayRecord(board: updated, eventCreatedAt: event.createdAt)
+    }
+
     public static func decodeTaskEvent(
         _ event: NostrEvent,
         board: Board,
@@ -186,15 +254,19 @@ public enum TaskEventCodec {
         }
         let dueDate = TaskSyncPayload.parse(payload.dueISO)
         let completedAt = TaskSyncPayload.parse(payload.completedAt)
+        let hiddenUntilDate = TaskSyncPayload.parse(payload.hiddenUntilISO)
         let status = event.firstTagValue(named: "status") ?? "open"
         let createdAt = payload.createdAt.map {
             Date(timeIntervalSince1970: TimeInterval($0) / 1_000)
         } ?? Date(timeIntervalSince1970: TimeInterval(event.createdAt))
         let columnID: String?
-        if board.kind == .week, let dueDate {
+        let taggedColumnID = event.firstTagValue(named: "col")
+        if let taggedColumnID, !taggedColumnID.isEmpty, taggedColumnID != "day" {
+            columnID = taggedColumnID
+        } else if board.kind == .week, let dueDate {
             columnID = WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
         } else {
-            columnID = event.firstTagValue(named: "col")
+            columnID = taggedColumnID
         }
 
         let task = TaskItem(
@@ -207,6 +279,14 @@ public enum TaskEventCodec {
             dueTimeEnabled: payload.dueTimeEnabled ?? false,
             dueTimeZone: payload.dueTimeZone,
             priority: payload.priority.flatMap(TaskPriority.init(rawValue:)),
+            images: payload.images,
+            documents: payload.documents,
+            subtasks: payload.subtasks,
+            recurrence: payload.recurrence?.isActive == true ? payload.recurrence : nil,
+            seriesID: payload.seriesId,
+            reminders: payload.reminders?.filter { $0.minutesBefore != nil && !$0.rawValue.isEmpty },
+            reminderTime: payload.reminderTime,
+            hiddenUntilDate: hiddenUntilDate,
             createdAt: createdAt,
             order: 0,
             columnID: columnID,

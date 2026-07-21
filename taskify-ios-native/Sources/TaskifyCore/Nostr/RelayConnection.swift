@@ -44,6 +44,19 @@ public enum NostrRelayMessage: Sendable {
     }
 }
 
+enum NostrRelayWire {
+    static func encode(_ object: [Any]) throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.withoutEscapingSlashes]
+        )
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return text
+    }
+}
+
 public actor NostrRelayConnection {
     public nonisolated let relayURL: String
 
@@ -51,6 +64,7 @@ public actor NostrRelayConnection {
     private let messageContinuation: AsyncStream<NostrRelayMessage>.Continuation
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
+    private var connectionGeneration: UUID?
 
     public init(relayURL: String) {
         self.relayURL = relayURL
@@ -79,10 +93,12 @@ public actor NostrRelayConnection {
         }
 
         let webSocket = URLSession.shared.webSocketTask(with: url)
+        let generation = UUID()
         socket = webSocket
+        connectionGeneration = generation
         webSocket.resume()
         receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
+            await self?.receiveLoop(socket: webSocket, generation: generation)
         }
     }
 
@@ -91,6 +107,7 @@ public actor NostrRelayConnection {
         receiveTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
+        connectionGeneration = nil
     }
 
     public func subscribe(
@@ -114,12 +131,14 @@ public actor NostrRelayConnection {
 
     private func send(_ object: [Any]) async throws {
         guard let socket else { throw URLError(.notConnectedToInternet) }
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
-        try await socket.send(.data(data))
+        try await socket.send(.string(NostrRelayWire.encode(object)))
     }
 
-    private func receiveLoop() async {
-        while !Task.isCancelled, let socket {
+    private func receiveLoop(
+        socket: URLSessionWebSocketTask,
+        generation: UUID
+    ) async {
+        while !Task.isCancelled, connectionGeneration == generation {
             do {
                 let message = try await socket.receive()
                 let data: Data
@@ -132,7 +151,9 @@ public actor NostrRelayConnection {
                     messageContinuation.yield(decoded)
                 }
             } catch {
+                guard connectionGeneration == generation else { return }
                 self.socket = nil
+                connectionGeneration = nil
                 messageContinuation.yield(.disconnected(error.localizedDescription))
                 return
             }

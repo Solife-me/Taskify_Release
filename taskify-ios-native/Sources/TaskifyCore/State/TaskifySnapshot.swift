@@ -1,7 +1,7 @@
 import Foundation
 
 public struct TaskifySnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 4
 
     public var schemaVersion: Int
     public var boards: [Board]
@@ -59,6 +59,43 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func createListBoard(
+        name: String,
+        initialColumnName: String = "Items",
+        now: Date = Date()
+    ) -> Board? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedColumnName = initialColumnName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, !trimmedColumnName.isEmpty else { return nil }
+
+        let board = Board(
+            name: trimmedName,
+            kind: .list,
+            columns: [
+                BoardColumn(id: UUID().uuidString, name: trimmedColumnName, order: 0),
+            ],
+            createdAt: now
+        )
+        boards.append(board)
+        selectedBoardID = board.id
+        return board
+    }
+
+    @discardableResult
+    public mutating func addListColumn(boardID: String, name: String) -> BoardColumn? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty,
+              let boardIndex = boards.firstIndex(where: { $0.id == boardID && $0.kind == .list && $0.isVisible }) else {
+            return nil
+        }
+
+        let nextOrder = (boards[boardIndex].columns.map(\.order).max() ?? -1) + 1
+        let column = BoardColumn(id: UUID().uuidString, name: trimmedName, order: nextOrder)
+        boards[boardIndex].columns.append(column)
+        return column
+    }
+
+    @discardableResult
     public mutating func joinWeekBoard(
         nostrBoardID: String,
         name: String = "Shared Week",
@@ -102,7 +139,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     ) -> TaskItem? {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return nil }
-        guard boards.contains(where: { $0.id == boardID && $0.isVisible }) else { return nil }
+        guard let board = boards.first(where: { $0.id == boardID && $0.isVisible }) else { return nil }
+        if board.kind == .list {
+            guard let columnID, board.columns.contains(where: { $0.id == columnID }) else { return nil }
+        }
 
         let nextOrder = (tasks.filter { $0.boardID == boardID && $0.columnID == columnID }.map(\.order).max() ?? -1) + 1
         let task = TaskItem(
@@ -124,6 +164,108 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func updateTask(
+        taskID: String,
+        title: String,
+        note: String,
+        dueDate: Date?,
+        dueDateEnabled: Bool,
+        dueTimeEnabled: Bool,
+        dueTimeZone: String?,
+        priority: TaskPriority?,
+        columnID: String?,
+        subtasks: [TaskSubtask],
+        recurrence: TaskRecurrence? = nil,
+        reminders: [TaskReminder] = [],
+        reminderTime: String? = nil,
+        editorPublicKey: String? = nil,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty,
+              let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
+              let board = boards.first(where: { $0.id == tasks[taskIndex].boardID && $0.isVisible }) else {
+            return false
+        }
+        guard !dueDateEnabled || dueDate != nil else { return false }
+
+        let resolvedColumnID: String?
+        switch board.kind {
+        case .week:
+            if dueDateEnabled, let dueDate {
+                resolvedColumnID = WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
+            } else {
+                resolvedColumnID = tasks[taskIndex].columnID
+            }
+        case .list:
+            guard let columnID, board.columns.contains(where: { $0.id == columnID }) else { return false }
+            resolvedColumnID = columnID
+        case .compound, .bible:
+            resolvedColumnID = columnID ?? tasks[taskIndex].columnID
+        }
+
+        if resolvedColumnID != tasks[taskIndex].columnID {
+            tasks[taskIndex].order = (
+                tasks
+                    .filter { $0.id != taskID && $0.boardID == board.id && $0.columnID == resolvedColumnID }
+                    .map(\.order)
+                    .max() ?? -1
+            ) + 1
+        }
+
+        let normalizedSubtasks = subtasks.compactMap { subtask -> TaskSubtask? in
+            let trimmed = subtask.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return TaskSubtask(
+                id: subtask.id.isEmpty ? UUID().uuidString : subtask.id,
+                title: trimmed,
+                completed: subtask.completed
+            )
+        }
+        let normalizedRecurrence = recurrence?.isActive == true ? recurrence : nil
+        let normalizedReminders = Self.normalizeReminders(reminders, dueTimeEnabled: dueTimeEnabled)
+
+        tasks[taskIndex].title = trimmedTitle
+        tasks[taskIndex].note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        tasks[taskIndex].dueDate = dueDateEnabled ? dueDate : nil
+        tasks[taskIndex].dueDateEnabled = dueDateEnabled
+        tasks[taskIndex].dueTimeEnabled = dueDateEnabled && dueTimeEnabled
+        tasks[taskIndex].dueTimeZone = dueDateEnabled && dueTimeEnabled ? dueTimeZone : nil
+        tasks[taskIndex].priority = priority
+        tasks[taskIndex].columnID = resolvedColumnID
+        tasks[taskIndex].subtasks = normalizedSubtasks.isEmpty ? nil : normalizedSubtasks
+        tasks[taskIndex].recurrence = dueDateEnabled ? normalizedRecurrence : nil
+        tasks[taskIndex].seriesID = tasks[taskIndex].recurrence == nil
+            ? nil
+            : (tasks[taskIndex].seriesID ?? tasks[taskIndex].id)
+        tasks[taskIndex].reminders = dueDateEnabled && !normalizedReminders.isEmpty ? normalizedReminders : nil
+        tasks[taskIndex].reminderTime = dueDateEnabled && !dueTimeEnabled
+            ? Self.normalizeReminderTime(reminderTime)
+            : nil
+        tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
+        return true
+    }
+
+    @discardableResult
+    public mutating func replaceTaskAttachments(
+        taskID: String,
+        images: [String],
+        documents: [TaskDocument],
+        editorPublicKey: String? = nil
+    ) -> Bool {
+        guard let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }) else {
+            return false
+        }
+        let normalizedImages = images.filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        tasks[taskIndex].images = normalizedImages.isEmpty ? nil : normalizedImages
+        tasks[taskIndex].documents = documents.isEmpty ? nil : documents
+        tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
+        return true
+    }
+
+    @discardableResult
     public mutating func toggleCompletion(
         taskID: String,
         editorPublicKey: String? = nil,
@@ -133,7 +275,141 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         tasks[index].completed.toggle()
         tasks[index].completedAt = tasks[index].completed ? now : nil
         tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
+        if tasks[index].completed {
+            appendNextRecurrence(afterCompletingAt: index, now: now)
+        }
         return true
+    }
+
+    private mutating func appendNextRecurrence(afterCompletingAt index: Int, now: Date) {
+        let completedTask = tasks[index]
+        guard let recurrence = completedTask.recurrence,
+              let dueDate = completedTask.dueDate,
+              let nextDueDate = recurrence.nextOccurrence(
+                  after: dueDate,
+                  dueTimeEnabled: completedTask.dueTimeEnabled,
+                  timeZoneIdentifier: completedTask.dueTimeZone
+              ) else { return }
+
+        let seriesID = completedTask.seriesID ?? completedTask.id
+        tasks[index].seriesID = seriesID
+        let nextID = Self.recurringInstanceID(
+            seriesID: seriesID,
+            dueDate: nextDueDate,
+            recurrence: recurrence,
+            timeZoneIdentifier: completedTask.dueTimeZone
+        )
+        guard !tasks.contains(where: { $0.id == nextID && !$0.isDeleted }) else { return }
+
+        let nextColumnID: String?
+        if let board = boards.first(where: { $0.id == completedTask.boardID }), board.kind == .week {
+            nextColumnID = WeekdayColumn.containing(nextDueDate).rawValue
+        } else {
+            nextColumnID = completedTask.columnID
+        }
+        let nextOrder = (
+            tasks
+                .filter { $0.boardID == completedTask.boardID && $0.columnID == nextColumnID && !$0.isDeleted }
+                .map(\.order)
+                .max() ?? -1
+        ) + 1
+        let resetSubtasks = completedTask.subtasks?.map {
+            TaskSubtask(id: $0.id, title: $0.title, completed: false)
+        }
+        tasks.append(TaskItem(
+            id: nextID,
+            boardID: completedTask.boardID,
+            title: completedTask.title,
+            note: completedTask.note,
+            dueDate: nextDueDate,
+            dueDateEnabled: true,
+            dueTimeEnabled: completedTask.dueTimeEnabled,
+            dueTimeZone: completedTask.dueTimeZone,
+            priority: completedTask.priority,
+            images: completedTask.images,
+            documents: completedTask.documents,
+            subtasks: resetSubtasks,
+            recurrence: recurrence,
+            seriesID: seriesID,
+            reminders: completedTask.reminders,
+            reminderTime: completedTask.reminderTime,
+            hiddenUntilDate: Self.hiddenUntilForNext(
+                nextDueDate,
+                recurrence: recurrence,
+                timeZoneIdentifier: completedTask.dueTimeZone
+            ),
+            createdAt: now,
+            order: nextOrder,
+            columnID: nextColumnID,
+            createdBy: completedTask.createdBy,
+            lastEditedBy: editorPublicKeyOrFallback(completedTask)
+        ))
+    }
+
+    private func editorPublicKeyOrFallback(_ task: TaskItem) -> String? {
+        task.lastEditedBy ?? task.createdBy
+    }
+
+    private static func recurringInstanceID(
+        seriesID: String,
+        dueDate: Date,
+        recurrence: TaskRecurrence,
+        timeZoneIdentifier: String?
+    ) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? .current
+        let components = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        let date = String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+        if case .every(_, .hour, _) = recurrence {
+            var utc = Calendar(identifier: .gregorian)
+            utc.timeZone = TimeZone(secondsFromGMT: 0)!
+            let time = utc.dateComponents([.hour, .minute], from: dueDate)
+            return String(
+                format: "recurrence:%@:%@T%02d:%02d",
+                seriesID,
+                date,
+                time.hour ?? 0,
+                time.minute ?? 0
+            )
+        }
+        return "recurrence:\(seriesID):\(date)"
+    }
+
+    private static func hiddenUntilForNext(
+        _ dueDate: Date,
+        recurrence: TaskRecurrence,
+        timeZoneIdentifier: String?
+    ) -> Date {
+        var calendar = Calendar.current
+        calendar.timeZone = timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? calendar.timeZone
+        if recurrence.revealsOnDueDate {
+            return calendar.startOfDay(for: dueDate)
+        }
+        return calendar.dateInterval(of: .weekOfYear, for: dueDate)?.start
+            ?? calendar.startOfDay(for: dueDate)
+    }
+
+    private static func normalizeReminders(
+        _ reminders: [TaskReminder],
+        dueTimeEnabled: Bool
+    ) -> [TaskReminder] {
+        var seenMinutes = Set<Int>()
+        return reminders.compactMap { reminder in
+            guard let minutes = reminder.minutesBefore, seenMinutes.insert(minutes).inserted else { return nil }
+            return TaskReminder(minutesBefore: minutes, dateOnly: !dueTimeEnabled)
+        }.sorted { ($0.minutesBefore ?? 0) < ($1.minutesBefore ?? 0) }
+    }
+
+    private static func normalizeReminderTime(_ value: String?) -> String {
+        let parts = (value ?? "09:00").split(separator: ":")
+        let hour = parts.first.flatMap { Int($0) }.map { min(max($0, 0), 23) } ?? 9
+        let minute = parts.dropFirst().first.flatMap { Int($0) }.map { min(max($0, 0), 59) } ?? 0
+        return String(format: "%02d:%02d", hour, minute)
     }
 
     @discardableResult
@@ -160,16 +436,33 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return true
     }
 
+    @discardableResult
+    public mutating func mergeRemoteBoard(_ remoteBoard: Board, eventCreatedAt: Int) -> Bool {
+        guard let index = boards.firstIndex(where: { $0.id == remoteBoard.id }) else { return false }
+        let localClock = boards[index].nostrUpdatedAt ?? 0
+        guard eventCreatedAt > localClock else { return false }
+
+        var merged = remoteBoard
+        merged.nostrBoardID = boards[index].nostrBoardID
+        merged.relayURLs = boards[index].relayURLs
+        merged.nostrUpdatedAt = eventCreatedAt
+        boards[index] = merged
+        repairSelection()
+        return true
+    }
+
     public func tasks(
         boardID: String,
         columnID: String,
-        includeCompleted: Bool
+        includeCompleted: Bool,
+        now: Date = Date()
     ) -> [TaskItem] {
         tasks
             .filter {
                 $0.boardID == boardID &&
                 $0.columnID == columnID &&
                 !$0.isDeleted &&
+                ($0.hiddenUntilDate == nil || $0.hiddenUntilDate! <= now) &&
                 (includeCompleted || !$0.completed)
             }
             .sorted {

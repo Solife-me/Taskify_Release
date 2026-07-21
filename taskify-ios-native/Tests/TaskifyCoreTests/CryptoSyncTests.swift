@@ -71,6 +71,24 @@ final class CryptoSyncTests: XCTestCase {
             dueDate: Date(timeIntervalSince1970: 1_753_056_000),
             dueDateEnabled: true,
             priority: .high,
+            images: ["https://originless.example/image"],
+            documents: [TaskDocument(
+                id: "document-1",
+                name: "plan.pdf",
+                mimeType: "application/pdf",
+                kind: "pdf",
+                size: 2_048,
+                remoteURL: "https://originless.example/document",
+                encrypted: true,
+                encryptionBoardID: board.effectiveNostrBoardID
+            )],
+            subtasks: [
+                TaskSubtask(id: "subtask-1", title: "Verify on PWA", completed: true),
+            ],
+            recurrence: .weekly(days: [1, 3, 5]),
+            seriesID: "series-1",
+            reminders: [TaskReminder(rawValue: "15m"), TaskReminder(rawValue: "1d")],
+            reminderTime: "09:00",
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             columnID: WeekdayColumn.sunday.rawValue,
             createdBy: "author",
@@ -86,11 +104,18 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(decoded.task.title, task.title)
         XCTAssertEqual(decoded.task.note, task.note)
         XCTAssertEqual(decoded.task.priority, .high)
+        XCTAssertEqual(decoded.task.images, task.images)
+        XCTAssertEqual(decoded.task.documents, task.documents)
+        XCTAssertEqual(decoded.task.subtasks, task.subtasks)
+        XCTAssertEqual(decoded.task.recurrence, task.recurrence)
+        XCTAssertEqual(decoded.task.seriesID, "series-1")
+        XCTAssertEqual(decoded.task.reminders, task.reminders)
+        XCTAssertEqual(decoded.task.reminderTime, "09:00")
         XCTAssertEqual(decoded.task.createdBy, "author")
         XCTAssertEqual(decoded.eventCreatedAt, 1_700_000_123)
     }
 
-    func testTaskDecoderIgnoresPWAFieldsNotYetShownNatively() throws {
+    func testTaskDecoderPreservesPWAImagesAndDocuments() throws {
         let board = Board(
             id: "local-board",
             name: "Shared Week",
@@ -99,10 +124,21 @@ final class CryptoSyncTests: XCTestCase {
             nostrBoardID: "test-board-id"
         )
         let payload: [String: Any] = [
-            "title": "Recurring PWA task",
+            "title": "PWA task with media",
             "dueISO": "2026-07-20T00:00:00.000Z",
             "recurrence": ["type": "weekly", "interval": 1],
-            "images": ["https://example.invalid/encrypted-image"],
+            "images": ["https://originless.example/encrypted-image"],
+            "documents": [[
+                "id": "document-1",
+                "name": "plan.pdf",
+                "mimeType": "application/pdf",
+                "kind": "pdf",
+                "size": 1_024,
+                "createdAt": "2026-07-20T12:00:00.000Z",
+                "remoteUrl": "https://originless.example/encrypted-document",
+                "encrypted": true,
+                "encryptionBoardId": "test-board-id",
+            ]],
         ]
         let content = try BoardCrypto.encrypt(
             JSONSerialization.data(withJSONObject: payload),
@@ -122,7 +158,187 @@ final class CryptoSyncTests: XCTestCase {
         )
 
         let decoded = try TaskEventCodec.decodeTaskEvent(event, board: board)
-        XCTAssertEqual(decoded.task.title, "Recurring PWA task")
+        XCTAssertEqual(decoded.task.title, "PWA task with media")
+        XCTAssertNil(decoded.task.recurrence)
+        XCTAssertEqual(decoded.task.images, ["https://originless.example/encrypted-image"])
+        XCTAssertEqual(decoded.task.documents?.first?.id, "document-1")
+        XCTAssertEqual(decoded.task.documents?.first?.name, "plan.pdf")
+        XCTAssertEqual(decoded.task.documents?.first?.remoteURL, "https://originless.example/encrypted-document")
+        XCTAssertTrue(decoded.task.documents?.first?.encrypted == true)
+        XCTAssertEqual(decoded.task.documents?.first?.encryptionBoardID, "test-board-id")
+    }
+
+    func testPWAAttachmentV2FixtureDecrypts() throws {
+        let encrypted = try Data(hex: "54464132000102030405060708090a0b8f27e5451df691df487a7a3ab66c5ba3bdb75d2954065d3bec71f93fac8ff6b251b992fa")
+
+        let plaintext = try TaskAttachmentCrypto.decrypt(
+            encrypted,
+            boardID: "test-board-id"
+        )
+
+        XCTAssertEqual(String(data: plaintext, encoding: .utf8), "PWA attachment bytes")
+    }
+
+    func testNativeAttachmentEncryptionUsesPWAEnvelope() throws {
+        let plaintext = Data("native attachment upload".utf8)
+
+        let encrypted = try TaskAttachmentCrypto.encrypt(
+            plaintext,
+            boardID: "test-board-id"
+        )
+
+        XCTAssertEqual(encrypted.prefix(4), Data("TFA2".utf8))
+        XCTAssertNotEqual(encrypted, plaintext)
+        XCTAssertEqual(
+            try TaskAttachmentCrypto.decrypt(encrypted, boardID: "test-board-id"),
+            plaintext
+        )
+    }
+
+    func testRemoteDocumentFactoryMatchesPWAContract() throws {
+        let document = try XCTUnwrap(TaskDocumentContract.remoteDocument(
+            name: "release-notes.md",
+            mimeType: "text/markdown",
+            size: 4_096,
+            remoteURL: "https://originless.example/ipfs/cid",
+            boardID: "test-board-id",
+            createdAt: "2026-07-21T00:00:00.000Z"
+        ))
+
+        XCTAssertEqual(document.kind, "md")
+        XCTAssertEqual(document.mimeType, "text/markdown")
+        XCTAssertEqual(document.remoteURL, "https://originless.example/ipfs/cid")
+        XCTAssertTrue(document.encrypted == true)
+        XCTAssertEqual(document.encryptionBoardID, "test-board-id")
+        XCTAssertNil(document.dataURL)
+        XCTAssertNil(document.preview)
+        XCTAssertNil(document.full)
+        XCTAssertNil(TaskDocumentContract.inferKind(name: "archive.zip", mimeType: "application/zip"))
+    }
+
+    func testLegacyPWAAttachmentFixtureStillDecrypts() throws {
+        let encrypted = try Data(hex: "000102030405060708090a0bed754622fa5b5a23bea3761aadaa252771c1212c6f54b142cdac4063fcc93c71a2")
+
+        let plaintext = try TaskAttachmentCrypto.decrypt(
+            encrypted,
+            boardID: "test-board-id"
+        )
+
+        XCTAssertEqual(String(data: plaintext, encoding: .utf8), "legacy attachment")
+    }
+
+    func testTaskContentFindsFirstPWAStyleHTTPLink() {
+        XCTAssertEqual(
+            TaskContentLinks.firstURL(
+                title: "Research",
+                note: "Compare https://example.com/articles/native-ios) before Friday"
+            )?.absoluteString,
+            "https://example.com/articles/native-ios"
+        )
+    }
+
+    func testTaskContentRemovesPreviewedURLsWithoutDamagingNotes() {
+        XCTAssertEqual(
+            TaskContentLinks.removingURLs(
+                from: "Review https://example.com/articles/native-ios and share the useful parts."
+            ),
+            "Review and share the useful parts."
+        )
+        XCTAssertEqual(
+            TaskContentLinks.removingURLs(from: "https://example.com/only"),
+            ""
+        )
+    }
+
+    func testURLOnlyTaskGetsReadableFallbackTitle() throws {
+        let url = try XCTUnwrap(URL(string: "https://www.example.com/articles/native-ios/"))
+
+        XCTAssertTrue(TaskContentLinks.isURLOnly("  https://www.example.com/articles/native-ios/  "))
+        XCTAssertEqual(TaskContentLinks.fallbackTitle(for: url), "example.com / articles / native-ios")
+        XCTAssertFalse(TaskContentLinks.isURLOnly("Read https://example.com"))
+    }
+
+    func testRecurrenceEncodesUsingPWAContract() throws {
+        let rule = TaskRecurrence.every(2, .week)
+        let data = try JSONEncoder().encode(rule)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(object["type"] as? String, "every")
+        XCTAssertEqual(object["n"] as? Int, 2)
+        XCTAssertEqual(object["unit"] as? String, "week")
+        XCTAssertNil(object["untilISO"])
+    }
+
+    func testPWAListBoardMetadataConvertsJoinedBoard() throws {
+        let joinedBoard = Board(
+            id: "local-board",
+            name: "Shared Board",
+            kind: .week,
+            columns: Board.week().columns,
+            nostrBoardID: "test-board-id"
+        )
+        let payload: [String: Any] = [
+            "columns": [
+                ["id": "backlog", "name": "Backlog"],
+                ["id": "doing", "name": "Doing"],
+            ],
+            "clearCompletedDisabled": true,
+            "listIndex": false,
+        ]
+        let content = try BoardCrypto.encrypt(
+            JSONSerialization.data(withJSONObject: payload),
+            boardID: joinedBoard.effectiveNostrBoardID
+        )
+        let event = try NostrEvent.signed(
+            privateKey: BoardCrypto.signingPrivateKey(for: joinedBoard.effectiveNostrBoardID),
+            createdAt: 1_700_000_789,
+            kind: TaskEventCodec.boardEventKind,
+            tags: [
+                ["d", BoardCrypto.boardTag(for: joinedBoard.effectiveNostrBoardID)],
+                ["b", BoardCrypto.boardTag(for: joinedBoard.effectiveNostrBoardID)],
+                ["k", "lists"],
+                ["name", "PWA Projects"],
+            ],
+            content: content
+        )
+
+        let record = try TaskEventCodec.decodeBoardEvent(event, board: joinedBoard)
+
+        XCTAssertEqual(record.board.kind, .list)
+        XCTAssertEqual(record.board.name, "PWA Projects")
+        XCTAssertEqual(record.board.columns.map(\.name), ["Backlog", "Doing"])
+        XCTAssertEqual(record.board.columns.map(\.order), [0, 1])
+        XCTAssertTrue(record.board.clearCompletedDisabled)
+        XCTAssertFalse(record.board.indexCardEnabled)
+    }
+
+    func testListColumnTagSurvivesBeforeBoardMetadataArrives() throws {
+        let joinedBoard = Board(
+            id: "local-board",
+            name: "Pending metadata",
+            kind: .week,
+            columns: Board.week().columns,
+            nostrBoardID: "test-board-id"
+        )
+        let content = try BoardCrypto.encrypt(
+            JSONSerialization.data(withJSONObject: ["title": "List task"]),
+            boardID: joinedBoard.effectiveNostrBoardID
+        )
+        let event = try NostrEvent.signed(
+            privateKey: BoardCrypto.signingPrivateKey(for: joinedBoard.effectiveNostrBoardID),
+            createdAt: 1_700_000_790,
+            kind: TaskEventCodec.taskEventKind,
+            tags: [
+                ["d", "list-task"],
+                ["b", BoardCrypto.boardTag(for: joinedBoard.effectiveNostrBoardID)],
+                ["col", "doing"],
+                ["status", "open"],
+            ],
+            content: content
+        )
+
+        let record = try TaskEventCodec.decodeTaskEvent(event, board: joinedBoard)
+        XCTAssertEqual(record.task.columnID, "doing")
     }
 
     func testNewerRemoteTombstoneWinsAndOlderEventIsIgnored() throws {
@@ -197,6 +413,56 @@ final class CryptoSyncTests: XCTestCase {
 
         XCTAssertEqual(batch.drain().map(\.task.title), ["Newest"])
         XCTAssertTrue(batch.drain().isEmpty)
+    }
+
+    func testSyncReportStaysOnlineWhenOneRelayIsUnavailable() {
+        let report = TaskSyncReport(
+            relays: [
+                TaskRelayStatus(relayURL: "wss://healthy.example", phase: .online),
+                TaskRelayStatus(
+                    relayURL: "wss://offline.example",
+                    phase: .offline,
+                    message: "Connection refused"
+                ),
+            ],
+            queuedChangeCount: 0
+        )
+
+        XCTAssertEqual(report.state, .online)
+        XCTAssertEqual(report.relays.map(\.relayURL), [
+            "wss://healthy.example",
+            "wss://offline.example",
+        ])
+    }
+
+    func testSyncReportOnlyReportsOfflineWhenNoRelayIsUsable() {
+        let report = TaskSyncReport(
+            relays: [
+                TaskRelayStatus(
+                    relayURL: "wss://offline.example",
+                    phase: .offline,
+                    message: "Connection refused"
+                ),
+            ],
+            queuedChangeCount: 2
+        )
+
+        XCTAssertEqual(report.state, .offline("Connection refused"))
+        XCTAssertEqual(report.queuedChangeCount, 2)
+    }
+
+    func testRelayWireEncodesNostrMessagesAsJSONText() throws {
+        let text = try NostrRelayWire.encode([
+            "REQ",
+            "taskify-test",
+            ["kinds": [30_300, 30_301], "#b": ["board-tag"]] as [String: Any],
+        ])
+        let decoded = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(text.utf8)) as? [Any]
+        )
+
+        XCTAssertEqual(decoded.first as? String, "REQ")
+        XCTAssertEqual(decoded[1] as? String, "taskify-test")
     }
 
     func testIdentityImportsHexAndNsec() throws {

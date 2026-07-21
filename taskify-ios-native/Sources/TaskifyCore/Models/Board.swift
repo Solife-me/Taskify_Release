@@ -25,6 +25,19 @@ public struct BoardColumn: Identifiable, Codable, Hashable, Sendable {
         self.name = name
         self.order = order
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case order
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        order = try container.decodeIfPresent(Int.self, forKey: .order) ?? -1
+    }
 }
 
 public struct Board: Identifiable, Codable, Hashable, Sendable {
@@ -39,6 +52,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
     public var createdAt: Date
     public var nostrBoardID: String?
     public var relayURLs: [String]?
+    public var nostrUpdatedAt: Int?
 
     public init(
         id: String = UUID().uuidString,
@@ -51,7 +65,8 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         clearCompletedDisabled: Bool = false,
         createdAt: Date = Date(),
         nostrBoardID: String? = UUID().uuidString,
-        relayURLs: [String]? = TaskifyRelayDefaults.urls
+        relayURLs: [String]? = TaskifyRelayDefaults.urls,
+        nostrUpdatedAt: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -64,6 +79,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         self.createdAt = createdAt
         self.nostrBoardID = nostrBoardID
         self.relayURLs = relayURLs
+        self.nostrUpdatedAt = nostrUpdatedAt
     }
 
     public var isVisible: Bool {
