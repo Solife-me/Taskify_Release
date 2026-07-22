@@ -5604,7 +5604,9 @@ export default function CashuWalletModal({
                             {msg.attachment?.type === "text" && (
                               <>
                                 {msg.replyToEventId && (() => {
-                                  const replied = dmMessages.find((m) => m.eventId === msg.replyToEventId);
+                                  const replied = dmMessages.find(
+                                    (m) => m.eventId === msg.replyToEventId || m.rumorEventId === msg.replyToEventId,
+                                  );
                                   if (!replied) return null;
                                   return (
                                     <div className="chat-reply-quote">
@@ -6863,7 +6865,11 @@ export default function CashuWalletModal({
                               )}
                               {msg.attachment?.type === "text" && (() => {
                                 const msgUrls = extractUrlsFromText(msg.content);
-                                const repliedMsg = msg.replyToEventId ? dmMessages.find((m) => m.eventId === msg.replyToEventId) : null;
+                                const repliedMsg = msg.replyToEventId
+                                  ? dmMessages.find(
+                                      (m) => m.eventId === msg.replyToEventId || m.rumorEventId === msg.replyToEventId,
+                                    )
+                                  : null;
                                 return (
                                   <div className="chat-bubble__card chat-bubble__card--text">
                                     {repliedMsg && (
@@ -7166,7 +7172,7 @@ export default function CashuWalletModal({
                               const extraTags: string[][] = [];
                               if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
                               if (capturedReply) {
-                                extraTags.push(["e", capturedReply.eventId]);
+                                extraTags.push(["e", capturedReply.rumorEventId || capturedReply.eventId]);
                               }
                               const { selfWrapEvent } = await publishNip17Giftwraps({
                                 content: text,
@@ -7234,7 +7240,7 @@ export default function CashuWalletModal({
                             const extraTags: string[][] = [];
                             if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
                             if (capturedReply) {
-                              extraTags.push(["e", capturedReply.eventId]);
+                              extraTags.push(["e", capturedReply.rumorEventId || capturedReply.eventId]);
                             }
                             const { selfWrapEvent } = await publishNip17Giftwraps({
                               content: text,

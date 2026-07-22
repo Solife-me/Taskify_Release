@@ -11,19 +11,22 @@ public struct TaskMoveResult: Equatable, Sendable {
     public let sourceColumnID: String?
     public let targetBoardID: String
     public let targetColumnID: String
+    public let updatedTaskIDs: [String]
 
     public init(
         taskID: String,
         sourceBoardID: String,
         sourceColumnID: String?,
         targetBoardID: String,
-        targetColumnID: String
+        targetColumnID: String,
+        updatedTaskIDs: [String]
     ) {
         self.taskID = taskID
         self.sourceBoardID = sourceBoardID
         self.sourceColumnID = sourceColumnID
         self.targetBoardID = targetBoardID
         self.targetColumnID = targetColumnID
+        self.updatedTaskIDs = updatedTaskIDs
     }
 
     public var crossedBoards: Bool { sourceBoardID != targetBoardID }
@@ -41,24 +44,94 @@ public struct ListColumnRemovalResult: Equatable, Sendable {
     }
 }
 
+public struct BoardDeletionResult: Equatable, Sendable {
+    public let deletedBoardID: String
+    public let deletedTaskIDs: [String]
+    public let deletedEventIDs: [String]
+    public let updatedCompoundBoardIDs: [String]
+
+    public init(
+        deletedBoardID: String,
+        deletedTaskIDs: [String],
+        deletedEventIDs: [String] = [],
+        updatedCompoundBoardIDs: [String]
+    ) {
+        self.deletedBoardID = deletedBoardID
+        self.deletedTaskIDs = deletedTaskIDs
+        self.deletedEventIDs = deletedEventIDs
+        self.updatedCompoundBoardIDs = updatedCompoundBoardIDs
+    }
+}
+
 public struct TaskifySnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 5
+    public static let currentSchemaVersion = 14
 
     public var schemaVersion: Int
     public var boards: [Board]
     public var tasks: [TaskItem]
     public var selectedBoardID: String
+    public var sharedInboxItems: [SharedInboxItem]?
+    public var sharedContactInboxItems: [SharedContactInboxItem]?
+    public var sharedCalendarInviteItems: [SharedCalendarInviteInboxItem]?
+    public var taskifyEvents: [TaskifyEvent]?
+    public var sharedTaskRecipients: [SharedTaskRecipient]?
+    public var contacts: [NostrContact]?
+    public var contactsListUpdatedAt: Int?
+    public var contactsListExtraTags: [[String]]?
+    public var directMessages: [NostrDirectMessage]?
+    public var directMessageReadAt: [String: Int]?
+    public var directMessageReactions: [NostrDirectMessageReaction]?
+    public var nostrGroupConversations: [NostrGroupConversation]?
+    public var directMessageArchivedAt: [String: Int]?
+    public var directMessageDeletedEventIDs: [String: Int]?
+    public var directMessageBlockedPeers: [String]?
+    public var directMessageMutedGroups: [String: Int]?
+    public var directMessageLeftGroups: [String]?
 
     public init(
         schemaVersion: Int = TaskifySnapshot.currentSchemaVersion,
         boards: [Board],
         tasks: [TaskItem],
-        selectedBoardID: String
+        selectedBoardID: String,
+        sharedInboxItems: [SharedInboxItem]? = nil,
+        sharedContactInboxItems: [SharedContactInboxItem]? = nil,
+        sharedCalendarInviteItems: [SharedCalendarInviteInboxItem]? = nil,
+        taskifyEvents: [TaskifyEvent]? = nil,
+        sharedTaskRecipients: [SharedTaskRecipient]? = nil,
+        contacts: [NostrContact]? = nil,
+        contactsListUpdatedAt: Int? = nil,
+        contactsListExtraTags: [[String]]? = nil,
+        directMessages: [NostrDirectMessage]? = nil,
+        directMessageReadAt: [String: Int]? = nil,
+        directMessageReactions: [NostrDirectMessageReaction]? = nil,
+        nostrGroupConversations: [NostrGroupConversation]? = nil,
+        directMessageArchivedAt: [String: Int]? = nil,
+        directMessageDeletedEventIDs: [String: Int]? = nil,
+        directMessageBlockedPeers: [String]? = nil,
+        directMessageMutedGroups: [String: Int]? = nil,
+        directMessageLeftGroups: [String]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.boards = boards
         self.tasks = tasks
         self.selectedBoardID = selectedBoardID
+        self.sharedInboxItems = sharedInboxItems
+        self.sharedContactInboxItems = sharedContactInboxItems
+        self.sharedCalendarInviteItems = sharedCalendarInviteItems
+        self.taskifyEvents = taskifyEvents
+        self.sharedTaskRecipients = sharedTaskRecipients
+        self.contacts = contacts
+        self.contactsListUpdatedAt = contactsListUpdatedAt
+        self.contactsListExtraTags = contactsListExtraTags
+        self.directMessages = directMessages
+        self.directMessageReadAt = directMessageReadAt
+        self.directMessageReactions = directMessageReactions
+        self.nostrGroupConversations = nostrGroupConversations
+        self.directMessageArchivedAt = directMessageArchivedAt
+        self.directMessageDeletedEventIDs = directMessageDeletedEventIDs
+        self.directMessageBlockedPeers = directMessageBlockedPeers
+        self.directMessageMutedGroups = directMessageMutedGroups
+        self.directMessageLeftGroups = directMessageLeftGroups
         repairSelection()
     }
 
@@ -152,6 +225,87 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         boards.append(board)
         selectedBoardID = board.id
         return board
+    }
+
+    @discardableResult
+    public mutating func renameBoard(boardID: String, name: String) -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty,
+              let index = boards.firstIndex(where: {
+                  $0.id == boardID && !$0.hidden && $0.kind != .bible
+              }) else { return false }
+        guard boards[index].name != trimmedName else { return true }
+        boards[index].name = trimmedName
+        return true
+    }
+
+    @discardableResult
+    public mutating func updateBoardRelayURLs(
+        boardID: String,
+        relayURLs: [String]
+    ) -> Bool {
+        let normalized = TaskifyRelayURL.normalizedList(relayURLs)
+        guard !normalized.isEmpty,
+              let index = boards.firstIndex(where: {
+                  $0.id == boardID && !$0.hidden && $0.kind != .bible
+              }) else { return false }
+        boards[index].relayURLs = normalized
+        return true
+    }
+
+    @discardableResult
+    public mutating func archiveBoard(boardID: String) -> Bool {
+        guard let index = boards.firstIndex(where: {
+            $0.id == boardID && $0.isVisible && $0.kind != .bible
+        }), visibleBoards.contains(where: { $0.id != boardID }) else { return false }
+
+        boards[index].archived = true
+        repairSelection()
+        return true
+    }
+
+    @discardableResult
+    public mutating func unarchiveBoard(boardID: String) -> Bool {
+        guard let index = boards.firstIndex(where: {
+            $0.id == boardID && $0.archived && !$0.hidden && $0.kind != .bible
+        }) else { return false }
+        boards[index].archived = false
+        repairSelection()
+        return true
+    }
+
+    @discardableResult
+    public mutating func deleteBoard(boardID: String) -> BoardDeletionResult? {
+        guard let boardIndex = boards.firstIndex(where: {
+            $0.id == boardID && !$0.hidden && $0.kind != .bible
+        }) else { return nil }
+
+        let deletedBoard = boards.remove(at: boardIndex)
+        let deletedTaskIDs = tasks
+            .filter { $0.boardID == deletedBoard.id }
+            .map(\.id)
+        tasks.removeAll { $0.boardID == deletedBoard.id }
+        let deletedEventIDs = (taskifyEvents ?? [])
+            .filter { $0.boardID == deletedBoard.id }
+            .map(\.id)
+        taskifyEvents?.removeAll { $0.boardID == deletedBoard.id }
+
+        var updatedCompoundBoardIDs: [String] = []
+        for index in boards.indices where boards[index].kind == .compound {
+            let originalCount = boards[index].children.count
+            boards[index].children.removeAll { deletedBoard.matchesReference($0) }
+            if boards[index].children.count != originalCount {
+                updatedCompoundBoardIDs.append(boards[index].id)
+            }
+        }
+
+        repairSelection()
+        return BoardDeletionResult(
+            deletedBoardID: deletedBoard.id,
+            deletedTaskIDs: deletedTaskIDs,
+            deletedEventIDs: deletedEventIDs,
+            updatedCompoundBoardIDs: updatedCompoundBoardIDs
+        )
     }
 
     public func compoundChildBoards(for boardID: String) -> [Board] {
@@ -507,16 +661,30 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         toBoardID targetBoardID: String,
         columnID targetColumnID: String,
         beforeTaskID: String? = nil,
-        editorPublicKey: String? = nil
+        editorPublicKey: String? = nil,
+        calendar: Calendar = .current
     ) -> TaskMoveResult? {
         guard let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
-              let targetBoard = boards.first(where: { $0.id == targetBoardID && $0.kind == .list }),
-              targetBoard.isVisible || isLinkedCompoundChild(targetBoard),
-              targetBoard.columns.contains(where: { $0.id == targetColumnID }) else {
+              let targetBoard = boards.first(where: { $0.id == targetBoardID }),
+              targetBoard.isVisible || isLinkedCompoundChild(targetBoard) else {
+            return nil
+        }
+
+        let targetWeekday: WeekdayColumn?
+        switch targetBoard.kind {
+        case .week:
+            targetWeekday = WeekdayColumn(rawValue: targetColumnID)
+            guard targetWeekday != nil, tasks[taskIndex].boardID == targetBoardID else { return nil }
+        case .list:
+            targetWeekday = nil
+            guard targetBoard.columns.contains(where: { $0.id == targetColumnID }) else { return nil }
+        case .compound, .bible:
             return nil
         }
 
         if let beforeTaskID, beforeTaskID == taskID { return nil }
+
+        let originalTasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
 
         let sourceBoardID = tasks[taskIndex].boardID
         let sourceColumnID = tasks[taskIndex].columnID
@@ -526,6 +694,32 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         var movedTask = tasks.remove(at: taskIndex)
         movedTask.boardID = targetBoardID
         movedTask.columnID = targetColumnID
+        if let targetWeekday {
+            var taskCalendar = calendar
+            if movedTask.dueTimeEnabled,
+               let timeZoneID = movedTask.dueTimeZone,
+               let timeZone = TimeZone(identifier: timeZoneID) {
+                taskCalendar.timeZone = timeZone
+            }
+            let originalDueDate = movedTask.dueDate
+            let targetDate = WeekDateResolver.date(
+                for: targetWeekday,
+                inWeekContaining: originalDueDate ?? Date(),
+                calendar: taskCalendar
+            )
+            if movedTask.dueTimeEnabled, let originalDueDate {
+                let time = taskCalendar.dateComponents([.hour, .minute, .second], from: originalDueDate)
+                movedTask.dueDate = taskCalendar.date(
+                    bySettingHour: time.hour ?? 0,
+                    minute: time.minute ?? 0,
+                    second: time.second ?? 0,
+                    of: targetDate
+                ) ?? targetDate
+            } else {
+                movedTask.dueDate = targetDate
+            }
+            movedTask.dueDateEnabled = true
+        }
         movedTask.hiddenUntilDate = nil
         movedTask.completed = false
         movedTask.completedAt = nil
@@ -549,13 +743,17 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             normalized.order = order
             return normalized
         })
+        let updatedTaskIDs = tasks.compactMap { task in
+            originalTasksByID[task.id] == task ? nil : task.id
+        }
 
         return TaskMoveResult(
             taskID: taskID,
             sourceBoardID: sourceBoardID,
             sourceColumnID: sourceColumnID,
             targetBoardID: targetBoardID,
-            targetColumnID: targetColumnID
+            targetColumnID: targetColumnID,
+            updatedTaskIDs: updatedTaskIDs
         )
     }
 
@@ -738,7 +936,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         if let index = tasks.firstIndex(where: { $0.id == remoteTask.id }) {
             let localClock = tasks[index].nostrUpdatedAt ?? 0
             guard eventCreatedAt > localClock else { return false }
-            tasks[index] = remoteTask
+            var merged = remoteTask
+            var preservedFields = tasks[index].preservedSyncFields ?? [:]
+            for (name, value) in remoteTask.preservedSyncFields ?? [:] {
+                preservedFields[name] = value
+            }
+            merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
+            tasks[index] = merged
             tasks[index].nostrUpdatedAt = eventCreatedAt
             return true
         }
@@ -758,6 +962,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         var merged = remoteBoard
         merged.nostrBoardID = boards[index].nostrBoardID
         merged.relayURLs = boards[index].relayURLs
+        merged.archived = boards[index].archived
+        merged.hidden = boards[index].hidden
         merged.nostrUpdatedAt = eventCreatedAt
         boards[index] = merged
         repairSelection()
@@ -804,9 +1010,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             if boards[index].nostrBoardID?.isEmpty != false {
                 boards[index].nostrBoardID = UUID().uuidString
             }
-            if boards[index].relayURLs?.isEmpty != false {
-                boards[index].relayURLs = TaskifyRelayDefaults.urls
-            }
+            let normalizedRelays = TaskifyRelayURL.normalizedList(boards[index].relayURLs ?? [])
+            boards[index].relayURLs = normalizedRelays.isEmpty
+                ? TaskifyRelayDefaults.urls
+                : normalizedRelays
         }
         for index in boards.indices where boards[index].kind == .compound {
             let compound = boards[index]

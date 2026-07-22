@@ -23,6 +23,13 @@ private enum TaskDropTargetStyle: Equatable {
     case column
 }
 
+private struct BoardQuickAddDestination: Equatable {
+    let boardID: String
+    let columnID: String
+    let displayName: String
+    let weekday: WeekdayColumn?
+}
+
 private struct TaskDropTargetModifier: ViewModifier {
     @EnvironmentObject private var model: AppModel
     let boardID: String
@@ -90,7 +97,7 @@ private struct TaskDragSourceModifier: ViewModifier {
                                 .stroke(TaskifyTheme.border, lineWidth: 1)
                         )
                 }
-                .accessibilityHint("Touch and hold, then drag to another list")
+                .accessibilityHint("Touch and hold, then drag to another list or day")
         } else {
             content
         }
@@ -118,7 +125,11 @@ struct BoardsView: View {
     @State private var showCompleted = false
     @State private var showingAddList = false
     @State private var showingBoardShare = false
+    @State private var showingSharedInbox = false
     @State private var newListName = ""
+    @State private var quickTaskDraft = ""
+    @State private var focusedPageID: String?
+    @FocusState private var quickTaskFieldIsFocused: Bool
 
     var body: some View {
         VStack(spacing: 10) {
@@ -127,6 +138,20 @@ struct BoardsView: View {
                 .padding(.top, 6)
 
             boardContent
+        }
+        .overlay(alignment: .bottom) {
+            if let quickAddDestination {
+                FloatingQuickAddBar(
+                    draft: $quickTaskDraft,
+                    isFocused: $quickTaskFieldIsFocused,
+                    destinationName: quickAddDestination.displayName,
+                    onSubmit: { addQuickTask(dismissKeyboard: false) },
+                    onAddButton: { addQuickTask(dismissKeyboard: true) }
+                )
+                .padding(.horizontal, 18)
+                .padding(.bottom, 10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .alert("Add list", isPresented: $showingAddList) {
             TextField("List name", text: $newListName)
@@ -144,20 +169,41 @@ struct BoardsView: View {
                 BoardShareSheet(board: board)
             }
         }
+        .sheet(isPresented: $showingSharedInbox) {
+            SharedTaskInboxSheet()
+                .environmentObject(model)
+        }
+        .onAppear(perform: resetFocusedPage)
+        .onChange(of: model.selectedBoardID) { _, _ in
+            quickTaskDraft = ""
+            quickTaskFieldIsFocused = false
+            resetFocusedPage()
+        }
     }
 
     @ViewBuilder
     private var boardContent: some View {
         switch model.selectedBoard?.kind {
         case .week:
-            WeekBoardView(showCompleted: showCompleted)
+            WeekBoardView(
+                showCompleted: showCompleted,
+                focusedPageID: $focusedPageID
+            )
         case .list:
             if let board = model.selectedBoard {
-                ListBoardView(board: board, showCompleted: showCompleted)
+                ListBoardView(
+                    board: board,
+                    showCompleted: showCompleted,
+                    focusedPageID: $focusedPageID
+                )
             }
         case .compound:
             if let board = model.selectedBoard {
-                CompoundBoardView(board: board, showCompleted: showCompleted)
+                CompoundBoardView(
+                    board: board,
+                    showCompleted: showCompleted,
+                    focusedPageID: $focusedPageID
+                )
             }
         case .bible:
             ContentUnavailableView("Bible board migration pending", systemImage: "book.closed")
@@ -168,83 +214,455 @@ struct BoardsView: View {
         }
     }
 
+    private var quickAddDestination: BoardQuickAddDestination? {
+        guard let board = model.selectedBoard else { return nil }
+
+        switch board.kind {
+        case .week:
+            let weekday = WeekdayColumn(rawValue: focusedPageID ?? "")
+                ?? WeekdayColumn.containing(Date())
+            return BoardQuickAddDestination(
+                boardID: board.id,
+                columnID: weekday.rawValue,
+                displayName: weekday.fullName,
+                weekday: weekday
+            )
+        case .list:
+            let columns = board.columns.sorted {
+                if $0.order != $1.order { return $0.order < $1.order }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            guard let column = columns.first(where: { $0.id == focusedPageID }) ?? columns.first else {
+                return nil
+            }
+            return BoardQuickAddDestination(
+                boardID: board.id,
+                columnID: column.id,
+                displayName: column.name,
+                weekday: nil
+            )
+        case .compound:
+            let references = model.compoundChildBoards(for: board.id).flatMap { child in
+                child.columns.map { CompoundColumnReference(board: child, column: $0) }
+            }
+            guard let reference = references.first(where: { $0.id == focusedPageID }) ?? references.first else {
+                return nil
+            }
+            return BoardQuickAddDestination(
+                boardID: reference.board.id,
+                columnID: reference.column.id,
+                displayName: "\(reference.board.name), \(reference.column.name)",
+                weekday: nil
+            )
+        case .bible:
+            return nil
+        }
+    }
+
+    private func resetFocusedPage() {
+        guard let board = model.selectedBoard else {
+            focusedPageID = nil
+            return
+        }
+
+        switch board.kind {
+        case .week:
+            focusedPageID = WeekdayColumn.containing(Date()).rawValue
+        case .list:
+            focusedPageID = board.columns.sorted { $0.order < $1.order }.first?.id
+        case .compound:
+            focusedPageID = model.compoundChildBoards(for: board.id)
+                .flatMap { child in
+                    child.columns
+                        .sorted { $0.order < $1.order }
+                        .map { CompoundColumnReference(board: child, column: $0).id }
+                }
+                .first
+        case .bible:
+            focusedPageID = nil
+        }
+    }
+
+    private func addQuickTask(dismissKeyboard: Bool) {
+        guard let quickAddDestination,
+              !quickTaskDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        if let weekday = quickAddDestination.weekday {
+            model.addQuickTask(title: quickTaskDraft, weekday: weekday)
+        } else {
+            model.addQuickTask(
+                title: quickTaskDraft,
+                boardID: quickAddDestination.boardID,
+                columnID: quickAddDestination.columnID
+            )
+        }
+        quickTaskDraft = ""
+
+        if dismissKeyboard {
+            quickTaskFieldIsFocused = false
+        } else {
+            DispatchQueue.main.async {
+                quickTaskFieldIsFocused = true
+            }
+        }
+    }
+
     private var header: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 0) {
-                Menu {
-                    ForEach(model.visibleBoards) { board in
-                        Button {
-                            model.selectBoard(board.id)
-                        } label: {
-                            if board.id == model.selectedBoardID {
-                                Label(board.name, systemImage: "checkmark")
-                            } else {
-                                Text(board.name)
+        TaskifyGlassControlGroup(spacing: 10) {
+            HStack(spacing: 10) {
+                HStack(spacing: 0) {
+                    Menu {
+                        ForEach(model.visibleBoards) { board in
+                            Button {
+                                model.selectBoard(board.id)
+                            } label: {
+                                if board.id == model.selectedBoardID {
+                                    Label(board.name, systemImage: "checkmark")
+                                } else {
+                                    Text(board.name)
+                                }
                             }
                         }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(model.selectedBoard?.name ?? "Boards")
+                                .font(.system(size: 17, weight: .semibold))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .padding(.leading, 16)
+                        .padding(.trailing, 11)
+                        .frame(height: 42)
                     }
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(model.selectedBoard?.name ?? "Boards")
-                            .font(.system(size: 17, weight: .semibold))
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 11, weight: .bold))
+
+                    Rectangle()
+                        .fill(TaskifyTheme.border)
+                        .frame(width: 1, height: 23)
+
+                    Button {
+                        showingBoardShare = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 42, height: 42)
+                            .contentShape(Rectangle())
                     }
                     .foregroundStyle(TaskifyTheme.primaryText)
-                    .padding(.leading, 16)
-                    .padding(.trailing, 11)
-                    .frame(height: 42)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
                 }
+                .taskifyGlassControl(in: Capsule())
+                .layoutPriority(1)
 
-                Rectangle()
-                    .fill(TaskifyTheme.border)
-                    .frame(width: 1, height: 23)
+                Spacer(minLength: 4)
 
-                Button {
-                    showingBoardShare = true
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 42, height: 42)
-                        .contentShape(Rectangle())
-                }
-                .foregroundStyle(TaskifyTheme.primaryText)
-                .buttonStyle(.plain)
-                .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
-            }
-            .background(TaskifyTheme.raisedFill, in: Capsule())
-            .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
-            .layoutPriority(1)
-
-            Spacer(minLength: 4)
-
-            HeaderIconButton(
-                systemName: showCompleted ? "checkmark.circle.fill" : "checkmark",
-                accent: showCompleted,
-                accessibilityLabel: showCompleted ? "Hide completed tasks" : "Show completed tasks"
-            ) {
-                withAnimation(.snappy) { showCompleted.toggle() }
-            }
-
-            if model.selectedBoard?.kind == .list {
                 HeaderIconButton(
-                    systemName: "rectangle.stack.badge.plus",
-                    accessibilityLabel: "Add list"
+                    systemName: showCompleted ? "checkmark.circle.fill" : "checkmark",
+                    accent: showCompleted,
+                    accessibilityLabel: showCompleted ? "Hide completed tasks" : "Show completed tasks"
                 ) {
-                    showingAddList = true
+                    withAnimation(.snappy) { showCompleted.toggle() }
                 }
-            } else {
+
+                if model.selectedBoard?.kind == .list {
+                    HeaderIconButton(
+                        systemName: "rectangle.stack.badge.plus",
+                        accessibilityLabel: "Add list"
+                    ) {
+                        showingAddList = true
+                    }
+                } else {
+                    HeaderIconButton(
+                        systemName: "calendar",
+                        accessibilityLabel: "Board upcoming"
+                    ) { }
+                }
+
                 HeaderIconButton(
-                    systemName: "calendar",
-                    accessibilityLabel: "Board upcoming"
-                ) { }
+                    systemName: model.pendingSharedInboxCount > 0 ? "tray.full.fill" : "tray",
+                    accent: model.pendingSharedInboxCount > 0,
+                    accessibilityLabel: model.pendingSharedInboxCount > 0
+                        ? "Shared task inbox, \(model.pendingSharedInboxCount) pending"
+                        : "Shared task inbox"
+                ) {
+                    showingSharedInbox = true
+                }
+            }
+        }
+    }
+}
+
+private struct SharedTaskInboxSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+
+    private var visibleItems: [SharedInboxItem] {
+        model.sharedInboxItems.filter { $0.status != .deleted }
+    }
+
+    private var destinationName: String? {
+        guard let board = model.selectedBoard, board.kind != .bible else { return nil }
+        return board.name
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if visibleItems.isEmpty {
+                    ContentUnavailableView(
+                        "No shared tasks",
+                        systemImage: "tray",
+                        description: Text("Tasks and assignments sent to your Nostr identity will appear here.")
+                    )
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            if let destinationName {
+                                Label(
+                                    "Accepted tasks are added to \(destinationName)",
+                                    systemImage: "arrow.down.app"
+                                )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 4)
+                            }
+
+                            ForEach(visibleItems) { item in
+                                SharedTaskInboxCard(
+                                    item: item,
+                                    canAccept: destinationName != nil
+                                )
+                            }
+                        }
+                        .padding(18)
+                    }
+                    .scrollIndicators(.hidden)
+                }
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Shared Tasks")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct SharedTaskInboxCard: View {
+    @EnvironmentObject private var model: AppModel
+    let item: SharedInboxItem
+    let canAccept: Bool
+
+    private var detailCount: Int {
+        (item.task.subtasks?.count ?? 0) + (item.task.documents?.count ?? 0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Label(
+                    item.task.isAssignment ? "ASSIGNMENT" : "SHARED TASK",
+                    systemImage: item.task.isAssignment ? "person.crop.circle.badge.checkmark" : "paperplane.fill"
+                )
+                .font(.system(size: 10, weight: .bold))
+                .tracking(0.8)
+                .foregroundStyle(TaskifyTheme.accent)
+
+                Spacer()
+
+                Text(item.receivedAt, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
             }
 
-            HeaderIconButton(
-                systemName: "arrow.up.arrow.down",
-                accessibilityLabel: "Filter and sort"
-            ) { }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.task.title)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("From \(item.sender.displayName)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+
+                if let note = item.task.note, !note.isEmpty {
+                    Text(note)
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(3)
+                        .padding(.top, 2)
+                }
+            }
+
+            HStack(spacing: 12) {
+                if let dueDate = item.task.dueDate {
+                    Label(
+                        dueDate.formatted(
+                            date: .abbreviated,
+                            time: item.task.dueTimeEnabled == true ? .shortened : .omitted
+                        ),
+                        systemImage: "calendar"
+                    )
+                }
+                if let priority = item.task.priority.flatMap(TaskPriority.init(rawValue:)) {
+                    Label(priority.cardLabel, systemImage: "exclamationmark")
+                        .foregroundStyle(priority.cardColor)
+                }
+                if detailCount > 0 {
+                    Label("\(detailCount)", systemImage: "paperclip")
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            if item.status == .pending {
+                pendingActions
+            } else {
+                HStack {
+                    Label(statusLabel, systemImage: statusSymbol)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(statusColor)
+                    Spacer()
+                    Button("Remove") {
+                        withAnimation(.snappy) {
+                            model.dismissSharedInboxItem(item.id)
+                        }
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+        }
+        .padding(15)
+        .taskifyGlass(cornerRadius: 19)
+    }
+
+    @ViewBuilder
+    private var pendingActions: some View {
+        if item.task.isAssignment {
+            HStack(spacing: 9) {
+                responseButton("Decline", status: .declined, tint: .red)
+                responseButton("Maybe", status: .tentative, tint: .orange)
+                responseButton("Accept", status: .accepted, tint: TaskifyTheme.accent)
+                    .disabled(!canAccept)
+            }
+        } else {
+            HStack(spacing: 9) {
+                Button {
+                    withAnimation(.snappy) {
+                        model.dismissSharedInboxItem(item.id)
+                    }
+                } label: {
+                    Text("Dismiss")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                }
+                .buttonStyle(.bordered)
+
+                responseButton("Add Task", status: .accepted, tint: TaskifyTheme.accent)
+                    .disabled(!canAccept)
+            }
+        }
+    }
+
+    private func responseButton(
+        _ title: String,
+        status: SharedInboxItemStatus,
+        tint: Color
+    ) -> some View {
+        Button {
+            withAnimation(.snappy) {
+                _ = model.respondToSharedInboxItem(item.id, status: status)
+            }
+        } label: {
+            Text(title)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(tint)
+    }
+
+    private var statusLabel: String {
+        switch item.status {
+        case .pending: "Pending"
+        case .accepted: "Accepted"
+        case .declined: "Declined"
+        case .tentative: "Maybe"
+        case .deleted: "Removed"
+        }
+    }
+
+    private var statusSymbol: String {
+        switch item.status {
+        case .pending: "clock"
+        case .accepted: "checkmark.circle.fill"
+        case .declined: "xmark.circle.fill"
+        case .tentative: "questionmark.circle.fill"
+        case .deleted: "trash"
+        }
+    }
+
+    private var statusColor: Color {
+        switch item.status {
+        case .pending: TaskifyTheme.secondaryText
+        case .accepted: .green
+        case .declined: .red
+        case .tentative: .orange
+        case .deleted: TaskifyTheme.tertiaryText
+        }
+    }
+}
+
+private struct FloatingQuickAddBar: View {
+    @Binding var draft: String
+    var isFocused: FocusState<Bool>.Binding
+    let destinationName: String
+    let onSubmit: () -> Void
+    let onAddButton: () -> Void
+
+    var body: some View {
+        TaskifyGlassControlGroup(spacing: 9) {
+            HStack(spacing: 9) {
+                TextField("New Task", text: $draft)
+                    .focused(isFocused)
+                    .textInputAutocapitalization(.sentences)
+                    .submitLabel(.done)
+                    .onSubmit(onSubmit)
+                    .padding(.horizontal, 17)
+                    .frame(height: 48)
+                    .taskifyGlassControl(
+                        in: Capsule(),
+                        fallbackFill: Color.black.opacity(0.32)
+                    )
+                    .accessibilityLabel("New task in \(destinationName)")
+
+                Button(action: onAddButton) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 19, weight: .bold))
+                        .frame(width: 48, height: 48)
+                        .foregroundStyle(.white)
+                        .taskifyGlassControl(
+                            in: Circle(),
+                            tint: TaskifyTheme.accent.opacity(0.72),
+                            fallbackFill: TaskifyTheme.accent
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Add task to \(destinationName) and close keyboard")
+            }
         }
     }
 }
@@ -444,10 +862,10 @@ private struct BoardShareSheet: View {
         if result.failedTaskCount > 0 {
             return "Template ready, but \(result.failedTaskCount) task\(result.failedTaskCount == 1 ? "" : "s") could not be added."
         }
-        if result.publishedTaskCount == 0 {
-            return "Empty template ready to share."
+        if result.queuedTaskCount == 0 {
+            return "Empty template ready to share. Publishing in the background."
         }
-        return "Template ready with \(result.publishedTaskCount) task\(result.publishedTaskCount == 1 ? "" : "s")."
+        return "Template ready with \(result.queuedTaskCount) task\(result.queuedTaskCount == 1 ? "" : "s"). Publishing in the background."
     }
 
     private func generateTemplate() {
@@ -501,6 +919,7 @@ private struct TaskifyQRCode: View {
 private struct ListBoardView: View {
     let board: Board
     let showCompleted: Bool
+    @Binding var focusedPageID: String?
 
     private var columns: [BoardColumn] {
         board.columns.sorted {
@@ -516,6 +935,7 @@ private struct ListBoardView: View {
                     ForEach(columns) { column in
                         ListColumnView(column: column, showCompleted: showCompleted)
                             .frame(width: min(330, proxy.size.width - 50))
+                            .id(column.id)
                     }
                 }
                 .scrollTargetLayout()
@@ -523,8 +943,16 @@ private struct ListBoardView: View {
                 .padding(.bottom, 10)
             }
             .scrollIndicators(.hidden)
-            .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
+            .scrollPosition(id: $focusedPageID)
+            .onAppear(perform: repairFocusedPage)
+            .onChange(of: columns.map(\.id)) { _, _ in repairFocusedPage() }
         }
+    }
+
+    private func repairFocusedPage() {
+        guard !columns.contains(where: { $0.id == focusedPageID }) else { return }
+        focusedPageID = columns.first?.id
     }
 }
 
@@ -532,6 +960,7 @@ private struct CompoundBoardView: View {
     @EnvironmentObject private var model: AppModel
     let board: Board
     let showCompleted: Bool
+    @Binding var focusedPageID: String?
 
     private var columns: [CompoundColumnReference] {
         model.compoundChildBoards(for: board.id).flatMap { child in
@@ -561,8 +990,9 @@ private struct CompoundBoardView: View {
                                 reference: reference,
                                 hideBoardName: board.hideChildBoardNames,
                                 showCompleted: showCompleted
-                            )
+                        )
                             .frame(width: min(330, proxy.size.width - 50))
+                            .id(reference.id)
                         }
                     }
                     .scrollTargetLayout()
@@ -570,9 +1000,17 @@ private struct CompoundBoardView: View {
                     .padding(.bottom, 10)
                 }
                 .scrollIndicators(.hidden)
-                .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+                .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
+                .scrollPosition(id: $focusedPageID)
+                .onAppear(perform: repairFocusedPage)
+                .onChange(of: columns.map(\.id)) { _, _ in repairFocusedPage() }
             }
         }
+    }
+
+    private func repairFocusedPage() {
+        guard !columns.contains(where: { $0.id == focusedPageID }) else { return }
+        focusedPageID = columns.first?.id
     }
 }
 
@@ -588,8 +1026,6 @@ private struct CompoundColumnView: View {
     let reference: CompoundColumnReference
     let hideBoardName: Bool
     let showCompleted: Bool
-
-    @State private var draft = ""
 
     private var tasks: [TaskItem] {
         model.tasks(
@@ -640,28 +1076,7 @@ private struct CompoundColumnView: View {
                 }
             }
             .scrollIndicators(.hidden)
-
-            HStack(spacing: 8) {
-                TextField("New Task", text: $draft)
-                    .textInputAutocapitalization(.sentences)
-                    .submitLabel(.done)
-                    .onSubmit(addTask)
-                    .padding(.horizontal, 16)
-                    .frame(height: 46)
-                    .background(Color.black.opacity(0.26), in: Capsule())
-                    .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
-
-                Button(action: addTask) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .bold))
-                        .frame(width: 46, height: 46)
-                        .foregroundStyle(.white)
-                        .background(TaskifyTheme.accent, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Add task to \(reference.board.name), \(reference.column.name)")
-            }
+            .contentMargins(.bottom, 76, for: .scrollContent)
         }
         .padding(10)
         .taskifyGlass(cornerRadius: 22)
@@ -671,23 +1086,12 @@ private struct CompoundColumnView: View {
             style: .column
         )
     }
-
-    private func addTask() {
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        model.addQuickTask(
-            title: draft,
-            boardID: reference.board.id,
-            columnID: reference.column.id
-        )
-        draft = ""
-    }
 }
 
 private struct ListColumnView: View {
     @EnvironmentObject private var model: AppModel
     let column: BoardColumn
     let showCompleted: Bool
-    @State private var draft = ""
     @State private var renameDraft = ""
     @State private var showingRename = false
     @State private var showingDeleteConfirmation = false
@@ -794,28 +1198,7 @@ private struct ListColumnView: View {
                 }
             }
             .scrollIndicators(.hidden)
-
-            HStack(spacing: 8) {
-                TextField("New Task", text: $draft)
-                    .textInputAutocapitalization(.sentences)
-                    .submitLabel(.done)
-                    .onSubmit(addTask)
-                    .padding(.horizontal, 16)
-                    .frame(height: 46)
-                    .background(Color.black.opacity(0.26), in: Capsule())
-                    .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
-
-                Button(action: addTask) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .bold))
-                        .frame(width: 46, height: 46)
-                        .foregroundStyle(.white)
-                        .background(TaskifyTheme.accent, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Add task to \(column.name)")
-            }
+            .contentMargins(.bottom, 76, for: .scrollContent)
         }
         .padding(10)
         .taskifyGlass(cornerRadius: 22)
@@ -868,16 +1251,11 @@ private struct ListColumnView: View {
     private var taskCountLabel: String {
         "\(allTasks.count) task\(allTasks.count == 1 ? "" : "s")"
     }
-
-    private func addTask() {
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        model.addQuickTask(title: draft, columnID: column.id)
-        draft = ""
-    }
 }
 
 private struct WeekBoardView: View {
     let showCompleted: Bool
+    @Binding var focusedPageID: String?
 
     var body: some View {
         GeometryReader { proxy in
@@ -886,6 +1264,7 @@ private struct WeekBoardView: View {
                     ForEach(WeekdayColumn.allCases) { weekday in
                         DayColumnView(weekday: weekday, showCompleted: showCompleted)
                             .frame(width: min(330, proxy.size.width - 50))
+                            .id(weekday.rawValue)
                     }
                 }
                 .scrollTargetLayout()
@@ -893,7 +1272,12 @@ private struct WeekBoardView: View {
                 .padding(.bottom, 10)
             }
             .scrollIndicators(.hidden)
-            .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
+            .scrollPosition(id: $focusedPageID)
+            .onAppear {
+                guard WeekdayColumn(rawValue: focusedPageID ?? "") == nil else { return }
+                focusedPageID = WeekdayColumn.containing(Date()).rawValue
+            }
         }
     }
 }
@@ -902,7 +1286,6 @@ private struct DayColumnView: View {
     @EnvironmentObject private var model: AppModel
     let weekday: WeekdayColumn
     let showCompleted: Bool
-    @State private var draft = ""
 
     private var tasks: [TaskItem] {
         model.tasks(for: weekday, includeCompleted: showCompleted)
@@ -928,42 +1311,26 @@ private struct DayColumnView: View {
             ScrollView {
                 LazyVStack(spacing: 9) {
                     ForEach(tasks) { task in
-                        TaskCardView(task: task)
+                        TaskCardView(task: task, allowsDragging: true)
+                            .taskDropTarget(
+                                boardID: model.selectedBoardID,
+                                columnID: weekday.rawValue,
+                                beforeTaskID: task.id,
+                                style: .card
+                            )
                     }
                 }
             }
             .scrollIndicators(.hidden)
-
-            HStack(spacing: 8) {
-                TextField("New Task", text: $draft)
-                    .textInputAutocapitalization(.sentences)
-                    .submitLabel(.done)
-                    .onSubmit(addTask)
-                    .padding(.horizontal, 16)
-                    .frame(height: 46)
-                    .background(Color.black.opacity(0.26), in: Capsule())
-                    .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 1))
-
-                Button(action: addTask) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .bold))
-                        .frame(width: 46, height: 46)
-                        .foregroundStyle(.white)
-                        .background(TaskifyTheme.accent, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Add task to \(weekday.fullName)")
-            }
+            .contentMargins(.bottom, 76, for: .scrollContent)
         }
         .padding(10)
         .taskifyGlass(cornerRadius: 22)
-    }
-
-    private func addTask() {
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        model.addQuickTask(title: draft, weekday: weekday)
-        draft = ""
+        .taskDropTarget(
+            boardID: model.selectedBoardID,
+            columnID: weekday.rawValue,
+            style: .column
+        )
     }
 }
 
@@ -972,6 +1339,10 @@ struct TaskCardView: View {
     let task: TaskItem
     let allowsDragging: Bool
     @State private var showingEditor = false
+    @State private var showingTaskShare = false
+    @State private var taskShareMode: TaskShareMode = .share
+    @State private var completionPreview = false
+    @State private var completionBurst = false
 
     init(task: TaskItem, allowsDragging: Bool = false) {
         self.task = task
@@ -1007,18 +1378,36 @@ struct TaskCardView: View {
 
     private var cardCornerRadius: CGFloat { hasMedia ? 24 : 18 }
 
+    private var showsCompletedState: Bool {
+        task.completed || completionPreview
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 11) {
-                Button {
-                    withAnimation(.snappy) { model.toggleCompletion(task.id) }
-                } label: {
-                    Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(task.completed ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                Button(action: handleCompletionTap) {
+                    ZStack {
+                        if completionBurst {
+                            Circle()
+                                .stroke(TaskifyTheme.accent.opacity(0.72), lineWidth: 2)
+                                .frame(width: 27, height: 27)
+                                .transition(.asymmetric(
+                                    insertion: .scale(scale: 0.55).combined(with: .opacity),
+                                    removal: .scale(scale: 1.8).combined(with: .opacity)
+                                ))
+                        }
+
+                        Image(systemName: showsCompletedState ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(showsCompletedState ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                            .contentTransition(.symbolEffect(.replace))
+                            .scaleEffect(completionPreview ? 1.12 : 1)
+                    }
+                    .frame(width: 30, height: 30)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(task.completed ? "Mark incomplete" : "Complete task")
+                .disabled(completionPreview)
+                .accessibilityLabel(showsCompletedState ? "Mark incomplete" : "Complete task")
 
                 Button {
                     showingEditor = true
@@ -1038,7 +1427,8 @@ struct TaskCardView: View {
                         }
 
                         if task.priority != nil || (task.dueDateEnabled && task.dueDate != nil) ||
-                            subtaskProgress != nil || task.recurrence != nil || !(task.reminders ?? []).isEmpty {
+                            subtaskProgress != nil || task.recurrence != nil || !(task.reminders ?? []).isEmpty ||
+                            !task.sharedTaskAssignees.isEmpty {
                             HStack(spacing: 9) {
                                 if let priority = task.priority {
                                     Text(String(repeating: "!", count: priority.rawValue))
@@ -1077,6 +1467,21 @@ struct TaskCardView: View {
                                         .font(.caption)
                                         .foregroundStyle(TaskifyTheme.secondaryText)
                                         .accessibilityLabel("Reminder set")
+                                }
+
+                                if !task.sharedTaskAssignees.isEmpty {
+                                    let hasPending = task.sharedTaskAssignees.contains {
+                                        $0.status == nil || $0.status == .pending
+                                    }
+                                    Label(
+                                        "\(task.sharedTaskAssignees.count)",
+                                        systemImage: hasPending ? "person.badge.clock" : "person.badge.checkmark"
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(hasPending ? TaskifyTheme.secondaryText : TaskifyTheme.accent)
+                                    .accessibilityLabel(
+                                        "\(task.sharedTaskAssignees.count) assignee\(task.sharedTaskAssignees.count == 1 ? "" : "s")"
+                                    )
                                 }
                             }
                         }
@@ -1127,6 +1532,18 @@ struct TaskCardView: View {
             } label: {
                 Label("Edit", systemImage: "pencil")
             }
+            Button {
+                taskShareMode = .share
+                showingTaskShare = true
+            } label: {
+                Label("Share Task", systemImage: "paperplane")
+            }
+            Button {
+                taskShareMode = .assignment
+                showingTaskShare = true
+            } label: {
+                Label("Assign Task", systemImage: "person.badge.plus")
+            }
             Button(role: .destructive) {
                 model.deleteTask(task.id)
             } label: {
@@ -1138,6 +1555,52 @@ struct TaskCardView: View {
                 .environmentObject(model)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showingTaskShare) {
+            TaskShareSheet(taskID: task.id, initialMode: taskShareMode)
+                .environmentObject(model)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func handleCompletionTap() {
+        if task.completed {
+            withAnimation(.snappy) {
+                model.toggleCompletion(task.id)
+            }
+            return
+        }
+
+        guard !completionPreview else { return }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
+            completionPreview = true
+            completionBurst = true
+        }
+
+        Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(140))
+            } catch {
+                return
+            }
+            withAnimation(.easeOut(duration: 0.28)) {
+                completionBurst = false
+            }
+
+            do {
+                try await Task.sleep(for: .milliseconds(260))
+            } catch {
+                return
+            }
+            if model.task(withID: task.id)?.completed == false {
+                withAnimation(.snappy) {
+                    model.toggleCompletion(task.id)
+                }
+            }
+            completionPreview = false
         }
     }
 }

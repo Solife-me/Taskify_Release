@@ -35,6 +35,7 @@ struct TaskEditorView: View {
     @State private var isUploadingAttachment = false
     @State private var attachmentStatus: String?
     @State private var attachmentError: String?
+    @State private var showingTaskShare = false
 
     init(task: TaskItem) {
         let repeatDraft = RepeatDraft(recurrence: task.recurrence, dueDate: task.dueDate ?? Date())
@@ -102,6 +103,16 @@ struct TaskEditorView: View {
                     Button("Cancel") { dismiss() }
                         .disabled(isUploadingAttachment)
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        guard persistChanges() else { return }
+                        showingTaskShare = true
+                    } label: {
+                        Image(systemName: "paperplane")
+                    }
+                    .disabled(!canSave)
+                    .accessibilityLabel("Send task")
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save", action: save)
                         .disabled(!canSave)
@@ -127,6 +138,12 @@ struct TaskEditorView: View {
             Button("OK", role: .cancel) { attachmentError = nil }
         } message: {
             Text(attachmentError ?? "The attachment could not be added.")
+        }
+        .sheet(isPresented: $showingTaskShare) {
+            TaskShareSheet(taskID: taskID)
+                .environmentObject(model)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -218,6 +235,12 @@ struct TaskEditorView: View {
     }
 
     private func save() {
+        guard persistChanges() else { return }
+        dismiss()
+    }
+
+    @discardableResult
+    private func persistChanges() -> Bool {
         let normalizedDueDate: Date?
         if dueDateEnabled {
             normalizedDueDate = dueTimeEnabled ? dueDate : Calendar.current.startOfDay(for: dueDate)
@@ -225,7 +248,7 @@ struct TaskEditorView: View {
             normalizedDueDate = nil
         }
 
-        guard model.updateTask(
+        return model.updateTask(
             taskID: taskID,
             title: title,
             note: note,
@@ -240,8 +263,7 @@ struct TaskEditorView: View {
             reminderTime: dueTimeEnabled ? nil : formattedReminderTime,
             images: images,
             documents: documents
-        ) else { return }
-        dismiss()
+        )
     }
 
     private func hasMedia(_ task: TaskItem) -> Bool {

@@ -2,6 +2,57 @@ import Foundation
 import TaskifyCore
 import UniformTypeIdentifiers
 
+enum TaskifyMediaServerSettings {
+    static let storageKey = "taskify.encryptedMediaServerURL"
+    static let pwaSettingsKey = "encryptedFileStorageServer"
+    static let defaultServer = "https://originless.solife.me"
+    static let suggestedServers = [
+        "https://originless.solife.me",
+        "https://originless.besoeasy.com",
+    ]
+
+    static var configuredServer: String {
+        let stored = UserDefaults.standard.string(forKey: storageKey)
+        return normalizedServer(stored ?? "") ?? defaultServer
+    }
+
+    @discardableResult
+    static func save(_ value: String) -> String? {
+        guard let normalized = normalizedServer(value) else { return nil }
+        UserDefaults.standard.set(normalized, forKey: storageKey)
+        return normalized
+    }
+
+    static func reset() {
+        UserDefaults.standard.removeObject(forKey: storageKey)
+    }
+
+    static func normalizedServer(_ value: String) -> String? {
+        var candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else { return nil }
+        if !candidate.contains("://") {
+            candidate = "https://\(candidate)"
+        }
+        guard var components = URLComponents(string: candidate),
+              components.scheme?.lowercased() == "https",
+              let host = components.host,
+              !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil else {
+            return nil
+        }
+        components.scheme = "https"
+        var path = components.path
+        while path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+        components.path = path == "/" ? "" : path
+        return components.url?.absoluteString
+    }
+}
+
 enum TaskAttachmentUploadError: LocalizedError {
     case invalidServer
     case fileTooLarge
@@ -31,17 +82,16 @@ enum TaskAttachmentUploadError: LocalizedError {
 
 actor TaskAttachmentUploadService {
     static let shared = TaskAttachmentUploadService()
-    static let pwaDefaultServer = "https://originless.solife.me"
 
     private let session: URLSession
-    private let serverURL: URL?
+    private let serverURLOverride: URL?
 
     init(
         session: URLSession = .shared,
-        serverURL: URL? = URL(string: pwaDefaultServer)
+        serverURL: URL? = nil
     ) {
         self.session = session
-        self.serverURL = serverURL
+        self.serverURLOverride = serverURL
     }
 
     func uploadDocument(
@@ -74,6 +124,38 @@ actor TaskAttachmentUploadService {
         return document
     }
 
+    func uploadChatAttachment(
+        data: Data,
+        name: String,
+        mimeType: String,
+        width: Int? = nil,
+        height: Int? = nil
+    ) async throws -> NostrDirectMessageAttachment {
+        guard !data.isEmpty else { throw TaskAttachmentUploadError.unsupportedFile }
+        guard data.count <= TaskDocumentContract.maximumUploadBytes else {
+            throw TaskAttachmentUploadError.fileTooLarge
+        }
+        let encrypted = try NostrDirectMessageAttachmentCrypto.encrypt(data)
+        let remoteURL = try await upload(
+            encrypted.ciphertext,
+            filename: "\(encrypted.sha256).bin"
+        )
+        guard let attachment = NostrDirectMessageAttachment(
+            url: remoteURL,
+            mimeType: mimeType,
+            filename: name,
+            size: data.count,
+            width: width,
+            height: height,
+            keyHex: encrypted.keyHex,
+            nonceHex: encrypted.nonceHex,
+            sha256: encrypted.sha256
+        ) else {
+            throw TaskAttachmentUploadError.invalidResponse
+        }
+        return attachment
+    }
+
     func uploadDocument(fileURL: URL, boardID: String) async throws -> TaskDocument {
         let accessing = fileURL.startAccessingSecurityScopedResource()
         defer {
@@ -104,9 +186,10 @@ actor TaskAttachmentUploadService {
     }
 
     private func upload(_ data: Data, filename: String) async throws -> String {
+        let serverURL = serverURLOverride ?? URL(string: TaskifyMediaServerSettings.configuredServer)
         guard let serverURL,
               let scheme = serverURL.scheme?.lowercased(),
-              scheme == "https" || scheme == "http" else {
+              scheme == "https" else {
             throw TaskAttachmentUploadError.invalidServer
         }
         let uploadURL = serverURL.appendingPathComponent("upload", isDirectory: false)

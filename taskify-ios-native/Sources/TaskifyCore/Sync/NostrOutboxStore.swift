@@ -66,10 +66,17 @@ public actor NostrOutboxStore {
     }
 
     public func enqueue(_ entry: NostrOutboxEntry) throws {
-        entries.removeAll {
-            $0.boardLocalID == entry.boardLocalID && $0.taskID == entry.taskID
+        try enqueue([entry])
+    }
+
+    public func enqueue(_ newEntries: [NostrOutboxEntry]) throws {
+        guard !newEntries.isEmpty else { return }
+        for entry in newEntries {
+            entries.removeAll {
+                $0.boardLocalID == entry.boardLocalID && $0.taskID == entry.taskID
+            }
+            entries.append(entry)
         }
-        entries.append(entry)
         try persist()
     }
 
@@ -84,6 +91,32 @@ public actor NostrOutboxStore {
             entries.remove(at: index)
         }
         try persist()
+    }
+
+    public func replaceRelayTargets(
+        boardLocalID: String,
+        relayURLs: [String]
+    ) throws {
+        let normalizedRelays = TaskifyRelayURL.normalizedList(relayURLs)
+        guard !normalizedRelays.isEmpty else { return }
+
+        for index in entries.indices where entries[index].boardLocalID == boardLocalID {
+            let accepted = Set(entries[index].acceptedRelayURLs ?? [])
+            entries[index].relayURLs = normalizedRelays
+            entries[index].acceptedRelayURLs = normalizedRelays.filter { accepted.contains($0) }
+        }
+        entries.removeAll {
+            $0.boardLocalID == boardLocalID && $0.pendingRelayURLs.isEmpty
+        }
+        try persist()
+    }
+
+    public func removeEntries(boardLocalID: String) throws {
+        let originalCount = entries.count
+        entries.removeAll { $0.boardLocalID == boardLocalID }
+        if entries.count != originalCount {
+            try persist()
+        }
     }
 
     private func persist() throws {

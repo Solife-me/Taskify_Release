@@ -42,6 +42,62 @@ extension View {
     func taskifyGlass(cornerRadius: CGFloat = 24) -> some View {
         modifier(GlassPanel(cornerRadius: cornerRadius))
     }
+
+    func taskifyGlassControl<ControlShape: Shape>(
+        in shape: ControlShape,
+        tint: Color? = nil,
+        fallbackFill: Color = TaskifyTheme.raisedFill
+    ) -> some View {
+        modifier(TaskifyGlassControlModifier(
+            shape: shape,
+            tint: tint,
+            fallbackFill: fallbackFill
+        ))
+    }
+}
+
+private struct TaskifyGlassControlModifier<ControlShape: Shape>: ViewModifier {
+    let shape: ControlShape
+    let tint: Color?
+    let fallbackFill: Color
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            if let tint {
+                content
+                    .glassEffect(.regular.tint(tint).interactive(), in: shape)
+            } else {
+                content
+                    .glassEffect(.regular.interactive(), in: shape)
+            }
+        } else {
+            content
+                .background(fallbackFill, in: shape)
+                .overlay(shape.stroke(TaskifyTheme.border, lineWidth: 1))
+        }
+    }
+}
+
+struct TaskifyGlassControlGroup<Content: View>: View {
+    let spacing: CGFloat
+    let content: Content
+
+    init(spacing: CGFloat = 8, @ViewBuilder content: () -> Content) {
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content
+            }
+        } else {
+            content
+        }
+    }
 }
 
 struct HeaderIconButton: View {
@@ -56,11 +112,11 @@ struct HeaderIconButton: View {
                 .font(.system(size: 16, weight: .semibold))
                 .frame(width: 42, height: 42)
                 .foregroundStyle(accent ? .white : TaskifyTheme.primaryText)
-                .background(
-                    Circle()
-                        .fill(accent ? TaskifyTheme.accent : TaskifyTheme.raisedFill)
+                .taskifyGlassControl(
+                    in: Circle(),
+                    tint: accent ? TaskifyTheme.accent.opacity(0.72) : nil,
+                    fallbackFill: accent ? TaskifyTheme.accent : TaskifyTheme.raisedFill
                 )
-                .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)

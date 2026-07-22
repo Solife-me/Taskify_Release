@@ -26,36 +26,31 @@ enum AppTab: String, CaseIterable, Identifiable {
 
 struct RootTabView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var selectedTab: AppTab = .boards
+    @EnvironmentObject private var wallet: WalletViewModel
+    @State private var selectedTab: AppTab
+
+    init() {
+#if DEBUG
+        let requestedTab = ProcessInfo.processInfo.environment["TASKIFY_INITIAL_TAB"]
+            .flatMap(AppTab.init(rawValue:))
+        _selectedTab = State(initialValue: requestedTab ?? .boards)
+#else
+        _selectedTab = State(initialValue: .boards)
+#endif
+    }
 
     var body: some View {
         ZStack {
             TaskifyTheme.background.ignoresSafeArea()
 
-            Group {
-                switch selectedTab {
-                case .boards:
-                    BoardsView()
-                case .upcoming:
-                    UpcomingView()
-                case .wallet:
-                    MigrationPlaceholderView(
-                        title: "Wallet",
-                        icon: "dollarsign.circle",
-                        detail: "The Cashu wallet and NWC flows will move after task and Nostr sync parity are stable."
-                    )
-                case .chat:
-                    MigrationPlaceholderView(
-                        title: "Chat",
-                        icon: "message",
-                        detail: "Native Nostr messaging is scheduled after the shared relay session is complete."
-                    )
-                case .settings:
-                    SettingsView()
-                }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 8) {
-                BottomTabBar(selectedTab: $selectedTab)
+            if #available(iOS 26.0, *) {
+                nativeTabView
+            } else {
+                legacyContent
+                    .safeAreaInset(edge: .bottom, spacing: 8) {
+                        MaterialGlassTabBar(selectedTab: $selectedTab)
+                            .padding(.horizontal, 14)
+                    }
             }
 
             if model.isLoading {
@@ -75,107 +70,84 @@ struct RootTabView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
-    }
-}
-
-private struct BottomTabBar: View {
-    @EnvironmentObject private var model: AppModel
-    @Binding var selectedTab: AppTab
-
-    var body: some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                NativeLiquidGlassTabBar(
-                    selectedTab: $selectedTab,
-                    upcomingCount: model.upcomingTasks().count
-                )
-            } else {
-                MaterialGlassTabBar(
-                    selectedTab: $selectedTab,
-                    upcomingCount: model.upcomingTasks().count
-                )
-            }
-        }
-        .padding(.horizontal, 14)
-    }
-}
-
-@available(iOS 26.0, *)
-private struct NativeLiquidGlassTabBar: View {
-    @Binding var selectedTab: AppTab
-    let upcomingCount: Int
-
-    @Namespace private var glassNamespace
-
-    var body: some View {
-        GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 0) {
-                ForEach(AppTab.allCases) { tab in
-                    Button {
-                        withAnimation(.bouncy(duration: 0.36, extraBounce: 0.04)) {
-                            selectedTab = tab
-                        }
-                    } label: {
-                        Group {
-                            if selectedTab == tab {
-                                BottomTabItem(
-                                    tab: tab,
-                                    isSelected: true,
-                                    upcomingCount: upcomingCount
-                                )
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 56)
-                                .contentShape(Capsule())
-                                .glassEffect(
-                                    .regular
-                                        .tint(TaskifyTheme.accent.opacity(0.14))
-                                        .interactive(),
-                                    in: Capsule()
-                                )
-                                .glassEffectID("selected-tab", in: glassNamespace)
-                                .glassEffectTransition(.matchedGeometry)
-                            } else {
-                                BottomTabItem(
-                                    tab: tab,
-                                    isSelected: false,
-                                    upcomingCount: upcomingCount
-                                )
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 56)
-                                .contentShape(Capsule())
-                            }
-                        }
+        .overlay(alignment: .top) {
+            if let message = wallet.statusMessage {
+                Text(message)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .taskifyGlassControl(in: Capsule())
+                    .padding(.top, 62)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .task(id: message) {
+                        try? await Task.sleep(for: .seconds(2.8))
+                        guard wallet.statusMessage == message else { return }
+                        withAnimation { wallet.statusMessage = nil }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(tab.title)
-                    .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
-                }
             }
-            .padding(5)
         }
-        .glassEffect(
-            .regular.tint(Color.black.opacity(0.10)).interactive(),
-            in: Capsule()
-        )
-        .overlay {
-            Capsule()
-                .stroke(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.32), Color.white.opacity(0.08)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.8
-                )
-                .allowsHitTesting(false)
-        }
-        .shadow(color: .black.opacity(0.22), radius: 16, y: 8)
     }
+
+    @ViewBuilder
+    private var legacyContent: some View {
+        switch selectedTab {
+        case .boards:
+            BoardsView()
+        case .upcoming:
+            UpcomingView()
+        case .wallet:
+            walletView
+        case .chat:
+            ContactsView()
+        case .settings:
+            SettingsView()
+        }
+    }
+
+    @available(iOS 26.0, *)
+    private var nativeTabView: some View {
+        TabView(selection: $selectedTab) {
+            BoardsView()
+                .tag(AppTab.boards)
+                .tabItem {
+                    Label(AppTab.boards.title, systemImage: AppTab.boards.icon)
+                }
+
+            UpcomingView()
+                .tag(AppTab.upcoming)
+                .tabItem {
+                    Label(AppTab.upcoming.title, systemImage: AppTab.upcoming.icon)
+                }
+
+            walletView
+                .tag(AppTab.wallet)
+                .tabItem {
+                    Label(AppTab.wallet.title, systemImage: AppTab.wallet.icon)
+                }
+
+            ContactsView()
+                .tag(AppTab.chat)
+                .tabItem {
+                    Label(AppTab.chat.title, systemImage: AppTab.chat.icon)
+                }
+
+            SettingsView()
+                .tag(AppTab.settings)
+                .tabItem {
+                    Label(AppTab.settings.title, systemImage: AppTab.settings.icon)
+                }
+        }
+    }
+
+    private var walletView: some View {
+        WalletView()
+    }
+
 }
 
 private struct MaterialGlassTabBar: View {
     @Binding var selectedTab: AppTab
-    let upcomingCount: Int
 
     @Namespace private var selectionNamespace
 
@@ -189,8 +161,7 @@ private struct MaterialGlassTabBar: View {
                 } label: {
                     BottomTabItem(
                         tab: tab,
-                        isSelected: selectedTab == tab,
-                        upcomingCount: upcomingCount
+                        isSelected: selectedTab == tab
                     )
                     .frame(maxWidth: .infinity)
                     .frame(height: 56)
@@ -205,7 +176,7 @@ private struct MaterialGlassTabBar: View {
                                             LinearGradient(
                                                 colors: [
                                                     Color.white.opacity(0.16),
-                                                    TaskifyTheme.accent.opacity(0.08),
+                                                    Color.white.opacity(0.04),
                                                     Color.black.opacity(0.10)
                                                 ],
                                                 startPoint: .topLeading,
@@ -225,7 +196,7 @@ private struct MaterialGlassTabBar: View {
                                         )
                                 }
                                 .matchedGeometryEffect(id: "selected-tab", in: selectionNamespace)
-                                .shadow(color: TaskifyTheme.accent.opacity(0.12), radius: 9)
+                                .shadow(color: Color.black.opacity(0.16), radius: 9)
                         }
                     }
                 }
@@ -256,35 +227,17 @@ private struct MaterialGlassTabBar: View {
 private struct BottomTabItem: View {
     let tab: AppTab
     let isSelected: Bool
-    let upcomingCount: Int
 
     var body: some View {
         VStack(spacing: 3) {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: tab.icon)
-                    .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
-                    .frame(width: 42, height: 30)
-
-                if tab == .upcoming, upcomingCount > 0 {
-                    Text(upcomingCount > 99 ? "99+" : "\(upcomingCount)")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4)
-                        .frame(minWidth: 15, minHeight: 15)
-                        .background(TaskifyTheme.accent, in: Capsule())
-                        .overlay(Capsule().stroke(Color.white.opacity(0.42), lineWidth: 0.6))
-                        .offset(x: 5, y: -3)
-                }
-            }
+            Image(systemName: tab.icon)
+                .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
+                .frame(width: 42, height: 30)
 
             Text(tab.title)
                 .font(.system(size: 9, weight: isSelected ? .bold : .medium))
                 .lineLimit(1)
         }
-        .foregroundStyle(
-            isSelected
-                ? Color(red: 0.66, green: 0.80, blue: 1.0)
-                : TaskifyTheme.primaryText
-        )
+        .foregroundStyle(TaskifyTheme.primaryText)
     }
 }

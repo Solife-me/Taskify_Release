@@ -97,6 +97,118 @@ actor TaskNotificationCoordinator {
     }
 }
 
+actor WalletPaymentNotificationCoordinator {
+    private static let identifierPrefix = "taskify.wallet.lightning."
+    private static let ecashIdentifierPrefix = "taskify.wallet.ecash."
+    private static let cashuRequestIdentifierPrefix = "taskify.wallet.cashu-request."
+    private let center: UNUserNotificationCenter
+
+    init(center: UNUserNotificationCenter = .current()) {
+        self.center = center
+    }
+
+    func requestAuthorizationIfNeeded() async {
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .notDetermined else { return }
+        _ = try? await center.requestAuthorization(options: [.alert, .sound])
+    }
+
+    func notifyPayments(_ quotes: [CashuLightningReceiveQuote]) async {
+        guard !quotes.isEmpty else { return }
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            break
+        case .notDetermined, .denied:
+            return
+        @unknown default:
+            return
+        }
+
+        for quote in quotes {
+            let amount = quote.issuedAmount > 0 ? quote.issuedAmount : quote.amount
+            let content = UNMutableNotificationContent()
+            content.title = "Lightning payment received"
+            content.body = "\(amount.formatted()) sats were added to your Taskify wallet."
+            content.sound = .default
+            content.userInfo = [
+                "lightningQuoteID": quote.id,
+                "mintURL": quote.mintURL,
+                "amount": amount,
+            ]
+            let request = UNNotificationRequest(
+                identifier: Self.identifierPrefix + quote.id,
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
+        }
+    }
+
+    func notifyEcashReceipts(_ receipts: [CashuRecoveredReceive]) async {
+        guard !receipts.isEmpty else { return }
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            break
+        case .notDetermined, .denied:
+            return
+        @unknown default:
+            return
+        }
+
+        for receipt in receipts {
+            let content = UNMutableNotificationContent()
+            content.title = "Ecash received"
+            content.body = "\(receipt.receivedAmount.formatted()) sats were added to your Taskify wallet."
+            content.sound = .default
+            content.userInfo = [
+                "pendingReceiveID": receipt.pending.id,
+                "mintURL": receipt.pending.mintURL,
+                "amount": receipt.receivedAmount,
+            ]
+            let request = UNNotificationRequest(
+                identifier: Self.ecashIdentifierPrefix + receipt.pending.id,
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
+        }
+    }
+
+    func notifyCashuRequestReceipts(_ receipts: [CashuPaymentRequestReceipt]) async {
+        guard !receipts.isEmpty else { return }
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            break
+        case .notDetermined, .denied:
+            return
+        @unknown default:
+            return
+        }
+
+        for receipt in receipts {
+            let content = UNMutableNotificationContent()
+            content.title = "Cashu payment received"
+            content.body = "\(receipt.amount.formatted()) sats were added to your Taskify wallet."
+            content.sound = .default
+            content.userInfo = [
+                "cashuPaymentRequestID": receipt.requestID,
+                "nostrEventID": receipt.eventID,
+                "mintURL": receipt.mintURL,
+                "amount": receipt.amount,
+            ]
+            let request = UNNotificationRequest(
+                identifier: Self.cashuRequestIdentifierPrefix + receipt.eventID,
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
+        }
+    }
+}
+
 private struct ScheduledReminder {
     let task: TaskItem
     let reminder: TaskReminder

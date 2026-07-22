@@ -11,6 +11,31 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.selectedBoard?.columns.count, 7)
     }
 
+    func testBoardRelayUpdatesNormalizeAndKeepAtLeastOneRelay() {
+        var snapshot = TaskifySnapshot.empty
+
+        XCTAssertTrue(snapshot.updateBoardRelayURLs(
+            boardID: snapshot.selectedBoardID,
+            relayURLs: [
+                " relay.example ",
+                "wss://relay.example/",
+                "ws://localhost:7777",
+            ]
+        ))
+        XCTAssertEqual(
+            snapshot.selectedBoard?.effectiveRelayURLs,
+            ["wss://relay.example", "ws://localhost:7777"]
+        )
+        XCTAssertFalse(snapshot.updateBoardRelayURLs(
+            boardID: snapshot.selectedBoardID,
+            relayURLs: ["https://not-a-nostr-relay.example"]
+        ))
+        XCTAssertEqual(
+            snapshot.selectedBoard?.effectiveRelayURLs,
+            ["wss://relay.example", "ws://localhost:7777"]
+        )
+    }
+
     func testScannedBoardShareJoinsWithNameAndRelays() throws {
         let rawShare = #"{"v":1,"kind":"taskify-share","item":{"type":"board","boardId":"4f35858d-066b-4f2d-a2f4-235794c77780","boardName":"Family Week","relays":["wss://relay.solife.me","wss://nos.lol"]}}"#
         let share = try XCTUnwrap(BoardShareContract.decode(rawShare))
@@ -59,6 +84,97 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.upcomingTasks(from: Date(timeIntervalSince1970: 1_700_000_000)).count, 1)
         XCTAssertTrue(snapshot.toggleCompletion(taskID: try XCTUnwrap(task?.id), now: dueDate))
         XCTAssertTrue(snapshot.upcomingTasks(from: Date(timeIntervalSince1970: 1_700_000_000)).isEmpty)
+    }
+
+    func testUpcomingOrganizerMatchesPWAFilteringAndSortControls() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let firstDay = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 22,
+            hour: 8
+        )))
+        let laterFirstDay = try XCTUnwrap(calendar.date(byAdding: .hour, value: 1, to: firstDay))
+        let secondDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: firstDay))
+        let tasks = [
+            TaskItem(
+                id: "home-low",
+                boardID: "home",
+                title: "Call plumber",
+                note: "Kitchen sink",
+                dueDate: laterFirstDay,
+                dueDateEnabled: true,
+                dueTimeEnabled: true,
+                priority: .low,
+                createdAt: Date(timeIntervalSince1970: 100),
+                order: 2
+            ),
+            TaskItem(
+                id: "work-high",
+                boardID: "work",
+                title: "Approve launch",
+                dueDate: firstDay,
+                dueDateEnabled: true,
+                dueTimeEnabled: true,
+                priority: .high,
+                createdAt: Date(timeIntervalSince1970: 200),
+                order: 1
+            ),
+            TaskItem(
+                id: "home-tomorrow",
+                boardID: "home",
+                title: "Buy filters",
+                dueDate: secondDay,
+                dueDateEnabled: true,
+                priority: .medium,
+                createdAt: Date(timeIntervalSince1970: 300),
+                order: 0
+            ),
+        ]
+
+        let selectedDay = UpcomingTaskOrganizer.filter(
+            tasks,
+            searchText: "",
+            includedBoardIDs: nil,
+            selectedDate: firstDay,
+            calendar: calendar
+        )
+        XCTAssertEqual(Set(selectedDay.map(\.id)), Set(["home-low", "work-high"]))
+        XCTAssertEqual(
+            UpcomingTaskOrganizer.taskCountsByDay(tasks, calendar: calendar),
+            [
+                calendar.startOfDay(for: firstDay): 2,
+                calendar.startOfDay(for: secondDay): 1,
+            ]
+        )
+
+        let searchedHomeTasks = UpcomingTaskOrganizer.filter(
+            tasks,
+            searchText: "sink",
+            includedBoardIDs: Set(["home"]),
+            selectedDate: nil,
+            calendar: calendar
+        )
+        XCTAssertEqual(searchedHomeTasks.map(\.id), ["home-low"])
+
+        let prioritySorted = UpcomingTaskOrganizer.sort(
+            selectedDay,
+            mode: .priority,
+            direction: .descending,
+            boardGrouping: .mixed,
+            boardOrder: ["home", "work"]
+        )
+        XCTAssertEqual(prioritySorted.map(\.id), ["work-high", "home-low"])
+
+        let groupedByBoard = UpcomingTaskOrganizer.sort(
+            selectedDay,
+            mode: .dueDate,
+            direction: .ascending,
+            boardGrouping: .grouped,
+            boardOrder: ["home", "work"]
+        )
+        XCTAssertEqual(groupedByBoard.map(\.id), ["home-low", "work-high"])
     }
 
     func testListBoardCreatesColumnsAndValidatesTaskPlacement() throws {
@@ -129,6 +245,80 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertTrue(snapshot.selectedBoard?.hideChildBoardNames == true)
     }
 
+    func testBoardRenameAndArchiveLifecycleKeepsAUsableSelection() throws {
+        var snapshot = TaskifySnapshot.empty
+        let projects = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+
+        XCTAssertTrue(snapshot.renameBoard(boardID: projects.id, name: "  Client work  "))
+        XCTAssertEqual(snapshot.boards.first(where: { $0.id == projects.id })?.name, "Client work")
+        XCTAssertFalse(snapshot.renameBoard(boardID: projects.id, name: "   "))
+
+        XCTAssertTrue(snapshot.archiveBoard(boardID: projects.id))
+        XCTAssertTrue(snapshot.boards.first(where: { $0.id == projects.id })?.archived == true)
+        XCTAssertEqual(snapshot.selectedBoardID, "week-default")
+        XCTAssertFalse(snapshot.archiveBoard(boardID: "week-default"))
+
+        XCTAssertTrue(snapshot.unarchiveBoard(boardID: projects.id))
+        XCTAssertTrue(snapshot.boards.first(where: { $0.id == projects.id })?.isVisible == true)
+    }
+
+    func testRemoteBoardMetadataPreservesLocalArchiveState() throws {
+        var snapshot = TaskifySnapshot.empty
+        let projects = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        XCTAssertTrue(snapshot.archiveBoard(boardID: projects.id))
+        var remote = projects
+        remote.name = "Renamed remotely"
+
+        XCTAssertTrue(snapshot.mergeRemoteBoard(remote, eventCreatedAt: 50))
+
+        let merged = try XCTUnwrap(snapshot.boards.first(where: { $0.id == projects.id }))
+        XCTAssertEqual(merged.name, "Renamed remotely")
+        XCTAssertTrue(merged.archived)
+        XCTAssertFalse(merged.hidden)
+        XCTAssertFalse(snapshot.visibleBoards.contains(where: { $0.id == projects.id }))
+    }
+
+    func testDeletingBoardRemovesItsTasksAndCompoundReferences() throws {
+        var snapshot = TaskifySnapshot.empty
+        let projects = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let home = try XCTUnwrap(snapshot.createListBoard(name: "Home"))
+        let compound = try XCTUnwrap(snapshot.createCompoundBoard(
+            name: "Everything",
+            childBoardIDs: [projects.id, home.id]
+        ))
+        let projectColumn = try XCTUnwrap(projects.columns.first)
+        let projectTask = try XCTUnwrap(snapshot.addTask(
+            title: "Remove with board",
+            boardID: projects.id,
+            columnID: projectColumn.id,
+            dueDate: nil
+        ))
+        _ = try XCTUnwrap(snapshot.addTask(
+            title: "Keep on home",
+            boardID: home.id,
+            columnID: try XCTUnwrap(home.columns.first).id,
+            dueDate: nil
+        ))
+
+        let result = try XCTUnwrap(snapshot.deleteBoard(boardID: projects.id))
+
+        XCTAssertEqual(result.deletedBoardID, projects.id)
+        XCTAssertEqual(result.deletedTaskIDs, [projectTask.id])
+        XCTAssertEqual(result.updatedCompoundBoardIDs, [compound.id])
+        XCTAssertFalse(snapshot.boards.contains(where: { $0.id == projects.id }))
+        XCTAssertFalse(snapshot.tasks.contains(where: { $0.id == projectTask.id }))
+        XCTAssertEqual(snapshot.compoundChildBoards(for: compound.id).map(\.id), [home.id])
+    }
+
+    func testDeletingOnlyVisibleBoardRepairsTheWorkspace() throws {
+        var snapshot = TaskifySnapshot.empty
+
+        XCTAssertNotNil(snapshot.deleteBoard(boardID: "week-default"))
+        XCTAssertEqual(snapshot.visibleBoards.count, 1)
+        XCTAssertEqual(snapshot.selectedBoard?.kind, .week)
+        XCTAssertFalse(snapshot.selectedBoardID.isEmpty)
+    }
+
     func testDraggingTaskMovesAndReordersWithinListBoard() throws {
         var snapshot = TaskifySnapshot.empty
         let board = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
@@ -166,6 +356,7 @@ final class TaskifySnapshotTests: XCTestCase {
         ))
 
         XCTAssertFalse(result.crossedBoards)
+        XCTAssertEqual(Set(result.updatedTaskIDs), Set([moved.id, last.id]))
         XCTAssertEqual(
             snapshot.tasks(boardID: board.id, columnID: doing.id, includeCompleted: true).map(\.id),
             [first.id, moved.id, last.id]
@@ -186,6 +377,75 @@ final class TaskifySnapshotTests: XCTestCase {
             snapshot.tasks(boardID: board.id, columnID: doing.id, includeCompleted: true).map(\.id),
             [last.id, first.id, moved.id]
         )
+    }
+
+    func testDraggingTaskAcrossWeekdaysPreservesTimeAndReorders() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let sunday = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 19,
+            hour: 14,
+            minute: 30
+        )))
+        let monday = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 20
+        )))
+        var snapshot = TaskifySnapshot.empty
+        let first = try XCTUnwrap(snapshot.addTask(
+            title: "First Monday task",
+            boardID: "week-default",
+            columnID: WeekdayColumn.monday.rawValue,
+            dueDate: monday
+        ))
+        let last = try XCTUnwrap(snapshot.addTask(
+            title: "Last Monday task",
+            boardID: "week-default",
+            columnID: WeekdayColumn.monday.rawValue,
+            dueDate: monday
+        ))
+        let moved = try XCTUnwrap(snapshot.addTask(
+            title: "Move from Sunday",
+            boardID: "week-default",
+            columnID: WeekdayColumn.sunday.rawValue,
+            dueDate: sunday
+        ))
+        let movedIndex = try XCTUnwrap(snapshot.tasks.firstIndex(where: { $0.id == moved.id }))
+        snapshot.tasks[movedIndex].dueTimeEnabled = true
+        snapshot.tasks[movedIndex].dueTimeZone = "UTC"
+        snapshot.tasks[movedIndex].completed = true
+
+        let result = try XCTUnwrap(snapshot.moveTask(
+            taskID: moved.id,
+            toBoardID: "week-default",
+            columnID: WeekdayColumn.monday.rawValue,
+            beforeTaskID: last.id,
+            editorPublicKey: "editor",
+            calendar: calendar
+        ))
+
+        XCTAssertFalse(result.crossedBoards)
+        XCTAssertEqual(Set(result.updatedTaskIDs), Set([moved.id, last.id]))
+        XCTAssertEqual(
+            snapshot.tasks(
+                boardID: "week-default",
+                columnID: WeekdayColumn.monday.rawValue,
+                includeCompleted: true
+            ).map(\.id),
+            [first.id, moved.id, last.id]
+        )
+        let updated = try XCTUnwrap(snapshot.tasks.first(where: { $0.id == moved.id }))
+        XCTAssertEqual(updated.columnID, WeekdayColumn.monday.rawValue)
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day, .hour, .minute], from: try XCTUnwrap(updated.dueDate)),
+            DateComponents(year: 2026, month: 7, day: 20, hour: 14, minute: 30)
+        )
+        XCTAssertTrue(updated.dueDateEnabled)
+        XCTAssertFalse(updated.completed)
+        XCTAssertEqual(updated.lastEditedBy, "editor")
     }
 
     func testDraggingAcrossCompoundChildrenChangesSourceBoard() throws {
@@ -446,6 +706,79 @@ final class TaskifySnapshotTests: XCTestCase {
         let updated = try XCTUnwrap(snapshot.tasks.first)
         XCTAssertEqual(updated.images, ["https://originless.example/image"])
         XCTAssertEqual(updated.documents?.map(\.id), ["doc"])
+    }
+
+    func testNativeTaskMutationsPreserveOpaquePWASyncFields() {
+        let board = Board(
+            id: "advanced-board",
+            name: "Advanced",
+            kind: .list,
+            columns: [
+                BoardColumn(id: "todo", name: "To Do", order: 0),
+                BoardColumn(id: "done", name: "Done", order: 1),
+            ]
+        )
+        let opaqueFields: [String: TaskPayloadValue] = [
+            "assignees": .array([
+                .object([
+                    "pubkey": .string(String(repeating: "a", count: 64)),
+                    "status": .string("accepted"),
+                ]),
+            ]),
+            "bounty": .object([
+                "id": .string("bounty-1"),
+                "amount": .integer(21),
+            ]),
+            "futureField": .null,
+        ]
+        let task = TaskItem(
+            id: "advanced-task",
+            boardID: board.id,
+            title: "Original",
+            columnID: "todo",
+            preservedSyncFields: opaqueFields
+        )
+        var snapshot = TaskifySnapshot(
+            boards: [board],
+            tasks: [task],
+            selectedBoardID: board.id
+        )
+
+        XCTAssertTrue(snapshot.updateTask(
+            taskID: task.id,
+            title: "Edited",
+            note: "Native edit",
+            dueDate: nil,
+            dueDateEnabled: false,
+            dueTimeEnabled: false,
+            dueTimeZone: nil,
+            priority: .medium,
+            columnID: "todo",
+            subtasks: []
+        ))
+        XCTAssertEqual(snapshot.tasks.first?.preservedSyncFields, opaqueFields)
+
+        XCTAssertNotNil(snapshot.moveTask(
+            taskID: task.id,
+            toBoardID: board.id,
+            columnID: "done"
+        ))
+        XCTAssertEqual(snapshot.tasks.first?.preservedSyncFields, opaqueFields)
+
+        XCTAssertTrue(snapshot.toggleCompletion(taskID: task.id))
+        XCTAssertEqual(snapshot.tasks.first?.preservedSyncFields, opaqueFields)
+
+        var remoteUpdate = snapshot.tasks[0]
+        remoteUpdate.title = "Newer PWA edit"
+        remoteUpdate.preservedSyncFields = [
+            "bounty": .null,
+            "newFutureField": .boolean(true),
+        ]
+        XCTAssertTrue(snapshot.mergeRemoteTask(remoteUpdate, eventCreatedAt: 10))
+        XCTAssertEqual(snapshot.tasks[0].preservedSyncFields?["assignees"], opaqueFields["assignees"])
+        XCTAssertEqual(snapshot.tasks[0].preservedSyncFields?["futureField"], .null)
+        XCTAssertEqual(snapshot.tasks[0].preservedSyncFields?["bounty"], .null)
+        XCTAssertEqual(snapshot.tasks[0].preservedSyncFields?["newFutureField"], .boolean(true))
     }
 
     func testReplacingAttachmentsSupportsNativeAddAndRemove() throws {

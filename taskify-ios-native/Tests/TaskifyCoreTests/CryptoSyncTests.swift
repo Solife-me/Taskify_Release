@@ -3,6 +3,24 @@ import XCTest
 @testable import TaskifyCore
 
 final class CryptoSyncTests: XCTestCase {
+    func testRelayURLNormalizationAcceptsNostrSchemesAndDeduplicates() {
+        XCTAssertEqual(
+            TaskifyRelayURL.normalize(" Relay.Example/ "),
+            "wss://relay.example"
+        )
+        XCTAssertEqual(
+            TaskifyRelayURL.normalizedList([
+                "wss://relay.example/",
+                " WSS://RELAY.EXAMPLE ",
+                "ws://localhost:7777",
+                "https://not-a-relay.example",
+            ]),
+            ["wss://relay.example", "ws://localhost:7777"]
+        )
+        XCTAssertNil(TaskifyRelayURL.normalize("https://not-a-relay.example"))
+        XCTAssertNil(TaskifyRelayURL.normalize("wss://user:secret@relay.example"))
+    }
+
     func testBoardShareContractEncodesPWAEnvelope() throws {
         let board = Board(
             id: "local-board",
@@ -201,6 +219,207 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(decoded.eventCreatedAt, 1_700_000_123)
     }
 
+    func testTaskifyCalendarEventRoundTripsThroughPWAContract() throws {
+        let board = Board(
+            id: "local-board",
+            name: "Shared Week",
+            kind: .week,
+            columns: [],
+            nostrBoardID: "test-board-id",
+            relayURLs: ["wss://relay.solife.me"]
+        )
+        let eventKey = Data(repeating: 9, count: 32).base64EncodedString()
+        let taskifyEvent = TaskifyEvent(
+            id: "event-1",
+            boardID: board.id,
+            order: 2,
+            title: "PWA parity review",
+            details: "Verify both event records",
+            locations: ["Remote"],
+            schedule: .time,
+            startISO: "2026-07-24T15:00:00.000Z",
+            endISO: "2026-07-24T16:00:00.000Z",
+            startTimeZoneID: "America/Chicago",
+            endTimeZoneID: "America/Chicago",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: eventKey,
+            inviteToken: "",
+            rsvpStatus: .accepted,
+            readOnly: false
+        )
+
+        let pair = try TaskifyCalendarEventCodec.eventPair(
+            event: taskifyEvent,
+            board: board,
+            createdAt: 1_700_000_500
+        )
+        XCTAssertEqual(pair.canonical.kind, 30_310)
+        XCTAssertEqual(pair.view.kind, 30_311)
+        XCTAssertEqual(pair.canonical.firstTagValue(named: "b"), BoardCrypto.boardTag(for: "test-board-id"))
+        XCTAssertEqual(pair.view.firstTagValue(named: "a"), pair.normalizedEvent.canonicalAddress)
+        XCTAssertTrue(pair.canonical.verify())
+        XCTAssertTrue(pair.view.verify())
+
+        let boardPrivateKey = BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID)
+        let boardPublicKey = try BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID)
+        let canonicalPlaintext = try NIP44V2.decrypt(
+            pair.canonical.content,
+            privateKey: boardPrivateKey,
+            publicKey: boardPublicKey
+        )
+        let canonical = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: canonicalPlaintext) as? [String: Any]
+        )
+        XCTAssertEqual(canonical["v"] as? Int, 1)
+        XCTAssertEqual(canonical["eventId"] as? String, "event-1")
+        XCTAssertEqual(canonical["eventKey"] as? String, eventKey)
+        XCTAssertEqual(canonical["kind"] as? String, "time")
+        XCTAssertEqual(canonical["description"] as? String, "Verify both event records")
+
+        let viewPlaintext = try NIP44V2.decrypt(
+            pair.view.content,
+            conversationKey: try XCTUnwrap(Data(base64Encoded: eventKey))
+        )
+        let view = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: viewPlaintext) as? [String: Any]
+        )
+        XCTAssertNil(view["eventKey"])
+        XCTAssertEqual(view["title"] as? String, "PWA parity review")
+
+        let decoded = try TaskifyCalendarEventCodec.decodeCanonicalEvent(
+            pair.canonical,
+            board: board
+        )
+        XCTAssertEqual(decoded.event.title, taskifyEvent.title)
+        XCTAssertEqual(decoded.event.details, taskifyEvent.details)
+        XCTAssertEqual(decoded.event.schedule, .time)
+        XCTAssertEqual(decoded.event.boardID, board.id)
+        XCTAssertFalse(decoded.event.isReadOnly)
+        XCTAssertEqual(decoded.event.nostrUpdatedAt, 1_700_000_500)
+    }
+
+    func testNativeEditPreservesUnsupportedAndFuturePWATaskFields() throws {
+        let board = Board(
+            id: "local-board",
+            name: "Shared Week",
+            kind: .week,
+            columns: [],
+            nostrBoardID: "test-board-id"
+        )
+        let payload: [String: Any] = [
+            "title": "Advanced PWA task",
+            "note": "Keep every advanced field",
+            "dueISO": "2026-07-21T14:00:00.000Z",
+            "createdAt": 1_700_000_000_000,
+            "streak": 7,
+            "longestStreak": 19,
+            "assignees": [[
+                "pubkey": String(repeating: "a", count: 64),
+                "relay": "wss://relay.example",
+                "status": "accepted",
+                "respondedAt": 1_700_000_123_456,
+            ]],
+            "bounty": [
+                "id": "bounty-1",
+                "token": "cashuAexample",
+                "amount": 21,
+                "state": "locked",
+                "updatedAt": "2026-07-21T13:59:00.000Z",
+                "enc": [
+                    "alg": "aes-gcm-256",
+                    "iv": "fixture-iv",
+                    "ct": "fixture-ciphertext",
+                ],
+            ],
+            "inboxItem": [
+                "type": "task",
+                "receivedAt": "2026-07-21T13:30:00.000Z",
+                "status": "accepted",
+                "sender": [
+                    "pubkey": String(repeating: "b", count: 64),
+                    "name": "PWA sender",
+                ],
+            ],
+            "scriptureMemoryId": "scripture-entry-1",
+            "scriptureMemoryStage": 4,
+            "bountyDeletedAt": NSNull(),
+            "futureTaskifyFeature": [
+                "enabled": true,
+                "threshold": 2.5,
+                "labels": ["one", "two"],
+                "optional": NSNull(),
+            ],
+        ]
+        let content = try BoardCrypto.encrypt(
+            JSONSerialization.data(withJSONObject: payload),
+            boardID: board.effectiveNostrBoardID
+        )
+        let incomingEvent = try NostrEvent.signed(
+            privateKey: BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID),
+            createdAt: 1_700_000_500,
+            kind: TaskEventCodec.taskEventKind,
+            tags: [
+                ["d", "advanced-task"],
+                ["b", BoardCrypto.boardTag(for: board.effectiveNostrBoardID)],
+                ["col", "day"],
+                ["status", "open"],
+            ],
+            content: content
+        )
+
+        let decoded = try TaskEventCodec.decodeTaskEvent(incomingEvent, board: board)
+        XCTAssertNil(decoded.task.preservedSyncFields?["title"])
+        XCTAssertEqual(decoded.task.preservedSyncFields?["streak"], .integer(7))
+        XCTAssertEqual(decoded.task.preservedSyncFields?["longestStreak"], .integer(19))
+        XCTAssertEqual(decoded.task.preservedSyncFields?["scriptureMemoryStage"], .integer(4))
+        XCTAssertEqual(decoded.task.preservedSyncFields?["bountyDeletedAt"], .null)
+
+        let localData = try JSONEncoder().encode(decoded.task)
+        var edited = try JSONDecoder().decode(TaskItem.self, from: localData)
+        edited.title = "Edited safely on iOS"
+        edited.completed = true
+        edited.completedAt = Date(timeIntervalSince1970: 1_753_107_660)
+        edited.lastEditedBy = String(repeating: "c", count: 64)
+
+        let outgoingEvent = try TaskEventCodec.taskEvent(
+            task: edited,
+            board: board,
+            createdAt: 1_700_000_600
+        )
+        let outgoingData = try BoardCrypto.decrypt(
+            outgoingEvent.content,
+            boardID: board.effectiveNostrBoardID
+        )
+        let outgoing = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: outgoingData) as? [String: Any]
+        )
+
+        XCTAssertEqual(outgoing["title"] as? String, "Edited safely on iOS")
+        XCTAssertEqual(outgoing["streak"] as? Int, 7)
+        XCTAssertEqual(outgoing["longestStreak"] as? Int, 19)
+        XCTAssertEqual(outgoing["scriptureMemoryId"] as? String, "scripture-entry-1")
+        XCTAssertEqual(outgoing["scriptureMemoryStage"] as? Int, 4)
+        XCTAssertTrue(outgoing["bountyDeletedAt"] is NSNull)
+
+        let assignee = try XCTUnwrap((outgoing["assignees"] as? [[String: Any]])?.first)
+        XCTAssertEqual(assignee["status"] as? String, "accepted")
+        XCTAssertEqual(assignee["respondedAt"] as? Int64, 1_700_000_123_456)
+
+        let bounty = try XCTUnwrap(outgoing["bounty"] as? [String: Any])
+        XCTAssertEqual(bounty["amount"] as? Int, 21)
+        XCTAssertEqual((bounty["enc"] as? [String: Any])?["alg"] as? String, "aes-gcm-256")
+
+        let inboxItem = try XCTUnwrap(outgoing["inboxItem"] as? [String: Any])
+        XCTAssertEqual((inboxItem["sender"] as? [String: Any])?["name"] as? String, "PWA sender")
+
+        let future = try XCTUnwrap(outgoing["futureTaskifyFeature"] as? [String: Any])
+        XCTAssertEqual(future["enabled"] as? Bool, true)
+        XCTAssertEqual(future["threshold"] as? Double, 2.5)
+        XCTAssertEqual(future["labels"] as? [String], ["one", "two"])
+        XCTAssertTrue(future["optional"] is NSNull)
+    }
+
     func testTaskDecoderPreservesPWAImagesAndDocuments() throws {
         let board = Board(
             id: "local-board",
@@ -321,6 +540,18 @@ final class CryptoSyncTests: XCTestCase {
             )?.absoluteString,
             "https://example.com/articles/native-ios"
         )
+    }
+
+    func testChatLinkExtractionMatchesPWAAndPreservesMessageOrder() {
+        let links = TaskContentLinks.allURLs(
+            in: "Read (https://example.com/native-ios) then https://taskify.example/help?q=chat"
+        )
+
+        XCTAssertEqual(links.map(\.absoluteString), [
+            "https://example.com/native-ios",
+            "https://taskify.example/help?q=chat",
+        ])
+        XCTAssertTrue(TaskContentLinks.allURLs(in: "nostr:example and ftp://example.com").isEmpty)
     }
 
     func testTaskContentRemovesPreviewedURLsWithoutDamagingNotes() {
@@ -567,19 +798,72 @@ final class CryptoSyncTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    func testOutboxRetargetsQueuedBoardEventsWhenRelaysChange() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-relay-retarget-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let event = try referenceEvent(content: "retarget", createdAt: 4)
+
+        try await store.enqueue(NostrOutboxEntry(
+            event: event,
+            relayURLs: ["wss://one.example", "wss://removed.example"],
+            boardLocalID: "board",
+            taskID: "task"
+        ))
+        try await store.markAccepted(eventID: event.id, relayURL: "wss://one.example")
+        try await store.replaceRelayTargets(
+            boardLocalID: "board",
+            relayURLs: ["wss://one.example", "wss://new.example"]
+        )
+
+        let entries = await store.allEntries()
+        let queued = try XCTUnwrap(entries.first)
+        XCTAssertEqual(queued.relayURLs, ["wss://one.example", "wss://new.example"])
+        XCTAssertEqual(queued.acceptedRelayURLs, ["wss://one.example"])
+        XCTAssertEqual(queued.pendingRelayURLs, ["wss://new.example"])
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testOutboxCanDiscardAnImportedIdentityScopeWithoutLosingTaskChanges() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-account-outbox-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let accountEvent = try referenceEvent(content: "old identity backup", createdAt: 5)
+        let taskEvent = try referenceEvent(content: "task change", createdAt: 6)
+        try await store.enqueue(NostrOutboxEntry(
+            event: accountEvent,
+            relayURLs: TaskifyRelayDefaults.urls,
+            boardLocalID: "__taskify-account-backup__",
+            taskID: "taskify-app-backup"
+        ))
+        try await store.enqueue(NostrOutboxEntry(
+            event: taskEvent,
+            relayURLs: TaskifyRelayDefaults.urls,
+            boardLocalID: "board",
+            taskID: "task"
+        ))
+
+        try await store.removeEntries(boardLocalID: "__taskify-account-backup__")
+
+        let remaining = await store.allEntries()
+        XCTAssertEqual(remaining.map(\.event.id), [taskEvent.id])
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     func testRelayPublishPacerSpacesBurstsAndBacksOffPerRelay() {
         var pacer = RelayPublishPacer(
-            defaultInterval: 0.5,
+            defaultInterval: 0.05,
             baseBackoff: 2,
             maximumBackoff: 30
         )
 
         XCTAssertEqual(pacer.delayBeforePublish(at: 100), 0, accuracy: 0.001)
         pacer.recordPublish(at: 100)
-        XCTAssertEqual(pacer.delayBeforePublish(at: 100.1), 0.4, accuracy: 0.001)
+        XCTAssertEqual(pacer.delayBeforePublish(at: 100.01), 0.04, accuracy: 0.001)
 
         let firstBackoff = pacer.recordRateLimit(at: 100.1)
         XCTAssertEqual(firstBackoff, 2, accuracy: 0.001)
+        XCTAssertEqual(pacer.currentInterval, 0.1, accuracy: 0.001)
         XCTAssertEqual(pacer.delayBeforePublish(at: 101), 1.1, accuracy: 0.001)
         XCTAssertTrue(NostrRelayRejection.isRateLimited("rate-limited: slow down"))
         XCTAssertTrue(NostrRelayRejection.isRateLimited(" RATE-LIMITED: burst "))
@@ -588,6 +872,20 @@ final class CryptoSyncTests: XCTestCase {
         let secondBackoff = pacer.recordRateLimit(at: 102.1)
         XCTAssertEqual(secondBackoff, 4, accuracy: 0.001)
         XCTAssertEqual(pacer.delayBeforePublish(at: 103), 3.1, accuracy: 0.001)
+    }
+
+    func testDefaultRelayPacerSendsHealthySixtyTaskTemplateWithinFewSeconds() {
+        var pacer = RelayPublishPacer()
+        var now: TimeInterval = 100
+        let startedAt = now
+
+        // One board metadata event plus sixty task events.
+        for _ in 0..<61 {
+            now += pacer.delayBeforePublish(at: now)
+            pacer.recordPublish(at: now)
+        }
+
+        XCTAssertLessThanOrEqual(now - startedAt, 3.01)
     }
 
     func testTemplateOutboxEntriesDoNotReplaceLiveBoardEntries() async throws {
@@ -617,6 +915,35 @@ final class CryptoSyncTests: XCTestCase {
         let queuedEntries = await store.allEntries()
         XCTAssertEqual(queuedEntries.count, 2)
         XCTAssertEqual(Set(queuedEntries.map(\.boardLocalID)), Set([liveBoard.id, templateBoard.id]))
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testSyncEngineQueuesTemplateBatchBeforeBackgroundDelivery() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-template-batch-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = directory.appendingPathComponent("outbox.json")
+        let store = NostrOutboxStore(fileURL: fileURL)
+        let engine = TaskSyncEngine(outbox: store)
+        let board = Board(id: "template-local", name: "Template").templateSnapshot(
+            boardID: "f1a75d28-1ce5-489a-b53a-1e2a447b0cf7"
+        )
+        let boardEvent = try TaskEventCodec.boardEvent(board: board, createdAt: 10)
+        let task = TaskItem(id: "task", boardID: board.id, title: "Queued task")
+        let taskEvent = try TaskEventCodec.taskEvent(task: task, board: board, createdAt: 11)
+
+        try await engine.queueForPublish([
+            TaskSyncPublishRequest(event: boardEvent, board: board, taskID: "_board"),
+            TaskSyncPublishRequest(event: taskEvent, board: board, taskID: task.id),
+        ])
+
+        let pendingPublishCount = await engine.pendingPublishCount()
+        XCTAssertEqual(pendingPublishCount, 2)
+        let queuedEntries = await store.allEntries()
+        XCTAssertEqual(queuedEntries.map(\.event.id), [boardEvent.id, taskEvent.id])
+
+        let reloadedStore = NostrOutboxStore(fileURL: fileURL)
+        let persistedEntries = await reloadedStore.allEntries()
+        XCTAssertEqual(persistedEntries.map(\.event.id), [boardEvent.id, taskEvent.id])
         try? FileManager.default.removeItem(at: directory)
     }
 

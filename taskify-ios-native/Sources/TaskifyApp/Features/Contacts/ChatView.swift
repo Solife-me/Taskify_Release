@@ -1,0 +1,3421 @@
+import PhotosUI
+import QuickLook
+import SwiftUI
+import TaskifyCore
+import UIKit
+import UniformTypeIdentifiers
+
+struct ContactsView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var navigationPath: [String] = []
+    @State private var searchText = ""
+    @State private var showingContactDirectory = false
+    @State private var showingNewConversation = false
+    @State private var showingNewGroup = false
+    @State private var showingStrangers = false
+    @State private var threadPendingDeletion: NostrDirectMessageThread?
+    @FocusState private var searchFocused: Bool
+
+    private var ownContact: NostrContact? {
+        guard !model.identityPublicKey.isEmpty else { return nil }
+        return model.nostrContact(publicKey: model.identityPublicKey)
+    }
+
+    private var activeThreads: [NostrDirectMessageThread] {
+        model.directMessageThreads.filter { !model.isDirectMessageThreadArchived($0.peerPublicKey) }
+    }
+
+    private var strangerThreads: [NostrDirectMessageThread] {
+        activeThreads.filter { thread in
+            model.groupConversation(id: thread.peerPublicKey) == nil &&
+                model.nostrContact(publicKey: thread.peerPublicKey) == nil &&
+                thread.peerPublicKey != model.identityPublicKey
+        }
+    }
+
+    private var familiarThreads: [NostrDirectMessageThread] {
+        let strangerIDs = Set(strangerThreads.map(\.peerPublicKey))
+        return activeThreads.filter { !strangerIDs.contains($0.peerPublicKey) }
+    }
+
+    private var strangerUnreadCount: Int {
+        strangerThreads.reduce(0) { $0 + $1.unreadCount + $1.actionRequiredCount }
+    }
+
+    private var filteredThreads: [NostrDirectMessageThread] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = query.isEmpty
+            ? (showingStrangers ? strangerThreads : familiarThreads)
+            : activeThreads
+        guard !query.isEmpty else { return source }
+        return source.filter { thread in
+            let contact = model.nostrContact(publicKey: thread.peerPublicKey)
+            let group = model.groupConversation(id: thread.peerPublicKey)
+            return contact?.displayName.localizedCaseInsensitiveContains(query) == true ||
+                group?.displayName.localizedCaseInsensitiveContains(query) == true ||
+                contact?.subtitle.localizedCaseInsensitiveContains(query) == true ||
+                thread.peerPublicKey.localizedCaseInsensitiveContains(query) ||
+                thread.messages.contains { message in
+                    message.matchesSearch(
+                        query,
+                        senderName: model.nostrContact(publicKey: message.senderPublicKey)?.displayName
+                    )
+                } || thread.sharedTasks.contains { item in
+                    item.task.title.localizedCaseInsensitiveContains(query) ||
+                        item.task.note?.localizedCaseInsensitiveContains(query) == true ||
+                        item.sender.displayName.localizedCaseInsensitiveContains(query)
+                } || thread.sharedContacts.contains { item in
+                    item.contact.primaryName.localizedCaseInsensitiveContains(query) ||
+                        item.contact.npub.localizedCaseInsensitiveContains(query) ||
+                        item.contact.nip05?.localizedCaseInsensitiveContains(query) == true
+                } || thread.calendarInvites.contains { item in
+                    item.event.displayTitle.localizedCaseInsensitiveContains(query) ||
+                        item.event.start?.localizedCaseInsensitiveContains(query) == true
+                }
+        }
+    }
+
+    var body: some View {
+        NavigationStack(path: $navigationPath) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                searchBar
+
+                if activeThreads.isEmpty {
+                    ScrollView {
+                        emptyState
+                            .padding(.horizontal, 18)
+                            .padding(.top, 30)
+                    }
+                } else if filteredThreads.isEmpty && (showingStrangers || !searchText.isEmpty) {
+                    ScrollView {
+                        if showingStrangers && searchText.isEmpty {
+                            ContentUnavailableView(
+                                "No Stranger Messages",
+                                systemImage: "person.crop.circle.badge.checkmark",
+                                description: Text("Messages from people outside your contacts will appear here.")
+                            )
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .padding(.top, 50)
+                        } else {
+                            ContentUnavailableView.search(text: searchText)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .padding(.top, 50)
+                        }
+                    }
+                } else {
+                    List {
+                        if searchText.isEmpty, !showingStrangers, !strangerThreads.isEmpty {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) { showingStrangers = true }
+                            } label: {
+                                StrangerInboxRow(
+                                    threads: strangerThreads,
+                                    unreadCount: strangerUnreadCount
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                        }
+
+                        ForEach(filteredThreads) { thread in
+                            NavigationLink(value: thread.peerPublicKey) {
+                                DirectMessageThreadRow(
+                                    thread: thread,
+                                    contact: model.nostrContact(publicKey: thread.peerPublicKey),
+                                    group: model.groupConversation(id: thread.peerPublicKey),
+                                    isMuted: model.isDirectMessageGroupMuted(thread.peerPublicKey),
+                                    isBlocked: model.isDirectMessagePeerBlocked(thread.peerPublicKey)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    archive(thread)
+                                } label: {
+                                    Label("Archive", systemImage: "archivebox")
+                                }
+                                .tint(.indigo)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    threadPendingDeletion = thread
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    archive(thread)
+                                } label: {
+                                    Label("Archive Conversation", systemImage: "archivebox")
+                                }
+                                Button(role: .destructive) {
+                                    threadPendingDeletion = thread
+                                } label: {
+                                    Label("Delete Conversation", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .scrollIndicators(.hidden)
+                    .contentMargins(.bottom, 90, for: .scrollContent)
+                }
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationDestination(for: String.self) { peerPublicKey in
+                DirectMessageConversationView(peerPublicKey: peerPublicKey)
+                    .environmentObject(model)
+            }
+        }
+        .sheet(isPresented: $showingContactDirectory) {
+            NostrContactsDirectoryView()
+                .environmentObject(model)
+        }
+        .fullScreenCover(isPresented: $showingNewConversation) {
+            NewConversationSheet { peerPublicKey in
+                showingNewConversation = false
+                navigationPath.append(peerPublicKey)
+            } onNewGroup: {
+                showingNewConversation = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    showingNewGroup = true
+                }
+            }
+            .environmentObject(model)
+        }
+        .fullScreenCover(isPresented: $showingNewGroup) {
+            NewGroupConversationSheet { groupID in
+                showingNewGroup = false
+                navigationPath.append(groupID)
+            }
+            .environmentObject(model)
+        }
+        .task {
+            model.refreshContactsIfNeeded()
+        }
+        .confirmationDialog(
+            "Delete this conversation?",
+            isPresented: Binding(
+                get: { threadPendingDeletion != nil },
+                set: { if !$0 { threadPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Conversation", role: .destructive) {
+                guard let thread = threadPendingDeletion else { return }
+                model.deleteDirectMessageThread(peerPublicKey: thread.peerPublicKey)
+                threadPendingDeletion = nil
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
+            Button("Cancel", role: .cancel) { threadPendingDeletion = nil }
+        } message: {
+            Text("This removes the local history and briefly suppresses relay replays so the conversation stays deleted.")
+        }
+    }
+
+    private var header: some View {
+        ZStack {
+            Text(showingStrangers ? "Strangers" : "Chat")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            HStack(spacing: 10) {
+                if showingStrangers {
+                    HeaderIconButton(systemName: "chevron.left", accessibilityLabel: "Back to conversations") {
+                        withAnimation(.easeInOut(duration: 0.2)) { showingStrangers = false }
+                    }
+                } else {
+                    Button {
+                        showingContactDirectory = true
+                    } label: {
+                        ChatPeerAvatar(
+                            contact: ownContact,
+                            publicKey: model.identityPublicKey,
+                            size: 42
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open contacts and profile")
+                }
+
+                Spacer()
+
+                if showingStrangers {
+                    Color.clear.frame(width: 42, height: 42)
+                } else {
+                    HeaderIconButton(
+                        systemName: "plus",
+                        accent: true,
+                        accessibilityLabel: "New message"
+                    ) {
+                        showingNewConversation = true
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 9)
+        .padding(.bottom, 5)
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            TextField(showingStrangers ? "Search strangers" : "Search", text: $searchText)
+                .font(.subheadline)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .focused($searchFocused)
+
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 42)
+        .background(TaskifyTheme.panelFill, in: Capsule())
+        .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 0.8))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 7)
+    }
+
+    private func archive(_ thread: NostrDirectMessageThread) {
+        model.archiveDirectMessageThread(peerPublicKey: thread.peerPublicKey)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "message.badge.waveform.fill")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(TaskifyTheme.accent)
+            Text("No messages yet")
+                .font(.headline)
+            Text("Start a private conversation or wait for an incoming Nostr message.")
+                .font(.subheadline)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .multilineTextAlignment(.center)
+            Button {
+                showingNewConversation = true
+            } label: {
+                Label("Start a Conversation", systemImage: "square.and.pencil")
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 28)
+        .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(TaskifyTheme.border, style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
+        )
+    }
+}
+
+private struct StrangerInboxRow: View {
+    let threads: [NostrDirectMessageThread]
+    let unreadCount: Int
+
+    private var latestPreview: String {
+        guard let thread = threads.max(by: {
+            $0.latestActivityTimestamp < $1.latestActivityTimestamp
+        }) else {
+            return "Messages from people outside your contacts"
+        }
+        if Int(thread.latestCalendarInvite?.receivedAt.timeIntervalSince1970 ?? 0) == thread.latestActivityTimestamp,
+           let invite = thread.latestCalendarInvite {
+            return "Event invite: \(invite.event.displayTitle)"
+        }
+        if Int(thread.latestSharedContact?.receivedAt.timeIntervalSince1970 ?? 0) == thread.latestActivityTimestamp,
+           let contact = thread.latestSharedContact {
+            return "Shared contact: \(contact.contact.primaryName)"
+        }
+        if Int(thread.latestSharedTask?.receivedAt.timeIntervalSince1970 ?? 0) == thread.latestActivityTimestamp,
+           let task = thread.latestSharedTask {
+            return "Shared task: \(task.task.title)"
+        }
+        return thread.latestMessage?.displayContent ?? "Messages from people outside your contacts"
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(
+                    LinearGradient(
+                        colors: [Color.indigo.opacity(0.86), TaskifyTheme.accent.opacity(0.56)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                    .font(.system(size: 23, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 46, height: 46)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Strangers")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    if unreadCount > 0 {
+                        Text("\(unreadCount)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color(red: 1, green: 0.36, blue: 0.41), Color(red: 1, green: 0.53, blue: 0.44)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                in: Capsule()
+                            )
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+                Text(latestPreview)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .lineLimit(1)
+            }
+        }
+        .padding(12)
+        .background(
+            LinearGradient(
+                colors: [Color.indigo.opacity(0.22), TaskifyTheme.panelFill],
+                startPoint: .leading,
+                endPoint: .trailing
+            ),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.indigo.opacity(0.28), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+}
+
+private struct ThreadStructuredPreview {
+    var text: String
+    var systemImage: String
+    var timestamp: Int
+    var senderName: String
+}
+
+private struct DirectMessageThreadRow: View {
+    @EnvironmentObject private var model: AppModel
+    let thread: NostrDirectMessageThread
+    let contact: NostrContact?
+    let group: NostrGroupConversation?
+    let isMuted: Bool
+    let isBlocked: Bool
+
+    private var hasAttention: Bool {
+        thread.unreadCount > 0 || thread.actionRequiredCount > 0
+    }
+
+    private var latestStructuredPreview: ThreadStructuredPreview? {
+        var candidates: [ThreadStructuredPreview] = []
+        if let item = thread.latestSharedTask {
+            candidates.append(ThreadStructuredPreview(
+                text: item.task.title,
+                systemImage: item.task.isAssignment ? "person.crop.circle.badge.checkmark" : "checklist",
+                timestamp: Int(item.receivedAt.timeIntervalSince1970),
+                senderName: item.sender.displayName
+            ))
+        }
+        if let item = thread.latestSharedContact {
+            candidates.append(ThreadStructuredPreview(
+                text: item.contact.primaryName,
+                systemImage: "person.crop.circle.badge.plus",
+                timestamp: Int(item.receivedAt.timeIntervalSince1970),
+                senderName: item.sender.displayName
+            ))
+        }
+        if let item = thread.latestCalendarInvite {
+            candidates.append(ThreadStructuredPreview(
+                text: item.event.displayTitle,
+                systemImage: "calendar.badge.plus",
+                timestamp: Int(item.receivedAt.timeIntervalSince1970),
+                senderName: item.sender.displayName
+            ))
+        }
+        return candidates.max { $0.timestamp < $1.timestamp }
+    }
+
+    private var latestIsStructured: Bool {
+        guard let latestStructuredPreview else { return false }
+        return latestStructuredPreview.timestamp >= (thread.latestMessage?.createdAt ?? 0)
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ChatPeerAvatar(
+                contact: contact,
+                publicKey: thread.peerPublicKey,
+                isGroup: group != nil
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(group?.displayName ?? contact?.displayName ?? latestStructuredPreview?.senderName ?? shortPublicKey)
+                        .font(.body.weight(hasAttention ? .bold : .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(1)
+                    if isMuted {
+                        Image(systemName: "bell.slash.fill")
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                    }
+                    if isBlocked {
+                        Image(systemName: "hand.raised.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    if thread.latestActivityTimestamp > 0 {
+                        Text(Self.relativeTime(thread.latestActivityTimestamp))
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    if let preview = latestStructuredPreview, latestIsStructured {
+                        Label(
+                            isBlocked ? "Blocked sender" : preview.text,
+                            systemImage: preview.systemImage
+                        )
+                            .font(.subheadline)
+                            .foregroundStyle(hasAttention ? TaskifyTheme.primaryText : TaskifyTheme.secondaryText)
+                            .lineLimit(2)
+                    } else if let message = thread.latestMessage {
+                        Text(isBlocked ? "Blocked sender" : messagePreview(message))
+                            .font(.subheadline)
+                            .foregroundStyle(
+                                hasAttention
+                                    ? TaskifyTheme.primaryText
+                                    : TaskifyTheme.secondaryText
+                            )
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 4)
+                    if thread.unreadCount > 0 {
+                        Text("\(thread.unreadCount)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color(red: 1, green: 0.36, blue: 0.41), Color(red: 1, green: 0.53, blue: 0.44)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                in: Capsule()
+                            )
+                    }
+                    if thread.actionRequiredCount > 0 {
+                        Label("\(thread.actionRequiredCount)", systemImage: "checklist")
+                            .font(.caption2.bold())
+                            .foregroundStyle(TaskifyTheme.accent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(TaskifyTheme.accent.opacity(0.16), in: Capsule())
+                            .accessibilityLabel("\(thread.actionRequiredCount) shared tasks need a response")
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(TaskifyTheme.panelFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        )
+        .contentShape(Rectangle())
+    }
+
+    private var shortPublicKey: String {
+        guard let key = NostrPublicKey.parse(thread.peerPublicKey),
+              let npub = NostrPublicKey.npub(from: key) else {
+            return "Nostr contact"
+        }
+        return npub.count > 22 ? "\(npub.prefix(12))…\(npub.suffix(6))" : npub
+    }
+
+    private func messagePreview(_ message: NostrDirectMessage) -> String {
+        guard message.isIncoming else { return "You: \(message.displayContent)" }
+        guard group != nil else { return message.displayContent }
+        let sender = modelName(for: message.senderPublicKey)
+        return "\(sender): \(message.displayContent)"
+    }
+
+    private func modelName(for publicKey: String) -> String {
+        model.nostrContact(publicKey: publicKey)?.displayName ?? "Member"
+    }
+
+    private static func relativeTime(_ timestamp: Int) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        if Calendar.current.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
+private struct ChatPeerAvatar: View {
+    let contact: NostrContact?
+    let publicKey: String
+    var size: CGFloat = 46
+    var isGroup = false
+
+    var body: some View {
+        Group {
+            if isGroup {
+                ZStack {
+                    Circle().fill(TaskifyTheme.accent.opacity(0.22))
+                    Image(systemName: "person.3.fill")
+                        .font(.system(size: size * 0.36))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                }
+                .frame(width: size, height: size)
+                .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+            } else if let contact {
+                NostrContactAvatar(contact: contact, size: size)
+            } else {
+                ZStack {
+                    Circle().fill(TaskifyTheme.accent.opacity(0.22))
+                    Image(systemName: "person.fill")
+                        .font(.system(size: size * 0.38))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                }
+                .frame(width: size, height: size)
+                .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct NewGroupConversationSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var searchText = ""
+    @State private var selectedKeys = Set<String>()
+    @State private var errorMessage: String?
+    @State private var isNamingGroup = false
+    let onCreate: (String) -> Void
+
+    private var contacts: [NostrContact] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.nostrContacts }
+        return model.nostrContacts.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query) ||
+                $0.subtitle.localizedCaseInsensitiveContains(query) ||
+                $0.npub.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var selectedContacts: [NostrContact] {
+        model.nostrContacts.filter { selectedKeys.contains($0.publicKey) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if isNamingGroup {
+                    namingSections
+                } else {
+                    participantSelectionSection
+                }
+
+                if let errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+            .overlay {
+                if model.nostrContacts.isEmpty {
+                    ContentUnavailableView(
+                        "No Contacts Yet",
+                        systemImage: "person.3",
+                        description: Text("Add or sync contacts before creating a group.")
+                    )
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(TaskifyTheme.background)
+            .navigationTitle(isNamingGroup ? "New Group" : "Add Participants")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(
+                text: $searchText,
+                isPresented: .constant(!isNamingGroup),
+                prompt: "Search contacts"
+            )
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(isNamingGroup ? "Back" : "Cancel") {
+                        if isNamingGroup {
+                            withAnimation(.easeInOut(duration: 0.2)) { isNamingGroup = false }
+                        } else {
+                            dismiss()
+                        }
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isNamingGroup {
+                        Button("Create") { create() }
+                            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    } else {
+                        Button("Next") {
+                            withAnimation(.easeInOut(duration: 0.2)) { isNamingGroup = true }
+                        }
+                        .disabled(
+                            selectedKeys.count < 2 ||
+                                selectedKeys.count >= NostrGroupConversation.maximumMemberCount
+                        )
+                    }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+
+    @ViewBuilder
+    private var namingSections: some View {
+        Section("Group Name") {
+            TextField("Name this group", text: $name)
+                .font(.body)
+                .textInputAutocapitalization(.words)
+                .submitLabel(.done)
+                .onSubmit {
+                    if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        create()
+                    }
+                }
+        }
+
+        Section("Members · \(selectedKeys.count + 1)") {
+            HStack(spacing: 12) {
+                ChatPeerAvatar(
+                    contact: model.nostrContact(publicKey: model.identityPublicKey),
+                    publicKey: model.identityPublicKey,
+                    size: 40
+                )
+                participantLabel(name: "You", subtitle: "Group creator")
+            }
+            ForEach(selectedContacts) { contact in
+                HStack(spacing: 12) {
+                    NostrContactAvatar(contact: contact, size: 40)
+                    participantLabel(name: contact.displayName, subtitle: contact.subtitle)
+                }
+            }
+        }
+    }
+
+    private var participantSelectionSection: some View {
+        Section {
+            ForEach(contacts) { contact in
+                Button {
+                    toggle(contact.publicKey)
+                } label: {
+                    HStack(spacing: 12) {
+                        NostrContactAvatar(contact: contact, size: 40)
+                        participantLabel(name: contact.displayName, subtitle: contact.subtitle)
+                        Spacer()
+                        Image(systemName: selectedKeys.contains(contact.publicKey)
+                              ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .foregroundStyle(selectedKeys.contains(contact.publicKey)
+                                             ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Text("People · \(selectedKeys.count + 1)/\(NostrGroupConversation.maximumMemberCount)")
+        } footer: {
+            Text("Select at least two people. Group membership and messages are end-to-end encrypted.")
+        }
+    }
+
+    private func participantLabel(name: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name)
+                .foregroundStyle(TaskifyTheme.primaryText)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+    }
+
+    private func toggle(_ key: String) {
+        if selectedKeys.contains(key) {
+            selectedKeys.remove(key)
+        } else if selectedKeys.count < NostrGroupConversation.maximumMemberCount - 1 {
+            selectedKeys.insert(key)
+        }
+    }
+
+    private func create() {
+        do {
+            let groupID = try model.createGroupConversation(
+                name: name,
+                memberPublicKeys: Array(selectedKeys)
+            )
+            onCreate(groupID)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct NewConversationSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    let onSelect: (String) -> Void
+    let onNewGroup: () -> Void
+
+    private var contacts: [NostrContact] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.nostrContacts }
+        return model.nostrContacts.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query) ||
+                $0.subtitle.localizedCaseInsensitiveContains(query) ||
+                $0.npub.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button(action: onNewGroup) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.3.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 42, height: 42)
+                            .background(TaskifyTheme.accent, in: Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("New Group")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text("Start an encrypted group conversation")
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                ForEach(contacts) { contact in
+                    Button {
+                        onSelect(contact.publicKey)
+                    } label: {
+                        HStack(spacing: 12) {
+                            NostrContactAvatar(contact: contact, size: 42)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(contact.displayName)
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                Text(contact.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .overlay {
+                if model.nostrContacts.isEmpty {
+                    ContentUnavailableView(
+                        "No Contacts Yet",
+                        systemImage: "person.2",
+                        description: Text("Add or sync a contact before starting a new conversation.")
+                    )
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(TaskifyTheme.background)
+            .navigationTitle("New Message")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search contacts")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+}
+
+private struct ShareContactPickerSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    @State private var sendingContactID: String?
+    let onSelect: (NostrContact) async -> Bool
+
+    private var contacts: [NostrContact] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.nostrContacts }
+        return model.nostrContacts.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query) ||
+                $0.subtitle.localizedCaseInsensitiveContains(query) ||
+                $0.npub.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(contacts) { contact in
+                Button {
+                    guard sendingContactID == nil else { return }
+                    sendingContactID = contact.id
+                    Task {
+                        if await onSelect(contact) { dismiss() }
+                        sendingContactID = nil
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        NostrContactAvatar(contact: contact, size: 42)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(contact.displayName)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text(contact.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        Spacer()
+                        if sendingContactID == contact.id {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "paperplane")
+                                .foregroundStyle(TaskifyTheme.accent)
+                        }
+                    }
+                }
+                .disabled(sendingContactID != nil)
+            }
+            .overlay {
+                if model.nostrContacts.isEmpty {
+                    ContentUnavailableView(
+                        "No Contacts to Share",
+                        systemImage: "person.crop.circle.badge.plus",
+                        description: Text("Add or sync contacts before sharing one.")
+                    )
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(TaskifyTheme.background)
+            .navigationTitle("Share Contact")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search contacts")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(sendingContactID != nil)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+}
+
+private enum GroupConversationDetailsTab: String, CaseIterable, Identifiable {
+    case info = "Info"
+    case photos = "Photos"
+    case links = "Links"
+
+    var id: String { rawValue }
+}
+
+private struct GroupConversationLink: Identifiable {
+    let id: String
+    let url: URL
+    let senderPublicKey: String
+    let createdAt: Int
+}
+
+private struct GroupConversationDetailsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @State private var draftName = ""
+    @State private var isEditingName = false
+    @State private var isSaving = false
+    @State private var statusMessage: String?
+    @State private var errorMessage: String?
+    @State private var selectedTab = GroupConversationDetailsTab.info
+    let groupID: String
+
+    private var group: NostrGroupConversation? { model.groupConversation(id: groupID) }
+    private var messages: [NostrDirectMessage] { model.directMessages(with: groupID) }
+    private var attachmentMessages: [NostrDirectMessage] {
+        messages.filter { $0.attachment != nil }
+    }
+    private var links: [GroupConversationLink] {
+        messages.flatMap { message in
+            TaskContentLinks.allURLs(in: message.content).enumerated().map { index, url in
+                GroupConversationLink(
+                    id: "\(message.rumorEventID)-\(index)",
+                    url: url,
+                    senderPublicKey: message.senderPublicKey,
+                    createdAt: message.createdAt
+                )
+            }
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let group {
+                    VStack(spacing: 0) {
+                        VStack(spacing: 8) {
+                            ChatPeerAvatar(
+                                contact: nil,
+                                publicKey: group.groupID,
+                                size: 72,
+                                isGroup: true
+                            )
+                            Text(group.displayName)
+                                .font(.title2.bold())
+                                .multilineTextAlignment(.center)
+                            Text("\(group.memberPublicKeys.count) participants")
+                                .font(.subheadline)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        .padding(.top, 12)
+                        .padding(.bottom, 14)
+
+                        groupDetailsTabs
+
+                        tabContent(group)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "Group Unavailable",
+                        systemImage: "person.3",
+                        description: Text("This group is no longer stored on this device.")
+                    )
+                }
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Group Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .onAppear {
+            draftName = group?.name ?? ""
+        }
+    }
+
+    private var groupDetailsTabs: some View {
+        HStack(spacing: 0) {
+            ForEach(GroupConversationDetailsTab.allCases) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tab }
+                } label: {
+                    VStack(spacing: 8) {
+                        Text(tab.rawValue)
+                            .font(.subheadline.weight(selectedTab == tab ? .bold : .semibold))
+                            .foregroundStyle(
+                                selectedTab == tab ? TaskifyTheme.primaryText : TaskifyTheme.secondaryText
+                            )
+                        Capsule()
+                            .fill(selectedTab == tab ? TaskifyTheme.accent : Color.clear)
+                            .frame(height: 3)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func tabContent(_ group: NostrGroupConversation) -> some View {
+        switch selectedTab {
+        case .info:
+            infoContent(group)
+        case .photos:
+            attachmentContent
+        case .links:
+            linkContent
+        }
+    }
+
+    private func infoContent(_ group: NostrGroupConversation) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("GROUP NAME")
+                    .font(.caption2.bold())
+                    .tracking(0.8)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .padding(.leading, 4)
+
+                if isEditingName {
+                    VStack(spacing: 12) {
+                        TextField("Group name", text: $draftName)
+                            .textInputAutocapitalization(.words)
+                            .submitLabel(.done)
+                            .onSubmit(saveName)
+                            .padding(.horizontal, 13)
+                            .frame(height: 44)
+                            .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 12))
+
+                        HStack(spacing: 12) {
+                            Button("Cancel") {
+                                draftName = group.name
+                                isEditingName = false
+                                errorMessage = nil
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isSaving)
+
+                            Spacer()
+
+                            Button {
+                                saveName()
+                            } label: {
+                                if isSaving {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text("Save")
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(
+                                isSaving ||
+                                    draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            )
+                        }
+                    }
+                    .padding(14)
+                    .taskifyGlass(cornerRadius: 18)
+                } else {
+                    Button {
+                        draftName = group.name
+                        statusMessage = nil
+                        errorMessage = nil
+                        isEditingName = true
+                    } label: {
+                        HStack {
+                            Text(group.displayName)
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Spacer()
+                            Image(systemName: "pencil")
+                                .foregroundStyle(TaskifyTheme.accent)
+                        }
+                        .padding(14)
+                        .taskifyGlass(cornerRadius: 18)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if let statusMessage {
+                    Label(statusMessage, systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                Text("PARTICIPANTS")
+                    .font(.caption2.bold())
+                    .tracking(0.8)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .padding(.leading, 4)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(group.memberPublicKeys, id: \.self) { publicKey in
+                            participantCell(publicKey)
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                }
+
+                Text("CONVERSATION")
+                    .font(.caption2.bold())
+                    .tracking(0.8)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .padding(.leading, 4)
+
+                VStack(spacing: 0) {
+                    Toggle(
+                        "Mute Group",
+                        isOn: Binding(
+                            get: { model.isDirectMessageGroupMuted(group.groupID) },
+                            set: { muted in
+                                model.setDirectMessageGroupMuted(group.groupID, muted: muted)
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                        )
+                    )
+                    .padding(14)
+
+                    Divider().overlay(TaskifyTheme.border)
+
+                    Button(role: model.hasLeftDirectMessageGroup(group.groupID) ? nil : .destructive) {
+                        let left = !model.hasLeftDirectMessageGroup(group.groupID)
+                        model.setDirectMessageGroupLeft(group.groupID, left: left)
+                        UINotificationFeedbackGenerator().notificationOccurred(left ? .warning : .success)
+                    } label: {
+                        HStack {
+                            Label(
+                                model.hasLeftDirectMessageGroup(group.groupID) ? "Rejoin Group" : "Leave Group",
+                                systemImage: model.hasLeftDirectMessageGroup(group.groupID)
+                                    ? "arrow.uturn.forward.circle" : "rectangle.portrait.and.arrow.right"
+                            )
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.bold())
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+                        .padding(14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .taskifyGlass(cornerRadius: 18)
+
+                Text("Muted groups stay available without adding new unread badges. Leaving disables replies and attachments until you rejoin.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                    .padding(.horizontal, 4)
+            }
+            .padding(16)
+        }
+    }
+
+    @ViewBuilder
+    private var attachmentContent: some View {
+        if attachmentMessages.isEmpty {
+            ContentUnavailableView(
+                "No Shared Attachments",
+                systemImage: "photo.on.rectangle.angled",
+                description: Text("Photos and files shared with this group will appear here.")
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 140), spacing: 12)],
+                    spacing: 12
+                ) {
+                    ForEach(attachmentMessages) { message in
+                        if let attachment = message.attachment {
+                            DirectMessageAttachmentView(attachment: attachment, compact: true)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var linkContent: some View {
+        if links.isEmpty {
+            ContentUnavailableView(
+                "No Shared Links",
+                systemImage: "link",
+                description: Text("Web links shared in group messages will appear here.")
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            List(links) { link in
+                Button {
+                    openURL(link.url)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "link")
+                            .font(.headline)
+                            .foregroundStyle(TaskifyTheme.accent)
+                            .frame(width: 42, height: 42)
+                            .background(TaskifyTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(TaskContentLinks.fallbackTitle(for: link.url))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                                .lineLimit(2)
+                            Text(link.url.absoluteString)
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .lineLimit(1)
+                            Text(linkMetadata(link))
+                                .font(.caption2)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+
+                        Spacer(minLength: 2)
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .scrollContentBackground(.hidden)
+        }
+    }
+
+    private func linkMetadata(_ link: GroupConversationLink) -> String {
+        let sender = participantName(
+            link.senderPublicKey,
+            contact: model.nostrContact(publicKey: link.senderPublicKey)
+        )
+        let date = Date(timeIntervalSince1970: TimeInterval(link.createdAt))
+            .formatted(date: .abbreviated, time: .shortened)
+        return "\(sender) · \(date)"
+    }
+
+    @ViewBuilder
+    private func participantRow(_ publicKey: String) -> some View {
+        let contact = model.nostrContact(publicKey: publicKey)
+        HStack(spacing: 12) {
+            if let contact {
+                NostrContactAvatar(contact: contact, size: 42)
+            } else {
+                ChatPeerAvatar(contact: nil, publicKey: publicKey, size: 42)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(participantName(publicKey, contact: contact))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Text(participantKey(publicKey, contact: contact))
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func participantCell(_ publicKey: String) -> some View {
+        let contact = model.nostrContact(publicKey: publicKey)
+        VStack(spacing: 7) {
+            if let contact {
+                NostrContactAvatar(contact: contact, size: 58)
+            } else {
+                ChatPeerAvatar(contact: nil, publicKey: publicKey, size: 58)
+            }
+            Text(participantName(publicKey, contact: contact))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .frame(width: 72)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func participantName(_ publicKey: String, contact: NostrContact?) -> String {
+        if publicKey == model.identityPublicKey { return "You" }
+        return contact?.displayName ?? "Group Member"
+    }
+
+    private func participantKey(_ publicKey: String, contact: NostrContact?) -> String {
+        let value: String
+        if publicKey == model.identityPublicKey, !model.identityNpub.isEmpty {
+            value = model.identityNpub
+        } else if let contact {
+            value = contact.npub
+        } else if let key = NostrPublicKey.parse(publicKey),
+                  let npub = NostrPublicKey.npub(from: key) {
+            value = npub
+        } else {
+            value = publicKey
+        }
+        guard value.count > 26 else { return value }
+        return "\(value.prefix(15))…\(value.suffix(8))"
+    }
+
+    private func saveName() {
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !isSaving else { return }
+        isSaving = true
+        statusMessage = nil
+        errorMessage = nil
+        Task {
+            do {
+                let queuedForSync = try await model.renameGroupConversation(
+                    groupID: groupID,
+                    name: name
+                )
+                draftName = name
+                isEditingName = false
+                statusMessage = queuedForSync
+                    ? "Group name updated"
+                    : "Saved locally; it will sync with the next group message"
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            isSaving = false
+        }
+    }
+}
+
+private enum ChatTimelineItem: Identifiable, Equatable {
+    case message(NostrDirectMessage)
+    case sharedTask(SharedInboxItem)
+    case sharedContact(SharedContactInboxItem)
+    case calendarInvite(SharedCalendarInviteInboxItem)
+
+    var id: String {
+        switch self {
+        case let .message(message): "message-\(message.id)"
+        case let .sharedTask(item): "shared-task-\(item.id)"
+        case let .sharedContact(item): "shared-contact-\(item.id)"
+        case let .calendarInvite(item): "calendar-invite-\(item.id)"
+        }
+    }
+
+    var timestamp: Int {
+        switch self {
+        case let .message(message): message.createdAt
+        case let .sharedTask(item): Int(item.receivedAt.timeIntervalSince1970)
+        case let .sharedContact(item): Int(item.receivedAt.timeIntervalSince1970)
+        case let .calendarInvite(item): Int(item.receivedAt.timeIntervalSince1970)
+        }
+    }
+
+    func matchesSearch(_ query: String, senderName: (String) -> String) -> Bool {
+        switch self {
+        case let .message(message):
+            message.matchesSearch(query, senderName: senderName(message.senderPublicKey))
+        case let .sharedTask(item):
+            item.task.title.localizedCaseInsensitiveContains(query) ||
+                item.task.note?.localizedCaseInsensitiveContains(query) == true ||
+                item.sender.displayName.localizedCaseInsensitiveContains(query)
+        case let .sharedContact(item):
+            item.contact.primaryName.localizedCaseInsensitiveContains(query) ||
+                item.contact.npub.localizedCaseInsensitiveContains(query) ||
+                item.contact.nip05?.localizedCaseInsensitiveContains(query) == true
+        case let .calendarInvite(item):
+            item.event.displayTitle.localizedCaseInsensitiveContains(query) ||
+                item.event.start?.localizedCaseInsensitiveContains(query) == true ||
+                item.sender.displayName.localizedCaseInsensitiveContains(query)
+        }
+    }
+}
+
+private struct DirectMessageConversationView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var composerFocused: Bool
+    @FocusState private var searchFocused: Bool
+    @State private var draft = ""
+    @State private var isSending = false
+    @State private var isSendingAttachment = false
+    @State private var replyingTo: NostrDirectMessage?
+    @State private var showingPhotoPicker = false
+    @State private var photoSelection: PhotosPickerItem?
+    @State private var showingFileImporter = false
+    @State private var showingContactSharePicker = false
+    @State private var showingGroupDetails = false
+    @State private var isSearchingConversation = false
+    @State private var searchQuery = ""
+    @State private var selectedSearchResultID: String?
+    @State private var isAddingContact = false
+    @State private var confirmingConversationDeletion = false
+    let peerPublicKey: String
+
+    private var contact: NostrContact? { model.nostrContact(publicKey: peerPublicKey) }
+    private var group: NostrGroupConversation? { model.groupConversation(id: peerPublicKey) }
+    private var messages: [NostrDirectMessage] { model.directMessages(with: peerPublicKey) }
+    private var sharedTasks: [SharedInboxItem] {
+        model.sharedInboxItems
+            .filter {
+                $0.status != .deleted &&
+                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+            }
+            .sorted {
+                if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
+                return $0.id < $1.id
+            }
+    }
+    private var sharedContacts: [SharedContactInboxItem] {
+        model.sharedContactInboxItems
+            .filter {
+                $0.status != .deleted &&
+                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+            }
+            .sorted {
+                if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
+                return $0.id < $1.id
+            }
+    }
+    private var calendarInvites: [SharedCalendarInviteInboxItem] {
+        model.sharedCalendarInviteItems
+            .filter {
+                $0.status != .deleted &&
+                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+            }
+            .sorted {
+                if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
+                return $0.id < $1.id
+            }
+    }
+    private var timeline: [ChatTimelineItem] {
+        (
+            messages.map(ChatTimelineItem.message)
+                + sharedTasks.map(ChatTimelineItem.sharedTask)
+                + sharedContacts.map(ChatTimelineItem.sharedContact)
+                + calendarInvites.map(ChatTimelineItem.calendarInvite)
+        )
+            .sorted {
+                if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
+                return $0.id < $1.id
+            }
+    }
+    private var structuredSenderName: String? {
+        var values: [(Date, String)] = sharedTasks.map { ($0.receivedAt, $0.sender.displayName) }
+        values += sharedContacts.map { ($0.receivedAt, $0.sender.displayName) }
+        values += calendarInvites.map { ($0.receivedAt, $0.sender.displayName) }
+        return values.max { $0.0 < $1.0 }?.1
+    }
+    private var isStranger: Bool {
+        group == nil && contact == nil && peerPublicKey != model.identityPublicKey
+    }
+    private var isBlocked: Bool { model.isDirectMessagePeerBlocked(peerPublicKey) }
+    private var hasLeftGroup: Bool { group != nil && model.hasLeftDirectMessageGroup(peerPublicKey) }
+    private var conversationTitle: String {
+        group?.displayName ?? contact?.displayName ?? structuredSenderName ?? "Message"
+    }
+    private var searchResults: [ChatTimelineItem] {
+        timeline.filter {
+            $0.matchesSearch(searchQuery, senderName: senderName(for:))
+        }
+    }
+    private var searchResultIDs: Set<String> { Set(searchResults.map(\.id)) }
+    private var selectedSearchResultIndex: Int? {
+        guard let selectedSearchResultID else { return nil }
+        return searchResults.firstIndex { $0.id == selectedSearchResultID }
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if timeline.isEmpty {
+                        VStack(spacing: 12) {
+                            ChatPeerAvatar(
+                                contact: contact,
+                                publicKey: peerPublicKey,
+                                size: 72,
+                                isGroup: group != nil
+                            )
+                            Text(group?.displayName ?? contact?.displayName ?? structuredSenderName ?? "New conversation")
+                                .font(.headline)
+                            Text("Messages are end-to-end encrypted with your Nostr identity.")
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding(.horizontal, 30)
+                        .padding(.top, 70)
+                    } else {
+                        ForEach(Array(timeline.enumerated()), id: \.element.id) { index, item in
+                            if shouldShowDayDivider(at: index) {
+                                ChatDayDivider(timestamp: item.timestamp)
+                            }
+
+                            switch item {
+                            case let .message(message):
+                                let groupedWithPrevious = isMessageGrouped(at: index, with: index - 1)
+                                let groupedWithNext = isMessageGrouped(at: index + 1, with: index)
+                                DirectMessageBubble(
+                                    message: message,
+                                    repliedMessage: repliedMessage(for: message),
+                                    reactions: model.directMessageReactions(for: message),
+                                    senderName: group != nil && message.isIncoming && !groupedWithPrevious
+                                        ? senderName(for: message.senderPublicKey) : nil,
+                                    senderContact: group != nil && message.isIncoming
+                                        ? model.nostrContact(publicKey: message.senderPublicKey) : nil,
+                                    showsSenderAvatar: group != nil && message.isIncoming,
+                                    isGroupedWithPrevious: groupedWithPrevious,
+                                    isGroupedWithNext: groupedWithNext,
+                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSelectedSearchResult: selectedSearchResultID == item.id
+                                )
+                                .contextMenu {
+                                    Menu("React", systemImage: "face.smiling") {
+                                        ForEach(["❤️", "👍", "👎", "😂", "😮", "😢"], id: \.self) { emoji in
+                                            Button(emoji) { react(to: message, with: emoji) }
+                                        }
+                                    }
+                                    if model.directMessageReactions(for: message).contains(where: {
+                                        $0.senderPublicKey == model.identityPublicKey
+                                    }) {
+                                        Button("Remove Reaction", systemImage: "minus.circle") {
+                                            react(to: message, with: "-")
+                                        }
+                                    }
+                                    Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                                        replyingTo = message
+                                        composerFocused = true
+                                    }
+                                    if message.attachment == nil {
+                                        Button("Copy", systemImage: "doc.on.doc") {
+                                            UIPasteboard.general.string = message.content
+                                        }
+                                    }
+                                }
+                                .id(item.id)
+                            case let .sharedTask(sharedTask):
+                                SharedTaskChatCard(
+                                    item: sharedTask,
+                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSelectedSearchResult: selectedSearchResultID == item.id
+                                )
+                                .id(item.id)
+                            case let .sharedContact(sharedContact):
+                                SharedContactChatCard(
+                                    item: sharedContact,
+                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSelectedSearchResult: selectedSearchResultID == item.id
+                                )
+                                .id(item.id)
+                            case let .calendarInvite(invite):
+                                SharedCalendarInviteChatCard(
+                                    item: invite,
+                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSelectedSearchResult: selectedSearchResultID == item.id
+                                )
+                                .id(item.id)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .defaultScrollAnchor(.bottom)
+            .safeAreaInset(edge: .top, spacing: 6) {
+                VStack(spacing: 7) {
+                    if isStranger {
+                        strangerSafetyBar
+                            .padding(.horizontal, 12)
+                    }
+                    if isSearchingConversation {
+                        conversationSearchBar(proxy: proxy)
+                            .padding(.horizontal, 12)
+                    }
+                }
+            }
+            .onAppear {
+                markReadAndScroll(proxy: proxy, animated: false)
+            }
+            .onChange(of: timeline.count) { _, _ in
+                if isSearchingConversation, !searchQuery.isEmpty {
+                    selectNewestSearchResult(proxy: proxy)
+                } else {
+                    markReadAndScroll(proxy: proxy, animated: true)
+                }
+            }
+            .onChange(of: searchQuery) { _, _ in
+                selectNewestSearchResult(proxy: proxy)
+            }
+        }
+        .background(TaskifyTheme.background.ignoresSafeArea())
+        .safeAreaInset(edge: .top, spacing: 0) {
+            conversationHeader
+        }
+        .safeAreaInset(edge: .bottom, spacing: 8) {
+            Group {
+                if hasLeftGroup {
+                    restrictedConversationFooter(
+                        title: "You left this group",
+                        actionTitle: "Rejoin",
+                        systemImage: "arrow.uturn.forward.circle"
+                    ) {
+                        model.setDirectMessageGroupLeft(peerPublicKey, left: false)
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    }
+                    .padding(.horizontal, 12)
+                } else if isBlocked {
+                    restrictedConversationFooter(
+                        title: "This sender is blocked",
+                        actionTitle: "Unblock",
+                        systemImage: "hand.raised.slash"
+                    ) {
+                        model.setDirectMessagePeerBlocked(peerPublicKey, blocked: false)
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    }
+                    .padding(.horizontal, 12)
+                } else {
+                    composer
+                }
+            }
+        }
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
+        .sheet(isPresented: $showingGroupDetails) {
+            GroupConversationDetailsView(groupID: peerPublicKey)
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $showingContactSharePicker) {
+            ShareContactPickerSheet { contact in
+                await shareContact(contact)
+            }
+            .environmentObject(model)
+        }
+        .photosPicker(
+            isPresented: $showingPhotoPicker,
+            selection: $photoSelection,
+            matching: .any(of: [.images, .videos]),
+            preferredItemEncoding: .automatic
+        )
+        .onChange(of: photoSelection) { _, selection in
+            guard let selection else { return }
+            Task { await sendPhotoSelection(selection) }
+        }
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let URLs) = result, let URL = URLs.first else {
+                if case .failure(let error) = result { model.errorMessage = error.localizedDescription }
+                return
+            }
+            Task { await sendFile(URL) }
+        }
+        .confirmationDialog(
+            "Delete this conversation?",
+            isPresented: $confirmingConversationDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Conversation", role: .destructive) {
+                model.deleteDirectMessageThread(peerPublicKey: peerPublicKey)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the conversation from this device and suppresses immediate relay replays.")
+        }
+    }
+
+    private var conversationHeader: some View {
+        ZStack {
+            Button {
+                if group != nil { showingGroupDetails = true }
+            } label: {
+                VStack(spacing: 2) {
+                    ChatPeerAvatar(
+                        contact: contact,
+                        publicKey: peerPublicKey,
+                        size: 42,
+                        isGroup: group != nil
+                    )
+                    Text(conversationTitle)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(1)
+                    if let group {
+                        Text("\(group.memberPublicKeys.count) members")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                }
+                .frame(maxWidth: 220)
+            }
+            .buttonStyle(.plain)
+            .disabled(group == nil)
+
+            HStack {
+                HeaderIconButton(systemName: "chevron.left", accessibilityLabel: "Back to chats") {
+                    dismiss()
+                }
+
+                Spacer()
+
+                Menu {
+                    Button {
+                        toggleConversationSearch()
+                    } label: {
+                        Label(
+                            isSearchingConversation ? "Close Search" : "Search Conversation",
+                            systemImage: "magnifyingglass"
+                        )
+                    }
+                    if group != nil {
+                        Button {
+                            showingGroupDetails = true
+                        } label: {
+                            Label("Group Details", systemImage: "person.3")
+                        }
+                    }
+                    Button {
+                        model.archiveDirectMessageThread(peerPublicKey: peerPublicKey)
+                        dismiss()
+                    } label: {
+                        Label("Archive Conversation", systemImage: "archivebox")
+                    }
+                    Button(role: .destructive) {
+                        confirmingConversationDeletion = true
+                    } label: {
+                        Label("Delete Conversation", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .bold))
+                        .frame(width: 42, height: 42)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Conversation actions")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.07))
+                .frame(height: 0.5)
+        }
+    }
+
+    private var strangerSafetyBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "person.crop.circle.badge.questionmark")
+                .font(.headline)
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Unknown sender")
+                    .font(.caption.bold())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Text("Only reply if you recognize this account.")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            Spacer(minLength: 4)
+
+            Button(isBlocked ? "Unblock" : "Block") {
+                model.setDirectMessagePeerBlocked(peerPublicKey, blocked: !isBlocked)
+                UINotificationFeedbackGenerator().notificationOccurred(isBlocked ? .success : .warning)
+            }
+            .font(.caption.bold())
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+
+            Button {
+                addStrangerToContacts()
+            } label: {
+                if isAddingContact {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Add")
+                }
+            }
+            .font(.caption.bold())
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .disabled(isAddingContact)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.orange.opacity(0.24), lineWidth: 1)
+        )
+    }
+
+    private func restrictedConversationFooter(
+        title: String,
+        actionTitle: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Spacer()
+            Button(action: action) {
+                Label(actionTitle, systemImage: systemImage)
+                    .font(.subheadline.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+        }
+        .padding(10)
+        .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private func addStrangerToContacts() {
+        guard !isAddingContact else { return }
+        isAddingContact = true
+        let relay = messages.flatMap { $0.relayURLs ?? [] }.first
+        Task {
+            do {
+                _ = try await model.saveNostrContact(
+                    publicKeyValue: peerPublicKey,
+                    petname: nil,
+                    relayURL: relay
+                )
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            isAddingContact = false
+        }
+    }
+
+    private func conversationSearchBar(proxy: ScrollViewProxy) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            TextField("Search conversation", text: $searchQuery)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .focused($searchFocused)
+                .submitLabel(.search)
+
+            if !searchQuery.isEmpty {
+                Button {
+                    searchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear conversation search")
+            }
+
+            Text(searchResultPositionLabel)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(minWidth: 34)
+
+            Button {
+                moveSearchResult(by: -1, proxy: proxy)
+            } label: {
+                Image(systemName: "chevron.up")
+                    .frame(width: 28, height: 32)
+            }
+            .buttonStyle(.plain)
+            .disabled(searchResults.isEmpty)
+            .accessibilityLabel("Previous search result")
+
+            Button {
+                moveSearchResult(by: 1, proxy: proxy)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .frame(width: 28, height: 32)
+            }
+            .buttonStyle(.plain)
+            .disabled(searchResults.isEmpty)
+            .accessibilityLabel("Next search result")
+        }
+        .font(.subheadline)
+        .foregroundStyle(TaskifyTheme.primaryText)
+        .padding(.horizontal, 13)
+        .frame(height: 48)
+        .taskifyGlassControl(in: Capsule())
+    }
+
+    private var searchResultPositionLabel: String {
+        guard let index = selectedSearchResultIndex, !searchResults.isEmpty else { return "0/0" }
+        return "\(index + 1)/\(searchResults.count)"
+    }
+
+    private func toggleConversationSearch() {
+        if isSearchingConversation {
+            isSearchingConversation = false
+            searchQuery = ""
+            selectedSearchResultID = nil
+            searchFocused = false
+        } else {
+            composerFocused = false
+            isSearchingConversation = true
+            DispatchQueue.main.async { searchFocused = true }
+        }
+    }
+
+    private func selectNewestSearchResult(proxy: ScrollViewProxy) {
+        guard !searchResults.isEmpty else {
+            selectedSearchResultID = nil
+            return
+        }
+        selectedSearchResultID = searchResults.last?.id
+        scrollToSelectedSearchResult(proxy: proxy)
+    }
+
+    private func moveSearchResult(by offset: Int, proxy: ScrollViewProxy) {
+        guard !searchResults.isEmpty else { return }
+        let currentIndex = selectedSearchResultIndex ?? searchResults.count - 1
+        let nextIndex = (currentIndex + offset + searchResults.count) % searchResults.count
+        selectedSearchResultID = searchResults[nextIndex].id
+        scrollToSelectedSearchResult(proxy: proxy)
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func scrollToSelectedSearchResult(proxy: ScrollViewProxy) {
+        guard let selectedSearchResultID else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            proxy.scrollTo(selectedSearchResultID, anchor: .center)
+        }
+    }
+
+    private var composer: some View {
+        VStack(spacing: 6) {
+            if let replyingTo {
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(TaskifyTheme.accent)
+                        .frame(width: 3, height: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Replying to \(replyTargetName(replyingTo))")
+                            .font(.caption.bold())
+                            .foregroundStyle(TaskifyTheme.accent)
+                        Text(replyingTo.displayContent)
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Button {
+                        self.replyingTo = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 9)
+            }
+
+            HStack(alignment: .bottom, spacing: 9) {
+                Menu {
+                    Button {
+                        showingPhotoPicker = true
+                    } label: {
+                        Label("Photo or Video", systemImage: "photo.on.rectangle")
+                    }
+                    Button {
+                        showingFileImporter = true
+                    } label: {
+                        Label("Document", systemImage: "doc")
+                    }
+                    if group == nil {
+                        Button {
+                            showingContactSharePicker = true
+                        } label: {
+                            Label("Share Contact", systemImage: "person.crop.circle.badge.plus")
+                        }
+                    }
+                } label: {
+                    Group {
+                        if isSendingAttachment {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "plus")
+                                .font(.system(size: 17, weight: .semibold))
+                        }
+                    }
+                    .frame(width: 42, height: 42)
+                    .taskifyGlassControl(in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isSending || isSendingAttachment)
+                .accessibilityLabel(isSendingAttachment ? "Sending attachment" : "Add attachment")
+
+                TextField("Message", text: $draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .focused($composerFocused)
+                    .submitLabel(.send)
+                    .onSubmit { send() }
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 11)
+                    .background(TaskifyTheme.panelFill, in: Capsule())
+                    .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 0.8))
+
+                Button {
+                    send()
+                } label: {
+                    Group {
+                        if isSending {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: "paperplane.fill")
+                                .font(.system(size: 16, weight: .bold))
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.circle)
+                .disabled(
+                    draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        isSending || isSendingAttachment
+                )
+                .accessibilityLabel("Send message")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 5)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 0.5)
+        }
+    }
+
+    private func send() {
+        let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty, !isSending else { return }
+        let capturedReply = replyingTo
+        draft = ""
+        replyingTo = nil
+        isSending = true
+        Task {
+            do {
+                try await model.sendDirectMessage(
+                    to: peerPublicKey,
+                    content: content,
+                    replyToEventID: capturedReply?.rumorEventID
+                )
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } catch {
+                draft = content
+                replyingTo = capturedReply
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            isSending = false
+            composerFocused = true
+        }
+    }
+
+    private func shareContact(_ contact: NostrContact) async -> Bool {
+        do {
+            try await model.sendSharedContact(
+                contactPublicKey: contact.publicKey,
+                to: peerPublicKey
+            )
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return true
+        } catch {
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return false
+        }
+    }
+
+    @MainActor
+    private func sendPhotoSelection(_ selection: PhotosPickerItem) async {
+        defer { photoSelection = nil }
+        do {
+            guard let data = try await selection.loadTransferable(type: Data.self), !data.isEmpty else {
+                throw ChatAttachmentError.unreadableFile
+            }
+            let contentType = selection.supportedContentTypes.first ?? .data
+            let mimeType = contentType.preferredMIMEType ?? "application/octet-stream"
+            let prefix = contentType.conforms(to: .movie) ? "Video" : "Photo"
+            let name = "\(prefix).\(contentType.preferredFilenameExtension ?? "bin")"
+            let image = contentType.conforms(to: .image) ? UIImage(data: data) : nil
+            try await sendAttachment(
+                data: data,
+                name: name,
+                mimeType: mimeType,
+                width: image.map { Int($0.size.width * $0.scale) },
+                height: image.map { Int($0.size.height * $0.scale) }
+            )
+        } catch {
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    @MainActor
+    private func sendFile(_ fileURL: URL) async {
+        let accessing = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { fileURL.stopAccessingSecurityScopedResource() }
+        }
+        do {
+            let values = try fileURL.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey, .nameKey])
+            if let size = values.fileSize, size > TaskDocumentContract.maximumUploadBytes {
+                throw TaskAttachmentUploadError.fileTooLarge
+            }
+            let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+            let type = values.contentType
+            let image = type?.conforms(to: .image) == true ? UIImage(data: data) : nil
+            try await sendAttachment(
+                data: data,
+                name: values.name ?? fileURL.lastPathComponent,
+                mimeType: type?.preferredMIMEType ?? "application/octet-stream",
+                width: image.map { Int($0.size.width * $0.scale) },
+                height: image.map { Int($0.size.height * $0.scale) }
+            )
+        } catch {
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    @MainActor
+    private func sendAttachment(
+        data: Data,
+        name: String,
+        mimeType: String,
+        width: Int?,
+        height: Int?
+    ) async throws {
+        guard !isSending, !isSendingAttachment else { return }
+        let capturedReply = replyingTo
+        isSendingAttachment = true
+        defer { isSendingAttachment = false }
+        let attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
+            data: data,
+            name: name,
+            mimeType: mimeType,
+            width: width,
+            height: height
+        )
+        try await model.sendDirectMessageAttachment(
+            to: peerPublicKey,
+            attachment: attachment,
+            replyToEventID: capturedReply?.rumorEventID
+        )
+        replyingTo = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func repliedMessage(for message: NostrDirectMessage) -> NostrDirectMessage? {
+        guard let target = message.replyToEventID else { return nil }
+        return messages.first {
+            $0.rumorEventID == target || $0.wrapEventID == target
+        }
+    }
+
+    private func shouldShowDayDivider(at index: Int) -> Bool {
+        guard timeline.indices.contains(index) else { return false }
+        guard index > 0 else { return true }
+        let current = Date(timeIntervalSince1970: TimeInterval(timeline[index].timestamp))
+        let previous = Date(timeIntervalSince1970: TimeInterval(timeline[index - 1].timestamp))
+        return !Calendar.current.isDate(current, inSameDayAs: previous)
+    }
+
+    private func isMessageGrouped(at currentIndex: Int, with previousIndex: Int) -> Bool {
+        guard timeline.indices.contains(currentIndex), timeline.indices.contains(previousIndex),
+              case let .message(current) = timeline[currentIndex],
+              case let .message(previous) = timeline[previousIndex] else {
+            return false
+        }
+        guard current.replyToEventID == nil,
+              current.isIncoming == previous.isIncoming,
+              current.senderPublicKey == previous.senderPublicKey,
+              current.createdAt - previous.createdAt <= 5 * 60 else { return false }
+        let currentDate = Date(timeIntervalSince1970: TimeInterval(current.createdAt))
+        let previousDate = Date(timeIntervalSince1970: TimeInterval(previous.createdAt))
+        return Calendar.current.isDate(currentDate, inSameDayAs: previousDate)
+    }
+
+    private func senderName(for publicKey: String) -> String {
+        if publicKey == model.identityPublicKey { return "You" }
+        if let contact = model.nostrContact(publicKey: publicKey) { return contact.displayName }
+        guard let key = NostrPublicKey.parse(publicKey),
+              let npub = NostrPublicKey.npub(from: key) else { return "Member" }
+        return "\(npub.prefix(8))…"
+    }
+
+    private func replyTargetName(_ message: NostrDirectMessage) -> String {
+        message.isIncoming ? senderName(for: message.senderPublicKey) : "yourself"
+    }
+
+    private func react(to message: NostrDirectMessage, with emoji: String) {
+        let ownReaction = model.directMessageReactions(for: message).first {
+            $0.senderPublicKey == model.identityPublicKey
+        }
+        let value = ownReaction?.emoji == emoji ? "-" : emoji
+        Task {
+            do {
+                try await model.sendDirectMessageReaction(to: message, emoji: value)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } catch {
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+        }
+    }
+
+    private func markReadAndScroll(proxy: ScrollViewProxy, animated: Bool) {
+        model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
+        guard let timelineItemID = timeline.last?.id else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(timelineItemID, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(timelineItemID, anchor: .bottom)
+        }
+    }
+}
+
+private struct ChatDayDivider: View {
+    let timestamp: Int
+
+    private var label: String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        if Calendar.current.isDateInToday(date) { return "Today" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+    }
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .opacity(0.72)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 10)
+            .padding(.bottom, 5)
+            .accessibilityLabel("Messages from \(label)")
+    }
+}
+
+private struct SharedTaskChatCard: View {
+    @EnvironmentObject private var model: AppModel
+    let item: SharedInboxItem
+    let isSearchMatch: Bool
+    let isSelectedSearchResult: Bool
+
+    private var canAccept: Bool {
+        guard let board = model.selectedBoard else { return false }
+        return board.kind != .bible
+    }
+
+    private var detailCount: Int {
+        (item.task.subtasks?.count ?? 0) + (item.task.documents?.count ?? 0)
+    }
+
+    private var completedSubtaskCount: Int {
+        item.task.subtasks?.filter(\.completed).count ?? 0
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Image(systemName: item.task.isAssignment ? "person.crop.circle.badge.checkmark" : "checklist")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(TaskifyTheme.accent)
+                .frame(width: 30, height: 30)
+                .background(TaskifyTheme.accent.opacity(0.16), in: Circle())
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Label(
+                        item.task.isAssignment ? "ASSIGNMENT" : "SHARED TASK",
+                        systemImage: "lock.fill"
+                    )
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.7)
+                    .foregroundStyle(TaskifyTheme.accent)
+
+                    Spacer()
+
+                    Text(item.receivedAt, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.task.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if let note = item.task.note?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !note.isEmpty {
+                        Text(note)
+                            .font(.subheadline)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .lineLimit(4)
+                    }
+                }
+
+                if item.task.dueDate != nil || item.task.priority != nil || detailCount > 0 {
+                    ViewThatFits(in: .horizontal) {
+                        metadata
+                        metadata.fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+
+                if item.status == .pending {
+                    pendingActions
+                } else {
+                    Label(statusLabel, systemImage: statusSymbol)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(statusColor.opacity(0.13), in: Capsule())
+                }
+
+                if item.status == .pending, !canAccept {
+                    Text("Choose a task board before adding this task.")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: 340, alignment: .leading)
+            .taskifyGlass(cornerRadius: 20)
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(
+                        isSelectedSearchResult
+                            ? TaskifyTheme.accent
+                            : (isSearchMatch ? TaskifyTheme.accent.opacity(0.48) : Color.clear),
+                        lineWidth: isSelectedSearchResult ? 2 : 1
+                    )
+            )
+
+            Spacer(minLength: 28)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "\(item.task.isAssignment ? "Assignment" : "Shared task"), \(item.task.title), from \(item.sender.displayName)"
+        )
+    }
+
+    private var metadata: some View {
+        HStack(spacing: 12) {
+            if let dueDate = item.task.dueDate {
+                Label(
+                    dueDate.formatted(
+                        date: .abbreviated,
+                        time: item.task.dueTimeEnabled == true ? .shortened : .omitted
+                    ),
+                    systemImage: "calendar"
+                )
+            }
+            if let priority = item.task.priority {
+                Label(priorityLabel(priority), systemImage: "exclamationmark")
+                    .foregroundStyle(priorityColor(priority))
+            }
+            if let subtasks = item.task.subtasks, !subtasks.isEmpty {
+                Label("\(completedSubtaskCount)/\(subtasks.count)", systemImage: "checklist")
+            }
+            if let documents = item.task.documents, !documents.isEmpty {
+                Label("\(documents.count)", systemImage: "paperclip")
+            }
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(TaskifyTheme.tertiaryText)
+    }
+
+    @ViewBuilder
+    private var pendingActions: some View {
+        if item.task.isAssignment {
+            HStack(spacing: 7) {
+                responseButton("Decline", status: .declined, tint: .red)
+                responseButton("Maybe", status: .tentative, tint: .orange)
+                responseButton("Accept", status: .accepted, tint: TaskifyTheme.accent)
+                    .disabled(!canAccept)
+            }
+        } else {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy) { model.dismissSharedInboxItem(item.id) }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    Text("Dismiss")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                }
+                .buttonStyle(.bordered)
+
+                responseButton("Add Task", status: .accepted, tint: TaskifyTheme.accent)
+                    .disabled(!canAccept)
+            }
+        }
+    }
+
+    private func responseButton(
+        _ title: String,
+        status: SharedInboxItemStatus,
+        tint: Color
+    ) -> some View {
+        Button {
+            let succeeded: Bool = withAnimation(.snappy) {
+                model.respondToSharedInboxItem(item.id, status: status)
+            }
+            UINotificationFeedbackGenerator().notificationOccurred(succeeded ? .success : .error)
+        } label: {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(tint)
+    }
+
+    private var statusLabel: String {
+        switch item.status {
+        case .pending: "Awaiting response"
+        case .accepted: "Added to your tasks"
+        case .declined: "Declined"
+        case .tentative: "Maybe"
+        case .deleted: "Removed"
+        }
+    }
+
+    private var statusSymbol: String {
+        switch item.status {
+        case .pending: "clock"
+        case .accepted: "checkmark.circle.fill"
+        case .declined: "xmark.circle.fill"
+        case .tentative: "questionmark.circle.fill"
+        case .deleted: "trash"
+        }
+    }
+
+    private var statusColor: Color {
+        switch item.status {
+        case .pending: TaskifyTheme.secondaryText
+        case .accepted: .green
+        case .declined: .red
+        case .tentative: .orange
+        case .deleted: TaskifyTheme.tertiaryText
+        }
+    }
+
+    private func priorityLabel(_ rawValue: Int) -> String {
+        switch rawValue {
+        case 3: "High"
+        case 2: "Medium"
+        default: "Low"
+        }
+    }
+
+    private func priorityColor(_ rawValue: Int) -> Color {
+        switch rawValue {
+        case 3: .red
+        case 2: .orange
+        default: .blue
+        }
+    }
+}
+
+private struct SharedContactChatCard: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var isSaving = false
+    let item: SharedContactInboxItem
+    let isSearchMatch: Bool
+    let isSelectedSearchResult: Bool
+
+    private var isInContacts: Bool {
+        guard let publicKey = item.contact.publicKey else { return false }
+        return model.nostrContact(publicKey: publicKey) != nil
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            sharedContactAvatar
+
+            VStack(alignment: .leading, spacing: 11) {
+                HStack {
+                    Label("SHARED CONTACT", systemImage: "lock.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(0.7)
+                        .foregroundStyle(TaskifyTheme.accent)
+                    Spacer()
+                    Text(item.receivedAt, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+
+                HStack(spacing: 11) {
+                    contactPhoto
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.contact.primaryName)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .lineLimit(2)
+                        if let nip05 = item.contact.nip05 {
+                            Text(nip05)
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .lineLimit(1)
+                        } else {
+                            Text(item.contact.shortNpub)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+
+                if let lud16 = item.contact.lud16 {
+                    Label(lud16, systemImage: "bolt.fill")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+
+                if item.status == .pending {
+                    HStack(spacing: 8) {
+                        Button {
+                            withAnimation(.snappy) {
+                                model.dismissSharedContactInboxItem(item.id)
+                            }
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        } label: {
+                            Text("Dismiss")
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 36)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button { saveContact() } label: {
+                            Group {
+                                if isSaving {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text(isInContacts ? "Confirm" : "Add Contact")
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 36)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSaving)
+                    }
+                } else {
+                    Label(
+                        item.status == .accepted ? "In Contacts" : "Dismissed",
+                        systemImage: item.status == .accepted ? "person.crop.circle.badge.checkmark" : "xmark.circle"
+                    )
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(item.status == .accepted ? Color.green : TaskifyTheme.secondaryText)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: 340, alignment: .leading)
+            .taskifyGlass(cornerRadius: 20)
+            .overlay(searchBorder)
+
+            Spacer(minLength: 28)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sharedContactAvatar: some View {
+        Image(systemName: "person.crop.circle.badge.plus")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(TaskifyTheme.accent)
+            .frame(width: 30, height: 30)
+            .background(TaskifyTheme.accent.opacity(0.16), in: Circle())
+    }
+
+    @ViewBuilder
+    private var contactPhoto: some View {
+        if let picture = item.contact.picture, let URL = URL(string: picture) {
+            AsyncImage(url: URL) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    contactPhotoFallback
+                }
+            }
+            .frame(width: 52, height: 52)
+            .clipShape(Circle())
+        } else {
+            contactPhotoFallback
+        }
+    }
+
+    private var contactPhotoFallback: some View {
+        Circle()
+            .fill(TaskifyTheme.accent.opacity(0.18))
+            .overlay(
+                Text(String(item.contact.primaryName.prefix(1)).uppercased())
+                    .font(.headline)
+                    .foregroundStyle(TaskifyTheme.accent)
+            )
+            .frame(width: 52, height: 52)
+    }
+
+    private var searchBorder: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .stroke(
+                isSelectedSearchResult
+                    ? TaskifyTheme.accent
+                    : (isSearchMatch ? TaskifyTheme.accent.opacity(0.48) : Color.clear),
+                lineWidth: isSelectedSearchResult ? 2 : 1
+            )
+    }
+
+    private func saveContact() {
+        guard !isSaving else { return }
+        isSaving = true
+        Task {
+            do {
+                try await model.acceptSharedContactInboxItem(item.id)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            isSaving = false
+        }
+    }
+}
+
+private struct SharedCalendarInviteChatCard: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var isResponding = false
+    @State private var responseError: String?
+    let item: SharedCalendarInviteInboxItem
+    let isSearchMatch: Bool
+    let isSelectedSearchResult: Bool
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Image(systemName: "calendar.badge.plus")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.orange)
+                .frame(width: 30, height: 30)
+                .background(Color.orange.opacity(0.16), in: Circle())
+
+            VStack(alignment: .leading, spacing: 11) {
+                HStack {
+                    Label("EVENT INVITE", systemImage: "lock.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(0.7)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Text(item.receivedAt, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+
+                Text(item.event.displayTitle)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Label(whenLabel, systemImage: "calendar")
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+
+                if item.status == .pending {
+                    HStack(spacing: 7) {
+                        responseButton("Decline", status: .declined, tint: .red)
+                        responseButton("Maybe", status: .tentative, tint: .orange)
+                        responseButton("Accept", status: .accepted, tint: TaskifyTheme.accent)
+                    }
+                } else {
+                    Label(statusLabel, systemImage: statusSymbol)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(statusColor.opacity(0.13), in: Capsule())
+                }
+
+                if let responseError {
+                    Text(responseError)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: 340, alignment: .leading)
+            .taskifyGlass(cornerRadius: 20)
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(
+                        isSelectedSearchResult
+                            ? TaskifyTheme.accent
+                            : (isSearchMatch ? TaskifyTheme.accent.opacity(0.48) : Color.clear),
+                        lineWidth: isSelectedSearchResult ? 2 : 1
+                    )
+            )
+
+            Spacer(minLength: 28)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var whenLabel: String {
+        guard let start = item.event.startDate else {
+            return item.event.start ?? "Date to be announced"
+        }
+        if item.event.isAllDay {
+            guard let end = item.event.endDate, !Calendar.current.isDate(start, inSameDayAs: end) else {
+                return start.formatted(date: .long, time: .omitted)
+            }
+            return "\(start.formatted(date: .abbreviated, time: .omitted)) – \(end.formatted(date: .abbreviated, time: .omitted))"
+        }
+        guard let end = item.event.endDate else {
+            return start.formatted(date: .abbreviated, time: .shortened)
+        }
+        if Calendar.current.isDate(start, inSameDayAs: end) {
+            return "\(start.formatted(date: .abbreviated, time: .shortened)) – \(end.formatted(date: .omitted, time: .shortened))"
+        }
+        return "\(start.formatted(date: .abbreviated, time: .shortened)) – \(end.formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    private func responseButton(
+        _ title: String,
+        status: SharedInboxItemStatus,
+        tint: Color
+    ) -> some View {
+        Button {
+            respond(status: status)
+        } label: {
+            Group {
+                if isResponding {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Text(title)
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(tint)
+        .disabled(isResponding)
+    }
+
+    private func respond(status: SharedInboxItemStatus) {
+        guard !isResponding else { return }
+        isResponding = true
+        responseError = nil
+        Task {
+            do {
+                try await model.respondToSharedCalendarInvite(item.id, status: status)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                responseError = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            isResponding = false
+        }
+    }
+
+    private var statusLabel: String {
+        switch item.status {
+        case .accepted: "Accepted · Added to Taskify"
+        case .declined: "Declined"
+        case .tentative: "Maybe · Added to Taskify"
+        case .pending: "Awaiting response"
+        case .deleted: "Dismissed"
+        }
+    }
+
+    private var statusSymbol: String {
+        switch item.status {
+        case .accepted: "checkmark.circle.fill"
+        case .declined: "xmark.circle.fill"
+        case .tentative: "questionmark.circle.fill"
+        case .pending: "clock"
+        case .deleted: "trash"
+        }
+    }
+
+    private var statusColor: Color {
+        switch item.status {
+        case .accepted: .green
+        case .declined: .red
+        case .tentative: .orange
+        case .pending: TaskifyTheme.secondaryText
+        case .deleted: TaskifyTheme.tertiaryText
+        }
+    }
+}
+
+private struct DirectMessageBubble: View {
+    let message: NostrDirectMessage
+    let repliedMessage: NostrDirectMessage?
+    let reactions: [NostrDirectMessageReaction]
+    let senderName: String?
+    let senderContact: NostrContact?
+    let showsSenderAvatar: Bool
+    let isGroupedWithPrevious: Bool
+    let isGroupedWithNext: Bool
+    let isSearchMatch: Bool
+    let isSelectedSearchResult: Bool
+    @GestureState private var timestampReveal: CGFloat = 0
+
+    private var links: [URL] {
+        Array(TaskContentLinks.allURLs(in: message.content).prefix(2))
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Text(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(
+                date: .omitted,
+                time: .shortened
+            ))
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(TaskifyTheme.tertiaryText)
+            .frame(width: 68, alignment: .trailing)
+            .opacity(timestampReveal / 44)
+
+            HStack(alignment: .bottom, spacing: 7) {
+                if !message.isIncoming { Spacer(minLength: 68) }
+
+                if showsSenderAvatar {
+                    Group {
+                        if !isGroupedWithNext {
+                            ChatPeerAvatar(
+                                contact: senderContact,
+                                publicKey: message.senderPublicKey,
+                                size: 34
+                            )
+                        } else {
+                            Color.clear.frame(width: 34, height: 1)
+                        }
+                    }
+                }
+
+                VStack(alignment: message.isIncoming ? .leading : .trailing, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if message.isIncoming, let senderName {
+                            Text(senderName)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .padding(.leading, 2)
+                        }
+                        if let repliedMessage {
+                            HStack(spacing: 7) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(message.isIncoming ? TaskifyTheme.accent : Color.white.opacity(0.8))
+                                    .frame(width: 3)
+                                Text(repliedMessage.displayContent)
+                                    .font(.caption)
+                                    .foregroundStyle(
+                                        message.isIncoming
+                                            ? TaskifyTheme.secondaryText
+                                            : Color.white.opacity(0.78)
+                                    )
+                                    .lineLimit(2)
+                            }
+                            .frame(minHeight: 28)
+                        }
+
+                        if let attachment = message.attachment {
+                            DirectMessageAttachmentView(attachment: attachment)
+                        } else {
+                            Text(message.content)
+                                .font(.system(size: 16))
+                                .foregroundStyle(message.isIncoming ? TaskifyTheme.primaryText : Color.white)
+                                .textSelection(.enabled)
+
+                            ForEach(links, id: \.absoluteString) { url in
+                                DirectMessageLinkCard(url: url, isIncoming: message.isIncoming)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background {
+                        bubbleShape
+                            .fill(
+                                message.isIncoming
+                                    ? Color(red: 44 / 255, green: 44 / 255, blue: 48 / 255).opacity(0.98)
+                                    : TaskifyTheme.accent
+                            )
+                    }
+                    .overlay(alignment: message.isIncoming ? .topLeading : .topTrailing) {
+                        if !reactions.isEmpty {
+                            HStack(spacing: 3) {
+                                ForEach(reactionEmojis, id: \.self) { emoji in
+                                    HStack(spacing: 2) {
+                                        Text(emoji)
+                                        let count = reactions.filter { $0.emoji == emoji }.count
+                                        if count > 1 {
+                                            Text("\(count)")
+                                                .font(.caption2.bold())
+                                        }
+                                    }
+                                }
+                            }
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.regularMaterial, in: Capsule())
+                            .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 0.7))
+                            .offset(y: -13)
+                            .padding(.horizontal, 10)
+                        }
+                    }
+                    .padding(.top, reactions.isEmpty ? 0 : 10)
+                }
+
+                if message.isIncoming { Spacer(minLength: 68) }
+            }
+            .offset(x: -timestampReveal)
+        }
+        .padding(.vertical, isGroupedWithPrevious ? 1 : 4)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 12)
+                .updating($timestampReveal) { value, state, _ in
+                    guard abs(value.translation.width) > abs(value.translation.height),
+                          value.translation.width < 0 else { return }
+                    state = min(68, -value.translation.width)
+                }
+        )
+        .background {
+            if isSearchMatch {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(TaskifyTheme.accent.opacity(isSelectedSearchResult ? 0.18 : 0.06))
+            }
+        }
+        .overlay {
+            if isSelectedSearchResult {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(TaskifyTheme.accent.opacity(0.9), lineWidth: 1.5)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: isSelectedSearchResult)
+    }
+
+    private var reactionEmojis: [String] {
+        reactions.reduce(into: [String]()) { values, reaction in
+            if !values.contains(reaction.emoji) { values.append(reaction.emoji) }
+        }
+    }
+
+    private var bubbleShape: UnevenRoundedRectangle {
+        let topNear: CGFloat = isGroupedWithPrevious ? 8 : 21
+        let bottomNear: CGFloat = isGroupedWithNext ? 8 : 7
+        return message.isIncoming
+            ? UnevenRoundedRectangle(
+                topLeadingRadius: topNear,
+                bottomLeadingRadius: bottomNear,
+                bottomTrailingRadius: 21,
+                topTrailingRadius: 21,
+                style: .continuous
+            )
+            : UnevenRoundedRectangle(
+                topLeadingRadius: 21,
+                bottomLeadingRadius: 21,
+                bottomTrailingRadius: bottomNear,
+                topTrailingRadius: topNear,
+                style: .continuous
+            )
+    }
+}
+
+private struct DirectMessageLinkCard: View {
+    @Environment(\.openURL) private var openURL
+    let url: URL
+    let isIncoming: Bool
+
+    private var host: String {
+        url.host(percentEncoded: false)?.replacingOccurrences(of: "www.", with: "")
+            ?? url.absoluteString
+    }
+
+    var body: some View {
+        Button {
+            openURL(url)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "link")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(isIncoming ? TaskifyTheme.accent : .white)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        isIncoming ? TaskifyTheme.accent.opacity(0.16) : Color.black.opacity(0.14),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(TaskContentLinks.fallbackTitle(for: url))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(2)
+                    Text(host)
+                        .font(.caption2)
+                        .foregroundStyle(isIncoming ? TaskifyTheme.secondaryText : Color.white.opacity(0.72))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 2)
+                Image(systemName: "arrow.up.right")
+                    .font(.caption2.bold())
+                    .foregroundStyle(isIncoming ? TaskifyTheme.secondaryText : Color.white.opacity(0.8))
+            }
+            .padding(8)
+            .frame(maxWidth: 270, alignment: .leading)
+            .background(
+                isIncoming ? Color.white.opacity(0.055) : Color.black.opacity(0.12),
+                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(Color.white.opacity(0.10), lineWidth: 0.7)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open link to \(host)")
+    }
+}
+
+private struct DirectMessageAttachmentView: View {
+    let attachment: NostrDirectMessageAttachment
+    var compact = false
+
+    @State private var image: UIImage?
+    @State private var isLoading = false
+    @State private var failed = false
+    @State private var previewURL: URL?
+    @State private var retryID = UUID()
+
+    var body: some View {
+        Button(action: openAttachment) {
+            Group {
+                if compact {
+                    compactPreview
+                } else if attachment.isImage {
+                    imagePreview
+                } else {
+                    filePreview
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .task(id: retryID) {
+            guard attachment.isImage else { return }
+            await loadImage()
+        }
+        .quickLookPreview($previewURL)
+        .accessibilityLabel("Open \(attachment.displayName)")
+    }
+
+    private var compactPreview: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(Color.black.opacity(0.2))
+
+            if attachment.isImage, let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            } else if failed {
+                VStack(spacing: 7) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.title2.weight(.semibold))
+                    Text("Retry")
+                        .font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            } else if isLoading {
+                ProgressView()
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: attachmentIcon)
+                        .font(.title2)
+                    Text(attachment.displayName)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                }
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .padding(10)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 150)
+        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(TaskifyTheme.border, lineWidth: 0.8)
+        )
+    }
+
+    @ViewBuilder
+    private var imagePreview: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(Color.black.opacity(0.2))
+
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: imageHeight)
+                    .clipped()
+            } else if failed {
+                VStack(spacing: 7) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.title3.weight(.semibold))
+                    Text("Photo unavailable · Retry")
+                        .font(.caption.weight(.medium))
+                }
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(maxWidth: .infinity, minHeight: 150)
+            } else {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Decrypting photo")
+                        .font(.caption2)
+                }
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(maxWidth: .infinity, minHeight: 150)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: imageHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(TaskifyTheme.border, lineWidth: 0.8)
+        )
+    }
+
+    private var filePreview: some View {
+        HStack(spacing: 11) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.1))
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: attachmentIcon)
+                        .font(.title3)
+                }
+            }
+            .frame(width: 44, height: 50)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(attachment.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                HStack(spacing: 5) {
+                    Text(fileKind)
+                    if let size = attachment.size {
+                        Text("·")
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            Spacer(minLength: 3)
+            Image(systemName: failed ? "arrow.clockwise" : "arrow.up.forward.app")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+        .padding(9)
+        .frame(minWidth: 220)
+        .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(TaskifyTheme.border, lineWidth: 0.8)
+        )
+    }
+
+    private var imageHeight: CGFloat {
+        guard let width = attachment.width,
+              let height = attachment.height,
+              width > 0 else { return 190 }
+        return min(250, max(140, 265 * CGFloat(height) / CGFloat(width)))
+    }
+
+    private var attachmentIcon: String {
+        if attachment.isVideo { return "video.fill" }
+        if attachment.isAudio { return "waveform" }
+        if attachment.mimeType.lowercased().contains("pdf") { return "doc.richtext.fill" }
+        return "doc.fill"
+    }
+
+    private var fileKind: String {
+        if attachment.isVideo { return "VIDEO" }
+        if attachment.isAudio { return "AUDIO" }
+        if attachment.mimeType.lowercased().contains("pdf") { return "PDF" }
+        return "FILE"
+    }
+
+    @MainActor
+    private func loadImage() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let data = try await DirectMessageAttachmentDataLoader.shared.data(for: attachment)
+            guard !Task.isCancelled else { return }
+            guard let decoded = UIImage(data: data) else { throw ChatAttachmentError.unreadableFile }
+            image = decoded
+            failed = false
+        } catch {
+            guard !Task.isCancelled else { return }
+            failed = true
+        }
+    }
+
+    private func openAttachment() {
+        if failed && attachment.isImage {
+            failed = false
+            retryID = UUID()
+            return
+        }
+        isLoading = true
+        Task { @MainActor in
+            defer { isLoading = false }
+            do {
+                let data = try await DirectMessageAttachmentDataLoader.shared.data(for: attachment)
+                previewURL = try DirectMessageAttachmentDataLoader.previewFile(
+                    data: data,
+                    attachment: attachment
+                )
+                failed = false
+            } catch {
+                failed = true
+            }
+        }
+    }
+}
+
+private actor DirectMessageAttachmentDataLoader {
+    static let shared = DirectMessageAttachmentDataLoader()
+    private var cache: [String: Data] = [:]
+
+    func data(for attachment: NostrDirectMessageAttachment) async throws -> Data {
+        let cacheKey = "\(attachment.url)::\(attachment.keyHex)::\(attachment.nonceHex)"
+        if let cached = cache[cacheKey] { return cached }
+        guard let URL = URL(string: attachment.url) else { throw ChatAttachmentError.invalidURL }
+        let (ciphertext, response) = try await URLSession.shared.data(from: URL)
+        if let response = response as? HTTPURLResponse,
+           !(200..<300).contains(response.statusCode) {
+            throw ChatAttachmentError.downloadFailed(response.statusCode)
+        }
+        guard ciphertext.count <= TaskDocumentContract.maximumUploadBytes + 16 else {
+            throw TaskAttachmentUploadError.fileTooLarge
+        }
+        let plaintext = try NostrDirectMessageAttachmentCrypto.decrypt(
+            ciphertext,
+            attachment: attachment
+        )
+        guard plaintext.count <= TaskDocumentContract.maximumUploadBytes else {
+            throw TaskAttachmentUploadError.fileTooLarge
+        }
+        cache[cacheKey] = plaintext
+        return plaintext
+    }
+
+    nonisolated static func previewFile(
+        data: Data,
+        attachment: NostrDirectMessageAttachment
+    ) throws -> URL {
+        let safeName = safeFilename(attachment.displayName, mimeType: attachment.mimeType)
+        let identifier = attachment.sha256 ?? String(attachment.keyHex.prefix(16))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskifyChatPreviews", isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let URL = directory.appendingPathComponent(safeName, isDirectory: false)
+        try data.write(to: URL, options: .atomic)
+        return URL
+    }
+
+    nonisolated private static func safeFilename(_ value: String, mimeType: String) -> String {
+        let cleaned = value
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.contains(".") { return String(cleaned.prefix(180)) }
+        let type = UTType(mimeType: mimeType)
+        return "\(String(cleaned.prefix(160)))\(type?.preferredFilenameExtension.map { ".\($0)" } ?? "")"
+    }
+}
+
+private enum ChatAttachmentError: LocalizedError {
+    case invalidURL
+    case unreadableFile
+    case downloadFailed(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL: "The attachment URL is invalid."
+        case .unreadableFile: "The selected attachment could not be read."
+        case .downloadFailed(let status): "The attachment server returned an error (\(status))."
+        }
+    }
+}

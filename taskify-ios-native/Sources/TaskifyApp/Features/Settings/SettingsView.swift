@@ -9,11 +9,14 @@ struct SettingsView: View {
     @State private var newBoardName = ""
     @State private var newBoardKind: BoardKind = .week
     @State private var selectedCompoundChildIDs: Set<String> = []
+    @State private var managingBoard: Board?
     @State private var managingCompoundBoard: Board?
     @State private var sharedBoardID = ""
     @State private var sharedBoardName = ""
     @State private var showingBoardScanner = false
     @State private var identityInput = ""
+    @State private var mediaServerInput = ""
+    @State private var mediaServerValidationMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -27,6 +30,7 @@ struct SettingsView: View {
                 VStack(spacing: 18) {
                     identityCard
                     syncCard
+                    storageCard
                     boardsCard
                     notificationsCard
                     migrationCard
@@ -41,9 +45,20 @@ struct SettingsView: View {
             BoardQRJoinFlow()
                 .environmentObject(model)
         }
+        .sheet(item: $managingBoard) { board in
+            BoardManagerSheet(boardID: board.id)
+                .environmentObject(model)
+        }
         .sheet(item: $managingCompoundBoard) { board in
             CompoundBoardManagerSheet(boardID: board.id)
                 .environmentObject(model)
+        }
+        .sheet(item: $model.pendingAccountBackup) { payload in
+            PWAAccountBackupReviewSheet(payload: payload)
+                .environmentObject(model)
+        }
+        .onAppear {
+            mediaServerInput = model.encryptedMediaServerURL
         }
     }
 
@@ -79,6 +94,34 @@ struct SettingsView: View {
             }
             .buttonStyle(.bordered)
             .disabled(identityInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Divider()
+
+            Button {
+                model.findPWAAccountBackup()
+            } label: {
+                if model.isCheckingAccountBackup {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Checking for PWA backup…")
+                    }
+                } else {
+                    Label("Find PWA account backup", systemImage: "arrow.triangle.2.circlepath.icloud")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.identityNpub.isEmpty || model.isCheckingAccountBackup)
+
+            if let message = model.accountBackupMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            Text("After a backup is restored, native board additions, names, lists, archive state, and relay changes are written back through the same encrypted PWA backup. Wallet data and unsupported fields are preserved unchanged.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
         }
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
@@ -135,6 +178,13 @@ struct SettingsView: View {
                 .foregroundStyle(TaskifyTheme.secondaryText)
             }
 
+            Label(
+                "Background sync: \(model.backgroundSyncStatus)",
+                systemImage: "arrow.clockwise.icloud"
+            )
+            .font(.caption)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+
             Button {
                 model.retrySync()
             } label: {
@@ -151,8 +201,103 @@ struct SettingsView: View {
         .taskifyGlass(cornerRadius: 24)
     }
 
+    private var storageCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "externaldrive.fill.badge.icloud")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Encrypted media storage")
+                        .font(.headline)
+                    Text("Originless server")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+
+            Text("Task photos, documents, and chat attachments are encrypted on this device before they are uploaded. The server only receives opaque encrypted bytes.")
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            TextField("https://originless.example", text: $mediaServerInput)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .submitLabel(.done)
+                .onSubmit(saveMediaServer)
+                .padding(.horizontal, 16)
+                .frame(height: 50)
+                .background(
+                    TaskifyTheme.raisedFill,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+
+            HStack(spacing: 10) {
+                Button("Save server", action: saveMediaServer)
+                    .buttonStyle(.borderedProminent)
+
+                Menu {
+                    ForEach(TaskifyMediaServerSettings.suggestedServers, id: \.self) { server in
+                        Button(server.replacingOccurrences(of: "https://", with: "")) {
+                            mediaServerInput = server
+                            saveMediaServer()
+                        }
+                    }
+                } label: {
+                    Label("Suggested", systemImage: "chevron.up.chevron.down")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Button("Restore Taskify default") {
+                model.resetEncryptedMediaServer()
+                mediaServerInput = model.encryptedMediaServerURL
+                mediaServerValidationMessage = "Using the Taskify default."
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.encryptedMediaServerURL == TaskifyMediaServerSettings.defaultServer)
+
+            if let mediaServerValidationMessage {
+                Text(mediaServerValidationMessage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(
+                        mediaServerValidationMessage.hasPrefix("Enter")
+                            ? Color.red
+                            : TaskifyTheme.secondaryText
+                    )
+            }
+
+            Text("Active: \(model.encryptedMediaServerURL)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+                .textSelection(.enabled)
+
+            Text("Originless is recommended for encrypted blobs. Attachments remain limited to 50 MB because this version encrypts and validates each complete file in memory before upload.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func saveMediaServer() {
+        if model.updateEncryptedMediaServer(mediaServerInput) {
+            mediaServerInput = model.encryptedMediaServerURL
+            mediaServerValidationMessage = "Encrypted media server saved."
+        } else {
+            mediaServerValidationMessage = "Enter a valid HTTPS Originless server address."
+        }
+    }
+
     private var availableCompoundChildren: [Board] {
         model.visibleBoards.filter { $0.kind == .list }
+    }
+
+    private var archivedBoards: [Board] {
+        model.boardsForManagement.filter(\.archived)
     }
 
     private var createBoardButtonTitle: String {
@@ -184,44 +329,58 @@ struct SettingsView: View {
 
             ForEach(model.visibleBoards) { board in
                 VStack(spacing: 7) {
-                    Button {
-                        model.selectBoard(board.id)
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(board.name)
-                                Text(boardSummary(board))
-                                    .font(.caption)
-                                    .foregroundStyle(TaskifyTheme.secondaryText)
-                                HStack(spacing: 6) {
-                                    Text(board.effectiveNostrBoardID)
-                                        .font(.caption2.monospaced())
+                    HStack(spacing: 8) {
+                        Button {
+                            model.selectBoard(board.id)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(board.name)
+                                    Text(boardSummary(board))
+                                        .font(.caption)
                                         .foregroundStyle(TaskifyTheme.secondaryText)
-                                        .lineLimit(1)
+                                    HStack(spacing: 6) {
+                                        Text(board.effectiveNostrBoardID)
+                                            .font(.caption2.monospaced())
+                                            .foregroundStyle(TaskifyTheme.secondaryText)
+                                            .lineLimit(1)
 
-                                    Image(systemName: "doc.on.doc")
-                                        .font(.caption2)
-                                        .foregroundStyle(TaskifyTheme.secondaryText)
+                                        Image(systemName: "doc.on.doc")
+                                            .font(.caption2)
+                                            .foregroundStyle(TaskifyTheme.secondaryText)
+                                    }
+                                }
+                                Spacer()
+                                if board.id == model.selectedBoardID {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(TaskifyTheme.accent)
                                 }
                             }
-                            Spacer()
-                            if board.id == model.selectedBoardID {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(TaskifyTheme.accent)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .padding(.horizontal, 16)
+                            .frame(maxWidth: .infinity, minHeight: 58)
+                            .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = board.effectiveNostrBoardID
+                            } label: {
+                                Label("Copy board ID", systemImage: "doc.on.doc")
                             }
                         }
-                        .foregroundStyle(TaskifyTheme.primaryText)
-                        .padding(.horizontal, 16)
-                        .frame(minHeight: 58)
-                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
+
                         Button {
-                            UIPasteboard.general.string = board.effectiveNostrBoardID
+                            managingBoard = board
                         } label: {
-                            Label("Copy board ID", systemImage: "doc.on.doc")
+                            Image(systemName: "ellipsis")
+                                .font(.headline)
+                                .frame(width: 46, height: 58)
+                                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .accessibilityLabel("Manage \(board.name)")
                     }
 
                     if board.kind == .compound {
@@ -236,6 +395,51 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                     }
                 }
+            }
+
+            if !archivedBoards.isEmpty {
+                Divider()
+
+                Text("Archived")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+
+                ForEach(archivedBoards) { board in
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(board.name)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text(boardSummary(board))
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+
+                        Spacer()
+
+                        Button("Restore") {
+                            _ = model.unarchiveBoard(boardID: board.id)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button {
+                            managingBoard = board
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.title3)
+                                .frame(width: 38, height: 38)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .accessibilityLabel("Manage \(board.name)")
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+
+                Text("Archived boards stay on this device and can be restored at any time.")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
             }
 
             TextField("Board name", text: $newBoardName)
@@ -381,7 +585,11 @@ struct SettingsView: View {
             StatusRow(title: "Compound boards", status: "Active", complete: true)
             StatusRow(title: "Recurrence & native reminders", status: "Active", complete: true)
             StatusRow(title: "Nostr sync", status: model.syncStatus, complete: model.syncIsOnline)
-            StatusRow(title: "Wallet & chat", status: "Planned", complete: false)
+            StatusRow(title: "PWA account backup continuity", status: "Active", complete: true)
+            StatusRow(title: "Task sharing & assignments", status: "Active", complete: true)
+            StatusRow(title: "Background sync", status: model.backgroundSyncStatus, complete: true)
+            StatusRow(title: "Encrypted chat", status: "Active", complete: true)
+            StatusRow(title: "Wallet", status: "Planned", complete: false)
         }
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
@@ -441,6 +649,320 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
+    }
+}
+
+private struct PWAAccountBackupReviewSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let payload: NostrAppBackupPayload
+
+    private var review: NostrAppBackupReview {
+        NostrAppBackupReview(payload: payload, currentBoards: model.snapshot.boards)
+    }
+
+    private var backupDate: Date {
+        Date(timeIntervalSince1970: TimeInterval(payload.timestamp))
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    LabeledContent("Backup date", value: backupDate.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Boards to add", value: "\(review.importableBoardCount)")
+                    LabeledContent("Already connected", value: "\(review.alreadyConnectedBoardCount)")
+                    LabeledContent("Relay addresses", value: "\(review.relayCount)")
+                    if review.unsupportedBoardCount > 0 {
+                        LabeledContent("Not yet supported", value: "\(review.unsupportedBoardCount)")
+                    }
+                } header: {
+                    Text("PWA backup found")
+                } footer: {
+                    Text("Import adds compatible boards and relay settings. It does not delete native boards or tasks.")
+                }
+
+                Section("Boards") {
+                    ForEach(Array(payload.boards.enumerated()), id: \.offset) { _, board in
+                        HStack(spacing: 12) {
+                            Image(systemName: board.kind == .compound ? "square.stack.3d.up" : "rectangle.3.group")
+                                .foregroundStyle(board.kind == .bible ? TaskifyTheme.tertiaryText : TaskifyTheme.accent)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(board.name?.isEmpty == false ? board.name! : "Shared Board")
+                                Text(board.kind == .bible ? "Bible board • not imported yet" : boardKindLabel(board.kind))
+                                    .font(.caption)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                            }
+                        }
+                    }
+                }
+
+                if review.containsWalletSeed || review.containsPWASettings {
+                    Section("Kept separate for safety") {
+                        if review.containsWalletSeed {
+                            Label("Wallet seed stays encrypted and is not imported", systemImage: "lock.shield")
+                        }
+                        if review.containsPWASettings {
+                            Label("PWA-only appearance and device settings are not imported", systemImage: "slider.horizontal.3")
+                        }
+                    }
+                    .font(.subheadline)
+                }
+
+                Section {
+                    Button {
+                        model.applyPendingPWAAccountBackup()
+                        dismiss()
+                    } label: {
+                        Label("Add compatible boards", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(review.importableBoardCount == 0 && review.alreadyConnectedBoardCount == 0)
+                }
+                .listRowBackground(Color.clear)
+            }
+            .navigationTitle("Restore from PWA")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Not now") {
+                        model.dismissPWAAccountBackup()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func boardKindLabel(_ kind: BoardKind?) -> String {
+        switch kind ?? .list {
+        case .week: "Weekly board"
+        case .list: "List board"
+        case .compound: "Compound board"
+        case .bible: "Bible board"
+        }
+    }
+}
+
+private struct BoardManagerSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let boardID: String
+    @State private var boardName = ""
+    @State private var newRelayURL = ""
+    @State private var relayMessage: String?
+    @State private var showingDeleteConfirmation = false
+    @State private var showingArchiveBlocked = false
+
+    private var board: Board? {
+        model.board(withID: boardID)
+    }
+
+    private var taskCount: Int {
+        model.taskCount(forBoardID: boardID)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let board {
+                    Section {
+                        TextField("Board name", text: $boardName)
+
+                        Button("Save name") {
+                            let trimmedName = boardName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard model.renameBoard(boardID: boardID, name: trimmedName) else { return }
+                            boardName = trimmedName
+                        }
+                        .disabled(
+                            boardName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                boardName.trimmingCharacters(in: .whitespacesAndNewlines) == board.name
+                        )
+                    } header: {
+                        Text("Board name")
+                    } footer: {
+                        Text("Name changes sync with collaborators on shared boards.")
+                    }
+
+                    Section("Board details") {
+                        LabeledContent("Type", value: boardKindName(board.kind))
+                        LabeledContent("Tasks", value: "\(taskCount)")
+
+                        Button {
+                            UIPasteboard.general.string = board.effectiveNostrBoardID
+                        } label: {
+                            Label("Copy board ID", systemImage: "doc.on.doc")
+                        }
+                    }
+
+                    Section {
+                        ForEach(board.effectiveRelayURLs, id: \.self) { relayURL in
+                            HStack(spacing: 10) {
+                                Image(systemName: "network")
+                                    .foregroundStyle(TaskifyTheme.accent)
+                                Text(relayURL)
+                                    .font(.caption.monospaced())
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                                Button(role: .destructive) {
+                                    removeRelay(relayURL, from: board)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(board.effectiveRelayURLs.count <= 1)
+                                .accessibilityLabel("Remove \(relayURL)")
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            TextField("wss://relay.example", text: $newRelayURL)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                                .submitLabel(.done)
+                                .onSubmit { addRelay(to: board) }
+
+                            Button("Add") { addRelay(to: board) }
+                                .disabled(newRelayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+
+                        Button("Restore Taskify defaults") {
+                            guard model.updateBoardRelayURLs(
+                                boardID: board.id,
+                                relayURLs: TaskifyRelayDefaults.urls
+                            ) else { return }
+                            relayMessage = "Default relays restored."
+                        }
+                        .disabled(board.effectiveRelayURLs == TaskifyRelayDefaults.urls)
+
+                        if let relayMessage {
+                            Text(relayMessage)
+                                .font(.caption)
+                                .foregroundStyle(relayMessage.hasPrefix("Invalid") || relayMessage.hasPrefix("Keep")
+                                    ? Color.red
+                                    : TaskifyTheme.secondaryText)
+                        }
+                    } header: {
+                        Text("Nostr relays")
+                    } footer: {
+                        Text("Relay changes apply immediately, migrate queued publishes, and sync in this board's share metadata. Secure wss:// relays are recommended.")
+                    }
+
+                    Section {
+                        if board.archived {
+                            Button {
+                                guard model.unarchiveBoard(boardID: boardID) else { return }
+                                dismiss()
+                            } label: {
+                                Label("Restore board", systemImage: "tray.and.arrow.up")
+                            }
+                        } else {
+                            Button {
+                                if model.archiveBoard(boardID: boardID) {
+                                    dismiss()
+                                } else {
+                                    showingArchiveBlocked = true
+                                }
+                            } label: {
+                                Label("Archive board", systemImage: "archivebox")
+                            }
+                        }
+                    } footer: {
+                        Text("Archiving is local to this device and can be reversed from Settings.")
+                    }
+
+                    Section {
+                        Button(role: .destructive) {
+                            showingDeleteConfirmation = true
+                        } label: {
+                            Label("Delete board", systemImage: "trash")
+                        }
+                    } footer: {
+                        Text("Deleting removes this board and its locally stored tasks from this device.")
+                    }
+                } else {
+                    ContentUnavailableView("Board unavailable", systemImage: "exclamationmark.triangle")
+                }
+            }
+            .navigationTitle(board?.name ?? "Manage board")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .onAppear {
+            boardName = board?.name ?? ""
+        }
+        .alert("Keep one active board", isPresented: $showingArchiveBlocked) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Create or restore another board before archiving this one.")
+        }
+        .confirmationDialog(
+            "Delete \(board?.name ?? "this board")?",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete board and \(taskCount) task\(taskCount == 1 ? "" : "s")", role: .destructive) {
+                guard model.deleteBoard(boardID: boardID) else { return }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the local copy. It does not delete copies already held by collaborators.")
+        }
+    }
+
+    private func addRelay(to board: Board) {
+        guard let normalized = TaskifyRelayURL.normalize(newRelayURL) else {
+            relayMessage = "Invalid relay. Enter a ws:// or wss:// address."
+            return
+        }
+        guard !board.effectiveRelayURLs.contains(normalized) else {
+            relayMessage = "That relay is already configured."
+            return
+        }
+        guard model.updateBoardRelayURLs(
+            boardID: board.id,
+            relayURLs: board.effectiveRelayURLs + [normalized]
+        ) else {
+            relayMessage = "Invalid relay configuration."
+            return
+        }
+        newRelayURL = ""
+        relayMessage = "Relay added and sync is reconnecting."
+    }
+
+    private func removeRelay(_ relayURL: String, from board: Board) {
+        let remaining = board.effectiveRelayURLs.filter { $0 != relayURL }
+        guard !remaining.isEmpty else {
+            relayMessage = "Keep at least one relay for board sync."
+            return
+        }
+        guard model.updateBoardRelayURLs(
+            boardID: board.id,
+            relayURLs: remaining
+        ) else {
+            relayMessage = "Invalid relay configuration."
+            return
+        }
+        relayMessage = "Relay removed and queued changes were updated."
+    }
+
+    private func boardKindName(_ kind: BoardKind) -> String {
+        switch kind {
+        case .week: "Weekly"
+        case .list: "Lists"
+        case .compound: "Compound"
+        case .bible: "Bible"
+        }
     }
 }
 

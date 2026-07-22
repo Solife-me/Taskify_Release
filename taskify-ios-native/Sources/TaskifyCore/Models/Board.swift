@@ -8,6 +8,42 @@ public enum TaskifyRelayDefaults {
     ]
 }
 
+public enum TaskifyRelayURL {
+    public static func normalize(_ rawValue: String) -> String? {
+        var candidate = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else { return nil }
+        if !candidate.contains("://") {
+            candidate = "wss://\(candidate)"
+        }
+
+        guard var components = URLComponents(string: candidate),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "ws" || scheme == "wss",
+              let host = components.host?.lowercased(),
+              !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.fragment == nil else { return nil }
+
+        components.scheme = scheme
+        components.host = host
+        if components.path == "/" {
+            components.path = ""
+        }
+        return components.string
+    }
+
+    public static func normalizedList(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            guard let normalized = normalize(value), seen.insert(normalized).inserted else {
+                return nil
+            }
+            return normalized
+        }
+    }
+}
+
 public struct BoardSharePayload: Equatable, Sendable {
     public var boardID: String
     public var boardName: String?
@@ -29,7 +65,7 @@ public enum BoardShareContract {
                 type: "board",
                 boardID: board.effectiveNostrBoardID,
                 boardName: board.name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                relayURLs: normalizedRelays(board.effectiveRelayURLs)
+                relayURLs: TaskifyRelayURL.normalizedList(board.effectiveRelayURLs)
             )
         )
         let encoder = JSONEncoder()
@@ -53,7 +89,7 @@ public enum BoardShareContract {
                 boardName: envelope.item.boardName?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .nilIfEmpty,
-                relayURLs: normalizedRelays(envelope.item.relayURLs ?? [])
+                relayURLs: TaskifyRelayURL.normalizedList(envelope.item.relayURLs ?? [])
             )
         }
 
@@ -61,14 +97,6 @@ public enum BoardShareContract {
         return BoardSharePayload(boardID: trimmed)
     }
 
-    private static func normalizedRelays(_ values: [String]) -> [String] {
-        var seen = Set<String>()
-        return values.compactMap { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
-            return trimmed
-        }
-    }
 }
 
 private struct BoardShareEnvelope: Codable {
@@ -219,7 +247,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
     }
 
     public var effectiveRelayURLs: [String] {
-        let configured = relayURLs?.filter { !$0.isEmpty } ?? []
+        let configured = TaskifyRelayURL.normalizedList(relayURLs ?? [])
         return configured.isEmpty ? TaskifyRelayDefaults.urls : configured
     }
 

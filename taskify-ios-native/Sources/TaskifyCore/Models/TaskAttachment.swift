@@ -273,6 +273,10 @@ public enum TaskContentLinks {
         pattern: #"https?://[^\s)]+"#,
         options: [.caseInsensitive]
     )
+    private static let chatExpression = try! NSRegularExpression(
+        pattern: #"https?://[^\s<>"'\[\]\(\)]+"#,
+        options: [.caseInsensitive]
+    )
     private static let onlyURLExpression = try! NSRegularExpression(
         pattern: #"^https?://[^\s)]+$"#,
         options: [.caseInsensitive]
@@ -293,6 +297,18 @@ public enum TaskContentLinks {
             return nil
         }
         return url
+    }
+
+    /// Extracts every HTTP(S) link using the PWA messenger's link-card rules.
+    public static func allURLs(in text: String) -> [URL] {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return chatExpression.matches(in: text, range: range).compactMap { match in
+            guard let matchRange = Range(match.range, in: text),
+                  let url = URL(string: String(text[matchRange])),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { return nil }
+            return url
+        }
     }
 
     public static func removingURLs(from text: String) -> String {

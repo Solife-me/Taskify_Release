@@ -123,6 +123,114 @@ public actor NostrRelayConnection {
         ])
     }
 
+    public func subscribeToAccountBackup(
+        id: String,
+        authorPublicKey: String,
+        limit: Int = 5
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [NostrAppBackupContract.eventKind],
+                "authors": [authorPublicKey],
+                "#d": [NostrAppBackupContract.eventDTag],
+                "limit": limit,
+            ] as [String: Any],
+        ])
+    }
+
+    public func subscribeToSharedInbox(
+        id: String,
+        recipientPublicKey: String,
+        since: Int,
+        limit: Int = 200
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [NIP17GiftWrap.wrapKind],
+                "#p": [recipientPublicKey],
+                "since": max(0, since),
+                "limit": min(max(1, limit), 500),
+            ] as [String: Any],
+        ])
+    }
+
+    public func subscribeToNIP17InboxRelayPreferences(
+        id: String,
+        authorPublicKey: String,
+        limit: Int = 5
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [NIP17InboxRelayResolver.preferenceEventKind],
+                "authors": [authorPublicKey],
+                "limit": min(max(1, limit), 20),
+            ] as [String: Any],
+        ])
+    }
+
+    public func subscribeToPrivateContacts(
+        id: String,
+        authorPublicKey: String,
+        limit: Int = 5
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [NIP51ContactListContract.eventKind],
+                "authors": [authorPublicKey],
+                "#d": [NIP51ContactListContract.eventDTag],
+                "limit": min(max(1, limit), 20),
+            ] as [String: Any],
+        ])
+    }
+
+    public func subscribeToProfiles(
+        id: String,
+        authorPublicKeys: [String],
+        limit: Int = 500
+    ) async throws {
+        let authors = Array(Set(authorPublicKeys.map { $0.lowercased() })).prefix(500)
+        guard !authors.isEmpty else { return }
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [0],
+                "authors": Array(authors),
+                "limit": min(max(1, limit), 500),
+            ] as [String: Any],
+        ])
+    }
+
+    public func subscribeToTaskifyEventView(
+        id: String,
+        authorPublicKey: String,
+        eventID: String,
+        limit: Int = 10
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [TaskifyEventContract.viewEventKind],
+                "authors": [authorPublicKey.lowercased()],
+                "#d": [eventID],
+                "limit": min(max(1, limit), 20),
+            ] as [String: Any],
+        ])
+    }
+
+    public func closeSubscription(id: String) async throws {
+        try await send(["CLOSE", id])
+    }
+
     public func publish(_ event: NostrEvent) async throws {
         let eventData = try JSONEncoder().encode(event)
         let eventObject = try JSONSerialization.jsonObject(with: eventData)

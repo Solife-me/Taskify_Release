@@ -1,5 +1,59 @@
 import Foundation
 
+public enum TaskPayloadValue: Codable, Hashable, Sendable {
+    case string(String)
+    case integer(Int64)
+    case number(Double)
+    case boolean(Bool)
+    case object([String: TaskPayloadValue])
+    case array([TaskPayloadValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .boolean(value)
+        } else if let value = try? container.decode(Int64.self) {
+            self = .integer(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: TaskPayloadValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([TaskPayloadValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported JSON value in a Taskify task payload."
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .integer(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .boolean(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+}
+
 public enum TaskPriority: Int, Codable, CaseIterable, Sendable {
     case low = 1
     case medium = 2
@@ -49,6 +103,7 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     public var lastEditedBy: String?
     public var nostrUpdatedAt: Int?
     public var deleted: Bool?
+    public var preservedSyncFields: [String: TaskPayloadValue]?
 
     public init(
         id: String = UUID().uuidString,
@@ -76,7 +131,8 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         createdBy: String? = nil,
         lastEditedBy: String? = nil,
         nostrUpdatedAt: Int? = nil,
-        deleted: Bool? = nil
+        deleted: Bool? = nil,
+        preservedSyncFields: [String: TaskPayloadValue]? = nil
     ) {
         self.id = id
         self.boardID = boardID
@@ -104,6 +160,7 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         self.lastEditedBy = lastEditedBy
         self.nostrUpdatedAt = nostrUpdatedAt
         self.deleted = deleted
+        self.preservedSyncFields = preservedSyncFields
     }
 
 
