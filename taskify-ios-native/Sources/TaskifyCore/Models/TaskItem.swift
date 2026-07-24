@@ -91,6 +91,7 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     public var subtasks: [TaskSubtask]?
     public var recurrence: TaskRecurrence?
     public var seriesID: String?
+    public var scriptureMemoryID: String?
     public var reminders: [TaskReminder]?
     public var reminderTime: String?
     public var hiddenUntilDate: Date?
@@ -104,6 +105,8 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     public var nostrUpdatedAt: Int?
     public var deleted: Bool?
     public var preservedSyncFields: [String: TaskPayloadValue]?
+    public var streak: Int?
+    public var longestStreak: Int?
 
     public init(
         id: String = UUID().uuidString,
@@ -120,6 +123,7 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         subtasks: [TaskSubtask]? = nil,
         recurrence: TaskRecurrence? = nil,
         seriesID: String? = nil,
+        scriptureMemoryID: String? = nil,
         reminders: [TaskReminder]? = nil,
         reminderTime: String? = nil,
         hiddenUntilDate: Date? = nil,
@@ -132,7 +136,9 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         lastEditedBy: String? = nil,
         nostrUpdatedAt: Int? = nil,
         deleted: Bool? = nil,
-        preservedSyncFields: [String: TaskPayloadValue]? = nil
+        preservedSyncFields: [String: TaskPayloadValue]? = nil,
+        streak: Int? = nil,
+        longestStreak: Int? = nil
     ) {
         self.id = id
         self.boardID = boardID
@@ -148,6 +154,7 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         self.subtasks = subtasks
         self.recurrence = recurrence
         self.seriesID = seriesID
+        self.scriptureMemoryID = scriptureMemoryID
         self.reminders = reminders
         self.reminderTime = reminderTime
         self.hiddenUntilDate = hiddenUntilDate
@@ -161,6 +168,8 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         self.nostrUpdatedAt = nostrUpdatedAt
         self.deleted = deleted
         self.preservedSyncFields = preservedSyncFields
+        self.streak = streak
+        self.longestStreak = longestStreak
     }
 
 

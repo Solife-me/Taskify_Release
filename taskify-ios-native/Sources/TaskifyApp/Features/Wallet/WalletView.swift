@@ -900,7 +900,7 @@ final class WalletViewModel: ObservableObject {
 }
 
 struct WalletView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @EnvironmentObject private var wallet: WalletViewModel
     @State private var showingMints = false
     @State private var showingHistory = false
@@ -1005,7 +1005,7 @@ struct WalletView: View {
         }
         .sheet(isPresented: $showingCreatePaymentRequest) {
             ReceiveCashuRequestSheet(wallet: wallet)
-                .environmentObject(model)
+                .environment(model)
         }
         .sheet(isPresented: $showingMintTransfer) {
             MintTransferSheet(wallet: wallet)
@@ -1071,8 +1071,7 @@ struct WalletView: View {
     private var header: some View {
         HStack(spacing: 14) {
             Text("Wallet")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(TaskifyTheme.primaryText)
+                .taskifyScreenTitle()
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Text("SATS")
@@ -1339,6 +1338,134 @@ private struct WalletUtilityButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+    }
+}
+
+private struct WalletMintSelectorCard: View {
+    let label: String
+    let mints: [CashuMintSummary]
+    @Binding var selectedMintURL: String
+
+    private var selectedMint: CashuMintSummary? {
+        mints.first { $0.url == selectedMintURL }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(1.1)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            Menu {
+                ForEach(mints) { mint in
+                    Button {
+                        selectedMintURL = mint.url
+                    } label: {
+                        if mint.url == selectedMintURL {
+                            Label(mint.name, systemImage: "checkmark")
+                        } else {
+                            Text(mint.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedMint?.name ?? "Select mint")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                        Text(selectedMint.map { "\($0.available.formatted()) sats available" } ?? "No mint selected")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    Spacer()
+                    if mints.count > 1 {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 52)
+                .taskifyGlass(cornerRadius: 20)
+            }
+            .buttonStyle(.plain)
+            .disabled(mints.count <= 1)
+        }
+    }
+}
+
+private struct WalletAmountDisplayCard: View {
+    let amountText: String
+    var suffix: String = "sats"
+    var caption: String = "Enter amount"
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text("\(amountText.isEmpty ? "0" : amountText) \(suffix)")
+                .font(.system(size: 44, weight: .bold, design: .rounded))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            Text(caption)
+                .font(.footnote)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+        .taskifyGlass(cornerRadius: 24)
+    }
+}
+
+private struct WalletAmountKeypad: View {
+    @Binding var amountText: String
+    var maxDigits: Int = 12
+
+    private static let keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "backspace"]
+
+    var body: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+            spacing: 12
+        ) {
+            ForEach(Self.keys, id: \.self) { key in
+                Button {
+                    handle(key)
+                } label: {
+                    Group {
+                        if key == "clear" {
+                            Text("Clear")
+                                .font(.subheadline.weight(.semibold))
+                        } else if key == "backspace" {
+                            Image(systemName: "delete.left")
+                                .font(.system(size: 17, weight: .semibold))
+                        } else {
+                            Text(key)
+                                .font(.title3.weight(.semibold))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func handle(_ key: String) {
+        switch key {
+        case "clear":
+            amountText = ""
+        case "backspace":
+            if !amountText.isEmpty { amountText.removeLast() }
+        default:
+            let next = amountText == "0" ? key : amountText + key
+            amountText = String(next.filter(\.isNumber).prefix(maxDigits))
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 }
 
@@ -2366,7 +2493,7 @@ private struct WalletSeedBackupDocument: FileDocument {
 }
 
 private struct ReceiveCashuRequestSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var wallet: WalletViewModel
 
@@ -2377,7 +2504,7 @@ private struct ReceiveCashuRequestSheet: View {
     @State private var request: CashuCreatedPaymentRequest?
     @State private var localError: String?
     @State private var copied = false
-    @FocusState private var amountFocused: Bool
+    @FocusState private var memoFocused: Bool
 
     private var parsedAmount: UInt64? {
         let trimmed = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2398,16 +2525,19 @@ private struct ReceiveCashuRequestSheet: View {
         NavigationStack {
             ZStack {
                 TaskifyTheme.background.ignoresSafeArea()
-                ScrollView {
-                    Group {
-                        if let request {
-                            requestView(request)
-                        } else {
-                            createView
+                GeometryReader { proxy in
+                    ScrollView {
+                        Group {
+                            if let request {
+                                requestView(request)
+                            } else {
+                                createView
+                            }
                         }
+                        .padding(22)
+                        .padding(.bottom, 28)
+                        .frame(minHeight: proxy.size.height, alignment: .center)
                     }
-                    .padding(22)
-                    .padding(.bottom, 28)
                 }
             }
             .navigationTitle("Receive Cashu")
@@ -2418,7 +2548,7 @@ private struct ReceiveCashuRequestSheet: View {
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done") { amountFocused = false }
+                    Button("Done") { memoFocused = false }
                 }
             }
             .alert("Cashu request", isPresented: Binding(
@@ -2449,81 +2579,37 @@ private struct ReceiveCashuRequestSheet: View {
 
     private var createView: some View {
         VStack(spacing: 20) {
-            Image(systemName: "qrcode")
-                .font(.system(size: 56, weight: .medium))
-                .foregroundStyle(TaskifyTheme.accent)
+            WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
 
-            VStack(spacing: 6) {
-                Text("Request ecash")
-                    .font(.title2.bold())
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                Text("Share a compact Cashu QR. Taskify will receive and claim the payment automatically over your Nostr relays.")
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+            WalletAmountDisplayCard(amountText: amountText, caption: "Leave at 0 to request any amount")
+
+            Picker("Request type", selection: $singleUse) {
+                Text("Single-use").tag(true)
+                Text("Multi-use").tag(false)
             }
+            .pickerStyle(.segmented)
 
-            VStack(spacing: 15) {
-                Picker("Request type", selection: $singleUse) {
-                    Text("Single payment").tag(true)
-                    Text("Reusable").tag(false)
-                }
-                .pickerStyle(.segmented)
+            WalletAmountKeypad(amountText: $amountText)
 
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    TextField("Any", text: $amountText)
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
-                        .keyboardType(.numberPad)
-                        .multilineTextAlignment(.trailing)
-                        .focused($amountFocused)
-                        .onChange(of: amountText) { _, value in
-                            amountText = String(value.filter(\.isNumber).prefix(12))
-                        }
-                    Text("sats")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                }
+            TextField("What is this payment for? (optional)", text: $memo, axis: .vertical)
+                .lineLimit(2...4)
                 .foregroundStyle(TaskifyTheme.primaryText)
-
-                Divider().overlay(TaskifyTheme.border)
-
-                TextField("What is this payment for? (optional)", text: $memo, axis: .vertical)
-                    .lineLimit(2...4)
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .onChange(of: memo) { _, value in
-                        if value.count > 280 { memo = String(value.prefix(280)) }
-                    }
-
-                Divider().overlay(TaskifyTheme.border)
-
-                if wallet.snapshot.mints.count > 1 {
-                    Picker("Receive with", selection: $selectedMintURL) {
-                        ForEach(wallet.snapshot.mints) { mint in
-                            Text(mint.name).tag(mint.url)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(TaskifyTheme.accent)
-                } else if let selectedMint {
-                    Label(selectedMint.name, systemImage: "building.columns")
-                        .font(.subheadline)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                .focused($memoFocused)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 12)
+                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
+                .onChange(of: memo) { _, value in
+                    if value.count > 280 { memo = String(value.prefix(280)) }
                 }
-            }
-            .padding(20)
-            .taskifyGlass(cornerRadius: 24)
 
             Button(action: createRequest) {
-                Label(
-                    wallet.isWorking ? "Creating request…" : "Create request",
-                    systemImage: "qrcode"
-                )
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .frame(height: 52)
-                .foregroundStyle(TaskifyTheme.primaryText)
-                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
+                Text(wallet.isWorking ? "Creating request…" : "Create request")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
             }
             .buttonStyle(.plain)
             .disabled(
@@ -2660,7 +2746,7 @@ private struct ReceiveCashuRequestSheet: View {
     }
 
     private func createRequest() {
-        amountFocused = false
+        memoFocused = false
         Task {
             do {
                 request = try await wallet.createPaymentRequest(
@@ -2681,7 +2767,6 @@ private struct ReceiveCashuRequestSheet: View {
 private struct ReceiveLightningSheet: View {
     @ObservedObject var wallet: WalletViewModel
     @Environment(\.dismiss) private var dismiss
-    @FocusState private var amountFocused: Bool
     @State private var amountText = ""
     @State private var selectedMintURL = ""
     @State private var quote: CashuLightningReceiveQuote?
@@ -2711,18 +2796,21 @@ private struct ReceiveLightningSheet: View {
         NavigationStack {
             ZStack {
                 TaskifyTheme.background.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 20) {
-                        if let receivedAmount {
-                            successView(amount: receivedAmount)
-                        } else if let quote {
-                            invoiceView(quote)
-                        } else {
-                            amountView
+                GeometryReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            if let receivedAmount {
+                                successView(amount: receivedAmount)
+                            } else if let quote {
+                                invoiceView(quote)
+                            } else {
+                                amountView
+                            }
                         }
+                        .padding(22)
+                        .padding(.bottom, 26)
+                        .frame(minHeight: proxy.size.height, alignment: .center)
                     }
-                    .padding(22)
-                    .padding(.bottom, 26)
                 }
             }
             .navigationTitle("Receive Lightning")
@@ -2730,10 +2818,6 @@ private struct ReceiveLightningSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { amountFocused = false }
                 }
             }
             .alert("Lightning receive", isPresented: Binding(
@@ -2768,59 +2852,14 @@ private struct ReceiveLightningSheet: View {
 
     private var amountView: some View {
         VStack(spacing: 20) {
-            Image(systemName: "bolt.circle.fill")
-                .font(.system(size: 58))
-                .foregroundStyle(.yellow)
-
-            VStack(spacing: 6) {
-                Text("Add sats over Lightning")
-                    .font(.title2.bold())
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                Text("Taskify creates an invoice at your selected Cashu mint and automatically claims the ecash when it is paid.")
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-            }
-
-            VStack(spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    TextField("0", text: $amountText)
-                        .font(.system(size: 46, weight: .bold, design: .rounded))
-                        .keyboardType(.numberPad)
-                        .multilineTextAlignment(.trailing)
-                        .focused($amountFocused)
-                        .onChange(of: amountText) { _, value in
-                            amountText = String(value.filter(\.isNumber).prefix(12))
-                        }
-                    Text("sats")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                }
-                .foregroundStyle(TaskifyTheme.primaryText)
-
-                if wallet.snapshot.mints.count > 1 {
-                    Divider().overlay(TaskifyTheme.border)
-                    Picker("Deposit mint", selection: $selectedMintURL) {
-                        ForEach(wallet.snapshot.mints) { mint in
-                            Text(mint.name).tag(mint.url)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(TaskifyTheme.accent)
-                } else if let mint = wallet.snapshot.mints.first {
-                    Label(mint.name, systemImage: "building.columns")
-                        .font(.subheadline)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(20)
-            .taskifyGlass(cornerRadius: 24)
+            WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
+            WalletAmountDisplayCard(amountText: amountText, caption: "Enter amount to receive")
+            WalletAmountKeypad(amountText: $amountText)
 
             Button {
                 createInvoice()
             } label: {
-                Label(wallet.isWorking ? "Creating invoice…" : "Create invoice", systemImage: "bolt.fill")
+                Text(wallet.isWorking ? "Creating invoice…" : "Create invoice")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
@@ -2839,16 +2878,6 @@ private struct ReceiveLightningSheet: View {
                 .foregroundStyle(TaskifyTheme.secondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Label(
-                "The invoice is issued by the selected mint. Only pay invoices from mints you trust.",
-                systemImage: "shield.lefthalf.filled"
-            )
-            .font(.caption)
-            .foregroundStyle(TaskifyTheme.secondaryText)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(15)
-            .taskifyGlass(cornerRadius: 18)
         }
     }
 
@@ -2979,7 +3008,6 @@ private struct ReceiveLightningSheet: View {
 
     private func createInvoice() {
         guard let amount, amount > 0 else { return }
-        amountFocused = false
         Task {
             do {
                 quote = try await wallet.createLightningReceiveQuote(
@@ -4544,26 +4572,29 @@ private struct SendCashuSheet: View {
         NavigationStack {
             ZStack {
                 TaskifyTheme.background.ignoresSafeArea()
-                ScrollView {
-                    Group {
-                        if let outgoing {
-                            OutgoingTokenContent(
-                                outgoing: outgoing,
-                                checkAction: {
-                                    Task {
-                                        do { self.outgoing = try await wallet.checkOutgoingToken(outgoing) }
-                                        catch { localError = WalletViewModel.message(for: error) }
-                                    }
-                                },
-                                reclaimAction: { confirmingReclaim = true }
-                            )
-                        } else if let quote {
-                            confirmationView(quote)
-                        } else {
-                            amountView
+                GeometryReader { proxy in
+                    ScrollView {
+                        Group {
+                            if let outgoing {
+                                OutgoingTokenContent(
+                                    outgoing: outgoing,
+                                    checkAction: {
+                                        Task {
+                                            do { self.outgoing = try await wallet.checkOutgoingToken(outgoing) }
+                                            catch { localError = WalletViewModel.message(for: error) }
+                                        }
+                                    },
+                                    reclaimAction: { confirmingReclaim = true }
+                                )
+                            } else if let quote {
+                                confirmationView(quote)
+                            } else {
+                                amountView
+                            }
                         }
+                        .padding(22)
+                        .frame(minHeight: proxy.size.height, alignment: .center)
                     }
-                    .padding(22)
                 }
             }
             .navigationTitle(outgoing == nil ? "Send" : "Ecash token")
@@ -4615,47 +4646,15 @@ private struct SendCashuSheet: View {
 
     private var amountView: some View {
         VStack(spacing: 20) {
-            Image(systemName: "arrow.up.circle.fill")
-                .font(.system(size: 52))
-                .foregroundStyle(TaskifyTheme.accent)
+            WalletMintSelectorCard(
+                label: "SEND FROM",
+                mints: wallet.snapshot.mints.filter { $0.available > 0 },
+                selectedMintURL: $selectedMintURL
+            )
 
-            Text("Create a Cashu token")
-                .font(.title2.bold())
-                .foregroundStyle(TaskifyTheme.primaryText)
+            WalletAmountDisplayCard(amountText: amountText, caption: "Enter amount to send")
 
-            VStack(spacing: 4) {
-                TextField("0", text: $amountText)
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.center)
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                Text("sats")
-                    .font(.headline)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-            }
-            .padding(.vertical, 24)
-            .frame(maxWidth: .infinity)
-            .taskifyGlass(cornerRadius: 26)
-
-            if wallet.snapshot.mints.count > 1 {
-                Picker("Mint", selection: $selectedMintURL) {
-                    ForEach(wallet.snapshot.mints.filter { $0.available > 0 }) { mint in
-                        Text("\(mint.name) · \(mint.available.formatted()) sats").tag(mint.url)
-                    }
-                }
-                .pickerStyle(.menu)
-                .tint(TaskifyTheme.accent)
-            } else if let mint = wallet.snapshot.mints.first {
-                HStack {
-                    Label(mint.name, systemImage: "building.columns")
-                    Spacer()
-                    Text("\(mint.available.formatted()) sats")
-                }
-                .font(.subheadline)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-                .padding(16)
-                .taskifyGlass(cornerRadius: 18)
-            }
+            WalletAmountKeypad(amountText: $amountText)
 
             TextField("Memo (optional)", text: $memo)
                 .padding(.horizontal, 15)

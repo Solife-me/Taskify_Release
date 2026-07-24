@@ -227,6 +227,165 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return board
     }
 
+    /// Fixed id for the single, settings-toggled Bible reading tracker board, matching the PWA's
+    /// hardcoded `bibleBoardId`. There is at most one Bible board; it is local-only and never
+    /// published to Nostr (its reading progress isn't part of the synced task/board graph either).
+    public static let bibleBoardID = "bible-reading"
+
+    /// Creates (or unhides) the singleton Bible board when `enabled` is true, or hides it when false.
+    /// Mirrors the PWA settingsHook, which injects/removes a single "Bible" board based on a toggle.
+    @discardableResult
+    public mutating func setBibleTrackerEnabled(_ enabled: Bool, now: Date = Date()) -> Bool {
+        if enabled {
+            if let index = boards.firstIndex(where: { $0.id == Self.bibleBoardID }) {
+                guard boards[index].hidden else { return false }
+                boards[index].hidden = false
+                repairSelection()
+                return true
+            }
+            let board = Board(
+                id: Self.bibleBoardID,
+                name: "Bible",
+                kind: .bible,
+                createdAt: now
+            )
+            boards.append(board)
+            repairSelection()
+            return true
+        }
+
+        guard let index = boards.firstIndex(where: { $0.id == Self.bibleBoardID && !$0.hidden }) else {
+            return false
+        }
+        boards[index].hidden = true
+        repairSelection()
+        return true
+    }
+
+    public static let fastingReminderSeriesID = "fasting-reminder-series"
+
+    /// Reconciles auto-generated "Fasting" tasks on the default week board against the desired
+    /// schedule, mirroring the PWA's fasting-reminders effect: within a rolling window of
+    /// `monthsAhead` months, prune future/incomplete series tasks that no longer match the
+    /// desired days and create the ones that are missing. Past and completed occurrences are
+    /// left untouched. Returns newly created tasks and the ids of existing tasks that were
+    /// deleted or reassigned, so the caller can push the right sync events.
+    public mutating func reconcileFastingReminders(
+        enabled: Bool,
+        mode: FastingRemindersMode,
+        weekday: Int,
+        perMonth: Int,
+        seed: String,
+        monthsAhead: Int = 2,
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> (created: [TaskItem], updatedIDs: [String]) {
+        guard enabled else {
+            var updatedIDs: [String] = []
+            for index in tasks.indices where tasks[index].seriesID == Self.fastingReminderSeriesID
+                && !tasks[index].completed && !tasks[index].isDeleted {
+                tasks[index].deleted = true
+                updatedIDs.append(tasks[index].id)
+            }
+            return ([], updatedIDs)
+        }
+
+        guard let targetBoard = boards.first(where: { $0.id == "week-default" && $0.kind == .week })
+            ?? boards.first(where: { $0.kind == .week && $0.isVisible })
+            ?? boards.first(where: { $0.kind == .week }) else {
+            return ([], [])
+        }
+
+        let todayMidnight = calendar.startOfDay(for: now)
+        var monthKeys = Set<String>()
+        var desiredDates: [Date] = []
+        for offset in 0..<max(1, monthsAhead) {
+            guard let anchor = calendar.date(byAdding: .month, value: offset, to: now) else { continue }
+            let year = calendar.component(.year, from: anchor)
+            let month = calendar.component(.month, from: anchor)
+            monthKeys.insert(String(format: "%04d-%02d", year, month))
+            desiredDates.append(contentsOf: FastingReminders.dueDates(
+                year: year,
+                monthIndex: month - 1,
+                mode: mode,
+                weekday: weekday,
+                perMonth: perMonth,
+                seed: seed,
+                calendar: calendar
+            ))
+        }
+        let desiredDueDates = Set(desiredDates)
+
+        var updatedIDs: [String] = []
+        var satisfiedDueDates = Set<Date>()
+        for index in tasks.indices {
+            guard tasks[index].seriesID == Self.fastingReminderSeriesID,
+                  !tasks[index].isDeleted,
+                  !tasks[index].completed,
+                  let dueDate = tasks[index].dueDate else { continue }
+            let dueMidnight = calendar.startOfDay(for: dueDate)
+            let monthKey = String(
+                format: "%04d-%02d",
+                calendar.component(.year, from: dueMidnight),
+                calendar.component(.month, from: dueMidnight)
+            )
+            let isFuture = dueMidnight >= todayMidnight
+            let isDesired = desiredDueDates.contains(dueMidnight)
+
+            if monthKeys.contains(monthKey), isFuture, !isDesired {
+                tasks[index].deleted = true
+                updatedIDs.append(tasks[index].id)
+                continue
+            }
+            if isFuture, isDesired {
+                satisfiedDueDates.insert(dueMidnight)
+            }
+
+            let resolvedColumnID = WeekdayColumn.containing(dueMidnight, calendar: calendar).rawValue
+            var changed = false
+            if tasks[index].boardID != targetBoard.id {
+                tasks[index].boardID = targetBoard.id
+                changed = true
+            }
+            if tasks[index].columnID != resolvedColumnID {
+                tasks[index].columnID = resolvedColumnID
+                changed = true
+            }
+            if changed { updatedIDs.append(tasks[index].id) }
+        }
+
+        var created: [TaskItem] = []
+        let nowWeekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        for dueDate in desiredDates.sorted() where dueDate >= todayMidnight && !satisfiedDueDates.contains(dueDate) {
+            satisfiedDueDates.insert(dueDate)
+            let columnID = WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
+            let dueWeekStart = calendar.dateInterval(of: .weekOfYear, for: dueDate)?.start ?? dueDate
+            let hiddenUntil = dueWeekStart > nowWeekStart ? dueWeekStart : nil
+            let nextOrder = (
+                tasks
+                    .filter { $0.boardID == targetBoard.id && $0.columnID == columnID }
+                    .map(\.order)
+                    .max() ?? -1
+            ) + 1
+            let task = TaskItem(
+                boardID: targetBoard.id,
+                title: "Fasting",
+                note: "Fasting reminder",
+                dueDate: dueDate,
+                dueDateEnabled: true,
+                seriesID: Self.fastingReminderSeriesID,
+                hiddenUntilDate: hiddenUntil,
+                createdAt: now,
+                order: nextOrder,
+                columnID: columnID
+            )
+            tasks.append(task)
+            created.append(task)
+        }
+
+        return (created, updatedIDs)
+    }
+
     @discardableResult
     public mutating func renameBoard(boardID: String, name: String) -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -236,6 +395,21 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
               }) else { return false }
         guard boards[index].name != trimmedName else { return true }
         boards[index].name = trimmedName
+        return true
+    }
+
+    /// Swaps a board with its neighbor among the visible, non-Bible boards (the set shown in the
+    /// board switcher). Board order has no dedicated field — it's just array position in
+    /// `boards` — and it's local-only: order isn't part of the synced board event, so this never
+    /// needs to publish anything.
+    @discardableResult
+    public mutating func moveBoard(boardID: String, direction: Int) -> Bool {
+        guard direction == -1 || direction == 1 else { return false }
+        let orderedIndices = boards.indices.filter { boards[$0].isVisible && boards[$0].kind != .bible }
+        guard let position = orderedIndices.firstIndex(where: { boards[$0].id == boardID }) else { return false }
+        let targetPosition = position + direction
+        guard orderedIndices.indices.contains(targetPosition) else { return false }
+        boards.swapAt(orderedIndices[position], orderedIndices[targetPosition])
         return true
     }
 
@@ -780,12 +954,28 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public mutating func toggleCompletion(
         taskID: String,
         editorPublicKey: String? = nil,
+        streaksEnabled: Bool = true,
         now: Date = Date()
     ) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }) else { return false }
         tasks[index].completed.toggle()
         tasks[index].completedAt = tasks[index].completed ? now : nil
         tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
+
+        // Streaks track completions of "frequent" recurring tasks (daily/weekly, or every N
+        // days/weeks) — the same set of recurrences that reveal on their due date rather than
+        // at the start of their window. Matches the PWA's `isFrequentRecurrence` check.
+        if streaksEnabled, tasks[index].recurrence?.revealsOnDueDate == true {
+            let currentStreak = tasks[index].streak ?? 0
+            if tasks[index].completed {
+                let newStreak = currentStreak + 1
+                tasks[index].streak = newStreak
+                tasks[index].longestStreak = max(tasks[index].longestStreak ?? currentStreak, newStreak)
+            } else {
+                tasks[index].streak = max(0, currentStreak - 1)
+            }
+        }
+
         if tasks[index].completed {
             appendNextRecurrence(afterCompletingAt: index, now: now)
         }
@@ -853,7 +1043,9 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             order: nextOrder,
             columnID: nextColumnID,
             createdBy: completedTask.createdBy,
-            lastEditedBy: editorPublicKeyOrFallback(completedTask)
+            lastEditedBy: editorPublicKeyOrFallback(completedTask),
+            streak: completedTask.streak,
+            longestStreak: completedTask.longestStreak
         ))
     }
 

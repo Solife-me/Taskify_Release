@@ -19,7 +19,7 @@ enum TaskShareMode: String, CaseIterable, Identifiable {
 }
 
 struct TaskShareSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
     let taskID: String

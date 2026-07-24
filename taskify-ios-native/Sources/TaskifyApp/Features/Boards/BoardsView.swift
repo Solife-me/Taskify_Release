@@ -31,7 +31,7 @@ private struct BoardQuickAddDestination: Equatable {
 }
 
 private struct TaskDropTargetModifier: ViewModifier {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let boardID: String
     let columnID: String
     let beforeTaskID: String?
@@ -121,15 +121,28 @@ private extension View {
 }
 
 struct BoardsView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
+    @AppStorage("taskify.board.sort.mode") private var sortModeRaw = UpcomingSortMode.manual.rawValue
+    @AppStorage("taskify.board.sort.direction") private var sortDirectionRaw = UpcomingSortDirection.ascending.rawValue
     @State private var showCompleted = false
     @State private var showingAddList = false
     @State private var showingBoardShare = false
     @State private var showingSharedInbox = false
+    @State private var showingBoardUpcoming = false
+    @State private var showingSortOptions = false
+    @State private var showingClearCompletedConfirmation = false
     @State private var newListName = ""
     @State private var quickTaskDraft = ""
     @State private var focusedPageID: String?
     @FocusState private var quickTaskFieldIsFocused: Bool
+
+    private var sortMode: UpcomingSortMode {
+        UpcomingSortMode(rawValue: sortModeRaw) ?? .manual
+    }
+
+    private var sortDirection: UpcomingSortDirection {
+        UpcomingSortDirection(rawValue: sortDirectionRaw) ?? sortMode.defaultDirection
+    }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -171,7 +184,35 @@ struct BoardsView: View {
         }
         .sheet(isPresented: $showingSharedInbox) {
             SharedTaskInboxSheet()
-                .environmentObject(model)
+                .environment(model)
+        }
+        .sheet(isPresented: $showingBoardUpcoming) {
+            if let board = model.selectedBoard {
+                BoardUpcomingSheet(board: board)
+                    .environment(model)
+            }
+        }
+        .sheet(isPresented: $showingSortOptions) {
+            BoardSortOptionsSheet(
+                sortMode: sortMode,
+                sortDirection: sortDirection,
+                onSelectSort: selectSortMode
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+        .confirmationDialog(
+            "Clear all completed tasks on \(model.selectedBoard?.name ?? "this board")?",
+            isPresented: $showingClearCompletedConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear completed", role: .destructive) {
+                guard let boardID = model.selectedBoard?.id else { return }
+                model.clearCompletedTasks(forBoardID: boardID)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This can't be undone.")
         }
         .onAppear(perform: resetFocusedPage)
         .onChange(of: model.selectedBoardID) { _, _ in
@@ -187,6 +228,8 @@ struct BoardsView: View {
         case .week:
             WeekBoardView(
                 showCompleted: showCompleted,
+                sortMode: sortMode,
+                sortDirection: sortDirection,
                 focusedPageID: $focusedPageID
             )
         case .list:
@@ -194,6 +237,8 @@ struct BoardsView: View {
                 ListBoardView(
                     board: board,
                     showCompleted: showCompleted,
+                    sortMode: sortMode,
+                    sortDirection: sortDirection,
                     focusedPageID: $focusedPageID
                 )
             }
@@ -202,12 +247,13 @@ struct BoardsView: View {
                 CompoundBoardView(
                     board: board,
                     showCompleted: showCompleted,
+                    sortMode: sortMode,
+                    sortDirection: sortDirection,
                     focusedPageID: $focusedPageID
                 )
             }
         case .bible:
-            ContentUnavailableView("Bible board migration pending", systemImage: "book.closed")
-                .foregroundStyle(TaskifyTheme.secondaryText)
+            BibleTrackerView(showCompletedBooks: showCompleted)
         case nil:
             ContentUnavailableView("No board selected", systemImage: "square.grid.2x2")
                 .foregroundStyle(TaskifyTheme.secondaryText)
@@ -307,6 +353,17 @@ struct BoardsView: View {
         }
     }
 
+    private func selectSortMode(_ mode: UpcomingSortMode) {
+        if sortMode == mode, mode.supportsDirection {
+            sortDirectionRaw = (sortDirection == .ascending
+                ? UpcomingSortDirection.descending
+                : UpcomingSortDirection.ascending).rawValue
+            return
+        }
+        sortModeRaw = mode.rawValue
+        sortDirectionRaw = mode.defaultDirection.rawValue
+    }
+
     private var header: some View {
         TaskifyGlassControlGroup(spacing: 10) {
             HStack(spacing: 10) {
@@ -337,21 +394,23 @@ struct BoardsView: View {
                         .frame(height: 42)
                     }
 
-                    Rectangle()
-                        .fill(TaskifyTheme.border)
-                        .frame(width: 1, height: 23)
+                    if model.selectedBoard?.kind != .bible {
+                        Rectangle()
+                            .fill(TaskifyTheme.border)
+                            .frame(width: 1, height: 23)
 
-                    Button {
-                        showingBoardShare = true
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 42, height: 42)
-                            .contentShape(Rectangle())
+                        Button {
+                            showingBoardShare = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 15, weight: .semibold))
+                                .frame(width: 42, height: 42)
+                                .contentShape(Rectangle())
+                        }
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
                     }
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
                 }
                 .taskifyGlassControl(in: Capsule())
                 .layoutPriority(1)
@@ -365,6 +424,15 @@ struct BoardsView: View {
                 ) {
                     withAnimation(.snappy) { showCompleted.toggle() }
                 }
+                .contextMenu {
+                    if showCompleted, model.selectedBoard?.kind != .bible {
+                        Button(role: .destructive) {
+                            showingClearCompletedConfirmation = true
+                        } label: {
+                            Label("Clear completed tasks", systemImage: "trash")
+                        }
+                    }
+                }
 
                 if model.selectedBoard?.kind == .list {
                     HeaderIconButton(
@@ -373,11 +441,23 @@ struct BoardsView: View {
                     ) {
                         showingAddList = true
                     }
-                } else {
+                } else if model.selectedBoard?.kind != .bible {
                     HeaderIconButton(
                         systemName: "calendar",
                         accessibilityLabel: "Board upcoming"
-                    ) { }
+                    ) {
+                        showingBoardUpcoming = true
+                    }
+                }
+
+                if model.selectedBoard?.kind != .bible {
+                    HeaderIconButton(
+                        systemName: "arrow.up.arrow.down",
+                        accent: sortMode != .manual,
+                        accessibilityLabel: "Sort tasks"
+                    ) {
+                        showingSortOptions = true
+                    }
                 }
 
                 HeaderIconButton(
@@ -396,7 +476,7 @@ struct BoardsView: View {
 
 private struct SharedTaskInboxSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
 
     private var visibleItems: [SharedInboxItem] {
         model.sharedInboxItems.filter { $0.status != .deleted }
@@ -459,7 +539,7 @@ private struct SharedTaskInboxSheet: View {
 }
 
 private struct SharedTaskInboxCard: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let item: SharedInboxItem
     let canAccept: Bool
 
@@ -625,6 +705,151 @@ private struct SharedTaskInboxCard: View {
     }
 }
 
+private struct BoardSortOptionsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let sortMode: UpcomingSortMode
+    let sortDirection: UpcomingSortDirection
+    let onSelectSort: (UpcomingSortMode) -> Void
+
+    private let columns = [GridItem(.flexible()), GridItem(.flexible())]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("SORT TASKS BY")
+                        .font(.system(size: 11, weight: .bold))
+                        .tracking(1)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(UpcomingSortMode.allCases, id: \.rawValue) { mode in
+                            Button {
+                                onSelectSort(mode)
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Text(mode.label)
+                                    if sortMode == mode, mode.supportsDirection {
+                                        Image(systemName: sortDirection == .ascending ? "arrow.up" : "arrow.down")
+                                    }
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(sortMode == mode ? .white : TaskifyTheme.secondaryText)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 44)
+                                .background(
+                                    sortMode == mode ? TaskifyTheme.accent : TaskifyTheme.raisedFill,
+                                    in: Capsule()
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(18)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Sort Board")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct BoardUpcomingSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
+    let board: Board
+
+    private struct DayGroup: Identifiable {
+        let date: Date
+        let tasks: [TaskItem]
+        var id: Date { date }
+    }
+
+    private var scopedBoardIDs: Set<String> {
+        if board.kind == .compound {
+            return Set(model.compoundChildBoards(for: board.id).map(\.id))
+        }
+        return [board.id]
+    }
+
+    private var groups: [DayGroup] {
+        let calendar = Calendar.current
+        let tasks = model.upcomingTasks().filter { scopedBoardIDs.contains($0.boardID) }
+        let byDate = Dictionary(grouping: tasks) { calendar.startOfDay(for: $0.dueDate ?? Date()) }
+        return byDate
+            .map { date, tasks in
+                DayGroup(
+                    date: date,
+                    tasks: UpcomingTaskOrganizer.sort(
+                        tasks,
+                        mode: .dueDate,
+                        direction: .ascending,
+                        boardGrouping: .mixed,
+                        boardOrder: []
+                    )
+                )
+            }
+            .sorted { $0.date < $1.date }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if groups.isEmpty {
+                    ContentUnavailableView(
+                        "No upcoming items",
+                        systemImage: "calendar",
+                        description: Text("Tasks with a due date on \(board.name) will appear here.")
+                    )
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 18) {
+                            ForEach(groups) { group in
+                                VStack(alignment: .leading, spacing: 9) {
+                                    Text(dayLabel(group.date))
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                                    ForEach(group.tasks) { task in
+                                        TaskCardView(task: task)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(18)
+                    }
+                    .scrollIndicators(.hidden)
+                }
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("\(board.name) Upcoming")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+
+    private func dayLabel(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInTomorrow(date) { return "Tomorrow" }
+        return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+    }
+}
+
 private struct FloatingQuickAddBar: View {
     @Binding var draft: String
     var isFocused: FocusState<Bool>.Binding
@@ -669,7 +894,7 @@ private struct FloatingQuickAddBar: View {
 
 private struct BoardShareSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let board: Board
 
     @State private var shareMode = ShareMode.board
@@ -919,6 +1144,8 @@ private struct TaskifyQRCode: View {
 private struct ListBoardView: View {
     let board: Board
     let showCompleted: Bool
+    let sortMode: UpcomingSortMode
+    let sortDirection: UpcomingSortDirection
     @Binding var focusedPageID: String?
 
     private var columns: [BoardColumn] {
@@ -933,7 +1160,12 @@ private struct ListBoardView: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 16) {
                     ForEach(columns) { column in
-                        ListColumnView(column: column, showCompleted: showCompleted)
+                        ListColumnView(
+                            column: column,
+                            showCompleted: showCompleted,
+                            sortMode: sortMode,
+                            sortDirection: sortDirection
+                        )
                             .frame(width: min(330, proxy.size.width - 50))
                             .id(column.id)
                     }
@@ -957,9 +1189,11 @@ private struct ListBoardView: View {
 }
 
 private struct CompoundBoardView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let board: Board
     let showCompleted: Bool
+    let sortMode: UpcomingSortMode
+    let sortDirection: UpcomingSortDirection
     @Binding var focusedPageID: String?
 
     private var columns: [CompoundColumnReference] {
@@ -989,7 +1223,9 @@ private struct CompoundBoardView: View {
                             CompoundColumnView(
                                 reference: reference,
                                 hideBoardName: board.hideChildBoardNames,
-                                showCompleted: showCompleted
+                                showCompleted: showCompleted,
+                                sortMode: sortMode,
+                                sortDirection: sortDirection
                         )
                             .frame(width: min(330, proxy.size.width - 50))
                             .id(reference.id)
@@ -1022,21 +1258,27 @@ private struct CompoundColumnReference: Identifiable {
 }
 
 private struct CompoundColumnView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let reference: CompoundColumnReference
     let hideBoardName: Bool
     let showCompleted: Bool
+    let sortMode: UpcomingSortMode
+    let sortDirection: UpcomingSortDirection
 
     private var tasks: [TaskItem] {
-        model.tasks(
+        let raw = model.tasks(
             boardID: reference.board.id,
             columnID: reference.column.id,
             includeCompleted: showCompleted
         )
+        guard sortMode != .manual else { return raw }
+        return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let tasks = tasks
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
                     if !hideBoardName {
@@ -1089,15 +1331,19 @@ private struct CompoundColumnView: View {
 }
 
 private struct ListColumnView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let column: BoardColumn
     let showCompleted: Bool
+    let sortMode: UpcomingSortMode
+    let sortDirection: UpcomingSortDirection
     @State private var renameDraft = ""
     @State private var showingRename = false
     @State private var showingDeleteConfirmation = false
 
     private var tasks: [TaskItem] {
-        model.tasks(forColumnID: column.id, includeCompleted: showCompleted)
+        let raw = model.tasks(forColumnID: column.id, includeCompleted: showCompleted)
+        guard sortMode != .manual else { return raw }
+        return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
     }
 
     private var allTasks: [TaskItem] {
@@ -1124,7 +1370,9 @@ private struct ListColumnView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let tasks = tasks
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(column.name)
                     .font(.system(size: 17, weight: .semibold))
@@ -1255,6 +1503,8 @@ private struct ListColumnView: View {
 
 private struct WeekBoardView: View {
     let showCompleted: Bool
+    let sortMode: UpcomingSortMode
+    let sortDirection: UpcomingSortDirection
     @Binding var focusedPageID: String?
 
     var body: some View {
@@ -1262,7 +1512,12 @@ private struct WeekBoardView: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 16) {
                     ForEach(WeekdayColumn.allCases) { weekday in
-                        DayColumnView(weekday: weekday, showCompleted: showCompleted)
+                        DayColumnView(
+                            weekday: weekday,
+                            showCompleted: showCompleted,
+                            sortMode: sortMode,
+                            sortDirection: sortDirection
+                        )
                             .frame(width: min(330, proxy.size.width - 50))
                             .id(weekday.rawValue)
                     }
@@ -1283,16 +1538,22 @@ private struct WeekBoardView: View {
 }
 
 private struct DayColumnView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let weekday: WeekdayColumn
     let showCompleted: Bool
+    let sortMode: UpcomingSortMode
+    let sortDirection: UpcomingSortDirection
 
     private var tasks: [TaskItem] {
-        model.tasks(for: weekday, includeCompleted: showCompleted)
+        let raw = model.tasks(for: weekday, includeCompleted: showCompleted)
+        guard sortMode != .manual else { return raw }
+        return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let tasks = tasks
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(weekday.shortName)
                     .font(.system(size: 17, weight: .semibold))
@@ -1335,7 +1596,7 @@ private struct DayColumnView: View {
 }
 
 struct TaskCardView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let task: TaskItem
     let allowsDragging: Bool
     @State private var showingEditor = false
@@ -1352,6 +1613,20 @@ struct TaskCardView: View {
     private var subtaskProgress: String? {
         guard let subtasks = task.subtasks, !subtasks.isEmpty else { return nil }
         return "\(subtasks.filter(\.completed).count)/\(subtasks.count)"
+    }
+
+    /// Streaks are tracked for any "frequent" recurrence (daily/weekly, or every N days/weeks —
+    /// see `TaskifySnapshot.toggleCompletion`), but only *displayed* for the simple daily/weekly
+    /// cases, matching the PWA's narrower badge condition.
+    private var visibleStreak: Int? {
+        switch task.recurrence {
+        case .daily, .weekly:
+            break
+        default:
+            return nil
+        }
+        guard let streak = task.streak, streak > 0 else { return nil }
+        return streak
     }
 
     private var mediaBoardID: String {
@@ -1376,14 +1651,25 @@ struct TaskCardView: View {
         TaskContentLinks.removingURLs(from: task.note)
     }
 
-    private var cardCornerRadius: CGFloat { hasMedia ? 24 : 18 }
-
     private var showsCompletedState: Bool {
         task.completed || completionPreview
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        // Hoisted once per body evaluation: these are all plain computed properties (not
+        // memoized by Swift), and several run regex matching over the title/note
+        // (`hasMedia`/`displayTitle`/`displayNote` via `TaskContentLinks`). The old code read
+        // them directly at each use site, re-running that work up to 7x per row per frame
+        // during scroll.
+        let hasMedia = hasMedia
+        let displayTitle = displayTitle
+        let displayNote = displayNote
+        let subtaskProgress = subtaskProgress
+        let visibleStreak = visibleStreak
+        let showsCompletedState = showsCompletedState
+        let cardCornerRadius = hasMedia ? CGFloat(24) : 18
+
+        return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 11) {
                 Button(action: handleCompletionTap) {
                     ZStack {
@@ -1428,7 +1714,7 @@ struct TaskCardView: View {
 
                         if task.priority != nil || (task.dueDateEnabled && task.dueDate != nil) ||
                             subtaskProgress != nil || task.recurrence != nil || !(task.reminders ?? []).isEmpty ||
-                            !task.sharedTaskAssignees.isEmpty {
+                            !task.sharedTaskAssignees.isEmpty || visibleStreak != nil {
                             HStack(spacing: 9) {
                                 if let priority = task.priority {
                                     Text(String(repeating: "!", count: priority.rawValue))
@@ -1460,6 +1746,17 @@ struct TaskCardView: View {
                                         .font(.caption)
                                         .foregroundStyle(TaskifyTheme.secondaryText)
                                         .accessibilityLabel("Repeating task")
+                                }
+
+                                if let visibleStreak {
+                                    Label {
+                                        Text("\(visibleStreak)")
+                                    } icon: {
+                                        Text("\u{1F525}")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                    .accessibilityLabel("\(visibleStreak) \(visibleStreak == 1 ? "completion" : "completions") streak")
                                 }
 
                                 if !(task.reminders ?? []).isEmpty {
@@ -1544,6 +1841,18 @@ struct TaskCardView: View {
             } label: {
                 Label("Assign Task", systemImage: "person.badge.plus")
             }
+            if task.dueDateEnabled, task.dueDate != nil {
+                Button {
+                    model.postponeTask(task.id, byDays: 1)
+                } label: {
+                    Label("Postpone 1 Day", systemImage: "calendar.badge.clock")
+                }
+                Button {
+                    model.postponeTask(task.id, byDays: 7)
+                } label: {
+                    Label("Postpone 1 Week", systemImage: "calendar.badge.clock")
+                }
+            }
             Button(role: .destructive) {
                 model.deleteTask(task.id)
             } label: {
@@ -1552,13 +1861,13 @@ struct TaskCardView: View {
         }
         .sheet(isPresented: $showingEditor) {
             TaskEditorView(task: task)
-                .environmentObject(model)
+                .environment(model)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showingTaskShare) {
             TaskShareSheet(taskID: task.id, initialMode: taskShareMode)
-                .environmentObject(model)
+                .environment(model)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }

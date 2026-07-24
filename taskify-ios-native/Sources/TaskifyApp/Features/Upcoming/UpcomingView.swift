@@ -3,8 +3,23 @@ import SwiftUI
 import TaskifyCore
 import UIKit
 
+private struct UpcomingFilterOption: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let boardID: String
+    let columnID: String?
+}
+
+private struct UpcomingFilterGroup: Identifiable {
+    let board: Board
+    let boardOption: UpcomingFilterOption
+    let listOptions: [UpcomingFilterOption]
+
+    var id: String { board.id }
+}
+
 struct UpcomingView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("taskify.upcoming.view") private var displayModeRaw = UpcomingDisplayMode.details.rawValue
@@ -12,10 +27,12 @@ struct UpcomingView: View {
     @AppStorage("taskify.upcoming.sort.direction") private var sortDirectionRaw = UpcomingSortDirection.ascending.rawValue
     @AppStorage("taskify.upcoming.board.grouping") private var boardGroupingRaw = UpcomingBoardGrouping.mixed.rawValue
     @AppStorage("taskify.upcoming.board.filter") private var boardFilterRaw = ""
+    @AppStorage("taskify.upcoming.filter.presets") private var filterPresetsRaw = "[]"
     @AppStorage("taskify.upcoming.apple-calendar") private var deviceCalendarEnabled = false
     @AppStorage("taskify.upcoming.apple-calendar-choice-made") private var deviceCalendarChoiceMade = false
     @AppStorage("taskify.upcoming.apple-reminders") private var deviceRemindersEnabled = false
     @AppStorage("taskify.upcoming.apple-reminders-choice-made") private var deviceRemindersChoiceMade = false
+    @AppStorage("taskify.upcoming.us-holidays") private var usHolidaysEnabled = true
     @StateObject private var deviceCalendar = DeviceCalendarStore()
     @State private var searchText = ""
     @State private var showingSearch = false
@@ -45,22 +62,89 @@ struct UpcomingView: View {
         model.visibleBoards.filter { $0.kind != .compound && $0.kind != .bible }
     }
 
-    private var selectedBoardIDs: Set<String> {
+    /// One filter group per board: a board-level option, plus a list-column option per column
+    /// for list-kind boards (mirrors the PWA's per-board / per-list Upcoming filter).
+    private var filterGroups: [UpcomingFilterGroup] {
+        filterBoards.map { board in
+            let boardOption = UpcomingFilterOption(id: board.id, label: board.name, boardID: board.id, columnID: nil)
+            let listOptions: [UpcomingFilterOption] = board.kind == .list
+                ? board.columns
+                    .sorted {
+                        if $0.order != $1.order { return $0.order < $1.order }
+                        return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                    .map {
+                        UpcomingFilterOption(id: "\(board.id)::\($0.id)", label: $0.name, boardID: board.id, columnID: $0.id)
+                    }
+                : []
+            return UpcomingFilterGroup(board: board, boardOption: boardOption, listOptions: listOptions)
+        }
+    }
+
+    private var filterOptions: [UpcomingFilterOption] {
+        filterGroups.flatMap { [$0.boardOption] + $0.listOptions }
+    }
+
+    private var selectedOptionIDs: Set<String> {
         guard !boardFilterRaw.isEmpty,
               let data = boardFilterRaw.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([String].self, from: data) else {
-            return Set(filterBoards.map(\.id))
+            return Set(filterOptions.map(\.id))
         }
         return Set(decoded)
     }
 
+    /// Boards with at least partial inclusion (the board itself, or any one of its lists, selected).
+    /// Used for board-scoped concerns that don't have list granularity (Taskify calendar events, sort board order).
+    private var selectedBoardIDs: Set<String> {
+        guard !filterOptions.isEmpty else { return Set(filterBoards.map(\.id)) }
+        let selected = selectedOptionIDs
+        return Set(filterGroups.compactMap { group in
+            let included = selected.contains(group.boardOption.id) || group.listOptions.contains { selected.contains($0.id) }
+            return included ? group.board.id : nil
+        })
+    }
+
+    private var filterPresets: [UpcomingFilterPreset] {
+        guard let data = filterPresetsRaw.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([UpcomingFilterPreset].self, from: data) else {
+            return []
+        }
+        return decoded
+    }
+
+    private func taskPassesFilter(_ task: TaskItem) -> Bool {
+        guard !filterOptions.isEmpty else { return true }
+        guard let board = model.board(withID: task.boardID) else { return false }
+        let selected = selectedOptionIDs
+        let group = filterGroups.first { $0.board.id == board.id }
+        let selectedListColumnIDs = Set((group?.listOptions ?? [])
+            .filter { selected.contains($0.id) }
+            .compactMap(\.columnID))
+
+        if selected.contains(board.id) {
+            if board.kind == .list {
+                guard let columnID = task.columnID else { return false }
+                if selectedListColumnIDs.isEmpty { return true }
+                return selectedListColumnIDs.contains(columnID)
+            }
+            return true
+        }
+
+        if let columnID = task.columnID, selectedListColumnIDs.contains(columnID) {
+            return true
+        }
+        return false
+    }
+
     private var filteredTasks: [TaskItem] {
-        UpcomingTaskOrganizer.filter(
+        let base = UpcomingTaskOrganizer.filter(
             model.upcomingTasks(),
             searchText: searchText,
-            includedBoardIDs: selectedBoardIDs,
+            includedBoardIDs: nil,
             selectedDate: nil
         )
+        return base.filter(taskPassesFilter)
     }
 
     private var groups: [UpcomingGroup] {
@@ -78,10 +162,14 @@ struct UpcomingView: View {
         let remindersByDate = Dictionary(grouping: upcomingAppleReminders) { reminder in
             calendar.startOfDay(for: reminder.dueDate)
         }
+        let holidaysByDate = Dictionary(grouping: upcomingUsHolidays) { holiday in
+            calendar.startOfDay(for: holiday.date)
+        }
         let dates = Set(tasksByDate.keys)
             .union(appleEventsByDate.keys)
             .union(taskifyEventsByDate.keys)
             .union(remindersByDate.keys)
+            .union(holidaysByDate.keys)
 
         return dates.map { date in
             UpcomingGroup(
@@ -89,10 +177,35 @@ struct UpcomingView: View {
                 tasks: sorted(tasksByDate[date] ?? []),
                 taskifyEvents: taskifyEventsByDate[date] ?? [],
                 appleEvents: appleEventsByDate[date] ?? [],
-                reminders: remindersByDate[date] ?? []
+                reminders: remindersByDate[date] ?? [],
+                holidays: holidaysByDate[date] ?? []
             )
         }
         .sorted { $0.date < $1.date }
+    }
+
+    /// All US holidays in a rolling window (last year through 8 years out), matching the PWA's range.
+    private var allUsHolidays: [UsHoliday] {
+        let currentYear = Calendar.current.component(.year, from: Date())
+        return UsHolidays.holidays(fromYear: currentYear - 1, toYear: currentYear + 8)
+    }
+
+    private var upcomingUsHolidays: [UsHoliday] {
+        guard usHolidaysEnabled else { return [] }
+        let today = Calendar.current.startOfDay(for: Date())
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return allUsHolidays.filter { holiday in
+            holiday.date >= today && (query.isEmpty || holiday.title.localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    private var selectedDayUsHolidays: [UsHoliday] {
+        let calendar = Calendar.current
+        return upcomingUsHolidays.filter { calendar.isDate($0.date, inSameDayAs: selectedDate) }
+    }
+
+    private var usHolidayDates: Set<Date> {
+        Set(upcomingUsHolidays.map { Calendar.current.startOfDay(for: $0.date) })
     }
 
     private var upcomingCalendarEvents: [DeviceCalendarEvent] {
@@ -200,7 +313,8 @@ struct UpcomingView: View {
             boardGrouping != .mixed ||
             !boardFilterRaw.isEmpty ||
             deviceCalendarEnabled ||
-            deviceRemindersEnabled
+            deviceRemindersEnabled ||
+            !usHolidaysEnabled
     }
 
     var body: some View {
@@ -227,7 +341,7 @@ struct UpcomingView: View {
         }
         .sheet(isPresented: $showingNewTask) {
             NewUpcomingItemSheet()
-                .environmentObject(model)
+                .environment(model)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -236,16 +350,22 @@ struct UpcomingView: View {
                 sortMode: sortMode,
                 sortDirection: sortDirection,
                 boardGrouping: boardGrouping,
-                boards: filterBoards,
-                selectedBoardIDs: selectedBoardIDs,
+                filterGroups: filterGroups,
+                selectedOptionIDs: selectedOptionIDs,
                 deviceCalendarEnabled: deviceCalendarEnabled,
                 deviceRemindersEnabled: deviceRemindersEnabled,
+                usHolidaysEnabled: usHolidaysEnabled,
+                filterPresets: filterPresets,
                 onSelectSort: selectSortMode,
                 onSelectGrouping: { boardGroupingRaw = $0.rawValue },
-                onToggleBoard: toggleBoardFilter,
+                onToggleOption: toggleFilterOption,
                 onSelectAllBoards: { boardFilterRaw = "" },
                 onToggleDeviceCalendar: toggleDeviceCalendar,
-                onToggleDeviceReminders: toggleDeviceReminders
+                onToggleDeviceReminders: toggleDeviceReminders,
+                onToggleUsHolidays: { usHolidaysEnabled.toggle() },
+                onApplyPreset: applyFilterPreset,
+                onSavePreset: saveFilterPreset,
+                onDeletePreset: deleteFilterPreset
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
@@ -321,6 +441,14 @@ struct UpcomingView: View {
                             }
                         }
 
+                        if !group.holidays.isEmpty {
+                            VStack(spacing: 10) {
+                                ForEach(group.holidays) { holiday in
+                                    UsHolidayCard(holiday: holiday)
+                                }
+                            }
+                        }
+
                         if !group.tasks.isEmpty {
                             UpcomingTaskList(tasks: group.tasks, boardGrouping: boardGrouping)
                         }
@@ -342,6 +470,7 @@ struct UpcomingView: View {
                     taskifyEventDates: taskifyEventDates,
                     eventDates: calendarEventDates,
                     reminderDates: appleReminderDates,
+                    holidayDates: usHolidayDates,
                     todayRequest: calendarTodayRequest
                 ) { month in
                     visibleCalendarMonth = month
@@ -363,7 +492,8 @@ struct UpcomingView: View {
                 if selectedDayTasks.isEmpty,
                    selectedDayTaskifyEvents.isEmpty,
                    selectedDayCalendarEvents.isEmpty,
-                   selectedDayReminders.isEmpty {
+                   selectedDayReminders.isEmpty,
+                   selectedDayUsHolidays.isEmpty {
                     ContentUnavailableView(
                         "Nothing scheduled",
                         systemImage: "calendar.badge.checkmark",
@@ -374,6 +504,14 @@ struct UpcomingView: View {
                     .foregroundStyle(TaskifyTheme.secondaryText)
                     .frame(minHeight: 150)
                 } else {
+                    if !selectedDayUsHolidays.isEmpty {
+                        VStack(spacing: 10) {
+                            ForEach(selectedDayUsHolidays) { holiday in
+                                UsHolidayCard(holiday: holiday)
+                            }
+                        }
+                    }
+
                     if !selectedDayTaskifyEvents.isEmpty {
                         VStack(spacing: 10) {
                             ForEach(selectedDayTaskifyEvents) { event in
@@ -637,20 +775,79 @@ struct UpcomingView: View {
         }
     }
 
-    private func toggleBoardFilter(_ boardID: String) {
-        var selection = selectedBoardIDs
-        if selection.contains(boardID) {
-            selection.remove(boardID)
-        } else {
-            selection.insert(boardID)
-        }
-        let allBoardIDs = Set(filterBoards.map(\.id))
-        if selection == allBoardIDs {
+    private func writeSelection(_ selection: Set<String>) {
+        let allIDs = Set(filterOptions.map(\.id))
+        if selection == allIDs {
             boardFilterRaw = ""
         } else if let data = try? JSONEncoder().encode(selection.sorted()),
                   let text = String(data: data, encoding: .utf8) {
             boardFilterRaw = text
         }
+    }
+
+    /// Toggles a board- or list-level filter option, keeping the two in sync the way the PWA does:
+    /// selecting/deselecting a whole board cascades to all of its lists, and selecting/deselecting the
+    /// last selected list for a board cascades back to the board-level option.
+    private func toggleFilterOption(_ optionID: String) {
+        guard !filterOptions.isEmpty,
+              let option = filterOptions.first(where: { $0.id == optionID }),
+              let group = filterGroups.first(where: { $0.board.id == option.boardID }) else { return }
+
+        var next = selectedOptionIDs
+        let listIDs = Set(group.listOptions.map(\.id))
+
+        if option.columnID == nil {
+            if next.contains(optionID) {
+                next.remove(optionID)
+                listIDs.forEach { next.remove($0) }
+            } else {
+                next.insert(optionID)
+                listIDs.forEach { next.insert($0) }
+            }
+        } else {
+            if next.contains(optionID) {
+                next.remove(optionID)
+            } else {
+                next.insert(optionID)
+                next.insert(option.boardID)
+            }
+            let hasAnyList = listIDs.contains { next.contains($0) }
+            if !hasAnyList {
+                next.remove(option.boardID)
+            }
+        }
+
+        writeSelection(next)
+    }
+
+    private func persistFilterPresets(_ presets: [UpcomingFilterPreset]) {
+        guard let data = try? JSONEncoder().encode(presets),
+              let text = String(data: data, encoding: .utf8) else { return }
+        filterPresetsRaw = text
+    }
+
+    private func applyFilterPreset(_ preset: UpcomingFilterPreset) {
+        let validIDs = Set(filterOptions.map(\.id))
+        let selection = Set(preset.selection.filter { validIDs.contains($0) })
+        writeSelection(selection)
+    }
+
+    private func saveFilterPreset(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let selection = filterOptions.map(\.id).filter { selectedOptionIDs.contains($0) }
+        var presets = filterPresets
+        if let index = presets.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(trimmed) == .orderedSame }) {
+            let existing = presets.remove(at: index)
+            presets.insert(UpcomingFilterPreset(id: existing.id, name: trimmed, selection: selection), at: 0)
+        } else {
+            presets.insert(UpcomingFilterPreset(name: trimmed, selection: selection), at: 0)
+        }
+        persistFilterPresets(presets)
+    }
+
+    private func deleteFilterPreset(_ preset: UpcomingFilterPreset) {
+        persistFilterPresets(filterPresets.filter { $0.id != preset.id })
     }
 
     private func toggleDeviceCalendar() {
@@ -709,6 +906,7 @@ private struct UpcomingCompactCalendar: View {
     let taskifyEventDates: Set<Date>
     let eventDates: Set<Date>
     let reminderDates: Set<Date>
+    let holidayDates: Set<Date>
     let todayRequest: Int
     let onVisibleMonthChange: (Date) -> Void
     private let calendar: Calendar
@@ -726,6 +924,7 @@ private struct UpcomingCompactCalendar: View {
         taskifyEventDates: Set<Date>,
         eventDates: Set<Date>,
         reminderDates: Set<Date>,
+        holidayDates: Set<Date>,
         todayRequest: Int,
         calendar: Calendar = .current,
         onVisibleMonthChange: @escaping (Date) -> Void
@@ -735,6 +934,7 @@ private struct UpcomingCompactCalendar: View {
         self.taskifyEventDates = taskifyEventDates
         self.eventDates = eventDates
         self.reminderDates = reminderDates
+        self.holidayDates = holidayDates
         self.todayRequest = todayRequest
         self.calendar = calendar
         self.onVisibleMonthChange = onVisibleMonthChange
@@ -883,6 +1083,7 @@ private struct UpcomingCompactCalendar: View {
         let hasTaskifyEvent = taskifyEventDates.contains(day)
         let hasCalendarEvent = eventDates.contains(day)
         let hasReminder = reminderDates.contains(day)
+        let hasHoliday = holidayDates.contains(day)
 
         return Button {
             withAnimation(.snappy) {
@@ -934,6 +1135,12 @@ private struct UpcomingCompactCalendar: View {
                             ? (isSelected ? Color.white.opacity(0.9) : Color.purple)
                             : Color.clear)
                         .frame(width: 4, height: 4)
+
+                    Circle()
+                        .fill(hasHoliday
+                            ? (isSelected ? Color.white.opacity(0.9) : Color.pink)
+                            : Color.clear)
+                        .frame(width: 4, height: 4)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -946,7 +1153,8 @@ private struct UpcomingCompactCalendar: View {
             taskCount: taskCount,
             hasTaskifyEvent: hasTaskifyEvent,
             hasCalendarEvent: hasCalendarEvent,
-            hasReminder: hasReminder
+            hasReminder: hasReminder,
+            hasHoliday: hasHoliday
         ))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -955,7 +1163,8 @@ private struct UpcomingCompactCalendar: View {
         taskCount: Int,
         hasTaskifyEvent: Bool,
         hasCalendarEvent: Bool,
-        hasReminder: Bool
+        hasReminder: Bool,
+        hasHoliday: Bool
     ) -> String {
         var parts: [String] = []
         if taskCount > 0 {
@@ -969,6 +1178,9 @@ private struct UpcomingCompactCalendar: View {
         }
         if hasReminder {
             parts.append("Apple Reminder")
+        }
+        if hasHoliday {
+            parts.append("US holiday")
         }
         return parts.isEmpty ? "Nothing scheduled" : parts.joined(separator: ", ")
     }
@@ -1161,6 +1373,7 @@ private struct UpcomingGroup: Identifiable {
     let taskifyEvents: [TaskifyEvent]
     let appleEvents: [DeviceCalendarEvent]
     let reminders: [DeviceReminder]
+    let holidays: [UsHoliday]
     var id: Date { date }
 }
 
@@ -1235,7 +1448,7 @@ private struct DeviceReminderCard: View {
 }
 
 private struct TaskifyEventCard: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var showingEditor = false
     let event: TaskifyEvent
 
@@ -1254,7 +1467,7 @@ private struct TaskifyEventCard: View {
         }
         .sheet(isPresented: $showingEditor) {
             TaskifyEventEditorSheet(event: event)
-                .environmentObject(model)
+                .environment(model)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -1381,8 +1594,36 @@ private struct DeviceCalendarEventCard: View {
     }
 }
 
+private struct UsHolidayCard: View {
+    let holiday: UsHoliday
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "star.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.pink)
+                .frame(width: 38, height: 38)
+                .background(Color.pink.opacity(0.16), in: Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(holiday.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(holiday.summary)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.pink)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .taskifyGlass(cornerRadius: 20)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct UpcomingTaskList: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let tasks: [TaskItem]
     let boardGrouping: UpcomingBoardGrouping
 
@@ -1438,16 +1679,26 @@ private struct UpcomingSortOptionsSheet: View {
     let sortMode: UpcomingSortMode
     let sortDirection: UpcomingSortDirection
     let boardGrouping: UpcomingBoardGrouping
-    let boards: [Board]
-    let selectedBoardIDs: Set<String>
+    let filterGroups: [UpcomingFilterGroup]
+    let selectedOptionIDs: Set<String>
     let deviceCalendarEnabled: Bool
     let deviceRemindersEnabled: Bool
+    let usHolidaysEnabled: Bool
+    let filterPresets: [UpcomingFilterPreset]
     let onSelectSort: (UpcomingSortMode) -> Void
     let onSelectGrouping: (UpcomingBoardGrouping) -> Void
-    let onToggleBoard: (String) -> Void
+    let onToggleOption: (String) -> Void
     let onSelectAllBoards: () -> Void
     let onToggleDeviceCalendar: () -> Void
     let onToggleDeviceReminders: () -> Void
+    let onToggleUsHolidays: () -> Void
+    let onApplyPreset: (UpcomingFilterPreset) -> Void
+    let onSavePreset: (String) -> Void
+    let onDeletePreset: (UpcomingFilterPreset) -> Void
+
+    @State private var showingSavePresetAlert = false
+    @State private var newPresetName = ""
+    @State private var presetPendingDeletion: UpcomingFilterPreset?
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
 
@@ -1546,6 +1797,74 @@ private struct UpcomingSortOptionsSheet: View {
                     }
                     .buttonStyle(.plain)
 
+                    Button(action: onToggleUsHolidays) {
+                        HStack(spacing: 12) {
+                            Image(systemName: usHolidaysEnabled
+                                ? "checkmark.circle.fill"
+                                : "circle")
+                                .foregroundStyle(usHolidaysEnabled
+                                    ? TaskifyTheme.accent
+                                    : TaskifyTheme.tertiaryText)
+                            Image(systemName: "star.fill")
+                                .foregroundStyle(Color.pink)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("US Holidays")
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                Text("Show federal holidays and DST changes")
+                                    .font(.caption)
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 56)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18))
+                    }
+                    .buttonStyle(.plain)
+
+                    HStack {
+                        sectionTitle("Filter presets")
+                        Spacer()
+                        Button {
+                            newPresetName = ""
+                            showingSavePresetAlert = true
+                        } label: {
+                            Label("Save current", systemImage: "plus.circle")
+                        }
+                        .font(.caption.weight(.semibold))
+                    }
+
+                    if filterPresets.isEmpty {
+                        Text("Select boards below, then save the combination as a reusable preset.")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                    } else {
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 8) {
+                                ForEach(filterPresets) { preset in
+                                    Button {
+                                        onApplyPreset(preset)
+                                    } label: {
+                                        Text(preset.name)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(TaskifyTheme.primaryText)
+                                            .padding(.horizontal, 14)
+                                            .frame(height: 36)
+                                            .background(TaskifyTheme.raisedFill, in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .onLongPressGesture(minimumDuration: 0.5) {
+                                        presetPendingDeletion = preset
+                                    }
+                                }
+                            }
+                        }
+                        .scrollIndicators(.hidden)
+                        Text("Touch and hold a preset to delete it.")
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                    }
+
                     HStack {
                         sectionTitle("Taskify boards")
                         Spacer()
@@ -1554,30 +1873,16 @@ private struct UpcomingSortOptionsSheet: View {
                     }
 
                     VStack(spacing: 0) {
-                        ForEach(boards) { board in
-                            Button {
-                                onToggleBoard(board.id)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: selectedBoardIDs.contains(board.id)
-                                        ? "checkmark.circle.fill"
-                                        : "circle")
-                                        .foregroundStyle(selectedBoardIDs.contains(board.id)
-                                            ? TaskifyTheme.accent
-                                            : TaskifyTheme.tertiaryText)
-                                    Text(board.name)
-                                        .foregroundStyle(TaskifyTheme.primaryText)
-                                    Spacer()
-                                    Text(board.kind == .list ? "List" : "Week")
-                                        .font(.caption)
-                                        .foregroundStyle(TaskifyTheme.tertiaryText)
-                                }
-                                .padding(.horizontal, 14)
-                                .frame(height: 50)
-                            }
-                            .buttonStyle(.plain)
-                            if board.id != boards.last?.id {
+                        ForEach(filterGroups) { group in
+                            filterOptionRow(group.boardOption, subtitle: group.board.kind == .list ? "List" : "Week")
+                            if group.board.id != filterGroups.last?.board.id || !group.listOptions.isEmpty {
                                 Divider().overlay(TaskifyTheme.border)
+                            }
+                            ForEach(group.listOptions) { listOption in
+                                filterOptionRow(listOption, indented: true)
+                                if listOption.id != group.listOptions.last?.id || group.board.id != filterGroups.last?.board.id {
+                                    Divider().overlay(TaskifyTheme.border)
+                                }
                             }
                         }
                     }
@@ -1593,6 +1898,35 @@ private struct UpcomingSortOptionsSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .alert("Save preset", isPresented: $showingSavePresetAlert) {
+                TextField("Preset name", text: $newPresetName)
+                Button("Cancel", role: .cancel) { newPresetName = "" }
+                Button("Save") {
+                    onSavePreset(newPresetName)
+                    newPresetName = ""
+                }
+                .disabled(newPresetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } message: {
+                Text("Saves the boards currently selected below as a reusable filter.")
+            }
+            .confirmationDialog(
+                "Delete \(presetPendingDeletion?.name ?? "preset")?",
+                isPresented: Binding(
+                    get: { presetPendingDeletion != nil },
+                    set: { isPresented in
+                        if !isPresented { presetPendingDeletion = nil }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let preset = presetPendingDeletion {
+                        onDeletePreset(preset)
+                    }
+                    presetPendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) { presetPendingDeletion = nil }
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -1603,6 +1937,36 @@ private struct UpcomingSortOptionsSheet: View {
             .tracking(0.8)
             .foregroundStyle(TaskifyTheme.secondaryText)
     }
+
+    private func filterOptionRow(_ option: UpcomingFilterOption, subtitle: String? = nil, indented: Bool = false) -> some View {
+        let isSelected = selectedOptionIDs.contains(option.id)
+        return Button {
+            onToggleOption(option.id)
+        } label: {
+            HStack(spacing: 12) {
+                if indented {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? TaskifyTheme.accent : TaskifyTheme.tertiaryText)
+                Text(option.label)
+                    .font(indented ? .subheadline : .body)
+                    .foregroundStyle(indented ? TaskifyTheme.secondaryText : TaskifyTheme.primaryText)
+                Spacer()
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.leading, indented ? 14 : 0)
+            .frame(height: indented ? 42 : 50)
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 private enum NewUpcomingItemType: String, CaseIterable {
@@ -1611,7 +1975,7 @@ private enum NewUpcomingItemType: String, CaseIterable {
 }
 
 private struct NewUpcomingItemSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var itemType = NewUpcomingItemType.task
     @State private var title = ""
@@ -1722,7 +2086,7 @@ private struct NewUpcomingItemSheet: View {
 }
 
 private struct TaskifyEventEditorSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
     @State private var details: String

@@ -4,7 +4,7 @@ import UIKit
 import VisionKit
 
 struct SettingsView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @State private var newBoardName = ""
     @State private var newBoardKind: BoardKind = .week
@@ -19,10 +19,13 @@ struct SettingsView: View {
     @State private var mediaServerValidationMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // @Environment values aren't bindable directly; @Bindable re-wraps the same model
+        // reference so `$model.pendingAccountBackup` below still works post-@Observable.
+        @Bindable var model = model
+
+        return VStack(alignment: .leading, spacing: 10) {
             Text("Settings")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(TaskifyTheme.primaryText)
+                .taskifyScreenTitle()
                 .padding(.horizontal, 18)
                 .padding(.top, 14)
 
@@ -32,6 +35,10 @@ struct SettingsView: View {
                     syncCard
                     storageCard
                     boardsCard
+                    bibleTrackerCard
+                    fastingRemindersCard
+                    scriptureMemoryCard
+                    streaksCard
                     notificationsCard
                     migrationCard
                     appearanceCard
@@ -43,22 +50,35 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingBoardScanner) {
             BoardQRJoinFlow()
-                .environmentObject(model)
+                .environment(model)
         }
         .sheet(item: $managingBoard) { board in
             BoardManagerSheet(boardID: board.id)
-                .environmentObject(model)
+                .environment(model)
         }
         .sheet(item: $managingCompoundBoard) { board in
             CompoundBoardManagerSheet(boardID: board.id)
-                .environmentObject(model)
+                .environment(model)
         }
         .sheet(item: $model.pendingAccountBackup) { payload in
             PWAAccountBackupReviewSheet(payload: payload)
-                .environmentObject(model)
+                .environment(model)
         }
         .onAppear {
             mediaServerInput = model.encryptedMediaServerURL
+        }
+        .task {
+#if DEBUG
+            switch ProcessInfo.processInfo.environment["TASKIFY_SETTINGS_SHEET"] {
+            case "boardManager":
+                managingBoard = model.visibleBoards.first
+            case "compoundBoardManager":
+                managingCompoundBoard = model.visibleBoards.first(where: { $0.kind == .compound })
+                    ?? model.visibleBoards.first
+            default:
+                break
+            }
+#endif
         }
     }
 
@@ -87,6 +107,10 @@ struct SettingsView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 50)
                 .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(TaskifyTheme.border, lineWidth: 1)
+                )
 
             Button("Import identity") {
                 guard model.importIdentity(identityInput) else { return }
@@ -233,6 +257,10 @@ struct SettingsView: View {
                     TaskifyTheme.raisedFill,
                     in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                 )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(TaskifyTheme.border, lineWidth: 1)
+                )
 
             HStack(spacing: 10) {
                 Button("Save server", action: saveMediaServer)
@@ -327,7 +355,7 @@ struct SettingsView: View {
             Text("Boards & Lists")
                 .font(.headline)
 
-            ForEach(model.visibleBoards) { board in
+            ForEach(model.visibleBoards.filter { $0.kind != .bible }) { board in
                 VStack(spacing: 7) {
                     HStack(spacing: 8) {
                         Button {
@@ -360,6 +388,10 @@ struct SettingsView: View {
                             .padding(.horizontal, 16)
                             .frame(maxWidth: .infinity, minHeight: 58)
                             .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(TaskifyTheme.border, lineWidth: 1)
+                            )
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
@@ -377,6 +409,10 @@ struct SettingsView: View {
                                 .font(.headline)
                                 .frame(width: 46, height: 58)
                                 .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .stroke(TaskifyTheme.border, lineWidth: 1)
+                                )
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(TaskifyTheme.primaryText)
@@ -435,6 +471,10 @@ struct SettingsView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(TaskifyTheme.border, lineWidth: 1)
+                    )
                 }
 
                 Text("Archived boards stay on this device and can be restored at any time.")
@@ -574,6 +614,211 @@ struct SettingsView: View {
         .taskifyGlass(cornerRadius: 24)
     }
 
+    private var bibleTrackerCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "Bible Reading Tracker",
+                isOn: Binding(
+                    get: { model.bibleTrackerEnabled },
+                    set: { _ = model.setBibleTrackerEnabled($0) }
+                )
+            )
+            .font(.headline)
+            Text("Adds a Bible board for tracking chapters read, book by book. Progress stays on this device only.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var fastingRemindersCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle(
+                "Fasting Reminders",
+                isOn: Binding(
+                    get: { model.fastingRemindersEnabled },
+                    set: { newValue in
+                        model.updateFastingReminders(
+                            enabled: newValue,
+                            mode: model.fastingRemindersMode,
+                            perMonth: model.fastingRemindersPerMonth,
+                            weekday: model.fastingRemindersWeekday
+                        )
+                    }
+                )
+            )
+            .font(.headline)
+
+            if model.fastingRemindersEnabled {
+                Picker(
+                    "Schedule",
+                    selection: Binding(
+                        get: { model.fastingRemindersMode },
+                        set: { newMode in
+                            let maxPerMonth = newMode == .random ? 31 : 5
+                            model.updateFastingReminders(
+                                enabled: true,
+                                mode: newMode,
+                                perMonth: min(model.fastingRemindersPerMonth, maxPerMonth),
+                                weekday: model.fastingRemindersWeekday
+                            )
+                        }
+                    )
+                ) {
+                    Text("Weekly").tag(FastingRemindersMode.weekday)
+                    Text("Random days").tag(FastingRemindersMode.random)
+                }
+                .pickerStyle(.segmented)
+
+                if model.fastingRemindersMode == .weekday {
+                    Picker(
+                        "Day of week",
+                        selection: Binding(
+                            get: { model.fastingRemindersWeekday },
+                            set: { newWeekday in
+                                model.updateFastingReminders(
+                                    enabled: true,
+                                    mode: model.fastingRemindersMode,
+                                    perMonth: model.fastingRemindersPerMonth,
+                                    weekday: newWeekday
+                                )
+                            }
+                        )
+                    ) {
+                        ForEach(0..<7, id: \.self) { index in
+                            Text(weekdayName(index)).tag(index)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Stepper(
+                    "\(model.fastingRemindersPerMonth) time\(model.fastingRemindersPerMonth == 1 ? "" : "s") per month",
+                    value: Binding(
+                        get: { model.fastingRemindersPerMonth },
+                        set: { newValue in
+                            model.updateFastingReminders(
+                                enabled: true,
+                                mode: model.fastingRemindersMode,
+                                perMonth: newValue,
+                                weekday: model.fastingRemindersWeekday
+                            )
+                        }
+                    ),
+                    in: 1...(model.fastingRemindersMode == .random ? 31 : 5)
+                )
+
+                Text(model.fastingRemindersMode == .weekday
+                    ? "Adds a \"Fasting\" task to your Week board on the chosen weekday."
+                    : "Adds a \"Fasting\" task to your Week board on this many random days each month.")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func weekdayName(_ index: Int) -> String {
+        let symbols = Calendar.current.weekdaySymbols
+        guard index >= 0, index < symbols.count else { return "" }
+        return symbols[index]
+    }
+
+    private var scriptureMemoryCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle(
+                "Scripture Memory",
+                isOn: Binding(
+                    get: { model.scriptureMemoryEnabled },
+                    set: { newValue in
+                        model.updateScriptureMemorySettings(
+                            enabled: newValue,
+                            boardID: model.scriptureMemoryBoardID ?? model.scriptureMemoryEligibleBoards.first?.id,
+                            frequency: model.scriptureMemoryFrequency
+                        )
+                    }
+                )
+            )
+            .font(.headline)
+
+            if model.scriptureMemoryEnabled {
+                if model.scriptureMemoryEligibleBoards.isEmpty {
+                    Text("Create a week or list board first to choose where review tasks appear.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                } else {
+                    Picker(
+                        "Board",
+                        selection: Binding(
+                            get: { model.scriptureMemoryBoardID ?? model.scriptureMemoryEligibleBoards.first?.id ?? "" },
+                            set: { newBoardID in
+                                model.updateScriptureMemorySettings(
+                                    enabled: true,
+                                    boardID: newBoardID,
+                                    frequency: model.scriptureMemoryFrequency
+                                )
+                            }
+                        )
+                    ) {
+                        ForEach(model.scriptureMemoryEligibleBoards) { board in
+                            Text(board.name).tag(board.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Picker(
+                    "Frequency",
+                    selection: Binding(
+                        get: { model.scriptureMemoryFrequency },
+                        set: { newFrequency in
+                            model.updateScriptureMemorySettings(
+                                enabled: true,
+                                boardID: model.scriptureMemoryBoardID,
+                                frequency: newFrequency
+                            )
+                        }
+                    )
+                ) {
+                    ForEach(ScriptureMemoryFrequency.allCases, id: \.rawValue) { frequency in
+                        Text(frequency.label).tag(frequency)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("Add passages from the Bible board. Taskify schedules one review task at a time, spacing it out further each time you review it.")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var streaksCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "Task Streaks",
+                isOn: Binding(
+                    get: { model.streaksEnabled },
+                    set: { model.setStreaksEnabled($0) }
+                )
+            )
+            .font(.headline)
+            Text("Shows a \u{1F525} count on daily and weekly recurring tasks each time you complete them in a row.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
     private var migrationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Native app status")
@@ -583,6 +828,10 @@ struct SettingsView: View {
             StatusRow(title: "Weekly boards", status: "Active", complete: true)
             StatusRow(title: "List boards & rich task editing", status: "Active", complete: true)
             StatusRow(title: "Compound boards", status: "Active", complete: true)
+            StatusRow(title: "Bible reading tracker", status: "Active (no print/scan)", complete: true)
+            StatusRow(title: "Fasting reminders", status: "Active", complete: true)
+            StatusRow(title: "Scripture memory", status: "Active", complete: true)
+            StatusRow(title: "Task streaks", status: "Active", complete: true)
             StatusRow(title: "Recurrence & native reminders", status: "Active", complete: true)
             StatusRow(title: "Nostr sync", status: model.syncStatus, complete: model.syncIsOnline)
             StatusRow(title: "PWA account backup continuity", status: "Active", complete: true)
@@ -653,7 +902,7 @@ struct SettingsView: View {
 }
 
 private struct PWAAccountBackupReviewSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let payload: NostrAppBackupPayload
 
@@ -667,60 +916,28 @@ private struct PWAAccountBackupReviewSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    LabeledContent("Backup date", value: backupDate.formatted(date: .abbreviated, time: .shortened))
-                    LabeledContent("Boards to add", value: "\(review.importableBoardCount)")
-                    LabeledContent("Already connected", value: "\(review.alreadyConnectedBoardCount)")
-                    LabeledContent("Relay addresses", value: "\(review.relayCount)")
-                    if review.unsupportedBoardCount > 0 {
-                        LabeledContent("Not yet supported", value: "\(review.unsupportedBoardCount)")
-                    }
-                } header: {
-                    Text("PWA backup found")
-                } footer: {
-                    Text("Import adds compatible boards and relay settings. It does not delete native boards or tasks.")
-                }
-
-                Section("Boards") {
-                    ForEach(Array(payload.boards.enumerated()), id: \.offset) { _, board in
-                        HStack(spacing: 12) {
-                            Image(systemName: board.kind == .compound ? "square.stack.3d.up" : "rectangle.3.group")
-                                .foregroundStyle(board.kind == .bible ? TaskifyTheme.tertiaryText : TaskifyTheme.accent)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(board.name?.isEmpty == false ? board.name! : "Shared Board")
-                                Text(board.kind == .bible ? "Bible board • not imported yet" : boardKindLabel(board.kind))
-                                    .font(.caption)
-                                    .foregroundStyle(TaskifyTheme.secondaryText)
-                            }
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        summaryCard
+                        boardsCard
+                        if review.containsWalletSeed || review.containsPWASettings {
+                            safetyCard
                         }
-                    }
-                }
 
-                if review.containsWalletSeed || review.containsPWASettings {
-                    Section("Kept separate for safety") {
-                        if review.containsWalletSeed {
-                            Label("Wallet seed stays encrypted and is not imported", systemImage: "lock.shield")
+                        Button {
+                            model.applyPendingPWAAccountBackup()
+                            dismiss()
+                        } label: {
+                            Label("Add compatible boards", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity)
                         }
-                        if review.containsPWASettings {
-                            Label("PWA-only appearance and device settings are not imported", systemImage: "slider.horizontal.3")
-                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(review.importableBoardCount == 0 && review.alreadyConnectedBoardCount == 0)
                     }
-                    .font(.subheadline)
+                    .padding(18)
                 }
-
-                Section {
-                    Button {
-                        model.applyPendingPWAAccountBackup()
-                        dismiss()
-                    } label: {
-                        Label("Add compatible boards", systemImage: "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(review.importableBoardCount == 0 && review.alreadyConnectedBoardCount == 0)
-                }
-                .listRowBackground(Color.clear)
             }
             .navigationTitle("Restore from PWA")
             .navigationBarTitleDisplayMode(.inline)
@@ -733,6 +950,76 @@ private struct PWAAccountBackupReviewSheet: View {
                 }
             }
         }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("PWA backup found")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 10) {
+                LabeledContent("Backup date", value: backupDate.formatted(date: .abbreviated, time: .shortened))
+                LabeledContent("Boards to add", value: "\(review.importableBoardCount)")
+                LabeledContent("Already connected", value: "\(review.alreadyConnectedBoardCount)")
+                LabeledContent("Relay addresses", value: "\(review.relayCount)")
+                if review.unsupportedBoardCount > 0 {
+                    LabeledContent("Not yet supported", value: "\(review.unsupportedBoardCount)")
+                }
+            }
+            .font(.subheadline)
+
+            Text("Import adds compatible boards and relay settings. It does not delete native boards or tasks.")
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var boardsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Boards")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(Array(payload.boards.enumerated()), id: \.offset) { _, board in
+                    HStack(spacing: 12) {
+                        Image(systemName: board.kind == .compound ? "square.stack.3d.up" : "rectangle.3.group")
+                            .foregroundStyle(board.kind == .bible ? TaskifyTheme.tertiaryText : TaskifyTheme.accent)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(board.name?.isEmpty == false ? board.name! : "Shared Board")
+                            Text(board.kind == .bible ? "Bible board • not imported yet" : boardKindLabel(board.kind))
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var safetyCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Kept separate for safety")
+                .font(.headline)
+            if review.containsWalletSeed {
+                Label("Wallet seed stays encrypted and is not imported", systemImage: "lock.shield")
+                    .font(.subheadline)
+            }
+            if review.containsPWASettings {
+                Label("PWA-only appearance and device settings are not imported", systemImage: "slider.horizontal.3")
+                    .font(.subheadline)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
     }
 
     private func boardKindLabel(_ kind: BoardKind?) -> String {
@@ -746,7 +1033,7 @@ private struct PWAAccountBackupReviewSheet: View {
 }
 
 private struct BoardManagerSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let boardID: String
     @State private var boardName = ""
@@ -765,123 +1052,19 @@ private struct BoardManagerSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
                 if let board {
-                    Section {
-                        TextField("Board name", text: $boardName)
-
-                        Button("Save name") {
-                            let trimmedName = boardName.trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard model.renameBoard(boardID: boardID, name: trimmedName) else { return }
-                            boardName = trimmedName
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            nameCard(board)
+                            reorderCard(board)
+                            detailsCard(board)
+                            relaysCard(board)
+                            archiveCard(board)
+                            deleteCard
                         }
-                        .disabled(
-                            boardName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                boardName.trimmingCharacters(in: .whitespacesAndNewlines) == board.name
-                        )
-                    } header: {
-                        Text("Board name")
-                    } footer: {
-                        Text("Name changes sync with collaborators on shared boards.")
-                    }
-
-                    Section("Board details") {
-                        LabeledContent("Type", value: boardKindName(board.kind))
-                        LabeledContent("Tasks", value: "\(taskCount)")
-
-                        Button {
-                            UIPasteboard.general.string = board.effectiveNostrBoardID
-                        } label: {
-                            Label("Copy board ID", systemImage: "doc.on.doc")
-                        }
-                    }
-
-                    Section {
-                        ForEach(board.effectiveRelayURLs, id: \.self) { relayURL in
-                            HStack(spacing: 10) {
-                                Image(systemName: "network")
-                                    .foregroundStyle(TaskifyTheme.accent)
-                                Text(relayURL)
-                                    .font(.caption.monospaced())
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Spacer()
-                                Button(role: .destructive) {
-                                    removeRelay(relayURL, from: board)
-                                } label: {
-                                    Image(systemName: "minus.circle.fill")
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(board.effectiveRelayURLs.count <= 1)
-                                .accessibilityLabel("Remove \(relayURL)")
-                            }
-                        }
-
-                        HStack(spacing: 8) {
-                            TextField("wss://relay.example", text: $newRelayURL)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .keyboardType(.URL)
-                                .submitLabel(.done)
-                                .onSubmit { addRelay(to: board) }
-
-                            Button("Add") { addRelay(to: board) }
-                                .disabled(newRelayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-
-                        Button("Restore Taskify defaults") {
-                            guard model.updateBoardRelayURLs(
-                                boardID: board.id,
-                                relayURLs: TaskifyRelayDefaults.urls
-                            ) else { return }
-                            relayMessage = "Default relays restored."
-                        }
-                        .disabled(board.effectiveRelayURLs == TaskifyRelayDefaults.urls)
-
-                        if let relayMessage {
-                            Text(relayMessage)
-                                .font(.caption)
-                                .foregroundStyle(relayMessage.hasPrefix("Invalid") || relayMessage.hasPrefix("Keep")
-                                    ? Color.red
-                                    : TaskifyTheme.secondaryText)
-                        }
-                    } header: {
-                        Text("Nostr relays")
-                    } footer: {
-                        Text("Relay changes apply immediately, migrate queued publishes, and sync in this board's share metadata. Secure wss:// relays are recommended.")
-                    }
-
-                    Section {
-                        if board.archived {
-                            Button {
-                                guard model.unarchiveBoard(boardID: boardID) else { return }
-                                dismiss()
-                            } label: {
-                                Label("Restore board", systemImage: "tray.and.arrow.up")
-                            }
-                        } else {
-                            Button {
-                                if model.archiveBoard(boardID: boardID) {
-                                    dismiss()
-                                } else {
-                                    showingArchiveBlocked = true
-                                }
-                            } label: {
-                                Label("Archive board", systemImage: "archivebox")
-                            }
-                        }
-                    } footer: {
-                        Text("Archiving is local to this device and can be reversed from Settings.")
-                    }
-
-                    Section {
-                        Button(role: .destructive) {
-                            showingDeleteConfirmation = true
-                        } label: {
-                            Label("Delete board", systemImage: "trash")
-                        }
-                    } footer: {
-                        Text("Deleting removes this board and its locally stored tasks from this device.")
+                        .padding(18)
                     }
                 } else {
                     ContentUnavailableView("Board unavailable", systemImage: "exclamationmark.triangle")
@@ -918,6 +1101,241 @@ private struct BoardManagerSheet: View {
         } message: {
             Text("This removes the local copy. It does not delete copies already held by collaborators.")
         }
+    }
+
+    private func nameCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Board name")
+                .font(.headline)
+
+            TextField("Board name", text: $boardName)
+                .padding(.horizontal, 16)
+                .frame(height: 50)
+                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(TaskifyTheme.border, lineWidth: 1)
+                )
+
+            Button("Save name") {
+                let trimmedName = boardName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard model.renameBoard(boardID: boardID, name: trimmedName) else { return }
+                boardName = trimmedName
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(
+                boardName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    boardName.trimmingCharacters(in: .whitespacesAndNewlines) == board.name
+            )
+
+            Text("Name changes sync with collaborators on shared boards.")
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var reorderableBoardIDs: [String] {
+        model.visibleBoards.filter { $0.kind != .bible }.map(\.id)
+    }
+
+    private func reorderCard(_ board: Board) -> some View {
+        let position = reorderableBoardIDs.firstIndex(of: board.id)
+        let canMoveUp = (position ?? 0) > 0
+        let canMoveDown = position.map { $0 < reorderableBoardIDs.count - 1 } ?? false
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Order")
+                .font(.headline)
+
+            HStack(spacing: 10) {
+                Button {
+                    _ = model.moveBoard(boardID: boardID, direction: -1)
+                } label: {
+                    Label("Move Up", systemImage: "arrow.up")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canMoveUp)
+
+                Button {
+                    _ = model.moveBoard(boardID: boardID, direction: 1)
+                } label: {
+                    Label("Move Down", systemImage: "arrow.down")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canMoveDown)
+            }
+            .font(.subheadline.weight(.semibold))
+
+            Text("Changes where this board appears in the board switcher. Stays on this device only.")
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func detailsCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Board details")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 10) {
+                LabeledContent("Type", value: boardKindName(board.kind))
+                LabeledContent("Tasks", value: "\(taskCount)")
+            }
+            .font(.subheadline)
+
+            Button {
+                UIPasteboard.general.string = board.effectiveNostrBoardID
+            } label: {
+                Label("Copy board ID", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func relaysCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Nostr relays")
+                .font(.headline)
+
+            VStack(spacing: 8) {
+                ForEach(board.effectiveRelayURLs, id: \.self) { relayURL in
+                    HStack(spacing: 10) {
+                        Image(systemName: "network")
+                            .foregroundStyle(TaskifyTheme.accent)
+                        Text(relayURL)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button(role: .destructive) {
+                            removeRelay(relayURL, from: board)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(board.effectiveRelayURLs.count <= 1)
+                        .accessibilityLabel("Remove \(relayURL)")
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 42)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(TaskifyTheme.border, lineWidth: 1)
+                    )
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField("wss://relay.example", text: $newRelayURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .submitLabel(.done)
+                    .onSubmit { addRelay(to: board) }
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(TaskifyTheme.border, lineWidth: 1)
+                    )
+
+                Button("Add") { addRelay(to: board) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(newRelayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            Button("Restore Taskify defaults") {
+                guard model.updateBoardRelayURLs(
+                    boardID: board.id,
+                    relayURLs: TaskifyRelayDefaults.urls
+                ) else { return }
+                relayMessage = "Default relays restored."
+            }
+            .buttonStyle(.bordered)
+            .disabled(board.effectiveRelayURLs == TaskifyRelayDefaults.urls)
+
+            if let relayMessage {
+                Text(relayMessage)
+                    .font(.caption)
+                    .foregroundStyle(relayMessage.hasPrefix("Invalid") || relayMessage.hasPrefix("Keep")
+                        ? Color.red
+                        : TaskifyTheme.secondaryText)
+            }
+
+            Text("Relay changes apply immediately, migrate queued publishes, and sync in this board's share metadata. Secure wss:// relays are recommended.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func archiveCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if board.archived {
+                Button {
+                    guard model.unarchiveBoard(boardID: boardID) else { return }
+                    dismiss()
+                } label: {
+                    Label("Restore board", systemImage: "tray.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button {
+                    if model.archiveBoard(boardID: boardID) {
+                        dismiss()
+                    } else {
+                        showingArchiveBlocked = true
+                    }
+                } label: {
+                    Label("Archive board", systemImage: "archivebox")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            Text("Archiving is local to this device and can be reversed from Settings.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var deleteCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(role: .destructive) {
+                showingDeleteConfirmation = true
+            } label: {
+                Label("Delete board", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            Text("Deleting removes this board and its locally stored tasks from this device.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
     }
 
     private func addRelay(to board: Board) {
@@ -967,7 +1385,7 @@ private struct BoardManagerSheet: View {
 }
 
 private struct CompoundBoardManagerSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let boardID: String
 
@@ -987,90 +1405,18 @@ private struct CompoundBoardManagerSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
                 if let board {
-                    Section {
-                        Toggle(
-                            "Hide board names in column headers",
-                            isOn: Binding(
-                                get: { board.hideChildBoardNames },
-                                set: { _ = model.setCompoundHideChildBoardNames(boardID: boardID, hidden: $0) }
-                            )
-                        )
-                    } footer: {
-                        Text("When off, each list shows the child board it came from.")
-                    }
-
-                    Section("Linked boards") {
-                        if linkedBoards.isEmpty {
-                            Text("No list boards linked yet.")
-                                .foregroundStyle(TaskifyTheme.secondaryText)
-                        }
-
-                        ForEach(Array(linkedBoards.enumerated()), id: \.element.id) { index, child in
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(child.name)
-                                    Text("\(child.columns.count) lists")
-                                        .font(.caption)
-                                        .foregroundStyle(TaskifyTheme.secondaryText)
-                                }
-
-                                Spacer()
-
-                                Button {
-                                    _ = model.moveCompoundChild(
-                                        boardID: boardID,
-                                        childBoardID: child.id,
-                                        direction: -1
-                                    )
-                                } label: {
-                                    Image(systemName: "arrow.up")
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(index == 0)
-
-                                Button {
-                                    _ = model.moveCompoundChild(
-                                        boardID: boardID,
-                                        childBoardID: child.id,
-                                        direction: 1
-                                    )
-                                } label: {
-                                    Image(systemName: "arrow.down")
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(index == linkedBoards.count - 1)
-
-                                Button(role: .destructive) {
-                                    _ = model.setCompoundChild(
-                                        boardID: boardID,
-                                        childBoardID: child.id,
-                                        included: false
-                                    )
-                                } label: {
-                                    Image(systemName: "minus.circle.fill")
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("Remove \(child.name)")
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            settingsCard(board)
+                            linkedBoardsCard
+                            if !availableBoards.isEmpty {
+                                addBoardCard
                             }
                         }
-                    }
-
-                    if !availableBoards.isEmpty {
-                        Section("Add a list board") {
-                            ForEach(availableBoards) { child in
-                                Button {
-                                    _ = model.setCompoundChild(
-                                        boardID: boardID,
-                                        childBoardID: child.id,
-                                        included: true
-                                    )
-                                } label: {
-                                    Label(child.name, systemImage: "plus.circle.fill")
-                                }
-                            }
-                        }
+                        .padding(18)
                     }
                 } else {
                     ContentUnavailableView("Board unavailable", systemImage: "exclamationmark.triangle")
@@ -1088,13 +1434,132 @@ private struct CompoundBoardManagerSheet: View {
         .tint(TaskifyTheme.accent)
     }
 
+    private func settingsCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "Hide board names in column headers",
+                isOn: Binding(
+                    get: { board.hideChildBoardNames },
+                    set: { _ = model.setCompoundHideChildBoardNames(boardID: boardID, hidden: $0) }
+                )
+            )
+            Text("When off, each list shows the child board it came from.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var linkedBoardsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Linked boards")
+                .font(.headline)
+
+            if linkedBoards.isEmpty {
+                Text("No list boards linked yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            VStack(spacing: 8) {
+                ForEach(Array(linkedBoards.enumerated()), id: \.element.id) { index, child in
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(child.name)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text("\(child.columns.count) lists")
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            _ = model.moveCompoundChild(
+                                boardID: boardID,
+                                childBoardID: child.id,
+                                direction: -1
+                            )
+                        } label: {
+                            Image(systemName: "arrow.up")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(index == 0)
+
+                        Button {
+                            _ = model.moveCompoundChild(
+                                boardID: boardID,
+                                childBoardID: child.id,
+                                direction: 1
+                            )
+                        } label: {
+                            Image(systemName: "arrow.down")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(index == linkedBoards.count - 1)
+
+                        Button(role: .destructive) {
+                            _ = model.setCompoundChild(
+                                boardID: boardID,
+                                childBoardID: child.id,
+                                included: false
+                            )
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Remove \(child.name)")
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 42)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(TaskifyTheme.border, lineWidth: 1)
+                    )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var addBoardCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add a list board")
+                .font(.headline)
+
+            VStack(spacing: 8) {
+                ForEach(availableBoards) { child in
+                    Button {
+                        _ = model.setCompoundChild(
+                            boardID: boardID,
+                            childBoardID: child.id,
+                            included: true
+                        )
+                    } label: {
+                        Label(child.name, systemImage: "plus.circle.fill")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
     private func isIncluded(_ child: Board) -> Bool {
         board?.children.contains(where: { child.matchesReference($0) }) == true
     }
 }
 
 private struct BoardQRJoinFlow: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var scannedShare: BoardSharePayload?
     @State private var rawShare = ""
@@ -1371,6 +1836,10 @@ private struct RelayStatusRow: View {
         .padding(.horizontal, 12)
         .frame(minHeight: 42)
         .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(TaskifyTheme.border, lineWidth: 1)
+        )
     }
 }
 

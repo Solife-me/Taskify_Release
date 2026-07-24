@@ -12,6 +12,17 @@ enum TaskifyTheme {
     static let raisedFill = Color.white.opacity(0.11)
     static let border = Color.white.opacity(0.12)
 
+    static let glassSheen = LinearGradient(
+        colors: [Color.white.opacity(0.10), Color.white.opacity(0.03), Color.black.opacity(0.05)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let glassStroke = LinearGradient(
+        colors: [Color.white.opacity(0.24), border],
+        startPoint: .top,
+        endPoint: .bottom
+    )
+
     static var background: LinearGradient {
         LinearGradient(
             colors: [backgroundTop, backgroundMid, backgroundBottom],
@@ -24,23 +35,30 @@ enum TaskifyTheme {
 struct GlassPanel: ViewModifier {
     var cornerRadius: CGFloat = 24
 
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
     func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                shape
                     .fill(TaskifyTheme.panelFill)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .background(.ultraThinMaterial, in: shape)
+                    .overlay(shape.fill(TaskifyTheme.glassSheen))
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(TaskifyTheme.border, lineWidth: 1)
-            )
+            .overlay(shape.stroke(TaskifyTheme.glassStroke, lineWidth: 1))
     }
 }
 
 extension View {
     func taskifyGlass(cornerRadius: CGFloat = 24) -> some View {
         modifier(GlassPanel(cornerRadius: cornerRadius))
+    }
+
+    func taskifyScreenTitle() -> some View {
+        font(.system(size: 22, weight: .bold))
+            .foregroundStyle(TaskifyTheme.primaryText)
     }
 
     func taskifyGlassControl<ControlShape: Shape>(

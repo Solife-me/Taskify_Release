@@ -1,16 +1,23 @@
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
-	classes = {};
+	classes = {
+	};
 	objectVersion = 71;
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4DE210899E6D8A850055ABE6 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8A5E0768C8D7B1E2BECC61D8 /* Foundation.framework */; };
 		B00000000000000000000101 /* TaskifyNativeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000201 /* TaskifyNativeApp.swift */; };
 		B00000000000000000000102 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000202 /* AppModel.swift */; };
 		B00000000000000000000103 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000203 /* RootTabView.swift */; };
 		B00000000000000000000104 /* TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* TaskifyTheme.swift */; };
 		B00000000000000000000105 /* BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* BoardsView.swift */; };
+		B00000000000000000000122 /* BibleTrackerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000223 /* BibleTrackerStore.swift */; };
+		B00000000000000000000123 /* BibleTrackerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000224 /* BibleTrackerView.swift */; };
+		45B0FD54A518483096597A9F /* FastingRemindersSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50694F99A59C46F29A34D542 /* FastingRemindersSettings.swift */; };
+		F4C17FA9D5F24554A5CFF5AC /* ScriptureMemorySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */; };
+		FF5C3B1D78B447EAB70D819E /* TaskStreakSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */; };
 		B00000000000000000000106 /* UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* UpcomingView.swift */; };
 		B00000000000000000000107 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* SettingsView.swift */; };
 		B00000000000000000000108 /* MigrationPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000208 /* MigrationPlaceholderView.swift */; };
@@ -27,14 +34,37 @@
 		B00000000000000000000119 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000221 /* ChatView.swift */; };
 		B00000000000000000000120 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000601 /* TaskifyCore */; };
 		B00000000000000000000121 /* WalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000222 /* WalletView.swift */; };
+		B0B1638B8F63CC397381704D /* ReceiveLightningSheetUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57F458985178452A2D282E74 /* ReceiveLightningSheetUITests.swift */; };
+		CA3D6C947B9B4D7AB9E6165C /* BibleTrackerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18EC57FC792E425B9E02B191 /* BibleTrackerUITests.swift */; };
+		204177419B8968CC8C904B29 /* ScrollPerformanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		CC3D8384A4E30EB2C695F5DF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B00000000000000000000500 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B00000000000000000000501;
+			remoteInfo = TaskifyNative;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		57F458985178452A2D282E74 /* ReceiveLightningSheetUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReceiveLightningSheetUITests.swift; path = ReceiveLightningSheetUITests.swift; sourceTree = "<group>"; };
+		18EC57FC792E425B9E02B191 /* BibleTrackerUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BibleTrackerUITests.swift; path = BibleTrackerUITests.swift; sourceTree = "<group>"; };
+		12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ScrollPerformanceUITests.swift; path = ScrollPerformanceUITests.swift; sourceTree = "<group>"; };
+		69AB7FE65898EA9D39EC4DAE /* TaskifyNativeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskifyNativeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		8A5E0768C8D7B1E2BECC61D8 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		B00000000000000000000201 /* TaskifyNativeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyNativeApp.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000202 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModel.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000203 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/RootTabView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000204 /* TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000205 /* BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000223 /* BibleTrackerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000224 /* BibleTrackerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift; sourceTree = SOURCE_ROOT; };
+		50694F99A59C46F29A34D542 /* FastingRemindersSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/FastingRemindersSettings.swift; sourceTree = SOURCE_ROOT; };
+		D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/ScriptureMemorySettings.swift; sourceTree = SOURCE_ROOT; };
+		1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskStreakSettings.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000206 /* UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000207 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000208 /* MigrationPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift; sourceTree = SOURCE_ROOT; };
@@ -55,53 +85,436 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		B00000000000000000000301 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000120 /* TaskifyCore in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		B00000000000000000000301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00000000000000000000120 /* TaskifyCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B3B149817540381B146401C8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4DE210899E6D8A850055ABE6 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		B00000000000000000000401 = {isa = PBXGroup; children = (B00000000000000000000402 /* App Sources */, B00000000000000000000403 /* Products */,); sourceTree = "<group>"; };
-		B00000000000000000000402 /* App Sources */ = {isa = PBXGroup; children = (B00000000000000000000201, B00000000000000000000202, B00000000000000000000203, B00000000000000000000204, B00000000000000000000205, B00000000000000000000206, B00000000000000000000207, B00000000000000000000208, B00000000000000000000209, B00000000000000000000210, B00000000000000000000211, B00000000000000000000212, B00000000000000000000213, B00000000000000000000214, B00000000000000000000215, B00000000000000000000216, B00000000000000000000217, B00000000000000000000218, B00000000000000000000219, B00000000000000000000221, B00000000000000000000222,); name = "App Sources"; sourceTree = "<group>"; };
-		B00000000000000000000403 /* Products */ = {isa = PBXGroup; children = (B00000000000000000000220 /* TaskifyNative.app */,); name = Products; sourceTree = "<group>"; };
+		3B4DD68B85E5E6A65369A742 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				C287FF03CABF1B6C1D79307E /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		B00000000000000000000401 = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000402 /* App Sources */,
+				B00000000000000000000403 /* Products */,
+				3B4DD68B85E5E6A65369A742 /* Frameworks */,
+				EC13A37E76EA16E524FD21D0 /* TaskifyNativeUITests */,
+			);
+			sourceTree = "<group>";
+		};
+		B00000000000000000000402 /* App Sources */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000201 /* TaskifyNativeApp.swift */,
+				B00000000000000000000202 /* AppModel.swift */,
+				B00000000000000000000203 /* RootTabView.swift */,
+				B00000000000000000000204 /* TaskifyTheme.swift */,
+				B00000000000000000000205 /* BoardsView.swift */,
+				B00000000000000000000223 /* BibleTrackerStore.swift */,
+				B00000000000000000000224 /* BibleTrackerView.swift */,
+				50694F99A59C46F29A34D542 /* FastingRemindersSettings.swift */,
+				D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */,
+				1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */,
+				B00000000000000000000206 /* UpcomingView.swift */,
+				B00000000000000000000207 /* SettingsView.swift */,
+				B00000000000000000000208 /* MigrationPlaceholderView.swift */,
+				B00000000000000000000209 /* KeychainIdentityStore.swift */,
+				B00000000000000000000210 /* TaskEditorView.swift */,
+				B00000000000000000000211 /* TaskNotificationCoordinator.swift */,
+				B00000000000000000000212 /* Assets.xcassets */,
+				B00000000000000000000213 /* TaskMediaView.swift */,
+				B00000000000000000000214 /* TaskAttachmentUploadService.swift */,
+				B00000000000000000000215 /* DeviceCalendarStore.swift */,
+				B00000000000000000000216 /* TaskifyBackgroundSyncCoordinator.swift */,
+				B00000000000000000000217 /* Info.plist */,
+				B00000000000000000000218 /* TaskShareSheet.swift */,
+				B00000000000000000000219 /* ContactsView.swift */,
+				B00000000000000000000221 /* ChatView.swift */,
+				B00000000000000000000222 /* WalletView.swift */,
+			);
+			name = "App Sources";
+			sourceTree = "<group>";
+		};
+		B00000000000000000000403 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000220 /* TaskifyNative.app */,
+				69AB7FE65898EA9D39EC4DAE /* TaskifyNativeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C287FF03CABF1B6C1D79307E /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				8A5E0768C8D7B1E2BECC61D8 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		EC13A37E76EA16E524FD21D0 /* TaskifyNativeUITests */ = {
+			isa = PBXGroup;
+			children = (
+				57F458985178452A2D282E74 /* ReceiveLightningSheetUITests.swift */,
+				18EC57FC792E425B9E02B191 /* BibleTrackerUITests.swift */,
+				12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */,
+			);
+			name = TaskifyNativeUITests;
+			path = Tests/TaskifyNativeUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		B00000000000000000000501 /* TaskifyNative */ = {isa = PBXNativeTarget; buildConfigurationList = B00000000000000000000801; buildPhases = (B00000000000000000000302 /* Sources */, B00000000000000000000301 /* Frameworks */, B00000000000000000000303 /* Resources */, B00000000000000000000304 /* Generate CashuDevKitFFI dSYM */,); buildRules = (); dependencies = (); name = TaskifyNative; packageProductDependencies = (B00000000000000000000601 /* TaskifyCore */,); productName = TaskifyNative; productReference = B00000000000000000000220 /* TaskifyNative.app */; productType = "com.apple.product-type.application"; };
+		1FD53C360FA145FA69A4DD58 /* TaskifyNativeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B8A5EACD4A802D0E5DBF5AF6 /* Build configuration list for PBXNativeTarget "TaskifyNativeUITests" */;
+			buildPhases = (
+				390DDC7A023A56A894E73458 /* Sources */,
+				B3B149817540381B146401C8 /* Frameworks */,
+				2FC0FECB55DDC786BD443447 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6B52B2D242D5AF2B46C9BB9D /* PBXTargetDependency */,
+			);
+			name = TaskifyNativeUITests;
+			productName = TaskifyNativeUITests;
+			productReference = 69AB7FE65898EA9D39EC4DAE /* TaskifyNativeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		B00000000000000000000501 /* TaskifyNative */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00000000000000000000801 /* Build configuration list for PBXNativeTarget "TaskifyNative" */;
+			buildPhases = (
+				B00000000000000000000302 /* Sources */,
+				B00000000000000000000301 /* Frameworks */,
+				B00000000000000000000303 /* Resources */,
+				B00000000000000000000304 /* Generate CashuDevKitFFI dSYM */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TaskifyNative;
+			packageProductDependencies = (
+				B00000000000000000000601 /* TaskifyCore */,
+			);
+			productName = TaskifyNative;
+			productReference = B00000000000000000000220 /* TaskifyNative.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		B00000000000000000000500 /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2600; LastUpgradeCheck = 2600; TargetAttributes = {B00000000000000000000501 = {CreatedOnToolsVersion = 26.3;};};}; buildConfigurationList = B00000000000000000000800; compatibilityVersion = "Xcode 16.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = B00000000000000000000401; packageReferences = (B00000000000000000000600 /* Local package */,); productRefGroup = B00000000000000000000403; projectDirPath = ""; projectRoot = ""; targets = (B00000000000000000000501 /* TaskifyNative */,); };
+		B00000000000000000000500 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					B00000000000000000000501 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+				};
+			};
+			buildConfigurationList = B00000000000000000000800 /* Build configuration list for PBXProject "TaskifyNative" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B00000000000000000000401;
+			packageReferences = (
+				B00000000000000000000600 /* XCLocalSwiftPackageReference "" */,
+			);
+			productRefGroup = B00000000000000000000403 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B00000000000000000000501 /* TaskifyNative */,
+				1FD53C360FA145FA69A4DD58 /* TaskifyNativeUITests */,
+			);
+		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		B00000000000000000000303 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000112 /* Assets.xcassets in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
+		2FC0FECB55DDC786BD443447 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00000000000000000000303 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00000000000000000000112 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		B00000000000000000000304 /* Generate CashuDevKitFFI dSYM */ = {isa = PBXShellScriptBuildPhase; alwaysOutOfDate = 1; buildActionMask = 2147483647; files = (); inputFileListPaths = (); inputPaths = (); name = "Generate CashuDevKitFFI dSYM"; outputFileListPaths = (); outputPaths = (); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "/bin/sh \"${SRCROOT}/Scripts/generate-cashudevkit-dsym.sh\"\n"; showEnvVarsInLog = 0; };
+		B00000000000000000000304 /* Generate CashuDevKitFFI dSYM */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Generate CashuDevKitFFI dSYM";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${SRCROOT}/Scripts/generate-cashudevkit-dsym.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		B00000000000000000000302 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000101, B00000000000000000000102, B00000000000000000000103, B00000000000000000000104, B00000000000000000000105, B00000000000000000000106, B00000000000000000000107, B00000000000000000000108, B00000000000000000000109, B00000000000000000000110, B00000000000000000000111, B00000000000000000000113, B00000000000000000000114, B00000000000000000000115, B00000000000000000000116, B00000000000000000000117, B00000000000000000000118, B00000000000000000000119, B00000000000000000000121,); runOnlyForDeploymentPostprocessing = 0; };
+		390DDC7A023A56A894E73458 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0B1638B8F63CC397381704D /* ReceiveLightningSheetUITests.swift in Sources */,
+				CA3D6C947B9B4D7AB9E6165C /* BibleTrackerUITests.swift in Sources */,
+				204177419B8968CC8C904B29 /* ScrollPerformanceUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00000000000000000000302 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00000000000000000000101 /* TaskifyNativeApp.swift in Sources */,
+				B00000000000000000000102 /* AppModel.swift in Sources */,
+				B00000000000000000000103 /* RootTabView.swift in Sources */,
+				B00000000000000000000104 /* TaskifyTheme.swift in Sources */,
+				B00000000000000000000105 /* BoardsView.swift in Sources */,
+				B00000000000000000000122 /* BibleTrackerStore.swift in Sources */,
+				B00000000000000000000123 /* BibleTrackerView.swift in Sources */,
+				45B0FD54A518483096597A9F /* FastingRemindersSettings.swift in Sources */,
+				F4C17FA9D5F24554A5CFF5AC /* ScriptureMemorySettings.swift in Sources */,
+				FF5C3B1D78B447EAB70D819E /* TaskStreakSettings.swift in Sources */,
+				B00000000000000000000106 /* UpcomingView.swift in Sources */,
+				B00000000000000000000107 /* SettingsView.swift in Sources */,
+				B00000000000000000000108 /* MigrationPlaceholderView.swift in Sources */,
+				B00000000000000000000109 /* KeychainIdentityStore.swift in Sources */,
+				B00000000000000000000110 /* TaskEditorView.swift in Sources */,
+				B00000000000000000000111 /* TaskNotificationCoordinator.swift in Sources */,
+				B00000000000000000000113 /* TaskMediaView.swift in Sources */,
+				B00000000000000000000114 /* TaskAttachmentUploadService.swift in Sources */,
+				B00000000000000000000115 /* DeviceCalendarStore.swift in Sources */,
+				B00000000000000000000116 /* TaskifyBackgroundSyncCoordinator.swift in Sources */,
+				B00000000000000000000117 /* TaskShareSheet.swift in Sources */,
+				B00000000000000000000118 /* ContactsView.swift in Sources */,
+				B00000000000000000000119 /* ChatView.swift in Sources */,
+				B00000000000000000000121 /* WalletView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		6B52B2D242D5AF2B46C9BB9D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = TaskifyNative;
+			target = B00000000000000000000501 /* TaskifyNative */;
+			targetProxy = CC3D8384A4E30EB2C695F5DF /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
-		B00000000000000000000700 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.5; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.1; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Debug; };
-		B00000000000000000000701 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.5; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.1; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Release; };
-		B00000000000000000000710 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; DEVELOPMENT_TEAM = JUH98962T7; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_OPTIMIZATION_LEVEL = 0; ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
-		B00000000000000000000711 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; DEVELOPMENT_TEAM = JUH98962T7; GCC_C_LANGUAGE_STANDARD = gnu17; SWIFT_COMPILATION_MODE = wholemodule; }; name = Release; };
+		8FC80D8F07D96C4654F0175F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TEST_TARGET_NAME = TaskifyNative;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		9B6C4DA4F1D91494FB08171C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TEST_TARGET_NAME = TaskifyNative;
+			};
+			name = Debug;
+		};
+		B00000000000000000000700 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B00000000000000000000701 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		B00000000000000000000710 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = JUH98962T7;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		B00000000000000000000711 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = JUH98962T7;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		B00000000000000000000800 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000710, B00000000000000000000711,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		B00000000000000000000801 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000700, B00000000000000000000701,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		B00000000000000000000800 /* Build configuration list for PBXProject "TaskifyNative" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000000710 /* Debug */,
+				B00000000000000000000711 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00000000000000000000801 /* Build configuration list for PBXNativeTarget "TaskifyNative" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000000700 /* Debug */,
+				B00000000000000000000701 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B8A5EACD4A802D0E5DBF5AF6 /* Build configuration list for PBXNativeTarget "TaskifyNativeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8FC80D8F07D96C4654F0175F /* Release */,
+				9B6C4DA4F1D91494FB08171C /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		B00000000000000000000600 /* Local package */ = {isa = XCLocalSwiftPackageReference; relativePath = ""; };
+		B00000000000000000000600 /* XCLocalSwiftPackageReference "" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "";
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		B00000000000000000000601 /* TaskifyCore */ = {isa = XCSwiftPackageProductDependency; package = B00000000000000000000600; productName = TaskifyCore; };
+		B00000000000000000000601 /* TaskifyCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000600 /* XCLocalSwiftPackageReference "" */;
+			productName = TaskifyCore;
+		};
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B00000000000000000000500 /* Project object */;

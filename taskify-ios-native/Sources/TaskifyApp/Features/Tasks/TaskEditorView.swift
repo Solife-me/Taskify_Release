@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import UIKit
 
 struct TaskEditorView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
     let taskID: String
@@ -141,7 +141,7 @@ struct TaskEditorView: View {
         }
         .sheet(isPresented: $showingTaskShare) {
             TaskShareSheet(taskID: taskID)
-                .environmentObject(model)
+                .environment(model)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }

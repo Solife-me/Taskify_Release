@@ -3,7 +3,7 @@ import TaskifyCore
 import UIKit
 
 struct NostrContactsDirectoryView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var searchText = ""
     @State private var editingContact: NostrContact?
     @State private var showingNewContact = false
@@ -66,7 +66,7 @@ struct NostrContactsDirectoryView: View {
                             ForEach(filteredContacts) { contact in
                                 NavigationLink {
                                     NostrContactDetailView(contactPublicKey: contact.publicKey)
-                                        .environmentObject(model)
+                                        .environment(model)
                                 } label: {
                                     NostrContactRow(contact: contact)
                                 }
@@ -107,11 +107,11 @@ struct NostrContactsDirectoryView: View {
         }
         .sheet(isPresented: $showingNewContact) {
             NostrContactEditorSheet()
-                .environmentObject(model)
+                .environment(model)
         }
         .sheet(item: $editingContact) { contact in
             NostrContactEditorSheet(contact: contact)
-                .environmentObject(model)
+                .environment(model)
         }
         .alert(
             "Delete Contact?",
@@ -255,7 +255,7 @@ private struct NostrContactRow: View {
 }
 
 private struct NostrContactDetailView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let contactPublicKey: String
 
     private var contact: NostrContact? {
@@ -333,7 +333,7 @@ private struct NostrContactDetailView: View {
 }
 
 private struct NostrContactEditorSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     private let existingContact: NostrContact?
 

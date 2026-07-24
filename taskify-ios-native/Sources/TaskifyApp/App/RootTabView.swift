@@ -25,7 +25,7 @@ enum AppTab: String, CaseIterable, Identifiable {
 }
 
 struct RootTabView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @EnvironmentObject private var wallet: WalletViewModel
     @State private var selectedTab: AppTab
 

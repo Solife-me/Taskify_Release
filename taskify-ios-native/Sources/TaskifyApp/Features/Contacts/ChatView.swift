@@ -6,7 +6,7 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct ContactsView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var navigationPath: [String] = []
     @State private var searchText = ""
     @State private var showingContactDirectory = false
@@ -172,12 +172,12 @@ struct ContactsView: View {
             .background(TaskifyTheme.background.ignoresSafeArea())
             .navigationDestination(for: String.self) { peerPublicKey in
                 DirectMessageConversationView(peerPublicKey: peerPublicKey)
-                    .environmentObject(model)
+                    .environment(model)
             }
         }
         .sheet(isPresented: $showingContactDirectory) {
             NostrContactsDirectoryView()
-                .environmentObject(model)
+                .environment(model)
         }
         .fullScreenCover(isPresented: $showingNewConversation) {
             NewConversationSheet { peerPublicKey in
@@ -189,17 +189,24 @@ struct ContactsView: View {
                     showingNewGroup = true
                 }
             }
-            .environmentObject(model)
+            .environment(model)
         }
         .fullScreenCover(isPresented: $showingNewGroup) {
             NewGroupConversationSheet { groupID in
                 showingNewGroup = false
                 navigationPath.append(groupID)
             }
-            .environmentObject(model)
+            .environment(model)
         }
         .task {
             model.refreshContactsIfNeeded()
+#if DEBUG
+            switch ProcessInfo.processInfo.environment["TASKIFY_CHAT_SHEET"] {
+            case "newConversation": showingNewConversation = true
+            case "newGroup": showingNewGroup = true
+            default: break
+            }
+#endif
         }
         .confirmationDialog(
             "Delete this conversation?",
@@ -224,8 +231,7 @@ struct ContactsView: View {
     private var header: some View {
         ZStack {
             Text(showingStrangers ? "Strangers" : "Chat")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(TaskifyTheme.primaryText)
+                .taskifyScreenTitle()
 
             HStack(spacing: 10) {
                 if showingStrangers {
@@ -292,8 +298,7 @@ struct ContactsView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 42)
-        .background(TaskifyTheme.panelFill, in: Capsule())
-        .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 0.8))
+        .taskifyGlassControl(in: Capsule())
         .padding(.horizontal, 18)
         .padding(.vertical, 7)
     }
@@ -325,9 +330,9 @@ struct ContactsView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
         .padding(.vertical, 28)
-        .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(TaskifyTheme.border, style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
         )
     }
@@ -407,15 +412,20 @@ private struct StrangerInboxRow: View {
         }
         .padding(12)
         .background(
-            LinearGradient(
-                colors: [Color.indigo.opacity(0.22), TaskifyTheme.panelFill],
-                startPoint: .leading,
-                endPoint: .trailing
-            ),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(TaskifyTheme.panelFill)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                LinearGradient(
+                    colors: [Color.indigo.opacity(0.22), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.indigo.opacity(0.28), lineWidth: 1)
         )
         .contentShape(Rectangle())
@@ -430,7 +440,7 @@ private struct ThreadStructuredPreview {
 }
 
 private struct DirectMessageThreadRow: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let thread: NostrDirectMessageThread
     let contact: NostrContact?
     let group: NostrGroupConversation?
@@ -555,11 +565,7 @@ private struct DirectMessageThreadRow: View {
             }
         }
         .padding(12)
-        .background(TaskifyTheme.panelFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
-        )
+        .taskifyGlass(cornerRadius: 18)
         .contentShape(Rectangle())
     }
 
@@ -627,7 +633,7 @@ private struct ChatPeerAvatar: View {
 }
 
 private struct NewGroupConversationSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var searchText = ""
@@ -675,6 +681,7 @@ private struct NewGroupConversationSheet: View {
                     )
                 }
             }
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(TaskifyTheme.background)
             .navigationTitle(isNamingGroup ? "New Group" : "Add Participants")
@@ -726,6 +733,8 @@ private struct NewGroupConversationSheet: View {
                         create()
                     }
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
         }
 
         Section("Members · \(selectedKeys.count + 1)") {
@@ -737,11 +746,15 @@ private struct NewGroupConversationSheet: View {
                 )
                 participantLabel(name: "You", subtitle: "Group creator")
             }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
             ForEach(selectedContacts) { contact in
                 HStack(spacing: 12) {
                     NostrContactAvatar(contact: contact, size: 40)
                     participantLabel(name: contact.displayName, subtitle: contact.subtitle)
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
         }
     }
@@ -764,11 +777,15 @@ private struct NewGroupConversationSheet: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
         } header: {
             Text("People · \(selectedKeys.count + 1)/\(NostrGroupConversation.maximumMemberCount)")
+                .listRowBackground(Color.clear)
         } footer: {
             Text("Select at least two people. Group membership and messages are end-to-end encrypted.")
+                .listRowBackground(Color.clear)
         }
     }
 
@@ -804,7 +821,7 @@ private struct NewGroupConversationSheet: View {
 }
 
 private struct NewConversationSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     let onSelect: (String) -> Void
@@ -841,6 +858,8 @@ private struct NewConversationSheet: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
 
                 ForEach(contacts) { contact in
                     Button {
@@ -858,8 +877,11 @@ private struct NewConversationSheet: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
             }
+            .listStyle(.plain)
             .overlay {
                 if model.nostrContacts.isEmpty {
                     ContentUnavailableView(
@@ -886,7 +908,7 @@ private struct NewConversationSheet: View {
 }
 
 private struct ShareContactPickerSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var sendingContactID: String?
@@ -931,8 +953,12 @@ private struct ShareContactPickerSheet: View {
                         }
                     }
                 }
+                .buttonStyle(.plain)
                 .disabled(sendingContactID != nil)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
+            .listStyle(.plain)
             .overlay {
                 if model.nostrContacts.isEmpty {
                     ContentUnavailableView(
@@ -975,7 +1001,7 @@ private struct GroupConversationLink: Identifiable {
 }
 
 private struct GroupConversationDetailsView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var draftName = ""
@@ -1456,7 +1482,7 @@ private enum ChatTimelineItem: Identifiable, Equatable {
 }
 
 private struct DirectMessageConversationView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @FocusState private var composerFocused: Bool
     @FocusState private var searchFocused: Bool
@@ -1550,10 +1576,20 @@ private struct DirectMessageConversationView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
+        // Computed once per body evaluation instead of read as plain computed properties from
+        // inside the per-row closure below. `timeline`/`messages` each filter+sort model-wide
+        // collections; `searchResultIDs` filters the whole timeline again. Re-deriving them from
+        // every row (as the old code did via `shouldShowDayDivider`/`isMessageGrouped`/
+        // `repliedMessage`/`searchResultIDs.contains`) meant a handful of visible rows could
+        // trigger dozens of full history rescans per frame — the main source of scroll jank here.
+        let currentTimeline = timeline
+        let currentMessages = messages
+        let currentSearchMatches = searchResultIDs
+
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if timeline.isEmpty {
+                    if currentTimeline.isEmpty {
                         VStack(spacing: 12) {
                             ChatPeerAvatar(
                                 contact: contact,
@@ -1571,18 +1607,18 @@ private struct DirectMessageConversationView: View {
                         .padding(.horizontal, 30)
                         .padding(.top, 70)
                     } else {
-                        ForEach(Array(timeline.enumerated()), id: \.element.id) { index, item in
-                            if shouldShowDayDivider(at: index) {
+                        ForEach(Array(currentTimeline.enumerated()), id: \.element.id) { index, item in
+                            if shouldShowDayDivider(at: index, in: currentTimeline) {
                                 ChatDayDivider(timestamp: item.timestamp)
                             }
 
                             switch item {
                             case let .message(message):
-                                let groupedWithPrevious = isMessageGrouped(at: index, with: index - 1)
-                                let groupedWithNext = isMessageGrouped(at: index + 1, with: index)
+                                let groupedWithPrevious = isMessageGrouped(at: index, with: index - 1, in: currentTimeline)
+                                let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
                                 DirectMessageBubble(
                                     message: message,
-                                    repliedMessage: repliedMessage(for: message),
+                                    repliedMessage: repliedMessage(for: message, in: currentMessages),
                                     reactions: model.directMessageReactions(for: message),
                                     senderName: group != nil && message.isIncoming && !groupedWithPrevious
                                         ? senderName(for: message.senderPublicKey) : nil,
@@ -1591,7 +1627,7 @@ private struct DirectMessageConversationView: View {
                                     showsSenderAvatar: group != nil && message.isIncoming,
                                     isGroupedWithPrevious: groupedWithPrevious,
                                     isGroupedWithNext: groupedWithNext,
-                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSearchMatch: currentSearchMatches.contains(item.id),
                                     isSelectedSearchResult: selectedSearchResultID == item.id
                                 )
                                 .contextMenu {
@@ -1621,21 +1657,21 @@ private struct DirectMessageConversationView: View {
                             case let .sharedTask(sharedTask):
                                 SharedTaskChatCard(
                                     item: sharedTask,
-                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSearchMatch: currentSearchMatches.contains(item.id),
                                     isSelectedSearchResult: selectedSearchResultID == item.id
                                 )
                                 .id(item.id)
                             case let .sharedContact(sharedContact):
                                 SharedContactChatCard(
                                     item: sharedContact,
-                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSearchMatch: currentSearchMatches.contains(item.id),
                                     isSelectedSearchResult: selectedSearchResultID == item.id
                                 )
                                 .id(item.id)
                             case let .calendarInvite(invite):
                                 SharedCalendarInviteChatCard(
                                     item: invite,
-                                    isSearchMatch: searchResultIDs.contains(item.id),
+                                    isSearchMatch: currentSearchMatches.contains(item.id),
                                     isSelectedSearchResult: selectedSearchResultID == item.id
                                 )
                                 .id(item.id)
@@ -1710,13 +1746,13 @@ private struct DirectMessageConversationView: View {
         .toolbar(.hidden, for: .tabBar)
         .sheet(isPresented: $showingGroupDetails) {
             GroupConversationDetailsView(groupID: peerPublicKey)
-                .environmentObject(model)
+                .environment(model)
         }
         .sheet(isPresented: $showingContactSharePicker) {
             ShareContactPickerSheet { contact in
                 await shareContact(contact)
             }
-            .environmentObject(model)
+            .environment(model)
         }
         .photosPicker(
             isPresented: $showingPhotoPicker,
@@ -2024,6 +2060,11 @@ private struct DirectMessageConversationView: View {
         }
     }
 
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !isSending && !isSendingAttachment
+    }
+
     private var composer: some View {
         VStack(spacing: 6) {
             if let replyingTo {
@@ -2095,8 +2136,7 @@ private struct DirectMessageConversationView: View {
                     .onSubmit { send() }
                     .padding(.horizontal, 15)
                     .padding(.vertical, 11)
-                    .background(TaskifyTheme.panelFill, in: Capsule())
-                    .overlay(Capsule().stroke(TaskifyTheme.border, lineWidth: 0.8))
+                    .taskifyGlassControl(in: Capsule())
 
                 Button {
                     send()
@@ -2109,14 +2149,17 @@ private struct DirectMessageConversationView: View {
                                 .font(.system(size: 16, weight: .bold))
                         }
                     }
+                    .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
+                    .taskifyGlassControl(
+                        in: Circle(),
+                        tint: TaskifyTheme.accent.opacity(0.72),
+                        fallbackFill: TaskifyTheme.accent
+                    )
                 }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.circle)
-                .disabled(
-                    draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        isSending || isSendingAttachment
-                )
+                .buttonStyle(.plain)
+                .opacity(canSend ? 1 : 0.45)
+                .disabled(!canSend)
                 .accessibilityLabel("Send message")
             }
         }
@@ -2252,25 +2295,25 @@ private struct DirectMessageConversationView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
-    private func repliedMessage(for message: NostrDirectMessage) -> NostrDirectMessage? {
+    private func repliedMessage(for message: NostrDirectMessage, in currentMessages: [NostrDirectMessage]) -> NostrDirectMessage? {
         guard let target = message.replyToEventID else { return nil }
-        return messages.first {
+        return currentMessages.first {
             $0.rumorEventID == target || $0.wrapEventID == target
         }
     }
 
-    private func shouldShowDayDivider(at index: Int) -> Bool {
-        guard timeline.indices.contains(index) else { return false }
+    private func shouldShowDayDivider(at index: Int, in currentTimeline: [ChatTimelineItem]) -> Bool {
+        guard currentTimeline.indices.contains(index) else { return false }
         guard index > 0 else { return true }
-        let current = Date(timeIntervalSince1970: TimeInterval(timeline[index].timestamp))
-        let previous = Date(timeIntervalSince1970: TimeInterval(timeline[index - 1].timestamp))
+        let current = Date(timeIntervalSince1970: TimeInterval(currentTimeline[index].timestamp))
+        let previous = Date(timeIntervalSince1970: TimeInterval(currentTimeline[index - 1].timestamp))
         return !Calendar.current.isDate(current, inSameDayAs: previous)
     }
 
-    private func isMessageGrouped(at currentIndex: Int, with previousIndex: Int) -> Bool {
-        guard timeline.indices.contains(currentIndex), timeline.indices.contains(previousIndex),
-              case let .message(current) = timeline[currentIndex],
-              case let .message(previous) = timeline[previousIndex] else {
+    private func isMessageGrouped(at currentIndex: Int, with previousIndex: Int, in currentTimeline: [ChatTimelineItem]) -> Bool {
+        guard currentTimeline.indices.contains(currentIndex), currentTimeline.indices.contains(previousIndex),
+              case let .message(current) = currentTimeline[currentIndex],
+              case let .message(previous) = currentTimeline[previousIndex] else {
             return false
         }
         guard current.replyToEventID == nil,
@@ -2346,7 +2389,7 @@ private struct ChatDayDivider: View {
 }
 
 private struct SharedTaskChatCard: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     let item: SharedInboxItem
     let isSearchMatch: Bool
     let isSelectedSearchResult: Bool
@@ -2572,7 +2615,7 @@ private struct SharedTaskChatCard: View {
 }
 
 private struct SharedContactChatCard: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var isSaving = false
     let item: SharedContactInboxItem
     let isSearchMatch: Bool
@@ -2737,7 +2780,7 @@ private struct SharedContactChatCard: View {
 }
 
 private struct SharedCalendarInviteChatCard: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var isResponding = false
     @State private var responseError: String?
     let item: SharedCalendarInviteInboxItem

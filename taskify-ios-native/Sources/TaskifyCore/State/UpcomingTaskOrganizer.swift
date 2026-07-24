@@ -178,4 +178,19 @@ public enum UpcomingTaskOrganizer {
             return fallbackComparison(lhs, rhs) < 0
         }
     }
+
+    /// Sorts tasks for a single board column: incomplete tasks first (ordered by `mode`),
+    /// then completed tasks (ordered the same way), mirroring the PWA's `sortBoardTasks`.
+    public static func sortBoardTasks(
+        _ tasks: [TaskItem],
+        mode: UpcomingSortMode,
+        direction: UpcomingSortDirection
+    ) -> [TaskItem] {
+        let incomplete = tasks.filter { !$0.completed }
+        let completed = tasks.filter(\.completed)
+        func ordered(_ items: [TaskItem]) -> [TaskItem] {
+            sort(items, mode: mode, direction: direction, boardGrouping: .mixed, boardOrder: [])
+        }
+        return ordered(incomplete) + ordered(completed)
+    }
 }

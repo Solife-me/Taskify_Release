@@ -110,48 +110,64 @@ enum NostrDirectMessageError: LocalizedError {
     }
 }
 
+// @Observable (vs. the old ObservableObject + @Published) makes SwiftUI track which of these
+// properties each view actually reads, so e.g. a relay-status tick no longer re-renders every
+// board and chat view in the app — with 26 frequently-churning properties and every screen
+// observing the model, that whole-object invalidation was a real scroll-performance cost.
+@Observable
 @MainActor
-final class AppModel: ObservableObject {
+final class AppModel {
     private static let accountBackupOutboxScope = "__taskify-account-backup__"
     private static let sharedInboxOutboxScope = "__taskify-shared-inbox__"
     private static let contactsOutboxScope = "__taskify-contacts__"
     private static let directMessagesOutboxScope = "__taskify-direct-messages__"
-    @Published private(set) var snapshot = TaskifySnapshot.empty
-    @Published private(set) var isLoading = true
-    @Published private(set) var identityPublicKey = ""
-    @Published private(set) var identityNpub = ""
-    @Published private(set) var syncStatus = "Starting"
-    @Published private(set) var syncDetail = "Preparing secure relay connections"
-    @Published private(set) var relayStatuses: [TaskRelayStatus] = []
-    @Published private(set) var pendingSyncChangeCount = 0
-    @Published private(set) var notificationStatus = "Checking"
-    @Published private(set) var backgroundSyncStatus = "Ready"
-    @Published private(set) var encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
-    @Published private(set) var isCheckingAccountBackup = false
-    @Published private(set) var isRefreshingContacts = false
-    @Published private(set) var contactSyncStatus = "Preparing private contact sync"
-    @Published private(set) var accountBackupMessage: String?
-    @Published var pendingAccountBackup: NostrAppBackupPayload?
-    @Published var errorMessage: String?
+    private(set) var snapshot = TaskifySnapshot.empty
+    private(set) var isLoading = true
+    private(set) var identityPublicKey = ""
+    private(set) var identityNpub = ""
+    private(set) var syncStatus = "Starting"
+    private(set) var syncDetail = "Preparing secure relay connections"
+    private(set) var relayStatuses: [TaskRelayStatus] = []
+    private(set) var pendingSyncChangeCount = 0
+    private(set) var notificationStatus = "Checking"
+    private(set) var backgroundSyncStatus = "Ready"
+    private(set) var encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+    private(set) var fastingRemindersEnabled = FastingRemindersSettings.enabled
+    private(set) var fastingRemindersMode = FastingRemindersSettings.mode
+    private(set) var fastingRemindersPerMonth = FastingRemindersSettings.perMonth
+    private(set) var fastingRemindersWeekday = FastingRemindersSettings.weekday
+    private(set) var scriptureMemoryState = AppModel.loadScriptureMemoryState()
+    private(set) var scriptureMemoryEnabled = ScriptureMemorySettings.enabled
+    private(set) var scriptureMemoryBoardID = ScriptureMemorySettings.boardID
+    private(set) var scriptureMemoryFrequency = ScriptureMemorySettings.frequency
+    private(set) var streaksEnabled = TaskStreakSettings.enabled
+    private(set) var isCheckingAccountBackup = false
+    private(set) var isRefreshingContacts = false
+    private(set) var contactSyncStatus = "Preparing private contact sync"
+    private(set) var accountBackupMessage: String?
+    var pendingAccountBackup: NostrAppBackupPayload?
+    var errorMessage: String?
 
-    private let store: JSONTaskStore
-    private let identityStore: KeychainIdentityStore
-    private let syncEngine: TaskSyncEngine
-    private let notificationCoordinator: TaskNotificationCoordinator
-    private var saveTask: Task<Void, Never>?
-    private var syncListenerTask: Task<Void, Never>?
-    private var notificationTask: Task<Void, Never>?
-    private var accountBackupSearchTask: Task<Void, Never>?
-    private var accountBackupPublishTask: Task<Void, Never>?
-    private var contactRefreshTask: Task<Void, Never>?
-    private var accountBackupBaseline: NostrAppBackupPayload?
-    private var managedAccountBackupBoardIDs: Set<String> = []
-    private var lastAccountBackupCreatedAt = 0
-    private var lastNostrCreatedAt = 0
-    private var accountBackupPublishPending = false
-    private var syncState: TaskSyncState = .connecting
-    private var lastContactRefreshAt: Date?
-    private var walletPaymentDeliveryHandler: (() -> Void)?
+    // Sync/bookkeeping internals — never read by views, so keep them out of observation
+    // tracking (they churn constantly during sync).
+    @ObservationIgnored private let store: JSONTaskStore
+    @ObservationIgnored private let identityStore: KeychainIdentityStore
+    @ObservationIgnored private let syncEngine: TaskSyncEngine
+    @ObservationIgnored private let notificationCoordinator: TaskNotificationCoordinator
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var syncListenerTask: Task<Void, Never>?
+    @ObservationIgnored private var notificationTask: Task<Void, Never>?
+    @ObservationIgnored private var accountBackupSearchTask: Task<Void, Never>?
+    @ObservationIgnored private var accountBackupPublishTask: Task<Void, Never>?
+    @ObservationIgnored private var contactRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var accountBackupBaseline: NostrAppBackupPayload?
+    @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
+    @ObservationIgnored private var lastAccountBackupCreatedAt = 0
+    @ObservationIgnored private var lastNostrCreatedAt = 0
+    @ObservationIgnored private var accountBackupPublishPending = false
+    @ObservationIgnored private var syncState: TaskSyncState = .connecting
+    @ObservationIgnored private var lastContactRefreshAt: Date?
+    @ObservationIgnored private var walletPaymentDeliveryHandler: (() -> Void)?
 
     init(
         store: JSONTaskStore = JSONTaskStore(),
@@ -666,11 +682,40 @@ final class AppModel: ObservableObject {
         return true
     }
 
+    /// Shifts a task's due date forward by the given number of days, preserving its due time.
+    /// A touch-friendly counterpart to the PWA's "drag onto Upcoming to postpone a week" gesture.
+    @discardableResult
+    func postponeTask(_ taskID: String, byDays days: Int) -> Bool {
+        guard let task = task(withID: taskID),
+              task.dueDateEnabled,
+              let dueDate = task.dueDate,
+              let nextDueDate = Calendar.current.date(byAdding: .day, value: days, to: dueDate) else {
+            return false
+        }
+        return updateTask(
+            taskID: taskID,
+            title: task.title,
+            note: task.note,
+            dueDate: nextDueDate,
+            dueDateEnabled: true,
+            dueTimeEnabled: task.dueTimeEnabled,
+            priority: task.priority,
+            columnID: task.columnID,
+            subtasks: task.subtasks ?? [],
+            recurrence: task.recurrence,
+            reminders: task.reminders ?? [],
+            reminderTime: task.reminderTime,
+            images: task.images ?? [],
+            documents: task.documents ?? []
+        )
+    }
+
     func toggleCompletion(_ taskID: String) {
         let existingIDs = Set(snapshot.tasks.map(\.id))
         guard snapshot.toggleCompletion(
             taskID: taskID,
-            editorPublicKey: identityPublicKey.nilIfEmpty
+            editorPublicKey: identityPublicKey.nilIfEmpty,
+            streaksEnabled: streaksEnabled
         ) else { return }
         synchronizeTask(taskID)
         snapshot.tasks
@@ -678,11 +723,35 @@ final class AppModel: ObservableObject {
             .filter { !existingIDs.contains($0) }
             .forEach { synchronizeTask($0) }
         refreshNotifications(requestPermission: false)
+        reconcileScriptureMemory()
     }
 
     func deleteTask(_ taskID: String) {
         guard snapshot.deleteTask(taskID: taskID, editorPublicKey: identityPublicKey.nilIfEmpty) else { return }
         synchronizeTask(taskID, includeDeletionEvent: true)
+        refreshNotifications(requestPermission: false)
+        reconcileScriptureMemory()
+    }
+
+    /// Deletes every completed task on a board (and, for compound boards, its linked child boards),
+    /// mirroring the PWA's "Clear completed" action.
+    func clearCompletedTasks(forBoardID boardID: String) {
+        let scopeIDs: Set<String>
+        if let board = board(withID: boardID), board.kind == .compound {
+            scopeIDs = Set(compoundChildBoards(for: boardID).map(\.id))
+        } else {
+            scopeIDs = [boardID]
+        }
+
+        let targetIDs = snapshot.tasks
+            .filter { !$0.isDeleted && $0.completed && scopeIDs.contains($0.boardID) }
+            .map(\.id)
+        guard !targetIDs.isEmpty else { return }
+
+        for taskID in targetIDs {
+            guard snapshot.deleteTask(taskID: taskID, editorPublicKey: identityPublicKey.nilIfEmpty) else { continue }
+            synchronizeTask(taskID, includeDeletionEvent: true)
+        }
         refreshNotifications(requestPermission: false)
     }
 
@@ -1566,12 +1635,243 @@ final class AppModel: ObservableObject {
         return true
     }
 
+    var bibleTrackerEnabled: Bool {
+        snapshot.boards.contains { $0.id == TaskifySnapshot.bibleBoardID && !$0.hidden }
+    }
+
+    /// Toggles the singleton Bible reading tracker board on/off. Local-only: unlike other board
+    /// kinds, this never publishes to Nostr since the board carries no shareable content.
+    @discardableResult
+    func setBibleTrackerEnabled(_ enabled: Bool) -> Bool {
+        guard snapshot.setBibleTrackerEnabled(enabled) else { return false }
+        scheduleSave()
+        return true
+    }
+
+    /// Saves the Fasting Reminders settings and immediately reconciles the generated tasks
+    /// against the new schedule (e.g. flipping from "weekday" to "random" replaces future
+    /// occurrences right away rather than waiting for the next app launch).
+    func updateFastingReminders(enabled: Bool, mode: FastingRemindersMode, perMonth: Int, weekday: Int) {
+        FastingRemindersSettings.save(enabled: enabled, mode: mode, perMonth: perMonth, weekday: weekday)
+        fastingRemindersEnabled = FastingRemindersSettings.enabled
+        fastingRemindersMode = FastingRemindersSettings.mode
+        fastingRemindersPerMonth = FastingRemindersSettings.perMonth
+        fastingRemindersWeekday = FastingRemindersSettings.weekday
+        reconcileFastingReminders()
+    }
+
+    /// Re-runs fasting-reminder task generation against the current settings. Safe to call
+    /// repeatedly (e.g. on every app launch) — it only creates/prunes tasks that drifted from
+    /// the desired schedule.
+    func reconcileFastingReminders() {
+        let result = snapshot.reconcileFastingReminders(
+            enabled: fastingRemindersEnabled,
+            mode: fastingRemindersMode,
+            weekday: fastingRemindersWeekday,
+            perMonth: fastingRemindersPerMonth,
+            seed: FastingRemindersSettings.seed
+        )
+        guard !result.created.isEmpty || !result.updatedIDs.isEmpty else { return }
+        scheduleSave()
+        for task in result.created {
+            synchronizeTask(task.id)
+        }
+        for taskID in result.updatedIDs {
+            let isDeletion = snapshot.tasks.first(where: { $0.id == taskID })?.isDeleted == true
+            synchronizeTask(taskID, includeDeletionEvent: isDeletion)
+        }
+    }
+
+    private static let scriptureMemorySeriesID = "scripture-memory-series"
+    private static let scriptureMemoryStorageKey = "taskify.scriptureMemory.state.v1"
+
+    static func loadScriptureMemoryState() -> ScriptureMemoryState {
+        guard let data = UserDefaults.standard.data(forKey: scriptureMemoryStorageKey),
+              let decoded = try? JSONDecoder().decode(ScriptureMemoryState.self, from: data) else {
+            return ScriptureMemoryState()
+        }
+        return decoded
+    }
+
+    private func persistScriptureMemoryState() {
+        guard let data = try? JSONEncoder().encode(scriptureMemoryState) else { return }
+        UserDefaults.standard.set(data, forKey: Self.scriptureMemoryStorageKey)
+    }
+
+    /// Boards a scripture-memory review task can be created on. Compound boards are excluded:
+    /// their "columns" belong to child list boards, so a task can't be unambiguously placed there.
+    var scriptureMemoryEligibleBoards: [Board] {
+        snapshot.boards.filter { $0.isVisible && ($0.kind == .week || $0.kind == .list) }
+    }
+
+    func addScriptureMemoryEntry(bookID: String, chapter: Int, startVerse: Int?, endVerse: Int?) {
+        let entry = ScriptureMemoryEntry(
+            bookID: bookID,
+            chapter: chapter,
+            startVerse: startVerse,
+            endVerse: endVerse,
+            addedAtISO: ISO8601DateFormatter().string(from: Date())
+        )
+        scriptureMemoryState.entries.append(entry)
+        persistScriptureMemoryState()
+        reconcileScriptureMemory()
+    }
+
+    func removeScriptureMemoryEntry(_ entryID: String) {
+        guard scriptureMemoryState.entries.contains(where: { $0.id == entryID }) else { return }
+        scriptureMemoryState.entries.removeAll { $0.id == entryID }
+        persistScriptureMemoryState()
+        if let pendingTaskID = snapshot.tasks.first(where: {
+            $0.scriptureMemoryID == entryID && !$0.completed && !$0.isDeleted
+        })?.id {
+            deleteTask(pendingTaskID)
+        }
+        reconcileScriptureMemory()
+    }
+
+    func updateScriptureMemorySettings(enabled: Bool, boardID: String?, frequency: ScriptureMemoryFrequency) {
+        ScriptureMemorySettings.setEnabled(enabled)
+        ScriptureMemorySettings.setBoardID(boardID)
+        ScriptureMemorySettings.setFrequency(frequency)
+        scriptureMemoryEnabled = ScriptureMemorySettings.enabled
+        scriptureMemoryBoardID = ScriptureMemorySettings.boardID
+        scriptureMemoryFrequency = ScriptureMemorySettings.frequency
+        reconcileScriptureMemory()
+    }
+
+    /// Marks an entry reviewed right now: completes its pending task if one exists (so the
+    /// board reflects it too), otherwise advances the entry directly. Matches the PWA's
+    /// `handleReviewScriptureMemory`.
+    func reviewScriptureMemoryEntry(_ entryID: String) {
+        if let pending = snapshot.tasks.first(where: {
+            $0.scriptureMemoryID == entryID && !$0.completed && !$0.isDeleted
+        }) {
+            toggleCompletion(pending.id)
+            return
+        }
+        guard let index = scriptureMemoryState.entries.firstIndex(where: { $0.id == entryID }) else { return }
+        scriptureMemoryState.entries[index].stage = min(
+            ScriptureMemoryAlgorithm.maxStage,
+            max(0, scriptureMemoryState.entries[index].stage + 1)
+        )
+        scriptureMemoryState.entries[index].totalReviews += 1
+        scriptureMemoryState.entries[index].lastReviewISO = ISO8601DateFormatter().string(from: Date())
+        scriptureMemoryState.entries[index].scheduledAtISO = nil
+        persistScriptureMemoryState()
+        reconcileScriptureMemory()
+    }
+
+    /// Advances entries whose review task was completed, then makes sure exactly one active
+    /// review task exists (picking the most-overdue entry) — mirrors the PWA's two scripture
+    /// memory effects (`markScriptureEntryReviewed` reconciliation + task generation).
+    func reconcileScriptureMemory() {
+        guard scriptureMemoryEnabled, !scriptureMemoryState.entries.isEmpty else { return }
+
+        let isoFormatter = ISO8601DateFormatter()
+        var stateChanged = false
+        for task in snapshot.tasks where task.completed && !task.isDeleted {
+            guard let entryID = task.scriptureMemoryID,
+                  let completedAt = task.completedAt,
+                  let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == entryID }) else { continue }
+            let entry = scriptureMemoryState.entries[entryIndex]
+            if let entryLastReview = entry.lastReviewISO.flatMap({ isoFormatter.date(from: $0) }),
+               entryLastReview >= completedAt {
+                continue
+            }
+            scriptureMemoryState.entries[entryIndex].stage = min(ScriptureMemoryAlgorithm.maxStage, max(0, entry.stage + 1))
+            scriptureMemoryState.entries[entryIndex].totalReviews += 1
+            scriptureMemoryState.entries[entryIndex].lastReviewISO = isoFormatter.string(from: completedAt)
+            scriptureMemoryState.entries[entryIndex].scheduledAtISO = nil
+            stateChanged = true
+        }
+        if stateChanged { persistScriptureMemoryState() }
+
+        guard let boardID = scriptureMemoryBoardID,
+              let targetBoard = scriptureMemoryEligibleBoards.first(where: { $0.id == boardID }),
+              targetBoard.kind != .list || !targetBoard.columns.isEmpty else {
+            return
+        }
+
+        let hasActive = snapshot.tasks.contains {
+            $0.seriesID == Self.scriptureMemorySeriesID && !$0.completed && !$0.isDeleted
+        }
+        guard !hasActive else { return }
+
+        let baseDays = Double(scriptureMemoryFrequency.days)
+        guard let selection = ScriptureMemoryAlgorithm.chooseNext(
+            entries: scriptureMemoryState.entries,
+            baseDays: baseDays,
+            now: Date()
+        ) else { return }
+
+        let calendar = Calendar.current
+        let now = Date()
+        let dueDays = selection.stats.dueInDays.isFinite && selection.stats.dueInDays > 0
+            ? Int(selection.stats.dueInDays.rounded(.up))
+            : 0
+        let dueDate = calendar.startOfDay(for: calendar.date(byAdding: .day, value: dueDays, to: now) ?? now)
+
+        let resolvedColumnID: String? = targetBoard.kind == .week
+            ? WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
+            : targetBoard.columns.first?.id
+
+        let hiddenUntil: Date?
+        if targetBoard.kind == .list {
+            hiddenUntil = dueDate > calendar.startOfDay(for: now) ? dueDate : nil
+        } else {
+            let nowWeekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+            let dueWeekStart = calendar.dateInterval(of: .weekOfYear, for: dueDate)?.start ?? dueDate
+            hiddenUntil = dueWeekStart > nowWeekStart ? dueWeekStart : nil
+        }
+
+        let nextOrder = (
+            snapshot.tasks
+                .filter { $0.boardID == targetBoard.id && $0.columnID == resolvedColumnID }
+                .map(\.order)
+                .max() ?? -1
+        ) + 1
+
+        let task = TaskItem(
+            boardID: targetBoard.id,
+            title: "Review \(ScriptureMemoryAlgorithm.reference(for: selection.entry))",
+            dueDate: dueDate,
+            dueDateEnabled: true,
+            seriesID: Self.scriptureMemorySeriesID,
+            scriptureMemoryID: selection.entry.id,
+            hiddenUntilDate: hiddenUntil,
+            createdAt: now,
+            order: nextOrder,
+            columnID: resolvedColumnID
+        )
+        snapshot.tasks.append(task)
+        if let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == selection.entry.id }) {
+            scriptureMemoryState.entries[entryIndex].scheduledAtISO = isoFormatter.string(from: now)
+            persistScriptureMemoryState()
+        }
+        scheduleSave()
+        synchronizeTask(task.id)
+    }
+
     @discardableResult
     func renameBoard(boardID: String, name: String) -> Bool {
         guard snapshot.renameBoard(boardID: boardID, name: name),
               let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
         scheduleSave()
         publishBoard(board)
+        return true
+    }
+
+    func setStreaksEnabled(_ enabled: Bool) {
+        TaskStreakSettings.setEnabled(enabled)
+        streaksEnabled = enabled
+    }
+
+    /// Reorders a board relative to its neighbors in the switcher. Local-only (no board-order
+    /// field is synced), so this just persists locally — no publish needed.
+    @discardableResult
+    func moveBoard(boardID: String, direction: Int) -> Bool {
+        guard snapshot.moveBoard(boardID: boardID, direction: direction) else { return false }
+        scheduleSave()
         return true
     }
 
@@ -2031,6 +2331,8 @@ final class AppModel: ObservableObject {
             errorMessage = "Your native data could not be loaded. A fresh local workspace is being shown."
         }
         refreshNotifications(requestPermission: false)
+        reconcileFastingReminders()
+        reconcileScriptureMemory()
         startSync()
         refreshContacts()
         if let loadedIdentity {
