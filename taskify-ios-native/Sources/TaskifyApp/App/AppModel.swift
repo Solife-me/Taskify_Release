@@ -1911,13 +1911,20 @@ final class AppModel {
     /// repeatedly (e.g. on every app launch) — it only creates/prunes tasks that drifted from
     /// the desired schedule.
     func reconcileFastingReminders() {
-        let result = snapshot.reconcileFastingReminders(
+        // Calling a `mutating` method directly on `snapshot` fires its `didSet` even when the
+        // method changes nothing — invalidating every observing view and discarding the lookup
+        // cache. Reconcile a copy and write back only when it actually differs.
+        var updated = snapshot
+        let result = updated.reconcileFastingReminders(
             enabled: fastingRemindersEnabled,
             mode: fastingRemindersMode,
             weekday: fastingRemindersWeekday,
             perMonth: fastingRemindersPerMonth,
             seed: FastingRemindersSettings.seed
         )
+        if updated != snapshot {
+            snapshot = updated
+        }
         guard !result.created.isEmpty || !result.updatedIDs.isEmpty else { return }
         scheduleSave()
         for task in result.created {
@@ -3270,7 +3277,13 @@ final class AppModel {
     }
 
     private func maintainTaskifyEventRecurrenceWindow(now: Date = Date()) {
-        let changes = snapshot.ensureTaskifyEventRecurrenceWindow(now: now)
+        // Same `didSet` trap as `reconcileFastingReminders`: mutate a copy, write back only
+        // when the recurrence window actually moved.
+        var updated = snapshot
+        let changes = updated.ensureTaskifyEventRecurrenceWindow(now: now)
+        if updated != snapshot {
+            snapshot = updated
+        }
         guard !changes.allEventIDs.isEmpty else { return }
         synchronizeTaskifyEvents(changes.allEventIDs)
         refreshNotifications(requestPermission: false)

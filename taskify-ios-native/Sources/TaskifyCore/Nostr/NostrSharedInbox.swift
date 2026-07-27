@@ -2178,7 +2178,13 @@ public extension TaskifySnapshot {
             }
         }
 
-        taskifyEvents = events
+        // Assigning unconditionally rewrote `taskifyEvents` on every call — including turning
+        // `nil` into `[]` on accounts that have no calendar events — which counts as a snapshot
+        // change and invalidates every observing view for nothing. Every mutation above is
+        // recorded in `updatedIDs`/`deletedIDs`, so this is a faithful "did anything change".
+        if !updatedIDs.isEmpty || !deletedIDs.isEmpty {
+            taskifyEvents = events
+        }
         return TaskifyEventSeriesChanges(
             updatedEventIDs: updatedIDs.sorted(),
             deletedEventIDs: deletedIDs.sorted()

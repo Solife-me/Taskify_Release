@@ -26,7 +26,6 @@ enum AppTab: String, CaseIterable, Identifiable {
 
 struct RootTabView: View {
     @Environment(AppModel.self) private var model
-    @EnvironmentObject private var wallet: WalletViewModel
     @State private var selectedTab: AppTab
     @State private var hasPresentedInitialContent = false
 
@@ -44,14 +43,21 @@ struct RootTabView: View {
         ZStack {
             TaskifyTheme.background.ignoresSafeArea()
 
-            if #available(iOS 26.0, *) {
-                nativeTabView
-            } else {
-                legacyContent
-                    .safeAreaInset(edge: .bottom, spacing: 8) {
-                        MaterialGlassTabBar(selectedTab: $selectedTab)
-                            .padding(.horizontal, 14)
-                    }
+            // Building the tab content before the store has loaded renders the entire board
+            // against `TaskifySnapshot.empty` — seven day columns with their glass materials
+            // and scroll views — and then throws all of it away when the real snapshot lands a
+            // few hundred milliseconds later. The spinner covers that pass, so the user never
+            // sees it; they only feel the main thread it blocks. Wait for the real data.
+            if !model.isLoading {
+                if #available(iOS 26.0, *) {
+                    nativeTabView
+                } else {
+                    legacyContent
+                        .safeAreaInset(edge: .bottom, spacing: 8) {
+                            MaterialGlassTabBar(selectedTab: $selectedTab)
+                                .padding(.horizontal, 14)
+                        }
+                }
             }
 
             if model.isLoading || !hasPresentedInitialContent {
@@ -92,21 +98,7 @@ struct RootTabView: View {
             Text(model.errorMessage ?? "")
         }
         .overlay(alignment: .top) {
-            if let message = wallet.statusMessage {
-                Text(message)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .taskifyGlassControl(in: Capsule())
-                    .padding(.top, 62)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .task(id: message) {
-                        try? await Task.sleep(for: .seconds(2.8))
-                        guard wallet.statusMessage == message else { return }
-                        withAnimation { wallet.statusMessage = nil }
-                    }
-            }
+            WalletStatusToast()
         }
         .fullScreenCover(isPresented: Binding(
             get: { model.showsFirstRunOnboarding },
@@ -172,6 +164,32 @@ struct RootTabView: View {
         WalletView()
     }
 
+}
+
+/// The wallet's transient status banner. Isolated into its own view so a wallet publish
+/// invalidates just this overlay. Observing `WalletViewModel` (still `ObservableObject`, so any
+/// `@Published` write notifies every observer) directly from `RootTabView` rebuilt the entire
+/// tab tree — every tab body — each time the wallet refreshed.
+private struct WalletStatusToast: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+
+    var body: some View {
+        if let message = wallet.statusMessage {
+            Text(message)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .taskifyGlassControl(in: Capsule())
+                .padding(.top, 62)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .task(id: message) {
+                    try? await Task.sleep(for: .seconds(2.8))
+                    guard wallet.statusMessage == message else { return }
+                    withAnimation { wallet.statusMessage = nil }
+                }
+        }
+    }
 }
 
 private struct MaterialGlassTabBar: View {
