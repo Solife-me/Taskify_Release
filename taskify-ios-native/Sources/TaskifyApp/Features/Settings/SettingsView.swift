@@ -838,7 +838,7 @@ struct SettingsView: View {
             StatusRow(title: "Task sharing & assignments", status: "Active", complete: true)
             StatusRow(title: "Background sync", status: model.backgroundSyncStatus, complete: true)
             StatusRow(title: "Encrypted chat", status: "Active", complete: true)
-            StatusRow(title: "Wallet", status: "Planned", complete: false)
+            StatusRow(title: "Wallet", status: "Active", complete: true)
         }
         .padding(18)
         .taskifyGlass(cornerRadius: 24)

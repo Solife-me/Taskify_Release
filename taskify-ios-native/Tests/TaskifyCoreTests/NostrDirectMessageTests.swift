@@ -510,6 +510,7 @@ final class NostrDirectMessageTests: XCTestCase {
 
         XCTAssertTrue(snapshot.archiveDirectMessageThread(peerPublicKey: sender.publicKeyHex, at: 110))
         XCTAssertTrue(snapshot.isDirectMessageThreadArchived(sender.publicKeyHex))
+        XCTAssertTrue(snapshot.activeDirectMessageThreads().isEmpty)
         XCTAssertTrue(snapshot.setDirectMessagePeerBlocked(sender.publicKeyHex, blocked: true))
         XCTAssertTrue(snapshot.isDirectMessagePeerBlocked(sender.publicKeyHex))
 
@@ -523,6 +524,7 @@ final class NostrDirectMessageTests: XCTestCase {
             incoming: true
         ), now: 120))
         XCTAssertFalse(snapshot.isDirectMessageThreadArchived(sender.publicKeyHex))
+        XCTAssertEqual(snapshot.activeDirectMessageThreads().map(\.peerPublicKey), [sender.publicKeyHex])
 
         let decoded = try JSONDecoder().decode(
             TaskifySnapshot.self,
@@ -575,6 +577,7 @@ final class NostrDirectMessageTests: XCTestCase {
 
         XCTAssertTrue(snapshot.archiveDirectMessageThread(peerPublicKey: sender.publicKeyHex, at: 110))
         XCTAssertTrue(snapshot.isDirectMessageThreadArchived(sender.publicKeyHex))
+        XCTAssertTrue(snapshot.activeDirectMessageThreads().isEmpty)
 
         let newerShare = SharedInboxItem(
             wrapEventID: "shared-wrap-2",
@@ -585,6 +588,7 @@ final class NostrDirectMessageTests: XCTestCase {
         )
         XCTAssertTrue(snapshot.ingestSharedInboxItem(newerShare))
         XCTAssertFalse(snapshot.isDirectMessageThreadArchived(sender.publicKeyHex))
+        XCTAssertEqual(snapshot.activeDirectMessageThreads().map(\.peerPublicKey), [sender.publicKeyHex])
         XCTAssertEqual(snapshot.directMessageThreads().first?.actionRequiredCount, 2)
 
         XCTAssertTrue(snapshot.deleteDirectMessageThread(peerPublicKey: sender.publicKeyHex, at: 130))

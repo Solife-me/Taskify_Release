@@ -98,8 +98,16 @@ final class WalletViewModel: ObservableObject {
         defer { isLoading = false }
 
         do {
-            let mnemonic = try KeychainWalletSeedStore().loadOrCreate()
-            let service = try makeService(mnemonic: mnemonic, migrateLegacyFiles: true)
+            // Opening the CDK SQLite repository and deriving its wallet identifier are
+            // synchronous. Performing them on MainActor caused the first Boards frame to
+            // pause even though the wallet tab was not visible.
+            let service = try await Task.detached(priority: .userInitiated) {
+                let mnemonic = try KeychainWalletSeedStore().loadOrCreate()
+                return try Self.makeService(
+                    mnemonic: mnemonic,
+                    migrateLegacyFiles: true
+                )
+            }.value
             self.service = service
             await service.recoverInterruptedOperations()
             await refresh()
@@ -670,9 +678,15 @@ final class WalletViewModel: ObservableObject {
         isWorking = true
         defer { isWorking = false }
 
-        let candidate = isCurrentWallet
-            ? currentService
-            : try makeService(mnemonic: material.mnemonic, migrateLegacyFiles: false)
+        let candidate: CashuWalletService
+        if isCurrentWallet {
+            candidate = currentService
+        } else {
+            candidate = try await Self.makeServiceOffMain(
+                mnemonic: material.mnemonic,
+                migrateLegacyFiles: false
+            )
+        }
         var results: [WalletMintRecoveryOutcome] = []
         var firstError: Error?
         for mintURL in mintURLs {
@@ -768,9 +782,15 @@ final class WalletViewModel: ObservableObject {
         isWorking = true
         defer { isWorking = false }
 
-        let candidate = isCurrentWallet
-            ? currentService
-            : try makeService(mnemonic: material.mnemonic, migrateLegacyFiles: false)
+        let candidate: CashuWalletService
+        if isCurrentWallet {
+            candidate = currentService
+        } else {
+            candidate = try await Self.makeServiceOffMain(
+                mnemonic: material.mnemonic,
+                migrateLegacyFiles: false
+            )
+        }
         var results: [WalletMintRecoveryOutcome] = []
         for mintURL in mintURLs {
             let restored = try await candidate.restoreMint(mintURL)
@@ -805,7 +825,22 @@ final class WalletViewModel: ObservableObject {
         return outcome
     }
 
-    private func makeService(mnemonic: String, migrateLegacyFiles: Bool) throws -> CashuWalletService {
+    private nonisolated static func makeServiceOffMain(
+        mnemonic: String,
+        migrateLegacyFiles: Bool
+    ) async throws -> CashuWalletService {
+        try await Task.detached(priority: .userInitiated) {
+            try makeService(
+                mnemonic: mnemonic,
+                migrateLegacyFiles: migrateLegacyFiles
+            )
+        }.value
+    }
+
+    private nonisolated static func makeService(
+        mnemonic: String,
+        migrateLegacyFiles: Bool
+    ) throws -> CashuWalletService {
         let directory = try walletDirectory()
         let identifier = try CashuWalletService.walletIdentifier(for: mnemonic)
         let databaseURL = directory.appendingPathComponent("cashu-\(identifier).sqlite")
@@ -824,7 +859,7 @@ final class WalletViewModel: ObservableObject {
         )
     }
 
-    private func walletDirectory() throws -> URL {
+    private nonisolated static func walletDirectory() throws -> URL {
         let directory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -839,7 +874,7 @@ final class WalletViewModel: ObservableObject {
         return directory
     }
 
-    private func migrateLegacyWalletFiles(
+    private nonisolated static func migrateLegacyWalletFiles(
         directory: URL,
         databaseURL: URL,
         outgoingURL: URL
@@ -4774,22 +4809,18 @@ private struct WalletHistorySheet: View {
         return (transactions + invoices + outgoing).sorted { $0.date > $1.date }
     }
 
-    private var pendingItems: [WalletActivityItem] {
-        activityItems.filter(\.isPending)
-    }
-
-    private var filteredItems: [WalletActivityItem] {
-        filter == .pending ? pendingItems : activityItems
-    }
-
     var body: some View {
-        NavigationStack {
+        let allItems = activityItems
+        let pendingItems = allItems.filter(\.isPending)
+        let filteredItems = filter == .pending ? pendingItems : allItems
+
+        return NavigationStack {
             ZStack {
                 TaskifyTheme.background.ignoresSafeArea()
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        if !activityItems.isEmpty {
-                            historyFilters
+                        if !allItems.isEmpty {
+                            historyFilters(pendingItems: pendingItems)
                                 .padding(.bottom, 2)
                         }
 
@@ -4848,7 +4879,7 @@ private struct WalletHistorySheet: View {
         .preferredColorScheme(.dark)
     }
 
-    private var historyFilters: some View {
+    private func historyFilters(pendingItems: [WalletActivityItem]) -> some View {
         HStack(spacing: 13) {
             ForEach(Filter.allCases, id: \.self) { option in
                 if option != Filter.all {

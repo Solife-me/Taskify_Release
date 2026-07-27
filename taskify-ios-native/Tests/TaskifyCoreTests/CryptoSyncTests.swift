@@ -241,6 +241,9 @@ final class CryptoSyncTests: XCTestCase {
             endISO: "2026-07-24T16:00:00.000Z",
             startTimeZoneID: "America/Chicago",
             endTimeZoneID: "America/Chicago",
+            reminders: [TaskReminder(rawValue: "15m"), TaskReminder(rawValue: "1h")],
+            recurrence: .weekly(days: [5]),
+            seriesID: "event-1",
             canonicalAddress: "",
             viewAddress: "",
             eventKey: eventKey,
@@ -276,6 +279,8 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(canonical["eventKey"] as? String, eventKey)
         XCTAssertEqual(canonical["kind"] as? String, "time")
         XCTAssertEqual(canonical["description"] as? String, "Verify both event records")
+        XCTAssertEqual(canonical["reminders"] as? [String], ["15m", "1h"])
+        XCTAssertEqual(canonical["seriesId"] as? String, "event-1")
 
         let viewPlaintext = try NIP44V2.decrypt(
             pair.view.content,
@@ -286,6 +291,7 @@ final class CryptoSyncTests: XCTestCase {
         )
         XCTAssertNil(view["eventKey"])
         XCTAssertEqual(view["title"] as? String, "PWA parity review")
+        XCTAssertEqual(view["reminders"] as? [String], ["15m", "1h"])
 
         let decoded = try TaskifyCalendarEventCodec.decodeCanonicalEvent(
             pair.canonical,
@@ -295,8 +301,63 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(decoded.event.details, taskifyEvent.details)
         XCTAssertEqual(decoded.event.schedule, .time)
         XCTAssertEqual(decoded.event.boardID, board.id)
+        XCTAssertEqual(decoded.event.reminders, taskifyEvent.reminders)
+        XCTAssertEqual(decoded.event.recurrence, taskifyEvent.recurrence)
+        XCTAssertEqual(decoded.event.seriesID, taskifyEvent.seriesID)
         XCTAssertFalse(decoded.event.isReadOnly)
         XCTAssertEqual(decoded.event.nostrUpdatedAt, 1_700_000_500)
+    }
+
+    func testTaskifyCalendarDecoderPreservesPWASchedulingFields() throws {
+        let board = Board(
+            id: "local-board",
+            name: "Shared Week",
+            kind: .week,
+            columns: [],
+            nostrBoardID: "test-board-id"
+        )
+        let eventKey = Data(repeating: 6, count: 32).base64EncodedString()
+        let payload: [String: Any] = [
+            "v": 1,
+            "eventId": "scheduled-event",
+            "eventKey": eventKey,
+            "kind": "time",
+            "title": "Recurring PWA event",
+            "startISO": "2026-07-27T14:00:00.000Z",
+            "endISO": "2026-07-27T15:00:00.000Z",
+            "startTzid": "America/Chicago",
+            "endTzid": "America/Chicago",
+            "reminders": ["15m", "1h"],
+            "recurrence": ["type": "weekly", "days": [1, 3, 5]],
+            "seriesId": "event-series-1",
+        ]
+        let boardPrivateKey = BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID)
+        let boardPublicKey = try BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID)
+        let content = try NIP44V2.encrypt(
+            JSONSerialization.data(withJSONObject: payload),
+            privateKey: boardPrivateKey,
+            publicKey: boardPublicKey
+        )
+        let nostrEvent = try NostrEvent.signed(
+            privateKey: boardPrivateKey,
+            createdAt: 1_700_000_600,
+            kind: TaskifyCalendarEventCodec.canonicalEventKind,
+            tags: [
+                ["d", "scheduled-event"],
+                ["b", BoardCrypto.boardTag(for: board.effectiveNostrBoardID)],
+                ["col", "day"],
+            ],
+            content: content
+        )
+
+        let decoded = try TaskifyCalendarEventCodec.decodeCanonicalEvent(nostrEvent, board: board)
+
+        XCTAssertEqual(decoded.event.reminders, [
+            TaskReminder(rawValue: "15m"),
+            TaskReminder(rawValue: "1h"),
+        ])
+        XCTAssertEqual(decoded.event.recurrence, .weekly(days: [1, 3, 5]))
+        XCTAssertEqual(decoded.event.seriesID, "event-series-1")
     }
 
     func testNativeEditPreservesUnsupportedAndFuturePWATaskFields() throws {
@@ -968,6 +1029,35 @@ final class CryptoSyncTests: XCTestCase {
 
         XCTAssertEqual(batch.drain().map(\.task.title), ["Newest"])
         XCTAssertTrue(batch.drain().isEmpty)
+    }
+
+    func testRelayStartupBatchDeduplicatesAndOrdersSharedInboxEvents() {
+        var batch = TaskRelayStartupBatch()
+        let newer = NostrEvent(
+            id: "newer",
+            publicKey: "sender",
+            createdAt: 12,
+            kind: NIP17GiftWrap.wrapKind,
+            tags: [],
+            content: "newer",
+            signature: "signature"
+        )
+        let older = NostrEvent(
+            id: "older",
+            publicKey: "sender",
+            createdAt: 10,
+            kind: NIP17GiftWrap.wrapKind,
+            tags: [],
+            content: "older",
+            signature: "signature"
+        )
+
+        batch.insert(sharedInboxEvent: newer)
+        batch.insert(sharedInboxEvent: older)
+        batch.insert(sharedInboxEvent: newer)
+
+        XCTAssertEqual(batch.drainSharedInboxEvents().map(\.id), ["older", "newer"])
+        XCTAssertTrue(batch.drainSharedInboxEvents().isEmpty)
     }
 
     func testSyncReportStaysOnlineWhenOneRelayIsUnavailable() {

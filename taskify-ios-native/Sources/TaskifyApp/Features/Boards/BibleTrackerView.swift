@@ -1,6 +1,10 @@
 import SwiftUI
 import TaskifyCore
 
+private enum BibleTrackerDateFormatting {
+    static let iso8601 = ISO8601DateFormatter()
+}
+
 /// Bible reading tracker board content, ported from the PWA's `BibleTracker.tsx`.
 /// Chapter-level progress with optional per-chapter verse selection, book completion,
 /// and reset-to-archive — everything except printing/scanning, which is a separate
@@ -31,7 +35,7 @@ struct BibleTrackerView: View {
     }
 
     private var lastResetDate: Date? {
-        ISO8601DateFormatter().date(from: store.state.lastResetISO)
+        BibleTrackerDateFormatting.iso8601.date(from: store.state.lastResetISO)
     }
 
     var body: some View {
@@ -568,7 +572,9 @@ private struct BibleArchiveRow: View {
     }
 
     private var savedAtText: String {
-        guard let date = ISO8601DateFormatter().date(from: entry.savedAtISO) else { return entry.savedAtISO }
+        guard let date = BibleTrackerDateFormatting.iso8601.date(from: entry.savedAtISO) else {
+            return entry.savedAtISO
+        }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
@@ -622,11 +628,11 @@ private struct ScriptureMemoryEntryRow: View {
     private var reference: String { ScriptureMemoryAlgorithm.reference(for: entry) }
 
     private var addedDate: Date? {
-        ISO8601DateFormatter().date(from: entry.addedAtISO)
+        BibleTrackerDateFormatting.iso8601.date(from: entry.addedAtISO)
     }
 
     private var lastReviewDate: Date? {
-        entry.lastReviewISO.flatMap { ISO8601DateFormatter().date(from: $0) }
+        entry.lastReviewISO.flatMap { BibleTrackerDateFormatting.iso8601.date(from: $0) }
     }
 
     var body: some View {

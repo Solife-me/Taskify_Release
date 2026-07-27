@@ -15,6 +15,8 @@ struct TaskEditorView: View {
     @State private var dueDate: Date
     @State private var dueDateEnabled: Bool
     @State private var dueTimeEnabled: Bool
+    @State private var dueTimeZone: String
+    @State private var showingTimeZonePicker = false
     @State private var priority: TaskPriority?
     @State private var selectedColumnID: String
     @State private var subtasks: [TaskSubtask]
@@ -47,6 +49,7 @@ struct TaskEditorView: View {
         _dueDate = State(initialValue: task.dueDate ?? Date())
         _dueDateEnabled = State(initialValue: task.dueDateEnabled)
         _dueTimeEnabled = State(initialValue: task.dueTimeEnabled)
+        _dueTimeZone = State(initialValue: task.dueTimeZone ?? TimeZone.current.identifier)
         _priority = State(initialValue: task.priority)
         _selectedColumnID = State(initialValue: task.columnID ?? "")
         _subtasks = State(initialValue: task.subtasks ?? [])
@@ -69,6 +72,9 @@ struct TaskEditorView: View {
     private var board: Board? { task.flatMap { model.board(withID: $0.boardID) } }
     private var orderedColumns: [BoardColumn] {
         board?.columns.sorted { $0.order < $1.order } ?? []
+    }
+    private var selectedDueTimeZone: TimeZone {
+        TimeZone(identifier: dueTimeZone) ?? .current
     }
 
     private var canSave: Bool {
@@ -139,6 +145,15 @@ struct TaskEditorView: View {
         } message: {
             Text(attachmentError ?? "The attachment could not be added.")
         }
+        .sheet(isPresented: $showingTimeZonePicker) {
+            TimeZonePickerSheet(
+                selection: Binding(
+                    get: { dueTimeZone },
+                    set: { changeDueTimeZone(to: $0) }
+                ),
+                referenceDate: dueDate
+            )
+        }
         .sheet(isPresented: $showingTaskShare) {
             TaskShareSheet(taskID: taskID)
                 .environment(model)
@@ -170,11 +185,27 @@ struct TaskEditorView: View {
                 Toggle("Due date", isOn: $dueDateEnabled)
                 if dueDateEnabled {
                     DatePicker("Date", selection: $dueDate, displayedComponents: .date)
+                        .environment(\.timeZone, dueTimeEnabled ? selectedDueTimeZone : .current)
                     Toggle("Include time", isOn: $dueTimeEnabled)
                     if dueTimeEnabled {
                         DatePicker("Time", selection: $dueDate, displayedComponents: .hourAndMinute)
-                        LabeledContent("Time zone", value: TimeZone.current.localizedName(for: .standard, locale: .current) ?? TimeZone.current.identifier)
-                            .font(.caption)
+                            .environment(\.timeZone, selectedDueTimeZone)
+                        Button {
+                            showingTimeZonePicker = true
+                        } label: {
+                            HStack {
+                                LabeledContent(
+                                    "Time zone",
+                                    value: selectedDueTimeZone.localizedName(for: .generic, locale: .current)
+                                        ?? dueTimeZone
+                                )
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .foregroundStyle(.primary)
+                        .font(.caption)
                     }
                 }
             }
@@ -239,6 +270,24 @@ struct TaskEditorView: View {
         dismiss()
     }
 
+    /// Keep the visible wall-clock due time stable while changing the zone it belongs to.
+    private func changeDueTimeZone(to newIdentifier: String) {
+        guard newIdentifier != dueTimeZone,
+              let newTimeZone = TimeZone(identifier: newIdentifier) else { return }
+        var oldCalendar = Calendar(identifier: .gregorian)
+        oldCalendar.timeZone = selectedDueTimeZone
+        let components = oldCalendar.dateComponents(
+            [.era, .year, .month, .day, .hour, .minute, .second],
+            from: dueDate
+        )
+        var newCalendar = Calendar(identifier: .gregorian)
+        newCalendar.timeZone = newTimeZone
+        if let translatedDate = newCalendar.date(from: components) {
+            dueDate = translatedDate
+        }
+        dueTimeZone = newIdentifier
+    }
+
     @discardableResult
     private func persistChanges() -> Bool {
         let normalizedDueDate: Date?
@@ -255,6 +304,7 @@ struct TaskEditorView: View {
             dueDate: normalizedDueDate,
             dueDateEnabled: dueDateEnabled,
             dueTimeEnabled: dueTimeEnabled,
+            dueTimeZone: dueTimeZone,
             priority: priority,
             columnID: board?.kind == .list ? selectedColumnID : task?.columnID,
             subtasks: subtasks,

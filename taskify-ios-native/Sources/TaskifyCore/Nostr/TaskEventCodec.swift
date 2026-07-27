@@ -597,6 +597,10 @@ public enum TaskifyCalendarEventCodec {
             endISO: payload.endISO,
             startTimeZoneID: payload.startTimeZoneID,
             endTimeZoneID: payload.endTimeZoneID,
+            reminders: payload.reminders?.filter { $0.minutesBefore != nil && !$0.rawValue.isEmpty },
+            reminderTime: payload.reminderTime?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            recurrence: payload.recurrence?.isActive == true ? payload.recurrence : nil,
+            seriesID: payload.seriesID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             createdBy: payload.createdBy,
             lastEditedBy: payload.lastEditedBy,
             canonicalAddress: "\(canonicalEventKind):\(boardPublicKey.hexString):\(eventID)",
@@ -637,6 +641,10 @@ public enum TaskifyCalendarEventCodec {
         var endISO: String?
         var startTimeZoneID: String?
         var endTimeZoneID: String?
+        var reminders: [TaskReminder]?
+        var reminderTime: String?
+        var recurrence: TaskRecurrence?
+        var seriesID: String?
         var inviteTokens: [String: String]?
         var deleted: Bool?
 
@@ -649,6 +657,8 @@ public enum TaskifyCalendarEventCodec {
             case startDate, endDate, startISO, endISO
             case startTimeZoneID = "startTzid"
             case endTimeZoneID = "endTzid"
+            case reminders, reminderTime, recurrence
+            case seriesID = "seriesId"
             case inviteTokens, deleted
         }
 
@@ -678,6 +688,10 @@ public enum TaskifyCalendarEventCodec {
             endISO = event.endISO
             startTimeZoneID = event.startTimeZoneID
             endTimeZoneID = event.endTimeZoneID
+            reminders = event.reminders
+            reminderTime = event.reminderTime
+            recurrence = event.recurrence?.isActive == true ? event.recurrence : nil
+            seriesID = recurrence == nil ? nil : (event.seriesID ?? event.id)
         }
     }
 }

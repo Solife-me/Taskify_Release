@@ -3,7 +3,8 @@ import TaskifyCore
 import UserNotifications
 
 actor TaskNotificationCoordinator {
-    private static let identifierPrefix = "taskify.task."
+    private static let taskIdentifierPrefix = "taskify.task."
+    private static let eventIdentifierPrefix = "taskify.event."
     private let center: UNUserNotificationCenter
     private let presentationDelegate = NotificationPresentationDelegate()
 
@@ -14,6 +15,7 @@ actor TaskNotificationCoordinator {
 
     func reschedule(
         tasks: [TaskItem],
+        events: [TaskifyEvent] = [],
         requestPermission: Bool,
         now: Date = Date()
     ) async -> String {
@@ -26,7 +28,10 @@ actor TaskNotificationCoordinator {
         let pending = await center.pendingNotificationRequests()
         let existingIDs = pending
             .map(\.identifier)
-            .filter { $0.hasPrefix(Self.identifierPrefix) }
+            .filter {
+                $0.hasPrefix(Self.taskIdentifierPrefix)
+                    || $0.hasPrefix(Self.eventIdentifierPrefix)
+            }
         if !existingIDs.isEmpty {
             center.removePendingNotificationRequests(withIdentifiers: existingIDs)
         }
@@ -35,27 +40,47 @@ actor TaskNotificationCoordinator {
             return Self.label(for: settings.authorizationStatus)
         }
 
-        let upcoming = tasks
+        let taskReminders = tasks
             .filter { !$0.isDeleted && !$0.completed }
             .flatMap { task in
                 task.reminderFireDates().compactMap { reminder, fireDate -> ScheduledReminder? in
                     guard fireDate > now.addingTimeInterval(1) else { return nil }
-                    return ScheduledReminder(task: task, reminder: reminder, fireDate: fireDate)
+                    return ScheduledReminder(
+                        identifier: Self.taskIdentifierPrefix + task.id + "." + reminder.rawValue,
+                        title: task.title,
+                        body: reminder.label,
+                        userInfo: ["taskID": task.id, "boardID": task.boardID],
+                        fireDate: fireDate
+                    )
                 }
             }
+        let eventReminders = events
+            .filter { !$0.isDeleted }
+            .flatMap { event in
+                event.reminderFireDates().compactMap { reminder, fireDate -> ScheduledReminder? in
+                    guard fireDate > now.addingTimeInterval(1) else { return nil }
+                    var userInfo = ["eventID": event.id]
+                    if let boardID = event.boardID { userInfo["boardID"] = boardID }
+                    return ScheduledReminder(
+                        identifier: Self.eventIdentifierPrefix + event.id + "." + reminder.rawValue,
+                        title: event.title,
+                        body: reminder.eventLabel,
+                        userInfo: userInfo,
+                        fireDate: fireDate
+                    )
+                }
+            }
+        let upcoming = (taskReminders + eventReminders)
             .sorted { $0.fireDate < $1.fireDate }
             .prefix(60)
 
         for scheduled in upcoming {
             guard !Task.isCancelled else { break }
             let content = UNMutableNotificationContent()
-            content.title = scheduled.task.title
-            content.body = scheduled.reminder.label
+            content.title = scheduled.title
+            content.body = scheduled.body
             content.sound = .default
-            content.userInfo = [
-                "taskID": scheduled.task.id,
-                "boardID": scheduled.task.boardID,
-            ]
+            content.userInfo = scheduled.userInfo
 
             var components = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute, .second],
@@ -63,12 +88,8 @@ actor TaskNotificationCoordinator {
             )
             components.timeZone = Calendar.current.timeZone
             let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
-            let identifier = Self.identifierPrefix
-                + scheduled.task.id
-                + "."
-                + scheduled.reminder.rawValue
             let request = UNNotificationRequest(
-                identifier: identifier,
+                identifier: scheduled.identifier,
                 content: content,
                 trigger: trigger
             )
@@ -95,6 +116,14 @@ actor TaskNotificationCoordinator {
         @unknown default: "Unavailable"
         }
     }
+}
+
+private struct ScheduledReminder: Sendable {
+    var identifier: String
+    var title: String
+    var body: String
+    var userInfo: [String: String]
+    var fireDate: Date
 }
 
 actor WalletPaymentNotificationCoordinator {
@@ -207,12 +236,6 @@ actor WalletPaymentNotificationCoordinator {
             try? await center.add(request)
         }
     }
-}
-
-private struct ScheduledReminder {
-    let task: TaskItem
-    let reminder: TaskReminder
-    let fireDate: Date
 }
 
 private final class NotificationPresentationDelegate: NSObject, UNUserNotificationCenterDelegate {

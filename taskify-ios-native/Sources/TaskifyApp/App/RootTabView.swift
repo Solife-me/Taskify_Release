@@ -28,6 +28,7 @@ struct RootTabView: View {
     @Environment(AppModel.self) private var model
     @EnvironmentObject private var wallet: WalletViewModel
     @State private var selectedTab: AppTab
+    @State private var hasPresentedInitialContent = false
 
     init() {
 #if DEBUG
@@ -53,11 +54,31 @@ struct RootTabView: View {
                     }
             }
 
-            if model.isLoading {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
+            if model.isLoading || !hasPresentedInitialContent {
+                ZStack {
+                    Color.black.opacity(0.001)
+                        .ignoresSafeArea()
+
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Preparing Taskify")
+                .accessibilityIdentifier("taskify-startup-loading")
             }
+        }
+        .task(id: model.isLoading) {
+            guard !model.isLoading, !hasPresentedInitialContent else { return }
+
+            // `snapshot` and `isLoading` can change in the same MainActor turn. Without
+            // crossing a display interval, SwiftUI may remove the spinner before it has
+            // committed the populated board's first frame, exposing a short frozen screen.
+            // Keep the honest loading state up until that frame has had a chance to render.
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(48))
+            guard !Task.isCancelled, !model.isLoading else { return }
+            hasPresentedInitialContent = true
         }
         .alert(
             "Taskify",
@@ -86,6 +107,13 @@ struct RootTabView: View {
                         withAnimation { wallet.statusMessage = nil }
                     }
             }
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { model.showsFirstRunOnboarding },
+            set: { _ in }
+        )) {
+            FirstRunOnboardingView()
+                .environment(model)
         }
     }
 

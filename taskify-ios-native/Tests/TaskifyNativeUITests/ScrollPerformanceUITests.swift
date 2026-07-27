@@ -11,6 +11,8 @@ final class ScrollPerformanceUITests: XCTestCase {
 
     func testBoardsScrollRemainsResponsiveWithManyTasks() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
         app.launch()
 
         app.buttons["Boards"].tap()
@@ -66,8 +68,148 @@ final class ScrollPerformanceUITests: XCTestCase {
                       "App should still be responsive after repeated scrolling")
     }
 
+    func testPopulatedBoardScrollPerformance() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
+        app.launch()
+
+        let firstTask = app.buttons["Edit Performance task 1"]
+        XCTAssertTrue(firstTask.waitForExistence(timeout: 10))
+
+        let options = XCTMeasureOptions()
+        options.iterationCount = 5
+        var scrollsDown = true
+        measure(
+            metrics: [XCTOSSignpostMetric.scrollDecelerationMetric],
+            options: options
+        ) {
+            if scrollsDown {
+                app.swipeUp(velocity: .fast)
+            } else {
+                app.swipeDown(velocity: .fast)
+            }
+            scrollsDown.toggle()
+        }
+    }
+
+    func testPopulatedBoardIsInteractiveWhenStartupIndicatorDismisses() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
+        app.launch()
+
+        let loadingIndicator = app.descendants(matching: .any)["taskify-startup-loading"]
+        if loadingIndicator.exists {
+            XCTAssertTrue(
+                loadingIndicator.waitForNonExistence(timeout: 10),
+                "The startup indicator should finish after the populated board is prepared"
+            )
+        }
+
+        let showCompleted = app.buttons["Show completed tasks"]
+        XCTAssertTrue(showCompleted.waitForExistence(timeout: 5))
+
+        showCompleted.tap()
+        XCTAssertTrue(
+            app.buttons["Hide completed tasks"].waitForExistence(timeout: 2),
+            "The first board interaction should respond as soon as startup loading disappears"
+        )
+    }
+
+    func testQuickAddReturnKeepsKeyboardAndPlusAddsThenClosesIt() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+
+        let quickAddField = app.textFields.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")
+        ).firstMatch
+        XCTAssertTrue(quickAddField.waitForExistence(timeout: 10))
+        quickAddField.tap()
+        quickAddField.typeText("Return keeps keyboard")
+        quickAddField.typeText("\n")
+
+        XCTAssertTrue(app.buttons["Edit Return keeps keyboard"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.element.exists, "Return should leave quick add ready for another task")
+
+        quickAddField.typeText("Plus closes keyboard")
+        let addButton = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "and close keyboard")
+        ).firstMatch
+        XCTAssertTrue(addButton.waitForExistence(timeout: 5))
+        addButton.tap()
+
+        XCTAssertTrue(app.buttons["Edit Plus closes keyboard"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.keyboards.element.waitForExistence(timeout: 1))
+    }
+
+    func testRapidCompletionRemovesEachTaskBeforeTheNextTap() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+
+        let quickAddField = app.textFields.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")
+        ).firstMatch
+        XCTAssertTrue(quickAddField.waitForExistence(timeout: 10))
+        quickAddField.tap()
+
+        let suffix = String(UUID().uuidString.prefix(8))
+        let firstTitle = "Rapid completion one \(suffix)"
+        let secondTitle = "Rapid completion two \(suffix)"
+
+        quickAddField.typeText(firstTitle)
+        quickAddField.typeText("\n")
+        quickAddField.typeText(secondTitle)
+        let addButton = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "and close keyboard")
+        ).firstMatch
+        XCTAssertTrue(addButton.waitForExistence(timeout: 5))
+        addButton.tap()
+        XCTAssertFalse(app.keyboards.element.waitForExistence(timeout: 1))
+
+        let firstTask = app.buttons["Edit \(firstTitle)"]
+        let secondTask = app.buttons["Edit \(secondTitle)"]
+        for _ in 0..<8 where !firstTask.exists {
+            app.swipeUp()
+        }
+        XCTAssertTrue(firstTask.waitForExistence(timeout: 5))
+        XCTAssertTrue(secondTask.waitForExistence(timeout: 5))
+        let completeButtons = app.buttons.matching(identifier: "Complete task")
+
+        let firstCompletionButton = try XCTUnwrap(
+            completeButtons.allElementsBoundByIndex.min {
+                abs($0.frame.midY - firstTask.frame.midY) < abs($1.frame.midY - firstTask.frame.midY)
+            }
+        )
+        firstCompletionButton.tap()
+        XCTAssertFalse(
+            firstTask.exists,
+            "A completed row should disappear immediately instead of blocking the next checkbox"
+        )
+
+        let secondCompletionButton = try XCTUnwrap(
+            completeButtons.allElementsBoundByIndex.min {
+                abs($0.frame.midY - secondTask.frame.midY) < abs($1.frame.midY - secondTask.frame.midY)
+            }
+        )
+        secondCompletionButton.tap()
+        XCTAssertFalse(
+            secondTask.exists,
+            "A second task should be completable while the first checkmark is still flying"
+        )
+    }
+
     func testChatTabLaunchesAndScrollsWithoutCrashing() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Chat"].tap()
@@ -77,6 +219,76 @@ final class ScrollPerformanceUITests: XCTestCase {
         // crashing; the timeline-hoisting fix itself is covered by the Boards test's
         // scroll behavior plus the code-level fix in ChatView.swift.
         XCTAssertTrue(app.buttons["Chat"].waitForExistence(timeout: 5))
+    }
+
+    func testOpeningChatStartsAtNewestMessage() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5),
+            "Opening a conversation should reveal its newest message"
+        )
+    }
+
+    func testChatSearchShowsIndividualMessageAndOpensItsLocation() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+
+        let search = app.textFields["Search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        search.typeText("early fixture needle")
+
+        let messageResult = app.staticTexts["Searchable early fixture needle"]
+        XCTAssertTrue(
+            messageResult.waitForExistence(timeout: 5),
+            "Global chat search should show the matching message itself"
+        )
+        messageResult.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["Searchable early fixture needle"].waitForExistence(timeout: 5),
+            "Tapping a message result should open the conversation at that message"
+        )
+    }
+
+    func testConversationSearchArrowsAndCloseControlWork() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        XCTAssertTrue(app.buttons["Conversation actions"].waitForExistence(timeout: 5))
+        app.buttons["Conversation actions"].tap()
+        app.buttons["Search Conversation"].tap()
+
+        let search = app.textFields["Search conversation"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("repeatable fixture match")
+        XCTAssertTrue(app.staticTexts["3/3"].waitForExistence(timeout: 5))
+
+        app.buttons["Previous search result"].tap()
+        XCTAssertTrue(app.staticTexts["2/3"].waitForExistence(timeout: 5))
+        app.buttons["Next search result"].tap()
+        XCTAssertTrue(app.staticTexts["3/3"].waitForExistence(timeout: 5))
+
+        app.buttons["Close conversation search"].tap()
+        XCTAssertFalse(app.textFields["Search conversation"].waitForExistence(timeout: 2))
+    }
+
+    private func chatFixtureApplication() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_INITIAL_TAB"] = "chat"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        return app
     }
 
     private func attach(_ app: XCUIApplication, name: String) {

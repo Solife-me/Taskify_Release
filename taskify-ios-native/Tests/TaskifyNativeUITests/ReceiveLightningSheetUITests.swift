@@ -7,6 +7,7 @@ final class ReceiveLightningSheetUITests: XCTestCase {
 
     func testReceiveLightningKeypadSheet() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         let walletTab = app.buttons["Wallet"]
@@ -41,6 +42,7 @@ final class ReceiveLightningSheetUITests: XCTestCase {
 
     func testEcashPaymentRequestKeypadSheet() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         let walletTab = app.buttons["Wallet"]
@@ -74,6 +76,7 @@ final class ReceiveLightningSheetUITests: XCTestCase {
 
     func testEcashSendKeypadSheet() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         let walletTab = app.buttons["Wallet"]

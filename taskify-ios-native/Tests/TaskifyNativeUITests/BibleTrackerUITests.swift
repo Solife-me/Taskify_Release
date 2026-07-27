@@ -10,6 +10,7 @@ final class BibleTrackerUITests: XCTestCase {
 
     func testBibleTrackerFlow() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Settings"].tap()
@@ -117,6 +118,7 @@ final class BibleTrackerUITests: XCTestCase {
 
     func testBoardSortAndUpcomingFilterSmoke() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Boards"].tap()
@@ -175,6 +177,7 @@ final class BibleTrackerUITests: XCTestCase {
     /// is used because its grid overflows the screen, unlike shorter books.
     func testChapterGridScrollsWhenTouchStartsOnAChapter() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Settings"].tap()
@@ -236,6 +239,7 @@ final class BibleTrackerUITests: XCTestCase {
 
     func testFastingRemindersFlow() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Settings"].tap()
@@ -282,6 +286,7 @@ final class BibleTrackerUITests: XCTestCase {
 
     func testScriptureMemoryFlow() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Settings"].tap()
@@ -378,6 +383,7 @@ final class BibleTrackerUITests: XCTestCase {
 
     func testReorderBoards() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Settings"].tap()
@@ -425,6 +431,7 @@ final class BibleTrackerUITests: XCTestCase {
     /// Assumes a fresh app install so the Week board's "today" column has exactly one task.
     func testTaskStreakBadge() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launch()
 
         app.buttons["Boards"].tap()

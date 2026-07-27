@@ -505,6 +505,25 @@ public enum TaskifyEventSchedule: String, Codable, Sendable {
     case time
 }
 
+public enum TaskifyEventDeletionScope: Equatable, Sendable {
+    case single
+    case thisAndFuture
+}
+
+public struct TaskifyEventSeriesChanges: Equatable, Sendable {
+    public var updatedEventIDs: [String]
+    public var deletedEventIDs: [String]
+
+    public init(updatedEventIDs: [String] = [], deletedEventIDs: [String] = []) {
+        self.updatedEventIDs = updatedEventIDs
+        self.deletedEventIDs = deletedEventIDs
+    }
+
+    public var allEventIDs: [String] {
+        Array(Set(updatedEventIDs + deletedEventIDs)).sorted()
+    }
+}
+
 public struct TaskifyEventParticipant: Codable, Equatable, Sendable {
     public var publicKey: String
     public var relayURL: String?
@@ -547,6 +566,10 @@ public struct TaskifyEvent: Identifiable, Codable, Equatable, Sendable {
     public var endISO: String?
     public var startTimeZoneID: String?
     public var endTimeZoneID: String?
+    public var reminders: [TaskReminder]?
+    public var reminderTime: String?
+    public var recurrence: TaskRecurrence?
+    public var seriesID: String?
     public var createdBy: String?
     public var lastEditedBy: String?
     public var canonicalAddress: String
@@ -583,6 +606,10 @@ public struct TaskifyEvent: Identifiable, Codable, Equatable, Sendable {
         endISO: String? = nil,
         startTimeZoneID: String? = nil,
         endTimeZoneID: String? = nil,
+        reminders: [TaskReminder]? = nil,
+        reminderTime: String? = nil,
+        recurrence: TaskRecurrence? = nil,
+        seriesID: String? = nil,
         createdBy: String? = nil,
         lastEditedBy: String? = nil,
         canonicalAddress: String,
@@ -618,6 +645,10 @@ public struct TaskifyEvent: Identifiable, Codable, Equatable, Sendable {
         self.endISO = endISO
         self.startTimeZoneID = startTimeZoneID
         self.endTimeZoneID = endTimeZoneID
+        self.reminders = reminders
+        self.reminderTime = reminderTime
+        self.recurrence = recurrence
+        self.seriesID = seriesID
         self.createdBy = createdBy
         self.lastEditedBy = lastEditedBy
         self.canonicalAddress = canonicalAddress
@@ -838,6 +869,10 @@ public enum TaskifyEventContract {
             endISO: endISO,
             startTimeZoneID: payload.startTimeZoneID?.trimmedNilIfEmpty,
             endTimeZoneID: payload.endTimeZoneID?.trimmedNilIfEmpty,
+            reminders: payload.reminders?.filter { $0.minutesBefore != nil && !$0.rawValue.isEmpty },
+            reminderTime: payload.reminderTime?.trimmedNilIfEmpty,
+            recurrence: payload.recurrence?.isActive == true ? payload.recurrence : nil,
+            seriesID: payload.seriesID?.trimmedNilIfEmpty,
             createdBy: normalizedPublicKey(payload.createdBy),
             lastEditedBy: normalizedPublicKey(payload.lastEditedBy),
             canonicalAddress: invite.canonical,
@@ -879,6 +914,10 @@ public enum TaskifyEventContract {
         var endISO: String?
         var startTimeZoneID: String?
         var endTimeZoneID: String?
+        var reminders: [TaskReminder]?
+        var reminderTime: String?
+        var recurrence: TaskRecurrence?
+        var seriesID: String?
         var deleted: Bool?
 
         enum CodingKeys: String, CodingKey {
@@ -888,6 +927,8 @@ public enum TaskifyEventContract {
             case documents, locations, geohash, hashtags, references, startDate, endDate, startISO, endISO
             case startTimeZoneID = "startTzid"
             case endTimeZoneID = "endTzid"
+            case reminders, reminderTime, recurrence
+            case seriesID = "seriesId"
             case deleted
         }
 
@@ -1157,6 +1198,26 @@ public struct TaskifyShareEnvelope: Equatable, Sendable {
 
     public func messageContent() throws -> String {
         let json = String(decoding: try encoded(), as: UTF8.self)
+        if case .assignmentResponse(let response) = item {
+            let status = switch response.status {
+            case .accepted: "Accepted"
+            case .declined: "Declined"
+            case .tentative: "Maybe"
+            case .pending: "Pending"
+            }
+            return embeddedMessage(
+                lines: [
+                    "Task Assignment Response",
+                    "",
+                    "Status: \(status)",
+                    "Task: \(response.taskID)",
+                    "",
+                    "Open this in Taskify to update the assignment.",
+                ],
+                json: json
+            )
+        }
+
         guard case .task(let task) = item, task.isAssignment else { return json }
 
         var lines = ["Task Assignment", "", "Title: \(task.title)"]
@@ -1176,17 +1237,16 @@ public struct TaskifyShareEnvelope: Equatable, Sendable {
             lines.append(contentsOf: subtasks.prefix(5).map { "- \($0)" })
             if subtasks.count > 5 { lines.append("- ...and \(subtasks.count - 5) more") }
         }
+        lines.append(contentsOf: ["", "Open this in Taskify to accept, decline, or maybe."])
+        return embeddedMessage(lines: lines, json: json)
+    }
+
+    private func embeddedMessage(lines: [String], json: String) -> String {
         let token = Data(json.utf8).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-        lines.append(contentsOf: [
-            "",
-            "Open this in Taskify to accept, decline, or maybe.",
-            "",
-            "Taskify-Share: \(token)",
-        ])
-        return lines.joined(separator: "\n")
+        return (lines + ["", "Taskify-Share: \(token)"]).joined(separator: "\n")
     }
 
     private static func assignmentDueDescription(_ task: SharedTaskDelivery) -> String {
@@ -1808,11 +1868,16 @@ public extension TaskifySnapshot {
     @discardableResult
     mutating func upsertTaskifyEvent(_ event: TaskifyEvent) -> Bool {
         var events = taskifyEvents ?? []
-        if let index = events.firstIndex(where: {
-            $0.id == event.id && $0.viewAddress == event.viewAddress
-        }) {
-            guard events[index] != event else { return false }
+        let matchingIndices = events.indices.filter { events[$0].id == event.id }
+        if let index = matchingIndices.first {
+            let changed = events[index] != event || matchingIndices.count > 1
+            guard changed else { return false }
             events[index] = event
+            if matchingIndices.count > 1 {
+                events = events.enumerated().compactMap { offset, existing in
+                    offset == index || existing.id != event.id ? existing : nil
+                }
+            }
         } else {
             events.append(event)
         }
@@ -1826,13 +1891,14 @@ public extension TaskifySnapshot {
         eventCreatedAt: Int
     ) -> Bool {
         var events = taskifyEvents ?? []
-        if let index = events.firstIndex(where: {
-            $0.id == remoteEvent.id && $0.boardID == remoteEvent.boardID
-        }) {
+        if let index = events.firstIndex(where: { $0.id == remoteEvent.id }) {
             guard eventCreatedAt > (events[index].nostrUpdatedAt ?? 0) else { return false }
             var merged = remoteEvent
             merged.nostrUpdatedAt = eventCreatedAt
             events[index] = merged
+            events = events.enumerated().compactMap { offset, existing in
+                offset == index || existing.id != remoteEvent.id ? existing : nil
+            }
         } else {
             var inserted = remoteEvent
             inserted.nostrUpdatedAt = eventCreatedAt
@@ -1840,6 +1906,421 @@ public extension TaskifySnapshot {
         }
         taskifyEvents = events
         return true
+    }
+
+    /// Rebuilds the generated instances owned by a recurrence seed. IDs and instance caps match
+    /// the PWA calendar contract, so native and web clients converge on the same replaceable
+    /// Nostr events instead of publishing duplicate occurrences.
+    @discardableResult
+    mutating func rebuildTaskifyEventSeries(
+        seedID: String,
+        replacingSeriesID: String? = nil,
+        editorPublicKey: String? = nil
+    ) -> TaskifyEventSeriesChanges {
+        var events = taskifyEvents ?? []
+        guard let seedIndex = events.firstIndex(where: {
+            $0.id == seedID && !$0.isReadOnly && !$0.isDeleted
+        }) else { return TaskifyEventSeriesChanges() }
+
+        let previousSeriesID = replacingSeriesID ?? events[seedIndex].seriesID
+        let activeRecurrence = events[seedIndex].recurrence?.isActive == true
+            ? events[seedIndex].recurrence
+            : nil
+        events[seedIndex].recurrence = activeRecurrence
+        events[seedIndex].seriesID = activeRecurrence == nil ? nil : seedID
+
+        var desiredIDs = Set<String>()
+        var updatedIDs = Set<String>()
+        var deletedIDs = Set<String>()
+
+        if let recurrence = activeRecurrence,
+           let start = Self.taskifyEventRecurrenceStart(events[seedIndex]) {
+            var cursor = start
+            var nextOrder = (
+                events
+                    .filter { $0.boardID == events[seedIndex].boardID && !$0.isDeleted }
+                    .compactMap(\.order)
+                    .max() ?? -1
+            ) + 1
+            let duration = max(
+                0,
+                (events[seedIndex].endDate ?? start).timeIntervalSince(start)
+            )
+            let durationDays = Self.taskifyEventDurationDays(events[seedIndex])
+            let limit = Self.taskifyEventRecurrenceLimit(recurrence)
+
+            if limit > 1 {
+                for _ in 1..<limit {
+                    guard let next = recurrence.nextOccurrence(
+                        after: cursor,
+                        dueTimeEnabled: !events[seedIndex].isAllDay,
+                        timeZoneIdentifier: events[seedIndex].isAllDay
+                            ? "UTC"
+                            : events[seedIndex].startTimeZoneID,
+                        calendar: Self.taskifyEventCalendar(for: events[seedIndex])
+                    ) else { break }
+                    cursor = next
+                    let instanceID = Self.taskifyEventRecurrenceID(
+                        seriesID: seedID,
+                        start: next,
+                        recurrence: recurrence,
+                        event: events[seedIndex]
+                    )
+                    desiredIDs.insert(instanceID)
+
+                    var instance = events[seedIndex]
+                    instance.id = instanceID
+                    instance.seriesID = seedID
+                    instance.recurrence = recurrence
+                    instance.order = nextOrder
+                    instance.readOnly = false
+                    instance.deleted = false
+                    instance.sourceUpdatedAt = nil
+                    instance.nostrUpdatedAt = nil
+                    instance.canonicalAddress = ""
+                    instance.viewAddress = ""
+                    instance.eventKey = TaskifyCalendarEventCodec.generateEventKey()
+                    instance.inviteToken = ""
+                    instance.inviteTokens = nil
+                    if instance.isAllDay {
+                        instance.startDateValue = Self.taskifyDateKey(next, timeZone: Self.utcTimeZone)
+                        instance.endDateValue = durationDays > 1
+                            ? Self.taskifyDateKey(
+                                Self.taskifyEventCalendar(for: instance).date(
+                                    byAdding: .day,
+                                    value: durationDays - 1,
+                                    to: next
+                                ) ?? next,
+                                timeZone: Self.utcTimeZone
+                            )
+                            : nil
+                        instance.startISO = nil
+                        instance.endISO = nil
+                    } else {
+                        instance.startDateValue = nil
+                        instance.endDateValue = nil
+                        instance.startISO = Self.taskifyISODate(next)
+                        instance.endISO = duration > 0
+                            ? Self.taskifyISODate(next.addingTimeInterval(duration))
+                            : nil
+                    }
+
+                    if let existingIndex = events.firstIndex(where: { $0.id == instanceID }) {
+                        let existing = events[existingIndex]
+                        instance.order = existing.order
+                        instance.eventKey = existing.eventKey.isEmpty
+                            ? instance.eventKey
+                            : existing.eventKey
+                        instance.canonicalAddress = existing.canonicalAddress
+                        instance.viewAddress = existing.viewAddress
+                        instance.inviteToken = existing.inviteToken
+                        instance.inviteTokens = existing.inviteTokens
+                        instance.sourceUpdatedAt = existing.sourceUpdatedAt
+                        instance.nostrUpdatedAt = existing.nostrUpdatedAt
+                        guard instance != existing else { continue }
+                        events[existingIndex] = instance
+                    } else {
+                        events.append(instance)
+                        nextOrder += 1
+                    }
+                    updatedIDs.insert(instanceID)
+                }
+            }
+        }
+
+        let ownedSeriesIDs = Set([previousSeriesID, activeRecurrence == nil ? nil : seedID].compactMap { $0 })
+        for index in events.indices {
+            guard events[index].id != seedID,
+                  let seriesID = events[index].seriesID,
+                  ownedSeriesIDs.contains(seriesID),
+                  !desiredIDs.contains(events[index].id),
+                  !events[index].isDeleted else { continue }
+            events[index].deleted = true
+            events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
+            updatedIDs.remove(events[index].id)
+            deletedIDs.insert(events[index].id)
+        }
+
+        taskifyEvents = events
+        return TaskifyEventSeriesChanges(
+            updatedEventIDs: updatedIDs.sorted(),
+            deletedEventIDs: deletedIDs.sorted()
+        )
+    }
+
+    /// Maintains the PWA's rolling number of future instances as older occurrences pass.
+    /// Tombstoned instance IDs remain reserved so deleting one occurrence never resurrects it.
+    @discardableResult
+    mutating func ensureTaskifyEventRecurrenceWindow(
+        now: Date = Date()
+    ) -> TaskifyEventSeriesChanges {
+        var events = taskifyEvents ?? []
+        let seedIDs = events.compactMap { event -> String? in
+            guard !event.isDeleted,
+                  !event.isReadOnly,
+                  event.recurrence?.isActive == true,
+                  event.seriesID == event.id else { return nil }
+            return event.id
+        }
+        var updatedIDs = Set<String>()
+        var deletedIDs = Set<String>()
+
+        for seedID in seedIDs {
+            guard let seedIndex = events.firstIndex(where: { $0.id == seedID }),
+                  let recurrence = events[seedIndex].recurrence,
+                  let seedStart = Self.taskifyEventRecurrenceStart(events[seedIndex]) else { continue }
+            let seed = events[seedIndex]
+            let limit = Self.taskifyEventRecurrenceLimit(recurrence)
+            guard limit > 0 else { continue }
+            let calendar = Self.taskifyEventCalendar(for: seed)
+            let futureBoundary = seed.isAllDay ? calendar.startOfDay(for: now) : now
+
+            let activeSeriesIndices = events.indices.filter {
+                !events[$0].isDeleted
+                    && events[$0].seriesID == seedID
+                    && events[$0].recurrence?.isActive == true
+            }
+            var futureIndices = activeSeriesIndices.filter {
+                (events[$0].endDate ?? events[$0].startDate ?? .distantPast) >= futureBoundary
+            }.sorted {
+                (events[$0].startDate ?? .distantFuture) < (events[$1].startDate ?? .distantFuture)
+            }
+
+            if futureIndices.count > limit {
+                for index in futureIndices.dropFirst(limit) {
+                    events[index].deleted = true
+                    deletedIDs.insert(events[index].id)
+                }
+                futureIndices = Array(futureIndices.prefix(limit))
+            }
+            guard futureIndices.count < limit else { continue }
+
+            let remainingIndices = activeSeriesIndices.filter { !events[$0].isDeleted }
+            let latestIndex = remainingIndices.max {
+                (events[$0].startDate ?? .distantPast) < (events[$1].startDate ?? .distantPast)
+            }
+            var cursor = latestIndex.flatMap { Self.taskifyEventRecurrenceStart(events[$0]) } ?? seedStart
+            var futureCount = futureIndices.count
+            var nextOrder = (
+                events
+                    .filter { $0.boardID == seed.boardID && !$0.isDeleted }
+                    .compactMap(\.order)
+                    .max() ?? -1
+            ) + 1
+            let duration = max(0, (seed.endDate ?? seedStart).timeIntervalSince(seedStart))
+            let durationDays = Self.taskifyEventDurationDays(seed)
+            let existingIDs = Set(events.map(\.id))
+            var guardCount = 0
+            let maxGuard = max(32, limit * 24)
+
+            while futureCount < limit, guardCount < maxGuard {
+                guardCount += 1
+                guard let next = recurrence.nextOccurrence(
+                    after: cursor,
+                    dueTimeEnabled: !seed.isAllDay,
+                    timeZoneIdentifier: seed.isAllDay ? "UTC" : seed.startTimeZoneID,
+                    calendar: calendar
+                ) else { break }
+                cursor = next
+                let instanceID = Self.taskifyEventRecurrenceID(
+                    seriesID: seedID,
+                    start: next,
+                    recurrence: recurrence,
+                    event: seed
+                )
+                guard !existingIDs.contains(instanceID) else { continue }
+
+                var instance = seed
+                instance.id = instanceID
+                instance.seriesID = seedID
+                instance.recurrence = recurrence
+                instance.order = nextOrder
+                instance.readOnly = false
+                instance.deleted = false
+                instance.sourceUpdatedAt = nil
+                instance.nostrUpdatedAt = nil
+                instance.canonicalAddress = ""
+                instance.viewAddress = ""
+                instance.eventKey = TaskifyCalendarEventCodec.generateEventKey()
+                instance.inviteToken = ""
+                instance.inviteTokens = nil
+                if seed.isAllDay {
+                    instance.startDateValue = Self.taskifyDateKey(next, timeZone: Self.utcTimeZone)
+                    if durationDays > 1 {
+                        let instanceEnd = calendar.date(
+                            byAdding: .day,
+                            value: durationDays - 1,
+                            to: next
+                        ) ?? next
+                        instance.endDateValue = Self.taskifyDateKey(
+                            instanceEnd,
+                            timeZone: Self.utcTimeZone
+                        )
+                    } else {
+                        instance.endDateValue = nil
+                    }
+                    instance.startISO = nil
+                    instance.endISO = nil
+                } else {
+                    instance.startDateValue = nil
+                    instance.endDateValue = nil
+                    instance.startISO = Self.taskifyISODate(next)
+                    instance.endISO = duration > 0
+                        ? Self.taskifyISODate(next.addingTimeInterval(duration))
+                        : nil
+                }
+                events.append(instance)
+                updatedIDs.insert(instanceID)
+                nextOrder += 1
+                if (instance.endDate ?? instance.startDate ?? .distantPast) >= futureBoundary {
+                    futureCount += 1
+                }
+            }
+        }
+
+        taskifyEvents = events
+        return TaskifyEventSeriesChanges(
+            updatedEventIDs: updatedIDs.sorted(),
+            deletedEventIDs: deletedIDs.sorted()
+        )
+    }
+
+    @discardableResult
+    mutating func deleteTaskifyEvent(
+        eventID: String,
+        scope: TaskifyEventDeletionScope,
+        editorPublicKey: String? = nil
+    ) -> TaskifyEventSeriesChanges {
+        var events = taskifyEvents ?? []
+        guard let selectedIndex = events.firstIndex(where: {
+            $0.id == eventID && !$0.isReadOnly && !$0.isDeleted
+        }) else { return TaskifyEventSeriesChanges() }
+
+        guard scope == .thisAndFuture,
+              events[selectedIndex].recurrence?.isActive == true,
+              let seriesID = events[selectedIndex].seriesID,
+              let cutoff = events[selectedIndex].startDate else {
+            events[selectedIndex].deleted = true
+            events[selectedIndex].lastEditedBy = editorPublicKey ?? events[selectedIndex].lastEditedBy
+            taskifyEvents = events
+            return TaskifyEventSeriesChanges(deletedEventIDs: [eventID])
+        }
+
+        var updatedIDs = Set<String>()
+        var deletedIDs = Set<String>()
+        let recurrenceCalendar = Self.taskifyEventCalendar(for: events[selectedIndex])
+        let endDate = recurrenceCalendar.date(byAdding: .day, value: -1, to: cutoff)
+
+        for index in events.indices {
+            guard events[index].seriesID == seriesID,
+                  events[index].recurrence?.isActive == true,
+                  !events[index].isDeleted,
+                  let start = events[index].startDate else { continue }
+            if start >= cutoff {
+                events[index].deleted = true
+                events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
+                deletedIDs.insert(events[index].id)
+                continue
+            }
+            let shortened = events[index].recurrence?.withUntilDate(endDate)
+            guard events[index].recurrence != shortened else { continue }
+            events[index].recurrence = shortened
+            events[index].seriesID = seriesID
+            events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
+            updatedIDs.insert(events[index].id)
+        }
+
+        taskifyEvents = events
+        return TaskifyEventSeriesChanges(
+            updatedEventIDs: updatedIDs.sorted(),
+            deletedEventIDs: deletedIDs.sorted()
+        )
+    }
+
+    private static var utcTimeZone: TimeZone { TimeZone(secondsFromGMT: 0)! }
+
+    private static func taskifyEventCalendar(for event: TaskifyEvent) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = event.isAllDay
+            ? utcTimeZone
+            : event.startTimeZoneID.flatMap(TimeZone.init(identifier:)) ?? .current
+        return calendar
+    }
+
+    private static func taskifyEventRecurrenceStart(_ event: TaskifyEvent) -> Date? {
+        guard event.isAllDay, let value = event.startDateValue else { return event.startDate }
+        let parts = value.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = utcTimeZone
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    }
+
+    private static func taskifyEventDurationDays(_ event: TaskifyEvent) -> Int {
+        guard event.isAllDay,
+              let start = taskifyEventRecurrenceStart(event),
+              let endValue = event.endDateValue else { return 1 }
+        let parts = endValue.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return 1 }
+        let calendar = taskifyEventCalendar(for: event)
+        guard let end = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) else {
+            return 1
+        }
+        return max(1, (calendar.dateComponents([.day], from: start, to: end).day ?? 0) + 1)
+    }
+
+    private static func taskifyEventRecurrenceLimit(_ recurrence: TaskRecurrence) -> Int {
+        switch recurrence {
+        case .weekly:
+            52
+        case .monthlyDay(_, let interval, _):
+            max(1, interval ?? 1) >= 12 ? 5 : 18
+        case .daily, .every:
+            24
+        case .none:
+            0
+        }
+    }
+
+    private static func taskifyEventRecurrenceID(
+        seriesID: String,
+        start: Date,
+        recurrence: TaskRecurrence,
+        event: TaskifyEvent
+    ) -> String {
+        let timeZone = event.isAllDay
+            ? utcTimeZone
+            : event.startTimeZoneID.flatMap(TimeZone.init(identifier:)) ?? .current
+        let date = taskifyDateKey(start, timeZone: timeZone)
+        let suffix: String
+        if case .every(_, .hour, _) = recurrence {
+            var utc = Calendar(identifier: .gregorian)
+            utc.timeZone = utcTimeZone
+            let parts = utc.dateComponents([.hour, .minute], from: start)
+            suffix = String(format: "%@T%02d:%02d", date, parts.hour ?? 0, parts.minute ?? 0)
+        } else {
+            suffix = date
+        }
+        return "recurrence:\(seriesID):\(suffix)".replacingOccurrences(of: ":", with: "_")
+    }
+
+    private static func taskifyDateKey(_ date: Date, timeZone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            parts.year ?? 0,
+            parts.month ?? 0,
+            parts.day ?? 0
+        )
+    }
+
+    private static func taskifyISODate(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = utcTimeZone
+        return formatter.string(from: date)
     }
 
     @discardableResult

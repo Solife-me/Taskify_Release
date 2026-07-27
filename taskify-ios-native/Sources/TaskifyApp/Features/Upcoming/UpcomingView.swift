@@ -18,6 +18,10 @@ private struct UpcomingFilterGroup: Identifiable {
     var id: String { board.id }
 }
 
+private struct UpcomingTaskFilterScope {
+    let columnIDs: Set<String>?
+}
+
 struct UpcomingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
@@ -41,6 +45,11 @@ struct UpcomingView: View {
     @State private var selectedDate = Calendar.current.startOfDay(for: Date())
     @State private var visibleCalendarMonth = Date()
     @State private var calendarTodayRequest = 0
+    @State private var holidayReferenceYear = Calendar.current.component(.year, from: Date())
+    @State private var allUsHolidays: [UsHoliday] = {
+        let year = Calendar.current.component(.year, from: Date())
+        return UsHolidays.holidays(fromYear: year - 1, toYear: year + 8)
+    }()
 
     private var displayMode: UpcomingDisplayMode {
         UpcomingDisplayMode(rawValue: displayModeRaw) ?? .details
@@ -113,28 +122,30 @@ struct UpcomingView: View {
         return decoded
     }
 
-    private func taskPassesFilter(_ task: TaskItem) -> Bool {
-        guard !filterOptions.isEmpty else { return true }
-        guard let board = model.board(withID: task.boardID) else { return false }
+    private func taskFilterSelection() -> [String: UpcomingTaskFilterScope] {
+        let groups = filterGroups
+        guard !groups.isEmpty else { return [:] }
         let selected = selectedOptionIDs
-        let group = filterGroups.first { $0.board.id == board.id }
-        let selectedListColumnIDs = Set((group?.listOptions ?? [])
-            .filter { selected.contains($0.id) }
-            .compactMap(\.columnID))
+        var result: [String: UpcomingTaskFilterScope] = [:]
+        result.reserveCapacity(groups.count)
 
-        if selected.contains(board.id) {
-            if board.kind == .list {
-                guard let columnID = task.columnID else { return false }
-                if selectedListColumnIDs.isEmpty { return true }
-                return selectedListColumnIDs.contains(columnID)
+        for group in groups {
+            let selectedColumns = Set(
+                group.listOptions
+                    .filter { selected.contains($0.id) }
+                    .compactMap(\.columnID)
+            )
+            if selected.contains(group.board.id) {
+                result[group.board.id] = UpcomingTaskFilterScope(
+                    columnIDs: selectedColumns.isEmpty ? nil : selectedColumns
+                )
+            } else if !selectedColumns.isEmpty {
+                result[group.board.id] = UpcomingTaskFilterScope(
+                    columnIDs: selectedColumns
+                )
             }
-            return true
         }
-
-        if let columnID = task.columnID, selectedListColumnIDs.contains(columnID) {
-            return true
-        }
-        return false
+        return result
     }
 
     private var filteredTasks: [TaskItem] {
@@ -144,7 +155,14 @@ struct UpcomingView: View {
             includedBoardIDs: nil,
             selectedDate: nil
         )
-        return base.filter(taskPassesFilter)
+        guard !filterOptions.isEmpty else { return base }
+        let selection = taskFilterSelection()
+        return base.filter { task in
+            guard let scope = selection[task.boardID] else { return false }
+            guard let columns = scope.columnIDs else { return true }
+            guard let columnID = task.columnID else { return false }
+            return columns.contains(columnID)
+        }
     }
 
     private var groups: [UpcomingGroup] {
@@ -182,12 +200,6 @@ struct UpcomingView: View {
             )
         }
         .sorted { $0.date < $1.date }
-    }
-
-    /// All US holidays in a rolling window (last year through 8 years out), matching the PWA's range.
-    private var allUsHolidays: [UsHoliday] {
-        let currentYear = Calendar.current.component(.year, from: Date())
-        return UsHolidays.holidays(fromYear: currentYear - 1, toYear: currentYear + 8)
     }
 
     private var upcomingUsHolidays: [UsHoliday] {
@@ -384,9 +396,18 @@ struct UpcomingView: View {
             refreshAppleSources()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active,
-                  deviceCalendarEnabled || deviceRemindersEnabled else { return }
-            refreshAppleSources()
+            guard phase == .active else { return }
+            let year = Calendar.current.component(.year, from: Date())
+            if holidayReferenceYear != year {
+                holidayReferenceYear = year
+                allUsHolidays = UsHolidays.holidays(
+                    fromYear: year - 1,
+                    toYear: year + 8
+                )
+            }
+            if deviceCalendarEnabled || deviceRemindersEnabled {
+                refreshAppleSources()
+            }
         }
         .onChange(of: displayModeRaw) { _, _ in
             refreshAppleSources()
@@ -1505,6 +1526,22 @@ private struct TaskifyEventCard: View {
                         .lineLimit(2)
                 }
 
+                if event.reminders?.isEmpty == false || event.recurrence?.isActive == true {
+                    HStack(spacing: 10) {
+                        if let reminders = event.reminders, !reminders.isEmpty {
+                            Label(
+                                reminders.count == 1 ? reminders[0].eventLabel : "\(reminders.count) reminders",
+                                systemImage: "bell.fill"
+                            )
+                        }
+                        if event.recurrence?.isActive == true {
+                            Label("Repeats", systemImage: "repeat")
+                        }
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+
                 HStack(spacing: 5) {
                     Text("Taskify event")
                     if let boardID = event.boardID,
@@ -1541,9 +1578,19 @@ private struct TaskifyEventCard: View {
             return "All-day · \(start.formatted(date: .abbreviated, time: .omitted)) – \(end.formatted(date: .abbreviated, time: .omitted))"
         }
         guard let end = event.endDate else {
-            return start.formatted(.dateTime.hour().minute())
+            return formattedTime(start)
         }
-        return "\(start.formatted(.dateTime.hour().minute())) – \(end.formatted(.dateTime.hour().minute()))"
+        let timeZoneSuffix = event.startTimeZoneID
+            .flatMap(TimeZone.init(identifier:))
+            .flatMap { $0.abbreviation(for: start) }
+            .map { " · \($0)" } ?? ""
+        return "\(formattedTime(start)) – \(formattedTime(end))\(timeZoneSuffix)"
+    }
+
+    private func formattedTime(_ date: Date) -> String {
+        var style = Date.FormatStyle(date: .omitted, time: .shortened)
+        style.timeZone = event.startTimeZoneID.flatMap(TimeZone.init(identifier:)) ?? .current
+        return date.formatted(style)
     }
 }
 
@@ -1985,6 +2032,13 @@ private struct NewUpcomingItemSheet: View {
     @State private var details = ""
     @State private var location = ""
     @State private var boardID = ""
+    @State private var timeZoneID = TimeZone.current.identifier
+    @State private var reminders: [TaskReminder] = []
+    @State private var reminderTime = Self.reminderClock(from: nil)
+    @State private var showingTimeZonePicker = false
+    @State private var repeatChoice = TaskifyEventRepeatChoice.never
+    @State private var repeatHasEnd = false
+    @State private var repeatEndDate = Date().addingTimeInterval(180 * 24 * 60 * 60)
 
     private var eventBoards: [Board] {
         model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }
@@ -2018,17 +2072,39 @@ private struct NewUpcomingItemSheet: View {
                             selection: $dueDate,
                             displayedComponents: allDay ? [.date] : [.date, .hourAndMinute]
                         )
+                        .environment(\.timeZone, selectedTimeZone)
                         DatePicker(
                             "Ends",
                             selection: $endDate,
                             in: dueDate...,
                             displayedComponents: allDay ? [.date] : [.date, .hourAndMinute]
                         )
+                        .environment(\.timeZone, selectedTimeZone)
+                        if !allDay {
+                            Button {
+                                showingTimeZonePicker = true
+                            } label: {
+                                LabeledContent("Time Zone", value: timeZoneID)
+                            }
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                        }
                         TextField("Location (optional)", text: $location)
                     }
                 }
 
                 if itemType == .event {
+                    TaskifyEventRemindersSection(
+                        isAllDay: allDay,
+                        reminders: $reminders,
+                        reminderTime: $reminderTime
+                    )
+                    TaskifyEventRepeatSection(
+                        choice: $repeatChoice,
+                        hasEnd: $repeatHasEnd,
+                        endDate: $repeatEndDate,
+                        minimumEndDate: dueDate,
+                        preservesCustomRule: false
+                    )
                     Section("Notes") {
                         TextEditor(text: $details)
                             .frame(minHeight: 100)
@@ -2053,7 +2129,11 @@ private struct NewUpcomingItemSheet: View {
                                 startDate: dueDate,
                                 endDate: endDate,
                                 isAllDay: allDay,
-                                boardID: boardID
+                                boardID: boardID,
+                                startTimeZoneID: timeZoneID,
+                                reminders: reminders,
+                                reminderTime: formattedReminderTime,
+                                recurrence: recurrence
                             )
                         }
                         dismiss()
@@ -2066,6 +2146,10 @@ private struct NewUpcomingItemSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingTimeZonePicker) {
+            TimeZonePickerSheet(selection: $timeZoneID, referenceDate: dueDate)
+                .preferredColorScheme(.dark)
+        }
         .onAppear {
             guard boardID.isEmpty else { return }
             if let selected = model.selectedBoard,
@@ -2081,7 +2165,41 @@ private struct NewUpcomingItemSheet: View {
                     ? newStart
                     : newStart.addingTimeInterval(60 * 60)
             }
+            if repeatEndDate < newStart {
+                repeatEndDate = newStart
+            }
         }
+        .onChange(of: timeZoneID) { oldZoneID, newZoneID in
+            guard oldZoneID != newZoneID else { return }
+            dueDate = taskifyRebasedWallClock(dueDate, from: oldZoneID, to: newZoneID)
+            endDate = taskifyRebasedWallClock(endDate, from: oldZoneID, to: newZoneID)
+        }
+    }
+
+    private var selectedTimeZone: TimeZone {
+        TimeZone(identifier: timeZoneID) ?? .current
+    }
+
+    private var formattedReminderTime: String {
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: reminderTime)
+        return String(format: "%02d:%02d", parts.hour ?? 9, parts.minute ?? 0)
+    }
+
+    private var recurrence: TaskRecurrence? {
+        TaskifyEventRepeatChoice.recurrence(
+            for: repeatChoice,
+            startDate: dueDate,
+            timeZoneID: allDay ? "UTC" : timeZoneID,
+            until: repeatHasEnd ? repeatEndDate : nil,
+            preserving: nil
+        )
+    }
+
+    private static func reminderClock(from value: String?) -> Date {
+        let parts = (value ?? "09:00").split(separator: ":")
+        let hour = parts.first.flatMap { Int($0) } ?? 9
+        let minute = parts.dropFirst().first.flatMap { Int($0) } ?? 0
+        return Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date()) ?? Date()
     }
 }
 
@@ -2094,6 +2212,13 @@ private struct TaskifyEventEditorSheet: View {
     @State private var startDate: Date
     @State private var endDate: Date
     @State private var allDay: Bool
+    @State private var timeZoneID: String
+    @State private var reminders: [TaskReminder]
+    @State private var reminderTime: Date
+    @State private var showingTimeZonePicker = false
+    @State private var repeatChoice: TaskifyEventRepeatChoice
+    @State private var repeatHasEnd: Bool
+    @State private var repeatEndDate: Date
     @State private var confirmingDeletion = false
     let event: TaskifyEvent
 
@@ -2106,6 +2231,16 @@ private struct TaskifyEventEditorSheet: View {
         _startDate = State(initialValue: start)
         _endDate = State(initialValue: event.endDate ?? start.addingTimeInterval(60 * 60))
         _allDay = State(initialValue: event.isAllDay)
+        _timeZoneID = State(initialValue: event.startTimeZoneID ?? TimeZone.current.identifier)
+        _reminders = State(initialValue: event.reminders ?? [])
+        _reminderTime = State(initialValue: Self.reminderClock(from: event.reminderTime))
+        _repeatChoice = State(initialValue: TaskifyEventRepeatChoice(event.recurrence))
+        _repeatHasEnd = State(initialValue: event.recurrence?.untilDate != nil)
+        _repeatEndDate = State(
+            initialValue: event.recurrence?.untilDate
+                ?? Calendar.current.date(byAdding: .month, value: 6, to: start)
+                ?? start
+        )
     }
 
     var body: some View {
@@ -2119,13 +2254,46 @@ private struct TaskifyEventEditorSheet: View {
                         selection: $startDate,
                         displayedComponents: allDay ? [.date] : [.date, .hourAndMinute]
                     )
+                    .environment(\.timeZone, selectedTimeZone)
                     DatePicker(
                         "Ends",
                         selection: $endDate,
                         in: startDate...,
                         displayedComponents: allDay ? [.date] : [.date, .hourAndMinute]
                     )
+                    .environment(\.timeZone, selectedTimeZone)
+                    if !allDay {
+                        Button {
+                            showingTimeZonePicker = true
+                        } label: {
+                            LabeledContent("Time Zone", value: timeZoneID)
+                        }
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    }
                     TextField("Location (optional)", text: $location)
+                }
+
+                TaskifyEventRemindersSection(
+                    isAllDay: allDay,
+                    reminders: $reminders,
+                    reminderTime: $reminderTime
+                )
+
+                if canEditSeriesRecurrence {
+                    TaskifyEventRepeatSection(
+                        choice: $repeatChoice,
+                        hasEnd: $repeatHasEnd,
+                        endDate: $repeatEndDate,
+                        minimumEndDate: startDate,
+                        preservesCustomRule: repeatChoice == .custom
+                    )
+                } else if event.recurrence?.isActive == true {
+                    Section("Repeat") {
+                        Label(TaskifyEventRepeatChoice(event.recurrence).label, systemImage: "repeat")
+                        Text("Edit the first event in this series to change its repeat schedule.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Notes") {
@@ -2154,7 +2322,11 @@ private struct TaskifyEventEditorSheet: View {
                             location: location,
                             startDate: startDate,
                             endDate: endDate,
-                            isAllDay: allDay
+                            isAllDay: allDay,
+                            startTimeZoneID: timeZoneID,
+                            reminders: reminders,
+                            reminderTime: formattedReminderTime,
+                            recurrence: recurrence
                         ) {
                             dismiss()
                         }
@@ -2167,9 +2339,18 @@ private struct TaskifyEventEditorSheet: View {
                 isPresented: $confirmingDeletion,
                 titleVisibility: .visible
             ) {
-                Button("Delete Event", role: .destructive) {
-                    model.deleteTaskifyEvent(event.id)
+                Button(
+                    event.recurrence?.isActive == true ? "Delete This Event" : "Delete Event",
+                    role: .destructive
+                ) {
+                    model.deleteTaskifyEvent(event.id, scope: .single)
                     dismiss()
+                }
+                if event.recurrence?.isActive == true {
+                    Button("Delete This and Future Events", role: .destructive) {
+                        model.deleteTaskifyEvent(event.id, scope: .thisAndFuture)
+                        dismiss()
+                    }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -2177,12 +2358,255 @@ private struct TaskifyEventEditorSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingTimeZonePicker) {
+            TimeZonePickerSheet(selection: $timeZoneID, referenceDate: startDate)
+                .preferredColorScheme(.dark)
+        }
         .onChange(of: startDate) { _, newStart in
             if endDate < newStart {
                 endDate = allDay
                     ? newStart
                     : newStart.addingTimeInterval(60 * 60)
             }
+            if repeatEndDate < newStart {
+                repeatEndDate = newStart
+            }
+        }
+        .onChange(of: timeZoneID) { oldZoneID, newZoneID in
+            guard oldZoneID != newZoneID else { return }
+            startDate = taskifyRebasedWallClock(startDate, from: oldZoneID, to: newZoneID)
+            endDate = taskifyRebasedWallClock(endDate, from: oldZoneID, to: newZoneID)
         }
     }
+
+    private var selectedTimeZone: TimeZone {
+        TimeZone(identifier: timeZoneID) ?? .current
+    }
+
+    private var formattedReminderTime: String {
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: reminderTime)
+        return String(format: "%02d:%02d", parts.hour ?? 9, parts.minute ?? 0)
+    }
+
+    private var canEditSeriesRecurrence: Bool {
+        event.seriesID == nil || event.seriesID == event.id
+    }
+
+    private var recurrence: TaskRecurrence? {
+        guard canEditSeriesRecurrence else { return event.recurrence }
+        return TaskifyEventRepeatChoice.recurrence(
+            for: repeatChoice,
+            startDate: startDate,
+            timeZoneID: allDay ? "UTC" : timeZoneID,
+            until: repeatHasEnd ? repeatEndDate : nil,
+            preserving: event.recurrence
+        )
+    }
+
+    private static func reminderClock(from value: String?) -> Date {
+        let parts = (value ?? "09:00").split(separator: ":")
+        let hour = parts.first.flatMap { Int($0) } ?? 9
+        let minute = parts.dropFirst().first.flatMap { Int($0) } ?? 0
+        return Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date()) ?? Date()
+    }
+}
+
+private enum TaskifyEventRepeatChoice: String, CaseIterable, Identifiable {
+    case never
+    case hourly
+    case daily
+    case weekdays
+    case weekends
+    case weekly
+    case biweekly
+    case monthly
+    case quarterly
+    case yearly
+    case custom
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .never: "Never"
+        case .hourly: "Hourly"
+        case .daily: "Daily"
+        case .weekdays: "Every Weekday"
+        case .weekends: "Every Weekend"
+        case .weekly: "Weekly"
+        case .biweekly: "Every 2 Weeks"
+        case .monthly: "Monthly"
+        case .quarterly: "Every 3 Months"
+        case .yearly: "Yearly"
+        case .custom: "Custom"
+        }
+    }
+
+    init(_ recurrence: TaskRecurrence?) {
+        guard let recurrence, recurrence.isActive else {
+            self = .never
+            return
+        }
+        switch recurrence {
+        case .daily:
+            self = .daily
+        case .weekly(let days, _):
+            let normalized = Set(days)
+            if normalized == Set([1, 2, 3, 4, 5]) {
+                self = .weekdays
+            } else if normalized == Set([0, 6]) {
+                self = .weekends
+            } else if normalized.count == 1 {
+                self = .weekly
+            } else {
+                self = .custom
+            }
+        case .every(let count, .hour, _):
+            self = count == 1 ? .hourly : .custom
+        case .every(let count, .week, _):
+            self = count == 2 ? .biweekly : .custom
+        case .every:
+            self = .custom
+        case .monthlyDay(_, let interval, _):
+            switch max(1, interval ?? 1) {
+            case 1: self = .monthly
+            case 3: self = .quarterly
+            case 12: self = .yearly
+            default: self = .custom
+            }
+        case .none:
+            self = .never
+        }
+    }
+
+    static func recurrence(
+        for choice: TaskifyEventRepeatChoice,
+        startDate: Date,
+        timeZoneID: String,
+        until: Date?,
+        preserving existing: TaskRecurrence?
+    ) -> TaskRecurrence? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: timeZoneID) ?? .current
+        let normalizedUntil = until.flatMap {
+            calendar.date(bySettingHour: 12, minute: 0, second: 0, of: $0)
+        }
+        let weekday = calendar.component(.weekday, from: startDate) - 1
+        let monthDay = min(max(calendar.component(.day, from: startDate), 1), 28)
+        switch choice {
+        case .never:
+            return nil
+        case .hourly:
+            return .every(1, .hour, until: normalizedUntil)
+        case .daily:
+            return .daily(until: normalizedUntil)
+        case .weekdays:
+            return .weekly(days: [1, 2, 3, 4, 5], until: normalizedUntil)
+        case .weekends:
+            return .weekly(days: [0, 6], until: normalizedUntil)
+        case .weekly:
+            return .weekly(days: [weekday], until: normalizedUntil)
+        case .biweekly:
+            return .every(2, .week, until: normalizedUntil)
+        case .monthly:
+            return .monthlyDay(day: monthDay, until: normalizedUntil)
+        case .quarterly:
+            return .monthlyDay(day: monthDay, interval: 3, until: normalizedUntil)
+        case .yearly:
+            return .monthlyDay(day: monthDay, interval: 12, until: normalizedUntil)
+        case .custom:
+            return existing?.isActive == true ? existing?.withUntilDate(normalizedUntil) : nil
+        }
+    }
+}
+
+private struct TaskifyEventRepeatSection: View {
+    @Binding var choice: TaskifyEventRepeatChoice
+    @Binding var hasEnd: Bool
+    @Binding var endDate: Date
+    let minimumEndDate: Date
+    let preservesCustomRule: Bool
+
+    var body: some View {
+        Section("Repeat") {
+            Picker("Repeat", selection: $choice) {
+                ForEach(availableChoices) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            if choice != .never {
+                Toggle("End repeat", isOn: $hasEnd)
+                if hasEnd {
+                    DatePicker(
+                        "End date",
+                        selection: $endDate,
+                        in: minimumEndDate...,
+                        displayedComponents: .date
+                    )
+                }
+            }
+            if choice == .custom {
+                Text("This custom PWA repeat rule will be preserved. Choose a preset to replace it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var availableChoices: [TaskifyEventRepeatChoice] {
+        TaskifyEventRepeatChoice.allCases.filter { $0 != .custom || preservesCustomRule }
+    }
+}
+
+private struct TaskifyEventRemindersSection: View {
+    let isAllDay: Bool
+    @Binding var reminders: [TaskReminder]
+    @Binding var reminderTime: Date
+
+    var body: some View {
+        Section("Reminders") {
+            ForEach(presets) { reminder in
+                Toggle(reminder.eventLabel, isOn: binding(for: reminder))
+            }
+            if isAllDay {
+                DatePicker("Reminder time", selection: $reminderTime, displayedComponents: .hourAndMinute)
+                Text("All-day events use your current time zone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !reminders.isEmpty {
+                Text("iOS will ask for notification permission when you save.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var presets: [TaskReminder] {
+        isAllDay ? TaskReminder.datePresets : TaskReminder.timedPresets
+    }
+
+    private func binding(for reminder: TaskReminder) -> Binding<Bool> {
+        Binding(
+            get: { reminders.contains { $0.minutesBefore == reminder.minutesBefore } },
+            set: { selected in
+                reminders.removeAll { $0.minutesBefore == reminder.minutesBefore }
+                if selected { reminders.append(reminder) }
+            }
+        )
+    }
+}
+
+private func taskifyRebasedWallClock(_ date: Date, from oldZoneID: String, to newZoneID: String) -> Date {
+    guard let oldZone = TimeZone(identifier: oldZoneID),
+          let newZone = TimeZone(identifier: newZoneID) else { return date }
+    var oldCalendar = Calendar(identifier: .gregorian)
+    oldCalendar.timeZone = oldZone
+    let components = oldCalendar.dateComponents(
+        [.year, .month, .day, .hour, .minute, .second],
+        from: date
+    )
+    var newCalendar = Calendar(identifier: .gregorian)
+    newCalendar.timeZone = newZone
+    return newCalendar.date(from: components) ?? date
 }

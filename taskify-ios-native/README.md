@@ -6,17 +6,19 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 
 - Native SwiftUI shell matching the PWA's dark glass appearance
 - Boards, Upcoming, Wallet, Chat, and Settings navigation with native Liquid Glass tab and floating controls on iOS 26+
-- Weekly board columns that open on today, with a shared floating Liquid Glass quick-entry control
-- List-board creation, custom list columns, focus-aware quick task entry, and free multi-column flick navigation
+- Weekly board columns that open on today, with a shared floating Liquid Glass quick-entry control where Return adds continuously and Plus adds then dismisses the keyboard
+- List-board creation, custom list columns, focus-aware quick task entry, free multi-column flick navigation, and proximity-accelerated edge scrolling while dragging tasks
 - Advanced list management with synced rename/reorder controls and guarded deletion that can preserve tasks by moving them to a neighboring list
 - Long-press task dragging and insertion feedback across weekly days and list columns, including synced reordering and cross-child movement within compound boards
-- Animated task-completion feedback with native success haptics
+- Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
 - Local task completion and deletion
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks
 - PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, and next-instance generation on completion
 - Multiple relative reminders, exact custom reminder times, and local iOS notification scheduling
 - PWA-familiar Upcoming list/calendar views with one-tap switching, native monthly task-day dots, search, add flow, persisted sorting, board grouping, and board filters
 - Opt-in Apple Calendar integration in both Upcoming views with native full-access permission handling, event-day dots, dated list sections, calendar colors, search, and live EventKit refreshes
+- Taskify event scheduling compatible with the PWA, including per-event time zones, reminder metadata and local notifications, plus lossless recurrence/series preservation across native edits
+- Native recurring Taskify events with PWA-compatible deterministic instance IDs, bounded rolling future windows, DST-safe generation, repeat presets/end dates, scoped single/future deletion, and logical-ID deduplication for newly published or previously saved events
 - Independently selectable Apple Reminders integration in both Upcoming views with due-day dots, dated list sections, list colors, priority/notes display, search, and completion writes back to Apple Reminders
 - Board creation, selection, synced rename, local archive/restore, and guarded deletion with task and compound-reference cleanup
 - Native compound-board creation and management with ordered child list boards, aggregated task columns, optional child-board labels, and PWA-compatible linked-board sync
@@ -30,17 +32,18 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Disk-backed offline publish outbox with per-relay acknowledgements, stale-event suppression, independent healthy-relay publish lanes, adaptive NIP-01 rate-limit backoff, and reconnect retries
 - Aggregate Nostr health reporting with per-relay status, queued-change visibility, and manual/foreground retry
 - iOS background app refresh with an immediate background handoff, atomic persistence, bounded relay listening, durable-outbox delivery, automatic rescheduling, and expiration-safe completion
-- Native NIP-17 shared-task and assignment inbox with encrypted gift-wrap verification, multi-relay deduplication, review-before-add, persisted delivery state, rich task-field import, and queued Accept/Decline/Maybe responses compatible with the PWA
+- Native NIP-17 shared-task and assignment inbox with encrypted gift-wrap verification, multi-relay deduplication, review-before-add, persisted delivery state, rich task-field import, and queued Accept/Decline/Maybe responses wrapped so PWA chat cannot misclassify them as eCash
 - Native outbound task sharing and assignments with npub/hex validation, NIP-17 inbox-relay preference discovery, persisted recent recipients, durable encrypted delivery, PWA-readable assignment messages, assignee-state badges, and authenticated response updates on the source task
 - Native Nostr contact directory with encrypted PWA-compatible NIP-51 private-list sync, signed kind-0 profile names/photos, automatic inbox-relay discovery, add/edit/delete controls, and contact selection for task shares and assignments
 - Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, preferred inbox-relay discovery, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, and encrypted message bubbles
 - Interoperable Chat replies and emoji reactions with canonical rumor references, PWA-style kind-7 reaction rumors, long-press actions, quoted reply previews, optimistic offline delivery, replacement/removal ordering, and out-of-order reaction recovery
-- PWA-compatible encrypted group conversations with deterministic member-derived threads, synced group names, participant details, media/link tabs, encrypted photo/document attachments, and searchable conversation history with result navigation
+- PWA-compatible encrypted group conversations with deterministic member-derived threads, synced group names, participant details, media/link tabs, encrypted photo/document attachments, newest-message opening, global individual-message results, and searchable conversation history with stable result navigation
 - PWA-familiar Chat organization and presentation with a separate unknown-sender inbox, add/block safety actions, native archive/delete gestures, replay-safe local deletion, group mute/leave/rejoin controls, day and sender message grouping, compact link cards, and Liquid Glass composer/search controls
 - Per-board Nostr relay management with ws/wss validation, normalization, default restoration, immediate connection reconfiguration, share-metadata publishing, and queued-event retargeting
 - PWA-compatible task image/document metadata sync that survives native edits and recurrence
 - Native decryption and display of current and legacy PWA encrypted attachments, with image zoom and Quick Look document viewing
 - PWA-familiar stacked image and document previews with media overflow labels, retry states, and readable file metadata
+- Behavior-preserving performance hardening for startup, populated boards, Upcoming filters, long Chat histories, wallet history, and attachment previews, with an interactive first-frame handoff, off-main wallet/media and NIP-17 replay decryption, deduplicated inbox batching, cached model projections, bounded media caches, and deterministic populated-screen UI regressions
 - Native Photos and Files attachment controls with PWA-compatible AES-GCM encryption, remote-first Originless uploads, and task-level removal
 - Cached native rich link cards generated from URLs in task titles and notes, with duplicate inline URLs suppressed in task-card presentation
 - Native live-board and independent template sharing with PWA-compatible QR payloads, board-ID copy, the iOS share sheet, camera scanning, review-before-join, and automatic board-name/relay import

@@ -73,13 +73,21 @@ public enum TaskSyncUpdate: Sendable {
     case board(BoardRelayRecord)
     case task(TaskRelayRecord)
     case calendarEvent(TaskifyCalendarRelayRecord)
+    /// A relay's whole stored-event backlog, delivered in one piece. Initial sync replays the
+    /// account's entire history, and handing those over one-at-a-time made the consumer redo an
+    /// O(all tasks) merge and a full view invalidation per event.
+    case batch(tasks: [TaskRelayRecord], calendarEvents: [TaskifyCalendarRelayRecord])
     case sharedInbox(NostrEvent)
+    /// Initial NIP-17 inbox history is expensive to authenticate and decrypt. Deliver the
+    /// stored-event replay as a batch so the app can do that crypto away from the UI thread.
+    case sharedInboxBatch([NostrEvent])
     case status(TaskSyncReport)
 }
 
 struct TaskRelayStartupBatch: Sendable {
     private var recordsByTaskID: [String: TaskRelayRecord] = [:]
     private var calendarRecordsByEventID: [String: TaskifyCalendarRelayRecord] = [:]
+    private var sharedInboxEventsByID: [String: NostrEvent] = [:]
 
     mutating func insert(_ record: TaskRelayRecord) {
         let existingClock = recordsByTaskID[record.task.id]?.eventCreatedAt ?? 0
@@ -115,6 +123,21 @@ struct TaskRelayStartupBatch: Sendable {
         }
         calendarRecordsByEventID.removeAll()
         return records
+    }
+
+    mutating func insert(sharedInboxEvent event: NostrEvent) {
+        sharedInboxEventsByID[event.id] = event
+    }
+
+    mutating func drainSharedInboxEvents() -> [NostrEvent] {
+        let events = sharedInboxEventsByID.values.sorted {
+            if $0.createdAt != $1.createdAt {
+                return $0.createdAt < $1.createdAt
+            }
+            return $0.id < $1.id
+        }
+        sharedInboxEventsByID.removeAll()
+        return events
     }
 }
 
@@ -198,6 +221,8 @@ public actor TaskSyncEngine {
     private var activeRelayDrains: Set<String> = []
     private var requestedRelayDrains: Set<String> = []
     private var inFlightEventIDs: [String: Set<String>] = [:]
+    private var deliveredSharedInboxEventIDs: Set<String> = []
+    private var deliveredSharedInboxEventIDOrder: [String] = []
 
     public init(outbox: NostrOutboxStore = NostrOutboxStore()) {
         self.outbox = outbox
@@ -227,7 +252,14 @@ public actor TaskSyncEngine {
     ) async {
         self.boards = boards
         self.auxiliaryRelayURLs = TaskifyRelayURL.normalizedList(auxiliaryRelayURLs)
-        self.inboxPublicKey = inboxPublicKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedInboxPublicKey = inboxPublicKey?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if normalizedInboxPublicKey != self.inboxPublicKey {
+            deliveredSharedInboxEventIDs.removeAll()
+            deliveredSharedInboxEventIDOrder.removeAll()
+        }
+        self.inboxPublicKey = normalizedInboxPublicKey
         let wantedRelays = Set(
             self.boards.flatMap(\.effectiveRelayURLs) + self.auxiliaryRelayURLs
         )
@@ -422,6 +454,7 @@ public actor TaskSyncEngine {
         if let inboxPublicKey, inboxPublicKey.count == 64 {
             let id = inboxSubscriptionID(relayURL: relayURL, publicKey: inboxPublicKey)
             pendingSubscriptions[relayURL, default: []].insert(id)
+            relayBatches[relayURL, default: [:]][id] = TaskRelayStartupBatch()
             try await connection.subscribeToSharedInbox(
                 id: id,
                 recipientPublicKey: inboxPublicKey,
@@ -527,7 +560,15 @@ public actor TaskSyncEngine {
                    relayURL: relayURL,
                    publicKey: inboxPublicKey ?? ""
                ) {
-                updateContinuation.yield(.sharedInbox(event))
+                if pendingSubscriptions[relayURL]?.contains(subscriptionID) == true {
+                    var subscriptions = relayBatches[relayURL] ?? [:]
+                    var batch = subscriptions[subscriptionID] ?? TaskRelayStartupBatch()
+                    batch.insert(sharedInboxEvent: event)
+                    subscriptions[subscriptionID] = batch
+                    relayBatches[relayURL] = subscriptions
+                } else if recordSharedInboxEventIfNew(event) {
+                    updateContinuation.yield(.sharedInbox(event))
+                }
                 return
             }
             guard let boardTag = event.firstTagValue(named: "b"),
@@ -620,16 +661,35 @@ public actor TaskSyncEngine {
             var batch = relayBatches[relayURL]?[subscriptionID] ?? TaskRelayStartupBatch()
             let records = batch.drain()
             let calendarRecords = batch.drainCalendarEvents()
+            let drainedSharedInboxEvents = batch.drainSharedInboxEvents()
+            var sharedInboxEvents: [NostrEvent] = []
+            for event in drainedSharedInboxEvents where recordSharedInboxEventIfNew(event) {
+                sharedInboxEvents.append(event)
+            }
             relayBatches[relayURL]?[subscriptionID] = nil
             pendingSubscriptions[relayURL]?.remove(subscriptionID)
-            for record in records {
-                updateContinuation.yield(.task(record))
+            if !records.isEmpty || !calendarRecords.isEmpty {
+                updateContinuation.yield(.batch(tasks: records, calendarEvents: calendarRecords))
             }
-            for record in calendarRecords {
-                updateContinuation.yield(.calendarEvent(record))
+            if !sharedInboxEvents.isEmpty {
+                updateContinuation.yield(.sharedInboxBatch(sharedInboxEvents))
             }
             await markRelayOnline(relayURL)
         }
+    }
+
+    private func recordSharedInboxEventIfNew(_ event: NostrEvent) -> Bool {
+        guard deliveredSharedInboxEventIDs.insert(event.id).inserted else { return false }
+        deliveredSharedInboxEventIDOrder.append(event.id)
+        let maximumRememberedEventCount = 2_000
+        if deliveredSharedInboxEventIDOrder.count > maximumRememberedEventCount {
+            let overflow = deliveredSharedInboxEventIDOrder.count - maximumRememberedEventCount
+            for expiredID in deliveredSharedInboxEventIDOrder.prefix(overflow) {
+                deliveredSharedInboxEventIDs.remove(expiredID)
+            }
+            deliveredSharedInboxEventIDOrder.removeFirst(overflow)
+        }
+        return true
     }
 
     private func scheduleReconnect(relayURL: String) {
@@ -705,13 +765,18 @@ public actor TaskSyncEngine {
     }
 
     private func markRelayOnline(_ relayURL: String) async {
+        // Called for every incoming relay event, so only emit a status report when the
+        // relay's phase/message actually changes — during initial sync this otherwise
+        // floods the main actor with one status update per stored event per relay.
         reconnectTasks.removeValue(forKey: relayURL)?.cancel()
         reconnectAttempts[relayURL] = 0
         if rateLimitRetryTasks[relayURL] != nil {
+            guard relayPhases[relayURL] != .syncing else { return }
             relayPhases[relayURL] = .syncing
             await emitStatus()
             return
         }
+        guard relayPhases[relayURL] != .online || relayMessages[relayURL] != nil else { return }
         relayPhases[relayURL] = .online
         relayMessages[relayURL] = nil
         await emitStatus()

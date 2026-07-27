@@ -191,7 +191,12 @@ final class SharedInboxTests: XCTestCase {
           "description": "Review the native implementation",
           "locations": ["Remote"],
           "startISO": "2026-07-24T15:00:00Z",
-          "endISO": "2026-07-24T16:00:00Z"
+          "endISO": "2026-07-24T16:00:00Z",
+          "startTzid": "America/Chicago",
+          "endTzid": "America/Chicago",
+          "reminders": ["15m"],
+          "recurrence": {"type":"weekly","days":[5]},
+          "seriesId": "\(eventID)"
         }
         """
         let encrypted = try NIP44V2.encrypt(
@@ -216,6 +221,10 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertEqual(event.summary, "Taskify event, not EventKit")
         XCTAssertEqual(event.schedule, .time)
         XCTAssertEqual(event.locations, ["Remote"])
+        XCTAssertEqual(event.startTimeZoneID, "America/Chicago")
+        XCTAssertEqual(event.reminders, [TaskReminder(rawValue: "15m")])
+        XCTAssertEqual(event.recurrence, .weekly(days: [5]))
+        XCTAssertEqual(event.seriesID, eventID)
         XCTAssertEqual(event.rsvpStatus, .accepted)
         XCTAssertEqual(event.canonicalAddress, canonical)
         XCTAssertEqual(event.sourceUpdatedAt, 1_784_647_200)
@@ -267,6 +276,81 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertEqual(decodedTask.assignees?.first?.publicKey, recipient.publicKeyHex)
         XCTAssertEqual(decodedTask.assignees?.first?.status, .pending)
         XCTAssertTrue(decodedTask.isAssignment)
+    }
+
+    func testAssignmentResponseContentAvoidsPWAECashMisclassification() throws {
+        let envelope = TaskifyShareEnvelope(
+            item: .assignmentResponse(SharedTaskAssignmentResponse(
+                taskID: "assigned-task",
+                status: .accepted,
+                respondedAt: "2026-07-26T19:00:00.000Z"
+            )),
+            senderName: "Native assignee"
+        )
+
+        let content = try envelope.messageContent()
+
+        XCTAssertTrue(content.hasPrefix("Task Assignment Response\n"))
+        XCTAssertTrue(content.contains("Status: Accepted"))
+        XCTAssertTrue(content.contains("Taskify-Share: "))
+        XCTAssertFalse(content.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{"))
+
+        let decoded = try XCTUnwrap(TaskifyShareEnvelope.decode(content: content))
+        guard case .assignmentResponse(let response) = decoded.item else {
+            return XCTFail("Expected an assignment response")
+        }
+        XCTAssertEqual(response.taskID, "assigned-task")
+        XCTAssertEqual(response.status, .accepted)
+    }
+
+    func testTaskifyEventUpsertReplacesNormalizedCopyInsteadOfDuplicatingIt() {
+        let local = TaskifyEvent(
+            id: "native-event",
+            boardID: "week-default",
+            title: "Planning",
+            schedule: .date,
+            startDateValue: "2026-07-27",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: "event-key",
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        var normalized = local
+        normalized.canonicalAddress = "30310:author:native-event"
+        normalized.viewAddress = "30311:author:native-event"
+        normalized.nostrUpdatedAt = 1_784_647_200
+        var snapshot = TaskifySnapshot.empty
+
+        XCTAssertTrue(snapshot.upsertTaskifyEvent(local))
+        XCTAssertTrue(snapshot.upsertTaskifyEvent(normalized))
+        XCTAssertEqual(snapshot.acceptedTaskifyEvents.count, 1)
+        XCTAssertEqual(snapshot.acceptedTaskifyEvents.first?.viewAddress, normalized.viewAddress)
+    }
+
+    func testSnapshotRepairRemovesPreviouslyPersistedTaskifyEventDuplicates() {
+        let local = TaskifyEvent(
+            id: "persisted-event",
+            boardID: "week-default",
+            title: "Planning",
+            schedule: .date,
+            startDateValue: "2026-07-27",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: "event-key",
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        var normalized = local
+        normalized.viewAddress = "30311:author:persisted-event"
+        normalized.nostrUpdatedAt = 1_784_647_200
+        var snapshot = TaskifySnapshot.empty
+        snapshot.taskifyEvents = [local, normalized]
+
+        snapshot.repairSelection()
+
+        XCTAssertEqual(snapshot.taskifyEvents?.count, 1)
+        XCTAssertEqual(snapshot.taskifyEvents?.first?.viewAddress, normalized.viewAddress)
     }
 
     func testNIP17GiftWrapRoundTripsAndRejectsAnotherRecipient() throws {

@@ -448,6 +448,25 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertEqual(updated.lastEditedBy, "editor")
     }
 
+    func testHorizontalDragAutoScrollStartsSoonerAndAcceleratesNearTheEdge() throws {
+        let policy = HorizontalDragAutoScrollPolicy(viewportWidth: 400)
+
+        XCTAssertNil(policy.command(forHorizontalLocation: 200))
+        let approachingLeft = try XCTUnwrap(policy.command(forHorizontalLocation: 78))
+        let atLeftEdge = try XCTUnwrap(policy.command(forHorizontalLocation: 8))
+        let approachingRight = try XCTUnwrap(policy.command(forHorizontalLocation: 322))
+        let atRightEdge = try XCTUnwrap(policy.command(forHorizontalLocation: 392))
+
+        XCTAssertEqual(approachingLeft.direction, .backward)
+        XCTAssertEqual(atLeftEdge.direction, .backward)
+        XCTAssertEqual(approachingRight.direction, .forward)
+        XCTAssertEqual(atRightEdge.direction, .forward)
+        XCTAssertLessThan(atLeftEdge.interval, approachingLeft.interval)
+        XCTAssertLessThan(atRightEdge.interval, approachingRight.interval)
+        XCTAssertGreaterThanOrEqual(atLeftEdge.interval, 0.38)
+        XCTAssertLessThanOrEqual(approachingLeft.interval, 0.75)
+    }
+
     func testDraggingAcrossCompoundChildrenChangesSourceBoard() throws {
         var snapshot = TaskifySnapshot.empty
         let personal = try XCTUnwrap(snapshot.createListBoard(name: "Personal"))
@@ -669,6 +688,86 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertTrue(updated.dueTimeEnabled)
         XCTAssertEqual(updated.subtasks, [TaskSubtask(id: "one", title: "Build UI")])
         XCTAssertEqual(updated.lastEditedBy, "editor")
+    }
+
+    func testTimedTaskUsesItsOwnTimeZoneWhenChoosingWeekColumn() throws {
+        var snapshot = TaskifySnapshot.empty
+        let task = try XCTUnwrap(snapshot.addTask(
+            title: "Late Pacific task",
+            boardID: snapshot.selectedBoardID,
+            columnID: WeekdayColumn.monday.rawValue,
+            dueDate: nil
+        ))
+        var pacificCalendar = Calendar(identifier: .gregorian)
+        pacificCalendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        let lateWednesday = try XCTUnwrap(pacificCalendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 22,
+            hour: 23,
+            minute: 30
+        )))
+        var deviceCalendar = Calendar(identifier: .gregorian)
+        deviceCalendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+
+        XCTAssertTrue(snapshot.updateTask(
+            taskID: task.id,
+            title: task.title,
+            note: "",
+            dueDate: lateWednesday,
+            dueDateEnabled: true,
+            dueTimeEnabled: true,
+            dueTimeZone: "America/Los_Angeles",
+            priority: nil,
+            columnID: task.columnID,
+            subtasks: [],
+            calendar: deviceCalendar
+        ))
+
+        XCTAssertEqual(snapshot.tasks.first?.columnID, WeekdayColumn.wednesday.rawValue)
+    }
+
+    func testRecurringTimedTaskUsesItsOwnTimeZoneForNextWeekColumn() throws {
+        var snapshot = TaskifySnapshot.empty
+        var pacificCalendar = Calendar(identifier: .gregorian)
+        pacificCalendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        let lateWednesday = try XCTUnwrap(pacificCalendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 22,
+            hour: 23,
+            minute: 30
+        )))
+        let task = try XCTUnwrap(snapshot.addTask(
+            title: "Nightly Pacific task",
+            boardID: snapshot.selectedBoardID,
+            columnID: WeekdayColumn.wednesday.rawValue,
+            dueDate: lateWednesday,
+            now: lateWednesday
+        ))
+        XCTAssertTrue(snapshot.updateTask(
+            taskID: task.id,
+            title: task.title,
+            note: "",
+            dueDate: lateWednesday,
+            dueDateEnabled: true,
+            dueTimeEnabled: true,
+            dueTimeZone: "America/Los_Angeles",
+            priority: nil,
+            columnID: task.columnID,
+            subtasks: [],
+            recurrence: .daily(),
+            calendar: pacificCalendar
+        ))
+
+        XCTAssertTrue(snapshot.toggleCompletion(taskID: task.id, now: lateWednesday))
+
+        let next = try XCTUnwrap(snapshot.tasks.first(where: { $0.id != task.id }))
+        XCTAssertEqual(next.columnID, WeekdayColumn.thursday.rawValue)
+        XCTAssertEqual(
+            pacificCalendar.component(.hour, from: try XCTUnwrap(next.dueDate)),
+            23
+        )
     }
 
     func testEditingTaskPreservesSyncedAttachments() throws {
@@ -952,6 +1051,207 @@ final class TaskifySnapshotTests: XCTestCase {
         )
     }
 
+    func testTaskifyEventReminderFireDatesMatchPWAOffsets() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 20,
+            hour: 14
+        )))
+        let event = TaskifyEvent(
+            id: "event-1",
+            boardID: "board",
+            title: "Planning session",
+            schedule: .time,
+            startISO: ISO8601DateFormatter().string(from: start),
+            startTimeZoneID: "UTC",
+            reminders: [TaskReminder(rawValue: "15m"), TaskReminder(rawValue: "1h")],
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: "",
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+
+        let dates = event.reminderFireDates(calendar: calendar)
+
+        XCTAssertEqual(dates.map(\.0.rawValue), ["15m", "1h"])
+        XCTAssertEqual(
+            dates.map(\.1),
+            [
+                start.addingTimeInterval(-15 * 60),
+                start.addingTimeInterval(-60 * 60),
+            ]
+        )
+    }
+
+    func testRecurringTaskifyEventBuildsPWACompatibleBoundedSeries() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Chicago"))
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 10,
+            day: 26,
+            hour: 9
+        )))
+        let seed = TaskifyEvent(
+            id: "event-seed",
+            boardID: "week-default",
+            order: 0,
+            title: "Weekly planning",
+            schedule: .time,
+            startISO: ISO8601DateFormatter().string(from: start),
+            endISO: ISO8601DateFormatter().string(from: start.addingTimeInterval(3_600)),
+            startTimeZoneID: "America/Chicago",
+            endTimeZoneID: "America/Chicago",
+            recurrence: .weekly(days: [1]),
+            seriesID: "event-seed",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 1, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        var snapshot = TaskifySnapshot.empty
+        snapshot.taskifyEvents = [seed]
+
+        let changes = snapshot.rebuildTaskifyEventSeries(seedID: seed.id)
+
+        XCTAssertEqual(changes.updatedEventIDs.count, 51)
+        XCTAssertTrue(changes.deletedEventIDs.isEmpty)
+        let events = try XCTUnwrap(snapshot.taskifyEvents)
+        XCTAssertEqual(events.filter { !$0.isDeleted }.count, 52)
+        let firstID = "recurrence_event-seed_2026-11-02"
+        let first = try XCTUnwrap(events.first { $0.id == firstID })
+        XCTAssertEqual(first.seriesID, seed.id)
+        XCTAssertEqual(first.recurrence, seed.recurrence)
+        XCTAssertEqual(first.startTimeZoneID, "America/Chicago")
+        XCTAssertEqual(
+            try XCTUnwrap(first.endDate).timeIntervalSince(try XCTUnwrap(first.startDate)),
+            3_600,
+            accuracy: 0.1
+        )
+        XCTAssertNotEqual(first.eventKey, seed.eventKey)
+        XCTAssertFalse(first.eventKey.isEmpty)
+
+        let localHour = calendar.component(.hour, from: try XCTUnwrap(first.startDate))
+        XCTAssertEqual(localHour, 9, "Weekly recurrences must retain wall-clock time across DST")
+        XCTAssertTrue(snapshot.rebuildTaskifyEventSeries(seedID: seed.id).updatedEventIDs.isEmpty)
+
+        snapshot.taskifyEvents?[0].title = "Updated weekly planning"
+        let editChanges = snapshot.rebuildTaskifyEventSeries(seedID: seed.id)
+        XCTAssertEqual(editChanges.updatedEventIDs.count, 51)
+        XCTAssertEqual(
+            snapshot.taskifyEvents?.first { $0.id == firstID }?.title,
+            "Updated weekly planning"
+        )
+    }
+
+    func testRemovingTaskifyEventRecurrenceTombstonesGeneratedSeries() {
+        let seed = TaskifyEvent(
+            id: "event-seed",
+            boardID: "week-default",
+            title: "Daily standup",
+            schedule: .date,
+            startDateValue: "2026-07-27",
+            recurrence: .daily(),
+            seriesID: "event-seed",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 2, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        var snapshot = TaskifySnapshot.empty
+        snapshot.taskifyEvents = [seed]
+        _ = snapshot.rebuildTaskifyEventSeries(seedID: seed.id)
+        snapshot.taskifyEvents?[0].recurrence = nil
+        snapshot.taskifyEvents?[0].seriesID = nil
+
+        let changes = snapshot.rebuildTaskifyEventSeries(
+            seedID: seed.id,
+            replacingSeriesID: seed.id
+        )
+
+        XCTAssertEqual(changes.deletedEventIDs.count, 23)
+        XCTAssertEqual(snapshot.acceptedTaskifyEvents, [snapshot.taskifyEvents![0]])
+    }
+
+    func testDeletingThisAndFutureTaskifyEventsEndsEarlierSeriesOccurrences() throws {
+        let seed = TaskifyEvent(
+            id: "event-seed",
+            boardID: "week-default",
+            title: "Daily standup",
+            schedule: .date,
+            startDateValue: "2026-07-27",
+            recurrence: .daily(),
+            seriesID: "event-seed",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 3, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        var snapshot = TaskifySnapshot.empty
+        snapshot.taskifyEvents = [seed]
+        _ = snapshot.rebuildTaskifyEventSeries(seedID: seed.id)
+
+        let cutoffID = "recurrence_event-seed_2026-07-29"
+        let changes = snapshot.deleteTaskifyEvent(
+            eventID: cutoffID,
+            scope: .thisAndFuture,
+            editorPublicKey: "editor"
+        )
+
+        XCTAssertEqual(changes.deletedEventIDs.count, 22)
+        let remaining = snapshot.acceptedTaskifyEvents
+        XCTAssertEqual(remaining.map(\.startDateValue), ["2026-07-27", "2026-07-28"])
+        XCTAssertEqual(remaining.map(\.seriesID), [seed.id, seed.id])
+        for event in remaining {
+            let until = try XCTUnwrap(event.recurrence?.untilDate)
+            XCTAssertEqual(
+                Calendar.current.startOfDay(for: until),
+                Calendar.current.startOfDay(for: try XCTUnwrap(TaskifyEvent.dateOnly("2026-07-28")))
+            )
+        }
+    }
+
+    func testTaskifyEventRecurrenceWindowRefillsAsOccurrencesPass() throws {
+        let seed = TaskifyEvent(
+            id: "event-seed",
+            boardID: "week-default",
+            title: "Daily standup",
+            schedule: .date,
+            startDateValue: "2026-07-01",
+            recurrence: .daily(),
+            seriesID: "event-seed",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 4, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        var snapshot = TaskifySnapshot.empty
+        snapshot.taskifyEvents = [seed]
+        _ = snapshot.rebuildTaskifyEventSeries(seedID: seed.id)
+        let now = try XCTUnwrap(TaskifyEvent.dateOnly("2026-07-20"))
+
+        let changes = snapshot.ensureTaskifyEventRecurrenceWindow(now: now)
+
+        XCTAssertEqual(changes.updatedEventIDs.count, 19)
+        XCTAssertTrue(changes.deletedEventIDs.isEmpty)
+        let future = snapshot.acceptedTaskifyEvents.filter {
+            ($0.endDate ?? $0.startDate ?? .distantPast) >= Calendar.current.startOfDay(for: now)
+        }
+        XCTAssertEqual(future.count, 24)
+        XCTAssertNotNil(snapshot.taskifyEvents?.first {
+            $0.id == "recurrence_event-seed_2026-08-12"
+        })
+        XCTAssertTrue(snapshot.ensureTaskifyEventRecurrenceWindow(now: now).allEventIDs.isEmpty)
+    }
+
     func testJSONStoreRoundTripsSnapshot() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -972,6 +1272,30 @@ final class TaskifySnapshotTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    func testJSONStoreReportsAndStabilizesLoadTimeRepairs() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("taskify.json")
+        let store = JSONTaskStore(fileURL: fileURL)
+        var legacySnapshot = TaskifySnapshot.empty
+        legacySnapshot.boards[0].nostrBoardID = nil
+        legacySnapshot.boards[0].relayURLs = []
+        legacySnapshot.schemaVersion = 0
+        try await store.save(legacySnapshot)
+
+        let repairedLoad = try await store.loadWithRepairStatus()
+        XCTAssertTrue(repairedLoad.wasRepaired)
+        XCTAssertFalse(try XCTUnwrap(repairedLoad.snapshot.boards.first?.nostrBoardID).isEmpty)
+        XCTAssertFalse(try XCTUnwrap(repairedLoad.snapshot.boards.first?.relayURLs).isEmpty)
+        XCTAssertEqual(repairedLoad.snapshot.schemaVersion, TaskifySnapshot.currentSchemaVersion)
+
+        try await store.save(repairedLoad.snapshot)
+        let stableLoad = try await store.loadWithRepairStatus()
+        XCTAssertFalse(stableLoad.wasRepaired)
+        XCTAssertEqual(stableLoad.snapshot, repairedLoad.snapshot)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     func testWeekDateResolverReturnsRequestedWeekday() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -984,5 +1308,109 @@ final class TaskifySnapshotTests: XCTestCase {
         )
 
         XCTAssertEqual(calendar.component(.weekday, from: friday), 6)
+    }
+
+    // MARK: - Batched remote task merge
+
+    private func makeSyncTask(id: String, title: String, boardID: String = "home") -> TaskItem {
+        TaskItem(
+            id: id,
+            boardID: boardID,
+            title: title,
+            createdAt: Date(timeIntervalSince1970: 1_000),
+            order: 0
+        )
+    }
+
+    func testBatchedRemoteTaskMergeMatchesSequentialMerge() {
+        var base = TaskifySnapshot.empty
+        base.tasks = (0..<50).map { makeSyncTask(id: "task-\($0)", title: "local \($0)") }
+        for index in base.tasks.indices {
+            base.tasks[index].nostrUpdatedAt = 100
+        }
+
+        // Mix of updates (newer + stale) and brand-new inserts, plus a duplicate id.
+        var records: [(task: TaskItem, eventCreatedAt: Int)] = []
+        records.append((makeSyncTask(id: "task-3", title: "remote newer"), 200))
+        records.append((makeSyncTask(id: "task-7", title: "remote stale"), 50))
+        records.append((makeSyncTask(id: "new-a", title: "inserted a"), 300))
+        records.append((makeSyncTask(id: "new-b", title: "inserted b"), 300))
+        records.append((makeSyncTask(id: "new-a", title: "inserted a v2"), 400))
+
+        var sequential = base
+        for record in records {
+            sequential.mergeRemoteTask(record.task, eventCreatedAt: record.eventCreatedAt)
+        }
+
+        var batched = base
+        let changed = batched.mergeRemoteTasks(records)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(
+            batched.tasks.map(\.id),
+            sequential.tasks.map(\.id),
+            "Batched merge must produce the same task ordering as sequential merges"
+        )
+        XCTAssertEqual(
+            batched.tasks.map(\.title),
+            sequential.tasks.map(\.title),
+            "Batched merge must resolve conflicts the same way as sequential merges"
+        )
+        XCTAssertEqual(
+            batched.tasks.map { $0.nostrUpdatedAt ?? 0 },
+            sequential.tasks.map { $0.nostrUpdatedAt ?? 0 }
+        )
+
+        // Stale record must not overwrite; newer must win; duplicate resolves to newest.
+        XCTAssertEqual(batched.tasks.first { $0.id == "task-3" }?.title, "remote newer")
+        XCTAssertEqual(batched.tasks.first { $0.id == "task-7" }?.title, "local 7")
+        XCTAssertEqual(batched.tasks.first { $0.id == "new-a" }?.title, "inserted a v2")
+    }
+
+    func testBatchedMergeReturnsFalseWhenNothingChanges() {
+        var snapshot = TaskifySnapshot.empty
+        snapshot.tasks = [makeSyncTask(id: "task-1", title: "local")]
+        snapshot.tasks[0].nostrUpdatedAt = 500
+
+        XCTAssertFalse(snapshot.mergeRemoteTasks([]))
+        XCTAssertFalse(
+            snapshot.mergeRemoteTasks([(makeSyncTask(id: "task-1", title: "stale"), 100)]),
+            "A backlog of only-stale records must not report a change (avoids a pointless save + re-render)"
+        )
+        XCTAssertEqual(snapshot.tasks[0].title, "local")
+    }
+
+    func testBatchedMergeScalesBetterThanSequentialOnLargeBacklog() {
+        let existingCount = 2_000
+        let backlogCount = 1_000
+
+        var base = TaskifySnapshot.empty
+        base.tasks = (0..<existingCount).map { makeSyncTask(id: "task-\($0)", title: "local \($0)") }
+        for index in base.tasks.indices {
+            base.tasks[index].nostrUpdatedAt = 100
+        }
+        let records: [(task: TaskItem, eventCreatedAt: Int)] = (0..<backlogCount).map {
+            (makeSyncTask(id: "task-\($0)", title: "remote \($0)"), 200)
+        }
+
+        var sequentialSnapshot = base
+        let sequentialStart = Date()
+        for record in records {
+            sequentialSnapshot.mergeRemoteTask(record.task, eventCreatedAt: record.eventCreatedAt)
+        }
+        let sequentialDuration = Date().timeIntervalSince(sequentialStart)
+
+        var batchedSnapshot = base
+        let batchedStart = Date()
+        batchedSnapshot.mergeRemoteTasks(records)
+        let batchedDuration = Date().timeIntervalSince(batchedStart)
+
+        XCTAssertEqual(batchedSnapshot.tasks.map(\.title), sequentialSnapshot.tasks.map(\.title))
+        print("sequential=\(sequentialDuration)s batched=\(batchedDuration)s speedup=\(sequentialDuration / max(batchedDuration, 1e-9))x")
+        XCTAssertLessThan(
+            batchedDuration * 5,
+            sequentialDuration,
+            "Batched merge should be dramatically faster than repeated linear scans"
+        )
     }
 }

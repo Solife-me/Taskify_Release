@@ -1,3 +1,4 @@
+import ImageIO
 import PhotosUI
 import QuickLook
 import SwiftUI
@@ -5,9 +6,34 @@ import TaskifyCore
 import UIKit
 import UniformTypeIdentifiers
 
+private struct ChatConversationRoute: Hashable {
+    let peerPublicKey: String
+    let timelineItemID: String?
+
+    init(peerPublicKey: String, timelineItemID: String? = nil) {
+        self.peerPublicKey = peerPublicKey
+        self.timelineItemID = timelineItemID
+    }
+}
+
+private struct ChatMessageSearchHit: Identifiable {
+    let thread: NostrDirectMessageThread
+    let message: NostrDirectMessage
+    let conversationName: String
+    let senderName: String
+
+    var id: String { "\(thread.peerPublicKey):\(message.id)" }
+    var route: ChatConversationRoute {
+        ChatConversationRoute(
+            peerPublicKey: thread.peerPublicKey,
+            timelineItemID: "message-\(message.id)"
+        )
+    }
+}
+
 struct ContactsView: View {
     @Environment(AppModel.self) private var model
-    @State private var navigationPath: [String] = []
+    @State private var navigationPath: [ChatConversationRoute] = []
     @State private var searchText = ""
     @State private var showingContactDirectory = false
     @State private var showingNewConversation = false
@@ -22,10 +48,12 @@ struct ContactsView: View {
     }
 
     private var activeThreads: [NostrDirectMessageThread] {
-        model.directMessageThreads.filter { !model.isDirectMessageThreadArchived($0.peerPublicKey) }
+        model.directMessageThreads
     }
 
-    private var strangerThreads: [NostrDirectMessageThread] {
+    private func strangerThreads(
+        in activeThreads: [NostrDirectMessageThread]
+    ) -> [NostrDirectMessageThread] {
         activeThreads.filter { thread in
             model.groupConversation(id: thread.peerPublicKey) == nil &&
                 model.nostrContact(publicKey: thread.peerPublicKey) == nil &&
@@ -33,16 +61,25 @@ struct ContactsView: View {
         }
     }
 
-    private var familiarThreads: [NostrDirectMessageThread] {
+    private func familiarThreads(
+        in activeThreads: [NostrDirectMessageThread],
+        strangerThreads: [NostrDirectMessageThread]
+    ) -> [NostrDirectMessageThread] {
         let strangerIDs = Set(strangerThreads.map(\.peerPublicKey))
         return activeThreads.filter { !strangerIDs.contains($0.peerPublicKey) }
     }
 
-    private var strangerUnreadCount: Int {
+    private func strangerUnreadCount(
+        in strangerThreads: [NostrDirectMessageThread]
+    ) -> Int {
         strangerThreads.reduce(0) { $0 + $1.unreadCount + $1.actionRequiredCount }
     }
 
-    private var filteredThreads: [NostrDirectMessageThread] {
+    private func filteredThreads(
+        activeThreads: [NostrDirectMessageThread],
+        strangerThreads: [NostrDirectMessageThread],
+        familiarThreads: [NostrDirectMessageThread]
+    ) -> [NostrDirectMessageThread] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let source = query.isEmpty
             ? (showingStrangers ? strangerThreads : familiarThreads)
@@ -55,12 +92,7 @@ struct ContactsView: View {
                 group?.displayName.localizedCaseInsensitiveContains(query) == true ||
                 contact?.subtitle.localizedCaseInsensitiveContains(query) == true ||
                 thread.peerPublicKey.localizedCaseInsensitiveContains(query) ||
-                thread.messages.contains { message in
-                    message.matchesSearch(
-                        query,
-                        senderName: model.nostrContact(publicKey: message.senderPublicKey)?.displayName
-                    )
-                } || thread.sharedTasks.contains { item in
+                thread.sharedTasks.contains { item in
                     item.task.title.localizedCaseInsensitiveContains(query) ||
                         item.task.note?.localizedCaseInsensitiveContains(query) == true ||
                         item.sender.displayName.localizedCaseInsensitiveContains(query)
@@ -75,8 +107,59 @@ struct ContactsView: View {
         }
     }
 
+    private func messageSearchResults(
+        in activeThreads: [NostrDirectMessageThread]
+    ) -> [ChatMessageSearchHit] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        return Array(
+            activeThreads
+                .flatMap { thread -> [ChatMessageSearchHit] in
+                    let contact = model.nostrContact(publicKey: thread.peerPublicKey)
+                    let group = model.groupConversation(id: thread.peerPublicKey)
+                    let conversationName = group?.displayName
+                        ?? contact?.displayName
+                        ?? "Conversation"
+                    return thread.messages.compactMap { message in
+                        let sender = message.isIncoming
+                            ? (model.nostrContact(publicKey: message.senderPublicKey)?.displayName
+                                ?? conversationName)
+                            : "You"
+                        guard message.matchesSearch(query, senderName: sender) else { return nil }
+                        return ChatMessageSearchHit(
+                            thread: thread,
+                            message: message,
+                            conversationName: conversationName,
+                            senderName: sender
+                        )
+                    }
+                }
+                .sorted {
+                    if $0.message.createdAt != $1.message.createdAt {
+                        return $0.message.createdAt > $1.message.createdAt
+                    }
+                    return $0.id < $1.id
+                }
+                .prefix(100)
+        )
+    }
+
     var body: some View {
-        NavigationStack(path: $navigationPath) {
+        let activeThreads = activeThreads
+        let strangerThreads = strangerThreads(in: activeThreads)
+        let familiarThreads = familiarThreads(
+            in: activeThreads,
+            strangerThreads: strangerThreads
+        )
+        let filteredThreads = filteredThreads(
+            activeThreads: activeThreads,
+            strangerThreads: strangerThreads,
+            familiarThreads: familiarThreads
+        )
+        let messageSearchResults = messageSearchResults(in: activeThreads)
+        let strangerUnreadCount = strangerUnreadCount(in: strangerThreads)
+
+        return NavigationStack(path: $navigationPath) {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 searchBar
@@ -87,7 +170,9 @@ struct ContactsView: View {
                             .padding(.horizontal, 18)
                             .padding(.top, 30)
                     }
-                } else if filteredThreads.isEmpty && (showingStrangers || !searchText.isEmpty) {
+                } else if filteredThreads.isEmpty,
+                          messageSearchResults.isEmpty,
+                          (showingStrangers || !searchText.isEmpty) {
                     ScrollView {
                         if showingStrangers && searchText.isEmpty {
                             ContentUnavailableView(
@@ -120,8 +205,33 @@ struct ContactsView: View {
                             .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                         }
 
+                        if !messageSearchResults.isEmpty {
+                            Section {
+                                ForEach(messageSearchResults) { result in
+                                    NavigationLink(value: result.route) {
+                                        ChatMessageSearchResultRow(result: result)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(EdgeInsets(
+                                        top: 5,
+                                        leading: 18,
+                                        bottom: 5,
+                                        trailing: 18
+                                    ))
+                                }
+                            } header: {
+                                Text("Messages")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                            }
+                        }
+
                         ForEach(filteredThreads) { thread in
-                            NavigationLink(value: thread.peerPublicKey) {
+                            NavigationLink(value: ChatConversationRoute(
+                                peerPublicKey: thread.peerPublicKey
+                            )) {
                                 DirectMessageThreadRow(
                                     thread: thread,
                                     contact: model.nostrContact(publicKey: thread.peerPublicKey),
@@ -170,8 +280,11 @@ struct ContactsView: View {
                 }
             }
             .background(TaskifyTheme.background.ignoresSafeArea())
-            .navigationDestination(for: String.self) { peerPublicKey in
-                DirectMessageConversationView(peerPublicKey: peerPublicKey)
+            .navigationDestination(for: ChatConversationRoute.self) { route in
+                DirectMessageConversationView(
+                    peerPublicKey: route.peerPublicKey,
+                    initialTimelineItemID: route.timelineItemID
+                )
                     .environment(model)
             }
         }
@@ -182,7 +295,7 @@ struct ContactsView: View {
         .fullScreenCover(isPresented: $showingNewConversation) {
             NewConversationSheet { peerPublicKey in
                 showingNewConversation = false
-                navigationPath.append(peerPublicKey)
+                navigationPath.append(ChatConversationRoute(peerPublicKey: peerPublicKey))
             } onNewGroup: {
                 showingNewConversation = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -194,7 +307,7 @@ struct ContactsView: View {
         .fullScreenCover(isPresented: $showingNewGroup) {
             NewGroupConversationSheet { groupID in
                 showingNewGroup = false
-                navigationPath.append(groupID)
+                navigationPath.append(ChatConversationRoute(peerPublicKey: groupID))
             }
             .environment(model)
         }
@@ -590,6 +703,66 @@ private struct DirectMessageThreadRow: View {
 
     private static func relativeTime(_ timestamp: Int) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        if Calendar.current.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
+private struct ChatMessageSearchResultRow: View {
+    let result: ChatMessageSearchHit
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: result.message.attachment == nil ? "text.bubble.fill" : "paperclip")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(TaskifyTheme.accent)
+                .frame(width: 34, height: 34)
+                .background(TaskifyTheme.accent.opacity(0.14), in: Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(result.conversationName)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(1)
+                    Text("·")
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                    Text(result.senderName)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(relativeTime)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+
+                Text(result.message.displayContent)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+                .padding(.top, 10)
+        }
+        .padding(12)
+        .taskifyGlass(cornerRadius: 18)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "Message from \(result.senderName) in \(result.conversationName): \(result.message.displayContent)"
+        )
+    }
+
+    private var relativeTime: String {
+        let date = Date(timeIntervalSince1970: TimeInterval(result.message.createdAt))
         if Calendar.current.isDateInToday(date) {
             return date.formatted(date: .omitted, time: .shortened)
         }
@@ -1498,9 +1671,12 @@ private struct DirectMessageConversationView: View {
     @State private var isSearchingConversation = false
     @State private var searchQuery = ""
     @State private var selectedSearchResultID: String?
+    @State private var searchSelectionTask: Task<Void, Never>?
+    @State private var protectsInitialScrollTarget = false
     @State private var isAddingContact = false
     @State private var confirmingConversationDeletion = false
     let peerPublicKey: String
+    let initialTimelineItemID: String?
 
     private var contact: NostrContact? { model.nostrContact(publicKey: peerPublicKey) }
     private var group: NostrGroupConversation? { model.groupConversation(id: peerPublicKey) }
@@ -1569,7 +1745,6 @@ private struct DirectMessageConversationView: View {
             $0.matchesSearch(searchQuery, senderName: senderName(for:))
         }
     }
-    private var searchResultIDs: Set<String> { Set(searchResults.map(\.id)) }
     private var selectedSearchResultIndex: Int? {
         guard let selectedSearchResultID else { return nil }
         return searchResults.firstIndex { $0.id == selectedSearchResultID }
@@ -1577,14 +1752,38 @@ private struct DirectMessageConversationView: View {
 
     var body: some View {
         // Computed once per body evaluation instead of read as plain computed properties from
-        // inside the per-row closure below. `timeline`/`messages` each filter+sort model-wide
-        // collections; `searchResultIDs` filters the whole timeline again. Re-deriving them from
-        // every row (as the old code did via `shouldShowDayDivider`/`isMessageGrouped`/
-        // `repliedMessage`/`searchResultIDs.contains`) meant a handful of visible rows could
-        // trigger dozens of full history rescans per frame — the main source of scroll jank here.
+        // inside the per-row closure below. The timeline, reply lookup, reactions, sender
+        // metadata, and search matches all scan model-wide collections; rebuilding any of them
+        // from each visible row makes a short scroll perform dozens of full-history passes.
         let currentTimeline = timeline
-        let currentMessages = messages
-        let currentSearchMatches = searchResultIDs
+        let currentMessages = currentTimeline.compactMap { item -> NostrDirectMessage? in
+            guard case let .message(message) = item else { return nil }
+            return message
+        }
+        var messageLookup: [String: NostrDirectMessage] = [:]
+        messageLookup.reserveCapacity(currentMessages.count * 2)
+        for message in currentMessages {
+            messageLookup[message.rumorEventID] = message
+            messageLookup[message.wrapEventID] = message
+        }
+        let reactionLookup = model.directMessageReactionLookup(peerPublicKey: peerPublicKey)
+        let currentSearchMatches = Set(
+            currentTimeline.lazy
+                .filter {
+                    !searchQuery.isEmpty &&
+                        $0.matchesSearch(searchQuery, senderName: senderName(for:))
+                }
+                .map(\.id)
+        )
+        let senderContacts = Dictionary(
+            model.nostrContacts.map { ($0.publicKey, $0) },
+            uniquingKeysWith: { _, newest in newest }
+        )
+        let senderNames = Dictionary(
+            uniqueKeysWithValues: Set(currentMessages.map(\.senderPublicKey)).map {
+                ($0, senderName(for: $0))
+            }
+        )
 
         return ScrollViewReader { proxy in
             ScrollView {
@@ -1616,14 +1815,20 @@ private struct DirectMessageConversationView: View {
                             case let .message(message):
                                 let groupedWithPrevious = isMessageGrouped(at: index, with: index - 1, in: currentTimeline)
                                 let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
+                                let reactions = (reactionLookup[message.rumorEventID] ?? [])
+                                    + (message.wrapEventID == message.rumorEventID
+                                        ? []
+                                        : reactionLookup[message.wrapEventID] ?? [])
                                 DirectMessageBubble(
                                     message: message,
-                                    repliedMessage: repliedMessage(for: message, in: currentMessages),
-                                    reactions: model.directMessageReactions(for: message),
+                                    repliedMessage: message.replyToEventID.flatMap {
+                                        messageLookup[$0]
+                                    },
+                                    reactions: reactions,
                                     senderName: group != nil && message.isIncoming && !groupedWithPrevious
-                                        ? senderName(for: message.senderPublicKey) : nil,
+                                        ? senderNames[message.senderPublicKey] : nil,
                                     senderContact: group != nil && message.isIncoming
-                                        ? model.nostrContact(publicKey: message.senderPublicKey) : nil,
+                                        ? senderContacts[message.senderPublicKey] : nil,
                                     showsSenderAvatar: group != nil && message.isIncoming,
                                     isGroupedWithPrevious: groupedWithPrevious,
                                     isGroupedWithNext: groupedWithNext,
@@ -1636,7 +1841,7 @@ private struct DirectMessageConversationView: View {
                                             Button(emoji) { react(to: message, with: emoji) }
                                         }
                                     }
-                                    if model.directMessageReactions(for: message).contains(where: {
+                                    if reactions.contains(where: {
                                         $0.senderPublicKey == model.identityPublicKey
                                     }) {
                                         Button("Remove Reaction", systemImage: "minus.circle") {
@@ -1697,9 +1902,29 @@ private struct DirectMessageConversationView: View {
                 }
             }
             .onAppear {
-                markReadAndScroll(proxy: proxy, animated: false)
+                if let initialTimelineItemID {
+                    selectedSearchResultID = initialTimelineItemID
+                    protectsInitialScrollTarget = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(1))
+                        protectsInitialScrollTarget = false
+                    }
+                }
+                markReadAndScroll(
+                    proxy: proxy,
+                    targetID: initialTimelineItemID,
+                    animated: false
+                )
             }
-            .onChange(of: timeline.count) { _, _ in
+            .onChange(of: currentTimeline.count) { _, _ in
+                if protectsInitialScrollTarget, let initialTimelineItemID {
+                    markReadAndScroll(
+                        proxy: proxy,
+                        targetID: initialTimelineItemID,
+                        animated: false
+                    )
+                    return
+                }
                 if isSearchingConversation, !searchQuery.isEmpty {
                     selectNewestSearchResult(proxy: proxy)
                 } else {
@@ -1707,7 +1932,7 @@ private struct DirectMessageConversationView: View {
                 }
             }
             .onChange(of: searchQuery) { _, _ in
-                selectNewestSearchResult(proxy: proxy)
+                scheduleNewestSearchResult(proxy: proxy)
             }
         }
         .background(TaskifyTheme.background.ignoresSafeArea())
@@ -1974,17 +2199,6 @@ private struct DirectMessageConversationView: View {
                 .focused($searchFocused)
                 .submitLabel(.search)
 
-            if !searchQuery.isEmpty {
-                Button {
-                    searchQuery = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear conversation search")
-            }
-
             Text(searchResultPositionLabel)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(TaskifyTheme.secondaryText)
@@ -1995,6 +2209,7 @@ private struct DirectMessageConversationView: View {
             } label: {
                 Image(systemName: "chevron.up")
                     .frame(width: 28, height: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(searchResults.isEmpty)
@@ -2005,10 +2220,20 @@ private struct DirectMessageConversationView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .frame(width: 28, height: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(searchResults.isEmpty)
             .accessibilityLabel("Next search result")
+
+            Button(action: closeConversationSearch) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 30, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close conversation search")
         }
         .font(.subheadline)
         .foregroundStyle(TaskifyTheme.primaryText)
@@ -2024,14 +2249,37 @@ private struct DirectMessageConversationView: View {
 
     private func toggleConversationSearch() {
         if isSearchingConversation {
-            isSearchingConversation = false
-            searchQuery = ""
-            selectedSearchResultID = nil
-            searchFocused = false
+            closeConversationSearch()
         } else {
             composerFocused = false
             isSearchingConversation = true
             DispatchQueue.main.async { searchFocused = true }
+        }
+    }
+
+    private func closeConversationSearch() {
+        searchSelectionTask?.cancel()
+        searchSelectionTask = nil
+        isSearchingConversation = false
+        searchQuery = ""
+        selectedSearchResultID = nil
+        searchFocused = false
+    }
+
+    private func scheduleNewestSearchResult(proxy: ScrollViewProxy) {
+        searchSelectionTask?.cancel()
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            selectedSearchResultID = nil
+            return
+        }
+        searchSelectionTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            selectNewestSearchResult(proxy: proxy)
         }
     }
 
@@ -2055,8 +2303,11 @@ private struct DirectMessageConversationView: View {
 
     private func scrollToSelectedSearchResult(proxy: ScrollViewProxy) {
         guard let selectedSearchResultID else { return }
-        withAnimation(.easeInOut(duration: 0.25)) {
-            proxy.scrollTo(selectedSearchResultID, anchor: .center)
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(.easeInOut(duration: 0.22)) {
+                proxy.scrollTo(selectedSearchResultID, anchor: .center)
+            }
         }
     }
 
@@ -2226,13 +2477,15 @@ private struct DirectMessageConversationView: View {
             let mimeType = contentType.preferredMIMEType ?? "application/octet-stream"
             let prefix = contentType.conforms(to: .movie) ? "Video" : "Photo"
             let name = "\(prefix).\(contentType.preferredFilenameExtension ?? "bin")"
-            let image = contentType.conforms(to: .image) ? UIImage(data: data) : nil
+            let dimensions = contentType.conforms(to: .image)
+                ? await DirectMessageAttachmentImageLoader.dimensions(data: data)
+                : nil
             try await sendAttachment(
                 data: data,
                 name: name,
                 mimeType: mimeType,
-                width: image.map { Int($0.size.width * $0.scale) },
-                height: image.map { Int($0.size.height * $0.scale) }
+                width: dimensions?.width,
+                height: dimensions?.height
             )
         } catch {
             model.errorMessage = error.localizedDescription
@@ -2253,13 +2506,15 @@ private struct DirectMessageConversationView: View {
             }
             let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
             let type = values.contentType
-            let image = type?.conforms(to: .image) == true ? UIImage(data: data) : nil
+            let dimensions = type?.conforms(to: .image) == true
+                ? await DirectMessageAttachmentImageLoader.dimensions(data: data)
+                : nil
             try await sendAttachment(
                 data: data,
                 name: values.name ?? fileURL.lastPathComponent,
                 mimeType: type?.preferredMIMEType ?? "application/octet-stream",
-                width: image.map { Int($0.size.width * $0.scale) },
-                height: image.map { Int($0.size.height * $0.scale) }
+                width: dimensions?.width,
+                height: dimensions?.height
             )
         } catch {
             model.errorMessage = error.localizedDescription
@@ -2293,13 +2548,6 @@ private struct DirectMessageConversationView: View {
         )
         replyingTo = nil
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
-
-    private func repliedMessage(for message: NostrDirectMessage, in currentMessages: [NostrDirectMessage]) -> NostrDirectMessage? {
-        guard let target = message.replyToEventID else { return nil }
-        return currentMessages.first {
-            $0.rumorEventID == target || $0.wrapEventID == target
-        }
     }
 
     private func shouldShowDayDivider(at index: Int, in currentTimeline: [ChatTimelineItem]) -> Bool {
@@ -2353,15 +2601,31 @@ private struct DirectMessageConversationView: View {
         }
     }
 
-    private func markReadAndScroll(proxy: ScrollViewProxy, animated: Bool) {
+    private func markReadAndScroll(
+        proxy: ScrollViewProxy,
+        targetID: String? = nil,
+        animated: Bool
+    ) {
         model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
-        guard let timelineItemID = timeline.last?.id else { return }
-        if animated {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(timelineItemID, anchor: .bottom)
+        guard let timelineItemID = targetID ?? timeline.last?.id else { return }
+        Task { @MainActor in
+            await Task.yield()
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(timelineItemID, anchor: targetID == nil ? .bottom : .center)
+                }
+                return
             }
-        } else {
-            proxy.scrollTo(timelineItemID, anchor: .bottom)
+
+            proxy.scrollTo(timelineItemID, anchor: targetID == nil ? .bottom : .center)
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                return
+            }
+            if !Task.isCancelled {
+                proxy.scrollTo(timelineItemID, anchor: targetID == nil ? .bottom : .center)
+            }
         }
     }
 }
@@ -3364,7 +3628,13 @@ private struct DirectMessageAttachmentView: View {
         do {
             let data = try await DirectMessageAttachmentDataLoader.shared.data(for: attachment)
             guard !Task.isCancelled else { return }
-            guard let decoded = UIImage(data: data) else { throw ChatAttachmentError.unreadableFile }
+            guard let decoded = await DirectMessageAttachmentImageLoader.shared.image(
+                data: data,
+                cacheKey: attachment.cacheKey,
+                maximumPixelSize: 1_080
+            ) else {
+                throw ChatAttachmentError.unreadableFile
+            }
             image = decoded
             failed = false
         } catch {
@@ -3398,11 +3668,15 @@ private struct DirectMessageAttachmentView: View {
 
 private actor DirectMessageAttachmentDataLoader {
     static let shared = DirectMessageAttachmentDataLoader()
-    private var cache: [String: Data] = [:]
+    private let cache: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.totalCostLimit = 64 * 1_024 * 1_024
+        return cache
+    }()
 
     func data(for attachment: NostrDirectMessageAttachment) async throws -> Data {
-        let cacheKey = "\(attachment.url)::\(attachment.keyHex)::\(attachment.nonceHex)"
-        if let cached = cache[cacheKey] { return cached }
+        let cacheKey = attachment.cacheKey as NSString
+        if let cached = cache.object(forKey: cacheKey) { return cached as Data }
         guard let URL = URL(string: attachment.url) else { throw ChatAttachmentError.invalidURL }
         let (ciphertext, response) = try await URLSession.shared.data(from: URL)
         if let response = response as? HTTPURLResponse,
@@ -3419,7 +3693,7 @@ private actor DirectMessageAttachmentDataLoader {
         guard plaintext.count <= TaskDocumentContract.maximumUploadBytes else {
             throw TaskAttachmentUploadError.fileTooLarge
         }
-        cache[cacheKey] = plaintext
+        cache.setObject(plaintext as NSData, forKey: cacheKey, cost: plaintext.count)
         return plaintext
     }
 
@@ -3446,6 +3720,67 @@ private actor DirectMessageAttachmentDataLoader {
         if cleaned.contains(".") { return String(cleaned.prefix(180)) }
         let type = UTType(mimeType: mimeType)
         return "\(String(cleaned.prefix(160)))\(type?.preferredFilenameExtension.map { ".\($0)" } ?? "")"
+    }
+}
+
+private actor DirectMessageAttachmentImageLoader {
+    static let shared = DirectMessageAttachmentImageLoader()
+
+    private let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 64 * 1_024 * 1_024
+        return cache
+    }()
+
+    func image(
+        data: Data,
+        cacheKey: String,
+        maximumPixelSize: CGFloat
+    ) async -> UIImage? {
+        let key = "\(Int(maximumPixelSize))::\(cacheKey)" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        let image = await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                return nil as UIImage?
+            }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                options as CFDictionary
+            ) else {
+                return nil
+            }
+            return UIImage(cgImage: thumbnail)
+        }.value
+        guard let image else { return nil }
+        let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+        cache.setObject(image, forKey: key, cost: cost)
+        return image
+    }
+
+    nonisolated static func dimensions(data: Data) async -> (width: Int, height: Int)? {
+        await Task.detached(priority: .utility) {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                    as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+                  let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else {
+                return nil
+            }
+            return (width.intValue, height.intValue)
+        }.value
+    }
+}
+
+private extension NostrDirectMessageAttachment {
+    var cacheKey: String {
+        "\(url)::\(keyHex)::\(nonceHex)"
     }
 }
 

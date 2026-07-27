@@ -1,3 +1,4 @@
+import ImageIO
 import LinkPresentation
 import QuickLook
 import QuickLookThumbnailing
@@ -48,7 +49,7 @@ private struct TaskAttachmentImageView: View {
     let boardID: String
     let compact: Bool
 
-    @State private var image: UIImage?
+    @State private var thumbnail: UIImage?
     @State private var failed = false
     @State private var showingPreview = false
     @State private var retryID = UUID()
@@ -63,11 +64,11 @@ private struct TaskAttachmentImageView: View {
                 endPoint: .bottomTrailing
             )
 
-            if let image {
+            if let thumbnail {
                 Button {
                     showingPreview = true
                 } label: {
-                    Image(uiImage: image)
+                    Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity)
@@ -117,32 +118,80 @@ private struct TaskAttachmentImageView: View {
                     boardID: boardID
                 )
                 guard !Task.isCancelled else { return }
-                image = UIImage(data: data)
-                failed = image == nil
+                thumbnail = await TaskAttachmentThumbnailLoader.shared.image(
+                    data: data,
+                    cacheKey: "image::\(boardID)::\(source)",
+                    maximumPixelSize: 1_080
+                )
+                failed = thumbnail == nil
             } catch {
                 guard !Task.isCancelled else { return }
                 failed = true
             }
         }
         .sheet(isPresented: $showingPreview) {
-            if let image {
-                NavigationStack {
+            TaskAttachmentFullScreenImage(
+                source: source,
+                boardID: boardID,
+                isPresented: $showingPreview
+            )
+        }
+    }
+}
+
+private struct TaskAttachmentFullScreenImage: View {
+    let source: String
+    let boardID: String
+    @Binding var isPresented: Bool
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let image {
                     ScrollView([.horizontal, .vertical]) {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
                             .padding(12)
                     }
-                    .background(TaskifyTheme.background.ignoresSafeArea())
-                    .navigationTitle("Attachment")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showingPreview = false }
-                        }
-                    }
+                } else if failed {
+                    ContentUnavailableView(
+                        "Image unavailable",
+                        systemImage: "photo.badge.exclamationmark"
+                    )
+                } else {
+                    ProgressView("Loading full-resolution image…")
                 }
-                .preferredColorScheme(.dark)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Attachment")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { isPresented = false }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task(id: source) {
+            do {
+                let data = try await TaskAttachmentDataLoader.load(
+                    source: source,
+                    encrypted: !source.hasPrefix("data:"),
+                    boardID: boardID
+                )
+                guard !Task.isCancelled else { return }
+                image = await TaskAttachmentThumbnailLoader.shared.fullImage(
+                    data: data,
+                    cacheKey: "full::\(boardID)::\(source)"
+                )
+                failed = image == nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                failed = true
             }
         }
     }
@@ -255,7 +304,7 @@ private struct TaskDocumentTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .disabled(source == nil || isLoading)
-        .task(id: "\(document.id)::\(source ?? "missing")") {
+        .task(id: document) {
             await loadThumbnailIfNeeded()
         }
         .quickLookPreview($previewURL)
@@ -277,32 +326,11 @@ private struct TaskDocumentTile: View {
     }
 
     private var previewImage: UIImage? {
-        if let derivedPreviewImage { return derivedPreviewImage }
-        guard document.preview?.type == "image",
-              let raw = document.preview?.data,
-              let data = try? TaskAttachmentCrypto.data(from: raw) else {
-            return nil
-        }
-        return UIImage(data: data)
+        derivedPreviewImage
     }
 
     private var textPreview: String? {
-        if let derivedPreviewText { return derivedPreviewText }
-        guard let preview = document.preview,
-              preview.type == "text" || preview.type == "html" else {
-            return nil
-        }
-        let raw = preview.type == "html"
-            ? preview.data.replacingOccurrences(
-                of: #"<[^>]+>"#,
-                with: " ",
-                options: .regularExpression
-            )
-            : preview.data
-        let normalized = raw
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        return normalized.isEmpty ? nil : normalized
+        derivedPreviewText
     }
 
     private var documentIcon: String {
@@ -344,10 +372,36 @@ private struct TaskDocumentTile: View {
 
     private func loadThumbnailIfNeeded() async {
         guard previewImage == nil,
-              textPreview == nil,
-              let source else {
-            return
+              textPreview == nil else { return }
+
+        if let embedded = document.preview {
+            if embedded.type == "image",
+               let data = try? TaskAttachmentCrypto.data(from: embedded.data) {
+                derivedPreviewImage = await TaskAttachmentThumbnailLoader.shared.image(
+                    data: data,
+                    cacheKey: "document-preview::\(document.id)",
+                    maximumPixelSize: 1_080
+                )
+                if derivedPreviewImage != nil { return }
+            } else if embedded.type == "text" || embedded.type == "html" {
+                derivedPreviewText = await Task.detached(priority: .utility) {
+                    let raw = embedded.type == "html"
+                        ? embedded.data.replacingOccurrences(
+                            of: #"<[^>]+>"#,
+                            with: " ",
+                            options: .regularExpression
+                        )
+                        : embedded.data
+                    let normalized = raw
+                        .split(whereSeparator: \.isWhitespace)
+                        .joined(separator: " ")
+                    return normalized.isEmpty ? nil : normalized
+                }.value
+                if derivedPreviewText != nil { return }
+            }
         }
+
+        guard let source else { return }
         do {
             let boardID = document.encryptionBoardID ?? fallbackBoardID
             let data = try await TaskAttachmentDataLoader.load(
@@ -358,17 +412,20 @@ private struct TaskDocumentTile: View {
             guard !Task.isCancelled else { return }
 
             let kind = document.kind.lowercased()
-            if ["png", "jpg", "jpeg", "webp", "gif"].contains(kind),
-               let image = UIImage(data: data) {
-                derivedPreviewImage = image
-                return
+            if ["png", "jpg", "jpeg", "webp", "gif"].contains(kind) {
+                derivedPreviewImage = await TaskAttachmentThumbnailLoader.shared.image(
+                    data: data,
+                    cacheKey: "document::\(document.id)::\(source)",
+                    maximumPixelSize: 1_080
+                )
+                if derivedPreviewImage != nil { return }
             }
 
             if ["txt", "md", "json", "csv"].contains(kind),
                let text = String(data: data.prefix(24_000), encoding: .utf8) {
-                let normalized = text
-                    .split(whereSeparator: \.isWhitespace)
-                    .joined(separator: " ")
+                let normalized = await Task.detached(priority: .utility) {
+                    text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                }.value
                 if !normalized.isEmpty {
                     derivedPreviewText = normalized
                     return
@@ -578,6 +635,61 @@ private struct TaskLinkPreviewCard: View {
                 .foregroundStyle(TaskifyTheme.tertiaryText)
                 .lineLimit(1)
         }
+    }
+}
+
+private actor TaskAttachmentThumbnailLoader {
+    static let shared = TaskAttachmentThumbnailLoader()
+
+    private let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 96 * 1_024 * 1_024
+        return cache
+    }()
+
+    func image(
+        data: Data,
+        cacheKey: String,
+        maximumPixelSize: CGFloat
+    ) async -> UIImage? {
+        let key = "\(Int(maximumPixelSize))::\(cacheKey)" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+
+        let image = await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                return nil as UIImage?
+            }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                options as CFDictionary
+            ) else {
+                return nil
+            }
+            return UIImage(cgImage: thumbnail)
+        }.value
+        guard let image else { return nil }
+        let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+        cache.setObject(image, forKey: key, cost: cost)
+        return image
+    }
+
+    func fullImage(data: Data, cacheKey: String) async -> UIImage? {
+        let key = cacheKey as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        let image = await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)?.preparingForDisplay()
+        }.value
+        guard let image else { return nil }
+        let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+        cache.setObject(image, forKey: key, cost: cost)
+        return image
     }
 }
 

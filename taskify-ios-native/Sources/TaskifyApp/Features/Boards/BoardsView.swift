@@ -104,6 +104,121 @@ private struct TaskDragSourceModifier: ViewModifier {
     }
 }
 
+@MainActor
+private final class HorizontalTaskDragAutoScrollController {
+    private var command: HorizontalDragAutoScrollCommand?
+    private var scrollTask: Task<Void, Never>?
+    var onStep: ((HorizontalDragAutoScrollDirection, TimeInterval) -> Void)?
+
+    deinit {
+        scrollTask?.cancel()
+    }
+
+    func update(_ nextCommand: HorizontalDragAutoScrollCommand?) {
+        guard let nextCommand else {
+            stop()
+            return
+        }
+        if let command,
+           command.direction == nextCommand.direction,
+           abs(command.interval - nextCommand.interval) < 0.06 {
+            return
+        }
+
+        command = nextCommand
+        scrollTask?.cancel()
+        scrollTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(min(0.24, nextCommand.interval)))
+                while !Task.isCancelled {
+                    guard let self, let command = self.command else { return }
+                    self.onStep?(command.direction, command.interval)
+                    try await Task.sleep(for: .seconds(command.interval))
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    func stop() {
+        command = nil
+        scrollTask?.cancel()
+        scrollTask = nil
+    }
+}
+
+private struct HorizontalTaskDragAutoScrollDropDelegate: DropDelegate {
+    let controller: HorizontalTaskDragAutoScrollController
+    let policy: HorizontalDragAutoScrollPolicy
+
+    func dropEntered(info: DropInfo) {
+        update(with: info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        update(with: info)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        controller.stop()
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        controller.stop()
+        return false
+    }
+
+    private func update(with info: DropInfo) {
+        controller.update(policy.command(
+            forHorizontalLocation: Double(info.location.x)
+        ))
+    }
+}
+
+private struct HorizontalTaskDragAutoScrollModifier: ViewModifier {
+    let pageIDs: [String]
+    @Binding var focusedPageID: String?
+    let viewportWidth: CGFloat
+    @State private var controller = HorizontalTaskDragAutoScrollController()
+
+    func body(content: Content) -> some View {
+        content
+            .onDrop(
+                of: [.taskifyTask],
+                delegate: HorizontalTaskDragAutoScrollDropDelegate(
+                    controller: controller,
+                    policy: HorizontalDragAutoScrollPolicy(
+                        viewportWidth: Double(viewportWidth)
+                    )
+                )
+            )
+            .onAppear(perform: configureController)
+            .onChange(of: pageIDs) { _, _ in configureController() }
+            .onDisappear { controller.stop() }
+    }
+
+    private func configureController() {
+        let focusedPageID = $focusedPageID
+        let pageIDs = pageIDs
+        controller.onStep = { direction, interval in
+            guard !pageIDs.isEmpty else { return }
+            let currentIndex = focusedPageID.wrappedValue
+                .flatMap { pageIDs.firstIndex(of: $0) }
+                ?? 0
+            let nextIndex = switch direction {
+            case .backward: max(0, currentIndex - 1)
+            case .forward: min(pageIDs.count - 1, currentIndex + 1)
+            }
+            guard nextIndex != currentIndex else { return }
+            withAnimation(.easeInOut(duration: min(0.42, max(0.25, interval * 0.65)))) {
+                focusedPageID.wrappedValue = pageIDs[nextIndex]
+            }
+        }
+    }
+}
+
 private extension View {
     func taskDropTarget(
         boardID: String,
@@ -118,6 +233,138 @@ private extension View {
             style: style
         ))
     }
+
+    func horizontalTaskDragAutoScroll(
+        pageIDs: [String],
+        focusedPageID: Binding<String?>,
+        viewportWidth: CGFloat
+    ) -> some View {
+        modifier(HorizontalTaskDragAutoScrollModifier(
+            pageIDs: pageIDs,
+            focusedPageID: focusedPageID,
+            viewportWidth: viewportWidth
+        ))
+    }
+}
+
+/// Drives Boards' multi-select mode (ported from the PWA's `useSelectionMode`). Owned as `@State`
+/// by `BoardsView` and handed down via `.environment(_:)` so column views and `TaskCardView` —
+/// several layers deep across three different board-kind view trees — can read/mutate it without
+/// threading a binding through every intermediate initializer.
+@Observable
+final class TaskSelectionController {
+    private(set) var isActive = false
+    private(set) var selectedTaskIDs: Set<String> = []
+
+    func enter() {
+        isActive = true
+        selectedTaskIDs.removeAll()
+    }
+
+    func exit() {
+        isActive = false
+        selectedTaskIDs.removeAll()
+    }
+
+    func toggle(_ taskID: String) {
+        if selectedTaskIDs.contains(taskID) {
+            selectedTaskIDs.remove(taskID)
+        } else {
+            selectedTaskIDs.insert(taskID)
+        }
+    }
+
+    func clear() {
+        selectedTaskIDs.removeAll()
+    }
+
+    func retainOnly(_ availableTaskIDs: Set<String>) {
+        selectedTaskIDs.formIntersection(availableTaskIDs)
+    }
+}
+
+private enum TaskCompletionFlightCoordinateSpace {
+    static let name = "taskify.boards.completion-flight"
+}
+
+private struct TaskCompletionFlight: Identifiable {
+    let id = UUID()
+    let source: CGPoint
+    let destination: CGPoint
+}
+
+@Observable
+private final class TaskCompletionAnimationController {
+    private(set) var flights: [TaskCompletionFlight] = []
+    var destination: CGPoint?
+
+    func launch(from source: CGPoint) {
+        guard let destination else { return }
+        flights.append(TaskCompletionFlight(source: source, destination: destination))
+    }
+
+    func finish(_ flightID: UUID) {
+        flights.removeAll { $0.id == flightID }
+    }
+
+    func reset() {
+        flights.removeAll()
+    }
+}
+
+private struct TaskCompletionDestinationPreferenceKey: PreferenceKey {
+    static var defaultValue: CGPoint?
+
+    static func reduce(value: inout CGPoint?, nextValue: () -> CGPoint?) {
+        value = nextValue() ?? value
+    }
+}
+
+private struct TaskCompletionFlightLayer: View {
+    let controller: TaskCompletionAnimationController
+
+    var body: some View {
+        ZStack {
+            ForEach(controller.flights) { flight in
+                FlyingTaskCheckmark(flight: flight) {
+                    controller.finish(flight.id)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct FlyingTaskCheckmark: View {
+    let flight: TaskCompletionFlight
+    let onFinished: () -> Void
+    @State private var hasLaunched = false
+
+    var body: some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 13, weight: .black))
+            .foregroundStyle(.white)
+            .frame(width: 24, height: 24)
+            .background(TaskifyTheme.accent, in: Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.42), lineWidth: 1))
+            .shadow(color: TaskifyTheme.accent.opacity(0.42), radius: 8)
+            .shadow(color: Color.black.opacity(0.32), radius: 7, y: 4)
+            .position(hasLaunched ? flight.destination : flight.source)
+            .scaleEffect(hasLaunched ? 0.5 : 1)
+            .opacity(hasLaunched ? 0.55 : 1)
+            .onAppear {
+                withAnimation(.timingCurve(0.2, 0.7, 0.3, 1, duration: 0.52)) {
+                    hasLaunched = true
+                }
+
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(620))
+                    onFinished()
+                }
+            }
+    }
 }
 
 struct BoardsView: View {
@@ -131,9 +378,12 @@ struct BoardsView: View {
     @State private var showingBoardUpcoming = false
     @State private var showingSortOptions = false
     @State private var showingClearCompletedConfirmation = false
+    @State private var showingSelectionMoveSheet = false
     @State private var newListName = ""
     @State private var quickTaskDraft = ""
     @State private var focusedPageID: String?
+    @State private var selection = TaskSelectionController()
+    @State private var completionAnimations = TaskCompletionAnimationController()
     @FocusState private var quickTaskFieldIsFocused: Bool
 
     private var sortMode: UpcomingSortMode {
@@ -144,6 +394,10 @@ struct BoardsView: View {
         UpcomingSortDirection(rawValue: sortDirectionRaw) ?? sortMode.defaultDirection
     }
 
+    private var availableTaskIDs: Set<String> {
+        model.activeTaskIDs
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             header
@@ -151,9 +405,34 @@ struct BoardsView: View {
                 .padding(.top, 6)
 
             boardContent
+                .environment(selection)
+                .environment(completionAnimations)
+        }
+        .coordinateSpace(name: TaskCompletionFlightCoordinateSpace.name)
+        .onPreferenceChange(TaskCompletionDestinationPreferenceKey.self) { destination in
+            completionAnimations.destination = destination
+        }
+        .overlay {
+            TaskCompletionFlightLayer(controller: completionAnimations)
         }
         .overlay(alignment: .bottom) {
-            if let quickAddDestination {
+            if selection.isActive {
+                SelectionActionBar(
+                    selection: selection,
+                    onMove: { showingSelectionMoveSheet = true },
+                    onComplete: {
+                        model.completeTasks(selection.selectedTaskIDs)
+                        selection.exit()
+                    },
+                    onDelete: {
+                        model.deleteTasks(selection.selectedTaskIDs)
+                        selection.exit()
+                    }
+                )
+                .padding(.horizontal, 18)
+                .padding(.bottom, 10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let quickAddDestination {
                 FloatingQuickAddBar(
                     draft: $quickTaskDraft,
                     isFocused: $quickTaskFieldIsFocused,
@@ -165,6 +444,12 @@ struct BoardsView: View {
                 .padding(.bottom, 10)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .sheet(isPresented: $showingSelectionMoveSheet) {
+            SelectionMoveSheet(selection: selection) {
+                selection.exit()
+            }
+            .environment(model)
         }
         .alert("Add list", isPresented: $showingAddList) {
             TextField("List name", text: $newListName)
@@ -216,9 +501,14 @@ struct BoardsView: View {
         }
         .onAppear(perform: resetFocusedPage)
         .onChange(of: model.selectedBoardID) { _, _ in
+            selection.exit()
+            completionAnimations.reset()
             quickTaskDraft = ""
             quickTaskFieldIsFocused = false
             resetFocusedPage()
+        }
+        .onChange(of: availableTaskIDs) { _, taskIDs in
+            selection.retainOnly(taskIDs)
         }
     }
 
@@ -330,26 +620,29 @@ struct BoardsView: View {
     }
 
     private func addQuickTask(dismissKeyboard: Bool) {
-        guard let quickAddDestination,
-              !quickTaskDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let quickAddDestination else { return }
+        let title = quickTaskDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+
+        quickTaskDraft = ""
+        if dismissKeyboard {
+            quickTaskFieldIsFocused = false
+            UIApplication.shared.sendAction(
+                #selector(UIResponder.resignFirstResponder),
+                to: nil,
+                from: nil,
+                for: nil
+            )
+        }
 
         if let weekday = quickAddDestination.weekday {
-            model.addQuickTask(title: quickTaskDraft, weekday: weekday)
+            model.addQuickTask(title: title, weekday: weekday)
         } else {
             model.addQuickTask(
-                title: quickTaskDraft,
+                title: title,
                 boardID: quickAddDestination.boardID,
                 columnID: quickAddDestination.columnID
             )
-        }
-        quickTaskDraft = ""
-
-        if dismissKeyboard {
-            quickTaskFieldIsFocused = false
-        } else {
-            DispatchQueue.main.async {
-                quickTaskFieldIsFocused = true
-            }
         }
     }
 
@@ -424,6 +717,15 @@ struct BoardsView: View {
                 ) {
                     withAnimation(.snappy) { showCompleted.toggle() }
                 }
+                .background {
+                    GeometryReader { proxy in
+                        let frame = proxy.frame(in: .named(TaskCompletionFlightCoordinateSpace.name))
+                        Color.clear.preference(
+                            key: TaskCompletionDestinationPreferenceKey.self,
+                            value: CGPoint(x: frame.midX, y: frame.midY)
+                        )
+                    }
+                }
                 .contextMenu {
                     if showCompleted, model.selectedBoard?.kind != .bible {
                         Button(role: .destructive) {
@@ -457,6 +759,20 @@ struct BoardsView: View {
                         accessibilityLabel: "Sort tasks"
                     ) {
                         showingSortOptions = true
+                    }
+
+                    HeaderIconButton(
+                        systemName: "checklist",
+                        accent: selection.isActive,
+                        accessibilityLabel: selection.isActive ? "Exit selection" : "Select tasks"
+                    ) {
+                        withAnimation(.snappy) {
+                            if selection.isActive {
+                                selection.exit()
+                            } else {
+                                selection.enter()
+                            }
+                        }
                     }
                 }
 
@@ -858,37 +1174,325 @@ private struct FloatingQuickAddBar: View {
     let onAddButton: () -> Void
 
     var body: some View {
-        TaskifyGlassControlGroup(spacing: 9) {
-            HStack(spacing: 9) {
-                TextField("New Task", text: $draft)
-                    .focused(isFocused)
-                    .textInputAutocapitalization(.sentences)
-                    .submitLabel(.done)
-                    .onSubmit(onSubmit)
-                    .padding(.horizontal, 17)
-                    .frame(height: 48)
-                    .taskifyGlassControl(
-                        in: Capsule(),
-                        fallbackFill: Color.black.opacity(0.32)
-                    )
-                    .accessibilityLabel("New task in \(destinationName)")
+        HStack(spacing: 9) {
+            QuickAddTextField(
+                text: $draft,
+                isFocused: isFocused,
+                accessibilityLabel: "New task in \(destinationName)",
+                onSubmit: onSubmit
+            )
+                .padding(.horizontal, 17)
+                .frame(height: 48)
+                .taskifyGlassControl(
+                    in: Capsule(),
+                    fallbackFill: Color.black.opacity(0.32)
+                )
 
-                Button(action: onAddButton) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 19, weight: .bold))
-                        .frame(width: 48, height: 48)
-                        .foregroundStyle(.white)
-                        .taskifyGlassControl(
-                            in: Circle(),
-                            tint: TaskifyTheme.accent.opacity(0.72),
-                            fallbackFill: TaskifyTheme.accent
-                        )
+            Button(action: onAddButton) {
+                Image(systemName: "plus")
+                    .font(.system(size: 19, weight: .bold))
+                    .frame(width: 48, height: 48)
+                    .contentShape(Circle())
+                    .foregroundStyle(.white)
+                    .taskifyGlassControl(
+                        in: Circle(),
+                        tint: TaskifyTheme.accent.opacity(0.72),
+                        fallbackFill: TaskifyTheme.accent
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityLabel("Add task to \(destinationName) and close keyboard")
+        }
+    }
+}
+
+private struct QuickAddTextField: UIViewRepresentable {
+    @Binding var text: String
+    var isFocused: FocusState<Bool>.Binding
+    let accessibilityLabel: String
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.delegate = context.coordinator
+        field.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.textChanged(_:)),
+            for: .editingChanged
+        )
+        field.placeholder = "New Task"
+        field.font = .preferredFont(forTextStyle: .body)
+        field.textColor = .white
+        field.tintColor = UIColor(TaskifyTheme.accent)
+        field.backgroundColor = .clear
+        field.clearButtonMode = .never
+        field.autocapitalizationType = .sentences
+        field.autocorrectionType = .default
+        field.returnKeyType = .default
+        field.enablesReturnKeyAutomatically = true
+        field.accessibilityLabel = accessibilityLabel
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        field.accessibilityLabel = accessibilityLabel
+        if field.text != text {
+            field.text = text
+        }
+        if isFocused.wrappedValue {
+            context.coordinator.hasSynchronizedFocus = true
+            if !field.isFirstResponder {
+                field.becomeFirstResponder()
+            }
+        } else if context.coordinator.hasSynchronizedFocus, field.isFirstResponder {
+            context.coordinator.hasSynchronizedFocus = false
+            field.resignFirstResponder()
+        }
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: QuickAddTextField
+        var hasSynchronizedFocus = false
+
+        init(parent: QuickAddTextField) {
+            self.parent = parent
+        }
+
+        @objc func textChanged(_ field: UITextField) {
+            parent.text = field.text ?? ""
+        }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            parent.isFocused.wrappedValue = true
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            parent.isFocused.wrappedValue = false
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            parent.onSubmit()
+            return false
+        }
+    }
+}
+
+/// Bottom action bar shown while `TaskSelectionController.isActive`, ported from the PWA's
+/// `SelectionOverlays.tsx` selection bar. Printing is intentionally not ported — the PWA's
+/// "Print" action feeds the fiducial-marker print/scan round-trip system, which is a separate,
+/// much larger milestone (see `BibleTrackerView`'s printing note) not built natively yet.
+private struct SelectionActionBar: View {
+    @Environment(AppModel.self) private var model
+    var selection: TaskSelectionController
+    let onMove: () -> Void
+    let onComplete: () -> Void
+    let onDelete: () -> Void
+
+    private var selectedCount: Int { selection.selectedTaskIDs.count }
+
+    private var hasIncompleteSelected: Bool {
+        selection.selectedTaskIDs.contains { model.task(withID: $0)?.completed == false }
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text(selectedCount > 0 ? "\(selectedCount) selected" : "Select items")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Spacer()
+                Button("Cancel") { selection.exit() }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            HStack(spacing: 0) {
+                SelectionBarAction(systemName: "xmark", label: "Clear", disabled: selectedCount == 0) {
+                    selection.clear()
                 }
-                .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Add task to \(destinationName) and close keyboard")
+                SelectionBarAction(systemName: "square.grid.2x2", label: "Move", disabled: selectedCount == 0, action: onMove)
+                SelectionBarAction(systemName: "checkmark", label: "Done", disabled: !hasIncompleteSelected, action: onComplete)
+                SelectionBarAction(
+                    systemName: "trash",
+                    label: "Delete",
+                    disabled: selectedCount == 0,
+                    danger: true,
+                    action: onDelete
+                )
+            }
+            .padding(.horizontal, 6)
+            .padding(.bottom, 8)
+        }
+        .taskifyGlass(cornerRadius: 22)
+    }
+}
+
+private struct SelectionBarAction: View {
+    let systemName: String
+    let label: String
+    var disabled: Bool
+    var danger: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: systemName)
+                    .font(.system(size: 17, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .foregroundStyle(disabled ? TaskifyTheme.tertiaryText : (danger ? Color.red : TaskifyTheme.primaryText))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+}
+
+/// Board/column picker for the selection bar's "Move" action, ported from `SelectionOverlays.tsx`.
+/// List boards with more than one list, week boards (always 7 weekday columns), and compound
+/// boards all drill into a column picker; a single-column list board moves directly.
+private struct SelectionMoveSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
+    var selection: TaskSelectionController
+    let onMoved: () -> Void
+
+    private struct ColumnTarget: Identifiable {
+        let id: String
+        let boardID: String
+        let boardName: String
+        let columnID: String
+        let columnName: String
+    }
+
+    @State private var drilledInBoard: Board?
+
+    private var eligibleBoards: [Board] {
+        model.visibleBoards.filter { $0.kind != .bible }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let drilledInBoard {
+                    ForEach(columnTargets(for: drilledInBoard)) { target in
+                        Button {
+                            move(toBoardID: target.boardID, columnID: target.columnID)
+                        } label: {
+                            HStack {
+                                Text(target.columnName)
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                if target.boardID != drilledInBoard.id {
+                                    Spacer()
+                                    Text(target.boardName)
+                                        .font(.caption)
+                                        .foregroundStyle(TaskifyTheme.secondaryText)
+                                }
+                            }
+                        }
+                    }
+                } else if selection.selectedTaskIDs.isEmpty {
+                    Text("Select one or more items to move.")
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                } else {
+                    ForEach(eligibleBoards) { board in
+                        Button {
+                            handleSelect(board)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(board.name)
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                    Text(board.kind.rawValue.capitalized)
+                                        .font(.caption)
+                                        .foregroundStyle(TaskifyTheme.secondaryText)
+                                }
+                                Spacer()
+                                if needsDrillIn(board) {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(drilledInBoard == nil ? "Move selected items" : "Choose a list")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if drilledInBoard != nil {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Back") { drilledInBoard = nil }
+                    }
+                } else {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
             }
         }
+    }
+
+    private func needsDrillIn(_ board: Board) -> Bool {
+        switch board.kind {
+        case .list: return board.columns.count > 1
+        case .week, .compound: return true
+        case .bible: return false
+        }
+    }
+
+    private func handleSelect(_ board: Board) {
+        if needsDrillIn(board) {
+            drilledInBoard = board
+        } else if let columnID = board.columns.first?.id {
+            move(toBoardID: board.id, columnID: columnID)
+        }
+    }
+
+    private func columnTargets(for board: Board) -> [ColumnTarget] {
+        if board.kind == .compound {
+            return model.compoundChildBoards(for: board.id).flatMap { child in
+                child.columns.sorted { $0.order < $1.order }.map { column in
+                    ColumnTarget(
+                        id: "\(child.id)::\(column.id)",
+                        boardID: child.id,
+                        boardName: child.name,
+                        columnID: column.id,
+                        columnName: column.name
+                    )
+                }
+            }
+        }
+        return board.columns
+            .sorted { $0.order < $1.order }
+            .map { column in
+                ColumnTarget(
+                    id: column.id,
+                    boardID: board.id,
+                    boardName: board.name,
+                    columnID: column.id,
+                    columnName: column.name
+                )
+            }
+    }
+
+    private func move(toBoardID boardID: String, columnID: String) {
+        model.moveTasks(selection.selectedTaskIDs, toBoardID: boardID, columnID: columnID)
+        dismiss()
+        onMoved()
     }
 }
 
@@ -1177,6 +1781,11 @@ private struct ListBoardView: View {
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
             .scrollPosition(id: $focusedPageID)
+            .horizontalTaskDragAutoScroll(
+                pageIDs: columns.map(\.id),
+                focusedPageID: $focusedPageID,
+                viewportWidth: proxy.size.width
+            )
             .onAppear(perform: repairFocusedPage)
             .onChange(of: columns.map(\.id)) { _, _ in repairFocusedPage() }
         }
@@ -1238,6 +1847,11 @@ private struct CompoundBoardView: View {
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
                 .scrollPosition(id: $focusedPageID)
+                .horizontalTaskDragAutoScroll(
+                    pageIDs: columns.map(\.id),
+                    focusedPageID: $focusedPageID,
+                    viewportWidth: proxy.size.width
+                )
                 .onAppear(perform: repairFocusedPage)
                 .onChange(of: columns.map(\.id)) { _, _ in repairFocusedPage() }
             }
@@ -1529,6 +2143,11 @@ private struct WeekBoardView: View {
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
             .scrollPosition(id: $focusedPageID)
+            .horizontalTaskDragAutoScroll(
+                pageIDs: WeekdayColumn.allCases.map(\.rawValue),
+                focusedPageID: $focusedPageID,
+                viewportWidth: proxy.size.width
+            )
             .onAppear {
                 guard WeekdayColumn(rawValue: focusedPageID ?? "") == nil else { return }
                 focusedPageID = WeekdayColumn.containing(Date()).rawValue
@@ -1597,13 +2216,18 @@ private struct DayColumnView: View {
 
 struct TaskCardView: View {
     @Environment(AppModel.self) private var model
+    // Optional: only Boards' own board content injects a TaskSelectionController (via
+    // `.environment(selection)` in BoardsView.body). TaskCardView is also used from Upcoming and
+    // a couple of other spots that never enter selection mode, so this must tolerate being nil
+    // rather than requiring every call site to provide one.
+    @Environment(TaskSelectionController.self) private var selection: TaskSelectionController?
+    @Environment(TaskCompletionAnimationController.self)
+    private var completionAnimations: TaskCompletionAnimationController?
     let task: TaskItem
     let allowsDragging: Bool
     @State private var showingEditor = false
     @State private var showingTaskShare = false
     @State private var taskShareMode: TaskShareMode = .share
-    @State private var completionPreview = false
-    @State private var completionBurst = false
 
     init(task: TaskItem, allowsDragging: Bool = false) {
         self.task = task
@@ -1651,10 +2275,6 @@ struct TaskCardView: View {
         TaskContentLinks.removingURLs(from: task.note)
     }
 
-    private var showsCompletedState: Bool {
-        task.completed || completionPreview
-    }
-
     var body: some View {
         // Hoisted once per body evaluation: these are all plain computed properties (not
         // memoized by Swift), and several run regex matching over the title/note
@@ -1666,37 +2286,47 @@ struct TaskCardView: View {
         let displayNote = displayNote
         let subtaskProgress = subtaskProgress
         let visibleStreak = visibleStreak
-        let showsCompletedState = showsCompletedState
         let cardCornerRadius = hasMedia ? CGFloat(24) : 18
+        let isSelectionMode = selection?.isActive ?? false
+        let isSelected = selection?.selectedTaskIDs.contains(task.id) ?? false
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 11) {
-                Button(action: handleCompletionTap) {
-                    ZStack {
-                        if completionBurst {
-                            Circle()
-                                .stroke(TaskifyTheme.accent.opacity(0.72), lineWidth: 2)
-                                .frame(width: 27, height: 27)
-                                .transition(.asymmetric(
-                                    insertion: .scale(scale: 0.55).combined(with: .opacity),
-                                    removal: .scale(scale: 1.8).combined(with: .opacity)
-                                ))
+                GeometryReader { proxy in
+                    Button {
+                        if isSelectionMode {
+                            selection?.toggle(task.id)
+                        } else {
+                            let frame = proxy.frame(
+                                in: .named(TaskCompletionFlightCoordinateSpace.name)
+                            )
+                            handleCompletionTap(
+                                origin: CGPoint(x: frame.midX, y: frame.midY)
+                            )
                         }
-
-                        Image(systemName: showsCompletedState ? "checkmark.circle.fill" : "circle")
+                    } label: {
+                        Image(systemName: isSelectionMode
+                            ? (isSelected ? "checkmark.circle.fill" : "circle")
+                            : (task.completed ? "checkmark.circle.fill" : "circle"))
                             .font(.system(size: 22, weight: .medium))
-                            .foregroundStyle(showsCompletedState ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                            .foregroundStyle((isSelectionMode ? isSelected : task.completed)
+                                ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
                             .contentTransition(.symbolEffect(.replace))
-                            .scaleEffect(completionPreview ? 1.12 : 1)
+                            .frame(width: 30, height: 30)
                     }
-                    .frame(width: 30, height: 30)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isSelectionMode
+                        ? (isSelected ? "Deselect task" : "Select task")
+                        : (task.completed ? "Mark incomplete" : "Complete task"))
                 }
-                .buttonStyle(.plain)
-                .disabled(completionPreview)
-                .accessibilityLabel(showsCompletedState ? "Mark incomplete" : "Complete task")
+                .frame(width: 30, height: 30)
 
                 Button {
-                    showingEditor = true
+                    if isSelectionMode {
+                        selection?.toggle(task.id)
+                    } else {
+                        showingEditor = true
+                    }
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(displayTitle)
@@ -1725,9 +2355,7 @@ struct TaskCardView: View {
 
                                 if task.dueDateEnabled, let dueDate = task.dueDate {
                                     Label {
-                                        Text(task.dueTimeEnabled
-                                            ? dueDate.formatted(.dateTime.month(.abbreviated).day().hour().minute())
-                                            : dueDate.formatted(.dateTime.month(.abbreviated).day()))
+                                        Text(formattedDueDate(dueDate))
                                     } icon: {
                                         Image(systemName: task.dueTimeEnabled ? "clock" : "calendar")
                                     }
@@ -1802,6 +2430,7 @@ struct TaskCardView: View {
                     .zIndex(0)
             }
         }
+        .allowsHitTesting(!isSelectionMode)
         .padding(.horizontal, hasMedia ? 10 : 13)
         .padding(.vertical, hasMedia ? 10 : 12)
         .background(
@@ -1814,49 +2443,72 @@ struct TaskCardView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
-                .stroke(Color.white.opacity(hasMedia ? 0.15 : 0.12), lineWidth: 1)
+                .stroke(
+                    isSelected ? TaskifyTheme.accent : Color.white.opacity(hasMedia ? 0.15 : 0.12),
+                    lineWidth: isSelected ? 2 : 1
+                )
         )
+        .overlay {
+            if isSelectionMode {
+                Button {
+                    selection?.toggle(task.id)
+                } label: {
+                    Color.clear
+                        .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isSelected ? "Deselect \(displayTitle)" : "Select \(displayTitle)")
+            }
+        }
         .shadow(color: Color.black.opacity(0.22), radius: 8, y: 5)
         .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .modifier(TaskDragSourceModifier(
-            payload: allowsDragging ? TaskDragPayload(taskID: task.id) : nil,
+            payload: (allowsDragging && !isSelectionMode) ? TaskDragPayload(taskID: task.id) : nil,
             title: displayTitle
         ))
-        .accessibilityAction(named: "Edit task") { showingEditor = true }
-        .contextMenu {
-            Button {
+        .accessibilityAction(named: isSelectionMode ? "Toggle selection" : "Edit task") {
+            if isSelectionMode {
+                selection?.toggle(task.id)
+            } else {
                 showingEditor = true
-            } label: {
-                Label("Edit", systemImage: "pencil")
             }
-            Button {
-                taskShareMode = .share
-                showingTaskShare = true
-            } label: {
-                Label("Share Task", systemImage: "paperplane")
-            }
-            Button {
-                taskShareMode = .assignment
-                showingTaskShare = true
-            } label: {
-                Label("Assign Task", systemImage: "person.badge.plus")
-            }
-            if task.dueDateEnabled, task.dueDate != nil {
+        }
+        .contextMenu {
+            if !isSelectionMode {
                 Button {
-                    model.postponeTask(task.id, byDays: 1)
+                    showingEditor = true
                 } label: {
-                    Label("Postpone 1 Day", systemImage: "calendar.badge.clock")
+                    Label("Edit", systemImage: "pencil")
                 }
                 Button {
-                    model.postponeTask(task.id, byDays: 7)
+                    taskShareMode = .share
+                    showingTaskShare = true
                 } label: {
-                    Label("Postpone 1 Week", systemImage: "calendar.badge.clock")
+                    Label("Share Task", systemImage: "paperplane")
                 }
-            }
-            Button(role: .destructive) {
-                model.deleteTask(task.id)
-            } label: {
-                Label("Delete", systemImage: "trash")
+                Button {
+                    taskShareMode = .assignment
+                    showingTaskShare = true
+                } label: {
+                    Label("Assign Task", systemImage: "person.badge.plus")
+                }
+                if task.dueDateEnabled, task.dueDate != nil {
+                    Button {
+                        model.postponeTask(task.id, byDays: 1)
+                    } label: {
+                        Label("Postpone 1 Day", systemImage: "calendar.badge.clock")
+                    }
+                    Button {
+                        model.postponeTask(task.id, byDays: 7)
+                    } label: {
+                        Label("Postpone 1 Week", systemImage: "calendar.badge.clock")
+                    }
+                }
+                Button(role: .destructive) {
+                    model.deleteTask(task.id)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
         .sheet(isPresented: $showingEditor) {
@@ -1873,7 +2525,22 @@ struct TaskCardView: View {
         }
     }
 
-    private func handleCompletionTap() {
+    private func formattedDueDate(_ dueDate: Date) -> String {
+        var style = Date.FormatStyle()
+            .month(.abbreviated)
+            .day()
+        if task.dueTimeEnabled {
+            style = style.hour().minute()
+        }
+        if task.dueTimeEnabled,
+           let dueTimeZone = task.dueTimeZone,
+           let timeZone = TimeZone(identifier: dueTimeZone) {
+            style.timeZone = timeZone
+        }
+        return dueDate.formatted(style)
+    }
+
+    private func handleCompletionTap(origin: CGPoint) {
         if task.completed {
             withAnimation(.snappy) {
                 model.toggleCompletion(task.id)
@@ -1881,36 +2548,9 @@ struct TaskCardView: View {
             return
         }
 
-        guard !completionPreview else { return }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
-            completionPreview = true
-            completionBurst = true
-        }
-
-        Task { @MainActor in
-            do {
-                try await Task.sleep(for: .milliseconds(140))
-            } catch {
-                return
-            }
-            withAnimation(.easeOut(duration: 0.28)) {
-                completionBurst = false
-            }
-
-            do {
-                try await Task.sleep(for: .milliseconds(260))
-            } catch {
-                return
-            }
-            if model.task(withID: task.id)?.completed == false {
-                withAnimation(.snappy) {
-                    model.toggleCompletion(task.id)
-                }
-            }
-            completionPreview = false
-        }
+        completionAnimations?.launch(from: origin)
+        model.toggleCompletion(task.id)
     }
 }
 

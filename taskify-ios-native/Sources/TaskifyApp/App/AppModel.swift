@@ -110,6 +110,128 @@ enum NostrDirectMessageError: LocalizedError {
     }
 }
 
+private final class AppSnapshotLookupCache {
+    private struct TaskColumnKey: Hashable {
+        let boardID: String
+        let columnID: String
+        let includeCompleted: Bool
+        let minute: Int
+    }
+
+    private var boardsByID: [String: Board]?
+    private var tasksByID: [String: TaskItem]?
+    private var taskIDs: Set<String>?
+    private var tasksByColumn: [TaskColumnKey: [TaskItem]] = [:]
+    private var taskColumnMinute: Int?
+    private var contactsByPublicKey: [String: NostrContact]?
+    private var groupsByID: [String: NostrGroupConversation]?
+    private var cachedVisibleBoards: [Board]?
+
+    func invalidate() {
+        boardsByID = nil
+        tasksByID = nil
+        taskIDs = nil
+        tasksByColumn.removeAll(keepingCapacity: true)
+        taskColumnMinute = nil
+        contactsByPublicKey = nil
+        groupsByID = nil
+        cachedVisibleBoards = nil
+    }
+
+    func board(id: String, snapshot: TaskifySnapshot) -> Board? {
+        if boardsByID == nil {
+            boardsByID = Dictionary(
+                snapshot.boards.map { ($0.id, $0) },
+                uniquingKeysWith: { _, newest in newest }
+            )
+        }
+        return boardsByID?[id]
+    }
+
+    func task(id: String, snapshot: TaskifySnapshot) -> TaskItem? {
+        if tasksByID == nil {
+            tasksByID = Dictionary(
+                snapshot.tasks
+                    .filter { !$0.isDeleted }
+                    .map { ($0.id, $0) },
+                uniquingKeysWith: { _, newest in newest }
+            )
+        }
+        return tasksByID?[id]
+    }
+
+    func activeTaskIDs(snapshot: TaskifySnapshot) -> Set<String> {
+        if let taskIDs { return taskIDs }
+        let values = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
+        taskIDs = values
+        return values
+    }
+
+    func tasks(
+        boardID: String,
+        columnID: String,
+        includeCompleted: Bool,
+        snapshot: TaskifySnapshot,
+        now: Date = Date()
+    ) -> [TaskItem] {
+        let minute = Int(now.timeIntervalSince1970 / 60)
+        if taskColumnMinute != minute {
+            tasksByColumn.removeAll(keepingCapacity: true)
+            taskColumnMinute = minute
+        }
+        let key = TaskColumnKey(
+            boardID: boardID,
+            columnID: columnID,
+            includeCompleted: includeCompleted,
+            minute: minute
+        )
+        if let cached = tasksByColumn[key] { return cached }
+        let values = snapshot.tasks(
+            boardID: boardID,
+            columnID: columnID,
+            includeCompleted: includeCompleted,
+            now: now
+        )
+        tasksByColumn[key] = values
+        return values
+    }
+
+    func contact(publicKey: String, snapshot: TaskifySnapshot) -> NostrContact? {
+        if contactsByPublicKey == nil {
+            contactsByPublicKey = Dictionary(
+                (snapshot.contacts ?? []).map {
+                    ($0.publicKey.lowercased(), $0)
+                },
+                uniquingKeysWith: { _, newest in newest }
+            )
+        }
+        let normalized = publicKey.count == 64
+            ? publicKey.lowercased()
+            : NostrPublicKey.parse(publicKey)?.hexString
+        guard let normalized else { return nil }
+        return contactsByPublicKey?[normalized]
+    }
+
+    func group(id: String, snapshot: TaskifySnapshot) -> NostrGroupConversation? {
+        if groupsByID == nil {
+            groupsByID = Dictionary(
+                (snapshot.nostrGroupConversations ?? []).map {
+                    ($0.groupID, $0)
+                },
+                uniquingKeysWith: { _, newest in newest }
+            )
+        }
+        return groupsByID?[id.lowercased()]
+    }
+
+    func visibleBoards(snapshot: TaskifySnapshot) -> [Board] {
+        if let cachedVisibleBoards { return cachedVisibleBoards }
+        let boards = snapshot.boards.filter(\.isVisible)
+        cachedVisibleBoards = boards
+        return boards
+    }
+}
+
 // @Observable (vs. the old ObservableObject + @Published) makes SwiftUI track which of these
 // properties each view actually reads, so e.g. a relay-status tick no longer re-renders every
 // board and chat view in the app — with 26 frequently-churning properties and every screen
@@ -121,7 +243,9 @@ final class AppModel {
     private static let sharedInboxOutboxScope = "__taskify-shared-inbox__"
     private static let contactsOutboxScope = "__taskify-contacts__"
     private static let directMessagesOutboxScope = "__taskify-direct-messages__"
-    private(set) var snapshot = TaskifySnapshot.empty
+    private(set) var snapshot = TaskifySnapshot.empty {
+        didSet { snapshotLookupCache.invalidate() }
+    }
     private(set) var isLoading = true
     private(set) var identityPublicKey = ""
     private(set) var identityNpub = ""
@@ -147,6 +271,7 @@ final class AppModel {
     private(set) var accountBackupMessage: String?
     var pendingAccountBackup: NostrAppBackupPayload?
     var errorMessage: String?
+    private(set) var showsFirstRunOnboarding = false
 
     // Sync/bookkeeping internals — never read by views, so keep them out of observation
     // tracking (they churn constantly during sync).
@@ -154,12 +279,15 @@ final class AppModel {
     @ObservationIgnored private let identityStore: KeychainIdentityStore
     @ObservationIgnored private let syncEngine: TaskSyncEngine
     @ObservationIgnored private let notificationCoordinator: TaskNotificationCoordinator
+    @ObservationIgnored private let snapshotLookupCache = AppSnapshotLookupCache()
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var syncListenerTask: Task<Void, Never>?
     @ObservationIgnored private var notificationTask: Task<Void, Never>?
     @ObservationIgnored private var accountBackupSearchTask: Task<Void, Never>?
     @ObservationIgnored private var accountBackupPublishTask: Task<Void, Never>?
     @ObservationIgnored private var contactRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var sharedInboxProcessingTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingSharedInboxEvents: [NostrEvent] = []
     @ObservationIgnored private var accountBackupBaseline: NostrAppBackupPayload?
     @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
     @ObservationIgnored private var lastAccountBackupCreatedAt = 0
@@ -168,6 +296,9 @@ final class AppModel {
     @ObservationIgnored private var syncState: TaskSyncState = .connecting
     @ObservationIgnored private var lastContactRefreshAt: Date?
     @ObservationIgnored private var walletPaymentDeliveryHandler: (() -> Void)?
+    // Keychain reads are slow syscalls; shared-inbox events arrive in bursts during initial
+    // sync and each needs the identity to unwrap its gift wrap, so cache it in memory.
+    @ObservationIgnored private var cachedIdentity: NostrIdentity?
 
     init(
         store: JSONTaskStore = JSONTaskStore(),
@@ -189,13 +320,19 @@ final class AppModel {
         accountBackupSearchTask?.cancel()
         accountBackupPublishTask?.cancel()
         contactRefreshTask?.cancel()
+        sharedInboxProcessingTask?.cancel()
     }
 
-    var visibleBoards: [Board] { snapshot.visibleBoards }
+    var visibleBoards: [Board] {
+        snapshotLookupCache.visibleBoards(snapshot: snapshot)
+    }
     var boardsForManagement: [Board] {
         snapshot.boards.filter { !$0.hidden && $0.kind != .bible }
     }
-    var selectedBoard: Board? { snapshot.selectedBoard }
+    var selectedBoard: Board? {
+        let boards = snapshotLookupCache.visibleBoards(snapshot: snapshot)
+        return boards.first { $0.id == snapshot.selectedBoardID } ?? boards.first
+    }
     var selectedBoardID: String { snapshot.selectedBoardID }
     var sharedInboxItems: [SharedInboxItem] { snapshot.sharedInbox }
     var sharedContactInboxItems: [SharedContactInboxItem] { snapshot.sharedContactInbox }
@@ -203,9 +340,14 @@ final class AppModel {
     var taskifyEvents: [TaskifyEvent] { snapshot.acceptedTaskifyEvents }
     var walletPaymentRequestRelayURLs: [String] { sharedInboxRelayURLs }
     var pendingSharedInboxCount: Int { snapshot.pendingSharedInboxCount }
+    var activeTaskIDs: Set<String> {
+        snapshotLookupCache.activeTaskIDs(snapshot: snapshot)
+    }
     var recentSharedTaskRecipients: [SharedTaskRecipient] { snapshot.recentSharedTaskRecipients }
     var nostrContacts: [NostrContact] { snapshot.contactDirectory }
-    var directMessageThreads: [NostrDirectMessageThread] { snapshot.directMessageThreads() }
+    var directMessageThreads: [NostrDirectMessageThread] {
+        snapshot.activeDirectMessageThreads()
+    }
     var groupConversations: [NostrGroupConversation] { snapshot.groupConversations }
     var syncIsOnline: Bool {
         if case .online = syncState { return true }
@@ -219,11 +361,11 @@ final class AppModel {
     }
 
     func task(withID taskID: String) -> TaskItem? {
-        snapshot.tasks.first { $0.id == taskID && !$0.isDeleted }
+        snapshotLookupCache.task(id: taskID, snapshot: snapshot)
     }
 
     func board(withID boardID: String) -> Board? {
-        snapshot.boards.first { $0.id == boardID }
+        snapshotLookupCache.board(id: boardID, snapshot: snapshot)
     }
 
     func directMessages(with peerPublicKey: String) -> [NostrDirectMessage] {
@@ -232,6 +374,17 @@ final class AppModel {
 
     func directMessageReactions(for message: NostrDirectMessage) -> [NostrDirectMessageReaction] {
         snapshot.directMessageReactions(for: message)
+    }
+
+    func directMessageReactionLookup(
+        peerPublicKey: String
+    ) -> [String: [NostrDirectMessageReaction]] {
+        Dictionary(
+            grouping: (snapshot.directMessageReactions ?? []).filter {
+                !$0.isRemoval && $0.peerPublicKey == peerPublicKey
+            },
+            by: \.targetEventID
+        )
     }
 
     func isDirectMessageThreadArchived(_ peerPublicKey: String) -> Bool {
@@ -251,7 +404,7 @@ final class AppModel {
     }
 
     func groupConversation(id: String) -> NostrGroupConversation? {
-        snapshot.groupConversation(id: id)
+        snapshotLookupCache.group(id: id, snapshot: snapshot)
     }
 
     @discardableResult
@@ -342,7 +495,7 @@ final class AppModel {
     }
 
     func nostrContact(publicKey: String) -> NostrContact? {
-        snapshot.contact(publicKeyValue: publicKey)
+        snapshotLookupCache.contact(publicKey: publicKey, snapshot: snapshot)
     }
 
     func markDirectMessageThreadRead(peerPublicKey: String) {
@@ -392,27 +545,30 @@ final class AppModel {
 
     func tasks(for weekday: WeekdayColumn, includeCompleted: Bool) -> [TaskItem] {
         guard let boardID = selectedBoard?.id else { return [] }
-        return snapshot.tasks(
+        return snapshotLookupCache.tasks(
             boardID: boardID,
             columnID: weekday.rawValue,
-            includeCompleted: includeCompleted
+            includeCompleted: includeCompleted,
+            snapshot: snapshot
         )
     }
 
     func tasks(forColumnID columnID: String, includeCompleted: Bool) -> [TaskItem] {
         guard let boardID = selectedBoard?.id else { return [] }
-        return snapshot.tasks(
+        return snapshotLookupCache.tasks(
             boardID: boardID,
             columnID: columnID,
-            includeCompleted: includeCompleted
+            includeCompleted: includeCompleted,
+            snapshot: snapshot
         )
     }
 
     func tasks(boardID: String, columnID: String, includeCompleted: Bool) -> [TaskItem] {
-        snapshot.tasks(
+        snapshotLookupCache.tasks(
             boardID: boardID,
             columnID: columnID,
-            includeCompleted: includeCompleted
+            includeCompleted: includeCompleted,
+            snapshot: snapshot
         )
     }
 
@@ -542,7 +698,11 @@ final class AppModel {
         startDate: Date,
         endDate: Date,
         isAllDay: Bool,
-        boardID requestedBoardID: String
+        boardID requestedBoardID: String,
+        startTimeZoneID: String? = nil,
+        reminders: [TaskReminder] = [],
+        reminderTime: String? = nil,
+        recurrence: TaskRecurrence? = nil
     ) -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
@@ -558,6 +718,14 @@ final class AppModel {
         let resolvedEnd = isAllDay
             ? max(startDate, endDate)
             : (endDate > startDate ? endDate : startDate.addingTimeInterval(60 * 60))
+        let resolvedTimeZoneID = startTimeZoneID
+            .flatMap { TimeZone(identifier: $0)?.identifier }
+            ?? TimeZone.current.identifier
+        let normalizedReminders = Self.normalizedTaskifyEventReminders(
+            reminders,
+            isAllDay: isAllDay
+        )
+        let normalizedRecurrence = recurrence?.isActive == true ? recurrence : nil
         let event = TaskifyEvent(
             id: eventID,
             boardID: board.id,
@@ -573,8 +741,12 @@ final class AppModel {
             endDateValue: isAllDay ? Self.taskifyDateValue(resolvedEnd) : nil,
             startISO: isAllDay ? nil : Self.taskifyISOValue(startDate),
             endISO: isAllDay ? nil : Self.taskifyISOValue(resolvedEnd),
-            startTimeZoneID: isAllDay ? nil : TimeZone.current.identifier,
-            endTimeZoneID: isAllDay ? nil : TimeZone.current.identifier,
+            startTimeZoneID: isAllDay ? nil : resolvedTimeZoneID,
+            endTimeZoneID: isAllDay ? nil : resolvedTimeZoneID,
+            reminders: normalizedReminders.isEmpty ? nil : normalizedReminders,
+            reminderTime: isAllDay ? Self.normalizedTaskifyEventReminderTime(reminderTime) : nil,
+            recurrence: normalizedRecurrence,
+            seriesID: normalizedRecurrence == nil ? nil : eventID,
             createdBy: identityPublicKey.nilIfEmpty,
             lastEditedBy: identityPublicKey.nilIfEmpty,
             canonicalAddress: "",
@@ -587,7 +759,12 @@ final class AppModel {
             deleted: false
         )
         _ = snapshot.upsertTaskifyEvent(event)
-        synchronizeTaskifyEvent(eventID)
+        let seriesChanges = snapshot.rebuildTaskifyEventSeries(
+            seedID: eventID,
+            editorPublicKey: identityPublicKey.nilIfEmpty
+        )
+        synchronizeTaskifyEvents([eventID] + seriesChanges.allEventIDs)
+        refreshNotifications(requestPermission: !normalizedReminders.isEmpty)
         return true
     }
 
@@ -599,7 +776,11 @@ final class AppModel {
         location: String,
         startDate: Date,
         endDate: Date,
-        isAllDay: Bool
+        isAllDay: Bool,
+        startTimeZoneID: String? = nil,
+        reminders: [TaskReminder]? = nil,
+        reminderTime: String? = nil,
+        recurrence: TaskRecurrence? = nil
     ) -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
@@ -607,9 +788,21 @@ final class AppModel {
               let index = events.firstIndex(where: { $0.id == eventID && !$0.isReadOnly && !$0.isDeleted }) else {
             return false
         }
+        let previousSeriesID = events[index].seriesID
+        let wasSeriesSeed = previousSeriesID == eventID
         let resolvedEnd = isAllDay
             ? max(startDate, endDate)
             : (endDate > startDate ? endDate : startDate.addingTimeInterval(60 * 60))
+        let resolvedTimeZoneID = startTimeZoneID
+            .flatMap { TimeZone(identifier: $0)?.identifier }
+            ?? events[index].startTimeZoneID
+            ?? TimeZone.current.identifier
+        let selectedReminders = reminders ?? events[index].reminders ?? []
+        let normalizedReminders = Self.normalizedTaskifyEventReminders(
+            selectedReminders,
+            isAllDay: isAllDay
+        )
+        let normalizedRecurrence = recurrence?.isActive == true ? recurrence : nil
         events[index].title = trimmedTitle
         events[index].details = details.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         events[index].locations = location.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty.map { [$0] }
@@ -618,24 +811,43 @@ final class AppModel {
         events[index].endDateValue = isAllDay ? Self.taskifyDateValue(resolvedEnd) : nil
         events[index].startISO = isAllDay ? nil : Self.taskifyISOValue(startDate)
         events[index].endISO = isAllDay ? nil : Self.taskifyISOValue(resolvedEnd)
-        events[index].startTimeZoneID = isAllDay ? nil : TimeZone.current.identifier
-        events[index].endTimeZoneID = isAllDay ? nil : TimeZone.current.identifier
+        events[index].startTimeZoneID = isAllDay ? nil : resolvedTimeZoneID
+        events[index].endTimeZoneID = isAllDay ? nil : resolvedTimeZoneID
+        events[index].reminders = normalizedReminders.isEmpty ? nil : normalizedReminders
+        events[index].reminderTime = isAllDay
+            ? Self.normalizedTaskifyEventReminderTime(reminderTime ?? events[index].reminderTime)
+            : nil
+        events[index].recurrence = normalizedRecurrence
+        events[index].seriesID = normalizedRecurrence == nil
+            ? nil
+            : (previousSeriesID ?? events[index].id)
         events[index].lastEditedBy = identityPublicKey.nilIfEmpty
         events[index].deleted = false
         snapshot.taskifyEvents = events
-        synchronizeTaskifyEvent(eventID)
+        let seriesChanges = wasSeriesSeed || (previousSeriesID == nil && normalizedRecurrence != nil)
+            ? snapshot.rebuildTaskifyEventSeries(
+                seedID: eventID,
+                replacingSeriesID: previousSeriesID,
+                editorPublicKey: identityPublicKey.nilIfEmpty
+            )
+            : TaskifyEventSeriesChanges()
+        synchronizeTaskifyEvents([eventID] + seriesChanges.allEventIDs)
+        refreshNotifications(requestPermission: !normalizedReminders.isEmpty)
         return true
     }
 
-    func deleteTaskifyEvent(_ eventID: String) {
-        guard var events = snapshot.taskifyEvents,
-              let index = events.firstIndex(where: { $0.id == eventID && !$0.isReadOnly && !$0.isDeleted }) else {
-            return
-        }
-        events[index].deleted = true
-        events[index].lastEditedBy = identityPublicKey.nilIfEmpty
-        snapshot.taskifyEvents = events
-        synchronizeTaskifyEvent(eventID)
+    func deleteTaskifyEvent(
+        _ eventID: String,
+        scope: TaskifyEventDeletionScope = .single
+    ) {
+        let changes = snapshot.deleteTaskifyEvent(
+            eventID: eventID,
+            scope: scope,
+            editorPublicKey: identityPublicKey.nilIfEmpty
+        )
+        guard !changes.allEventIDs.isEmpty else { return }
+        synchronizeTaskifyEvents(changes.allEventIDs)
+        refreshNotifications(requestPermission: false)
     }
 
     @discardableResult
@@ -646,6 +858,7 @@ final class AppModel {
         dueDate: Date?,
         dueDateEnabled: Bool,
         dueTimeEnabled: Bool,
+        dueTimeZone: String? = nil,
         priority: TaskPriority?,
         columnID: String?,
         subtasks: [TaskSubtask],
@@ -662,7 +875,7 @@ final class AppModel {
             dueDate: dueDate,
             dueDateEnabled: dueDateEnabled,
             dueTimeEnabled: dueTimeEnabled,
-            dueTimeZone: dueTimeEnabled ? TimeZone.current.identifier : nil,
+            dueTimeZone: dueTimeEnabled ? (dueTimeZone ?? TimeZone.current.identifier) : nil,
             priority: priority,
             columnID: columnID,
             subtasks: subtasks,
@@ -688,8 +901,16 @@ final class AppModel {
     func postponeTask(_ taskID: String, byDays days: Int) -> Bool {
         guard let task = task(withID: taskID),
               task.dueDateEnabled,
-              let dueDate = task.dueDate,
-              let nextDueDate = Calendar.current.date(byAdding: .day, value: days, to: dueDate) else {
+              let dueDate = task.dueDate else {
+            return false
+        }
+        var calendar = Calendar.current
+        if task.dueTimeEnabled,
+           let dueTimeZone = task.dueTimeZone,
+           let timeZone = TimeZone(identifier: dueTimeZone) {
+            calendar.timeZone = timeZone
+        }
+        guard let nextDueDate = calendar.date(byAdding: .day, value: days, to: dueDate) else {
             return false
         }
         return updateTask(
@@ -699,6 +920,7 @@ final class AppModel {
             dueDate: nextDueDate,
             dueDateEnabled: true,
             dueTimeEnabled: task.dueTimeEnabled,
+            dueTimeZone: task.dueTimeZone,
             priority: task.priority,
             columnID: task.columnID,
             subtasks: task.subtasks ?? [],
@@ -724,6 +946,30 @@ final class AppModel {
             .forEach { synchronizeTask($0) }
         refreshNotifications(requestPermission: false)
         reconcileScriptureMemory()
+    }
+
+    /// Bulk counterpart to `toggleCompletion`, for the Boards multi-select action bar. Only marks
+    /// *incomplete* tasks done — unlike single-task `toggleCompletion`, a bulk "Complete" action on
+    /// a mixed selection shouldn't un-complete tasks that already were, matching the PWA's
+    /// `completeSelectedItems` (disabled unless the selection has at least one incomplete task).
+    func completeTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {
+        for taskID in taskIDs where task(withID: taskID)?.completed == false {
+            toggleCompletion(taskID)
+        }
+    }
+
+    /// Bulk counterpart to `deleteTask`.
+    func deleteTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {
+        for taskID in taskIDs {
+            deleteTask(taskID)
+        }
+    }
+
+    /// Bulk counterpart to `moveTask`, for the Boards multi-select "Move" action.
+    func moveTasks<S: Sequence>(_ taskIDs: S, toBoardID boardID: String, columnID: String) where S.Element == String {
+        for taskID in taskIDs {
+            moveTask(taskID, toBoardID: boardID, columnID: columnID)
+        }
     }
 
     func deleteTask(_ taskID: String) {
@@ -1557,6 +1803,7 @@ final class AppModel {
 
     func prepareForBackground() async {
         await persistImmediately()
+        await refreshNotificationsImmediately()
         if accountBackupPublishPending {
             accountBackupPublishTask?.cancel()
             await publishAccountBackupSafely()
@@ -2154,6 +2401,19 @@ final class AppModel {
         )
     }
 
+    /// The current identity's nsec, for the onboarding "create new login" backup step. Only
+    /// meant to be read from that one deliberate, user-initiated screen — everywhere else in the
+    /// app only exposes the public npub.
+    func currentIdentityNsec() -> String? {
+        guard let identity = try? identityStore.load(), !identity.nsec.isEmpty else { return nil }
+        return identity.nsec
+    }
+
+    func completeFirstRunOnboarding() {
+        OnboardingSettings.setCompleted(true)
+        showsFirstRunOnboarding = false
+    }
+
     @discardableResult
     func importIdentity(_ value: String) -> Bool {
         do {
@@ -2267,13 +2527,18 @@ final class AppModel {
                 relayURLs: relays
             )
             guard !Task.isCancelled, let self else { return }
-            var decodedPayload: NostrAppBackupPayload?
-            for event in candidates {
-                if let payload = try? NostrAppBackupContract.decode(event: event, identity: identity) {
-                    decodedPayload = payload
-                    break
+            let decodedPayload: NostrAppBackupPayload? = await Task.detached(priority: .utility) {
+                () -> NostrAppBackupPayload? in
+                for event in candidates {
+                    if let payload = try? NostrAppBackupContract.decode(
+                        event: event,
+                        identity: identity
+                    ) {
+                        return payload
+                    }
                 }
-            }
+                return nil
+            }.value
             guard !Task.isCancelled else { return }
             isCheckingAccountBackup = false
             if let decodedPayload {
@@ -2318,6 +2583,9 @@ final class AppModel {
         defer { isLoading = false }
         var loadedIdentity: NostrIdentity?
         do {
+            let hadExistingIdentity = (try? identityStore.load()) != nil
+            OnboardingSettings.determineEligibilityIfNeeded(hadExistingIdentity: hadExistingIdentity)
+            showsFirstRunOnboarding = !OnboardingSettings.completed
             let identity = try identityStore.loadOrCreate()
             loadedIdentity = identity
             applyIdentity(identity)
@@ -2325,15 +2593,28 @@ final class AppModel {
             errorMessage = error.localizedDescription
         }
         do {
-            snapshot = try await store.load()
-            try await store.save(snapshot)
+            let loadResult = try await store.loadWithRepairStatus()
+            snapshot = loadResult.snapshot
+            if loadResult.wasRepaired {
+                do {
+                    try await store.save(loadResult.snapshot)
+                } catch {
+                    errorMessage = "Taskify repaired your local data but could not save the repair."
+                }
+            }
         } catch {
             errorMessage = "Your native data could not be loaded. A fresh local workspace is being shown."
         }
+#if DEBUG
+        applyChatUITestFixtureIfRequested()
+        applyBoardUITestFixtureIfRequested()
+        applyPerformanceUITestFixtureIfRequested()
+#endif
         refreshNotifications(requestPermission: false)
         reconcileFastingReminders()
         reconcileScriptureMemory()
         startSync()
+        maintainTaskifyEventRecurrenceWindow()
         refreshContacts()
         if let loadedIdentity {
             findPWAAccountBackup(
@@ -2343,7 +2624,109 @@ final class AppModel {
         }
     }
 
+#if DEBUG
+    private func applyBoardUITestFixtureIfRequested() {
+        guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_BOARD_FIXTURE"] == "1" else {
+            return
+        }
+        let board = Board.week(name: "UI Test Board")
+        snapshot = TaskifySnapshot(
+            boards: [board],
+            tasks: [],
+            selectedBoardID: board.id
+        )
+        errorMessage = nil
+    }
+
+    private func applyPerformanceUITestFixtureIfRequested() {
+        guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] == "1" else {
+            return
+        }
+
+        let board = Board.week(name: "Performance")
+        let today = WeekdayColumn.containing(Date())
+        let tasks = (0..<140).map { index in
+            let weekday = index < 70
+                ? today
+                : WeekdayColumn.allCases[index % WeekdayColumn.allCases.count]
+            let hasDetails = index.isMultiple(of: 4)
+            return TaskItem(
+                id: "performance-task-\(index)",
+                boardID: board.id,
+                title: "Performance task \(index + 1)",
+                note: hasDetails
+                    ? "A realistic task note used to exercise multi-line card layout while scrolling."
+                    : "",
+                dueDate: hasDetails ? Date().addingTimeInterval(TimeInterval(index * 900)) : nil,
+                dueDateEnabled: hasDetails,
+                dueTimeEnabled: hasDetails && index.isMultiple(of: 8),
+                dueTimeZone: hasDetails ? TimeZone.current.identifier : nil,
+                priority: index.isMultiple(of: 7) ? .medium : nil,
+                subtasks: index.isMultiple(of: 6)
+                    ? [
+                        TaskSubtask(title: "First step", completed: true),
+                        TaskSubtask(title: "Second step"),
+                    ]
+                    : nil,
+                createdAt: Date().addingTimeInterval(TimeInterval(-index)),
+                order: index,
+                columnID: weekday.rawValue
+            )
+        }
+        snapshot = TaskifySnapshot(
+            boards: [board],
+            tasks: tasks,
+            selectedBoardID: board.id
+        )
+        errorMessage = nil
+    }
+
+    private func applyChatUITestFixtureIfRequested() {
+        guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1" else {
+            return
+        }
+        let peerPublicKey = String(repeating: "1", count: 64)
+        let ownPublicKey = identityPublicKey.isEmpty
+            ? String(repeating: "2", count: 64)
+            : identityPublicKey
+        snapshot.contacts = [
+            NostrContact(
+                publicKeyValue: peerPublicKey,
+                petname: "UI Test Contact"
+            ),
+        ].compactMap { $0 }
+        snapshot.directMessages = (1...40).map { index in
+            let content: String
+            switch index {
+            case 2:
+                content = "Searchable early fixture needle"
+            case 8, 20, 32:
+                content = "Repeatable fixture match \(index)"
+            case 40:
+                content = "Newest fixture message"
+            default:
+                content = "Fixture conversation message \(index)"
+            }
+            let incoming = index.isMultiple(of: 2)
+            return NostrDirectMessage(
+                rumorEventID: "ui-message-\(index)",
+                wrapEventID: "ui-wrap-\(index)",
+                peerPublicKey: peerPublicKey,
+                senderPublicKey: incoming ? peerPublicKey : ownPublicKey,
+                content: content,
+                createdAt: 1_784_647_200 + index,
+                isIncoming: incoming
+            )
+        }
+        snapshot.directMessageReadAt = [:]
+        snapshot.directMessageArchivedAt = [:]
+        snapshot.directMessageDeletedEventIDs = [:]
+        errorMessage = nil
+    }
+#endif
+
     private func applyIdentity(_ identity: NostrIdentity) {
+        cachedIdentity = identity
         identityPublicKey = identity.publicKeyHex
         identityNpub = identity.npub
     }
@@ -2398,25 +2781,149 @@ final class AppModel {
                 eventCreatedAt: record.eventCreatedAt
             ) {
                 scheduleSave()
+                maintainTaskifyEventRecurrenceWindow()
+                refreshNotifications(requestPermission: false)
             }
+        case .batch(let taskRecords, let calendarRecords):
+            applySyncBatch(tasks: taskRecords, calendarEvents: calendarRecords)
         case .sharedInbox(let event):
-            receiveSharedInboxEvent(event)
+            enqueueSharedInboxEvents([event])
+        case .sharedInboxBatch(let events):
+            enqueueSharedInboxEvents(events)
         case .status(let report):
             applySyncReport(report)
         }
     }
 
-    private func receiveSharedInboxEvent(_ event: NostrEvent) {
+    /// Merges a relay's stored-event backlog in one pass. Mutating a local copy and assigning
+    /// `snapshot` once means the whole backlog costs a single observation invalidation (and one
+    /// save/notification refresh) instead of one per event.
+    private func applySyncBatch(
+        tasks taskRecords: [TaskRelayRecord],
+        calendarEvents calendarRecords: [TaskifyCalendarRelayRecord]
+    ) {
+        for record in taskRecords {
+            lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
+        }
+        for record in calendarRecords {
+            lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
+        }
+
+        var updated = snapshot
+        let tasksChanged = updated.mergeRemoteTasks(
+            taskRecords.map { (task: $0.task, eventCreatedAt: $0.eventCreatedAt) }
+        )
+        var calendarChanged = false
+        for record in calendarRecords {
+            if updated.mergeRemoteTaskifyEvent(record.event, eventCreatedAt: record.eventCreatedAt) {
+                calendarChanged = true
+            }
+        }
+        guard tasksChanged || calendarChanged else { return }
+        snapshot = updated
+        scheduleSave()
+        if calendarChanged {
+            maintainTaskifyEventRecurrenceWindow()
+        }
+        if tasksChanged || calendarChanged {
+            refreshNotifications(requestPermission: false)
+        }
+    }
+
+    private struct SharedInboxApplyEffects {
+        var snapshotChanged = false
+        var shouldReconfigureSync = false
+        var taskIDsToSynchronize: Set<String> = []
+        var walletDeliveryQueued = false
+        var walletDeliveryFailed = false
+    }
+
+    private func enqueueSharedInboxEvents(_ events: [NostrEvent]) {
+        guard !events.isEmpty else { return }
+        pendingSharedInboxEvents.append(contentsOf: events)
+        guard sharedInboxProcessingTask == nil else { return }
+        sharedInboxProcessingTask = Task(priority: .utility) { [weak self] in
+            await self?.processPendingSharedInboxEvents()
+        }
+    }
+
+    private func processPendingSharedInboxEvents() async {
         let identity: NostrIdentity
-        do {
-            guard let storedIdentity = try identityStore.load() else { return }
-            identity = storedIdentity
-        } catch {
-            return
+        if let cachedIdentity {
+            identity = cachedIdentity
+        } else {
+            do {
+                guard let storedIdentity = try identityStore.load() else { return }
+                identity = storedIdentity
+            } catch {
+                return
+            }
+            cachedIdentity = identity
         }
-        guard let decrypted = try? NIP17GiftWrap.unwrapRumor(event, recipient: identity) else {
-            return
+
+        while !pendingSharedInboxEvents.isEmpty, !Task.isCancelled {
+            let events = pendingSharedInboxEvents
+            pendingSharedInboxEvents.removeAll(keepingCapacity: true)
+            let decryptedEvents: [NIP17DecryptedRumor] = await Task.detached(priority: .utility) {
+                () -> [NIP17DecryptedRumor] in
+                var seenEventIDs: Set<String> = []
+                return events.compactMap { event in
+                    guard seenEventIDs.insert(event.id).inserted else { return nil }
+                    return try? NIP17GiftWrap.unwrapRumor(event, recipient: identity)
+                }
+            }.value
+            guard !Task.isCancelled else { break }
+
+            // Apply a bounded group at a time. This turns a relay replay that previously caused
+            // hundreds of observation invalidations into a handful, while yielding between groups
+            // so taps and scrolling are never held behind inbox maintenance.
+            let chunkSize = 24
+            var offset = 0
+            while offset < decryptedEvents.count, !Task.isCancelled {
+                let end = min(offset + chunkSize, decryptedEvents.count)
+                var updatedSnapshot = snapshot
+                var effects = SharedInboxApplyEffects()
+                let connectedInboxRelays = Set(sharedInboxRelayURLs)
+                for decrypted in decryptedEvents[offset..<end] {
+                    applySharedInboxRumor(
+                        decrypted,
+                        identity: identity,
+                        connectedInboxRelays: connectedInboxRelays,
+                        snapshot: &updatedSnapshot,
+                        effects: &effects
+                    )
+                }
+                if effects.snapshotChanged {
+                    snapshot = updatedSnapshot
+                    scheduleSave()
+                }
+                if effects.shouldReconfigureSync {
+                    reconfigureSync()
+                }
+                for taskID in effects.taskIDsToSynchronize {
+                    synchronizeTask(taskID)
+                }
+                if effects.walletDeliveryQueued {
+                    walletPaymentDeliveryHandler?()
+                }
+                if effects.walletDeliveryFailed {
+                    errorMessage = "Taskify could not save an incoming Cashu payment."
+                }
+                offset = end
+                await Task.yield()
+            }
         }
+
+        sharedInboxProcessingTask = nil
+    }
+
+    private func applySharedInboxRumor(
+        _ decrypted: NIP17DecryptedRumor,
+        identity: NostrIdentity,
+        connectedInboxRelays: Set<String>,
+        snapshot updatedSnapshot: inout TaskifySnapshot,
+        effects: inout SharedInboxApplyEffects
+    ) {
         let rumor = decrypted.rumor
         if rumor.publicKey != identity.publicKeyHex,
            let payloadJSON = CashuPaymentRequestContract.paymentPayloadJSON(from: rumor.content) {
@@ -2429,10 +2936,10 @@ final class AppModel {
                     receivedAt: Date(timeIntervalSince1970: TimeInterval(rumor.createdAt))
                 )
                 if try CashuNostrPaymentInboxStore.enqueue(delivery, at: inboxURL) {
-                    walletPaymentDeliveryHandler?()
+                    effects.walletDeliveryQueued = true
                 }
             } catch {
-                errorMessage = "Taskify could not save an incoming Cashu payment."
+                effects.walletDeliveryFailed = true
             }
             return
         }
@@ -2440,7 +2947,9 @@ final class AppModel {
             rumor: rumor,
             identityPublicKey: identity.publicKeyHex
         ) {
-            if snapshot.upsertGroupConversation(group) { scheduleSave() }
+            if updatedSnapshot.upsertGroupConversation(group) {
+                effects.snapshotChanged = true
+            }
             if rumor.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                rumor.tags.contains(where: { $0.count >= 2 && $0[0] == "subject" }) {
                 return
@@ -2458,13 +2967,67 @@ final class AppModel {
             )
             switch envelope.item {
             case .task(let delivery):
-                receiveSharedTask(delivery, message: message)
+                let senderKey = try? Data(hex: message.senderPublicKey)
+                let sender = SharedInboxSender(
+                    publicKey: message.senderPublicKey,
+                    npub: message.envelope.senderNpub
+                        ?? senderKey.flatMap { try? Bech32.encode(prefix: "npub", data: $0) },
+                    name: message.envelope.senderName
+                )
+                let item = SharedInboxItem(
+                    wrapEventID: message.wrapEventID,
+                    rumorEventID: message.rumorEventID,
+                    sender: sender,
+                    task: delivery,
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                )
+                if updatedSnapshot.ingestSharedInboxItem(item) {
+                    effects.snapshotChanged = true
+                    let addsRelay = TaskifyRelayURL.normalizedList(delivery.relayURLs ?? [])
+                        .contains { !connectedInboxRelays.contains($0) }
+                    effects.shouldReconfigureSync = effects.shouldReconfigureSync || addsRelay
+                }
             case .contact(let delivery):
-                receiveSharedContact(delivery, message: message)
+                let item = SharedContactInboxItem(
+                    wrapEventID: message.wrapEventID,
+                    rumorEventID: message.rumorEventID,
+                    sender: sharedInboxSender(for: message),
+                    contact: delivery,
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                )
+                if updatedSnapshot.ingestSharedContactInboxItem(item) {
+                    effects.snapshotChanged = true
+                    let addsRelay = TaskifyRelayURL.normalizedList(delivery.relayURLs ?? [])
+                        .contains { !connectedInboxRelays.contains($0) }
+                    effects.shouldReconfigureSync = effects.shouldReconfigureSync || addsRelay
+                }
             case .calendarEvent(let delivery):
-                receiveSharedCalendarInvite(delivery, message: message)
+                let item = SharedCalendarInviteInboxItem(
+                    wrapEventID: message.wrapEventID,
+                    rumorEventID: message.rumorEventID,
+                    sender: sharedInboxSender(for: message),
+                    event: delivery,
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                )
+                if updatedSnapshot.ingestSharedCalendarInvite(item) {
+                    effects.snapshotChanged = true
+                    let addsRelay = TaskifyRelayURL.normalizedList(delivery.relayURLs ?? [])
+                        .contains { !connectedInboxRelays.contains($0) }
+                    effects.shouldReconfigureSync = effects.shouldReconfigureSync || addsRelay
+                }
             case .assignmentResponse(let response):
-                receiveSharedTaskAssignmentResponse(response, message: message)
+                let respondedAt = response.respondedAt.flatMap(Self.parseSharedResponseDate)
+                    ?? Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                if let updatedTask = updatedSnapshot.applyTaskAssignmentResponse(
+                    taskID: response.taskID,
+                    senderPublicKey: message.senderPublicKey,
+                    status: response.status,
+                    respondedAt: respondedAt,
+                    editorPublicKey: message.senderPublicKey
+                ) {
+                    effects.snapshotChanged = true
+                    effects.taskIDsToSynchronize.insert(updatedTask.id)
+                }
             }
             return
         }
@@ -2473,8 +3036,8 @@ final class AppModel {
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex
         ) {
-            if snapshot.ingestDirectMessageReaction(reaction) {
-                scheduleSave()
+            if updatedSnapshot.ingestDirectMessageReaction(reaction) {
+                effects.snapshotChanged = true
             }
             return
         }
@@ -2483,75 +3046,8 @@ final class AppModel {
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex
         ) else { return }
-        if snapshot.ingestDirectMessage(directMessage) {
-            scheduleSave()
-        }
-    }
-
-    private func receiveSharedTask(
-        _ delivery: SharedTaskDelivery,
-        message: NIP17InboxMessage
-    ) {
-        let senderKey = (try? Data(hex: message.senderPublicKey))
-        let sender = SharedInboxSender(
-            publicKey: message.senderPublicKey,
-            npub: message.envelope.senderNpub
-                ?? senderKey.flatMap { try? Bech32.encode(prefix: "npub", data: $0) },
-            name: message.envelope.senderName
-        )
-        let item = SharedInboxItem(
-            wrapEventID: message.wrapEventID,
-            rumorEventID: message.rumorEventID,
-            sender: sender,
-            task: delivery,
-            receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
-        )
-        let connectedInboxRelays = Set(sharedInboxRelayURLs)
-        let addsRelay = TaskifyRelayURL.normalizedList(delivery.relayURLs ?? [])
-            .contains { !connectedInboxRelays.contains($0) }
-        if snapshot.ingestSharedInboxItem(item) {
-            scheduleSave()
-            if addsRelay { reconfigureSync() }
-        }
-    }
-
-    private func receiveSharedContact(
-        _ delivery: SharedContactDelivery,
-        message: NIP17InboxMessage
-    ) {
-        let item = SharedContactInboxItem(
-            wrapEventID: message.wrapEventID,
-            rumorEventID: message.rumorEventID,
-            sender: sharedInboxSender(for: message),
-            contact: delivery,
-            receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
-        )
-        let connectedInboxRelays = Set(sharedInboxRelayURLs)
-        let addsRelay = TaskifyRelayURL.normalizedList(delivery.relayURLs ?? [])
-            .contains { !connectedInboxRelays.contains($0) }
-        if snapshot.ingestSharedContactInboxItem(item) {
-            scheduleSave()
-            if addsRelay { reconfigureSync() }
-        }
-    }
-
-    private func receiveSharedCalendarInvite(
-        _ delivery: SharedCalendarEventDelivery,
-        message: NIP17InboxMessage
-    ) {
-        let item = SharedCalendarInviteInboxItem(
-            wrapEventID: message.wrapEventID,
-            rumorEventID: message.rumorEventID,
-            sender: sharedInboxSender(for: message),
-            event: delivery,
-            receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
-        )
-        let connectedInboxRelays = Set(sharedInboxRelayURLs)
-        let addsRelay = TaskifyRelayURL.normalizedList(delivery.relayURLs ?? [])
-            .contains { !connectedInboxRelays.contains($0) }
-        if snapshot.ingestSharedCalendarInvite(item) {
-            scheduleSave()
-            if addsRelay { reconfigureSync() }
+        if updatedSnapshot.ingestDirectMessage(directMessage) {
+            effects.snapshotChanged = true
         }
     }
 
@@ -2563,23 +3059,6 @@ final class AppModel {
                 ?? senderKey.flatMap { try? Bech32.encode(prefix: "npub", data: $0) },
             name: message.envelope.senderName
         )
-    }
-
-    private func receiveSharedTaskAssignmentResponse(
-        _ response: SharedTaskAssignmentResponse,
-        message: NIP17InboxMessage
-    ) {
-        let respondedAt = response.respondedAt.flatMap(Self.parseSharedResponseDate)
-            ?? Date(timeIntervalSince1970: TimeInterval(message.createdAt))
-        guard let updatedTask = snapshot.applyTaskAssignmentResponse(
-            taskID: response.taskID,
-            senderPublicKey: message.senderPublicKey,
-            status: response.status,
-            respondedAt: respondedAt,
-            editorPublicKey: message.senderPublicKey
-        ) else { return }
-        scheduleSave()
-        synchronizeTask(updatedTask.id)
     }
 
     private func sharedInboxDestination() -> (boardID: String, columnID: String?)? {
@@ -2647,9 +3126,15 @@ final class AppModel {
     }
 
     private func applySyncReport(_ report: TaskSyncReport) {
+        // Status reports arrive frequently during initial sync; skip writes when nothing
+        // changed so observation doesn't invalidate views for identical values.
         syncState = report.state
-        relayStatuses = report.relays
-        pendingSyncChangeCount = report.queuedChangeCount
+        if relayStatuses != report.relays {
+            relayStatuses = report.relays
+        }
+        if pendingSyncChangeCount != report.queuedChangeCount {
+            pendingSyncChangeCount = report.queuedChangeCount
+        }
 
         let onlineCount = report.relays.filter { $0.phase == .online }.count
         let activeCount = report.relays.filter {
@@ -2659,28 +3144,32 @@ final class AppModel {
             ? "No relays configured"
             : "\(onlineCount) of \(report.relays.count) relays synced"
 
+        let newStatus: String
+        let newDetail: String
         switch report.state {
         case .stopped:
-            syncStatus = "Stopped"
-            syncDetail = relaySummary
+            newStatus = "Stopped"
+            newDetail = relaySummary
         case .connecting:
-            syncStatus = report.queuedChangeCount > 0
+            newStatus = report.queuedChangeCount > 0
                 ? "Connecting • \(report.queuedChangeCount) queued"
                 : "Connecting"
-            syncDetail = activeCount > 0
+            newDetail = activeCount > 0
                 ? "\(activeCount) of \(report.relays.count) relays responding"
                 : "Contacting \(report.relays.count) relays"
         case .online:
-            syncStatus = report.queuedChangeCount > 0
+            newStatus = report.queuedChangeCount > 0
                 ? "Syncing \(report.queuedChangeCount) change\(report.queuedChangeCount == 1 ? "" : "s")"
                 : "Synced"
-            syncDetail = relaySummary
+            newDetail = relaySummary
         case .offline(let message):
-            syncStatus = report.queuedChangeCount > 0
+            newStatus = report.queuedChangeCount > 0
                 ? "Offline • \(report.queuedChangeCount) queued"
                 : "Offline"
-            syncDetail = message
+            newDetail = message
         }
+        if syncStatus != newStatus { syncStatus = newStatus }
+        if syncDetail != newDetail { syncDetail = newDetail }
     }
 
     private func synchronizeTask(_ taskID: String, includeDeletionEvent: Bool = false) {
@@ -2721,48 +3210,70 @@ final class AppModel {
         }
     }
 
-    private func synchronizeTaskifyEvent(_ eventID: String) {
-        guard let event = snapshot.taskifyEvents?.first(where: { $0.id == eventID }),
-              let boardID = event.boardID,
-              let board = snapshot.boards.first(where: { $0.id == boardID }) else {
-            scheduleSave()
-            return
-        }
-        let timestamp = nextNostrTimestamp()
-        let pair: TaskifyCalendarEventPair
+    private func synchronizeTaskifyEvents(_ eventIDs: [String]) {
+        let requestedIDs = Set(eventIDs)
+        guard !requestedIDs.isEmpty else { return }
+        let eventsByBoard = Dictionary(grouping: (snapshot.taskifyEvents ?? []).filter {
+            requestedIDs.contains($0.id) && $0.boardID != nil
+        }) { $0.boardID! }
+
+        var batches: [(board: Board, pairs: [TaskifyCalendarEventPair], boardTimestamp: Int)] = []
         do {
-            pair = try TaskifyCalendarEventCodec.eventPair(
-                event: event,
-                board: board,
-                createdAt: timestamp
-            )
+            for (boardID, events) in eventsByBoard {
+                guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { continue }
+                let boardTimestamp = nextNostrTimestamp()
+                var pairs: [TaskifyCalendarEventPair] = []
+                for event in events {
+                    let pair = try TaskifyCalendarEventCodec.eventPair(
+                        event: event,
+                        board: board,
+                        createdAt: nextNostrTimestamp()
+                    )
+                    _ = snapshot.upsertTaskifyEvent(pair.normalizedEvent)
+                    pairs.append(pair)
+                }
+                batches.append((board, pairs, boardTimestamp))
+            }
         } catch {
-            errorMessage = "Taskify could not prepare this event for Nostr sync."
+            errorMessage = "Taskify could not prepare these events for Nostr sync."
             scheduleSave()
             return
         }
-        _ = snapshot.upsertTaskifyEvent(pair.normalizedEvent)
         scheduleSave()
         Task { [syncEngine] in
             do {
-                let boardEvent = try TaskEventCodec.boardEvent(board: board, createdAt: timestamp)
-                try await syncEngine.publish(boardEvent, board: board, taskID: "_board")
-                try await syncEngine.publish(
-                    pair.canonical,
-                    board: board,
-                    taskID: "event:\(eventID):canonical"
-                )
-                try await syncEngine.publish(
-                    pair.view,
-                    board: board,
-                    taskID: "event:\(eventID):view"
-                )
+                for batch in batches {
+                    let boardEvent = try TaskEventCodec.boardEvent(
+                        board: batch.board,
+                        createdAt: batch.boardTimestamp
+                    )
+                    try await syncEngine.publish(boardEvent, board: batch.board, taskID: "_board")
+                    for pair in batch.pairs {
+                        try await syncEngine.publish(
+                            pair.canonical,
+                            board: batch.board,
+                            taskID: "event:\(pair.normalizedEvent.id):canonical"
+                        )
+                        try await syncEngine.publish(
+                            pair.view,
+                            board: batch.board,
+                            taskID: "event:\(pair.normalizedEvent.id):view"
+                        )
+                    }
+                }
             } catch {
                 await MainActor.run {
-                    self.errorMessage = "Taskify could not queue this event for Nostr sync."
+                    self.errorMessage = "Taskify could not queue these events for Nostr sync."
                 }
             }
         }
+    }
+
+    private func maintainTaskifyEventRecurrenceWindow(now: Date = Date()) {
+        let changes = snapshot.ensureTaskifyEventRecurrenceWindow(now: now)
+        guard !changes.allEventIDs.isEmpty else { return }
+        synchronizeTaskifyEvents(changes.allEventIDs)
+        refreshNotifications(requestPermission: false)
     }
 
     private static func taskifyDateValue(_ date: Date) -> String {
@@ -2889,10 +3400,14 @@ final class AppModel {
     }
 
     private func scheduleSave() {
-        let snapshotToSave = snapshot
         saveTask?.cancel()
-        saveTask = Task { [store] in
-            guard !Task.isCancelled else { return }
+        saveTask = Task { [store, weak self] in
+            // Debounce before snapshotting: initial sync calls this once per merged event,
+            // and encoding the full snapshot each time is wasted work. Sleeping first (and
+            // reading `snapshot` only after) collapses a burst into one save of the final state.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            let snapshotToSave = self.snapshot
             do {
                 try await store.save(snapshotToSave)
             } catch {
@@ -2980,13 +3495,18 @@ final class AppModel {
             relayURLs: relays
         )
         guard !Task.isCancelled else { return }
-        var decodedList: NIP51ContactList?
-        for event in candidates {
-            if let list = try? NIP51ContactListContract.decode(event: event, identity: identity) {
-                decodedList = list
-                break
+        let decodedList: NIP51ContactList? = await Task.detached(priority: .utility) {
+            () -> NIP51ContactList? in
+            for event in candidates {
+                if let list = try? NIP51ContactListContract.decode(
+                    event: event,
+                    identity: identity
+                ) {
+                    return list
+                }
             }
-        }
+            return nil
+        }.value
         if let decodedList {
             lastNostrCreatedAt = max(lastNostrCreatedAt, decodedList.eventCreatedAt)
             if snapshot.replaceContacts(from: decodedList) { scheduleSave() }
@@ -3162,10 +3682,20 @@ final class AppModel {
 
     private func refreshNotifications(requestPermission: Bool) {
         let tasks = snapshot.tasks
+        let events = snapshot.acceptedTaskifyEvents
         notificationTask?.cancel()
         notificationTask = Task { [notificationCoordinator] in
+            // Debounce: this is called once per merged task during initial sync, and a
+            // full UNUserNotificationCenter reschedule per event is expensive. The sleep
+            // lets the cancel-and-respawn above collapse a burst into one reschedule.
+            // Permission requests skip the delay so the system prompt isn't lagged.
+            if !requestPermission {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled else { return }
+            }
             let status = await notificationCoordinator.reschedule(
                 tasks: tasks,
+                events: events,
                 requestPermission: requestPermission
             )
             guard !Task.isCancelled else { return }
@@ -3173,6 +3703,35 @@ final class AppModel {
                 self.notificationStatus = status
             }
         }
+    }
+
+    private func refreshNotificationsImmediately() async {
+        notificationTask?.cancel()
+        notificationTask = nil
+        notificationStatus = await notificationCoordinator.reschedule(
+            tasks: snapshot.tasks,
+            events: snapshot.acceptedTaskifyEvents,
+            requestPermission: false
+        )
+    }
+
+    private static func normalizedTaskifyEventReminders(
+        _ reminders: [TaskReminder],
+        isAllDay: Bool
+    ) -> [TaskReminder] {
+        var seenMinutes = Set<Int>()
+        return reminders.compactMap { reminder in
+            guard let minutes = reminder.minutesBefore,
+                  seenMinutes.insert(minutes).inserted else { return nil }
+            return TaskReminder(minutesBefore: minutes, dateOnly: isAllDay)
+        }.sorted { ($0.minutesBefore ?? 0) < ($1.minutesBefore ?? 0) }
+    }
+
+    private static func normalizedTaskifyEventReminderTime(_ value: String?) -> String {
+        let parts = (value ?? "09:00").split(separator: ":")
+        let hour = parts.first.flatMap { Int($0) }.map { min(max($0, 0), 23) } ?? 9
+        let minute = parts.dropFirst().first.flatMap { Int($0) }.map { min(max($0, 0), 59) } ?? 0
+        return String(format: "%02d:%02d", hour, minute)
     }
 }
 

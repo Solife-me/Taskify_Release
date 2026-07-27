@@ -776,7 +776,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         switch board.kind {
         case .week:
             if dueDateEnabled, let dueDate {
-                resolvedColumnID = WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
+                var dueCalendar = calendar
+                if dueTimeEnabled,
+                   let dueTimeZone,
+                   let timeZone = TimeZone(identifier: dueTimeZone) {
+                    dueCalendar.timeZone = timeZone
+                }
+                resolvedColumnID = WeekdayColumn.containing(dueDate, calendar: dueCalendar).rawValue
             } else {
                 resolvedColumnID = tasks[taskIndex].columnID
             }
@@ -1004,7 +1010,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
         let nextColumnID: String?
         if let board = boards.first(where: { $0.id == completedTask.boardID }), board.kind == .week {
-            nextColumnID = WeekdayColumn.containing(nextDueDate).rawValue
+            var dueCalendar = Calendar.current
+            if completedTask.dueTimeEnabled,
+               let dueTimeZone = completedTask.dueTimeZone,
+               let timeZone = TimeZone(identifier: dueTimeZone) {
+                dueCalendar.timeZone = timeZone
+            }
+            nextColumnID = WeekdayColumn.containing(nextDueDate, calendar: dueCalendar).rawValue
         } else {
             nextColumnID = completedTask.columnID
         }
@@ -1123,6 +1135,45 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return true
     }
 
+    /// Batched form of `mergeRemoteTask`. Building one id→index map up front makes a backlog
+    /// merge O(records + tasks) instead of the O(records × tasks) that repeated
+    /// `firstIndex(where:)` scans cost during initial sync.
+    @discardableResult
+    public mutating func mergeRemoteTasks(
+        _ records: [(task: TaskItem, eventCreatedAt: Int)]
+    ) -> Bool {
+        guard !records.isEmpty else { return false }
+
+        var indexByID = [String: Int](minimumCapacity: tasks.count)
+        for (index, task) in tasks.enumerated() {
+            indexByID[task.id] = index
+        }
+
+        var changed = false
+        for record in records {
+            if let index = indexByID[record.task.id] {
+                let localClock = tasks[index].nostrUpdatedAt ?? 0
+                guard record.eventCreatedAt > localClock else { continue }
+                var merged = record.task
+                var preservedFields = tasks[index].preservedSyncFields ?? [:]
+                for (name, value) in record.task.preservedSyncFields ?? [:] {
+                    preservedFields[name] = value
+                }
+                merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
+                merged.nostrUpdatedAt = record.eventCreatedAt
+                tasks[index] = merged
+                changed = true
+            } else {
+                var inserted = record.task
+                inserted.nostrUpdatedAt = record.eventCreatedAt
+                indexByID[inserted.id] = tasks.count
+                tasks.append(inserted)
+                changed = true
+            }
+        }
+        return changed
+    }
+
     @discardableResult
     public mutating func mergeRemoteTask(_ remoteTask: TaskItem, eventCreatedAt: Int) -> Bool {
         if let index = tasks.firstIndex(where: { $0.id == remoteTask.id }) {
@@ -1198,6 +1249,21 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     public mutating func repairSelection() {
+        if let events = taskifyEvents {
+            var repaired: [TaskifyEvent] = []
+            var indexByID: [String: Int] = [:]
+            for event in events {
+                guard let existingIndex = indexByID[event.id] else {
+                    indexByID[event.id] = repaired.count
+                    repaired.append(event)
+                    continue
+                }
+                if Self.prefersTaskifyEvent(event, over: repaired[existingIndex]) {
+                    repaired[existingIndex] = event
+                }
+            }
+            taskifyEvents = repaired
+        }
         for index in boards.indices {
             if boards[index].nostrBoardID?.isEmpty != false {
                 boards[index].nostrBoardID = UUID().uuidString
@@ -1234,6 +1300,38 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             selectedBoardID = visibleBoards[0].id
             return
         }
+    }
+
+    private static func prefersTaskifyEvent(
+        _ candidate: TaskifyEvent,
+        over existing: TaskifyEvent
+    ) -> Bool {
+        let candidateTimestamp = max(
+            candidate.nostrUpdatedAt ?? 0,
+            candidate.sourceUpdatedAt ?? 0
+        )
+        let existingTimestamp = max(
+            existing.nostrUpdatedAt ?? 0,
+            existing.sourceUpdatedAt ?? 0
+        )
+        if candidateTimestamp != existingTimestamp {
+            return candidateTimestamp > existingTimestamp
+        }
+
+        let candidateAddressScore =
+            (candidate.canonicalAddress.isEmpty ? 0 : 1)
+            + (candidate.viewAddress.isEmpty ? 0 : 1)
+        let existingAddressScore =
+            (existing.canonicalAddress.isEmpty ? 0 : 1)
+            + (existing.viewAddress.isEmpty ? 0 : 1)
+        if candidateAddressScore != existingAddressScore {
+            return candidateAddressScore > existingAddressScore
+        }
+
+        if candidate.isDeleted != existing.isDeleted {
+            return candidate.isDeleted
+        }
+        return false
     }
 
     private func normalizedCompoundChildReferences(_ references: [String]) -> [String] {

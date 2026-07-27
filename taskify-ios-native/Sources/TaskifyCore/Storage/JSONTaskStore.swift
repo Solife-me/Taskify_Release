@@ -1,6 +1,11 @@
 import Foundation
 
 public actor JSONTaskStore {
+    public struct LoadResult: Sendable {
+        public let snapshot: TaskifySnapshot
+        public let wasRepaired: Bool
+    }
+
     public static var defaultURL: URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -18,15 +23,20 @@ public actor JSONTaskStore {
     }
 
     public func load() throws -> TaskifySnapshot {
+        try loadWithRepairStatus().snapshot
+    }
+
+    public func loadWithRepairStatus() throws -> LoadResult {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return .empty
+            return LoadResult(snapshot: .empty, wasRepaired: false)
         }
 
         let data = try Data(contentsOf: fileURL)
         let decoder = JSONDecoder()
         var snapshot = try decoder.decode(TaskifySnapshot.self, from: data)
+        let decodedSnapshot = snapshot
         snapshot.repairSelection()
-        return snapshot
+        return LoadResult(snapshot: snapshot, wasRepaired: snapshot != decodedSnapshot)
     }
 
     public func save(_ snapshot: TaskifySnapshot) throws {

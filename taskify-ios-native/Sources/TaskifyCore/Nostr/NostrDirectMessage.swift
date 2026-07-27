@@ -546,6 +546,16 @@ public extension TaskifySnapshot {
     }
 
     func directMessageThreads() -> [NostrDirectMessageThread] {
+        let conversations = nostrGroupConversations ?? []
+        let conversationByID = Dictionary(
+            conversations.map { ($0.groupID, $0) },
+            uniquingKeysWith: { current, candidate in
+                (candidate.nameUpdatedAt ?? candidate.createdAt)
+                    > (current.nameUpdatedAt ?? current.createdAt)
+                    ? candidate
+                    : current
+            }
+        )
         let groupedMessages = Dictionary(
             grouping: directMessages ?? [],
             by: \NostrDirectMessage.peerPublicKey
@@ -562,7 +572,7 @@ public extension TaskifySnapshot {
             grouping: (sharedCalendarInviteItems ?? []).filter { $0.status != .deleted },
             by: { $0.sender.publicKey.lowercased() }
         )
-        let groupIDs = Set(groupConversations.map(\.groupID))
+        let groupIDs = Set(conversationByID.keys)
         let peerIDs = Set(groupedMessages.keys)
             .union(groupedShares.keys)
             .union(groupedContacts.keys)
@@ -604,10 +614,30 @@ public extension TaskifySnapshot {
             let lhs = $0.latestActivityTimestamp
             let rhs = $1.latestActivityTimestamp
             if lhs != rhs { return lhs > rhs }
-            let lhsGroupCreated = groupConversation(id: $0.peerPublicKey)?.createdAt ?? 0
-            let rhsGroupCreated = groupConversation(id: $1.peerPublicKey)?.createdAt ?? 0
+            let lhsGroupCreated = conversationByID[$0.peerPublicKey]?.createdAt ?? 0
+            let rhsGroupCreated = conversationByID[$1.peerPublicKey]?.createdAt ?? 0
             if lhsGroupCreated != rhsGroupCreated { return lhsGroupCreated > rhsGroupCreated }
             return $0.peerPublicKey < $1.peerPublicKey
+        }
+    }
+
+    /// Builds the inbox without rescanning every model-wide message/share collection once for
+    /// each thread. Archive state can be decided from the already-computed latest activity.
+    func activeDirectMessageThreads() -> [NostrDirectMessageThread] {
+        let archivedAt = directMessageArchivedAt ?? [:]
+        guard !archivedAt.isEmpty else { return directMessageThreads() }
+        let groupCreatedAt = Dictionary(
+            (nostrGroupConversations ?? []).map {
+                ($0.groupID, $0.createdAt)
+            },
+            uniquingKeysWith: min
+        )
+        return directMessageThreads().filter { thread in
+            guard let archivedTimestamp = archivedAt[thread.peerPublicKey] else { return true }
+            return max(
+                thread.latestActivityTimestamp,
+                groupCreatedAt[thread.peerPublicKey] ?? 0
+            ) > archivedTimestamp
         }
     }
 

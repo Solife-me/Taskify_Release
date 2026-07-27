@@ -265,6 +265,14 @@ public struct TaskReminder: RawRepresentable, Codable, Hashable, Sendable, Ident
         return "\(absolute) minute\(absolute == 1 ? "" : "s") \(direction)"
     }
 
+    public var eventLabel: String {
+        switch rawValue {
+        case "0h": "At start time"
+        case "0d": "On the start date"
+        default: label
+        }
+    }
+
     public static let timedPresets: [TaskReminder] = [
         TaskReminder(rawValue: "0h"),
         TaskReminder(rawValue: "5m"),
@@ -318,6 +326,28 @@ public extension TaskItem {
         return (reminders ?? []).compactMap { reminder in
             guard let minutes = reminder.minutesBefore else { return nil }
             guard seenMinutes.insert(minutes).inserted else { return nil }
+            return (reminder, anchor.addingTimeInterval(TimeInterval(-minutes * 60)))
+        }
+    }
+}
+
+public extension TaskifyEvent {
+    func reminderAnchor(calendar baseCalendar: Calendar = .current) -> Date? {
+        guard let startDate else { return nil }
+        if !isAllDay { return startDate }
+
+        let calendar = baseCalendar
+        let parts = (reminderTime ?? "09:00").split(separator: ":")
+        let hour = parts.first.flatMap { Int($0) }.map { min(max($0, 0), 23) } ?? 9
+        let minute = parts.dropFirst().first.flatMap { Int($0) }.map { min(max($0, 0), 59) } ?? 0
+        return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: startDate)
+    }
+
+    func reminderFireDates(calendar: Calendar = .current) -> [(TaskReminder, Date)] {
+        guard let anchor = reminderAnchor(calendar: calendar) else { return [] }
+        var seenMinutes = Set<Int>()
+        return (reminders ?? []).compactMap { reminder in
+            guard let minutes = reminder.minutesBefore, seenMinutes.insert(minutes).inserted else { return nil }
             return (reminder, anchor.addingTimeInterval(TimeInterval(-minutes * 60)))
         }
     }
