@@ -41,6 +41,8 @@ struct SettingsView: View {
                     fastingRemindersCard
                     scriptureMemoryCard
                     streaksCard
+                    taskOrderingCard
+                    startupTabCard
                     notificationsCard
                     migrationCard
                     appearanceCard
@@ -917,6 +919,61 @@ struct SettingsView: View {
             )
             .font(.headline)
             Text("Shows a \u{1F525} count on daily and weekly recurring tasks each time you complete them in a row.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var taskOrderingCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("New task position")
+                .font(.headline)
+
+            Picker(
+                "New task position",
+                selection: Binding(
+                    get: { model.newTaskPosition },
+                    set: { model.setNewTaskPosition($0) }
+                )
+            ) {
+                Text("Top").tag(NewTaskPosition.top)
+                Text("Bottom").tag(NewTaskPosition.bottom)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text("Where a quick-added task lands within its list or day.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var startupTabCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Launch tab")
+                .font(.headline)
+
+            Picker(
+                "Launch tab",
+                selection: Binding(
+                    get: { model.startupTab },
+                    set: { model.setStartupTab($0) }
+                )
+            ) {
+                ForEach(StartupTab.allCases, id: \.self) { tab in
+                    Text(tab.title).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text("Which tab Taskify opens to next time you launch it.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }

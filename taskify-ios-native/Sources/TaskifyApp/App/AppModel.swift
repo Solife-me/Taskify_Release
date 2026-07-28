@@ -288,6 +288,8 @@ final class AppModel {
     private(set) var scriptureMemoryBoardID = ScriptureMemorySettings.boardID
     private(set) var scriptureMemoryFrequency = ScriptureMemorySettings.frequency
     private(set) var streaksEnabled = TaskStreakSettings.enabled
+    private(set) var newTaskPosition = TaskOrderingSettings.position
+    private(set) var startupTab = StartupViewSettings.tab
     private(set) var appRelays = AppRelaySettings.urls
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
@@ -673,7 +675,8 @@ final class AppModel {
             boardID: boardID,
             columnID: weekday.rawValue,
             dueDate: dueDate,
-            authorPublicKey: identityPublicKey.nilIfEmpty
+            authorPublicKey: identityPublicKey.nilIfEmpty,
+            newTaskPosition: newTaskPosition
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -685,7 +688,8 @@ final class AppModel {
             boardID: board.id,
             columnID: columnID,
             dueDate: nil,
-            authorPublicKey: identityPublicKey.nilIfEmpty
+            authorPublicKey: identityPublicKey.nilIfEmpty,
+            newTaskPosition: newTaskPosition
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -698,7 +702,8 @@ final class AppModel {
             boardID: board.id,
             columnID: columnID,
             dueDate: nil,
-            authorPublicKey: identityPublicKey.nilIfEmpty
+            authorPublicKey: identityPublicKey.nilIfEmpty,
+            newTaskPosition: newTaskPosition
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -759,7 +764,8 @@ final class AppModel {
             boardID: board.id,
             columnID: columnID,
             dueDate: dueDate,
-            authorPublicKey: identityPublicKey.nilIfEmpty
+            authorPublicKey: identityPublicKey.nilIfEmpty,
+            newTaskPosition: newTaskPosition
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -2197,6 +2203,16 @@ final class AppModel {
     func setStreaksEnabled(_ enabled: Bool) {
         TaskStreakSettings.setEnabled(enabled)
         streaksEnabled = enabled
+    }
+
+    func setNewTaskPosition(_ position: NewTaskPosition) {
+        TaskOrderingSettings.setPosition(position)
+        newTaskPosition = position
+    }
+
+    func setStartupTab(_ tab: StartupTab) {
+        StartupViewSettings.setTab(tab)
+        startupTab = tab
     }
 
     /// Reorders a board relative to its neighbors in the switcher. Local-only (no board-order

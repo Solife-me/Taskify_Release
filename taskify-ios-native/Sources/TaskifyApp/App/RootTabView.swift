@@ -33,9 +33,9 @@ struct RootTabView: View {
 #if DEBUG
         let requestedTab = ProcessInfo.processInfo.environment["TASKIFY_INITIAL_TAB"]
             .flatMap(AppTab.init(rawValue:))
-        _selectedTab = State(initialValue: requestedTab ?? .boards)
+        _selectedTab = State(initialValue: requestedTab ?? StartupViewSettings.tab.appTab)
 #else
-        _selectedTab = State(initialValue: .boards)
+        _selectedTab = State(initialValue: StartupViewSettings.tab.appTab)
 #endif
     }
 

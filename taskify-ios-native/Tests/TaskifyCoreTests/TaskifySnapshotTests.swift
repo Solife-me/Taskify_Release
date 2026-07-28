@@ -207,6 +207,43 @@ final class TaskifySnapshotTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testNewTaskPositionDefaultsToTopMatchingThePWA() throws {
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let column = try XCTUnwrap(board.columns.first)
+
+        let first = try XCTUnwrap(snapshot.addTask(
+            title: "First",
+            boardID: board.id,
+            columnID: column.id,
+            dueDate: nil
+        ))
+        let second = try XCTUnwrap(snapshot.addTask(
+            title: "Second",
+            boardID: board.id,
+            columnID: column.id,
+            dueDate: nil
+        ))
+
+        XCTAssertEqual(
+            snapshot.tasks(boardID: board.id, columnID: column.id, includeCompleted: true).map(\.id),
+            [second.id, first.id],
+            "defaulting to top, like the PWA, means the newest task leads"
+        )
+
+        let third = try XCTUnwrap(snapshot.addTask(
+            title: "Third",
+            boardID: board.id,
+            columnID: column.id,
+            dueDate: nil,
+            newTaskPosition: .bottom
+        ))
+        XCTAssertEqual(
+            snapshot.tasks(boardID: board.id, columnID: column.id, includeCompleted: true).map(\.id),
+            [second.id, first.id, third.id]
+        )
+    }
+
     func testIndexCardDefaultsOffAndCanBeToggledForListAndCompoundBoards() throws {
         var snapshot = TaskifySnapshot.empty
         let projects = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
@@ -352,19 +389,22 @@ final class TaskifySnapshotTests: XCTestCase {
             title: "Moved",
             boardID: board.id,
             columnID: backlog.id,
-            dueDate: nil
+            dueDate: nil,
+            newTaskPosition: .bottom
         ))
         let first = try XCTUnwrap(snapshot.addTask(
             title: "First",
             boardID: board.id,
             columnID: doing.id,
-            dueDate: nil
+            dueDate: nil,
+            newTaskPosition: .bottom
         ))
         let last = try XCTUnwrap(snapshot.addTask(
             title: "Last",
             boardID: board.id,
             columnID: doing.id,
-            dueDate: nil
+            dueDate: nil,
+            newTaskPosition: .bottom
         ))
         let movedIndex = try XCTUnwrap(snapshot.tasks.firstIndex(where: { $0.id == moved.id }))
         snapshot.tasks[movedIndex].completed = true
@@ -423,19 +463,22 @@ final class TaskifySnapshotTests: XCTestCase {
             title: "First Monday task",
             boardID: "week-default",
             columnID: WeekdayColumn.monday.rawValue,
-            dueDate: monday
+            dueDate: monday,
+            newTaskPosition: .bottom
         ))
         let last = try XCTUnwrap(snapshot.addTask(
             title: "Last Monday task",
             boardID: "week-default",
             columnID: WeekdayColumn.monday.rawValue,
-            dueDate: monday
+            dueDate: monday,
+            newTaskPosition: .bottom
         ))
         let moved = try XCTUnwrap(snapshot.addTask(
             title: "Move from Sunday",
             boardID: "week-default",
             columnID: WeekdayColumn.sunday.rawValue,
-            dueDate: sunday
+            dueDate: sunday,
+            newTaskPosition: .bottom
         ))
         let movedIndex = try XCTUnwrap(snapshot.tasks.firstIndex(where: { $0.id == moved.id }))
         snapshot.tasks[movedIndex].dueTimeEnabled = true
@@ -612,19 +655,22 @@ final class TaskifySnapshotTests: XCTestCase {
             title: "Already there",
             boardID: board.id,
             columnID: destination.id,
-            dueDate: nil
+            dueDate: nil,
+            newTaskPosition: .bottom
         ))
         let firstMoved = try XCTUnwrap(snapshot.addTask(
             title: "First moved",
             boardID: board.id,
             columnID: source.id,
-            dueDate: nil
+            dueDate: nil,
+            newTaskPosition: .bottom
         ))
         let secondMoved = try XCTUnwrap(snapshot.addTask(
             title: "Second moved",
             boardID: board.id,
             columnID: source.id,
-            dueDate: nil
+            dueDate: nil,
+            newTaskPosition: .bottom
         ))
 
         let result = try XCTUnwrap(snapshot.removeListColumn(

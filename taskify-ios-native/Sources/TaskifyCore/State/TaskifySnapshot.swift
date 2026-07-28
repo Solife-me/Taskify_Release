@@ -1,5 +1,12 @@
 import Foundation
 
+/// Where a quick-added task lands within its column, matching the PWA's `newTaskPosition`
+/// setting (which defaults to `top`).
+public enum NewTaskPosition: String, Codable, CaseIterable, Sendable {
+    case top
+    case bottom
+}
+
 public enum ListColumnRemovalStrategy: Equatable, Sendable {
     case moveTasks(toColumnID: String)
     case deleteTasks
@@ -739,6 +746,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         note: String = "",
         priority: TaskPriority? = nil,
         authorPublicKey: String? = nil,
+        newTaskPosition: NewTaskPosition = .top,
         now: Date = Date()
     ) -> TaskItem? {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -749,7 +757,14 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             guard let columnID, board.columns.contains(where: { $0.id == columnID }) else { return nil }
         }
 
-        let nextOrder = (tasks.filter { $0.boardID == boardID && $0.columnID == columnID }.map(\.order).max() ?? -1) + 1
+        let columnOrders = tasks.filter { $0.boardID == boardID && $0.columnID == columnID }.map(\.order)
+        let nextOrder: Int
+        switch newTaskPosition {
+        case .top:
+            nextOrder = (columnOrders.min() ?? 0) - 1
+        case .bottom:
+            nextOrder = (columnOrders.max() ?? -1) + 1
+        }
         let task = TaskItem(
             boardID: boardID,
             title: trimmedTitle,

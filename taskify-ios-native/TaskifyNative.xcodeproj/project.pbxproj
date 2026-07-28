@@ -20,6 +20,8 @@
 		45B0FD54A518483096597A9F /* FastingRemindersSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50694F99A59C46F29A34D542 /* FastingRemindersSettings.swift */; };
 		F4C17FA9D5F24554A5CFF5AC /* ScriptureMemorySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */; };
 		FF5C3B1D78B447EAB70D819E /* TaskStreakSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */; };
+		D8975E95F45CC36870A25CAB /* TaskOrderingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C3FC3D0DAC095EE87D44D86 /* TaskOrderingSettings.swift */; };
+		614C954B821CAA17D51AA24B /* StartupViewSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8578A541E8A9F26924788981 /* StartupViewSettings.swift */; };
 		B00000000000000000000106 /* UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* UpcomingView.swift */; };
 		B00000000000000000000107 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* SettingsView.swift */; };
 		B00000000000000000000108 /* MigrationPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000208 /* MigrationPlaceholderView.swift */; };
@@ -76,6 +78,8 @@
 		50694F99A59C46F29A34D542 /* FastingRemindersSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/FastingRemindersSettings.swift; sourceTree = SOURCE_ROOT; };
 		D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/ScriptureMemorySettings.swift; sourceTree = SOURCE_ROOT; };
 		1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskStreakSettings.swift; sourceTree = SOURCE_ROOT; };
+		9C3FC3D0DAC095EE87D44D86 /* TaskOrderingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskOrderingSettings.swift; sourceTree = SOURCE_ROOT; };
+		8578A541E8A9F26924788981 /* StartupViewSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/StartupViewSettings.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000206 /* UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000207 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000208 /* MigrationPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift; sourceTree = SOURCE_ROOT; };
@@ -149,6 +153,8 @@
 				50694F99A59C46F29A34D542 /* FastingRemindersSettings.swift */,
 				D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */,
 				1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */,
+				9C3FC3D0DAC095EE87D44D86 /* TaskOrderingSettings.swift */,
+				8578A541E8A9F26924788981 /* StartupViewSettings.swift */,
 				B00000000000000000000206 /* UpcomingView.swift */,
 				B00000000000000000000207 /* SettingsView.swift */,
 				B00000000000000000000208 /* MigrationPlaceholderView.swift */,
@@ -351,6 +357,8 @@
 				45B0FD54A518483096597A9F /* FastingRemindersSettings.swift in Sources */,
 				F4C17FA9D5F24554A5CFF5AC /* ScriptureMemorySettings.swift in Sources */,
 				FF5C3B1D78B447EAB70D819E /* TaskStreakSettings.swift in Sources */,
+				D8975E95F45CC36870A25CAB /* TaskOrderingSettings.swift in Sources */,
+				614C954B821CAA17D51AA24B /* StartupViewSettings.swift in Sources */,
 				B00000000000000000000106 /* UpcomingView.swift in Sources */,
 				B00000000000000000000107 /* SettingsView.swift in Sources */,
 				B00000000000000000000108 /* MigrationPlaceholderView.swift in Sources */,
