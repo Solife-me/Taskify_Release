@@ -35,7 +35,6 @@ struct SettingsView: View {
                 VStack(spacing: 18) {
                     identityCard
                     syncCard
-                    contactsSyncCard
                     storageCard
                     boardsCard
                     bibleTrackerCard
@@ -228,25 +227,6 @@ struct SettingsView: View {
             Divider()
 
             appRelaysSection
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .taskifyGlass(cornerRadius: 24)
-    }
-
-    private var contactsSyncCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle(
-                "Contacts sync/backup",
-                isOn: Binding(
-                    get: { model.walletContactsSyncEnabled },
-                    set: { model.setWalletContactsSyncEnabled($0) }
-                )
-            )
-            .font(.headline)
-            Text("Publish and pull your private contact list over Nostr. Turn off to keep contacts local only.")
-                .font(.caption2)
-                .foregroundStyle(TaskifyTheme.tertiaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
