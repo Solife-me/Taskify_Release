@@ -288,6 +288,7 @@ private enum TaskCompletionFlightCoordinateSpace {
 }
 
 
+
 private extension GeometryProxy {
     /// Centre of this view in the flight coordinate space — where a completion dot launches from.
     var flightOrigin: CGPoint {
@@ -317,13 +318,36 @@ private struct TaskCompletionToggleButtonStyle: ButtonStyle {
     }
 }
 
+/// Collapses the touch-down and touch-up halves of one tap into a single completion.
+///
+/// Keyed by task id and by time rather than by a per-view flag, deliberately: the view that would
+/// own such a flag is destroyed or re-rendered by the very completion it is tracking, so it can
+/// never be trusted to clear it. Anything here expires on its own.
+@MainActor
+private enum CompletionTapCoalescer {
+    /// Comfortably longer than a press, short enough that a deliberate re-tap (undoing a
+    /// completion you just made) still registers.
+    private static let window: CFTimeInterval = 0.4
+    private static var lastHandled: [String: CFTimeInterval] = [:]
+
+    static func shouldHandle(taskID: String) -> Bool {
+        let now = CACurrentMediaTime()
+        if let last = lastHandled[taskID], now - last < window { return false }
+        lastHandled[taskID] = now
+        if lastHandled.count > 64 {
+            lastHandled = lastHandled.filter { now - $0.value < window }
+        }
+        return true
+    }
+}
+
 /// Tracks the board's scroll views so a touch-down can tell whether the list is moving.
 ///
 /// Completing on touch-down means a tap that was really meant to halt a coasting list would
 /// otherwise check off whatever it landed on. Momentum taps are caught here; a touch that lands
 /// still and *then* turns into a drag is not, which is the accepted trade for instant feedback.
 @MainActor
-private enum BoardScrollActivity {
+enum BoardScrollActivity {
     private static let scrollViews = NSHashTable<UIScrollView>.weakObjects()
 
     static func register(_ scrollView: UIScrollView) {
@@ -342,12 +366,13 @@ private enum BoardScrollActivity {
 /// checkbox would highlight a beat after the finger, or not at all for a quick tap. SwiftUI
 /// exposes no modifier for it, hence the walk up the UIKit superview chain. Scrolling still
 /// cancels an in-progress press, because `canCancelContentTouches` remains true.
-private struct ImmediateScrollTouchDelivery: UIViewRepresentable {
+struct ImmediateScrollTouchDelivery: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: .zero)
         view.isUserInteractionEnabled = false
         return view
     }
+
 
     func updateUIView(_ uiView: UIView, context: Context) {
         // Deferred: on the first update pass the view is not in the hierarchy yet, so there is no
@@ -368,7 +393,9 @@ private struct ImmediateScrollTouchDelivery: UIViewRepresentable {
     }
 }
 
-private extension View {
+extension View {
+    /// Apply inside any scroll view containing `TaskCardView`, so its checkbox reacts to a finger
+    /// immediately rather than after the scroll view's ~150ms touch-delay.
     func immediateScrollTouchDelivery() -> some View {
         background(ImmediateScrollTouchDelivery().frame(width: 0, height: 0))
     }
@@ -551,7 +578,6 @@ struct BoardsView: View {
     @State private var showCompleted = false
     @State private var showingAddList = false
     @State private var showingBoardShare = false
-    @State private var showingSharedInbox = false
     @State private var showingBoardUpcoming = false
     @State private var showingSortOptions = false
     @State private var showingClearCompletedConfirmation = false
@@ -645,10 +671,6 @@ struct BoardsView: View {
             if let board = model.selectedBoard {
                 BoardShareSheet(board: board)
             }
-        }
-        .sheet(isPresented: $showingSharedInbox) {
-            SharedTaskInboxSheet()
-                .environment(model)
         }
         .sheet(isPresented: $showingBoardUpcoming) {
             if let board = model.selectedBoard {
@@ -940,42 +962,33 @@ struct BoardsView: View {
                     ) {
                         showingSortOptions = true
                     }
-
-                    HeaderIconButton(
-                        systemName: "checklist",
-                        accent: selection.isActive,
-                        accessibilityLabel: selection.isActive ? "Exit selection" : "Select tasks"
-                    ) {
-                        withAnimation(.snappy) {
-                            if selection.isActive {
-                                selection.exit()
-                            } else {
-                                selection.enter()
-                            }
-                        }
-                    }
-                }
-
-                HeaderIconButton(
-                    systemName: model.pendingSharedInboxCount > 0 ? "tray.full.fill" : "tray",
-                    accent: model.pendingSharedInboxCount > 0,
-                    accessibilityLabel: model.pendingSharedInboxCount > 0
-                        ? "Shared task inbox, \(model.pendingSharedInboxCount) pending"
-                        : "Shared task inbox"
-                ) {
-                    showingSharedInbox = true
                 }
             }
         }
     }
 }
 
-private struct SharedTaskInboxSheet: View {
+private enum SharedInboxFilterTab: String, CaseIterable {
+    case new = "New"
+    case replied = "Replied"
+}
+
+struct SharedTaskInboxSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
+    @State private var selectedTab: SharedInboxFilterTab = .new
 
     private var visibleItems: [SharedInboxItem] {
         model.sharedInboxItems.filter { $0.status != .deleted }
+    }
+
+    private var filteredItems: [SharedInboxItem] {
+        visibleItems.filter { item in
+            switch selectedTab {
+            case .new: item.status == .pending
+            case .replied: item.status != .pending
+            }
+        }
     }
 
     private var destinationName: String? {
@@ -986,9 +999,9 @@ private struct SharedTaskInboxSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if visibleItems.isEmpty {
+                if filteredItems.isEmpty {
                     ContentUnavailableView(
-                        "No shared tasks",
+                        selectedTab == .new ? "No new invitations" : "No replied invitations",
                         systemImage: "tray",
                         description: Text("Tasks and assignments sent to your Nostr identity will appear here.")
                     )
@@ -996,7 +1009,7 @@ private struct SharedTaskInboxSheet: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            if let destinationName {
+                            if selectedTab == .new, let destinationName {
                                 Label(
                                     "Accepted tasks are added to \(destinationName)",
                                     systemImage: "arrow.down.app"
@@ -1007,7 +1020,7 @@ private struct SharedTaskInboxSheet: View {
                                 .padding(.horizontal, 4)
                             }
 
-                            ForEach(visibleItems) { item in
+                            ForEach(filteredItems) { item in
                                 SharedTaskInboxCard(
                                     item: item,
                                     canAccept: destinationName != nil
@@ -1020,11 +1033,28 @@ private struct SharedTaskInboxSheet: View {
                 }
             }
             .background(TaskifyTheme.background.ignoresSafeArea())
-            .navigationTitle("Shared Tasks")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .frame(width: 32, height: 32)
+                            .background(TaskifyTheme.raisedFill, in: Circle())
+                    }
+                    .accessibilityLabel("Close")
+                }
+                ToolbarItem(placement: .principal) {
+                    Picker("Filter", selection: $selectedTab) {
+                        ForEach(SharedInboxFilterTab.allCases, id: \.self) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 200)
                 }
             }
         }
@@ -2053,6 +2083,7 @@ private struct CompoundColumnReference: Identifiable {
 
 private struct CompoundColumnView: View {
     @Environment(AppModel.self) private var model
+    @Environment(TaskSelectionController.self) private var selection: TaskSelectionController?
     let reference: CompoundColumnReference
     let hideBoardName: Bool
     let showCompleted: Bool
@@ -2096,6 +2127,31 @@ private struct CompoundColumnView: View {
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
                     .background(TaskifyTheme.raisedFill, in: Capsule())
+
+                Menu {
+                    Button {
+                        withAnimation(.snappy) {
+                            if selection?.isActive == true {
+                                selection?.exit()
+                            } else {
+                                selection?.enter()
+                            }
+                        }
+                    } label: {
+                        Label(
+                            selection?.isActive == true ? "Exit selection" : "Select tasks",
+                            systemImage: selection?.isActive == true ? "xmark.circle" : "checklist"
+                        )
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .frame(width: 34, height: 34)
+                        .background(TaskifyTheme.raisedFill, in: Circle())
+                        .contentShape(Circle())
+                }
+                .accessibilityLabel("Manage \(reference.column.name) list")
             }
 
             ScrollView {
@@ -2127,6 +2183,7 @@ private struct CompoundColumnView: View {
 
 private struct ListColumnView: View {
     @Environment(AppModel.self) private var model
+    @Environment(TaskSelectionController.self) private var selection: TaskSelectionController?
     let column: BoardColumn
     let showCompleted: Bool
     let sortMode: UpcomingSortMode
@@ -2181,6 +2238,23 @@ private struct ListColumnView: View {
                     .background(TaskifyTheme.raisedFill, in: Capsule())
 
                 Menu {
+                    Button {
+                        withAnimation(.snappy) {
+                            if selection?.isActive == true {
+                                selection?.exit()
+                            } else {
+                                selection?.enter()
+                            }
+                        }
+                    } label: {
+                        Label(
+                            selection?.isActive == true ? "Exit selection" : "Select tasks",
+                            systemImage: selection?.isActive == true ? "xmark.circle" : "checklist"
+                        )
+                    }
+
+                    Divider()
+
                     Button {
                         renameDraft = column.name
                         showingRename = true
@@ -2340,6 +2414,7 @@ private struct WeekBoardView: View {
 
 private struct DayColumnView: View {
     @Environment(AppModel.self) private var model
+    @Environment(TaskSelectionController.self) private var selection: TaskSelectionController?
     let weekday: WeekdayColumn
     let showCompleted: Bool
     let sortMode: UpcomingSortMode
@@ -2361,8 +2436,20 @@ private struct DayColumnView: View {
                     .foregroundStyle(TaskifyTheme.secondaryText)
                 Spacer()
                 Menu {
-                    Button("Add task") { }
-                    Button("Select tasks") { }
+                    Button {
+                        withAnimation(.snappy) {
+                            if selection?.isActive == true {
+                                selection?.exit()
+                            } else {
+                                selection?.enter()
+                            }
+                        }
+                    } label: {
+                        Label(
+                            selection?.isActive == true ? "Exit selection" : "Select tasks",
+                            systemImage: selection?.isActive == true ? "xmark.circle" : "checklist"
+                        )
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .foregroundStyle(TaskifyTheme.secondaryText)
@@ -2411,8 +2498,6 @@ struct TaskCardView: View {
     let allowsDragging: Bool
     @State private var showingEditor = false
     @State private var showingTaskShare = false
-    /// Set when touch-down already ran the completion, so the touch-up is ignored.
-    @State private var completionFiredOnPress = false
     @State private var taskShareMode: TaskShareMode = .share
 
     init(task: TaskItem, allowsDragging: Bool = false) {
@@ -2482,11 +2567,9 @@ struct TaskCardView: View {
                     Button {
                         if isSelectionMode {
                             selection?.toggle(task.id)
-                        } else if completionFiredOnPress {
-                            // Already handled on touch-down; swallow the matching touch-up.
-                            completionFiredOnPress = false
                         } else {
-                            // VoiceOver activation and any press we declined to fire early.
+                            // Touch-up, and the only path VoiceOver takes. Deduplicated against
+                            // the touch-down fire inside `handleCompletionTap`.
                             handleCompletionTap(origin: proxy.flightOrigin)
                         }
                     } label: {
@@ -2729,14 +2812,23 @@ struct TaskCardView: View {
     }
 
     /// Touch-down path: this is what makes a check-off feel instant. Skipped in selection mode
-    /// (selection stays a deliberate touch-up action) and while the list is coasting.
+    /// (selection stays a deliberate touch-up action) and while the list is coasting, in which
+    /// case the touch-up below still completes the task — a skipped early fire costs a little
+    /// latency, never the tap itself.
     private func handleCompletionPressDown(origin: CGPoint, isSelectionMode: Bool) {
         guard !isSelectionMode, !BoardScrollActivity.isMoving else { return }
-        completionFiredOnPress = true
         handleCompletionTap(origin: origin)
     }
 
     private func handleCompletionTap(origin: CGPoint) {
+        // Touch-down and touch-up can both reach here for one physical tap, and `isPressed` can
+        // cycle more than once within a single press. Collapsing them by task id keeps the
+        // toggle idempotent per tap without any cross-interaction state to leak — the earlier
+        // "did the press already fire?" flag could never be cleared reliably, because completing
+        // a task re-renders the row and tears the button down before its action ever runs, so a
+        // stale flag went on to swallow the *next* real tap.
+        guard CompletionTapCoalescer.shouldHandle(taskID: task.id) else { return }
+
         if task.completed {
             withAnimation(.snappy) {
                 model.toggleCompletion(task.id)

@@ -146,6 +146,7 @@ struct UpcomingView: View {
     @State private var showingSearch = false
     @State private var showingNewTask = false
     @State private var showingSortOptions = false
+    @State private var showingSharedInbox = false
     @State private var selectedDate = Calendar.current.startOfDay(for: Date())
     @State private var dataCache = UpcomingDataCache()
     @State private var visibleCalendarMonth = Date()
@@ -525,15 +526,20 @@ struct UpcomingView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showingSharedInbox) {
+            SharedTaskInboxSheet()
+                .environment(model)
+        }
         .safeAreaInset(edge: .bottom, spacing: 8) {
-            if displayMode == .list {
-                HStack {
+            HStack {
+                if displayMode == .list {
                     todayButton
-                    Spacer()
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 10)
+                Spacer()
+                bottomRightControls
             }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 10)
         }
         .onAppear {
             refreshAppleSources()
@@ -849,6 +855,43 @@ struct UpcomingView: View {
             .taskifyGlass(cornerRadius: 18)
     }
 
+    private var bottomRightControls: some View {
+        HStack(spacing: 0) {
+            Button {
+                showingSortOptions = true
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(controlsAreCustomized ? TaskifyTheme.accent : TaskifyTheme.primaryText)
+                    .frame(width: 42, height: 42)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Sort and filter upcoming tasks")
+
+            Rectangle()
+                .fill(TaskifyTheme.border)
+                .frame(width: 1, height: 23)
+
+            Button {
+                showingSharedInbox = true
+            } label: {
+                Image(systemName: model.pendingSharedInboxCount > 0 ? "tray.full.fill" : "tray")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(model.pendingSharedInboxCount > 0 ? TaskifyTheme.accent : TaskifyTheme.primaryText)
+                    .frame(width: 42, height: 42)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                model.pendingSharedInboxCount > 0
+                    ? "Shared task inbox, \(model.pendingSharedInboxCount) pending"
+                    : "Shared task inbox"
+            )
+        }
+        .taskifyGlassControl(in: Capsule())
+    }
+
     private var todayButton: some View {
         Button {
             withAnimation(.snappy) {
@@ -884,13 +927,6 @@ struct UpcomingView: View {
                         : "Show list view"
                 ) {
                     toggleDisplayMode()
-                }
-                HeaderIconButton(
-                    systemName: "arrow.up.arrow.down",
-                    accent: controlsAreCustomized,
-                    accessibilityLabel: "Sort and filter upcoming tasks"
-                ) {
-                    showingSortOptions = true
                 }
                 HeaderIconButton(
                     systemName: showingSearch ? "xmark" : "magnifyingglass",
@@ -1831,6 +1867,9 @@ private struct UpcomingTaskList: View {
     }
 
     var body: some View {
+        // The checkbox lives in TaskCardView; without this its press feedback (and the
+        // touch-down completion) waits out the enclosing scroll view's touch delay.
+        ImmediateScrollTouchDelivery().frame(width: 0, height: 0)
         if boardGrouping == .grouped {
             ForEach(sections) { section in
                 Text(model.board(withID: section.boardID)?.name ?? "Board")

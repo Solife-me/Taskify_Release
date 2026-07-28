@@ -291,6 +291,67 @@ final class ScrollPerformanceUITests: XCTestCase {
         return app
     }
 
+    /// One physical tap must complete exactly the task it was aimed at — first tap, and only
+    /// that task.
+    ///
+    /// Regression test: completing on touch-down originally paired with a per-view "already
+    /// fired" flag, but completing a task re-renders the row and tears the button down before its
+    /// action runs, so the flag was never cleared. A stale flag then swallowed a later tap and the
+    /// task had to be checked off twice.
+    func testSingleTapCompletesOnlyTheTargetedTask() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+
+        let quickAddField = app.textFields.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")
+        ).firstMatch
+        XCTAssertTrue(quickAddField.waitForExistence(timeout: 10))
+        quickAddField.tap()
+        let suffix = String(UUID().uuidString.prefix(6))
+        let titles = (1...5).map { "Single \(suffix) \($0)" }
+        for title in titles {
+            quickAddField.typeText(title)
+            quickAddField.typeText("\n")
+        }
+        let addButton = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "and close keyboard")
+        ).firstMatch
+        XCTAssertTrue(addButton.waitForExistence(timeout: 5))
+        addButton.tap()
+
+        for title in titles {
+            XCTAssertTrue(app.buttons["Edit \(title)"].waitForExistence(timeout: 10), title)
+        }
+
+        let target = app.buttons["Edit \(titles[0])"]
+        let completeButtons = app.buttons.matching(identifier: "Complete task")
+        let checkbox = try XCTUnwrap(
+            completeButtons.allElementsBoundByIndex.min {
+                abs($0.frame.midY - target.frame.midY) < abs($1.frame.midY - target.frame.midY)
+            }
+        )
+
+        checkbox.tap()
+
+        // A single tap, with no retry: the targeted task must go.
+        XCTAssertTrue(
+            app.buttons["Edit \(titles[0])"].waitForNonExistence(timeout: 3),
+            "one tap should complete the targeted task"
+        )
+        // ...and must not take a neighbour with it, which is what happens if the touch-up lands
+        // on the row that slid up into the vacated slot.
+        for title in titles.dropFirst() {
+            XCTAssertTrue(
+                app.buttons["Edit \(title)"].exists,
+                "\(title) should be untouched by a tap aimed at \(titles[0])"
+            )
+        }
+    }
+
     private func attach(_ app: XCUIApplication, name: String) {
         let screenshot = app.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
