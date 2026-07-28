@@ -1717,6 +1717,10 @@ private struct BoardShareSheet: View {
     @State private var templateError: String?
     @State private var isGeneratingTemplate = false
     @State private var requestedTemplate = false
+    @State private var recipient = ""
+    @State private var isSendingToContact = false
+    @State private var sendErrorMessage: String?
+    @State private var sentToRecipientName: String?
 
     private enum ShareMode: String, CaseIterable, Identifiable {
         case board = "Board"
@@ -1863,6 +1867,10 @@ private struct BoardShareSheet: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if activeShareBoard != nil {
+                        sendToContactCard
+                    }
                 }
                 .padding(20)
             }
@@ -1871,6 +1879,8 @@ private struct BoardShareSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .onChange(of: shareMode) { _, mode in
                 copied = false
+                sendErrorMessage = nil
+                sentToRecipientName = nil
                 guard mode == .template,
                       templateShare == nil,
                       !requestedTemplate else { return }
@@ -1921,6 +1931,123 @@ private struct BoardShareSheet: View {
                 templateError = error.localizedDescription
             }
             isGeneratingTemplate = false
+        }
+    }
+
+    private var recipientIsValid: Bool { NostrPublicKey.parse(recipient) != nil }
+
+    private var matchingContacts: [NostrContact] {
+        let query = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, NostrPublicKey.parse(query) == nil else {
+            return model.nostrContacts
+        }
+        return model.nostrContacts.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query) ||
+                $0.subtitle.localizedCaseInsensitiveContains(query) ||
+                $0.npub.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var sendToContactCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Send to a contact")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            TextField("npub or public key", text: $recipient, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .lineLimit(1...3)
+                .font(.system(.callout, design: .monospaced))
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(TaskifyTheme.border, lineWidth: 1))
+
+            if !matchingContacts.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(matchingContacts.prefix(6)) { contact in
+                        Button {
+                            recipient = contact.npub
+                            sendErrorMessage = nil
+                            sentToRecipientName = nil
+                        } label: {
+                            HStack(spacing: 10) {
+                                NostrContactAvatar(contact: contact, size: 30)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(contact.displayName)
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                    Text(contact.subtitle)
+                                        .font(.caption2)
+                                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                if contact.publicKey == NostrPublicKey.parse(recipient)?.hexString {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(TaskifyTheme.accent)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 44)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if let sendErrorMessage {
+                Label(sendErrorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let sentToRecipientName {
+                Label("Sent to \(sentToRecipientName)", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Color.green)
+            }
+
+            Button(action: sendToContact) {
+                if isSendingToContact {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                } else {
+                    Text("Send")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!recipientIsValid || activeShareBoard == nil || isSendingToContact)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sendToContact() {
+        guard recipientIsValid, let activeShareBoard, !isSendingToContact else { return }
+        isSendingToContact = true
+        sendErrorMessage = nil
+        sentToRecipientName = nil
+        let recipientValue = recipient
+        Task { @MainActor in
+            do {
+                try await model.sendSharedBoard(
+                    boardID: activeShareBoard.effectiveNostrBoardID,
+                    boardName: activeShareBoard.name,
+                    relayURLs: activeShareBoard.effectiveRelayURLs,
+                    to: recipientValue
+                )
+                sentToRecipientName = model.nostrContact(
+                    publicKey: NostrPublicKey.parse(recipientValue)?.hexString ?? ""
+                )?.displayName ?? "contact"
+                recipient = ""
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                sendErrorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            isSendingToContact = false
         }
     }
 }

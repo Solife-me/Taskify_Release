@@ -66,6 +66,7 @@ enum SharedTaskSendError: LocalizedError {
 
 enum StructuredShareSendError: LocalizedError {
     case contactUnavailable
+    case boardUnavailable
     case identityUnavailable
     case invalidRecipient
     case cannotSendToSelf
@@ -74,6 +75,7 @@ enum StructuredShareSendError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .contactUnavailable: "That contact is no longer available."
+        case .boardUnavailable: "That board is no longer available."
         case .identityUnavailable: "Your Nostr identity is unavailable."
         case .invalidRecipient: "That conversation has an invalid Nostr public key."
         case .cannotSendToSelf: "Choose another Nostr account as the recipient."
@@ -1413,6 +1415,61 @@ final class AppModel {
             relayURLs: deliveryRelays,
             outboxScope: Self.sharedInboxOutboxScope,
             recordID: "contact-share:\(event.id)"
+        )
+    }
+
+    /// Shares a board over an encrypted DM, matching the PWA's board-share envelope. Takes the
+    /// resolved board identity/relays directly (rather than a local board id) so it works for a
+    /// template snapshot too — a template board never joins `snapshot.boards`.
+    func sendSharedBoard(
+        boardID: String,
+        boardName: String,
+        relayURLs: [String],
+        to recipientValue: String
+    ) async throws {
+        guard let recipientPublicKey = NostrPublicKey.parse(recipientValue) else {
+            throw StructuredShareSendError.invalidRecipient
+        }
+        guard recipientPublicKey.hexString != identityPublicKey else {
+            throw StructuredShareSendError.cannotSendToSelf
+        }
+        guard let identity = try identityStore.load() else {
+            throw StructuredShareSendError.identityUnavailable
+        }
+        let knownRecipientRelays = snapshot.contact(
+            publicKeyValue: recipientPublicKey.hexString
+        )?.relayURLs ?? []
+        let fallbackRelays = TaskifyRelayURL.normalizedList(
+            knownRecipientRelays + relayURLs + sharedInboxRelayURLs
+        )
+        guard !fallbackRelays.isEmpty else { throw StructuredShareSendError.noRelays }
+        let deliveryRelays = syncIsOnline
+            ? await NIP17InboxRelayResolver.resolve(
+                recipientPublicKey: recipientPublicKey.hexString,
+                fallbackRelayURLs: fallbackRelays
+            )
+            : fallbackRelays
+        guard !deliveryRelays.isEmpty else { throw StructuredShareSendError.noRelays }
+
+        let delivery = SharedBoardDelivery(
+            boardID: boardID,
+            boardName: boardName,
+            relayURLs: TaskifyRelayURL.normalizedList(relayURLs + deliveryRelays)
+        )
+        let envelope = TaskifyShareEnvelope(
+            item: .board(delivery),
+            senderNpub: identity.npub
+        )
+        let event = try NIP17GiftWrap.wrap(
+            envelope: envelope,
+            sender: identity,
+            recipientPublicKey: recipientPublicKey
+        )
+        try await syncEngine.publish(
+            event,
+            relayURLs: deliveryRelays,
+            outboxScope: Self.sharedInboxOutboxScope,
+            recordID: "board-share:\(event.id)"
         )
     }
 
