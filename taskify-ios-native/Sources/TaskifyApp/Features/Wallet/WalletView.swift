@@ -44,6 +44,12 @@ enum NpubCashClaimStatus: Equatable {
     case error
 }
 
+enum SolifeAccountStatus: Equatable {
+    case idle
+    case loading
+    case error
+}
+
 @MainActor
 final class WalletViewModel: ObservableObject {
     static let suggestedMintURL = "https://mint.solife.me"
@@ -58,6 +64,10 @@ final class WalletViewModel: ObservableObject {
     @Published private(set) var pendingEcashReceives: [CashuPendingReceive] = []
     @Published private(set) var createdPaymentRequests: [CashuCreatedPaymentRequest] = []
     @Published private(set) var solifeAddress: String?
+    @Published private(set) var solifeAccount: SolifeAccount?
+    @Published private(set) var solifeConfig: SolifeConfig?
+    @Published private(set) var solifeAccountStatus: SolifeAccountStatus = .idle
+    @Published private(set) var solifeAccountMessage: String?
     @Published private(set) var npubCashIdentity: NpubCashIdentity?
     @Published private(set) var npubCashIdentityError: String?
     @Published private(set) var npubCashClaimStatus: NpubCashClaimStatus = .idle
@@ -311,6 +321,82 @@ final class WalletViewModel: ObservableObject {
             npubCashClaimMessage = Self.message(for: error)
             return 0
         }
+    }
+
+    /// Loads the solife.me account: default address, mint routing, and any purchased custom
+    /// addresses. Unlike npub.cash there's no "enable" step — any Nostr identity already
+    /// authenticates, so this is only fetched when the user opens address management, not
+    /// automatically on wallet start.
+    func refreshSolifeAccount() async {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            solifeAccountStatus = .error
+            solifeAccountMessage = "Set up your Taskify Nostr identity to manage solife.me addresses."
+            return
+        }
+        solifeAccountStatus = .loading
+        solifeAccountMessage = nil
+        do {
+            let (config, account) = try await SolifeClient.fetchAccount(identity: identity)
+            solifeConfig = config
+            solifeAccount = account
+            solifeAccountStatus = .idle
+        } catch {
+            solifeAccountStatus = .error
+            solifeAccountMessage = Self.message(for: error)
+        }
+    }
+
+    func checkSolifeAddressAvailability(handle: String) async throws -> SolifeAddressAvailability {
+        try await SolifeClient.fetchAddressAvailability(handle: handle)
+    }
+
+    /// Claims a custom handle. A free handle settles immediately; a priced one returns an invoice
+    /// the caller must pay (via `prepareLightningPayment`/`confirmLightningPayment`) and then
+    /// confirm with `verifySolifePurchase`.
+    func purchaseSolifeCustomAddress(handle: String) async throws -> SolifeCustomAddressClaim {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        let (_, claim) = try await SolifeClient.claimCustomAddress(
+            identity: identity,
+            handle: handle,
+            relays: TaskifyRelayDefaults.urls,
+            mintURL: nil
+        )
+        if case .address = claim {
+            await refreshSolifeAccount()
+        }
+        return claim
+    }
+
+    func verifySolifePurchase(purchaseID: String) async throws -> SolifeAddressPurchase {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        let (_, purchase) = try await SolifeClient.verifyAddressPurchase(
+            identity: identity,
+            purchaseID: purchaseID
+        )
+        if purchase.status == "address_claimed" {
+            await refreshSolifeAccount()
+        }
+        return purchase
+    }
+
+    func updateSolifeDefaultMint(_ mintURL: String?) async throws {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        _ = try await SolifeClient.updateDefaultMint(identity: identity, mintURL: mintURL)
+        await refreshSolifeAccount()
+    }
+
+    func updateSolifeCustomAddressMint(handle: String, mintURL: String?) async throws {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        _ = try await SolifeClient.updateCustomAddressMint(identity: identity, handle: handle, mintURL: mintURL)
+        await refreshSolifeAccount()
     }
 
     func createPaymentRequest(
@@ -3289,6 +3375,7 @@ private struct LightningAddressReceiveSheet: View {
     @State private var autoClaimEnabled = NpubCashSettings.autoClaimEnabled
     @State private var copiedSolife = false
     @State private var copied = false
+    @State private var showingSolifeManager = false
 
     var body: some View {
         NavigationStack {
@@ -3334,6 +3421,16 @@ private struct LightningAddressReceiveSheet: View {
                                 .font(.caption2)
                                 .foregroundStyle(TaskifyTheme.tertiaryText)
                                 .multilineTextAlignment(.center)
+
+                            Button {
+                                showingSolifeManager = true
+                            } label: {
+                                Label("Manage custom addresses & mint", systemImage: "slider.horizontal.3")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(TaskifyTheme.accent)
+                            .padding(.top, 2)
                         }
                         .padding(16)
                         .taskifyGlass(cornerRadius: 18)
@@ -3423,6 +3520,9 @@ private struct LightningAddressReceiveSheet: View {
         .onAppear {
             wallet.refreshLightningAddresses()
         }
+        .sheet(isPresented: $showingSolifeManager) {
+            SolifeAddressManagerSheet(wallet: wallet)
+        }
     }
 
     private var statusIcon: String {
@@ -3439,6 +3539,378 @@ private struct LightningAddressReceiveSheet: View {
         case .error: .orange
         case .checking, .idle: TaskifyTheme.secondaryText
         }
+    }
+}
+
+/// solife.me's default address always works with no setup. This sheet is for the optional
+/// enhancements that do need the server's authenticated API: buying a vanity handle instead of
+/// the default npub-based one, and choosing which mint receives payments for either.
+private struct SolifeAddressManagerSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingPurchase = false
+    @State private var mintUpdateError: String?
+
+    private var mintChoices: [String] {
+        var urls = wallet.snapshot.mints.map(\.url)
+        if let configured = wallet.solifeConfig?.mintUrl, !urls.contains(configured) {
+            urls.append(configured)
+        }
+        return urls
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    if wallet.solifeAccountStatus == .loading, wallet.solifeAccount == nil {
+                        ProgressView("Loading your solife.me account…")
+                            .padding(.top, 40)
+                    } else if let account = wallet.solifeAccount {
+                        addressCard(
+                            title: "Default address",
+                            address: account.lightningAddress,
+                            mintURL: account.lightningAddressMintUrl,
+                            onSelectMint: { mintURL in
+                                await updateMint { try await wallet.updateSolifeDefaultMint(mintURL) }
+                            }
+                        )
+
+                        if !account.addresses.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Custom addresses")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                ForEach(account.addresses, id: \.handle) { customAddress in
+                                    addressCard(
+                                        title: customAddress.handle,
+                                        address: customAddress.address,
+                                        mintURL: customAddress.mintUrl,
+                                        onSelectMint: { mintURL in
+                                            await updateMint {
+                                                try await wallet.updateSolifeCustomAddressMint(
+                                                    handle: customAddress.handle,
+                                                    mintURL: mintURL
+                                                )
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        if let price = wallet.solifeConfig?.customAddressPriceSats {
+                            Button {
+                                showingPurchase = true
+                            } label: {
+                                Text(price > 0 ? "New Custom Address (\(price.formatted()) sats)" : "New Custom Address")
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 46)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+
+                        if let mintUpdateError {
+                            Label(mintUpdateError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    } else if let message = wallet.solifeAccountMessage {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .padding(.top, 40)
+                    }
+                }
+                .padding(20)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("solife.me")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .task {
+            await wallet.refreshSolifeAccount()
+        }
+        .sheet(isPresented: $showingPurchase) {
+            SolifeCustomAddressPurchaseSheet(wallet: wallet)
+        }
+    }
+
+    private func addressCard(
+        title: String,
+        address: String,
+        mintURL: String,
+        onSelectMint: @escaping (String?) async -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Text(address)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Menu {
+                Button("Server default") {
+                    Task { await onSelectMint(nil) }
+                }
+                ForEach(mintChoices, id: \.self) { url in
+                    Button(url) {
+                        Task { await onSelectMint(url) }
+                    }
+                }
+            } label: {
+                Label(mintURL, systemImage: "building.columns")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .taskifyGlass(cornerRadius: 18)
+    }
+
+    private func updateMint(_ action: () async throws -> Void) async {
+        mintUpdateError = nil
+        do {
+            try await action()
+        } catch {
+            mintUpdateError = WalletViewModel.message(for: error)
+        }
+    }
+}
+
+/// Handle availability check, purchase, invoice payment (when the handle isn't free), and
+/// settlement verification — the same sequence as the PWA's `handlePurchaseCustomAddress`.
+private struct SolifeCustomAddressPurchaseSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var handle = ""
+    @State private var availability: SolifeAddressAvailability?
+    @State private var isChecking = false
+    @State private var isPurchasing = false
+    @State private var pendingPurchase: SolifeAddressPurchase?
+    @State private var lightningQuote: CashuLightningPaymentQuote?
+    @State private var claimedAddress: String?
+    @State private var errorMessage: String?
+    @FocusState private var handleFocused: Bool
+
+    private var normalizedHandle: String { handle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    private var handleIsValid: Bool {
+        normalizedHandle.range(of: "^[a-z0-9][a-z0-9_-]{1,31}$", options: .regularExpression) != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    if let claimedAddress {
+                        VStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.green)
+                            Text("Claimed \(claimedAddress)")
+                                .font(.title3.bold())
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                        }
+                        .padding(.top, 30)
+                    } else {
+                        VStack(spacing: 6) {
+                            Text("New Custom Address")
+                                .font(.title3.bold())
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            if let price = wallet.solifeConfig?.customAddressPriceSats {
+                                Text(price > 0 ? "\(price.formatted()) sat one-time fee." : "Custom address claims are currently free.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                            }
+                        }
+
+                        HStack(spacing: 6) {
+                            TextField("handle", text: $handle)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .focused($handleFocused)
+                                .onChange(of: handle) { _, newValue in
+                                    handle = newValue.lowercased()
+                                    availability = nil
+                                }
+                            Text("@solife.me")
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 46)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(TaskifyTheme.border))
+
+                        if let pendingPurchase {
+                            if let lightningQuote {
+                                payInvoiceView(pendingPurchase, quote: lightningQuote)
+                            } else {
+                                Text("Paying \(pendingPurchase.priceSats.formatted()) sats to claim \(pendingPurchase.address)…")
+                                    .font(.caption)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                ProgressView()
+                            }
+                        } else {
+                            if let availability {
+                                Label(
+                                    availability.available ? "Available" : (availability.reason ?? "Not available"),
+                                    systemImage: availability.available ? "checkmark.circle" : "xmark.circle"
+                                )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(availability.available ? Color.green : Color.orange)
+                            }
+
+                            Button {
+                                Task { await checkAvailabilityThenPurchase() }
+                            } label: {
+                                if isChecking || isPurchasing {
+                                    ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                                } else {
+                                    Text("Purchase Address")
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 46)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!handleIsValid || isChecking || isPurchasing)
+                        }
+
+                        if let errorMessage {
+                            Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .padding(22)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(claimedAddress == nil ? "Cancel" : "Done") { dismiss() }
+                        .disabled(isChecking || isPurchasing)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .interactiveDismissDisabled(isChecking || isPurchasing)
+        .task {
+            handleFocused = true
+            if wallet.solifeConfig == nil {
+                await wallet.refreshSolifeAccount()
+            }
+        }
+    }
+
+    private func payInvoiceView(_ purchase: SolifeAddressPurchase, quote: CashuLightningPaymentQuote) -> some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 6) {
+                Text("\(quote.amount.formatted()) sats").font(.title2.bold())
+                let fee = quote.feeReserve + quote.walletFee
+                if fee > 0 {
+                    Text("+ \(fee.formatted()) sat fee").font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            Button {
+                Task { await payAndVerify(purchase, quote: quote) }
+            } label: {
+                if isPurchasing {
+                    ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                } else {
+                    Text("Pay & Claim").frame(maxWidth: .infinity).frame(height: 46)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isPurchasing)
+        }
+    }
+
+    private func checkAvailabilityThenPurchase() async {
+        guard handleIsValid else { return }
+        isChecking = true
+        errorMessage = nil
+        do {
+            let result = try await wallet.checkSolifeAddressAvailability(handle: normalizedHandle)
+            availability = result
+            guard result.available else {
+                isChecking = false
+                return
+            }
+            isChecking = false
+            await purchase()
+        } catch {
+            isChecking = false
+            errorMessage = WalletViewModel.message(for: error)
+        }
+    }
+
+    private func purchase() async {
+        isPurchasing = true
+        errorMessage = nil
+        do {
+            switch try await wallet.purchaseSolifeCustomAddress(handle: normalizedHandle) {
+            case .address(let address):
+                claimedAddress = address.address
+            case .purchase(let purchase):
+                pendingPurchase = purchase
+                guard let mintURL = wallet.activeMint?.url else {
+                    throw CashuWalletError.lightningPaymentMissing
+                }
+                lightningQuote = try await wallet.prepareLightningPayment(
+                    mintURL: mintURL,
+                    invoice: purchase.bolt11,
+                    amount: nil
+                )
+            }
+        } catch {
+            errorMessage = WalletViewModel.message(for: error)
+        }
+        isPurchasing = false
+    }
+
+    private func payAndVerify(_ purchase: SolifeAddressPurchase, quote: CashuLightningPaymentQuote) async {
+        isPurchasing = true
+        errorMessage = nil
+        do {
+            _ = try await wallet.confirmLightningPayment(quote)
+            lightningQuote = nil
+
+            var latest = purchase
+            for _ in 0..<5 where !latest.isSettled {
+                try? await Task.sleep(for: .milliseconds(1_500))
+                latest = try await wallet.verifySolifePurchase(purchaseID: purchase.purchaseID)
+            }
+            if latest.status == "address_claimed" {
+                claimedAddress = latest.address
+                pendingPurchase = nil
+            } else if latest.status == "expired" {
+                errorMessage = "The invoice expired for \(latest.address)."
+                pendingPurchase = nil
+            } else if let error = latest.error, !error.isEmpty {
+                errorMessage = error
+                pendingPurchase = nil
+            } else {
+                errorMessage = "Payment sent, but solife.me hasn't confirmed \(latest.address) yet. Check back shortly."
+            }
+        } catch {
+            errorMessage = WalletViewModel.message(for: error)
+        }
+        isPurchasing = false
     }
 }
 
