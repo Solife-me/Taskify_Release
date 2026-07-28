@@ -381,6 +381,67 @@ final class BibleTrackerUITests: XCTestCase {
         attach(app, name: "scripture-03-review-task-on-week-board")
     }
 
+    func testAppRelaysAreEditableAndDoNotChangeBoardRelays() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launch()
+
+        app.buttons["Settings"].tap()
+
+        let relayField = app.textFields["app-relay-input"]
+        var scrolls = 0
+        while !relayField.exists, scrolls < 12 {
+            app.swipeUp()
+            scrolls += 1
+        }
+        XCTAssertTrue(relayField.waitForExistence(timeout: 5), "App relays should be editable")
+        attach(app, name: "apprelays-01-list")
+
+        let removeDamus = app.buttons["remove-app-relay-relay.damus.io"]
+        XCTAssertTrue(removeDamus.waitForExistence(timeout: 5))
+        removeDamus.tap()
+        XCTAssertTrue(
+            app.staticTexts.matching(
+                NSPredicate(format: "label CONTAINS[c] %@", "App relays updated")
+            ).firstMatch.waitForExistence(timeout: 5)
+        )
+        XCTAssertFalse(
+            app.buttons["remove-app-relay-relay.damus.io"].exists,
+            "A removed app relay should leave the list"
+        )
+        attach(app, name: "apprelays-02-removed")
+
+        relayField.tap()
+        relayField.typeText("wss://relay.example.com")
+        app.buttons["Add"].firstMatch.tap()
+        XCTAssertTrue(
+            app.buttons["remove-app-relay-relay.example.com"].waitForExistence(timeout: 5),
+            "An added app relay should appear in the list"
+        )
+
+        // The edits above must not have touched any board's own relay list.
+        while app.buttons["Manage Week"].exists == false, scrolls < 24 {
+            app.swipeDown()
+            scrolls += 1
+        }
+        let manageWeek = app.buttons["Manage Week"]
+        XCTAssertTrue(manageWeek.waitForExistence(timeout: 10))
+        manageWeek.tap()
+
+        // Assert against the board card's own remove buttons. Those are labelled with the full
+        // relay URL, where the app relay rows above are labelled with just the host, so these
+        // queries cannot accidentally match the app relay list behind the sheet.
+        XCTAssertTrue(
+            app.buttons["Remove wss://relay.damus.io"].waitForExistence(timeout: 10),
+            "Removing an app relay must not remove it from an existing board"
+        )
+        XCTAssertFalse(
+            app.buttons["Remove wss://relay.example.com"].exists,
+            "Adding an app relay must not add it to an existing board"
+        )
+        attach(app, name: "apprelays-03-board-relays-unchanged")
+    }
+
     func testReorderBoards() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"

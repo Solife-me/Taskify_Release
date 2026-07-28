@@ -165,7 +165,11 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func createWeekBoard(name: String, now: Date = Date()) -> Board? {
+    public mutating func createWeekBoard(
+        name: String,
+        relayURLs: [String] = TaskifyRelayDefaults.urls,
+        now: Date = Date()
+    ) -> Board? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return nil }
 
@@ -176,7 +180,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             columns: WeekdayColumn.allCases.map {
                 BoardColumn(id: $0.rawValue, name: $0.shortName, order: $0.calendarWeekday)
             },
-            createdAt: now
+            createdAt: now,
+            relayURLs: relayURLs
         )
         boards.append(board)
         selectedBoardID = board.id
@@ -187,6 +192,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public mutating func createListBoard(
         name: String,
         initialColumnName: String = "Items",
+        relayURLs: [String] = TaskifyRelayDefaults.urls,
         now: Date = Date()
     ) -> Board? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -199,7 +205,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             columns: [
                 BoardColumn(id: UUID().uuidString, name: trimmedColumnName, order: 0),
             ],
-            createdAt: now
+            createdAt: now,
+            relayURLs: relayURLs
         )
         boards.append(board)
         selectedBoardID = board.id
@@ -210,6 +217,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public mutating func createCompoundBoard(
         name: String,
         childBoardIDs: [String] = [],
+        relayURLs: [String] = TaskifyRelayDefaults.urls,
         now: Date = Date()
     ) -> Board? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -220,7 +228,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             name: trimmedName,
             kind: .compound,
             children: children,
-            createdAt: now
+            createdAt: now,
+            relayURLs: relayURLs
         )
         boards.append(board)
         selectedBoardID = board.id

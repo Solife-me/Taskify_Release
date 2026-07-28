@@ -22,6 +22,110 @@ private struct UpcomingTaskFilterScope {
     let columnIDs: Set<String>?
 }
 
+
+/// Memoizes the parts of the Upcoming screen that do not vary with the selected day.
+///
+/// Tapping a date re-evaluates `UpcomingView.body`, and each evaluation used to redo all of
+/// this from scratch: the full task filter three times, the board/column filter options nine
+/// times, and a JSON parse of the stored filter selection three times. None of it depends on
+/// the selected date, so it is computed once per (data, filters, minute) and reused.
+///
+/// The minute in the key mirrors `AppSnapshotLookupCache`: "upcoming" is relative to now, so
+/// the cache must not outlive the minute it was built in.
+@MainActor
+final class UpcomingDataCache {
+    struct Key: Equatable {
+        let snapshotRevision: Int
+        let minute: Int
+        let searchText: String
+        let boardFilterRaw: String
+        let sortModeRaw: String
+        let sortDirectionRaw: String
+        let usHolidaysEnabled: Bool
+        let holidayCount: Int
+        let visibleBoardRevision: Int
+    }
+
+    private var key: Key?
+    fileprivate var storedFilterGroups: [UpcomingFilterGroup]?
+    private var storedSelectedOptionIDs: Set<String>?
+    private var storedFilteredTasks: [TaskItem]?
+    private var storedTaskCountsByDate: [Date: Int]?
+    private var storedFilteredTaskifyEvents: [TaskifyEvent]?
+    private var storedTaskifyEventDates: Set<Date>?
+    private var storedUpcomingUsHolidays: [UsHoliday]?
+    private var storedUsHolidayDates: Set<Date>?
+
+    func prepare(for newKey: Key) {
+        guard key != newKey else { return }
+        key = newKey
+        storedFilterGroups = nil
+        storedSelectedOptionIDs = nil
+        storedFilteredTasks = nil
+        storedTaskCountsByDate = nil
+        storedFilteredTaskifyEvents = nil
+        storedTaskifyEventDates = nil
+        storedUpcomingUsHolidays = nil
+        storedUsHolidayDates = nil
+    }
+
+    fileprivate func filterGroups(_ build: () -> [UpcomingFilterGroup]) -> [UpcomingFilterGroup] {
+        if let storedFilterGroups { return storedFilterGroups }
+        let value = build()
+        storedFilterGroups = value
+        return value
+    }
+
+    func selectedOptionIDs(_ build: () -> Set<String>) -> Set<String> {
+        if let storedSelectedOptionIDs { return storedSelectedOptionIDs }
+        let value = build()
+        storedSelectedOptionIDs = value
+        return value
+    }
+
+    func filteredTasks(_ build: () -> [TaskItem]) -> [TaskItem] {
+        if let storedFilteredTasks { return storedFilteredTasks }
+        let value = build()
+        storedFilteredTasks = value
+        return value
+    }
+
+    func taskCountsByDate(_ build: () -> [Date: Int]) -> [Date: Int] {
+        if let storedTaskCountsByDate { return storedTaskCountsByDate }
+        let value = build()
+        storedTaskCountsByDate = value
+        return value
+    }
+
+    func filteredTaskifyEvents(_ build: () -> [TaskifyEvent]) -> [TaskifyEvent] {
+        if let storedFilteredTaskifyEvents { return storedFilteredTaskifyEvents }
+        let value = build()
+        storedFilteredTaskifyEvents = value
+        return value
+    }
+
+    func taskifyEventDates(_ build: () -> Set<Date>) -> Set<Date> {
+        if let storedTaskifyEventDates { return storedTaskifyEventDates }
+        let value = build()
+        storedTaskifyEventDates = value
+        return value
+    }
+
+    func upcomingUsHolidays(_ build: () -> [UsHoliday]) -> [UsHoliday] {
+        if let storedUpcomingUsHolidays { return storedUpcomingUsHolidays }
+        let value = build()
+        storedUpcomingUsHolidays = value
+        return value
+    }
+
+    func usHolidayDates(_ build: () -> Set<Date>) -> Set<Date> {
+        if let storedUsHolidayDates { return storedUsHolidayDates }
+        let value = build()
+        storedUsHolidayDates = value
+        return value
+    }
+}
+
 struct UpcomingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
@@ -43,6 +147,7 @@ struct UpcomingView: View {
     @State private var showingNewTask = false
     @State private var showingSortOptions = false
     @State private var selectedDate = Calendar.current.startOfDay(for: Date())
+    @State private var dataCache = UpcomingDataCache()
     @State private var visibleCalendarMonth = Date()
     @State private var calendarTodayRequest = 0
     @State private var holidayReferenceYear = Calendar.current.component(.year, from: Date())
@@ -50,6 +155,28 @@ struct UpcomingView: View {
         let year = Calendar.current.component(.year, from: Date())
         return UsHolidays.holidays(fromYear: year - 1, toYear: year + 8)
     }()
+
+
+    /// Everything the memoized values depend on. Deliberately excludes `selectedDate`: that is
+    /// the whole point — switching days must not invalidate any of this.
+    private var dataCacheKey: UpcomingDataCache.Key {
+        UpcomingDataCache.Key(
+            snapshotRevision: model.snapshotRevision,
+            minute: Int(Date().timeIntervalSince1970 / 60),
+            searchText: searchText,
+            boardFilterRaw: boardFilterRaw,
+            sortModeRaw: sortModeRaw,
+            sortDirectionRaw: sortDirectionRaw,
+            usHolidaysEnabled: usHolidaysEnabled,
+            holidayCount: allUsHolidays.count,
+            visibleBoardRevision: model.visibleBoards.count
+        )
+    }
+
+    private var cache: UpcomingDataCache {
+        dataCache.prepare(for: dataCacheKey)
+        return dataCache
+    }
 
     private var displayMode: UpcomingDisplayMode {
         UpcomingDisplayMode(rawValue: displayModeRaw) ?? .details
@@ -74,7 +201,8 @@ struct UpcomingView: View {
     /// One filter group per board: a board-level option, plus a list-column option per column
     /// for list-kind boards (mirrors the PWA's per-board / per-list Upcoming filter).
     private var filterGroups: [UpcomingFilterGroup] {
-        filterBoards.map { board in
+        cache.filterGroups {
+            filterBoards.map { board in
             let boardOption = UpcomingFilterOption(id: board.id, label: board.name, boardID: board.id, columnID: nil)
             let listOptions: [UpcomingFilterOption] = board.kind == .list
                 ? board.columns
@@ -88,6 +216,7 @@ struct UpcomingView: View {
                 : []
             return UpcomingFilterGroup(board: board, boardOption: boardOption, listOptions: listOptions)
         }
+        }
     }
 
     private var filterOptions: [UpcomingFilterOption] {
@@ -95,12 +224,14 @@ struct UpcomingView: View {
     }
 
     private var selectedOptionIDs: Set<String> {
-        guard !boardFilterRaw.isEmpty,
-              let data = boardFilterRaw.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([String].self, from: data) else {
-            return Set(filterOptions.map(\.id))
+        cache.selectedOptionIDs {
+            guard !boardFilterRaw.isEmpty,
+                  let data = boardFilterRaw.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([String].self, from: data) else {
+                return Set(filterOptions.map(\.id))
+            }
+            return Set(decoded)
         }
-        return Set(decoded)
     }
 
     /// Boards with at least partial inclusion (the board itself, or any one of its lists, selected).
@@ -149,6 +280,7 @@ struct UpcomingView: View {
     }
 
     private var filteredTasks: [TaskItem] {
+        cache.filteredTasks {
         let base = UpcomingTaskOrganizer.filter(
             model.upcomingTasks(),
             searchText: searchText,
@@ -162,6 +294,7 @@ struct UpcomingView: View {
             guard let columns = scope.columnIDs else { return true }
             guard let columnID = task.columnID else { return false }
             return columns.contains(columnID)
+        }
         }
     }
 
@@ -203,11 +336,13 @@ struct UpcomingView: View {
     }
 
     private var upcomingUsHolidays: [UsHoliday] {
-        guard usHolidaysEnabled else { return [] }
-        let today = Calendar.current.startOfDay(for: Date())
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return allUsHolidays.filter { holiday in
-            holiday.date >= today && (query.isEmpty || holiday.title.localizedCaseInsensitiveContains(query))
+        cache.upcomingUsHolidays {
+            guard usHolidaysEnabled else { return [] }
+            let today = Calendar.current.startOfDay(for: Date())
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return allUsHolidays.filter { holiday in
+                holiday.date >= today && (query.isEmpty || holiday.title.localizedCaseInsensitiveContains(query))
+            }
         }
     }
 
@@ -217,7 +352,9 @@ struct UpcomingView: View {
     }
 
     private var usHolidayDates: Set<Date> {
-        Set(upcomingUsHolidays.map { Calendar.current.startOfDay(for: $0.date) })
+        cache.usHolidayDates {
+            Set(upcomingUsHolidays.map { Calendar.current.startOfDay(for: $0.date) })
+        }
     }
 
     private var upcomingCalendarEvents: [DeviceCalendarEvent] {
@@ -233,6 +370,7 @@ struct UpcomingView: View {
     }
 
     private var filteredTaskifyEvents: [TaskifyEvent] {
+        cache.filteredTaskifyEvents {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return model.taskifyEvents.filter { event in
             guard event.boardID.map(selectedBoardIDs.contains) ?? true else { return false }
@@ -241,6 +379,7 @@ struct UpcomingView: View {
                 event.summary?.localizedCaseInsensitiveContains(query) == true ||
                 event.details?.localizedCaseInsensitiveContains(query) == true ||
                 event.locations?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) == true
+        }
         }
     }
 
@@ -275,7 +414,9 @@ struct UpcomingView: View {
     }
 
     private var taskCountsByDate: [Date: Int] {
-        UpcomingTaskOrganizer.taskCountsByDay(filteredTasks)
+        cache.taskCountsByDate {
+            UpcomingTaskOrganizer.taskCountsByDay(filteredTasks)
+        }
     }
 
     private var selectedDayCalendarEvents: [DeviceCalendarEvent] {
@@ -288,6 +429,7 @@ struct UpcomingView: View {
     }
 
     private var taskifyEventDates: Set<Date> {
+        cache.taskifyEventDates {
         var dates = Set<Date>()
         let calendar = Calendar.current
         for event in filteredTaskifyEvents {
@@ -302,6 +444,7 @@ struct UpcomingView: View {
             }
         }
         return dates
+        }
     }
 
     private var calendarEventDates: Set<Date> {

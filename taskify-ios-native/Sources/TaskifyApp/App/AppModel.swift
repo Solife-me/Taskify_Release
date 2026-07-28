@@ -110,6 +110,22 @@ enum NostrDirectMessageError: LocalizedError {
     }
 }
 
+/// The account-level relay set, stored per device. Falls back to the built-in defaults until
+/// the user edits it.
+enum AppRelaySettings {
+    private static let key = "taskify.sync.appRelays"
+
+    static var urls: [String] {
+        let stored = UserDefaults.standard.stringArray(forKey: key) ?? []
+        let normalized = TaskifyRelayURL.normalizedList(stored)
+        return normalized.isEmpty ? TaskifyRelayDefaults.urls : normalized
+    }
+
+    static func setURLs(_ urls: [String]) {
+        UserDefaults.standard.set(TaskifyRelayURL.normalizedList(urls), forKey: key)
+    }
+}
+
 private final class AppSnapshotLookupCache {
     private struct TaskColumnKey: Hashable {
         let boardID: String
@@ -244,8 +260,15 @@ final class AppModel {
     private static let contactsOutboxScope = "__taskify-contacts__"
     private static let directMessagesOutboxScope = "__taskify-direct-messages__"
     private(set) var snapshot = TaskifySnapshot.empty {
-        didSet { snapshotLookupCache.invalidate() }
+        didSet {
+            snapshotLookupCache.invalidate()
+            snapshotRevision &+= 1
+        }
     }
+
+    /// Bumped on every snapshot write. Views that memoize derived data can use this as an O(1)
+    /// "has anything changed?" key instead of diffing the task list.
+    private(set) var snapshotRevision = 0
     private(set) var isLoading = true
     private(set) var identityPublicKey = ""
     private(set) var identityNpub = ""
@@ -265,6 +288,7 @@ final class AppModel {
     private(set) var scriptureMemoryBoardID = ScriptureMemorySettings.boardID
     private(set) var scriptureMemoryFrequency = ScriptureMemorySettings.frequency
     private(set) var streaksEnabled = TaskStreakSettings.enabled
+    private(set) var appRelays = AppRelaySettings.urls
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
     private(set) var contactSyncStatus = "Preparing private contact sync"
@@ -352,6 +376,56 @@ final class AppModel {
     var syncIsOnline: Bool {
         if case .online = syncState { return true }
         return false
+    }
+
+    // MARK: - App relays
+
+    /// The account-level relay set. These are the relays Taskify itself uses: they seed the
+    /// relay list of every new board, and they carry direct messages, shared tasks and the
+    /// encrypted account backup. Changing them deliberately leaves existing boards alone —
+    /// a board keeps whatever relays it was created with or joined on, editable per board.
+    var appRelayURLs: [String] { appRelays }
+
+    var appRelaysAreDefault: Bool {
+        appRelays == TaskifyRelayDefaults.urls
+    }
+
+    enum AppRelayChangeResult: Equatable {
+        case changed
+        case invalidURL
+        case duplicate
+        case lastRelay
+    }
+
+    func addAppRelay(_ relayURL: String) -> AppRelayChangeResult {
+        guard let normalized = TaskifyRelayURL.normalize(relayURL) else { return .invalidURL }
+        guard !appRelays.contains(normalized) else { return .duplicate }
+        applyAppRelays(appRelays + [normalized])
+        return .changed
+    }
+
+    /// Refuses to remove the last one — an empty app relay set would leave new boards, direct
+    /// messages and account backup with nowhere to publish.
+    func removeAppRelay(_ relayURL: String) -> AppRelayChangeResult {
+        guard let normalized = TaskifyRelayURL.normalize(relayURL) else { return .invalidURL }
+        guard appRelays.count > 1 else { return .lastRelay }
+        guard appRelays.contains(normalized) else { return .invalidURL }
+        applyAppRelays(appRelays.filter { $0 != normalized })
+        return .changed
+    }
+
+    func restoreDefaultAppRelays() {
+        applyAppRelays(TaskifyRelayDefaults.urls)
+    }
+
+    private func applyAppRelays(_ urls: [String]) {
+        let normalized = TaskifyRelayURL.normalizedList(urls)
+        guard !normalized.isEmpty, normalized != appRelays else { return }
+        appRelays = normalized
+        AppRelaySettings.setURLs(normalized)
+        // Direct messages, shared-task delivery and account backup all resolve their relays
+        // through this set, so the engine needs to pick up the new connections now.
+        reconfigureSync()
     }
 
     func registerWalletPaymentReceiver(_ wallet: WalletViewModel) {
@@ -1854,7 +1928,9 @@ final class AppModel {
 
     @discardableResult
     func createWeekBoard(name: String) -> Bool {
-        guard let board = snapshot.createWeekBoard(name: name) else { return false }
+        guard let board = snapshot.createWeekBoard(name: name, relayURLs: appRelays) else {
+            return false
+        }
         scheduleSave()
         reconfigureSync()
         publishBoard(board)
@@ -1863,7 +1939,9 @@ final class AppModel {
 
     @discardableResult
     func createListBoard(name: String) -> Bool {
-        guard let board = snapshot.createListBoard(name: name) else { return false }
+        guard let board = snapshot.createListBoard(name: name, relayURLs: appRelays) else {
+            return false
+        }
         scheduleSave()
         reconfigureSync()
         publishBoard(board)
@@ -1874,7 +1952,8 @@ final class AppModel {
     func createCompoundBoard(name: String, childBoardIDs: [String]) -> Bool {
         guard let board = snapshot.createCompoundBoard(
             name: name,
-            childBoardIDs: childBoardIDs
+            childBoardIDs: childBoardIDs,
+            relayURLs: appRelays
         ) else { return false }
         scheduleSave()
         reconfigureSync()
@@ -2145,13 +2224,14 @@ final class AppModel {
         let auxiliaryRelays = sharedInboxRelayURLs
         let inboxPublicKey = identityPublicKey.nilIfEmpty
         let timestamp = nextNostrTimestamp()
+        let boardRelayTargets = board.effectiveRelayURLs
         scheduleSave()
         scheduleAccountBackupPublish()
         Task { [syncEngine] in
             do {
                 try await syncEngine.replaceQueuedRelayTargets(
                     boardLocalID: board.id,
-                    relayURLs: board.effectiveRelayURLs
+                    relayURLs: boardRelayTargets
                 )
                 await syncEngine.configure(
                     boards: boardsForSync,
@@ -2333,7 +2413,7 @@ final class AppModel {
         }
         let customName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = customName.isEmpty ? (share.boardName ?? "Shared Board") : customName
-        let relays = share.relayURLs.isEmpty ? TaskifyRelayDefaults.urls : share.relayURLs
+        let relays = share.relayURLs.isEmpty ? appRelays : share.relayURLs
         guard snapshot.joinWeekBoard(
             nostrBoardID: share.boardID,
             name: resolvedName,
@@ -2526,7 +2606,7 @@ final class AppModel {
         isCheckingAccountBackup = true
         accountBackupMessage = "Checking your configured relays for a PWA account backup…"
         let relays = TaskifyRelayURL.normalizedList(
-            TaskifyRelayDefaults.urls + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
         )
         accountBackupSearchTask = Task { [weak self] in
             let candidates = await NostrAccountBackupFinder.findCandidates(
@@ -2765,11 +2845,21 @@ final class AppModel {
 
     private func handleSyncUpdate(_ update: TaskSyncUpdate) {
         switch update {
+        // Each of these merges runs against a copy and assigns back only when it reports a real
+        // change. Merging straight into `snapshot` fired its `didSet` for every event — and a
+        // relay replay is mostly events we already have, so the common case was a full view
+        // invalidation and lookup-cache wipe for a merge that did nothing.
         case .board(let record):
             lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
-            if snapshot.mergeRemoteBoard(record.board, eventCreatedAt: record.eventCreatedAt) {
-                if record.board.kind == .compound {
-                    _ = snapshot.ensureCompoundChildBoards(parentBoardID: record.board.id)
+            var updated = snapshot
+            if updated.mergeRemoteBoard(record.board, eventCreatedAt: record.eventCreatedAt) {
+                let isCompound = record.board.kind == .compound
+                if isCompound {
+                    _ = updated.ensureCompoundChildBoards(parentBoardID: record.board.id)
+                }
+                snapshot = updated
+                if isCompound {
+                    // Reads `snapshot.boardsForSync`, so it has to see the merged value.
                     reconfigureSync()
                 }
                 scheduleSave()
@@ -2777,16 +2867,20 @@ final class AppModel {
             }
         case .task(let record):
             lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
-            if snapshot.mergeRemoteTask(record.task, eventCreatedAt: record.eventCreatedAt) {
+            var updated = snapshot
+            if updated.mergeRemoteTask(record.task, eventCreatedAt: record.eventCreatedAt) {
+                snapshot = updated
                 scheduleSave()
                 refreshNotifications(requestPermission: false)
             }
         case .calendarEvent(let record):
             lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
-            if snapshot.mergeRemoteTaskifyEvent(
+            var updated = snapshot
+            if updated.mergeRemoteTaskifyEvent(
                 record.event,
                 eventCreatedAt: record.eventCreatedAt
             ) {
+                snapshot = updated
                 scheduleSave()
                 maintainTaskifyEventRecurrenceWindow()
                 refreshNotifications(requestPermission: false)
@@ -3445,13 +3539,16 @@ final class AppModel {
     private var accountBackupRelayURLs: [String] {
         guard let baseline = accountBackupBaseline else { return [] }
         return baseline.defaultRelayURLs.isEmpty
-            ? TaskifyRelayDefaults.urls
+            ? appRelays
             : baseline.defaultRelayURLs
     }
 
+    /// Relays used for everything that is not board sync: the shared inbox, direct messages,
+    /// shared tasks and invites. Rooted on the app relay set, plus whatever relays the people
+    /// and shares involved have told us to use.
     private var sharedInboxRelayURLs: [String] {
         TaskifyRelayURL.normalizedList(
-            TaskifyRelayDefaults.urls
+            appRelays
                 + accountBackupRelayURLs
                 + (snapshot.sharedInboxItems ?? []).flatMap { $0.task.relayURLs ?? [] }
                 + (snapshot.sharedContactInboxItems ?? []).flatMap { $0.contact.relayURLs ?? [] }
@@ -3464,7 +3561,7 @@ final class AppModel {
 
     private var contactsSyncRelayURLs: [String] {
         TaskifyRelayURL.normalizedList(
-            TaskifyRelayDefaults.urls
+            appRelays
                 + accountBackupRelayURLs
         )
     }
@@ -3648,7 +3745,7 @@ final class AppModel {
             encryptedMediaServerURL
         )
         let relayURLs = updatedPayload.defaultRelayURLs.isEmpty
-            ? TaskifyRelayDefaults.urls
+            ? appRelays
             : updatedPayload.defaultRelayURLs
         let auxiliaryRelayURLs = TaskifyRelayURL.normalizedList(
             sharedInboxRelayURLs + relayURLs

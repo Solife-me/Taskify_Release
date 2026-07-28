@@ -223,6 +223,11 @@ public actor TaskSyncEngine {
     private var inFlightEventIDs: [String: Set<String>] = [:]
     private var deliveredSharedInboxEventIDs: Set<String> = []
     private var deliveredSharedInboxEventIDOrder: [String] = []
+    // The same board/task/calendar event is stored on every relay the board syncs to, so an
+    // account on N relays receives N copies of each event. Without this, every copy was handed
+    // to the app and merged again — N times the work for one change.
+    private var deliveredEventIDs: Set<String> = []
+    private var deliveredEventIDOrder: [String] = []
 
     public init(outbox: NostrOutboxStore = NostrOutboxStore()) {
         self.outbox = outbox
@@ -258,6 +263,8 @@ public actor TaskSyncEngine {
         if normalizedInboxPublicKey != self.inboxPublicKey {
             deliveredSharedInboxEventIDs.removeAll()
             deliveredSharedInboxEventIDOrder.removeAll()
+            deliveredEventIDs.removeAll()
+            deliveredEventIDOrder.removeAll()
         }
         self.inboxPublicKey = normalizedInboxPublicKey
         let wantedRelays = Set(
@@ -580,7 +587,8 @@ public actor TaskSyncEngine {
 
             if event.kind == TaskEventCodec.boardEventKind {
                 guard let record = try? TaskEventCodec.decodeBoardEvent(event, board: board),
-                      event.createdAt > (board.nostrUpdatedAt ?? 0) else { return }
+                      event.createdAt > (board.nostrUpdatedAt ?? 0),
+                      recordEventIfNew(event.id) else { return }
                 boards[boardIndex] = record.board
                 updateContinuation.yield(.board(record))
                 return
@@ -591,7 +599,7 @@ public actor TaskSyncEngine {
                 guard let record = try? TaskifyCalendarEventCodec.decodeCanonicalEvent(
                     event,
                     board: board
-                ) else { return }
+                ), recordEventIfNew(event.id) else { return }
                 if pendingSubscriptions[relayURL]?.contains(subscriptionID) == true {
                     var subscriptions = relayBatches[relayURL] ?? [:]
                     var batch = subscriptions[subscriptionID] ?? TaskRelayStartupBatch()
@@ -604,7 +612,8 @@ public actor TaskSyncEngine {
                 return
             }
 
-            guard let record = try? TaskEventCodec.decodeTaskEvent(event, board: board) else { return }
+            guard let record = try? TaskEventCodec.decodeTaskEvent(event, board: board),
+                  recordEventIfNew(event.id) else { return }
             if pendingSubscriptions[relayURL]?.contains(subscriptionID) == true {
                 var subscriptions = relayBatches[relayURL] ?? [:]
                 var batch = subscriptions[subscriptionID] ?? TaskRelayStartupBatch()
@@ -676,6 +685,22 @@ public actor TaskSyncEngine {
             }
             await markRelayOnline(relayURL)
         }
+    }
+
+    /// Recorded only after a successful decode, so a relay that hands us a corrupt or
+    /// undecryptable copy never prevents a healthy copy from another relay being processed.
+    private func recordEventIfNew(_ eventID: String) -> Bool {
+        guard deliveredEventIDs.insert(eventID).inserted else { return false }
+        deliveredEventIDOrder.append(eventID)
+        let maximumRememberedEventCount = 5_000
+        if deliveredEventIDOrder.count > maximumRememberedEventCount {
+            let overflow = deliveredEventIDOrder.count - maximumRememberedEventCount
+            for expiredID in deliveredEventIDOrder.prefix(overflow) {
+                deliveredEventIDs.remove(expiredID)
+            }
+            deliveredEventIDOrder.removeFirst(overflow)
+        }
+        return true
     }
 
     private func recordSharedInboxEventIfNew(_ event: NostrEvent) -> Bool {

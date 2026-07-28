@@ -17,6 +17,8 @@ struct SettingsView: View {
     @State private var identityInput = ""
     @State private var mediaServerInput = ""
     @State private var mediaServerValidationMessage: String?
+    @State private var newAppRelayURL = ""
+    @State private var appRelayMessage: String?
 
     var body: some View {
         // @Environment values aren't bindable directly; @Bindable re-wraps the same model
@@ -219,10 +221,114 @@ struct SettingsView: View {
             Text("Taskify stays synced when at least one relay is available. Individual relay issues are shown above without incorrectly marking the whole app offline.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            Divider()
+
+            appRelaysSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
+    }
+
+    /// The account-level relay set: the relays new boards are created on, and the ones that
+    /// carry direct messages, shared tasks and the encrypted account backup. Editing this list
+    /// deliberately leaves existing boards untouched — each board keeps its own relays, managed
+    /// from that board's manager sheet.
+    private var appRelaysSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("App relays")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            ForEach(model.appRelayURLs, id: \.self) { relayURL in
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(URL(string: relayURL)?.host ?? relayURL)
+                            .font(.subheadline)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .lineLimit(1)
+                        Text(relayURL)
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        applyAppRelayChange(model.removeAppRelay(relayURL), relayURL: relayURL)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.appRelayURLs.count <= 1)
+                    .accessibilityIdentifier("remove-app-relay-\(URL(string: relayURL)?.host ?? relayURL)")
+                    .accessibilityLabel("Remove \(URL(string: relayURL)?.host ?? relayURL)")
+                }
+            }
+
+            HStack(spacing: 10) {
+                TextField("wss://relay.example", text: $newAppRelayURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.subheadline)
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(
+                        TaskifyTheme.raisedFill,
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .accessibilityIdentifier("app-relay-input")
+                    .onSubmit { addAppRelay() }
+
+                Button("Add") { addAppRelay() }
+                    .buttonStyle(.bordered)
+                    .disabled(newAppRelayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            Button("Restore default relays") {
+                model.restoreDefaultAppRelays()
+                appRelayMessage = "Default app relays restored."
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.appRelaysAreDefault)
+
+            if let appRelayMessage {
+                Text(appRelayMessage)
+                    .font(.caption)
+                    .foregroundStyle(
+                        appRelayMessage.hasPrefix("Enter") || appRelayMessage.hasPrefix("Keep")
+                            || appRelayMessage.hasPrefix("That")
+                            ? Color.orange
+                            : TaskifyTheme.secondaryText
+                    )
+            }
+
+            Text("New boards are created on these relays, and they carry direct messages, shared tasks and your encrypted account backup. Existing boards keep their own relays — change those from each board's manager.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+    private func addAppRelay() {
+        let entry = newAppRelayURL
+        applyAppRelayChange(model.addAppRelay(entry), relayURL: entry)
+    }
+
+    private func applyAppRelayChange(_ result: AppModel.AppRelayChangeResult, relayURL: String) {
+        switch result {
+        case .changed:
+            newAppRelayURL = ""
+            appRelayMessage = "App relays updated. Sync is reconnecting."
+        case .invalidURL:
+            appRelayMessage = "Enter a valid ws:// or wss:// relay address."
+        case .duplicate:
+            appRelayMessage = "That relay is already in the list."
+        case .lastRelay:
+            appRelayMessage = "Keep at least one app relay."
+        }
     }
 
     private var storageCard: some View {
