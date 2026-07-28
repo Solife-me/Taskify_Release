@@ -343,6 +343,84 @@ public enum CashuPaymentRequestContract {
     }
 }
 
+/// An unsolicited incoming Cashu token found in a plain DM — distinct from
+/// `CashuNostrPaymentDelivery`, which only ever fulfills a payment request this device created.
+/// A Lightning-address forwarder (e.g. solife.me) has no such request to match against: it just
+/// drops a token in your DMs whenever someone pays your address. Matches the PWA's
+/// `processIncomingPaymentPayload`, which auto-claims any decodable incoming token regardless of
+/// whether it corresponds to a request the user made.
+public struct CashuIncomingTokenDelivery: Identifiable, Codable, Equatable, Sendable {
+    public var id: String { eventID }
+    public let eventID: String
+    public let token: String
+    public let senderPublicKey: String
+    public let receivedAt: Date
+
+    public init(
+        eventID: String,
+        token: String,
+        senderPublicKey: String,
+        receivedAt: Date = Date()
+    ) {
+        self.eventID = eventID.lowercased()
+        self.token = token
+        self.senderPublicKey = senderPublicKey.lowercased()
+        self.receivedAt = receivedAt
+    }
+}
+
+public enum CashuIncomingTokenInboxStore {
+    private static let maximumAge: TimeInterval = 30 * 24 * 60 * 60
+    private static let maximumCount = 200
+
+    public static func defaultURL() throws -> URL {
+        let directory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+            .appendingPathComponent("TaskifyNative", isDirectory: true)
+            .appendingPathComponent("Wallet", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        )
+        return directory.appendingPathComponent("incoming-token-inbox.json")
+    }
+
+    @discardableResult
+    public static func enqueue(
+        _ delivery: CashuIncomingTokenDelivery,
+        at url: URL,
+        now: Date = Date()
+    ) throws -> Bool {
+        var deliveries = load(from: url, now: now)
+        guard !deliveries.contains(where: { $0.eventID == delivery.eventID }) else { return false }
+        deliveries.append(delivery)
+        deliveries = Array(deliveries.sorted { $0.receivedAt < $1.receivedAt }.suffix(maximumCount))
+        try save(deliveries, to: url)
+        return true
+    }
+
+    public static func load(from url: URL, now: Date = Date()) -> [CashuIncomingTokenDelivery] {
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode([CashuIncomingTokenDelivery].self, from: data) else {
+            return []
+        }
+        return decoded.filter { now.timeIntervalSince($0.receivedAt) <= maximumAge }
+    }
+
+    public static func remove(eventIDs: Set<String>, at url: URL, now: Date = Date()) throws {
+        let remaining = load(from: url, now: now).filter { !eventIDs.contains($0.eventID) }
+        try save(remaining, to: url)
+    }
+
+    private static func save(_ deliveries: [CashuIncomingTokenDelivery], to url: URL) throws {
+        let data = try JSONEncoder().encode(deliveries)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+    }
+}
+
 public enum CashuNostrPaymentInboxStore {
     private static let maximumAge: TimeInterval = 30 * 24 * 60 * 60
     private static let maximumCount = 200

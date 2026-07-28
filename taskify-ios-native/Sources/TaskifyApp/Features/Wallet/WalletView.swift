@@ -57,6 +57,7 @@ final class WalletViewModel: ObservableObject {
     @Published private(set) var lightningReceiveQuotes: [CashuLightningReceiveQuote] = []
     @Published private(set) var pendingEcashReceives: [CashuPendingReceive] = []
     @Published private(set) var createdPaymentRequests: [CashuCreatedPaymentRequest] = []
+    @Published private(set) var solifeAddress: String?
     @Published private(set) var npubCashIdentity: NpubCashIdentity?
     @Published private(set) var npubCashIdentityError: String?
     @Published private(set) var npubCashClaimStatus: NpubCashClaimStatus = .idle
@@ -69,6 +70,7 @@ final class WalletViewModel: ObservableObject {
     private var paymentInboxTask: Task<Void, Never>?
     private var paymentInboxNeedsAnotherPass = false
     private var isRecoveringPaymentInbox = false
+    private var isRecoveringIncomingTokenInbox = false
     private var isClaimingNpubCash = false
     private var announcedLightningQuoteIDs: Set<String> = []
     private let paymentNotificationCoordinator = WalletPaymentNotificationCoordinator()
@@ -128,11 +130,12 @@ final class WalletViewModel: ObservableObject {
             )
             await recoverPendingEcashReceives(force: true)
             await recoverNostrPaymentRequests()
+            await recoverIncomingTokenInbox()
             if recoverLightningReceives {
                 await recoverPendingLightningReceives()
             }
             startLightningMonitoring()
-            refreshNpubCashIdentity()
+            refreshLightningAddresses()
             if NpubCashSettings.autoClaimEnabled {
                 await claimNpubCash(auto: true)
             }
@@ -161,11 +164,12 @@ final class WalletViewModel: ObservableObject {
             Task { await paymentNotificationCoordinator.requestAuthorizationIfNeeded() }
         }
         restartLightningMonitoring()
-        refreshNpubCashIdentity()
+        refreshLightningAddresses()
         Task {
             await service?.recoverInterruptedOperations()
             await recoverPendingEcashReceives(force: true)
             await recoverNostrPaymentRequests()
+            await recoverIncomingTokenInbox()
             if NpubCashSettings.autoClaimEnabled {
                 await claimNpubCash(auto: true)
             }
@@ -213,6 +217,7 @@ final class WalletViewModel: ObservableObject {
             repeat {
                 self.paymentInboxNeedsAnotherPass = false
                 _ = await self.recoverNostrPaymentRequests(presentInApp: self.isAppActive)
+                _ = await self.recoverIncomingTokenInbox(presentInApp: self.isAppActive)
             } while self.paymentInboxNeedsAnotherPass && !Task.isCancelled
             self.paymentInboxTask = nil
         }
@@ -221,24 +226,25 @@ final class WalletViewModel: ObservableObject {
     /// Derives the `<npub>@npub.cash` address from the stored Nostr identity — local only, no
     /// network call. Called whenever the wallet starts or the app returns to the foreground, and
     /// whenever the user turns receiving on, so the address is ready to show immediately.
-    func refreshNpubCashIdentity() {
+    /// Derives the always-on `<npub>@solife.me` address (a pure forwarder — any Nostr key works,
+    /// nothing to enable) and, if the user has opted in, the `<npub>@npub.cash` address. Both are
+    /// local-only, no network call.
+    func refreshLightningAddresses() {
+        let identity = try? KeychainIdentityStore().load()
+        solifeAddress = identity.map { SolifeClient.address(npub: $0.npub) }
+
         guard NpubCashSettings.receivingEnabled else {
             npubCashIdentity = nil
             npubCashIdentityError = nil
             return
         }
-        do {
-            guard let identity = try KeychainIdentityStore().load() else {
-                npubCashIdentity = nil
-                npubCashIdentityError = "Set up your Taskify Nostr identity to use npub.cash."
-                return
-            }
-            npubCashIdentity = NpubCashClient.identity(npub: identity.npub)
-            npubCashIdentityError = nil
-        } catch {
+        guard let identity else {
             npubCashIdentity = nil
-            npubCashIdentityError = "Unable to derive your npub.cash address."
+            npubCashIdentityError = "Set up your Taskify Nostr identity to use npub.cash."
+            return
         }
+        npubCashIdentity = NpubCashClient.identity(npub: identity.npub)
+        npubCashIdentityError = nil
     }
 
     /// Checks npub.cash for a pending balance and, if any, redeems each token through the normal
@@ -606,6 +612,58 @@ final class WalletViewModel: ObservableObject {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
         return receipts
+    }
+
+    /// Claims unsolicited incoming tokens — e.g. eCash a Lightning-address forwarder like
+    /// solife.me drops in a DM — through the same `submitReceive` path as a manually pasted
+    /// token. Unlike `recoverNostrPaymentRequests`, there's no request on this device to match:
+    /// any decodable token found in an incoming DM is fair game.
+    @discardableResult
+    private func recoverIncomingTokenInbox(presentInApp: Bool = true) async -> UInt64 {
+        guard !isRecoveringIncomingTokenInbox else {
+            paymentInboxNeedsAnotherPass = true
+            return 0
+        }
+        isRecoveringIncomingTokenInbox = true
+        defer { isRecoveringIncomingTokenInbox = false }
+        guard let service,
+              let inboxURL = try? CashuIncomingTokenInboxStore.defaultURL() else { return 0 }
+        let deliveries = CashuIncomingTokenInboxStore.load(from: inboxURL)
+        guard !deliveries.isEmpty else { return 0 }
+
+        var completedEventIDs = Set<String>()
+        var claimedTotal: UInt64 = 0
+        var claimedCount = 0
+        for delivery in deliveries {
+            guard !Task.isCancelled else { break }
+            do {
+                switch try await service.submitReceive(delivery.token) {
+                case .received(let amount):
+                    claimedTotal += amount
+                    claimedCount += 1
+                case .queued:
+                    // Now tracked by the pending-receive system's own retry loop.
+                    break
+                }
+                completedEventIDs.insert(delivery.eventID)
+            } catch {
+                // Malformed or already-spent — this delivery will never succeed. Drop it.
+                completedEventIDs.insert(delivery.eventID)
+            }
+        }
+        if !completedEventIDs.isEmpty {
+            try? CashuIncomingTokenInboxStore.remove(eventIDs: completedEventIDs, at: inboxURL)
+        }
+        guard claimedCount > 0 else { return 0 }
+
+        await refresh()
+        if presentInApp {
+            statusMessage = claimedCount == 1
+                ? "Received \(claimedTotal.formatted()) sats"
+                : "Received \(claimedTotal.formatted()) sats from \(claimedCount) payments"
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        return claimedTotal
     }
 
     private static func isTerminalPaymentDeliveryError(_ error: CashuWalletError) -> Bool {
@@ -3229,6 +3287,7 @@ private struct LightningAddressReceiveSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var receivingEnabled = NpubCashSettings.receivingEnabled
     @State private var autoClaimEnabled = NpubCashSettings.autoClaimEnabled
+    @State private var copiedSolife = false
     @State private var copied = false
 
     var body: some View {
@@ -3242,10 +3301,42 @@ private struct LightningAddressReceiveSheet: View {
                         Text("Lightning Address")
                             .font(.title3.bold())
                             .foregroundStyle(TaskifyTheme.primaryText)
-                        Text("Get a permanent address at npub.cash, derived from your Taskify Nostr identity. Anyone can pay it like a normal Lightning address.")
+                        Text("Permanent addresses derived from your Taskify Nostr identity. Anyone can pay them like a normal Lightning address.")
                             .font(.subheadline)
                             .multilineTextAlignment(.center)
                             .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+
+                    if let solifeAddress = wallet.solifeAddress {
+                        VStack(spacing: 8) {
+                            Text("solife.me")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                            Button {
+                                UIPasteboard.general.string = solifeAddress
+                                withAnimation(.snappy) { copiedSolife = true }
+                            } label: {
+                                VStack(spacing: 8) {
+                                    Text(solifeAddress)
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                        .multilineTextAlignment(.center)
+                                    Label(
+                                        copiedSolife ? "Copied" : "Tap to copy",
+                                        systemImage: copiedSolife ? "checkmark" : "doc.on.doc"
+                                    )
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(copiedSolife ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            Text("Always on — solife.me forwards payments to this address as eCash automatically. No setup needed.")
+                                .font(.caption2)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding(16)
+                        .taskifyGlass(cornerRadius: 18)
                     }
 
                     Toggle("Enable npub.cash receiving", isOn: $receivingEnabled)
@@ -3254,7 +3345,7 @@ private struct LightningAddressReceiveSheet: View {
                         .onChange(of: receivingEnabled) { _, enabled in
                             NpubCashSettings.setReceivingEnabled(enabled)
                             if !enabled { autoClaimEnabled = false; NpubCashSettings.setAutoClaimEnabled(false) }
-                            wallet.refreshNpubCashIdentity()
+                            wallet.refreshLightningAddresses()
                         }
 
                     if receivingEnabled {
@@ -3330,7 +3421,7 @@ private struct LightningAddressReceiveSheet: View {
         .preferredColorScheme(.dark)
         .tint(TaskifyTheme.accent)
         .onAppear {
-            wallet.refreshNpubCashIdentity()
+            wallet.refreshLightningAddresses()
         }
     }
 

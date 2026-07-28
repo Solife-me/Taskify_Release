@@ -514,6 +514,39 @@ final class CashuWalletTests: XCTestCase {
         XCTAssertTrue(CashuNostrPaymentInboxStore.load(from: url, now: now).isEmpty)
     }
 
+    func testIncomingTokenInboxIsDurableDeduplicatedAndExpiresOldDeliveries() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-incoming-token-inbox-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("inbox.json")
+        let now = Date(timeIntervalSince1970: 4_000_000)
+        let current = CashuIncomingTokenDelivery(
+            eventID: String(repeating: "a", count: 64),
+            token: "cashuAcurrent",
+            senderPublicKey: String(repeating: "b", count: 64),
+            receivedAt: now.addingTimeInterval(-60)
+        )
+        let expired = CashuIncomingTokenDelivery(
+            eventID: String(repeating: "c", count: 64),
+            token: "cashuAexpired",
+            senderPublicKey: String(repeating: "d", count: 64),
+            receivedAt: now.addingTimeInterval(-(31 * 24 * 60 * 60))
+        )
+
+        XCTAssertTrue(try CashuIncomingTokenInboxStore.enqueue(current, at: url, now: now))
+        XCTAssertFalse(try CashuIncomingTokenInboxStore.enqueue(current, at: url, now: now))
+        XCTAssertTrue(try CashuIncomingTokenInboxStore.enqueue(expired, at: url, now: now))
+        XCTAssertEqual(CashuIncomingTokenInboxStore.load(from: url, now: now), [current])
+
+        try CashuIncomingTokenInboxStore.remove(eventIDs: [current.eventID], at: url, now: now)
+        XCTAssertTrue(CashuIncomingTokenInboxStore.load(from: url, now: now).isEmpty)
+    }
+
+    func testSolifeAddressIsDerivedFromNpubWithNoNetworkCall() {
+        XCTAssertEqual(SolifeClient.address(npub: "npub1example"), "npub1example@solife.me")
+    }
+
     func testTransactionSummaryDefaultsToEcashWithoutPaymentMetadata() {
         let transaction = CashuTransactionSummary(
             id: "transaction",

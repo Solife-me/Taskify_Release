@@ -3276,6 +3276,30 @@ final class AppModel {
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex
         ) else { return }
+
+        // Unlike the NUT-18 payment-request path above, a Lightning-address forwarder (e.g.
+        // solife.me) has no request on this device to match a payload against — it just drops a
+        // token in DMs whenever someone pays the address. Detecting it here, alongside the
+        // message itself landing in chat, lets the wallet claim it automatically instead of
+        // requiring a tap on the chat bubble's payment card.
+        if directMessage.isIncoming,
+           let token = CashuPaymentRequestContract.firstTokenSubstring(in: directMessage.content) {
+            do {
+                let inboxURL = try CashuIncomingTokenInboxStore.defaultURL()
+                let delivery = CashuIncomingTokenDelivery(
+                    eventID: decrypted.wrapEventID,
+                    token: token,
+                    senderPublicKey: rumor.publicKey,
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(rumor.createdAt))
+                )
+                if try CashuIncomingTokenInboxStore.enqueue(delivery, at: inboxURL) {
+                    effects.walletDeliveryQueued = true
+                }
+            } catch {
+                effects.walletDeliveryFailed = true
+            }
+        }
+
         if updatedSnapshot.ingestDirectMessage(directMessage) {
             effects.snapshotChanged = true
         }
