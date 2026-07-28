@@ -103,6 +103,8 @@ struct ContactsView: View {
                 } || thread.calendarInvites.contains { item in
                     item.event.displayTitle.localizedCaseInsensitiveContains(query) ||
                         item.event.start?.localizedCaseInsensitiveContains(query) == true
+                } || thread.sharedBoards.contains { item in
+                    (item.board.boardName ?? "Shared board").localizedCaseInsensitiveContains(query)
                 }
         }
     }
@@ -473,6 +475,10 @@ private struct StrangerInboxRow: View {
            let task = thread.latestSharedTask {
             return "Shared task: \(task.task.title)"
         }
+        if Int(thread.latestSharedBoard?.receivedAt.timeIntervalSince1970 ?? 0) == thread.latestActivityTimestamp,
+           let board = thread.latestSharedBoard {
+            return "Shared board: \(board.board.boardName ?? "Board")"
+        }
         return thread.latestMessage?.displayContent ?? "Messages from people outside your contacts"
     }
 
@@ -586,6 +592,14 @@ private struct DirectMessageThreadRow: View {
             candidates.append(ThreadStructuredPreview(
                 text: item.event.displayTitle,
                 systemImage: "calendar.badge.plus",
+                timestamp: Int(item.receivedAt.timeIntervalSince1970),
+                senderName: item.sender.displayName
+            ))
+        }
+        if let item = thread.latestSharedBoard {
+            candidates.append(ThreadStructuredPreview(
+                text: item.board.boardName ?? "Shared board",
+                systemImage: "square.grid.2x2",
                 timestamp: Int(item.receivedAt.timeIntervalSince1970),
                 senderName: item.sender.displayName
             ))
@@ -1631,6 +1645,7 @@ private enum ChatTimelineItem: Identifiable, Equatable {
     case sharedTask(SharedInboxItem)
     case sharedContact(SharedContactInboxItem)
     case calendarInvite(SharedCalendarInviteInboxItem)
+    case sharedBoard(SharedBoardInboxItem)
 
     var id: String {
         switch self {
@@ -1638,6 +1653,7 @@ private enum ChatTimelineItem: Identifiable, Equatable {
         case let .sharedTask(item): "shared-task-\(item.id)"
         case let .sharedContact(item): "shared-contact-\(item.id)"
         case let .calendarInvite(item): "calendar-invite-\(item.id)"
+        case let .sharedBoard(item): "shared-board-\(item.id)"
         }
     }
 
@@ -1647,6 +1663,7 @@ private enum ChatTimelineItem: Identifiable, Equatable {
         case let .sharedTask(item): Int(item.receivedAt.timeIntervalSince1970)
         case let .sharedContact(item): Int(item.receivedAt.timeIntervalSince1970)
         case let .calendarInvite(item): Int(item.receivedAt.timeIntervalSince1970)
+        case let .sharedBoard(item): Int(item.receivedAt.timeIntervalSince1970)
         }
     }
 
@@ -1665,6 +1682,9 @@ private enum ChatTimelineItem: Identifiable, Equatable {
         case let .calendarInvite(item):
             item.event.displayTitle.localizedCaseInsensitiveContains(query) ||
                 item.event.start?.localizedCaseInsensitiveContains(query) == true ||
+                item.sender.displayName.localizedCaseInsensitiveContains(query)
+        case let .sharedBoard(item):
+            (item.board.boardName ?? "Shared board").localizedCaseInsensitiveContains(query) ||
                 item.sender.displayName.localizedCaseInsensitiveContains(query)
         }
     }
@@ -1730,12 +1750,24 @@ private struct DirectMessageConversationView: View {
                 return $0.id < $1.id
             }
     }
+    private var sharedBoards: [SharedBoardInboxItem] {
+        model.sharedBoardInboxItems
+            .filter {
+                $0.status != .deleted &&
+                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+            }
+            .sorted {
+                if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
+                return $0.id < $1.id
+            }
+    }
     private var timeline: [ChatTimelineItem] {
         (
             messages.map(ChatTimelineItem.message)
                 + sharedTasks.map(ChatTimelineItem.sharedTask)
                 + sharedContacts.map(ChatTimelineItem.sharedContact)
                 + calendarInvites.map(ChatTimelineItem.calendarInvite)
+                + sharedBoards.map(ChatTimelineItem.sharedBoard)
         )
             .sorted {
                 if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
@@ -1746,6 +1778,7 @@ private struct DirectMessageConversationView: View {
         var values: [(Date, String)] = sharedTasks.map { ($0.receivedAt, $0.sender.displayName) }
         values += sharedContacts.map { ($0.receivedAt, $0.sender.displayName) }
         values += calendarInvites.map { ($0.receivedAt, $0.sender.displayName) }
+        values += sharedBoards.map { ($0.receivedAt, $0.sender.displayName) }
         return values.max { $0.0 < $1.0 }?.1
     }
     private var isStranger: Bool {
@@ -1892,6 +1925,13 @@ private struct DirectMessageConversationView: View {
                             case let .calendarInvite(invite):
                                 SharedCalendarInviteChatCard(
                                     item: invite,
+                                    isSearchMatch: currentSearchMatches.contains(item.id),
+                                    isSelectedSearchResult: selectedSearchResultID == item.id
+                                )
+                                .id(item.id)
+                            case let .sharedBoard(sharedBoard):
+                                SharedBoardChatCard(
+                                    item: sharedBoard,
                                     isSearchMatch: currentSearchMatches.contains(item.id),
                                     isSelectedSearchResult: selectedSearchResultID == item.id
                                 )
@@ -3056,6 +3096,109 @@ private struct SharedContactChatCard: View {
             }
             isSaving = false
         }
+    }
+}
+
+private struct SharedBoardChatCard: View {
+    @Environment(AppModel.self) private var model
+    let item: SharedBoardInboxItem
+    let isSearchMatch: Bool
+    let isSelectedSearchResult: Bool
+
+    private var boardName: String {
+        let trimmed = item.board.boardName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Shared board" : trimmed
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            sharedBoardAvatar
+
+            VStack(alignment: .leading, spacing: 11) {
+                HStack {
+                    Label("SHARED BOARD", systemImage: "lock.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(0.7)
+                        .foregroundStyle(TaskifyTheme.accent)
+                    Spacer()
+                    Text(item.receivedAt, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(boardName)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(2)
+                    Text("Add this board to your workspace")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+
+                if item.status == .pending {
+                    HStack(spacing: 8) {
+                        Button {
+                            withAnimation(.snappy) {
+                                model.dismissSharedBoardInboxItem(item.id)
+                            }
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        } label: {
+                            Text("Dismiss")
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 36)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button { joinBoard() } label: {
+                            Text("Add Board")
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 36)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                } else {
+                    Label(
+                        item.status == .accepted ? "Added" : "Dismissed",
+                        systemImage: item.status == .accepted ? "checkmark.circle.fill" : "xmark.circle"
+                    )
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(item.status == .accepted ? Color.green : TaskifyTheme.secondaryText)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: 340, alignment: .leading)
+            .taskifyGlass(cornerRadius: 20)
+            .overlay(searchBorder)
+
+            Spacer(minLength: 28)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sharedBoardAvatar: some View {
+        Image(systemName: "square.grid.2x2")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(TaskifyTheme.accent)
+            .frame(width: 30, height: 30)
+            .background(TaskifyTheme.accent.opacity(0.16), in: Circle())
+    }
+
+    private var searchBorder: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .stroke(
+                isSelectedSearchResult
+                    ? TaskifyTheme.accent
+                    : (isSearchMatch ? TaskifyTheme.accent.opacity(0.48) : Color.clear),
+                lineWidth: isSelectedSearchResult ? 2 : 1
+            )
+    }
+
+    private func joinBoard() {
+        withAnimation(.snappy) {
+            _ = model.acceptSharedBoardInboxItem(item.id)
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 }
 

@@ -624,18 +624,27 @@ final class NostrDirectMessageTests: XCTestCase {
             ),
             receivedAt: Date(timeIntervalSince1970: 110)
         )))
+        XCTAssertTrue(snapshot.ingestSharedBoardInboxItem(SharedBoardInboxItem(
+            wrapEventID: "board-wrap",
+            rumorEventID: "board-rumor",
+            sender: SharedInboxSender(publicKey: sender.publicKeyHex, name: "Alice"),
+            board: SharedBoardDelivery(boardID: "shared-board-1", boardName: "Family Projects"),
+            receivedAt: Date(timeIntervalSince1970: 130)
+        )))
 
         let thread = try XCTUnwrap(snapshot.directMessageThreads().first)
         XCTAssertEqual(thread.peerPublicKey, sender.publicKeyHex)
         XCTAssertEqual(thread.sharedContacts.first?.contact.primaryName, "Sam")
         XCTAssertEqual(thread.latestCalendarInvite?.event.displayTitle, "Planning call")
-        XCTAssertEqual(thread.actionRequiredCount, 2)
-        XCTAssertEqual(thread.latestActivityTimestamp, 110)
+        XCTAssertEqual(thread.latestSharedBoard?.board.boardName, "Family Projects")
+        XCTAssertEqual(thread.actionRequiredCount, 3)
+        XCTAssertEqual(thread.latestActivityTimestamp, 130)
 
-        XCTAssertTrue(snapshot.deleteDirectMessageThread(peerPublicKey: sender.publicKeyHex, at: 120))
+        XCTAssertTrue(snapshot.deleteDirectMessageThread(peerPublicKey: sender.publicKeyHex, at: 140))
         XCTAssertTrue(snapshot.directMessageThreads().isEmpty)
         XCTAssertEqual(snapshot.sharedContactInboxItems?.first?.status, .deleted)
         XCTAssertEqual(snapshot.sharedCalendarInviteItems?.first?.status, .deleted)
+        XCTAssertEqual(snapshot.sharedBoardInboxItems?.first?.status, .deleted)
     }
 
     func testMutedAndLeftGroupPreferencesAffectUnreadAndPersist() throws {

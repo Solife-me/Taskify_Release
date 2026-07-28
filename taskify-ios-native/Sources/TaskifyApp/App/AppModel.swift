@@ -364,6 +364,7 @@ final class AppModel {
     var sharedInboxItems: [SharedInboxItem] { snapshot.sharedInbox }
     var sharedContactInboxItems: [SharedContactInboxItem] { snapshot.sharedContactInbox }
     var sharedCalendarInviteItems: [SharedCalendarInviteInboxItem] { snapshot.sharedCalendarInvites }
+    var sharedBoardInboxItems: [SharedBoardInboxItem] { snapshot.sharedBoardInbox }
     var taskifyEvents: [TaskifyEvent] { snapshot.acceptedTaskifyEvents }
     var walletPaymentRequestRelayURLs: [String] { sharedInboxRelayURLs }
     var pendingSharedInboxCount: Int { snapshot.pendingSharedInboxCount }
@@ -1193,6 +1194,32 @@ final class AppModel {
 
     func dismissSharedContactInboxItem(_ itemID: String) {
         guard snapshot.setSharedContactInboxStatus(itemID: itemID, status: .deleted) != nil else { return }
+        scheduleSave()
+    }
+
+    /// Joins the shared board (idempotent — a board already joined by nostrBoardID just gets
+    /// reselected) and marks the inbox item accepted.
+    @discardableResult
+    func acceptSharedBoardInboxItem(_ itemID: String) -> Bool {
+        guard let item = snapshot.sharedBoardInboxItems?.first(where: { $0.id == itemID }),
+              item.status == .pending else { return false }
+        let relays = item.board.relayURLs?.isEmpty == false ? item.board.relayURLs! : appRelays
+        guard snapshot.joinWeekBoard(
+            nostrBoardID: item.board.boardID,
+            name: item.board.boardName ?? "Shared Board",
+            relayURLs: relays
+        ) != nil else { return false }
+        guard snapshot.setSharedBoardInboxStatus(itemID: itemID, status: .accepted) != nil else {
+            return false
+        }
+        scheduleSave()
+        reconfigureSync()
+        scheduleAccountBackupPublish()
+        return true
+    }
+
+    func dismissSharedBoardInboxItem(_ itemID: String) {
+        guard snapshot.setSharedBoardInboxStatus(itemID: itemID, status: .deleted) != nil else { return }
         scheduleSave()
     }
 
@@ -3159,6 +3186,20 @@ final class AppModel {
                 ) {
                     effects.snapshotChanged = true
                     effects.taskIDsToSynchronize.insert(updatedTask.id)
+                }
+            case .board(let delivery):
+                let item = SharedBoardInboxItem(
+                    wrapEventID: message.wrapEventID,
+                    rumorEventID: message.rumorEventID,
+                    sender: sharedInboxSender(for: message),
+                    board: delivery,
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                )
+                if updatedSnapshot.ingestSharedBoardInboxItem(item) {
+                    effects.snapshotChanged = true
+                    let addsRelay = TaskifyRelayURL.normalizedList(delivery.relayURLs ?? [])
+                        .contains { !connectedInboxRelays.contains($0) }
+                    effects.shouldReconfigureSync = effects.shouldReconfigureSync || addsRelay
                 }
             }
             return

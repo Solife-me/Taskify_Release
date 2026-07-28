@@ -461,6 +461,7 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
     public var sharedTasks: [SharedInboxItem]
     public var sharedContacts: [SharedContactInboxItem]
     public var calendarInvites: [SharedCalendarInviteInboxItem]
+    public var sharedBoards: [SharedBoardInboxItem]
     public var unreadCount: Int
     public var actionRequiredCount: Int
 
@@ -470,6 +471,7 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
         sharedTasks: [SharedInboxItem] = [],
         sharedContacts: [SharedContactInboxItem] = [],
         calendarInvites: [SharedCalendarInviteInboxItem] = [],
+        sharedBoards: [SharedBoardInboxItem] = [],
         unreadCount: Int,
         actionRequiredCount: Int = 0
     ) {
@@ -478,6 +480,7 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
         self.sharedTasks = sharedTasks
         self.sharedContacts = sharedContacts
         self.calendarInvites = calendarInvites
+        self.sharedBoards = sharedBoards
         self.unreadCount = unreadCount
         self.actionRequiredCount = actionRequiredCount
     }
@@ -486,12 +489,14 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
     public var latestSharedTask: SharedInboxItem? { sharedTasks.last }
     public var latestSharedContact: SharedContactInboxItem? { sharedContacts.last }
     public var latestCalendarInvite: SharedCalendarInviteInboxItem? { calendarInvites.last }
+    public var latestSharedBoard: SharedBoardInboxItem? { sharedBoards.last }
     public var latestActivityTimestamp: Int {
         [
             latestMessage?.createdAt ?? 0,
             Int(latestSharedTask?.receivedAt.timeIntervalSince1970 ?? 0),
             Int(latestSharedContact?.receivedAt.timeIntervalSince1970 ?? 0),
             Int(latestCalendarInvite?.receivedAt.timeIntervalSince1970 ?? 0),
+            Int(latestSharedBoard?.receivedAt.timeIntervalSince1970 ?? 0),
         ].max() ?? 0
     }
 }
@@ -572,11 +577,16 @@ public extension TaskifySnapshot {
             grouping: (sharedCalendarInviteItems ?? []).filter { $0.status != .deleted },
             by: { $0.sender.publicKey.lowercased() }
         )
+        let groupedBoards = Dictionary(
+            grouping: (sharedBoardInboxItems ?? []).filter { $0.status != .deleted },
+            by: { $0.sender.publicKey.lowercased() }
+        )
         let groupIDs = Set(conversationByID.keys)
         let peerIDs = Set(groupedMessages.keys)
             .union(groupedShares.keys)
             .union(groupedContacts.keys)
             .union(groupedCalendarInvites.keys)
+            .union(groupedBoards.keys)
             .union(groupIDs)
         let threads = peerIDs.map { peer -> NostrDirectMessageThread in
             let sorted = (groupedMessages[peer] ?? []).sorted(by: Self.directMessageSort)
@@ -592,6 +602,10 @@ public extension TaskifySnapshot {
                 if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
                 return $0.id < $1.id
             }
+            let sharedBoards = (groupedBoards[peer] ?? []).sorted {
+                if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
+                return $0.id < $1.id
+            }
             let readAt = directMessageReadAt?[peer] ?? 0
             let mutedAt = directMessageMutedGroups?[peer]
             return NostrDirectMessageThread(
@@ -600,6 +614,7 @@ public extension TaskifySnapshot {
                 sharedTasks: sharedTasks,
                 sharedContacts: sharedContacts,
                 calendarInvites: calendarInvites,
+                sharedBoards: sharedBoards,
                 unreadCount: sorted.filter {
                     $0.isIncoming &&
                         $0.createdAt > readAt &&
@@ -608,6 +623,7 @@ public extension TaskifySnapshot {
                 actionRequiredCount: sharedTasks.filter { $0.status == .pending }.count
                     + sharedContacts.filter { $0.status == .pending }.count
                     + calendarInvites.filter { $0.status == .pending }.count
+                    + sharedBoards.filter { $0.status == .pending }.count
             )
         }
         return threads.sorted {
@@ -660,9 +676,15 @@ public extension TaskifySnapshot {
             .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
+        let latestSharedBoard = (sharedBoardInboxItems ?? [])
+            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .map { Int($0.receivedAt.timeIntervalSince1970) }
+            .max() ?? 0
         let groupCreatedAt = groupConversation(id: peer)?.createdAt ?? 0
-        return ([latestMessage, latestSharedTask, latestSharedContact, latestCalendarInvite, groupCreatedAt]
-            .max() ?? 0) <= archivedAt
+        return ([
+            latestMessage, latestSharedTask, latestSharedContact, latestCalendarInvite,
+            latestSharedBoard, groupCreatedAt,
+        ].max() ?? 0) <= archivedAt
     }
 
     @discardableResult
@@ -687,12 +709,17 @@ public extension TaskifySnapshot {
             .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
+        let latestSharedBoard = (sharedBoardInboxItems ?? [])
+            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .map { Int($0.receivedAt.timeIntervalSince1970) }
+            .max() ?? 0
         let latestActivity = [
             timestamp,
             latestMessage,
             latestSharedTask,
             latestSharedContact,
             latestCalendarInvite,
+            latestSharedBoard,
             groupConversation(id: peer)?.createdAt ?? 0,
         ].max() ?? timestamp
         let archivedAt = max(
@@ -734,9 +761,13 @@ public extension TaskifySnapshot {
         let removedCalendarInvites = (sharedCalendarInviteItems ?? []).filter {
             $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
         }
+        let removedSharedBoards = (sharedBoardInboxItems ?? []).filter {
+            $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
+        }
         let hadGroup = groupConversation(id: peer) != nil
         guard !removedMessages.isEmpty || !removedSharedTasks.isEmpty ||
-                !removedSharedContacts.isEmpty || !removedCalendarInvites.isEmpty || hadGroup else {
+                !removedSharedContacts.isEmpty || !removedCalendarInvites.isEmpty ||
+                !removedSharedBoards.isEmpty || hadGroup else {
             return false
         }
 
@@ -785,6 +816,17 @@ public extension TaskifySnapshot {
                 items[index].respondedAt = respondedAt
             }
             sharedCalendarInviteItems = items.nilIfEmpty
+        }
+        if !removedSharedBoards.isEmpty {
+            var items = sharedBoardInboxItems ?? []
+            let respondedAt = Date(timeIntervalSince1970: TimeInterval(timestamp))
+            for index in items.indices where
+                items[index].status != .deleted &&
+                items[index].sender.publicKey.lowercased() == peer {
+                items[index].status = .deleted
+                items[index].respondedAt = respondedAt
+            }
+            sharedBoardInboxItems = items.nilIfEmpty
         }
         directMessageReadAt?.removeValue(forKey: peer)
         directMessageArchivedAt?.removeValue(forKey: peer)

@@ -368,6 +368,57 @@ public struct SharedContactInboxItem: Identifiable, Codable, Equatable, Sendable
     }
 }
 
+public struct SharedBoardDelivery: Codable, Equatable, Sendable {
+    public var boardID: String
+    public var boardName: String?
+    public var relayURLs: [String]?
+
+    public init(boardID: String, boardName: String? = nil, relayURLs: [String]? = nil) {
+        self.boardID = boardID
+        self.boardName = boardName
+        self.relayURLs = relayURLs
+    }
+
+    fileprivate func normalized() -> SharedBoardDelivery? {
+        let trimmedID = boardID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty else { return nil }
+        return SharedBoardDelivery(
+            boardID: trimmedID,
+            boardName: boardName?.trimmedNilIfEmpty,
+            relayURLs: TaskifyRelayURL.normalizedList(relayURLs ?? []).nilIfEmpty
+        )
+    }
+}
+
+public struct SharedBoardInboxItem: Identifiable, Codable, Equatable, Sendable {
+    public var id: String { wrapEventID }
+    public var wrapEventID: String
+    public var rumorEventID: String
+    public var sender: SharedInboxSender
+    public var board: SharedBoardDelivery
+    public var receivedAt: Date
+    public var status: SharedInboxItemStatus
+    public var respondedAt: Date?
+
+    public init(
+        wrapEventID: String,
+        rumorEventID: String,
+        sender: SharedInboxSender,
+        board: SharedBoardDelivery,
+        receivedAt: Date,
+        status: SharedInboxItemStatus = .pending,
+        respondedAt: Date? = nil
+    ) {
+        self.wrapEventID = wrapEventID
+        self.rumorEventID = rumorEventID
+        self.sender = sender
+        self.board = board
+        self.receivedAt = receivedAt
+        self.status = status
+        self.respondedAt = respondedAt
+    }
+}
+
 public struct SharedCalendarEventDelivery: Codable, Equatable, Sendable {
     public var eventID: String
     public var canonical: String
@@ -1122,6 +1173,7 @@ public enum TaskifyShareItem: Equatable, Sendable {
     case contact(SharedContactDelivery)
     case calendarEvent(SharedCalendarEventDelivery)
     case assignmentResponse(SharedTaskAssignmentResponse)
+    case board(SharedBoardDelivery)
 }
 
 public struct TaskifyShareEnvelope: Equatable, Sendable {
@@ -1164,6 +1216,9 @@ public struct TaskifyShareEnvelope: Equatable, Sendable {
                   !response.taskID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   response.status != .pending else { return nil }
             item = .assignmentResponse(response)
+        case "board":
+            guard let delivery = wire.item.boardDelivery?.normalized() else { return nil }
+            item = .board(delivery)
         default:
             return nil
         }
@@ -1185,6 +1240,8 @@ public struct TaskifyShareEnvelope: Equatable, Sendable {
             item = ShareItemWire(calendarEventDelivery: delivery)
         case .assignmentResponse(let response):
             item = ShareItemWire(assignmentResponse: response)
+        case .board(let delivery):
+            item = ShareItemWire(boardDelivery: delivery)
         }
         return try JSONEncoder().encode(ShareEnvelopeWire(
             version: 1,
@@ -1328,6 +1385,8 @@ private struct ShareItemWire: Codable {
     var inviteToken: String? = nil
     var start: String? = nil
     var end: String? = nil
+    var boardID: String? = nil
+    var boardName: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -1364,6 +1423,8 @@ private struct ShareItemWire: Codable {
         case inviteToken
         case start
         case end
+        case boardID = "boardId"
+        case boardName
     }
 
     init(taskDelivery: SharedTaskDelivery) {
@@ -1416,6 +1477,13 @@ private struct ShareItemWire: Codable {
         taskID = assignmentResponse.taskID
         status = assignmentResponse.status
         respondedAt = assignmentResponse.respondedAt
+    }
+
+    init(boardDelivery: SharedBoardDelivery) {
+        type = "board"
+        boardID = boardDelivery.boardID
+        boardName = boardDelivery.boardName
+        relayURLs = boardDelivery.relayURLs
     }
 
     var taskDelivery: SharedTaskDelivery? {
@@ -1472,6 +1540,11 @@ private struct ShareItemWire: Codable {
             end: end,
             relayURLs: relayURLs
         )
+    }
+
+    var boardDelivery: SharedBoardDelivery? {
+        guard let boardID else { return nil }
+        return SharedBoardDelivery(boardID: boardID, boardName: boardName, relayURLs: relayURLs)
     }
 }
 
@@ -1773,6 +1846,13 @@ public extension TaskifySnapshot {
         }
     }
 
+    var sharedBoardInbox: [SharedBoardInboxItem] {
+        (sharedBoardInboxItems ?? []).sorted {
+            if $0.status != $1.status { return $0.status == .pending }
+            return $0.receivedAt > $1.receivedAt
+        }
+    }
+
     var acceptedTaskifyEvents: [TaskifyEvent] {
         (taskifyEvents ?? []).filter { !$0.isDeleted }.sorted {
             ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture)
@@ -1804,6 +1884,20 @@ public extension TaskifySnapshot {
             items = Array(items.sorted { $0.receivedAt > $1.receivedAt }.prefix(400))
         }
         sharedContactInboxItems = items
+        return true
+    }
+
+    @discardableResult
+    mutating func ingestSharedBoardInboxItem(_ item: SharedBoardInboxItem) -> Bool {
+        var items = sharedBoardInboxItems ?? []
+        guard !items.contains(where: {
+            $0.wrapEventID == item.wrapEventID || $0.rumorEventID == item.rumorEventID
+        }) else { return false }
+        items.append(item)
+        if items.count > 400 {
+            items = Array(items.sorted { $0.receivedAt > $1.receivedAt }.prefix(400))
+        }
+        sharedBoardInboxItems = items
         return true
     }
 
@@ -1848,6 +1942,20 @@ public extension TaskifySnapshot {
         items[index].status = status
         items[index].respondedAt = now
         sharedContactInboxItems = items
+        return items[index]
+    }
+
+    @discardableResult
+    mutating func setSharedBoardInboxStatus(
+        itemID: String,
+        status: SharedInboxItemStatus,
+        now: Date = Date()
+    ) -> SharedBoardInboxItem? {
+        guard var items = sharedBoardInboxItems,
+              let index = items.firstIndex(where: { $0.id == itemID }) else { return nil }
+        items[index].status = status
+        items[index].respondedAt = now
+        sharedBoardInboxItems = items
         return items[index]
     }
 

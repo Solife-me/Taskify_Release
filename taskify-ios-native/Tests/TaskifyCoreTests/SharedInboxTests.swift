@@ -110,6 +110,40 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertEqual(roundTripped, decoded)
     }
 
+    func testBoardShareRoundTripsThroughPWAContract() throws {
+        let json = """
+        {
+          "v": 1,
+          "kind": "taskify-share",
+          "sender": {"name": "Alice"},
+          "item": {
+            "type": "board",
+            "boardId": "shared-board-1",
+            "boardName": "Family Projects",
+            "relays": ["relay.solife.me", "wss://relay.solife.me/"]
+          }
+        }
+        """
+
+        let decoded = try XCTUnwrap(TaskifyShareEnvelope.decode(content: json))
+        guard case .board(let board) = decoded.item else {
+            return XCTFail("Expected a shared board")
+        }
+        XCTAssertEqual(board.boardID, "shared-board-1")
+        XCTAssertEqual(board.boardName, "Family Projects")
+        XCTAssertEqual(board.relayURLs, ["wss://relay.solife.me"])
+
+        let encoded = try TaskifyShareEnvelope(item: .board(board), senderName: "Alice").encoded()
+        let roundTripped = try XCTUnwrap(TaskifyShareEnvelope.decode(
+            content: String(decoding: encoded, as: UTF8.self)
+        ))
+        XCTAssertEqual(roundTripped, decoded)
+
+        XCTAssertNil(TaskifyShareEnvelope.decode(content: """
+        {"v": 1, "kind": "taskify-share", "item": {"type": "board", "boardId": "   "}}
+        """))
+    }
+
     func testCalendarInviteAndRSVPMirrorPWAContracts() throws {
         let calendarAuthor = try identity(senderPrivateKey)
         let attendee = try identity(recipientPrivateKey)

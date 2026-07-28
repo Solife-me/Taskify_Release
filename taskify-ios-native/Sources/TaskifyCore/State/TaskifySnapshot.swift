@@ -80,6 +80,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public var sharedInboxItems: [SharedInboxItem]?
     public var sharedContactInboxItems: [SharedContactInboxItem]?
     public var sharedCalendarInviteItems: [SharedCalendarInviteInboxItem]?
+    public var sharedBoardInboxItems: [SharedBoardInboxItem]?
     public var taskifyEvents: [TaskifyEvent]?
     public var sharedTaskRecipients: [SharedTaskRecipient]?
     public var contacts: [NostrContact]?
@@ -103,6 +104,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         sharedInboxItems: [SharedInboxItem]? = nil,
         sharedContactInboxItems: [SharedContactInboxItem]? = nil,
         sharedCalendarInviteItems: [SharedCalendarInviteInboxItem]? = nil,
+        sharedBoardInboxItems: [SharedBoardInboxItem]? = nil,
         taskifyEvents: [TaskifyEvent]? = nil,
         sharedTaskRecipients: [SharedTaskRecipient]? = nil,
         contacts: [NostrContact]? = nil,
@@ -125,6 +127,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         self.sharedInboxItems = sharedInboxItems
         self.sharedContactInboxItems = sharedContactInboxItems
         self.sharedCalendarInviteItems = sharedCalendarInviteItems
+        self.sharedBoardInboxItems = sharedBoardInboxItems
         self.taskifyEvents = taskifyEvents
         self.sharedTaskRecipients = sharedTaskRecipients
         self.contacts = contacts
