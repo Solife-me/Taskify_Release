@@ -37,6 +37,13 @@ struct WalletRestoreOutcome: Equatable {
     var failures: [WalletMintRecoveryOutcome] { mints.filter { !$0.succeeded } }
 }
 
+enum NpubCashClaimStatus: Equatable {
+    case idle
+    case checking
+    case success
+    case error
+}
+
 @MainActor
 final class WalletViewModel: ObservableObject {
     static let suggestedMintURL = "https://mint.solife.me"
@@ -50,6 +57,10 @@ final class WalletViewModel: ObservableObject {
     @Published private(set) var lightningReceiveQuotes: [CashuLightningReceiveQuote] = []
     @Published private(set) var pendingEcashReceives: [CashuPendingReceive] = []
     @Published private(set) var createdPaymentRequests: [CashuCreatedPaymentRequest] = []
+    @Published private(set) var npubCashIdentity: NpubCashIdentity?
+    @Published private(set) var npubCashIdentityError: String?
+    @Published private(set) var npubCashClaimStatus: NpubCashClaimStatus = .idle
+    @Published private(set) var npubCashClaimMessage: String?
 
     private var service: CashuWalletService?
     private var hasStarted = false
@@ -58,6 +69,7 @@ final class WalletViewModel: ObservableObject {
     private var paymentInboxTask: Task<Void, Never>?
     private var paymentInboxNeedsAnotherPass = false
     private var isRecoveringPaymentInbox = false
+    private var isClaimingNpubCash = false
     private var announcedLightningQuoteIDs: Set<String> = []
     private let paymentNotificationCoordinator = WalletPaymentNotificationCoordinator()
     private let activeMintKey = "taskify.wallet.active-mint"
@@ -120,6 +132,10 @@ final class WalletViewModel: ObservableObject {
                 await recoverPendingLightningReceives()
             }
             startLightningMonitoring()
+            refreshNpubCashIdentity()
+            if NpubCashSettings.autoClaimEnabled {
+                await claimNpubCash(auto: true)
+            }
         } catch {
             errorMessage = Self.message(for: error)
         }
@@ -145,10 +161,14 @@ final class WalletViewModel: ObservableObject {
             Task { await paymentNotificationCoordinator.requestAuthorizationIfNeeded() }
         }
         restartLightningMonitoring()
+        refreshNpubCashIdentity()
         Task {
             await service?.recoverInterruptedOperations()
             await recoverPendingEcashReceives(force: true)
             await recoverNostrPaymentRequests()
+            if NpubCashSettings.autoClaimEnabled {
+                await claimNpubCash(auto: true)
+            }
             await refresh()
         }
     }
@@ -195,6 +215,95 @@ final class WalletViewModel: ObservableObject {
                 _ = await self.recoverNostrPaymentRequests(presentInApp: self.isAppActive)
             } while self.paymentInboxNeedsAnotherPass && !Task.isCancelled
             self.paymentInboxTask = nil
+        }
+    }
+
+    /// Derives the `<npub>@npub.cash` address from the stored Nostr identity — local only, no
+    /// network call. Called whenever the wallet starts or the app returns to the foreground, and
+    /// whenever the user turns receiving on, so the address is ready to show immediately.
+    func refreshNpubCashIdentity() {
+        guard NpubCashSettings.receivingEnabled else {
+            npubCashIdentity = nil
+            npubCashIdentityError = nil
+            return
+        }
+        do {
+            guard let identity = try KeychainIdentityStore().load() else {
+                npubCashIdentity = nil
+                npubCashIdentityError = "Set up your Taskify Nostr identity to use npub.cash."
+                return
+            }
+            npubCashIdentity = NpubCashClient.identity(npub: identity.npub)
+            npubCashIdentityError = nil
+        } catch {
+            npubCashIdentity = nil
+            npubCashIdentityError = "Unable to derive your npub.cash address."
+        }
+    }
+
+    /// Checks npub.cash for a pending balance and, if any, redeems each token through the normal
+    /// receive path (`submitReceive`) — the same preview-free flow already used for NUT-18
+    /// payment-request receipts, so a claimed token gets identical mint verification, retry, and
+    /// history handling as any other incoming ecash.
+    @discardableResult
+    func claimNpubCash(auto: Bool) async -> Int {
+        guard NpubCashSettings.receivingEnabled, !isClaimingNpubCash else { return 0 }
+        guard let identity = try? KeychainIdentityStore().load() else {
+            if !auto {
+                npubCashClaimStatus = .error
+                npubCashClaimMessage = "Set up your Taskify Nostr identity to use npub.cash."
+            }
+            return 0
+        }
+        isClaimingNpubCash = true
+        defer { isClaimingNpubCash = false }
+        npubCashClaimStatus = .checking
+        npubCashClaimMessage = "Checking npub.cash for pending tokens…"
+
+        do {
+            let result = try await NpubCashClient.claim(identity: identity)
+            guard !result.tokens.isEmpty else {
+                npubCashClaimStatus = .idle
+                npubCashClaimMessage = result.balance > 0
+                    ? "npub.cash reported a balance, but no token was returned. Try again shortly."
+                    : "No pending eCash found."
+                return 0
+            }
+
+            var claimedCount = 0
+            var claimedTotal: UInt64 = 0
+            var lastError: String?
+            for token in result.tokens {
+                do {
+                    switch try await submitReceive(token) {
+                    case .received(let amount):
+                        claimedCount += 1
+                        claimedTotal += amount
+                    case .queued:
+                        claimedCount += 1
+                    }
+                } catch {
+                    lastError = Self.message(for: error)
+                }
+            }
+
+            if claimedCount > 0 {
+                npubCashClaimStatus = .success
+                npubCashClaimMessage = claimedTotal > 0
+                    ? "Claimed \(claimedTotal.formatted()) sats via npub.cash"
+                    : "Claimed \(claimedCount) token\(claimedCount == 1 ? "" : "s") via npub.cash"
+                if !auto {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            } else {
+                npubCashClaimStatus = .error
+                npubCashClaimMessage = lastError ?? "Unable to claim eCash from npub.cash."
+            }
+            return Int(claimedTotal)
+        } catch {
+            npubCashClaimStatus = .error
+            npubCashClaimMessage = Self.message(for: error)
+            return 0
         }
     }
 
@@ -943,6 +1052,7 @@ struct WalletView: View {
     @State private var showingSendOptions = false
     @State private var showingReceive = false
     @State private var showingLightningReceive = false
+    @State private var showingLightningAddress = false
     @State private var showingScanner = false
     @State private var showingSend = false
     @State private var showingLightningSend = false
@@ -1051,6 +1161,9 @@ struct WalletView: View {
         .sheet(isPresented: $showingRecovery) {
             WalletRecoverySheet(wallet: wallet)
         }
+        .sheet(isPresented: $showingLightningAddress) {
+            LightningAddressReceiveSheet(wallet: wallet)
+        }
         .confirmationDialog(
             "Receive into Taskify",
             isPresented: $showingReceiveOptions,
@@ -1060,6 +1173,9 @@ struct WalletView: View {
                 showingLightningReceive = true
             }
             .disabled(wallet.activeMint == nil)
+            Button("Lightning address", systemImage: "at") {
+                showingLightningAddress = true
+            }
             Button("Cashu token", systemImage: "banknote") {
                 scannedToken = ""
                 showingReceive = true
@@ -1070,7 +1186,7 @@ struct WalletView: View {
             .disabled(wallet.activeMint == nil || model.identityPublicKey.isEmpty)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Create a Lightning invoice or Cashu request, or redeem an existing Cashu token.")
+            Text("Create a Lightning invoice or Cashu request, redeem an existing Cashu token, or receive at a Lightning address.")
         }
         .confirmationDialog(
             "Send from Taskify",
@@ -3100,6 +3216,137 @@ private struct ReceiveLightningSheet: View {
         case .unpaid, .pending: TaskifyTheme.accent
         case .paid, .issued: .green
         case .expired: .orange
+        }
+    }
+}
+
+/// A `<npub>@npub.cash` Lightning address that resolves without any signup step. Enabling it
+/// only derives and displays the address; claiming pending eCash is a separate, explicit step
+/// (or automatic if the user opts into that too) that redeems through the wallet's normal
+/// receive path.
+private struct LightningAddressReceiveSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var receivingEnabled = NpubCashSettings.receivingEnabled
+    @State private var autoClaimEnabled = NpubCashSettings.autoClaimEnabled
+    @State private var copied = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    VStack(spacing: 6) {
+                        Image(systemName: "at.circle.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(TaskifyTheme.accent)
+                        Text("Lightning Address")
+                            .font(.title3.bold())
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                        Text("Get a permanent address at npub.cash, derived from your Taskify Nostr identity. Anyone can pay it like a normal Lightning address.")
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+
+                    Toggle("Enable npub.cash receiving", isOn: $receivingEnabled)
+                        .padding(16)
+                        .taskifyGlass(cornerRadius: 18)
+                        .onChange(of: receivingEnabled) { _, enabled in
+                            NpubCashSettings.setReceivingEnabled(enabled)
+                            if !enabled { autoClaimEnabled = false; NpubCashSettings.setAutoClaimEnabled(false) }
+                            wallet.refreshNpubCashIdentity()
+                        }
+
+                    if receivingEnabled {
+                        if let identity = wallet.npubCashIdentity {
+                            VStack(spacing: 12) {
+                                Button {
+                                    UIPasteboard.general.string = identity.address
+                                    withAnimation(.snappy) { copied = true }
+                                } label: {
+                                    VStack(spacing: 8) {
+                                        Text(identity.address)
+                                            .font(.system(.body, design: .monospaced))
+                                            .foregroundStyle(TaskifyTheme.primaryText)
+                                            .multilineTextAlignment(.center)
+                                        Label(copied ? "Copied" : "Tap to copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(copied ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
+                                    .onChange(of: autoClaimEnabled) { _, enabled in
+                                        NpubCashSettings.setAutoClaimEnabled(enabled)
+                                    }
+                                Text("Automatically check for and redeem pending eCash each time the wallet opens.")
+                                    .font(.caption2)
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                Button {
+                                    Task { await wallet.claimNpubCash(auto: false) }
+                                } label: {
+                                    if wallet.npubCashClaimStatus == .checking {
+                                        ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                                    } else {
+                                        Text("Check for pending eCash")
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 46)
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(wallet.npubCashClaimStatus == .checking)
+
+                                if let message = wallet.npubCashClaimMessage {
+                                    Label(message, systemImage: statusIcon)
+                                        .font(.caption)
+                                        .foregroundStyle(statusColor)
+                                }
+                            }
+                            .padding(16)
+                            .taskifyGlass(cornerRadius: 18)
+                        } else if let identityError = wallet.npubCashIdentityError {
+                            Label(identityError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .padding(16)
+                                .taskifyGlass(cornerRadius: 18)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Lightning Address")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .onAppear {
+            wallet.refreshNpubCashIdentity()
+        }
+    }
+
+    private var statusIcon: String {
+        switch wallet.npubCashClaimStatus {
+        case .success: "checkmark.circle.fill"
+        case .error: "exclamationmark.triangle.fill"
+        case .checking, .idle: "info.circle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch wallet.npubCashClaimStatus {
+        case .success: .green
+        case .error: .orange
+        case .checking, .idle: TaskifyTheme.secondaryText
         }
     }
 }

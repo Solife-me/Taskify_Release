@@ -21,6 +21,7 @@
 		F4C17FA9D5F24554A5CFF5AC /* ScriptureMemorySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */; };
 		FF5C3B1D78B447EAB70D819E /* TaskStreakSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */; };
 		D8975E95F45CC36870A25CAB /* TaskOrderingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C3FC3D0DAC095EE87D44D86 /* TaskOrderingSettings.swift */; };
+		796D1AE211EE8CD2720A10F9 /* NpubCashSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0009C830AAB8965BF019980 /* NpubCashSettings.swift */; };
 		614C954B821CAA17D51AA24B /* StartupViewSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8578A541E8A9F26924788981 /* StartupViewSettings.swift */; };
 		B00000000000000000000106 /* UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* UpcomingView.swift */; };
 		B00000000000000000000107 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* SettingsView.swift */; };
@@ -79,6 +80,7 @@
 		D5B511EBD86443B28B6EF5F8 /* ScriptureMemorySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/ScriptureMemorySettings.swift; sourceTree = SOURCE_ROOT; };
 		1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskStreakSettings.swift; sourceTree = SOURCE_ROOT; };
 		9C3FC3D0DAC095EE87D44D86 /* TaskOrderingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskOrderingSettings.swift; sourceTree = SOURCE_ROOT; };
+		A0009C830AAB8965BF019980 /* NpubCashSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/NpubCashSettings.swift; sourceTree = SOURCE_ROOT; };
 		8578A541E8A9F26924788981 /* StartupViewSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/StartupViewSettings.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000206 /* UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000207 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
@@ -155,6 +157,7 @@
 				1A62BC5630844B0DB46DFD5B /* TaskStreakSettings.swift */,
 				9C3FC3D0DAC095EE87D44D86 /* TaskOrderingSettings.swift */,
 				8578A541E8A9F26924788981 /* StartupViewSettings.swift */,
+				A0009C830AAB8965BF019980 /* NpubCashSettings.swift */,
 				B00000000000000000000206 /* UpcomingView.swift */,
 				B00000000000000000000207 /* SettingsView.swift */,
 				B00000000000000000000208 /* MigrationPlaceholderView.swift */,
@@ -359,6 +362,7 @@
 				FF5C3B1D78B447EAB70D819E /* TaskStreakSettings.swift in Sources */,
 				D8975E95F45CC36870A25CAB /* TaskOrderingSettings.swift in Sources */,
 				614C954B821CAA17D51AA24B /* StartupViewSettings.swift in Sources */,
+				796D1AE211EE8CD2720A10F9 /* NpubCashSettings.swift in Sources */,
 				B00000000000000000000106 /* UpcomingView.swift in Sources */,
 				B00000000000000000000107 /* SettingsView.swift in Sources */,
 				B00000000000000000000108 /* MigrationPlaceholderView.swift in Sources */,
