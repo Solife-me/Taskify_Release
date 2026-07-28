@@ -3242,6 +3242,14 @@ private struct DirectMessageBubble: View {
         Array(TaskContentLinks.allURLs(in: message.content).prefix(2))
     }
 
+    /// A Cashu token pasted or forwarded as plain chat text rather than sent through the formal
+    /// NUT-18 payment-request flow. Only offered for incoming messages — the sender already has
+    /// their own record of a token they sent.
+    private var detectedPaymentToken: String? {
+        guard message.isIncoming, message.attachment == nil else { return nil }
+        return CashuPaymentRequestContract.firstTokenSubstring(in: message.content)
+    }
+
     var body: some View {
         ZStack(alignment: .trailing) {
             Text(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(
@@ -3297,6 +3305,8 @@ private struct DirectMessageBubble: View {
 
                         if let attachment = message.attachment {
                             DirectMessageAttachmentView(attachment: attachment)
+                        } else if let detectedPaymentToken {
+                            DirectMessagePaymentCard(token: detectedPaymentToken)
                         } else {
                             Text(message.content)
                                 .font(.system(size: 16))
@@ -3473,6 +3483,60 @@ private struct DirectMessageLinkCard: View {
         } else {
             Image(systemName: "link")
                 .font(.subheadline.bold())
+        }
+    }
+}
+
+/// A Cashu token sent as plain chat text rather than through the formal payment-request flow.
+/// Redeeming reuses the wallet's normal receive sheet unchanged — this view only recognizes the
+/// token and offers a shortcut into that review-before-claim flow, never claims funds itself.
+private struct DirectMessagePaymentCard: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    let token: String
+    @State private var showingReceiveSheet = false
+
+    private var summary: CashuOfflineTokenSummary? {
+        CashuWalletService.offlineTokenSummary(token)
+    }
+
+    var body: some View {
+        Button {
+            showingReceiveSheet = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "bitcoinsign.circle.fill")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(TaskifyTheme.accent)
+                    .frame(width: 34, height: 34)
+                    .background(TaskifyTheme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(summary.map { "\($0.amount.formatted()) sats" } ?? "Cashu token received")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(summary?.memo ?? "Tap to redeem")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 2)
+                Image(systemName: "arrow.down.circle")
+                    .font(.caption2.bold())
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            .padding(8)
+            .frame(maxWidth: 270, alignment: .leading)
+            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(Color.white.opacity(0.10), lineWidth: 0.7)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(summary.map { "Redeem \($0.amount) sat Cashu token" } ?? "Redeem Cashu token")
+        .sheet(isPresented: $showingReceiveSheet) {
+            ReceiveCashuSheet(wallet: wallet, initialToken: token)
         }
     }
 }

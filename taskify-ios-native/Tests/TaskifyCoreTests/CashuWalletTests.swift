@@ -427,6 +427,41 @@ final class CashuWalletTests: XCTestCase {
         XCTAssertEqual(preview.memo, "Coffee")
     }
 
+    func testFirstTokenSubstringExtractsCashuTokenEmbeddedInChatText() {
+        XCTAssertEqual(
+            CashuPaymentRequestContract.firstTokenSubstring(
+                in: "Here you go: cashuAeyJ0b2tlbiI6W119fQ, enjoy!"
+            ),
+            "cashuAeyJ0b2tlbiI6W119fQ"
+        )
+        XCTAssertNil(CashuPaymentRequestContract.firstTokenSubstring(in: "Thanks for lunch!"))
+        XCTAssertNil(CashuPaymentRequestContract.firstTokenSubstring(in: "just the word cashu, no token"))
+    }
+
+    func testOfflineTokenSummaryDecodesAmountMintAndMemoWithoutNetwork() throws {
+        let proof = Proof(
+            amount: Amount(value: 21),
+            secret: "offline-summary-secret",
+            c: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            keysetId: "009a1f293253e41e",
+            witness: nil,
+            dleq: nil,
+            p2pkE: nil
+        )
+        let token = try CashuPaymentRequestContract.tokenString(
+            mintURL: "https://mint.example",
+            memo: "Chat payment",
+            proofs: [proof]
+        )
+
+        let summary = try XCTUnwrap(CashuWalletService.offlineTokenSummary(token))
+
+        XCTAssertEqual(summary.amount, 21)
+        XCTAssertEqual(summary.mintURL, "https://mint.example")
+        XCTAssertEqual(summary.memo, "Chat payment")
+        XCTAssertNil(CashuWalletService.offlineTokenSummary("not a token"))
+    }
+
     func testOutgoingTransactionProofsReconstructCompleteHistoryToken() async throws {
         let proof = Proof(
             amount: Amount(value: 21),

@@ -3104,7 +3104,7 @@ private struct ReceiveLightningSheet: View {
     }
 }
 
-private struct ReceiveCashuSheet: View {
+struct ReceiveCashuSheet: View {
     @ObservedObject var wallet: WalletViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var token = ""

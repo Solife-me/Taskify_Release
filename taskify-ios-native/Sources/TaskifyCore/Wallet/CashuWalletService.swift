@@ -463,6 +463,12 @@ public struct CashuTokenPreview: Equatable, Sendable {
     }
 }
 
+public struct CashuOfflineTokenSummary: Equatable, Sendable {
+    public let mintURL: String
+    public let amount: UInt64
+    public let memo: String?
+}
+
 public enum CashuPendingReceiveState: String, Codable, Equatable, Sendable {
     case queued
     case needsAttention
@@ -2240,6 +2246,17 @@ public actor CashuWalletService {
         }
         pendingReceives.removeAll { $0.id == id }
         try persistPendingReceives()
+    }
+
+    /// Decodes just the amount/mint/memo embedded in a token, with no network access — enough to
+    /// label a chat bubble before the user opts into the full preview-and-receive flow.
+    public static func offlineTokenSummary(_ encodedToken: String) -> CashuOfflineTokenSummary? {
+        guard let token = try? Token.decode(
+            encodedToken: encodedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        ), token.unit() == nil || token.unit() == .sat,
+        let mintURL = try? token.mintUrl().url,
+        let amount = try? token.value().value else { return nil }
+        return CashuOfflineTokenSummary(mintURL: mintURL, amount: amount, memo: token.memo())
     }
 
     public func previewToken(_ encodedToken: String) async throws -> CashuTokenPreview {

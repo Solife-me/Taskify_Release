@@ -192,6 +192,28 @@ public enum CashuPaymentRequestContract {
         return trimmed
     }
 
+    private static let tokenTextExpression = try! NSRegularExpression(
+        pattern: #"cashu[A-Za-z0-9_+/=-]{10,}"#,
+        options: [.caseInsensitive]
+    )
+
+    /// Finds a Cashu token embedded in free text, matching the PWA's `extractFirstCashuTokenFromText`
+    /// fallback for tokens sent as plain chat text rather than through the formal NUT-18
+    /// payment-request/response flow. Used only to decide whether to offer a redeem card in chat —
+    /// the token itself is still verified end to end by the normal receive flow before any balance
+    /// changes.
+    public static func firstTokenSubstring(in text: String) -> String? {
+        guard text.range(of: "cashu", options: .caseInsensitive) != nil else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = tokenTextExpression.firstMatch(in: text, range: range),
+              let matchRange = Range(match.range, in: text) else { return nil }
+        var candidate = String(text[matchRange])
+        while let last = candidate.last, ".,!?;:'\"”’)]}>".contains(last) {
+            candidate.removeLast()
+        }
+        return candidate.isEmpty ? nil : candidate
+    }
+
     /// Reconstruct the complete NUT-00 token carried by a NUT-18 payment
     /// payload. CDK's reference receiver feeds this token through the normal
     /// wallet receive API so inactive keysets, DLEQ data, transaction storage,
