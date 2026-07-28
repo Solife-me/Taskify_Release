@@ -35,6 +35,7 @@ struct SettingsView: View {
                 VStack(spacing: 18) {
                     identityCard
                     syncCard
+                    contactsSyncCard
                     storageCard
                     boardsCard
                     bibleTrackerCard
@@ -227,6 +228,25 @@ struct SettingsView: View {
             Divider()
 
             appRelaysSection
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var contactsSyncCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "Contacts sync/backup",
+                isOn: Binding(
+                    get: { model.walletContactsSyncEnabled },
+                    set: { model.setWalletContactsSyncEnabled($0) }
+                )
+            )
+            .font(.headline)
+            Text("Publish and pull your private contact list over Nostr. Turn off to keep contacts local only.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
@@ -897,6 +917,19 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                Picker(
+                    "Review list order",
+                    selection: Binding(
+                        get: { model.scriptureMemorySort },
+                        set: { model.setScriptureMemorySort($0) }
+                    )
+                ) {
+                    ForEach(ScriptureMemorySort.allCases, id: \.rawValue) { sort in
+                        Text(sort.label).tag(sort)
+                    }
+                }
+                .pickerStyle(.menu)
 
                 Text("Add passages from the Bible board. Taskify schedules one review task at a time, spacing it out further each time you review it.")
                     .font(.caption2)

@@ -248,15 +248,12 @@ struct BibleTrackerView: View {
     }
 
     private var sortedScriptureEntries: [(entry: ScriptureMemoryEntry, stats: ScriptureMemoryAlgorithm.Stats)] {
-        let baseDays = Double(model.scriptureMemoryFrequency.days)
-        let now = Date()
-        let total = model.scriptureMemoryState.entries.count
-        return model.scriptureMemoryState.entries
-            .map { ($0, ScriptureMemoryAlgorithm.stats(for: $0, baseDays: baseDays, totalEntries: total, now: now)) }
-            .sorted { lhs, rhs in
-                if lhs.1.score == rhs.1.score { return lhs.1.dueInDays < rhs.1.dueInDays }
-                return lhs.1.score > rhs.1.score
-            }
+        ScriptureMemoryAlgorithm.sortedEntries(
+            model.scriptureMemoryState.entries,
+            sort: model.scriptureMemorySort,
+            baseDays: Double(model.scriptureMemoryFrequency.days),
+            now: Date()
+        )
     }
 
     private var scriptureMemoryTargetBoardName: String? {

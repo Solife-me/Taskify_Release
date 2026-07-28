@@ -287,9 +287,11 @@ final class AppModel {
     private(set) var scriptureMemoryEnabled = ScriptureMemorySettings.enabled
     private(set) var scriptureMemoryBoardID = ScriptureMemorySettings.boardID
     private(set) var scriptureMemoryFrequency = ScriptureMemorySettings.frequency
+    private(set) var scriptureMemorySort = ScriptureMemorySettings.sort
     private(set) var streaksEnabled = TaskStreakSettings.enabled
     private(set) var newTaskPosition = TaskOrderingSettings.position
     private(set) var startupTab = StartupViewSettings.tab
+    private(set) var walletContactsSyncEnabled = WalletSettings.contactsSyncEnabled
     private(set) var appRelays = AppRelaySettings.urls
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
@@ -1859,7 +1861,7 @@ final class AppModel {
             relayURLs: discovered
         )
         if snapshot.applyContactProfiles(profiles) { scheduleSave() }
-        contactSyncStatus = "Contacts synced privately"
+        contactSyncStatus = walletContactsSyncEnabled ? "Contacts synced privately" : "Contact saved locally"
         return snapshot.contact(publicKeyValue: contact.publicKey) ?? contact
     }
 
@@ -1878,7 +1880,7 @@ final class AppModel {
         }
         scheduleSave()
         try await publishContacts(identity: identity, createdAt: timestamp)
-        contactSyncStatus = "Contacts synced privately"
+        contactSyncStatus = walletContactsSyncEnabled ? "Contacts synced privately" : "Contact removed locally"
     }
 
     func prepareForBackground() async {
@@ -2078,6 +2080,11 @@ final class AppModel {
         reconcileScriptureMemory()
     }
 
+    func setScriptureMemorySort(_ sort: ScriptureMemorySort) {
+        ScriptureMemorySettings.setSort(sort)
+        scriptureMemorySort = sort
+    }
+
     /// Marks an entry reviewed right now: completes its pending task if one exists (so the
     /// board reflects it too), otherwise advances the entry directly. Matches the PWA's
     /// `handleReviewScriptureMemory`.
@@ -2213,6 +2220,13 @@ final class AppModel {
     func setStartupTab(_ tab: StartupTab) {
         StartupViewSettings.setTab(tab)
         startupTab = tab
+    }
+
+    /// Turning this off stops publishing/pulling the private contact list over Nostr; contacts
+    /// already on-device keep working, added/edited/deleted locally, they just stop syncing.
+    func setWalletContactsSyncEnabled(_ enabled: Bool) {
+        WalletSettings.setContactsSyncEnabled(enabled)
+        walletContactsSyncEnabled = enabled
     }
 
     /// Reorders a board relative to its neighbors in the switcher. Local-only (no board-order
@@ -3601,6 +3615,10 @@ final class AppModel {
 
     private func refreshContactsFromNostr(silent: Bool) async {
         guard !isRefreshingContacts else { return }
+        guard walletContactsSyncEnabled else {
+            if !silent { contactSyncStatus = "Contacts sync is turned off in Settings" }
+            return
+        }
         let identity: NostrIdentity
         do {
             guard let storedIdentity = try identityStore.load() else {
@@ -3669,6 +3687,7 @@ final class AppModel {
     }
 
     private func publishContacts(identity: NostrIdentity, createdAt: Int) async throws {
+        guard walletContactsSyncEnabled else { return }
         let relays = contactsSyncRelayURLs
         guard !relays.isEmpty else { throw NostrContactDirectoryError.noRelays }
         let event = try NIP51ContactListContract.event(

@@ -8,6 +8,7 @@ enum ScriptureMemorySettings {
     private static let enabledKey = "taskify.scriptureMemory.enabled"
     private static let boardIDKey = "taskify.scriptureMemory.boardID"
     private static let frequencyKey = "taskify.scriptureMemory.frequency"
+    private static let sortKey = "taskify.scriptureMemory.sort"
 
     static var enabled: Bool {
         UserDefaults.standard.bool(forKey: enabledKey)
@@ -21,6 +22,11 @@ enum ScriptureMemorySettings {
         UserDefaults.standard.string(forKey: frequencyKey).flatMap(ScriptureMemoryFrequency.init(rawValue:)) ?? .daily
     }
 
+    /// Defaults to needs-review, matching the PWA.
+    static var sort: ScriptureMemorySort {
+        UserDefaults.standard.string(forKey: sortKey).flatMap(ScriptureMemorySort.init(rawValue:)) ?? .needsReview
+    }
+
     static func setEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: enabledKey)
     }
@@ -31,5 +37,9 @@ enum ScriptureMemorySettings {
 
     static func setFrequency(_ frequency: ScriptureMemoryFrequency) {
         UserDefaults.standard.set(frequency.rawValue, forKey: frequencyKey)
+    }
+
+    static func setSort(_ sort: ScriptureMemorySort) {
+        UserDefaults.standard.set(sort.rawValue, forKey: sortKey)
     }
 }

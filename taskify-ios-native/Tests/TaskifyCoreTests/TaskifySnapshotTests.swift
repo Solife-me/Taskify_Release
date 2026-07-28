@@ -1380,6 +1380,56 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertEqual(calendar.component(.weekday, from: friday), 6)
     }
 
+    func testScriptureMemorySortOrdersEntriesPerPWASemantics() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let isoFormatter = ISO8601DateFormatter()
+        // Deliberately out of canonical/added order so each sort mode produces a distinct result.
+        let exodus = ScriptureMemoryEntry(
+            id: "exodus",
+            bookID: "exo",
+            chapter: 3,
+            startVerse: 1,
+            endVerse: 1,
+            addedAtISO: isoFormatter.string(from: now.addingTimeInterval(-3600)),
+            lastReviewISO: isoFormatter.string(from: now.addingTimeInterval(-86_400 * 30)),
+            stage: 0
+        )
+        let genesis = ScriptureMemoryEntry(
+            id: "genesis",
+            bookID: "gen",
+            chapter: 1,
+            startVerse: 1,
+            endVerse: 3,
+            addedAtISO: isoFormatter.string(from: now.addingTimeInterval(-7200)),
+            lastReviewISO: nil,
+            stage: 0
+        )
+        let entries = [exodus, genesis]
+
+        XCTAssertEqual(
+            ScriptureMemoryAlgorithm.sortedEntries(entries, sort: .canonical, baseDays: 1, now: now)
+                .map(\.entry.id),
+            ["genesis", "exodus"],
+            "Genesis precedes Exodus canonically regardless of add order"
+        )
+        XCTAssertEqual(
+            ScriptureMemoryAlgorithm.sortedEntries(entries, sort: .oldest, baseDays: 1, now: now)
+                .map(\.entry.id),
+            ["genesis", "exodus"]
+        )
+        XCTAssertEqual(
+            ScriptureMemoryAlgorithm.sortedEntries(entries, sort: .newest, baseDays: 1, now: now)
+                .map(\.entry.id),
+            ["exodus", "genesis"]
+        )
+        XCTAssertEqual(
+            ScriptureMemoryAlgorithm.sortedEntries(entries, sort: .needsReview, baseDays: 1, now: now)
+                .map(\.entry.id),
+            ["genesis", "exodus"],
+            "Never-reviewed Genesis is more overdue than a 30-day-old review of Exodus"
+        )
+    }
+
     // MARK: - Batched remote task merge
 
     private func makeSyncTask(id: String, title: String, boardID: String = "home") -> TaskItem {

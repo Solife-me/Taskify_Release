@@ -75,6 +75,24 @@ public enum ScriptureMemoryFrequency: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// How the review list is ordered, ported from the PWA's `ScriptureMemorySort` /
+/// `SCRIPTURE_MEMORY_SORTS`.
+public enum ScriptureMemorySort: String, Codable, CaseIterable, Sendable {
+    case canonical
+    case oldest
+    case newest
+    case needsReview
+
+    public var label: String {
+        switch self {
+        case .canonical: "Canonical order"
+        case .oldest: "Oldest added"
+        case .newest: "Newest added"
+        case .needsReview: "Needs review"
+        }
+    }
+}
+
 /// Spaced-repetition scoring, ported from `domains/scripture/scriptureUtils.ts`. The interval
 /// between reviews grows exponentially with `stage` (capped at 180 days) and shrinks as more
 /// entries compete for review slots.
@@ -133,6 +151,48 @@ public enum ScriptureMemoryAlgorithm {
             }
         }
         return best
+    }
+
+    /// Orders entries per the user's chosen sort, matching `scriptureMemoryItems`'s `decorated.sort`
+    /// switch (including its tie-breakers) in the PWA.
+    public static func sortedEntries(
+        _ entries: [ScriptureMemoryEntry],
+        sort: ScriptureMemorySort,
+        baseDays: Double,
+        now: Date
+    ) -> [(entry: ScriptureMemoryEntry, stats: Stats)] {
+        let total = entries.count
+        let decorated = entries.map { ($0, stats(for: $0, baseDays: baseDays, totalEntries: total, now: now)) }
+        switch sort {
+        case .canonical:
+            return decorated.sorted { lhs, rhs in
+                let orderA = BibleCatalog.books.firstIndex { $0.id == lhs.0.bookID } ?? 0
+                let orderB = BibleCatalog.books.firstIndex { $0.id == rhs.0.bookID } ?? 0
+                if orderA != orderB { return orderA < orderB }
+                if lhs.0.chapter != rhs.0.chapter { return lhs.0.chapter < rhs.0.chapter }
+                let startA = lhs.0.startVerse ?? 0
+                let startB = rhs.0.startVerse ?? 0
+                if startA != startB { return startA < startB }
+                return (lhs.0.endVerse ?? 0) < (rhs.0.endVerse ?? 0)
+            }
+        case .oldest:
+            return decorated.sorted {
+                addedAtTime($0.0) < addedAtTime($1.0)
+            }
+        case .newest:
+            return decorated.sorted {
+                addedAtTime($0.0) > addedAtTime($1.0)
+            }
+        case .needsReview:
+            return decorated.sorted { lhs, rhs in
+                if lhs.1.score == rhs.1.score { return lhs.1.dueInDays < rhs.1.dueInDays }
+                return lhs.1.score > rhs.1.score
+            }
+        }
+    }
+
+    private static func addedAtTime(_ entry: ScriptureMemoryEntry) -> TimeInterval {
+        ISO8601DateFormatter().date(from: entry.addedAtISO)?.timeIntervalSince1970 ?? 0
     }
 
     public static func formatDueInLabel(_ dueInDays: Double) -> String {
