@@ -1166,6 +1166,9 @@ private struct BoardManagerSheet: View {
                             nameCard(board)
                             reorderCard(board)
                             detailsCard(board)
+                            if board.kind == .list {
+                                indexCardToggleCard(board)
+                            }
                             relaysCard(board)
                             archiveCard(board)
                             deleteCard
@@ -1305,6 +1308,24 @@ private struct BoardManagerSheet: View {
                 Label("Copy board ID", systemImage: "doc.on.doc")
             }
             .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func indexCardToggleCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "List index card",
+                isOn: Binding(
+                    get: { board.indexCardEnabled },
+                    set: { _ = model.setBoardIndexCardEnabled(boardID: boardID, enabled: $0) }
+                )
+            )
+            Text("Add a quick navigation card to jump to any list and keep it centered when opening the board.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
@@ -1542,6 +1563,20 @@ private struct CompoundBoardManagerSheet: View {
 
     private func settingsCard(_ board: Board) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "List index card",
+                isOn: Binding(
+                    get: { board.indexCardEnabled },
+                    set: { _ = model.setBoardIndexCardEnabled(boardID: boardID, enabled: $0) }
+                )
+            )
+            Text("Quickly jump between lists across all linked boards.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            Divider()
+                .padding(.vertical, 4)
+
             Toggle(
                 "Hide board names in column headers",
                 isOn: Binding(

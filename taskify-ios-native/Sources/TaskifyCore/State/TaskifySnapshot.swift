@@ -554,6 +554,20 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func setBoardIndexCardEnabled(
+        boardID: String,
+        enabled: Bool
+    ) -> Bool {
+        guard let index = boards.firstIndex(where: {
+            $0.id == boardID && ($0.kind == .list || $0.kind == .compound) && $0.isVisible
+        }) else {
+            return false
+        }
+        boards[index].indexCardEnabled = enabled
+        return true
+    }
+
+    @discardableResult
     public mutating func ensureCompoundChildBoards(parentBoardID: String) -> Bool {
         guard let parent = boards.first(where: { $0.id == parentBoardID && $0.kind == .compound }) else {
             return false

@@ -207,6 +207,30 @@ final class TaskifySnapshotTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testIndexCardDefaultsOffAndCanBeToggledForListAndCompoundBoards() throws {
+        var snapshot = TaskifySnapshot.empty
+        let projects = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        XCTAssertFalse(projects.indexCardEnabled, "matches the PWA's opt-in default")
+
+        let compound = try XCTUnwrap(snapshot.createCompoundBoard(
+            name: "Everything",
+            childBoardIDs: [projects.id]
+        ))
+        XCTAssertFalse(compound.indexCardEnabled)
+
+        XCTAssertTrue(snapshot.setBoardIndexCardEnabled(boardID: projects.id, enabled: true))
+        XCTAssertEqual(snapshot.boards.first(where: { $0.id == projects.id })?.indexCardEnabled, true)
+
+        XCTAssertTrue(snapshot.setBoardIndexCardEnabled(boardID: compound.id, enabled: true))
+        XCTAssertEqual(snapshot.boards.first(where: { $0.id == compound.id })?.indexCardEnabled, true)
+
+        let week = try XCTUnwrap(snapshot.createWeekBoard(name: "This Week"))
+        XCTAssertFalse(
+            snapshot.setBoardIndexCardEnabled(boardID: week.id, enabled: true),
+            "week boards have fixed columns and don't support the index card"
+        )
+    }
+
     func testCompoundBoardAggregatesOrderedListBoardsAndManagesChildren() throws {
         var snapshot = TaskifySnapshot.empty
         let projects = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))

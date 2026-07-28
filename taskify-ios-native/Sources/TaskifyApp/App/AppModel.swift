@@ -2325,6 +2325,15 @@ final class AppModel {
     }
 
     @discardableResult
+    func setBoardIndexCardEnabled(boardID: String, enabled: Bool) -> Bool {
+        guard snapshot.setBoardIndexCardEnabled(boardID: boardID, enabled: enabled),
+              let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
+        scheduleSave()
+        publishBoard(board)
+        return true
+    }
+
+    @discardableResult
     func addListColumn(name: String) -> Bool {
         guard let board = selectedBoard,
               snapshot.addListColumn(boardID: board.id, name: name) != nil,

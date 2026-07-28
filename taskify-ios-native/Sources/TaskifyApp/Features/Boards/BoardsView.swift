@@ -1955,6 +1955,98 @@ private struct TaskifyQRCode: View {
     }
 }
 
+/// A jump-to-list navigation card shown as the leading page in a list/compound board's
+/// horizontal column scroller, matching the PWA's opt-in "Index" card. It participates in the
+/// same view-aligned paging as the columns it lets you jump to.
+private struct IndexCardEntry: Identifiable {
+    let id: String
+    let title: String
+}
+
+private struct IndexCardGroup: Identifiable {
+    let id: String
+    let title: String?
+    let entries: [IndexCardEntry]
+}
+
+private struct IndexCardColumnView: View {
+    let groups: [IndexCardGroup]
+    @Binding var focusedPageID: String?
+
+    private var flatEntries: [IndexCardEntry] {
+        groups.flatMap(\.entries)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Index")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            if flatEntries.isEmpty {
+                Text("No lists yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 24)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(groups) { group in
+                            if let title = group.title {
+                                Text(title.uppercased())
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                                    .padding(.top, group.id == groups.first?.id ? 0 : 6)
+                                    .padding(.horizontal, 4)
+                            }
+                            ForEach(group.entries) { entry in
+                                indexEntryButton(entry)
+                            }
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+        .padding(10)
+        .taskifyGlass(cornerRadius: 22)
+    }
+
+    private func indexEntryButton(_ entry: IndexCardEntry) -> some View {
+        let order = (flatEntries.firstIndex(where: { $0.id == entry.id }) ?? 0) + 1
+        let isActive = focusedPageID == entry.id
+        return Button {
+            withAnimation(.snappy) {
+                focusedPageID = entry.id
+            }
+        } label: {
+            HStack {
+                Text(entry.title)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer()
+                Text("\(order)")
+                    .font(.caption)
+            }
+            .foregroundStyle(isActive ? TaskifyTheme.primaryText : TaskifyTheme.secondaryText)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isActive ? TaskifyTheme.accent.opacity(0.15) : TaskifyTheme.raisedFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isActive ? TaskifyTheme.accent.opacity(0.6) : TaskifyTheme.border, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private let indexCardPageID = "board-index-card"
+
 private struct ListBoardView: View {
     let board: Board
     let showCompleted: Bool
@@ -1969,10 +2061,23 @@ private struct ListBoardView: View {
         }
     }
 
+    private var indexGroups: [IndexCardGroup] {
+        [IndexCardGroup(
+            id: indexCardPageID,
+            title: nil,
+            entries: columns.map { IndexCardEntry(id: $0.id, title: $0.name) }
+        )]
+    }
+
     var body: some View {
         GeometryReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 16) {
+                    if board.indexCardEnabled {
+                        IndexCardColumnView(groups: indexGroups, focusedPageID: $focusedPageID)
+                            .frame(width: min(330, proxy.size.width - 50))
+                            .id(indexCardPageID)
+                    }
                     ForEach(columns) { column in
                         ListColumnView(
                             column: column,
@@ -2002,6 +2107,7 @@ private struct ListBoardView: View {
     }
 
     private func repairFocusedPage() {
+        if board.indexCardEnabled && focusedPageID == indexCardPageID { return }
         guard !columns.contains(where: { $0.id == focusedPageID }) else { return }
         focusedPageID = columns.first?.id
     }
@@ -2026,6 +2132,29 @@ private struct CompoundBoardView: View {
         }
     }
 
+    private var indexGroups: [IndexCardGroup] {
+        var groups: [IndexCardGroup] = []
+        var groupIndexByBoardID: [String: Int] = [:]
+        for reference in columns {
+            let entry = IndexCardEntry(id: reference.id, title: reference.column.name)
+            if let index = groupIndexByBoardID[reference.board.id] {
+                groups[index] = IndexCardGroup(
+                    id: groups[index].id,
+                    title: groups[index].title,
+                    entries: groups[index].entries + [entry]
+                )
+            } else {
+                groupIndexByBoardID[reference.board.id] = groups.count
+                groups.append(IndexCardGroup(
+                    id: reference.board.id,
+                    title: board.hideChildBoardNames ? nil : reference.board.name,
+                    entries: [entry]
+                ))
+            }
+        }
+        return groups
+    }
+
     var body: some View {
         if columns.isEmpty {
             ContentUnavailableView(
@@ -2038,6 +2167,11 @@ private struct CompoundBoardView: View {
             GeometryReader { proxy in
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: 16) {
+                        if board.indexCardEnabled {
+                            IndexCardColumnView(groups: indexGroups, focusedPageID: $focusedPageID)
+                                .frame(width: min(330, proxy.size.width - 50))
+                                .id(indexCardPageID)
+                        }
                         ForEach(columns) { reference in
                             CompoundColumnView(
                                 reference: reference,
@@ -2069,6 +2203,7 @@ private struct CompoundBoardView: View {
     }
 
     private func repairFocusedPage() {
+        if board.indexCardEnabled && focusedPageID == indexCardPageID { return }
         guard !columns.contains(where: { $0.id == focusedPageID }) else { return }
         focusedPageID = columns.first?.id
     }

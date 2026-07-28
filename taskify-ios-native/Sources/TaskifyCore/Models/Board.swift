@@ -179,7 +179,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         children: [String] = [],
         archived: Bool = false,
         hidden: Bool = false,
-        indexCardEnabled: Bool = true,
+        indexCardEnabled: Bool = false,
         hideChildBoardNames: Bool = false,
         clearCompletedDisabled: Bool = false,
         createdAt: Date = Date(),
@@ -229,7 +229,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         children = try container.decodeIfPresent([String].self, forKey: .children) ?? []
         archived = try container.decodeIfPresent(Bool.self, forKey: .archived) ?? false
         hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
-        indexCardEnabled = try container.decodeIfPresent(Bool.self, forKey: .indexCardEnabled) ?? true
+        indexCardEnabled = try container.decodeIfPresent(Bool.self, forKey: .indexCardEnabled) ?? false
         hideChildBoardNames = try container.decodeIfPresent(Bool.self, forKey: .hideChildBoardNames) ?? false
         clearCompletedDisabled = try container.decodeIfPresent(Bool.self, forKey: .clearCompletedDisabled) ?? false
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
