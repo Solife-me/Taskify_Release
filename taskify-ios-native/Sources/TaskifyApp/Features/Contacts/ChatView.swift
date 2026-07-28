@@ -1479,11 +1479,27 @@ private struct GroupConversationDetailsView: View {
                     openURL(link.url)
                 } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: "link")
-                            .font(.headline)
-                            .foregroundStyle(TaskifyTheme.accent)
-                            .frame(width: 42, height: 42)
-                            .background(TaskifyTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11))
+                        Group {
+                            if let faviconURL = TaskContentLinks.faviconURL(for: link.url) {
+                                AsyncImage(url: faviconURL) { phase in
+                                    if case let .success(image) = phase {
+                                        image
+                                            .resizable()
+                                            .scaledToFit()
+                                            .padding(9)
+                                    } else {
+                                        Image(systemName: "link")
+                                            .font(.headline)
+                                    }
+                                }
+                            } else {
+                                Image(systemName: "link")
+                                    .font(.headline)
+                            }
+                        }
+                        .foregroundStyle(TaskifyTheme.accent)
+                        .frame(width: 42, height: 42)
+                        .background(TaskifyTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11))
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(TaskContentLinks.fallbackTitle(for: link.url))
@@ -3394,13 +3410,14 @@ private struct DirectMessageLinkCard: View {
             ?? url.absoluteString
     }
 
+    private var faviconURL: URL? { TaskContentLinks.faviconURL(for: url) }
+
     var body: some View {
         Button {
             openURL(url)
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: "link")
-                    .font(.subheadline.bold())
+                faviconIcon
                     .foregroundStyle(isIncoming ? TaskifyTheme.accent : .white)
                     .frame(width: 34, height: 34)
                     .background(
@@ -3437,6 +3454,26 @@ private struct DirectMessageLinkCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open link to \(host)")
+    }
+
+    @ViewBuilder
+    private var faviconIcon: some View {
+        if let faviconURL {
+            AsyncImage(url: faviconURL) { phase in
+                if case let .success(image) = phase {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .padding(7)
+                } else {
+                    Image(systemName: "link")
+                        .font(.subheadline.bold())
+                }
+            }
+        } else {
+            Image(systemName: "link")
+                .font(.subheadline.bold())
+        }
     }
 }
 

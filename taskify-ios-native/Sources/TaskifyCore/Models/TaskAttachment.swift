@@ -282,6 +282,18 @@ public enum TaskContentLinks {
         options: [.caseInsensitive]
     )
 
+    /// The same third-party favicon service the PWA uses for its chat link previews, so a link
+    /// shared from either client shows the same icon.
+    public static func faviconURL(for url: URL) -> URL? {
+        guard let domain = url.host(percentEncoded: false) else { return nil }
+        var components = URLComponents(string: "https://www.google.com/s2/favicons")
+        components?.queryItems = [
+            URLQueryItem(name: "domain", value: domain),
+            URLQueryItem(name: "sz", value: "64"),
+        ]
+        return components?.url
+    }
+
     public static func firstURL(title: String, note: String) -> URL? {
         let source = "\(title) \(note)"
         let range = NSRange(source.startIndex..<source.endIndex, in: source)

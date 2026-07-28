@@ -636,6 +636,19 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertFalse(TaskContentLinks.isURLOnly("Read https://example.com"))
     }
 
+    func testFaviconURLUsesThePWAsFaviconServiceAndDomain() throws {
+        let url = try XCTUnwrap(URL(string: "https://www.example.com/articles/native-ios/"))
+        let favicon = try XCTUnwrap(TaskContentLinks.faviconURL(for: url))
+        let components = try XCTUnwrap(URLComponents(url: favicon, resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(components.host, "www.google.com")
+        XCTAssertEqual(components.path, "/s2/favicons")
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "domain" })?.value,
+            "www.example.com"
+        )
+    }
+
     func testRecurrenceEncodesUsingPWAContract() throws {
         let rule = TaskRecurrence.every(2, .week)
         let data = try JSONEncoder().encode(rule)
