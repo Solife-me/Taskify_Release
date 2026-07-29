@@ -821,6 +821,16 @@ struct BoardsView: View {
         }
     }
 
+    private func dismissQuickTaskKeyboard() {
+        quickTaskFieldIsFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+    }
+
     private func addQuickTask(dismissKeyboard: Bool) {
         guard let quickAddDestination else { return }
         let title = quickTaskDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -828,13 +838,7 @@ struct BoardsView: View {
 
         quickTaskDraft = ""
         if dismissKeyboard {
-            quickTaskFieldIsFocused = false
-            UIApplication.shared.sendAction(
-                #selector(UIResponder.resignFirstResponder),
-                to: nil,
-                from: nil,
-                for: nil
-            )
+            dismissQuickTaskKeyboard()
         }
 
         if let weekday = quickAddDestination.weekday {
@@ -1449,6 +1453,10 @@ private struct QuickAddTextField: UIViewRepresentable {
         return field
     }
 
+    static func dismantleUIView(_ uiView: UITextField, coordinator: Coordinator) {
+        coordinator.removeKeyboardDismissalGesture()
+    }
+
     func updateUIView(_ field: UITextField, context: Context) {
         context.coordinator.parent = self
         field.accessibilityLabel = accessibilityLabel
@@ -1466,9 +1474,23 @@ private struct QuickAddTextField: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, UITextFieldDelegate {
+    final class Coordinator: NSObject, UITextFieldDelegate, UIGestureRecognizerDelegate {
         var parent: QuickAddTextField
         var hasSynchronizedFocus = false
+        // The floating field sits outside the task scroll views, and an empty scroll view has no
+        // draggable content. Observe the active window so swipe-down works on populated and empty
+        // boards.
+        private weak var activeField: UITextField?
+        private weak var gestureWindow: UIWindow?
+        private lazy var keyboardDismissalPan: UIPanGestureRecognizer = {
+            let gesture = UIPanGestureRecognizer(
+                target: self,
+                action: #selector(handleKeyboardDismissalPan(_:))
+            )
+            gesture.cancelsTouchesInView = false
+            gesture.delegate = self
+            return gesture
+        }()
 
         init(parent: QuickAddTextField) {
             self.parent = parent
@@ -1480,15 +1502,67 @@ private struct QuickAddTextField: UIViewRepresentable {
 
         func textFieldDidBeginEditing(_ textField: UITextField) {
             parent.isFocused.wrappedValue = true
+            installKeyboardDismissalGesture(for: textField)
         }
 
         func textFieldDidEndEditing(_ textField: UITextField) {
             parent.isFocused.wrappedValue = false
+            removeKeyboardDismissalGesture()
         }
 
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             parent.onSubmit()
             return false
+        }
+
+        private func installKeyboardDismissalGesture(for field: UITextField) {
+            guard let window = field.window else {
+                DispatchQueue.main.async { [weak self, weak field] in
+                    guard let self, let field, field.isFirstResponder else { return }
+                    self.installKeyboardDismissalGesture(for: field)
+                }
+                return
+            }
+
+            if gestureWindow === window {
+                activeField = field
+                return
+            }
+
+            removeKeyboardDismissalGesture()
+            activeField = field
+            gestureWindow = window
+            window.addGestureRecognizer(keyboardDismissalPan)
+        }
+
+        func removeKeyboardDismissalGesture() {
+            gestureWindow?.removeGestureRecognizer(keyboardDismissalPan)
+            gestureWindow = nil
+            activeField = nil
+        }
+
+        @objc private func handleKeyboardDismissalPan(_ gesture: UIPanGestureRecognizer) {
+            guard gesture.state == .changed else { return }
+            let translation = gesture.translation(in: gestureWindow)
+            guard translation.y > 30 else { return }
+            guard abs(translation.y) > abs(translation.x) else { return }
+
+            parent.isFocused.wrappedValue = false
+            activeField?.resignFirstResponder()
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard activeField?.isFirstResponder == true else { return false }
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: gestureWindow)
+            return velocity.y > abs(velocity.x)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
     }
 }
@@ -2134,6 +2208,7 @@ private struct IndexCardColumnView: View {
                     }
                 }
                 .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
             }
         }
         .padding(10)
@@ -2431,6 +2506,7 @@ private struct CompoundColumnView: View {
                 .immediateScrollTouchDelivery()
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .contentMargins(.bottom, 76, for: .scrollContent)
         }
         .padding(10)
@@ -2578,6 +2654,7 @@ private struct ListColumnView: View {
                 .immediateScrollTouchDelivery()
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .contentMargins(.bottom, 76, for: .scrollContent)
         }
         .padding(10)
@@ -2734,6 +2811,7 @@ private struct DayColumnView: View {
                 .immediateScrollTouchDelivery()
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .contentMargins(.bottom, 76, for: .scrollContent)
         }
         .padding(10)

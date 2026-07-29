@@ -147,6 +147,34 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertFalse(app.keyboards.element.waitForExistence(timeout: 1))
     }
 
+    func testQuickAddKeyboardDismissesWhenBoardIsSwipedDown() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+
+        let quickAddField = app.textFields.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")
+        ).firstMatch
+        XCTAssertTrue(quickAddField.waitForExistence(timeout: 10))
+        quickAddField.tap()
+        quickAddField.typeText("Keep this draft")
+        XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 2))
+
+        let swipeStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.24))
+        let swipeEnd = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.54))
+        swipeStart.press(forDuration: 0.05, thenDragTo: swipeEnd)
+
+        XCTAssertFalse(
+            app.keyboards.element.waitForExistence(timeout: 2),
+            "Swiping down on the board should dismiss the quick-add keyboard"
+        )
+        XCTAssertEqual(quickAddField.value as? String, "Keep this draft")
+        XCTAssertFalse(app.buttons["Edit Keep this draft"].exists)
+    }
+
     func testRapidCompletionRemovesEachTaskBeforeTheNextTap() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
