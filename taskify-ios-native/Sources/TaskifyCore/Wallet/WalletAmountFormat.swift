@@ -51,24 +51,13 @@ public enum WalletAmountFormat {
         display == .bitcoinSymbol ? bitcoinSymbol : "sats"
     }
 
-    /// Mirrors `Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: N })`
-    /// for N=2 (amounts >= $1) or N=6 (amounts < $1, e.g. a single sat's fractional-cent value),
-    /// trimmed to the shortest representation with at least 2 decimal places.
+    /// Rounded to the nearest penny regardless of magnitude -- unlike the PWA, which shows up to 6
+    /// fraction digits for sub-$1 amounts (e.g. a single sat's fractional-cent value), this native
+    /// build intentionally keeps every USD figure at 2 decimal places for a plainer, less noisy
+    /// display.
     public static func formatUSD(_ amount: Double) -> String {
         guard amount.isFinite else { return "—" }
         guard amount > 0 else { return "$0.00" }
-        guard amount < 1 else {
-            return "$" + String(format: "%.2f", amount)
-        }
-        var text = String(format: "%.6f", amount)
-        while text.hasSuffix("0") {
-            let trimmed = String(text.dropLast())
-            guard let decimalIndex = trimmed.firstIndex(of: "."),
-                  trimmed.distance(from: trimmed.index(after: decimalIndex), to: trimmed.endIndex) >= 2 else {
-                break
-            }
-            text = trimmed
-        }
-        return "$" + text
+        return "$" + String(format: "%.2f", amount)
     }
 }

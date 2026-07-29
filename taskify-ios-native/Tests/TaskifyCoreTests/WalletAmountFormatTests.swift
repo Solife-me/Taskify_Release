@@ -32,10 +32,14 @@ final class WalletAmountFormatTests: XCTestCase {
         XCTAssertEqual(WalletAmountFormat.formatUSD(1.239), "$1.24")
     }
 
-    func testFormatUSDForSubDollarAmountsAllowsUpToSixDecimalsTrimmed() {
-        XCTAssertEqual(WalletAmountFormat.formatUSD(0.00065), "$0.00065")
+    func testFormatUSDForSubDollarAmountsRoundsToTheNearestPenny() {
+        // Unlike the PWA, which shows up to 6 fraction digits for sub-$1 amounts, this native
+        // build always rounds to 2 decimal places -- including down to $0.00 for a fraction of a
+        // cent, since there's no coarser display to fall back to.
+        XCTAssertEqual(WalletAmountFormat.formatUSD(0.00065), "$0.00")
         XCTAssertEqual(WalletAmountFormat.formatUSD(0.1), "$0.10")
-        XCTAssertEqual(WalletAmountFormat.formatUSD(0.000001), "$0.000001")
+        XCTAssertEqual(WalletAmountFormat.formatUSD(0.006), "$0.01")
+        XCTAssertEqual(WalletAmountFormat.formatUSD(0.004), "$0.00")
     }
 
     func testFormatUSDHandlesZeroAndNonFinite() {
