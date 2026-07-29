@@ -578,6 +578,20 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func setBoardClearCompletedEnabled(
+        boardID: String,
+        enabled: Bool
+    ) -> Bool {
+        guard let index = boards.firstIndex(where: {
+            $0.id == boardID && $0.kind != .bible && $0.isVisible
+        }) else {
+            return false
+        }
+        boards[index].clearCompletedDisabled = !enabled
+        return true
+    }
+
+    @discardableResult
     public mutating func ensureCompoundChildBoards(parentBoardID: String) -> Bool {
         guard let parent = boards.first(where: { $0.id == parentBoardID && $0.kind == .compound }) else {
             return false
@@ -1026,6 +1040,23 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         if tasks[index].completed {
             appendNextRecurrence(afterCompletingAt: index, now: now)
         }
+        return true
+    }
+
+    @discardableResult
+    public mutating func toggleSubtaskCompletion(
+        taskID: String,
+        subtaskID: String,
+        editorPublicKey: String? = nil
+    ) -> Bool {
+        guard let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
+              var subtasks = tasks[taskIndex].subtasks,
+              let subtaskIndex = subtasks.firstIndex(where: { $0.id == subtaskID }) else {
+            return false
+        }
+        subtasks[subtaskIndex].completed.toggle()
+        tasks[taskIndex].subtasks = subtasks
+        tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
         return true
     }
 

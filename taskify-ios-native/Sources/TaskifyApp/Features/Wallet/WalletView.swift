@@ -4190,13 +4190,13 @@ private struct PendingEcashSheet: View {
                     ContentUnavailableView {
                         Label("All caught up", systemImage: "checkmark.circle.fill")
                     } description: {
-                        Text("Every saved ecash token has been redeemed.")
+                        Text("There are no saved ecash tokens waiting to be redeemed.")
                     }
                     .foregroundStyle(TaskifyTheme.primaryText)
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            Text("Tokens waiting on a mint stay encrypted by iOS file protection on this device. Cashu tokens do not have a normal expiration, so Taskify keeps retrying recoverable tokens until they succeed or you remove them.")
+                            Text("Tokens waiting on a mint stay encrypted by iOS file protection on this device. Cashu tokens do not have a normal expiration, so Taskify keeps retrying recoverable tokens until they succeed, the mint confirms they are spent, or you remove them.")
                                 .font(.footnote)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4258,14 +4258,12 @@ private struct PendingEcashSheet: View {
     private func pendingRow(_ pending: CashuPendingReceive) -> some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(spacing: 12) {
-                Image(systemName: pending.state == .queued
-                    ? "clock.arrow.circlepath"
-                    : "exclamationmark.triangle.fill")
+                Image(systemName: "clock.arrow.circlepath")
                     .font(.title3)
                     .frame(width: 42, height: 42)
-                    .foregroundStyle(pending.state == .queued ? TaskifyTheme.accent : .orange)
+                    .foregroundStyle(TaskifyTheme.accent)
                     .background(
-                        (pending.state == .queued ? TaskifyTheme.accent : Color.orange).opacity(0.12),
+                        TaskifyTheme.accent.opacity(0.12),
                         in: Circle()
                     )
 
@@ -4281,9 +4279,9 @@ private struct PendingEcashSheet: View {
 
                 Spacer()
 
-                Text(pending.state == .queued ? "Saved" : "Check token")
+                Text("Saved")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(pending.state == .queued ? TaskifyTheme.accent : .orange)
+                    .foregroundStyle(TaskifyTheme.accent)
             }
 
             if let memo = pending.memo, !memo.isEmpty {
@@ -4296,12 +4294,6 @@ private struct PendingEcashSheet: View {
                 Text("Last tried \(lastAttemptAt, style: .relative) · \(pending.attemptCount) attempt\(pending.attemptCount == 1 ? "" : "s")")
                     .font(.caption2)
                     .foregroundStyle(TaskifyTheme.tertiaryText)
-            }
-
-            if pending.state == .needsAttention {
-                Text("The mint says this token is already spent. Verify the balance or original sender before removing it.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
             }
 
             HStack(spacing: 12) {

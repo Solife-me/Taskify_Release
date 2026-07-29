@@ -21,6 +21,62 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertNil(TaskifyRelayURL.normalize("wss://user:secret@relay.example"))
     }
 
+    func testSyncConfigurationFingerprintIgnoresPresentationOnlyBoardChanges() {
+        let board = Board(
+            id: "local-board",
+            name: "Original name",
+            columns: [BoardColumn(id: "one", name: "One", order: 0)],
+            nostrBoardID: "f1a75d28-1ce5-489a-b53a-1e2a447b0cf7",
+            relayURLs: ["wss://relay.example", "wss://second.example"]
+        )
+        var renamed = board
+        renamed.name = "Renamed"
+        renamed.columns = [BoardColumn(id: "two", name: "Two", order: 0)]
+        renamed.nostrUpdatedAt = 100
+
+        let original = TaskSyncConfigurationFingerprint(
+            boards: [board],
+            auxiliaryRelayURLs: ["wss://inbox.example"],
+            inboxPublicKey: String(repeating: "a", count: 64)
+        )
+        let presentationChange = TaskSyncConfigurationFingerprint(
+            boards: [renamed],
+            auxiliaryRelayURLs: ["WSS://INBOX.EXAMPLE/"],
+            inboxPublicKey: String(repeating: "A", count: 64)
+        )
+
+        XCTAssertEqual(original, presentationChange)
+    }
+
+    func testSyncConfigurationFingerprintDetectsSubscriptionChanges() {
+        let board = Board(
+            id: "local-board",
+            name: "Board",
+            nostrBoardID: "f1a75d28-1ce5-489a-b53a-1e2a447b0cf7",
+            relayURLs: ["wss://relay.example"]
+        )
+        let original = TaskSyncConfigurationFingerprint(
+            boards: [board],
+            auxiliaryRelayURLs: [],
+            inboxPublicKey: String(repeating: "a", count: 64)
+        )
+        var moved = board
+        moved.relayURLs = ["wss://another.example"]
+        let relayChange = TaskSyncConfigurationFingerprint(
+            boards: [moved],
+            auxiliaryRelayURLs: [],
+            inboxPublicKey: String(repeating: "a", count: 64)
+        )
+        let identityChange = TaskSyncConfigurationFingerprint(
+            boards: [board],
+            auxiliaryRelayURLs: [],
+            inboxPublicKey: String(repeating: "b", count: 64)
+        )
+
+        XCTAssertNotEqual(original, relayChange)
+        XCTAssertNotEqual(original, identityChange)
+    }
+
     func testBoardShareContractEncodesPWAEnvelope() throws {
         let board = Board(
             id: "local-board",

@@ -12,7 +12,9 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Long-press task dragging and insertion feedback across weekly days and list columns, including synced reordering and cross-child movement within compound boards
 - Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
 - Local task completion and deletion
-- Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks
+- Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks, with PWA-familiar interactive inline checklists on task cards
+- PWA-style completed-task presentation preferences, including a dedicated completed view or in-list completed tasks, optional hiding of finished subtasks, and synced per-board Clear completed controls
+- PWA-style per-weekday startup-board routing with a safe first-visible fallback and automatic cleanup when a destination is archived or deleted
 - PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, and next-instance generation on completion
 - Multiple relative reminders, exact custom reminder times, and local iOS notification scheduling
 - PWA-familiar Upcoming list/calendar views with one-tap switching, native monthly task-day dots, search, add flow, persisted sorting, board grouping, and board filters
@@ -27,7 +29,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Review-before-apply PWA account bootstrap and ongoing native board-index publishing through signed kind-30078 Nostr backups, using interoperable NIP-44 v2 encryption, bounded multi-relay discovery, fetch-before-patch conflict protection, offline outbox delivery, and lossless wallet/PWA-only/future-field preservation
 - PWA-compatible deterministic board keys, AES-256-GCM task payloads, and signed Nostr events
 - Lossless preservation of assignments, bounties, inbox metadata, streaks, scripture state, and future encrypted PWA task fields across native edits, moves, completion, persistence, and relay merges
-- Shared-board join flow, default relay subscriptions, EOSE startup batching, and clock-based merges
+- Shared-board join flow, default relay subscriptions, configuration-aware replay coalescing, EOSE startup batching, and clock-based merges
 - Encrypted PWA-compatible list-board metadata sync, including conversion of joined boards to their remote type and columns
 - Disk-backed offline publish outbox with per-relay acknowledgements, stale-event suppression, independent healthy-relay publish lanes, adaptive NIP-01 rate-limit backoff, and reconnect retries
 - Aggregate Nostr health reporting with per-relay status, queued-change visibility, and manual/foreground retry
@@ -47,7 +49,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Native Photos and Files attachment controls with PWA-compatible AES-GCM encryption, remote-first Originless uploads, and task-level removal
 - Cached native rich link cards generated from URLs in task titles and notes, with duplicate inline URLs suppressed in task-card presentation
 - Native live-board and independent template sharing with PWA-compatible QR payloads, board-ID copy, the iOS share sheet, camera scanning, review-before-join, and automatic board-name/relay import
-- Native multi-mint Cashu wallet with ecash and Lightning send/receive, persistent invoice recovery and notifications, detailed payment history, seed backup/transfer recovery, outgoing-token redemption tracking, NUT-16 animated QR support, NUT-18/NUT-26 Cashu payment requests in both directions, recoverable Lightning transfers between configured mints, and durable offline ecash/payment-request inboxes with automatic retry and spent-token review
+- Native multi-mint Cashu wallet with ecash and Lightning send/receive, persistent invoice recovery and notifications, detailed payment history, seed backup/transfer recovery, outgoing-token redemption tracking, NUT-16 animated QR support, NUT-18/NUT-26 Cashu payment requests in both directions, recoverable Lightning transfers between configured mints, and durable offline ecash/payment-request inboxes with automatic retry and spent-token cleanup
 - Core unit and interoperability tests for state, persistence, list movement, recurrence, reminder timing, PWA task/attachment/account-backup/share-envelope cryptography fixtures, NIP-17 gift wraps, signing, merge clocks, and outbox behavior
 
 Nostr Cashu payment requests now work in both directions; advanced NWC, P2PK/contact payment fields, and external account calendar sync remain migration work instead of being backed by the abandoned native implementation. Native and PWA clients can exchange encrypted one-to-one/group messages, attachments, replies, and reactions as well as task shares and assignments, including Accept/Decline/Maybe status updates on the originating task, and both clients share the same encrypted private Nostr contact list. The current calendar slice reads calendars already available through Apple EventKit; PWA-managed Google account connection remains future work. Board and task relay sync has been manually confirmed in both directions between the native app and PWA. Compound boards retain their PWA child-board references and ordering, including hidden linked-board placeholders that continue syncing without cluttering the visible board picker. Synced PWA attachments are readable on iOS, native additions/removals use the PWA's encrypted remote attachment contract and configurable encrypted file server, and template shares publish a separate board/task snapshot that does not follow later live-board changes.

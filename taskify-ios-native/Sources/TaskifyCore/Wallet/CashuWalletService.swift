@@ -471,6 +471,7 @@ public struct CashuOfflineTokenSummary: Equatable, Sendable {
 
 public enum CashuPendingReceiveState: String, Codable, Equatable, Sendable {
     case queued
+    // Retained so older journals can decode and discard spent-token records.
     case needsAttention
 }
 
@@ -2200,16 +2201,17 @@ public actor CashuWalletService {
                 return artifact.amount ?? pending.amount
             }
 
-            guard let failedIndex = pendingReceives.firstIndex(where: { $0.id == id }) else {
-                throw error
-            }
             let message = String(describing: error)
-            pendingReceives[failedIndex].lastError = message
             if Self.isTokenAlreadySpentMessage(message) {
-                pendingReceives[failedIndex].state = .needsAttention
+                pendingReceives.removeAll { $0.id == id }
                 try persistPendingReceives()
                 throw CashuWalletError.pendingReceiveAlreadySpent
             }
+
+            guard let failedIndex = pendingReceives.firstIndex(where: { $0.id == id }) else {
+                throw error
+            }
+            pendingReceives[failedIndex].lastError = message
             pendingReceives[failedIndex].state = .queued
             try persistPendingReceives()
             throw error
@@ -2601,17 +2603,24 @@ public actor CashuWalletService {
     }
 
     private func persistPendingReceives() throws {
-        let directory = pendingReceivesURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         pendingReceives.sort { $0.createdAt > $1.createdAt }
+        try Self.persistPendingReceives(pendingReceives, to: pendingReceivesURL)
+    }
+
+    private static func persistPendingReceives(
+        _ pendingReceives: [CashuPendingReceive],
+        to url: URL
+    ) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(pendingReceives)
 #if os(iOS)
         try data.write(
-            to: pendingReceivesURL,
+            to: url,
             options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
         )
 #else
-        try data.write(to: pendingReceivesURL, options: .atomic)
+        try data.write(to: url, options: .atomic)
 #endif
     }
 
@@ -2621,9 +2630,14 @@ public actor CashuWalletService {
         else { return [] }
 
         var seen = Set<String>()
-        return decoded
+        let recoverable = decoded
             .sorted { $0.createdAt > $1.createdAt }
             .filter { seen.insert($0.id).inserted }
+            .filter(\.isRecoverable)
+        if recoverable.count != decoded.count {
+            try? persistPendingReceives(recoverable, to: url)
+        }
+        return recoverable
     }
 
     private func persistCreatedPaymentRequests() throws {

@@ -575,6 +575,8 @@ struct BoardsView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("taskify.board.sort.mode") private var sortModeRaw = UpcomingSortMode.manual.rawValue
     @AppStorage("taskify.board.sort.direction") private var sortDirectionRaw = UpcomingSortDirection.ascending.rawValue
+    @AppStorage(TaskPresentationSettings.completedTabKey)
+    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var showCompleted = false
     @State private var showingAddList = false
     @State private var showingBoardShare = false
@@ -599,6 +601,15 @@ struct BoardsView: View {
 
     private var availableTaskIDs: Set<String> {
         model.activeTaskIDs
+    }
+
+    private var completedTasksAreVisible: Bool {
+        model.selectedBoard?.kind == .bible ? showCompleted : (!completedTabEnabled || showCompleted)
+    }
+
+    private var hasCompletedTasks: Bool {
+        guard let boardID = model.selectedBoard?.id else { return false }
+        return model.completedTaskCount(forBoardID: boardID) > 0
     }
 
     var body: some View {
@@ -712,6 +723,12 @@ struct BoardsView: View {
         .onChange(of: availableTaskIDs) { _, taskIDs in
             selection.retainOnly(taskIDs)
         }
+        .onChange(of: completedTabEnabled) { _, enabled in
+            showCompleted = false
+            if !enabled {
+                completionAnimations.destination = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -719,7 +736,7 @@ struct BoardsView: View {
         switch model.selectedBoard?.kind {
         case .week:
             WeekBoardView(
-                showCompleted: showCompleted,
+                showCompleted: completedTasksAreVisible,
                 sortMode: sortMode,
                 sortDirection: sortDirection,
                 focusedPageID: $focusedPageID
@@ -728,7 +745,7 @@ struct BoardsView: View {
             if let board = model.selectedBoard {
                 ListBoardView(
                     board: board,
-                    showCompleted: showCompleted,
+                    showCompleted: completedTasksAreVisible,
                     sortMode: sortMode,
                     sortDirection: sortDirection,
                     focusedPageID: $focusedPageID
@@ -738,7 +755,7 @@ struct BoardsView: View {
             if let board = model.selectedBoard {
                 CompoundBoardView(
                     board: board,
-                    showCompleted: showCompleted,
+                    showCompleted: completedTasksAreVisible,
                     sortMode: sortMode,
                     sortDirection: sortDirection,
                     focusedPageID: $focusedPageID
@@ -916,30 +933,43 @@ struct BoardsView: View {
 
                 Spacer(minLength: 4)
 
-                HeaderIconButton(
-                    systemName: showCompleted ? "checkmark.circle.fill" : "checkmark",
-                    accent: showCompleted,
-                    accessibilityLabel: showCompleted ? "Hide completed tasks" : "Show completed tasks"
-                ) {
-                    withAnimation(.snappy) { showCompleted.toggle() }
-                }
-                .background {
-                    GeometryReader { proxy in
-                        let frame = proxy.frame(in: .named(TaskCompletionFlightCoordinateSpace.name))
-                        Color.clear.preference(
-                            key: TaskCompletionDestinationPreferenceKey.self,
-                            value: CGPoint(x: frame.midX, y: frame.midY)
-                        )
+                if completedTabEnabled || model.selectedBoard?.kind == .bible {
+                    HeaderIconButton(
+                        systemName: showCompleted ? "checkmark.circle.fill" : "checkmark",
+                        accent: showCompleted,
+                        accessibilityLabel: showCompleted ? "Hide completed tasks" : "Show completed tasks"
+                    ) {
+                        withAnimation(.snappy) { showCompleted.toggle() }
                     }
-                }
-                .contextMenu {
-                    if showCompleted, model.selectedBoard?.kind != .bible {
-                        Button(role: .destructive) {
-                            showingClearCompletedConfirmation = true
-                        } label: {
-                            Label("Clear completed tasks", systemImage: "trash")
+                    .background {
+                        GeometryReader { proxy in
+                            let frame = proxy.frame(in: .named(TaskCompletionFlightCoordinateSpace.name))
+                            Color.clear.preference(
+                                key: TaskCompletionDestinationPreferenceKey.self,
+                                value: CGPoint(x: frame.midX, y: frame.midY)
+                            )
                         }
                     }
+                    .contextMenu {
+                        if showCompleted,
+                           model.selectedBoard?.kind != .bible,
+                           model.selectedBoard?.clearCompletedDisabled == false {
+                            Button(role: .destructive) {
+                                showingClearCompletedConfirmation = true
+                            } label: {
+                                Label("Clear completed tasks", systemImage: "trash")
+                            }
+                        }
+                    }
+                } else if model.selectedBoard?.clearCompletedDisabled == false {
+                    HeaderIconButton(
+                        systemName: "trash",
+                        accessibilityLabel: "Clear completed tasks"
+                    ) {
+                        showingClearCompletedConfirmation = true
+                    }
+                    .disabled(!hasCompletedTasks)
+                    .opacity(hasCompletedTasks ? 1 : 0.42)
                 }
 
                 if model.selectedBoard?.kind == .list {
@@ -2855,6 +2885,10 @@ struct TaskCardView: View {
     @Environment(TaskCompletionAnimationController.self)
     private var completionAnimations: TaskCompletionAnimationController?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(TaskPresentationSettings.completedTabKey)
+    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
+    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
+    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
     let task: TaskItem
     let allowsDragging: Bool
     @State private var showingEditor = false
@@ -2869,6 +2903,11 @@ struct TaskCardView: View {
     private var subtaskProgress: String? {
         guard let subtasks = task.subtasks, !subtasks.isEmpty else { return nil }
         return "\(subtasks.filter(\.completed).count)/\(subtasks.count)"
+    }
+
+    private var visibleSubtasks: [TaskSubtask] {
+        let subtasks = task.subtasks ?? []
+        return hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
     }
 
     /// Streaks are tracked for any "frequent" recurrence (daily/weekly, or every N days/weeks —
@@ -2917,6 +2956,7 @@ struct TaskCardView: View {
         let displayTitle = displayTitle
         let displayNote = displayNote
         let subtaskProgress = subtaskProgress
+        let visibleSubtasks = visibleSubtasks
         let visibleStreak = visibleStreak
         let cardCornerRadius = hasMedia ? CGFloat(24) : 18
         let isSelectionMode = selection?.isActive ?? false
@@ -3061,6 +3101,51 @@ struct TaskCardView: View {
                     .contentShape(Rectangle())
                     .zIndex(0)
             }
+
+            if !visibleSubtasks.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(visibleSubtasks) { subtask in
+                        Button {
+                            TaskCompletionHaptics.subtaskToggled()
+                            model.toggleSubtaskCompletion(
+                                taskID: task.id,
+                                subtaskID: subtask.id
+                            )
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: subtask.completed ? "checkmark.square.fill" : "square")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(
+                                        subtask.completed
+                                            ? TaskifyTheme.accent
+                                            : TaskifyTheme.secondaryText
+                                    )
+                                    .contentTransition(.symbolEffect(.replace))
+
+                                Text(subtask.title)
+                                    .font(.caption)
+                                    .foregroundStyle(
+                                        subtask.completed
+                                            ? TaskifyTheme.tertiaryText
+                                            : TaskifyTheme.secondaryText
+                                    )
+                                    .strikethrough(subtask.completed)
+                                    .multilineTextAlignment(.leading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            subtask.completed
+                                ? "Mark \(subtask.title) incomplete"
+                                : "Complete \(subtask.title)"
+                        )
+                    }
+                }
+                .padding(.leading, 41)
+                .padding(.trailing, 3)
+            }
         }
         .allowsHitTesting(!isSelectionMode)
         .padding(.horizontal, hasMedia ? 10 : 13)
@@ -3198,7 +3283,7 @@ struct TaskCardView: View {
         }
 
         TaskCompletionHaptics.completed()
-        if !reduceMotion {
+        if completedTabEnabled, !reduceMotion {
             completionAnimations?.launch(from: origin)
         }
         // Deliberately *not* wrapped in `withAnimation`: the row must vanish on this runloop
@@ -3220,6 +3305,7 @@ struct TaskCardView: View {
 @MainActor
 private enum TaskCompletionHaptics {
     private static let generator = UIImpactFeedbackGenerator(style: .rigid)
+    private static let subtaskGenerator = UISelectionFeedbackGenerator()
 
     static func completed() {
         generator.impactOccurred()
@@ -3231,6 +3317,12 @@ private enum TaskCompletionHaptics {
     /// its own lag to the very taps that should feel immediate. Warm it when the board appears.
     static func warmUp() {
         generator.prepare()
+        subtaskGenerator.prepare()
+    }
+
+    static func subtaskToggled() {
+        subtaskGenerator.selectionChanged()
+        subtaskGenerator.prepare()
     }
 }
 

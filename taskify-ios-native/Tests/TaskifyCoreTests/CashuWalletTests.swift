@@ -93,7 +93,7 @@ final class CashuWalletTests: XCTestCase {
         )
     }
 
-    func testPendingReceiveJournalRoundTripsAndDeduplicatesBearerTokens() throws {
+    func testPendingReceiveJournalDropsSpentTokensAndKeepsRecoverableTokens() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("taskify-pending-receives-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -122,15 +122,31 @@ final class CashuWalletTests: XCTestCase {
             lastAttemptAt: Date(timeIntervalSince1970: 2_010),
             lastError: "already spent"
         )
-        try JSONEncoder().encode([older, newer]).write(to: url, options: .atomic)
+        let recoverable = CashuPendingReceive(
+            id: "recoverable-token",
+            token: "cashuBrecoverable",
+            mintURL: "https://mint.example",
+            amount: 34,
+            memo: nil,
+            createdAt: Date(timeIntervalSince1970: 3_000),
+            attemptCount: 1,
+            lastAttemptAt: Date(timeIntervalSince1970: 3_010),
+            lastError: "network request timed out"
+        )
+        try JSONEncoder().encode([older, newer, recoverable]).write(to: url, options: .atomic)
 
         let loaded = CashuWalletService.loadPendingReceives(from: url)
+        let persisted = try JSONDecoder().decode(
+            [CashuPendingReceive].self,
+            from: Data(contentsOf: url)
+        )
 
-        XCTAssertEqual(loaded, [newer])
-        XCTAssertFalse(loaded[0].isRecoverable)
+        XCTAssertEqual(loaded, [recoverable])
+        XCTAssertEqual(persisted, [recoverable])
+        XCTAssertTrue(loaded[0].isRecoverable)
     }
 
-    func testAlreadySpentReceiveErrorsBecomeAttentionItems() {
+    func testAlreadySpentReceiveErrorsAreRecognizedForAutomaticRemoval() {
         XCTAssertTrue(CashuWalletService.isTokenAlreadySpentMessage("Proof already spent"))
         XCTAssertTrue(CashuWalletService.isTokenAlreadySpentMessage("inputs have already been spent"))
         XCTAssertTrue(CashuWalletService.isTokenAlreadySpentMessage("Duplicate inputs"))

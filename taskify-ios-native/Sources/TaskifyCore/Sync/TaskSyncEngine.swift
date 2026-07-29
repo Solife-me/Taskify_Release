@@ -201,6 +201,46 @@ enum NostrRelayRejection {
     }
 }
 
+struct TaskSyncRelaySubscriptionPlan: Equatable, Sendable {
+    let relayURL: String
+    let boardTags: [String]
+    let inboxPublicKey: String?
+}
+
+/// The parts of a sync configuration that change relay subscriptions. Board names, columns,
+/// clocks, and ordering still refresh the engine's local decode state, but should not cause every
+/// relay to replay its stored history again.
+struct TaskSyncConfigurationFingerprint: Equatable, Sendable {
+    let relayPlans: [TaskSyncRelaySubscriptionPlan]
+
+    init(
+        boards: [Board],
+        auxiliaryRelayURLs: [String],
+        inboxPublicKey: String?
+    ) {
+        let normalizedAuxiliaryRelays = TaskifyRelayURL.normalizedList(auxiliaryRelayURLs)
+        let normalizedInboxPublicKey = inboxPublicKey?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let wantedRelays = Set(
+            boards.flatMap(\.effectiveRelayURLs) + normalizedAuxiliaryRelays
+        )
+        relayPlans = wantedRelays.map { relayURL in
+            let boardTags = Set<String>(
+                boards.compactMap { board -> String? in
+                    guard board.effectiveRelayURLs.contains(relayURL) else { return nil }
+                    return BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
+                }
+            ).sorted()
+            return TaskSyncRelaySubscriptionPlan(
+                relayURL: relayURL,
+                boardTags: boardTags,
+                inboxPublicKey: normalizedInboxPublicKey
+            )
+        }.sorted { $0.relayURL < $1.relayURL }
+    }
+}
+
 public actor TaskSyncEngine {
     private let outbox: NostrOutboxStore
     private let updateStream: AsyncStream<TaskSyncUpdate>
@@ -228,6 +268,7 @@ public actor TaskSyncEngine {
     // to the app and merged again — N times the work for one change.
     private var deliveredEventIDs: Set<String> = []
     private var deliveredEventIDOrder: [String] = []
+    private var configurationFingerprint: TaskSyncConfigurationFingerprint?
 
     public init(outbox: NostrOutboxStore = NostrOutboxStore()) {
         self.outbox = outbox
@@ -255,6 +296,13 @@ public actor TaskSyncEngine {
         auxiliaryRelayURLs: [String] = [],
         inboxPublicKey: String? = nil
     ) async {
+        let fingerprint = TaskSyncConfigurationFingerprint(
+            boards: boards,
+            auxiliaryRelayURLs: auxiliaryRelayURLs,
+            inboxPublicKey: inboxPublicKey
+        )
+        let subscriptionsAreUnchanged = fingerprint == configurationFingerprint
+        configurationFingerprint = fingerprint
         self.boards = boards
         self.auxiliaryRelayURLs = TaskifyRelayURL.normalizedList(auxiliaryRelayURLs)
         let normalizedInboxPublicKey = inboxPublicKey?
@@ -267,6 +315,7 @@ public actor TaskSyncEngine {
             deliveredEventIDOrder.removeAll()
         }
         self.inboxPublicKey = normalizedInboxPublicKey
+        guard !subscriptionsAreUnchanged else { return }
         let wantedRelays = Set(
             self.boards.flatMap(\.effectiveRelayURLs) + self.auxiliaryRelayURLs
         )
@@ -343,6 +392,7 @@ public actor TaskSyncEngine {
         publishPacers.removeAll()
         requestedRelayDrains.removeAll()
         inFlightEventIDs.removeAll()
+        configurationFingerprint = nil
         await emitStatus(state: .stopped)
     }
 
@@ -355,6 +405,7 @@ public actor TaskSyncEngine {
         pendingSubscriptions.removeAll()
         relayBatches.removeAll()
         inFlightEventIDs.removeAll()
+        configurationFingerprint = nil
         for connection in connections.values {
             await connection.disconnect()
         }

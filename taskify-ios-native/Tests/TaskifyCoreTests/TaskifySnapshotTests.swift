@@ -86,6 +86,55 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertTrue(snapshot.upcomingTasks(from: Date(timeIntervalSince1970: 1_700_000_000)).isEmpty)
     }
 
+    func testSubtaskCompletionTogglesInlineWithoutChangingTheParentTask() throws {
+        var snapshot = TaskifySnapshot.empty
+        let task = try XCTUnwrap(snapshot.addTask(
+            title: "Prepare release",
+            boardID: snapshot.selectedBoardID,
+            columnID: WeekdayColumn.monday.rawValue,
+            dueDate: Date(timeIntervalSince1970: 1_700_000_000)
+        ))
+        XCTAssertTrue(snapshot.updateTask(
+            taskID: task.id,
+            title: task.title,
+            note: "Keep this note",
+            dueDate: task.dueDate,
+            dueDateEnabled: true,
+            dueTimeEnabled: false,
+            dueTimeZone: nil,
+            priority: .high,
+            columnID: task.columnID,
+            subtasks: [
+                TaskSubtask(id: "first", title: "Build", completed: false),
+                TaskSubtask(id: "second", title: "Test", completed: true),
+            ],
+            recurrence: nil,
+            reminders: [],
+            editorPublicKey: "original-editor"
+        ))
+
+        XCTAssertTrue(snapshot.toggleSubtaskCompletion(
+            taskID: task.id,
+            subtaskID: "first",
+            editorPublicKey: "inline-editor"
+        ))
+        let updated = try XCTUnwrap(snapshot.tasks.first { $0.id == task.id })
+        XCTAssertFalse(updated.completed)
+        XCTAssertEqual(updated.title, "Prepare release")
+        XCTAssertEqual(updated.note, "Keep this note")
+        XCTAssertEqual(updated.priority, .high)
+        XCTAssertEqual(updated.subtasks, [
+            TaskSubtask(id: "first", title: "Build", completed: true),
+            TaskSubtask(id: "second", title: "Test", completed: true),
+        ])
+        XCTAssertEqual(updated.lastEditedBy, "inline-editor")
+
+        XCTAssertFalse(snapshot.toggleSubtaskCompletion(
+            taskID: task.id,
+            subtaskID: "missing"
+        ))
+    }
+
     func testUpcomingOrganizerMatchesPWAFilteringAndSortControls() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
@@ -266,6 +315,20 @@ final class TaskifySnapshotTests: XCTestCase {
             snapshot.setBoardIndexCardEnabled(boardID: week.id, enabled: true),
             "week boards have fixed columns and don't support the index card"
         )
+    }
+
+    func testBoardClearCompletedPreferenceCanBeToggledForSyncedBoards() throws {
+        var snapshot = TaskifySnapshot.empty
+        let boardID = snapshot.selectedBoardID
+
+        XCTAssertFalse(try XCTUnwrap(snapshot.selectedBoard).clearCompletedDisabled)
+        XCTAssertTrue(snapshot.setBoardClearCompletedEnabled(boardID: boardID, enabled: false))
+        XCTAssertTrue(try XCTUnwrap(snapshot.selectedBoard).clearCompletedDisabled)
+        XCTAssertTrue(snapshot.setBoardClearCompletedEnabled(boardID: boardID, enabled: true))
+        XCTAssertFalse(try XCTUnwrap(snapshot.selectedBoard).clearCompletedDisabled)
+
+        snapshot.boards.append(Board(id: "bible", name: "Bible", kind: .bible))
+        XCTAssertFalse(snapshot.setBoardClearCompletedEnabled(boardID: "bible", enabled: false))
     }
 
     func testCompoundBoardAggregatesOrderedListBoardsAndManagesChildren() throws {

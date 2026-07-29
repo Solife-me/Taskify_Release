@@ -293,6 +293,7 @@ final class AppModel {
     private(set) var streaksEnabled = TaskStreakSettings.enabled
     private(set) var newTaskPosition = TaskOrderingSettings.position
     private(set) var startupTab = StartupViewSettings.tab
+    private(set) var startupBoardIDsByWeekday = StartupViewSettings.boardIDsByWeekday
     private(set) var appRelays = AppRelaySettings.urls
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
@@ -621,6 +622,18 @@ final class AppModel {
 
     func taskCount(forBoardID boardID: String) -> Int {
         snapshot.tasks.filter { $0.boardID == boardID && !$0.isDeleted }.count
+    }
+
+    func completedTaskCount(forBoardID boardID: String) -> Int {
+        let scopeIDs: Set<String>
+        if let board = board(withID: boardID), board.kind == .compound {
+            scopeIDs = Set(compoundChildBoards(for: boardID).map(\.id))
+        } else {
+            scopeIDs = [boardID]
+        }
+        return snapshot.tasks.lazy.filter {
+            !$0.isDeleted && $0.completed && scopeIDs.contains($0.boardID)
+        }.count
     }
 
     func tasks(for weekday: WeekdayColumn, includeCompleted: Bool) -> [TaskItem] {
@@ -1032,6 +1045,15 @@ final class AppModel {
         reconcileScriptureMemory()
     }
 
+    func toggleSubtaskCompletion(taskID: String, subtaskID: String) {
+        guard snapshot.toggleSubtaskCompletion(
+            taskID: taskID,
+            subtaskID: subtaskID,
+            editorPublicKey: identityPublicKey.nilIfEmpty
+        ) else { return }
+        synchronizeTask(taskID)
+    }
+
     /// Bulk counterpart to `toggleCompletion`, for the Boards multi-select action bar. Only marks
     /// *incomplete* tasks done — unlike single-task `toggleCompletion`, a bulk "Complete" action on
     /// a mixed selection shouldn't un-complete tasks that already were, matching the PWA's
@@ -1066,8 +1088,13 @@ final class AppModel {
     /// Deletes every completed task on a board (and, for compound boards, its linked child boards),
     /// mirroring the PWA's "Clear completed" action.
     func clearCompletedTasks(forBoardID boardID: String) {
+        guard let board = board(withID: boardID),
+              board.kind != .bible,
+              !board.clearCompletedDisabled else {
+            return
+        }
         let scopeIDs: Set<String>
-        if let board = board(withID: boardID), board.kind == .compound {
+        if board.kind == .compound {
             scopeIDs = Set(compoundChildBoards(for: boardID).map(\.id))
         } else {
             scopeIDs = [boardID]
@@ -2305,6 +2332,21 @@ final class AppModel {
         startupTab = tab
     }
 
+    func startupBoardID(for weekday: WeekdayColumn) -> String? {
+        startupBoardIDsByWeekday[weekday.calendarWeekday - 1]
+    }
+
+    func setStartupBoardID(_ boardID: String?, for weekday: WeekdayColumn) {
+        let weekdayIndex = weekday.calendarWeekday - 1
+        if let boardID {
+            guard visibleBoards.contains(where: { $0.id == boardID }) else { return }
+            startupBoardIDsByWeekday[weekdayIndex] = boardID
+        } else {
+            startupBoardIDsByWeekday.removeValue(forKey: weekdayIndex)
+        }
+        StartupViewSettings.setBoardIDsByWeekday(startupBoardIDsByWeekday)
+    }
+
     /// Reorders a board relative to its neighbors in the switcher. Local-only (no board-order
     /// field is synced), so this just persists locally — no publish needed.
     @discardableResult
@@ -2365,6 +2407,7 @@ final class AppModel {
     @discardableResult
     func archiveBoard(boardID: String) -> Bool {
         guard snapshot.archiveBoard(boardID: boardID) else { return false }
+        sanitizeStartupBoardPreferences()
         scheduleSave()
         reconfigureSync()
         scheduleAccountBackupPublish()
@@ -2383,6 +2426,7 @@ final class AppModel {
     @discardableResult
     func deleteBoard(boardID: String) -> Bool {
         guard let result = snapshot.deleteBoard(boardID: boardID) else { return false }
+        sanitizeStartupBoardPreferences()
         let updatedCompoundBoards = result.updatedCompoundBoardIDs.compactMap { boardID in
             snapshot.boards.first { $0.id == boardID }
         }
@@ -2433,6 +2477,15 @@ final class AppModel {
     @discardableResult
     func setBoardIndexCardEnabled(boardID: String, enabled: Bool) -> Bool {
         guard snapshot.setBoardIndexCardEnabled(boardID: boardID, enabled: enabled),
+              let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
+        scheduleSave()
+        publishBoard(board)
+        return true
+    }
+
+    @discardableResult
+    func setBoardClearCompletedEnabled(boardID: String, enabled: Bool) -> Bool {
+        guard snapshot.setBoardClearCompletedEnabled(boardID: boardID, enabled: enabled),
               let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
         scheduleSave()
         publishBoard(board)
@@ -2812,6 +2865,7 @@ final class AppModel {
         applyBoardUITestFixtureIfRequested()
         applyPerformanceUITestFixtureIfRequested()
 #endif
+        applyStartupBoardPreference()
         refreshNotifications(requestPermission: false)
         reconcileFastingReminders()
         reconcileScriptureMemory()
@@ -2824,6 +2878,30 @@ final class AppModel {
                 automaticallyActivateWhenAlreadyConnected: true
             )
         }
+    }
+
+    private func applyStartupBoardPreference(
+        date: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        sanitizeStartupBoardPreferences()
+        guard let boardID = StartupBoardSelection.boardID(
+            boards: snapshot.boards,
+            preferredBoardIDsByWeekday: startupBoardIDsByWeekday,
+            date: date,
+            calendar: calendar
+        ) else { return }
+        snapshot.selectBoard(boardID)
+    }
+
+    private func sanitizeStartupBoardPreferences() {
+        let sanitized = StartupBoardSelection.sanitizedPreferences(
+            startupBoardIDsByWeekday,
+            boards: snapshot.boards
+        )
+        guard sanitized != startupBoardIDsByWeekday else { return }
+        startupBoardIDsByWeekday = sanitized
+        StartupViewSettings.setBoardIDsByWeekday(sanitized)
     }
 
 #if DEBUG

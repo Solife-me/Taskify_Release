@@ -19,6 +19,10 @@ struct SettingsView: View {
     @State private var mediaServerValidationMessage: String?
     @State private var newAppRelayURL = ""
     @State private var appRelayMessage: String?
+    @AppStorage(TaskPresentationSettings.completedTabKey)
+    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
+    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
+    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
 
     var body: some View {
         // @Environment values aren't bindable directly; @Bindable re-wraps the same model
@@ -41,6 +45,7 @@ struct SettingsView: View {
                     fastingRemindersCard
                     scriptureMemoryCard
                     streaksCard
+                    taskPresentationCard
                     taskOrderingCard
                     startupTabCard
                     notificationsCard
@@ -952,6 +957,34 @@ struct SettingsView: View {
         .taskifyGlass(cornerRadius: 24)
     }
 
+    private var taskPresentationCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Task cards & completed items")
+                .font(.headline)
+
+            Toggle("Completed view", isOn: $completedTabEnabled)
+
+            Text(
+                completedTabEnabled
+                    ? "Completed tasks leave their lists and collect behind the checkmark button."
+                    : "Completed tasks stay at the bottom of their lists and the checkmark button becomes Clear completed."
+            )
+            .font(.caption2)
+            .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            Divider()
+
+            Toggle("Hide completed subtasks", isOn: $hideCompletedSubtasks)
+
+            Text("Finished checklist items stay available in Edit but are hidden from task cards.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
     private var taskOrderingCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("New task position")
@@ -980,7 +1013,7 @@ struct SettingsView: View {
     }
 
     private var startupTabCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Launch tab")
                 .font(.headline)
 
@@ -1001,6 +1034,48 @@ struct SettingsView: View {
             Text("Which tab Taskify opens to next time you launch it.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            Divider()
+
+            Text("Board on app start")
+                .font(.subheadline.weight(.semibold))
+
+            Text("Choose a board for each day. First visible follows the order shown in the board switcher.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            VStack(spacing: 4) {
+                ForEach(WeekdayColumn.allCases) { weekday in
+                    HStack(spacing: 12) {
+                        Text(weekday.fullName)
+                            .font(.subheadline)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+
+                        Spacer(minLength: 12)
+
+                        Picker(
+                            weekday.fullName,
+                            selection: Binding(
+                                get: { model.startupBoardID(for: weekday) ?? "" },
+                                set: {
+                                    model.setStartupBoardID(
+                                        $0.isEmpty ? nil : $0,
+                                        for: weekday
+                                    )
+                                }
+                            )
+                        ) {
+                            Text("First visible").tag("")
+                            ForEach(model.visibleBoards) { board in
+                                Text(board.name).tag(board.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                    }
+                    .frame(minHeight: 38)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
@@ -1248,6 +1323,9 @@ private struct BoardManagerSheet: View {
                             nameCard(board)
                             reorderCard(board)
                             detailsCard(board)
+                            if board.kind != .bible {
+                                completionCard(board)
+                            }
                             if board.kind == .list {
                                 indexCardToggleCard(board)
                             }
@@ -1406,6 +1484,29 @@ private struct BoardManagerSheet: View {
                 )
             )
             Text("Add a quick navigation card to jump to any list and keep it centered when opening the board.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func completionCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "Clear completed button",
+                isOn: Binding(
+                    get: { !board.clearCompletedDisabled },
+                    set: {
+                        _ = model.setBoardClearCompletedEnabled(
+                            boardID: boardID,
+                            enabled: $0
+                        )
+                    }
+                )
+            )
+            Text("When the global Completed view is off, show the destructive Clear completed action for this board.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
