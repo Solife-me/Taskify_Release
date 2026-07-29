@@ -769,6 +769,22 @@ final class WalletViewModel: ObservableObject {
                 try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
             } catch let error as CashuWalletError where Self.isTerminalPaymentDeliveryError(error) {
                 try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
+            } catch CashuWalletError.paymentRequestUncertain {
+                // The mint rejected this as already spent, but nothing on this device shows *we*
+                // were the one who spent it -- most likely someone else redeemed it first (a
+                // different wallet holding the same request, or a race with another delivery of
+                // the same payment). A few retries across separate recovery passes give a same-
+                // device timing race (the evidence just hasn't landed yet) a chance to resolve;
+                // past that, retrying forever would just repeat the same failed mint call on every
+                // future launch for money that's already gone, so give up for good.
+                let attempts = (delivery.uncertainAttempts ?? 0) + 1
+                if attempts >= Self.maximumUncertainPaymentAttempts {
+                    try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
+                } else {
+                    var retried = delivery
+                    retried.uncertainAttempts = attempts
+                    try? CashuNostrPaymentInboxStore.update(retried, at: inboxURL)
+                }
             } catch {
                 // Keep transient mint/network failures in the durable inbox.
             }
@@ -839,6 +855,11 @@ final class WalletViewModel: ObservableObject {
         }
         return claimedTotal
     }
+
+    /// `.paymentRequestUncertain` deliveries get this many recovery passes (not raw retries --
+    /// once per `recoverNostrPaymentRequests` call, so roughly once per cold launch/background
+    /// refresh) before being dropped as unrecoverable.
+    private static let maximumUncertainPaymentAttempts = 3
 
     private static func isTerminalPaymentDeliveryError(_ error: CashuWalletError) -> Bool {
         switch error {

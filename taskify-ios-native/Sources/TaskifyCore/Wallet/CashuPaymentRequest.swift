@@ -65,17 +65,26 @@ public struct CashuNostrPaymentDelivery: Identifiable, Codable, Equatable, Senda
     public let payloadJSON: String
     public let senderPublicKey: String
     public let receivedAt: Date
+    /// Counts `CashuWalletError.paymentRequestUncertain` results: the mint rejected the token as
+    /// already spent, but nothing on this device (a matching transaction, a balance increase)
+    /// shows *we* were the one who spent it -- most likely someone else redeemed it first. A
+    /// couple of retries give a same-device timing race (the evidence just hasn't landed yet) a
+    /// chance to resolve itself before the delivery is given up on for good; `Int?` rather than a
+    /// non-optional default so old persisted deliveries without this field decode as 0 attempts.
+    public var uncertainAttempts: Int?
 
     public init(
         eventID: String,
         payloadJSON: String,
         senderPublicKey: String,
-        receivedAt: Date = Date()
+        receivedAt: Date = Date(),
+        uncertainAttempts: Int? = nil
     ) {
         self.eventID = eventID.lowercased()
         self.payloadJSON = payloadJSON
         self.senderPublicKey = senderPublicKey.lowercased()
         self.receivedAt = receivedAt
+        self.uncertainAttempts = uncertainAttempts
     }
 }
 
@@ -506,6 +515,15 @@ public enum CashuNostrPaymentInboxStore {
     public static func remove(eventIDs: Set<String>, at url: URL, now: Date = Date()) throws {
         let remaining = load(from: url, now: now).filter { !eventIDs.contains($0.eventID) }
         try save(remaining, to: url)
+    }
+
+    /// Replaces an existing delivery in place (matched by `eventID`) — used to persist an
+    /// incremented `uncertainAttempts` without disturbing the rest of the queue.
+    public static func update(_ delivery: CashuNostrPaymentDelivery, at url: URL, now: Date = Date()) throws {
+        var deliveries = load(from: url, now: now)
+        guard let index = deliveries.firstIndex(where: { $0.eventID == delivery.eventID }) else { return }
+        deliveries[index] = delivery
+        try save(deliveries, to: url)
     }
 
     private static func save(_ deliveries: [CashuNostrPaymentDelivery], to url: URL) throws {

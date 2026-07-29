@@ -586,6 +586,55 @@ final class CashuWalletTests: XCTestCase {
         XCTAssertTrue(CashuNostrPaymentInboxStore.load(from: url, now: now).isEmpty)
     }
 
+    func testNostrPaymentInboxUpdateReplacesADeliveryInPlace() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-payment-inbox-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("inbox.json")
+        let now = Date(timeIntervalSince1970: 4_000_000)
+        let delivery = CashuNostrPaymentDelivery(
+            eventID: String(repeating: "a", count: 64),
+            payloadJSON: "{}",
+            senderPublicKey: String(repeating: "b", count: 64),
+            receivedAt: now
+        )
+        XCTAssertTrue(try CashuNostrPaymentInboxStore.enqueue(delivery, at: url, now: now))
+        XCTAssertNil(CashuNostrPaymentInboxStore.load(from: url, now: now).first?.uncertainAttempts)
+
+        var retried = delivery
+        retried.uncertainAttempts = 1
+        try CashuNostrPaymentInboxStore.update(retried, at: url, now: now)
+
+        let reloaded = CashuNostrPaymentInboxStore.load(from: url, now: now)
+        XCTAssertEqual(reloaded.count, 1, "update should replace, not duplicate, the existing entry")
+        XCTAssertEqual(reloaded.first?.uncertainAttempts, 1)
+
+        // Updating an eventID that isn't in the store is a no-op, not an error.
+        let untracked = CashuNostrPaymentDelivery(
+            eventID: String(repeating: "z", count: 64),
+            payloadJSON: "{}",
+            senderPublicKey: String(repeating: "b", count: 64),
+            receivedAt: now
+        )
+        try CashuNostrPaymentInboxStore.update(untracked, at: url, now: now)
+        XCTAssertEqual(CashuNostrPaymentInboxStore.load(from: url, now: now).count, 1)
+    }
+
+    func testNostrPaymentDeliveryDecodesLegacyJSONMissingTheUncertainAttemptsField() throws {
+        let legacyJSON = Data("""
+        [{
+            "eventID": "\(String(repeating: "a", count: 64))",
+            "payloadJSON": "{}",
+            "senderPublicKey": "\(String(repeating: "b", count: 64))",
+            "receivedAt": 4000000
+        }]
+        """.utf8)
+        let decoded = try JSONDecoder().decode([CashuNostrPaymentDelivery].self, from: legacyJSON)
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertNil(decoded.first?.uncertainAttempts)
+    }
+
     func testIncomingTokenInboxIsDurableDeduplicatedAndExpiresOldDeliveries() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("taskify-incoming-token-inbox-\(UUID().uuidString)", isDirectory: true)
