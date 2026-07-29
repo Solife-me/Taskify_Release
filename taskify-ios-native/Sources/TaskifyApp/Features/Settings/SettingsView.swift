@@ -42,6 +42,7 @@ struct SettingsView: View {
                     syncCard
                     storageCard
                     chatHistoryCard
+                    walletCurrencyCard
                     boardsCard
                     bibleTrackerCard
                     fastingRemindersCard
@@ -489,6 +490,84 @@ struct SettingsView: View {
             .disabled(model.storedDirectMessageCount == 0)
 
             Text("Retention and clearing are local privacy controls. They do not publish deletion events or erase messages from other participants' devices.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var walletCurrencyCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "bitcoinsign.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Wallet currency")
+                        .font(.headline)
+                    Text(model.walletConversionEnabled ? "Conversion on" : "Sats only")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+
+            Text("Currency conversion")
+                .font(.subheadline.weight(.semibold))
+            Picker(
+                "Currency conversion",
+                selection: Binding(
+                    get: { model.walletConversionEnabled },
+                    set: { model.setWalletConversionEnabled($0) }
+                )
+            ) {
+                Text("On").tag(true)
+                Text("Off").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text("Show USD equivalents by fetching the spot BTC price from Coinbase.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            if model.walletConversionEnabled {
+                Divider()
+
+                Text("Primary currency")
+                    .font(.subheadline.weight(.semibold))
+                Picker(
+                    "Primary currency",
+                    selection: Binding(
+                        get: { model.walletPrimaryCurrency },
+                        set: { model.setWalletPrimaryCurrency($0) }
+                    )
+                ) {
+                    Text("Sats").tag(WalletPrimaryCurrency.sat)
+                    Text("USD").tag(WalletPrimaryCurrency.usd)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            Divider()
+
+            Text("Bitcoin denomination")
+                .font(.subheadline.weight(.semibold))
+            Picker(
+                "Bitcoin denomination",
+                selection: Binding(
+                    get: { model.walletDenominationDisplay },
+                    set: { model.setWalletDenominationDisplay($0) }
+                )
+            ) {
+                Text("\(WalletAmountFormat.bitcoinSymbol)42,778").tag(WalletDenominationDisplay.bitcoinSymbol)
+                Text("42,778 sat").tag(WalletDenominationDisplay.sat)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text("Choose how sat amounts are labeled in the wallet.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }

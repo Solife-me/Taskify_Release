@@ -294,6 +294,9 @@ final class AppModel {
     private(set) var newTaskPosition = TaskOrderingSettings.position
     private(set) var weekStart = WeekLayoutSettings.start
     private(set) var chatMessageRetention = ChatHistorySettings.retention
+    private(set) var walletConversionEnabled = WalletCurrencySettings.conversionEnabled
+    private(set) var walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
+    private(set) var walletDenominationDisplay = WalletCurrencySettings.denominationDisplay
     private(set) var startupTab = StartupViewSettings.tab
     private(set) var startupBoardIDsByWeekday = StartupViewSettings.boardIDsByWeekday
     private(set) var appRelays = AppRelaySettings.urls
@@ -616,6 +619,28 @@ final class AppModel {
            snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed {
             scheduleSave()
         }
+        scheduleAccountBackupPublish()
+    }
+
+    func setWalletConversionEnabled(_ enabled: Bool) {
+        guard enabled != walletConversionEnabled else { return }
+        WalletCurrencySettings.setConversionEnabled(enabled)
+        walletConversionEnabled = enabled
+        walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
+        scheduleAccountBackupPublish()
+    }
+
+    func setWalletPrimaryCurrency(_ currency: WalletPrimaryCurrency) {
+        guard walletConversionEnabled, currency != walletPrimaryCurrency else { return }
+        WalletCurrencySettings.setPrimaryCurrency(currency)
+        walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
+        scheduleAccountBackupPublish()
+    }
+
+    func setWalletDenominationDisplay(_ display: WalletDenominationDisplay) {
+        guard display != walletDenominationDisplay else { return }
+        WalletCurrencySettings.setDenominationDisplay(display)
+        walletDenominationDisplay = display
         scheduleAccountBackupPublish()
     }
 
@@ -4220,6 +4245,15 @@ final class AppModel {
         updatedPayload.settings[ChatHistorySettings.pwaSettingsKey] = .string(
             chatMessageRetention.rawValue
         )
+        updatedPayload.settings[WalletCurrencySettings.conversionEnabledPWAKey] = .boolean(
+            walletConversionEnabled
+        )
+        updatedPayload.settings[WalletCurrencySettings.primaryCurrencyPWAKey] = .string(
+            walletPrimaryCurrency.rawValue
+        )
+        updatedPayload.settings[WalletCurrencySettings.denominationDisplayPWAKey] = .string(
+            walletDenominationDisplay.rawValue
+        )
         let relayURLs = updatedPayload.defaultRelayURLs.isEmpty
             ? appRelays
             : updatedPayload.defaultRelayURLs
@@ -4271,6 +4305,20 @@ final class AppModel {
                snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed {
                 scheduleSave()
             }
+        }
+        if case .boolean(let enabled)? = payload.settings[WalletCurrencySettings.conversionEnabledPWAKey] {
+            WalletCurrencySettings.setConversionEnabled(enabled)
+            walletConversionEnabled = enabled
+        }
+        if case .string(let value)? = payload.settings[WalletCurrencySettings.primaryCurrencyPWAKey],
+           let currency = WalletPrimaryCurrency(rawValue: value) {
+            WalletCurrencySettings.setPrimaryCurrency(currency)
+        }
+        walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
+        if case .string(let value)? = payload.settings[WalletCurrencySettings.denominationDisplayPWAKey],
+           let display = WalletDenominationDisplay(rawValue: value) {
+            WalletCurrencySettings.setDenominationDisplay(display)
+            walletDenominationDisplay = display
         }
     }
 

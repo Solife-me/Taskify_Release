@@ -50,6 +50,22 @@ enum SolifeAccountStatus: Equatable {
     case error
 }
 
+/// A last-known BTC/USD price, so the wallet has an immediate (if possibly stale) conversion
+/// available before the first live fetch completes -- matches the PWA's `LS_BTC_USD_PRICE_CACHE`
+/// localStorage cache, minus the `updatedAt` timestamp, which nothing in this app's UI surfaces.
+enum WalletPriceCache {
+    private static let key = "taskify.wallet.btcUsdPriceCache"
+
+    static var cachedPrice: Double? {
+        let value = UserDefaults.standard.double(forKey: key)
+        return value > 0 ? value : nil
+    }
+
+    static func save(_ price: Double) {
+        UserDefaults.standard.set(price, forKey: key)
+    }
+}
+
 @MainActor
 final class WalletViewModel: ObservableObject {
     static let suggestedMintURL = "https://mint.solife.me"
@@ -72,11 +88,13 @@ final class WalletViewModel: ObservableObject {
     @Published private(set) var npubCashIdentityError: String?
     @Published private(set) var npubCashClaimStatus: NpubCashClaimStatus = .idle
     @Published private(set) var npubCashClaimMessage: String?
+    @Published private(set) var btcUSDPrice: Double? = WalletPriceCache.cachedPrice
 
     private var service: CashuWalletService?
     private var hasStarted = false
     private var isAppActive = true
     private var lightningMonitorTask: Task<Void, Never>?
+    private var priceMonitorTask: Task<Void, Never>?
     private var paymentInboxTask: Task<Void, Never>?
     private var paymentInboxNeedsAnotherPass = false
     private var isRecoveringPaymentInbox = false
@@ -115,6 +133,7 @@ final class WalletViewModel: ObservableObject {
             }
             await refresh()
             startLightningMonitoring()
+            startPriceMonitoring()
             return
         }
         hasStarted = true
@@ -145,6 +164,7 @@ final class WalletViewModel: ObservableObject {
                 await recoverPendingLightningReceives()
             }
             startLightningMonitoring()
+            startPriceMonitoring()
             refreshLightningAddresses()
             if NpubCashSettings.autoClaimEnabled {
                 await claimNpubCash(auto: true)
@@ -174,6 +194,7 @@ final class WalletViewModel: ObservableObject {
             Task { await paymentNotificationCoordinator.requestAuthorizationIfNeeded() }
         }
         restartLightningMonitoring()
+        restartPriceMonitoring()
         refreshLightningAddresses()
         Task {
             await service?.recoverInterruptedOperations()
@@ -191,6 +212,7 @@ final class WalletViewModel: ObservableObject {
         isAppActive = false
         lightningMonitorTask?.cancel()
         lightningMonitorTask = nil
+        stopPriceMonitoring()
     }
 
     func performBackgroundLightningRefresh() async -> Bool {
@@ -608,6 +630,73 @@ final class WalletViewModel: ObservableObject {
         lightningMonitorTask?.cancel()
         lightningMonitorTask = nil
         startLightningMonitoring()
+    }
+
+    /// Matches the PWA's `useWalletPrice` gating: only poll while conversion is turned on and the
+    /// app is in the foreground (the PWA also requires the wallet modal to be open, which doesn't
+    /// have a clean native analogue since the wallet is an always-mounted tab rather than a
+    /// dismissable modal -- app-foreground is the natural equivalent cost-control here). Every
+    /// 5 minutes, matching the PWA's `BACKGROUND_REFRESH_INTERVAL_MS`.
+    func startPriceMonitoringIfNeeded() {
+        startPriceMonitoring()
+    }
+
+    func stopPriceMonitoring() {
+        priceMonitorTask?.cancel()
+        priceMonitorTask = nil
+    }
+
+    private func startPriceMonitoring() {
+        guard WalletCurrencySettings.conversionEnabled, isAppActive, priceMonitorTask == nil else { return }
+        priceMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard WalletCurrencySettings.conversionEnabled else {
+                    self.priceMonitorTask = nil
+                    return
+                }
+                if let price = try? await CoinbasePriceClient.fetchSpotPriceUSD() {
+                    self.btcUSDPrice = price
+                    WalletPriceCache.save(price)
+                }
+                do {
+                    try await Task.sleep(for: .seconds(300))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func restartPriceMonitoring() {
+        priceMonitorTask?.cancel()
+        priceMonitorTask = nil
+        startPriceMonitoring()
+    }
+
+    /// The primary/secondary amount pair for a sat amount, following the PWA's `formatSatAmount`/
+    /// `formatUsdAmount` + `walletPrimaryCurrency`/`walletDenominationDisplay` settings: which
+    /// currency leads depends on `walletPrimaryCurrency`, and a secondary "≈" line only appears
+    /// when conversion is enabled and a price is available. `amount` is assumed non-negative --
+    /// callers that need a sign prefix (e.g. transaction history's +/-) apply it themselves.
+    func displayAmount(forSats amount: UInt64) -> (primary: String, secondary: String?) {
+        let satText = WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
+        guard WalletCurrencySettings.conversionEnabled, let price = btcUSDPrice else {
+            return (satText, nil)
+        }
+        let usdText = WalletAmountFormat.formatUSD(WalletAmountFormat.usdValue(sats: amount, btcUSDPrice: price))
+        switch WalletCurrencySettings.primaryCurrency {
+        case .usd:
+            return (usdText, satText)
+        case .sat:
+            return (satText, "≈ \(usdText)")
+        }
+    }
+
+    /// The denomination-aware sat string alone (no USD line) -- for call sites where a secondary
+    /// currency line doesn't fit (status toasts, inline labels).
+    func formattedSats(_ amount: UInt64) -> String {
+        WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
     }
 
     @discardableResult
@@ -1262,6 +1351,13 @@ struct WalletView: View {
             }
 #endif
         }
+        .onChange(of: model.walletConversionEnabled) { _, enabled in
+            if enabled {
+                wallet.startPriceMonitoringIfNeeded()
+            } else {
+                wallet.stopPriceMonitoring()
+            }
+        }
         .sheet(isPresented: $showingMints) {
             MintManagerSheet(wallet: wallet)
         }
@@ -1417,8 +1513,9 @@ struct WalletView: View {
     }
 
     private var balanceCard: some View {
-        VStack(spacing: 10) {
-            Text("\(wallet.snapshot.available.formatted()) sats")
+        let balance = wallet.displayAmount(forSats: wallet.snapshot.available)
+        return VStack(spacing: 10) {
+            Text(balance.primary)
                 .font(.system(size: 48, weight: .semibold, design: .rounded))
                 .minimumScaleFactor(0.62)
                 .lineLimit(1)
@@ -1426,13 +1523,19 @@ struct WalletView: View {
                 .monospacedDigit()
                 .foregroundStyle(TaskifyTheme.primaryText)
 
+            if let secondary = balance.secondary {
+                Text(secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
             if wallet.snapshot.pending > 0 || wallet.snapshot.reserved > 0 {
                 VStack(spacing: 5) {
                     if wallet.snapshot.pending > 0 {
-                        Text("\(wallet.snapshot.pending.formatted()) sats pending")
+                        Text("\(wallet.formattedSats(wallet.snapshot.pending)) pending")
                     }
                     if wallet.snapshot.reserved > 0 {
-                        Text("\(wallet.snapshot.reserved.formatted()) sats in outgoing tokens")
+                        Text("\(wallet.formattedSats(wallet.snapshot.reserved)) in outgoing tokens")
                     }
                 }
                 .font(.caption)
@@ -5914,6 +6017,10 @@ private struct WalletTransactionDetailSheet: View {
         }) ?? initialTransaction
     }
 
+    private var amountDisplay: (primary: String, secondary: String?) {
+        wallet.displayAmount(forSats: transaction.amount)
+    }
+
     private var statusLabel: String {
         if let tokenStatus = transaction.outgoingTokenStatus {
             return switch tokenStatus {
@@ -6147,7 +6254,8 @@ private struct WalletTransactionDetailSheet: View {
         VStack(spacing: 0) {
             WalletTransactionDetailRow(
                 title: "Amount",
-                value: "\(transaction.amount.formatted()) sats"
+                value: amountDisplay.primary,
+                secondaryValue: amountDisplay.secondary
             )
 
             Divider().overlay(TaskifyTheme.border)
@@ -6180,7 +6288,7 @@ private struct WalletTransactionDetailSheet: View {
                 Divider().overlay(TaskifyTheme.border)
                 WalletTransactionDetailRow(
                     title: "Fee paid",
-                    value: "\(transaction.fee.formatted()) sats"
+                    value: wallet.formattedSats(transaction.fee)
                 )
             }
 
@@ -6365,15 +6473,23 @@ private struct WalletTransactionDetailSheet: View {
 private struct WalletTransactionDetailRow: View {
     let title: String
     let value: String
+    var secondaryValue: String?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 16) {
             Text(title)
                 .foregroundStyle(TaskifyTheme.secondaryText)
             Spacer(minLength: 12)
-            Text(value)
-                .foregroundStyle(TaskifyTheme.primaryText)
-                .multilineTextAlignment(.trailing)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(value)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                if let secondaryValue {
+                    Text(secondaryValue)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            .multilineTextAlignment(.trailing)
         }
         .font(.subheadline)
         .padding(.vertical, 14)
