@@ -167,6 +167,7 @@ struct TaskEditorView: View {
             Section("Task") {
                 TextField("Title", text: $title, axis: .vertical)
                     .lineLimit(1...3)
+                    .accessibilityIdentifier("Title")
                 TextField("Notes", text: $note, axis: .vertical)
                     .lineLimit(3...8)
             }

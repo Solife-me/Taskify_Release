@@ -175,6 +175,58 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Edit Keep this draft"].exists)
     }
 
+    /// Regression test: the quick-add field's window-level swipe-to-dismiss-keyboard gesture
+    /// must never intercept a drag that begins on a *different* text field, even one presented
+    /// in a sheet above the board while quick-add is still first responder in the background.
+    /// Before the fix, dragging inside the task editor's title field to select text could get
+    /// misread as a swipe-to-dismiss, resigning the background field mid-interaction and leaving
+    /// the sheet's dismiss state out of sync — closing and reopening instead of placing the
+    /// cursor, exactly as reported: editing a title sometimes worked, sometimes didn't.
+    func testDraggingInsideTaskEditorTitleDoesNotDismissTheSheet() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+
+        let quickAddField = app.textFields.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")
+        ).firstMatch
+        XCTAssertTrue(quickAddField.waitForExistence(timeout: 10))
+
+        // Seed a real task to edit.
+        quickAddField.tap()
+        quickAddField.typeText("Rename this task")
+        quickAddField.typeText("\n")
+        let editButton = app.buttons["Edit Rename this task"]
+        XCTAssertTrue(editButton.waitForExistence(timeout: 10))
+
+        // Leave quick-add mid-draft and first responder, matching the reported scenario: the
+        // field never went through its own blur flow before another sheet was presented.
+        quickAddField.tap()
+        quickAddField.typeText("unsent draft")
+        XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 2))
+
+        editButton.tap()
+        let titleField = app.textFields["Title"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 5))
+
+        // Drag inside the title field itself — this is the exact gesture shape
+        // (near-vertical, > 30pt) the window-level dismiss gesture was previously willing to
+        // steal regardless of which view the touch actually began on.
+        let fieldCenter = titleField.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let fieldBelow = titleField.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 3.0))
+        fieldCenter.press(forDuration: 0.3, thenDragTo: fieldBelow)
+
+        XCTAssertTrue(app.navigationBars["Edit Task"].exists, "The editor sheet should still be open")
+        titleField.tap()
+        titleField.typeText("edited ")
+        let finalValue = titleField.value as? String ?? ""
+        XCTAssertTrue(finalValue.contains("edited"), "Typing after the drag should still reach the title field")
+        XCTAssertTrue(finalValue.contains("Rename this task"), "The original title text should be preserved")
+    }
+
     func testRapidCompletionRemovesEachTaskBeforeTheNextTap() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"

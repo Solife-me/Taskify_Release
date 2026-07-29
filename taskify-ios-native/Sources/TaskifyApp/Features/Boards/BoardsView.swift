@@ -1558,6 +1558,23 @@ private struct QuickAddTextField: UIViewRepresentable {
             return velocity.y > abs(velocity.x)
         }
 
+        /// The gesture is on the window, so without this it also sees touches inside any sheet
+        /// presented above the board — e.g. the task editor. A drag that begins on a text field
+        /// anywhere (this one or a completely different field in a presented sheet) is a cursor
+        /// placement or text-selection gesture, never a request to dismiss the keyboard, even if
+        /// this field is still first responder in the background. Regression: that conflict made
+        /// dragging to select a title in the task editor sometimes get read as a swipe-to-dismiss,
+        /// resigning this field mid-interaction and leaving the editor's own focus/dismiss state
+        /// out of sync — closing and reopening the sheet instead of placing the cursor.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var view: UIView? = touch.view
+            while let current = view {
+                if current is UITextField || current is UITextView { return false }
+                view = current.superview
+            }
+            return true
+        }
+
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
