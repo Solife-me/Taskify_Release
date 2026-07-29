@@ -224,21 +224,62 @@ public enum CashuPaymentRequestContract {
               let dictionary = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let mint = dictionary["mint"] as? String,
               let proofs = dictionary["proofs"] as? [[String: Any]],
-              !proofs.isEmpty else {
+              !proofs.isEmpty,
+              let token = tokenString(
+                mint: mint,
+                proofs: proofs,
+                unit: dictionary["unit"] as? String,
+                memo: dictionary["memo"] as? String
+              ) else {
             throw CashuWalletError.invalidPaymentRequest
         }
+        return token
+    }
 
-        var token: [String: Any] = [
-            "token": [["mint": mint, "proofs": proofs]],
-        ]
-        if let unit = dictionary["unit"] as? String { token["unit"] = unit }
-        if let memo = dictionary["memo"] as? String { token["memo"] = memo }
+    /// Extracts a redeemable token from arbitrary incoming DM content: a raw token string, or a
+    /// bare `{mint, proofs}` JSON shape reconstructed the same way as a NUT-18 payload but
+    /// *without* requiring the "id"/full envelope that only makes sense for a payment request
+    /// this device created. A Lightning-address forwarder (e.g. solife.me) has no such request —
+    /// it just drops mint+proofs (or an encoded token) in a DM whenever someone pays the address.
+    /// Matches the PWA's tolerant `selectIncomingPaymentFromPayload`, which treats any decodable
+    /// incoming payment as receivable regardless of whether it fulfills a known request.
+    public static func extractReceivableToken(from content: String) -> String? {
+        if let token = firstTokenSubstring(in: content) {
+            return token
+        }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any],
+              let mint = dictionary["mint"] as? String,
+              !mint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let proofs = dictionary["proofs"] as? [[String: Any]],
+              !proofs.isEmpty else {
+            return nil
+        }
+        return tokenString(
+            mint: mint,
+            proofs: proofs,
+            unit: dictionary["unit"] as? String,
+            memo: dictionary["memo"] as? String
+        )
+    }
+
+    private static func tokenString(
+        mint: String,
+        proofs: [[String: Any]],
+        unit: String?,
+        memo: String?
+    ) -> String? {
+        var token: [String: Any] = ["token": [["mint": mint, "proofs": proofs]]]
+        if let unit { token["unit"] = unit }
+        if let memo { token["memo"] = memo }
         guard JSONSerialization.isValidJSONObject(token),
               let tokenData = try? JSONSerialization.data(
                 withJSONObject: token,
                 options: [.sortedKeys]
               ) else {
-            throw CashuWalletError.invalidPaymentRequest
+            return nil
         }
         let encoded = tokenData.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")

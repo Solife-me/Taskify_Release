@@ -427,6 +427,62 @@ final class CashuWalletTests: XCTestCase {
         XCTAssertEqual(preview.memo, "Coffee")
     }
 
+    /// Regression test: a Lightning-address forwarder (e.g. solife.me) has no payment request on
+    /// this device to match against, so it can never satisfy the strict NUT-18 path's implicit
+    /// "id" expectation the way a real request-response would. `extractReceivableToken` is the
+    /// generic fallback that must still recognize it — without requiring "id" at all — so the
+    /// wallet can actually receive it and the message doesn't silently vanish before ever
+    /// becoming a chat message.
+    func testExtractReceivableTokenAcceptsBareMintProofsPayloadWithNoRequestID() async throws {
+        let bareProofPayload = """
+        {"mint":"https://mint.example","unit":"sat","proofs":[{
+            "amount":1,
+            "secret":"test-secret",
+            "C":"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "id":"009a1f293253e41e"
+        }]}
+        """
+        // The strict, request-fulfillment-only path must reject this — it has no "id".
+        XCTAssertNil(CashuPaymentRequestContract.paymentPayloadJSON(from: bareProofPayload))
+        XCTAssertThrowsError(try CashuPaymentRequestContract.tokenString(fromPaymentPayload: bareProofPayload))
+
+        let token = try XCTUnwrap(CashuPaymentRequestContract.extractReceivableToken(from: bareProofPayload))
+        XCTAssertTrue(token.hasPrefix("cashuA"))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-bare-proof-token-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = try CashuWalletService(
+            databaseURL: directory.appendingPathComponent("wallet.sqlite"),
+            outgoingTokensURL: directory.appendingPathComponent("outgoing.json"),
+            mnemonic: CashuWalletService.generateMnemonic()
+        )
+        let preview = try await service.previewToken(token)
+        XCTAssertEqual(preview.mintURL, "https://mint.example")
+        XCTAssertEqual(preview.amount, 1)
+    }
+
+    func testExtractReceivableTokenAlsoAcceptsAFullNUT18ShapedPayloadOrARawToken() throws {
+        let fullPayload = """
+        {"id":"some-request","mint":"https://mint.example","unit":"sat","proofs":[{
+            "amount":1,
+            "secret":"test-secret",
+            "C":"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "id":"009a1f293253e41e"
+        }]}
+        """
+        XCTAssertNotNil(CashuPaymentRequestContract.extractReceivableToken(from: fullPayload))
+
+        XCTAssertEqual(
+            CashuPaymentRequestContract.extractReceivableToken(from: "Here you go: cashuAeyJ0b2tlbiI6W119fQ"),
+            "cashuAeyJ0b2tlbiI6W119fQ"
+        )
+
+        XCTAssertNil(CashuPaymentRequestContract.extractReceivableToken(from: "Thanks for lunch!"))
+        XCTAssertNil(CashuPaymentRequestContract.extractReceivableToken(from: #"{"v":1,"kind":"taskify-share"}"#))
+    }
+
     func testFirstTokenSubstringExtractsCashuTokenEmbeddedInChatText() {
         XCTAssertEqual(
             CashuPaymentRequestContract.firstTokenSubstring(

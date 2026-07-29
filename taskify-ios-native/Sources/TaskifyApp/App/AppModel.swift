@@ -3141,6 +3141,13 @@ final class AppModel {
         effects: inout SharedInboxApplyEffects
     ) {
         let rumor = decrypted.rumor
+        // This only ever succeeds for a payment fulfilling a NUT-18 request *this device*
+        // created (see receiveNostrPayment's requestID lookup) — it's for updating that
+        // request's received-amount bookkeeping, not general incoming-payment detection. It
+        // deliberately doesn't `return`: an unsolicited deposit (a Lightning-address forwarder
+        // like solife.me, or anything else that isn't fulfilling a request of ours) needs to
+        // keep flowing through to the generic detection below and to become a normal chat
+        // message, the same way the PWA still shows every payment inline in the DM thread.
         if rumor.publicKey != identity.publicKeyHex,
            let payloadJSON = CashuPaymentRequestContract.paymentPayloadJSON(from: rumor.content) {
             do {
@@ -3157,7 +3164,6 @@ final class AppModel {
             } catch {
                 effects.walletDeliveryFailed = true
             }
-            return
         }
         if let group = NostrGroupConversation(
             rumor: rumor,
@@ -3279,11 +3285,14 @@ final class AppModel {
 
         // Unlike the NUT-18 payment-request path above, a Lightning-address forwarder (e.g.
         // solife.me) has no request on this device to match a payload against — it just drops a
-        // token in DMs whenever someone pays the address. Detecting it here, alongside the
-        // message itself landing in chat, lets the wallet claim it automatically instead of
-        // requiring a tap on the chat bubble's payment card.
+        // token (or a bare {mint, proofs} payload, no "id") in DMs whenever someone pays the
+        // address. Detecting it here, alongside the message itself landing in chat, lets the
+        // wallet claim it automatically instead of requiring a tap on the chat bubble's payment
+        // card. This is a superset of the strict path above, so a message can safely match both —
+        // whichever pipeline runs first claims it; the mint's double-spend protection makes the
+        // second attempt a harmless no-op.
         if directMessage.isIncoming,
-           let token = CashuPaymentRequestContract.firstTokenSubstring(in: directMessage.content) {
+           let token = CashuPaymentRequestContract.extractReceivableToken(from: directMessage.content) {
             do {
                 let inboxURL = try CashuIncomingTokenInboxStore.defaultURL()
                 let delivery = CashuIncomingTokenDelivery(
