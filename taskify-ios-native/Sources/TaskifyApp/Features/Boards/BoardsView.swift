@@ -2762,16 +2762,21 @@ private struct ListColumnView: View {
 }
 
 private struct WeekBoardView: View {
+    @Environment(AppModel.self) private var model
     let showCompleted: Bool
     let sortMode: UpcomingSortMode
     let sortDirection: UpcomingSortDirection
     @Binding var focusedPageID: String?
 
+    private var orderedWeekdays: [WeekdayColumn] {
+        WeekdayColumn.ordered(startingAt: model.weekStart)
+    }
+
     var body: some View {
         GeometryReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 16) {
-                    ForEach(WeekdayColumn.allCases) { weekday in
+                    ForEach(orderedWeekdays) { weekday in
                         DayColumnView(
                             weekday: weekday,
                             showCompleted: showCompleted,
@@ -2790,7 +2795,7 @@ private struct WeekBoardView: View {
             .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
             .scrollPosition(id: $focusedPageID)
             .horizontalTaskDragAutoScroll(
-                pageIDs: WeekdayColumn.allCases.map(\.rawValue),
+                pageIDs: orderedWeekdays.map(\.rawValue),
                 focusedPageID: $focusedPageID,
                 viewportWidth: proxy.size.width
             )

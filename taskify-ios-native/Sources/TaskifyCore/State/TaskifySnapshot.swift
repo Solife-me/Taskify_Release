@@ -405,6 +405,53 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return (created, updatedIDs)
     }
 
+    /// Recomputes the PWA's `hiddenUntilISO` boundary after the user changes the first day of
+    /// the week. This includes currently visible tasks because Saturday/Sunday/Monday can move
+    /// a neighboring day into or out of the current week.
+    public mutating func rebaseWeekVisibility(
+        startingOn firstDay: WeekdayColumn,
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> [String] {
+        let weekBoardIDs = Set(boards.lazy.filter { $0.kind == .week }.map(\.id))
+        let today = calendar.startOfDay(for: now)
+        let currentWeekStart = WeekDateResolver.startOfWeek(
+            containing: now,
+            startingOn: firstDay,
+            calendar: calendar
+        )
+        var updatedIDs: [String] = []
+
+        for index in tasks.indices {
+            guard !tasks[index].isDeleted,
+                  !tasks[index].completed,
+                  weekBoardIDs.contains(tasks[index].boardID),
+                  tasks[index].dueDateEnabled,
+                  let dueDate = tasks[index].dueDate else {
+                continue
+            }
+
+            let nextHiddenUntil: Date?
+            if tasks[index].recurrence?.revealsOnDueDate == true {
+                let dueDay = calendar.startOfDay(for: dueDate)
+                nextHiddenUntil = dueDay > today ? dueDay : nil
+            } else {
+                let dueWeekStart = WeekDateResolver.startOfWeek(
+                    containing: dueDate,
+                    startingOn: firstDay,
+                    calendar: calendar
+                )
+                nextHiddenUntil = dueWeekStart > currentWeekStart ? dueWeekStart : nil
+            }
+
+            guard tasks[index].hiddenUntilDate != nextHiddenUntil else { continue }
+            tasks[index].hiddenUntilDate = nextHiddenUntil
+            updatedIDs.append(tasks[index].id)
+        }
+
+        return updatedIDs
+    }
+
     @discardableResult
     public mutating func renameBoard(boardID: String, name: String) -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1016,6 +1063,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         taskID: String,
         editorPublicKey: String? = nil,
         streaksEnabled: Bool = true,
+        weekStartsOn: WeekdayColumn? = nil,
         now: Date = Date()
     ) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }) else { return false }
@@ -1038,7 +1086,11 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         }
 
         if tasks[index].completed {
-            appendNextRecurrence(afterCompletingAt: index, now: now)
+            appendNextRecurrence(
+                afterCompletingAt: index,
+                weekStartsOn: weekStartsOn,
+                now: now
+            )
         }
         return true
     }
@@ -1060,7 +1112,11 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return true
     }
 
-    private mutating func appendNextRecurrence(afterCompletingAt index: Int, now: Date) {
+    private mutating func appendNextRecurrence(
+        afterCompletingAt index: Int,
+        weekStartsOn: WeekdayColumn?,
+        now: Date
+    ) {
         let completedTask = tasks[index]
         guard let recurrence = completedTask.recurrence,
               let dueDate = completedTask.dueDate,
@@ -1121,7 +1177,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             hiddenUntilDate: Self.hiddenUntilForNext(
                 nextDueDate,
                 recurrence: recurrence,
-                timeZoneIdentifier: completedTask.dueTimeZone
+                timeZoneIdentifier: completedTask.dueTimeZone,
+                weekStartsOn: weekStartsOn
             ),
             createdAt: now,
             order: nextOrder,
@@ -1170,12 +1227,20 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     private static func hiddenUntilForNext(
         _ dueDate: Date,
         recurrence: TaskRecurrence,
-        timeZoneIdentifier: String?
+        timeZoneIdentifier: String?,
+        weekStartsOn: WeekdayColumn?
     ) -> Date {
         var calendar = Calendar.current
         calendar.timeZone = timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? calendar.timeZone
         if recurrence.revealsOnDueDate {
             return calendar.startOfDay(for: dueDate)
+        }
+        if let weekStartsOn {
+            return WeekDateResolver.startOfWeek(
+                containing: dueDate,
+                startingOn: weekStartsOn,
+                calendar: calendar
+            )
         }
         return calendar.dateInterval(of: .weekOfYear, for: dueDate)?.start
             ?? calendar.startOfDay(for: dueDate)

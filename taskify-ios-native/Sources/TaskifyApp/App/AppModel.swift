@@ -292,6 +292,7 @@ final class AppModel {
     private(set) var scriptureMemorySort = ScriptureMemorySettings.sort
     private(set) var streaksEnabled = TaskStreakSettings.enabled
     private(set) var newTaskPosition = TaskOrderingSettings.position
+    private(set) var weekStart = WeekLayoutSettings.start
     private(set) var startupTab = StartupViewSettings.tab
     private(set) var startupBoardIDsByWeekday = StartupViewSettings.boardIDsByWeekday
     private(set) var appRelays = AppRelaySettings.urls
@@ -302,6 +303,12 @@ final class AppModel {
     var pendingAccountBackup: NostrAppBackupPayload?
     var errorMessage: String?
     private(set) var showsFirstRunOnboarding = false
+
+    private var weekCalendar: Calendar {
+        var calendar = Calendar.current
+        calendar.firstWeekday = weekStart.calendarWeekday
+        return calendar
+    }
 
     // Sync/bookkeeping internals — never read by views, so keep them out of observation
     // tracking (they churn constantly during sync).
@@ -686,7 +693,11 @@ final class AppModel {
 
     func addQuickTask(title: String, weekday: WeekdayColumn) {
         guard let boardID = selectedBoard?.id else { return }
-        let dueDate = WeekDateResolver.date(for: weekday, inWeekContaining: Date())
+        let dueDate = WeekDateResolver.date(
+            for: weekday,
+            inWeekContaining: Date(),
+            weekStartsOn: weekStart
+        )
         guard let task = snapshot.addTask(
             title: title,
             boardID: boardID,
@@ -739,7 +750,8 @@ final class AppModel {
                 toBoardID: targetBoardID,
                 columnID: targetColumnID,
                 beforeTaskID: beforeTaskID,
-                editorPublicKey: identityPublicKey.nilIfEmpty
+                editorPublicKey: identityPublicKey.nilIfEmpty,
+                calendar: weekCalendar
               ) else { return false }
 
         if result.crossedBoards {
@@ -1034,7 +1046,8 @@ final class AppModel {
         guard snapshot.toggleCompletion(
             taskID: taskID,
             editorPublicKey: identityPublicKey.nilIfEmpty,
-            streaksEnabled: streaksEnabled
+            streaksEnabled: streaksEnabled,
+            weekStartsOn: weekStart
         ) else { return }
         synchronizeTask(taskID)
         snapshot.tasks
@@ -2117,7 +2130,8 @@ final class AppModel {
             mode: fastingRemindersMode,
             weekday: fastingRemindersWeekday,
             perMonth: fastingRemindersPerMonth,
-            seed: FastingRemindersSettings.seed
+            seed: FastingRemindersSettings.seed,
+            calendar: weekCalendar
         )
         if updated != snapshot {
             snapshot = updated
@@ -2260,7 +2274,7 @@ final class AppModel {
             now: Date()
         ) else { return }
 
-        let calendar = Calendar.current
+        let calendar = weekCalendar
         let now = Date()
         let dueDays = selection.stats.dueInDays.isFinite && selection.stats.dueInDays > 0
             ? Int(selection.stats.dueInDays.rounded(.up))
@@ -2275,8 +2289,16 @@ final class AppModel {
         if targetBoard.kind == .list {
             hiddenUntil = dueDate > calendar.startOfDay(for: now) ? dueDate : nil
         } else {
-            let nowWeekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
-            let dueWeekStart = calendar.dateInterval(of: .weekOfYear, for: dueDate)?.start ?? dueDate
+            let nowWeekStart = WeekDateResolver.startOfWeek(
+                containing: now,
+                startingOn: weekStart,
+                calendar: calendar
+            )
+            let dueWeekStart = WeekDateResolver.startOfWeek(
+                containing: dueDate,
+                startingOn: weekStart,
+                calendar: calendar
+            )
             hiddenUntil = dueWeekStart > nowWeekStart ? dueWeekStart : nil
         }
 
@@ -2325,6 +2347,27 @@ final class AppModel {
     func setNewTaskPosition(_ position: NewTaskPosition) {
         TaskOrderingSettings.setPosition(position)
         newTaskPosition = position
+    }
+
+    func setWeekStart(_ weekday: WeekdayColumn) {
+        guard WeekdayColumn.supportedWeekStarts.contains(weekday),
+              weekday != weekStart else { return }
+        WeekLayoutSettings.setStart(weekday)
+        weekStart = weekday
+
+        var updated = snapshot
+        let updatedTaskIDs = updated.rebaseWeekVisibility(
+            startingOn: weekday,
+            calendar: weekCalendar
+        )
+        if updated != snapshot {
+            snapshot = updated
+            scheduleSave()
+            updatedTaskIDs.forEach { synchronizeTask($0) }
+        }
+
+        reconcileFastingReminders()
+        reconcileScriptureMemory()
     }
 
     func setStartupTab(_ tab: StartupTab) {

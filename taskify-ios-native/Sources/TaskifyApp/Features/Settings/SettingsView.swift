@@ -986,7 +986,7 @@ struct SettingsView: View {
     }
 
     private var taskOrderingCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("New task position")
                 .font(.headline)
 
@@ -1004,6 +1004,29 @@ struct SettingsView: View {
             .labelsHidden()
 
             Text("Where a quick-added task lands within its list or day.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            Divider()
+
+            Text("Week starts on")
+                .font(.headline)
+
+            Picker(
+                "Week starts on",
+                selection: Binding(
+                    get: { model.weekStart },
+                    set: { model.setWeekStart($0) }
+                )
+            ) {
+                ForEach(WeekdayColumn.supportedWeekStarts) { weekday in
+                    Text(weekday.fullName).tag(weekday)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text("Orders week boards and controls when weekly recurring tasks reappear.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }

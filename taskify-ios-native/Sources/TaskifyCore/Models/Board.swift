@@ -331,4 +331,17 @@ public enum WeekdayColumn: String, Codable, CaseIterable, Identifiable, Sendable
         let weekday = calendar.component(.weekday, from: date)
         return allCases.first { $0.calendarWeekday == weekday } ?? .sunday
     }
+
+    /// The three week boundaries exposed by the PWA's View settings.
+    public static let supportedWeekStarts: [WeekdayColumn] = [
+        .saturday,
+        .sunday,
+        .monday,
+    ]
+
+    /// Returns all seven days rotated so the configured first day leads the board.
+    public static func ordered(startingAt firstDay: WeekdayColumn) -> [WeekdayColumn] {
+        guard let firstIndex = allCases.firstIndex(of: firstDay) else { return allCases }
+        return Array(allCases[firstIndex...] + allCases[..<firstIndex])
+    }
 }
