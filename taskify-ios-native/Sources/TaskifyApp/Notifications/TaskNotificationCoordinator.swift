@@ -130,10 +130,22 @@ actor WalletPaymentNotificationCoordinator {
     private static let identifierPrefix = "taskify.wallet.lightning."
     private static let ecashIdentifierPrefix = "taskify.wallet.ecash."
     private static let cashuRequestIdentifierPrefix = "taskify.wallet.cashu-request."
+    /// The wallet's recovery pipelines can re-surface a payment that was already fully received in
+    /// a past session — e.g. a durable delivery queue whose entry didn't get cleared before the app
+    /// was interrupted, or the same payment matching more than one recovery pipeline. Those
+    /// pipelines still legitimately return a "receipt" for it (the alternative is silently losing
+    /// track of genuinely-interrupted payments), so the dedup belongs here, at the point a
+    /// notification is about to be shown to the user: each of the three notification-worthy
+    /// identifiers below is durably remembered once shown, and never shown again, regardless of how
+    /// many more times the underlying recovery logic re-reports the same payment.
+    private static let deliveredIdentifiersKey = "taskify.wallet.notifiedPaymentIdentifiers"
+    private static let maximumTrackedIdentifiers = 500
     private let center: UNUserNotificationCenter
+    private let defaults: UserDefaults
 
-    init(center: UNUserNotificationCenter = .current()) {
+    init(center: UNUserNotificationCenter = .current(), defaults: UserDefaults = .standard) {
         self.center = center
+        self.defaults = defaults
     }
 
     func requestAuthorizationIfNeeded() async {
@@ -155,6 +167,8 @@ actor WalletPaymentNotificationCoordinator {
         }
 
         for quote in quotes {
+            let identifier = Self.identifierPrefix + quote.id
+            guard !hasAlreadyNotified(identifier) else { continue }
             let amount = quote.issuedAmount > 0 ? quote.issuedAmount : quote.amount
             let content = UNMutableNotificationContent()
             content.title = "Lightning payment received"
@@ -166,11 +180,12 @@ actor WalletPaymentNotificationCoordinator {
                 "amount": amount,
             ]
             let request = UNNotificationRequest(
-                identifier: Self.identifierPrefix + quote.id,
+                identifier: identifier,
                 content: content,
                 trigger: nil
             )
             try? await center.add(request)
+            markNotified(identifier)
         }
     }
 
@@ -187,6 +202,8 @@ actor WalletPaymentNotificationCoordinator {
         }
 
         for receipt in receipts {
+            let identifier = Self.ecashIdentifierPrefix + receipt.pending.id
+            guard !hasAlreadyNotified(identifier) else { continue }
             let content = UNMutableNotificationContent()
             content.title = "Ecash received"
             content.body = "\(receipt.receivedAmount.formatted()) sats were added to your Taskify wallet."
@@ -197,11 +214,12 @@ actor WalletPaymentNotificationCoordinator {
                 "amount": receipt.receivedAmount,
             ]
             let request = UNNotificationRequest(
-                identifier: Self.ecashIdentifierPrefix + receipt.pending.id,
+                identifier: identifier,
                 content: content,
                 trigger: nil
             )
             try? await center.add(request)
+            markNotified(identifier)
         }
     }
 
@@ -218,6 +236,8 @@ actor WalletPaymentNotificationCoordinator {
         }
 
         for receipt in receipts {
+            let identifier = Self.cashuRequestIdentifierPrefix + receipt.eventID
+            guard !hasAlreadyNotified(identifier) else { continue }
             let content = UNMutableNotificationContent()
             content.title = "Cashu payment received"
             content.body = "\(receipt.amount.formatted()) sats were added to your Taskify wallet."
@@ -229,12 +249,30 @@ actor WalletPaymentNotificationCoordinator {
                 "amount": receipt.amount,
             ]
             let request = UNNotificationRequest(
-                identifier: Self.cashuRequestIdentifierPrefix + receipt.eventID,
+                identifier: identifier,
                 content: content,
                 trigger: nil
             )
             try? await center.add(request)
+            markNotified(identifier)
         }
+    }
+
+    private func hasAlreadyNotified(_ identifier: String) -> Bool {
+        deliveredIdentifiers().contains(identifier)
+    }
+
+    private func markNotified(_ identifier: String) {
+        var identifiers = deliveredIdentifiers()
+        identifiers.append(identifier)
+        if identifiers.count > Self.maximumTrackedIdentifiers {
+            identifiers.removeFirst(identifiers.count - Self.maximumTrackedIdentifiers)
+        }
+        defaults.set(identifiers, forKey: Self.deliveredIdentifiersKey)
+    }
+
+    private func deliveredIdentifiers() -> [String] {
+        defaults.stringArray(forKey: Self.deliveredIdentifiersKey) ?? []
     }
 }
 

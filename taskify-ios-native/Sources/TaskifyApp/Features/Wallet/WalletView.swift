@@ -756,22 +756,22 @@ final class WalletViewModel: ObservableObject {
             return []
         }
 
-        var completedEventIDs = Set<String>()
         var receipts: [CashuPaymentRequestReceipt] = []
         for delivery in deliveries {
             guard !Task.isCancelled else { break }
             do {
                 let receipt = try await service.receiveNostrPayment(delivery)
                 receipts.append(receipt)
-                completedEventIDs.insert(delivery.eventID)
+                // Removed immediately, not batched after the loop: if the app is interrupted
+                // partway through (backgrounded and killed before this pass finishes), a delivery
+                // that already succeeded here must not be left sitting in the durable inbox to be
+                // redeemed-and-notified-about all over again on the next cold launch.
+                try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
             } catch let error as CashuWalletError where Self.isTerminalPaymentDeliveryError(error) {
-                completedEventIDs.insert(delivery.eventID)
+                try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
             } catch {
                 // Keep transient mint/network failures in the durable inbox.
             }
-        }
-        if !completedEventIDs.isEmpty {
-            try? CashuNostrPaymentInboxStore.remove(eventIDs: completedEventIDs, at: inboxURL)
         }
         guard !receipts.isEmpty else {
             createdPaymentRequests = await service.savedCreatedPaymentRequests()
@@ -806,7 +806,6 @@ final class WalletViewModel: ObservableObject {
         let deliveries = CashuIncomingTokenInboxStore.load(from: inboxURL)
         guard !deliveries.isEmpty else { return 0 }
 
-        var completedEventIDs = Set<String>()
         var claimedTotal: UInt64 = 0
         var claimedCount = 0
         for delivery in deliveries {
@@ -820,14 +819,14 @@ final class WalletViewModel: ObservableObject {
                     // Now tracked by the pending-receive system's own retry loop.
                     break
                 }
-                completedEventIDs.insert(delivery.eventID)
+                // Removed immediately, not batched after the loop: if the app is interrupted
+                // partway through, an already-claimed delivery must not be left in the durable
+                // inbox to be re-claimed-and-reported all over again on the next cold launch.
+                try? CashuIncomingTokenInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
             } catch {
                 // Malformed or already-spent — this delivery will never succeed. Drop it.
-                completedEventIDs.insert(delivery.eventID)
+                try? CashuIncomingTokenInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
             }
-        }
-        if !completedEventIDs.isEmpty {
-            try? CashuIncomingTokenInboxStore.remove(eventIDs: completedEventIDs, at: inboxURL)
         }
         guard claimedCount > 0 else { return 0 }
 
