@@ -44,6 +44,13 @@ public enum WalletAmountFormat {
         (Double(amount) / satsPerBTC) * btcUSDPrice
     }
 
+    /// Mirrors the PWA's `satInputUnitLabel` -- a bare unit label (not tied to a specific amount)
+    /// for use next to a live numeric-entry field, where showing the full formatted string isn't
+    /// appropriate.
+    public static func inputUnitLabel(display: WalletDenominationDisplay) -> String {
+        display == .bitcoinSymbol ? bitcoinSymbol : "sats"
+    }
+
     /// Mirrors `Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: N })`
     /// for N=2 (amounts >= $1) or N=6 (amounts < $1, e.g. a single sat's fractional-cent value),
     /// trimmed to the shortest representation with at least 2 decimal places.

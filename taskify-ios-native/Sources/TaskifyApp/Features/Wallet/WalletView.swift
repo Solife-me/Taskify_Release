@@ -328,7 +328,7 @@ final class WalletViewModel: ObservableObject {
             if claimedCount > 0 {
                 npubCashClaimStatus = .success
                 npubCashClaimMessage = claimedTotal > 0
-                    ? "Claimed \(claimedTotal.formatted()) sats via npub.cash"
+                    ? "Claimed \(formattedSats(claimedTotal)) via npub.cash"
                     : "Claimed \(claimedCount) token\(claimedCount == 1 ? "" : "s") via npub.cash"
                 if !auto {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -510,7 +510,7 @@ final class WalletViewModel: ObservableObject {
                 customAmount: customAmount
             )
             await refresh()
-            statusMessage = "Paid \(result.amount.formatted()) sats to Cashu request"
+            statusMessage = "Paid \(formattedSats(result.amount)) to Cashu request"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             return result
         } catch {
@@ -533,7 +533,7 @@ final class WalletViewModel: ObservableObject {
         await refresh()
         switch result {
         case .received(let amount):
-            statusMessage = "Received \(amount.formatted()) sats"
+            statusMessage = "Received \(formattedSats(amount))"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         case .queued:
             await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
@@ -555,7 +555,7 @@ final class WalletViewModel: ObservableObject {
             throw error
         }
         await refresh()
-        statusMessage = "Received \(amount.formatted()) sats"
+        statusMessage = "Received \(formattedSats(amount))"
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         return amount
     }
@@ -679,7 +679,7 @@ final class WalletViewModel: ObservableObject {
     /// currency leads depends on `walletPrimaryCurrency`, and a secondary "≈" line only appears
     /// when conversion is enabled and a price is available. `amount` is assumed non-negative --
     /// callers that need a sign prefix (e.g. transaction history's +/-) apply it themselves.
-    func displayAmount(forSats amount: UInt64) -> (primary: String, secondary: String?) {
+    func displayAmount<T: BinaryInteger>(forSats amount: T) -> (primary: String, secondary: String?) {
         let satText = WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
         guard WalletCurrencySettings.conversionEnabled, let price = btcUSDPrice else {
             return (satText, nil)
@@ -695,7 +695,7 @@ final class WalletViewModel: ObservableObject {
 
     /// The denomination-aware sat string alone (no USD line) -- for call sites where a secondary
     /// currency line doesn't fit (status toasts, inline labels).
-    func formattedSats(_ amount: UInt64) -> String {
+    func formattedSats<T: BinaryInteger>(_ amount: T) -> String {
         WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
     }
 
@@ -732,8 +732,8 @@ final class WalletViewModel: ObservableObject {
 
         let total = recovered.reduce(UInt64(0)) { $0 + $1.receivedAmount }
         statusMessage = recovered.count == 1
-            ? "Received \(total.formatted()) sats from saved ecash"
-            : "Received \(total.formatted()) sats from \(recovered.count) saved tokens"
+            ? "Received \(formattedSats(total)) from saved ecash"
+            : "Received \(formattedSats(total)) from \(recovered.count) saved tokens"
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         return recovered
     }
@@ -782,8 +782,8 @@ final class WalletViewModel: ObservableObject {
         if presentInApp {
             let total = receipts.reduce(UInt64(0)) { $0 + $1.amount }
             statusMessage = receipts.count == 1
-                ? "Received \(total.formatted()) sats from a Cashu request"
-                : "Received \(total.formatted()) sats from \(receipts.count) Cashu payments"
+                ? "Received \(formattedSats(total)) from a Cashu request"
+                : "Received \(formattedSats(total)) from \(receipts.count) Cashu payments"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
         return receipts
@@ -834,8 +834,8 @@ final class WalletViewModel: ObservableObject {
         await refresh()
         if presentInApp {
             statusMessage = claimedCount == 1
-                ? "Received \(claimedTotal.formatted()) sats"
-                : "Received \(claimedTotal.formatted()) sats from \(claimedCount) payments"
+                ? "Received \(formattedSats(claimedTotal))"
+                : "Received \(formattedSats(claimedTotal)) from \(claimedCount) payments"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
         return claimedTotal
@@ -875,9 +875,9 @@ final class WalletViewModel: ObservableObject {
             partial + (quote.issuedAmount > 0 ? quote.issuedAmount : quote.amount)
         }
         if newlyIssued.count == 1 {
-            statusMessage = "Received \(total.formatted()) sats over Lightning"
+            statusMessage = "Received \(formattedSats(total)) over Lightning"
         } else {
-            statusMessage = "Received \(total.formatted()) sats from \(newlyIssued.count) Lightning invoices"
+            statusMessage = "Received \(formattedSats(total)) from \(newlyIssued.count) Lightning invoices"
         }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         return newlyIssued
@@ -933,7 +933,7 @@ final class WalletViewModel: ObservableObject {
         let result = try await service.confirmLightningPayment(id: quote.id)
         await refresh()
         if result.state == .completed {
-            statusMessage = "Paid \(result.amount.formatted()) sats over Lightning"
+            statusMessage = "Paid \(formattedSats(result.amount)) over Lightning"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } else {
             statusMessage = "Lightning payment is processing"
@@ -961,7 +961,7 @@ final class WalletViewModel: ObservableObject {
         restartLightningMonitoring()
 
         if result.state == .completed {
-            statusMessage = "Moved \(result.receivedAmount.formatted()) sats between mints"
+            statusMessage = "Moved \(formattedSats(result.receivedAmount)) between mints"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } else {
             statusMessage = "Mint transfer is finishing in the background"
@@ -976,7 +976,7 @@ final class WalletViewModel: ObservableObject {
         defer { isWorking = false }
         let amount = try await service.reclaimOutgoingToken(id: outgoing.id)
         await refresh()
-        statusMessage = "Reclaimed \(amount.formatted()) sats"
+        statusMessage = "Reclaimed \(formattedSats(amount))"
         return amount
     }
 
@@ -1080,11 +1080,11 @@ final class WalletViewModel: ObservableObject {
         )
         statusMessage = switch outcome.mode {
         case .transfer where outcome.recovered > 0:
-            "Transferred \(outcome.recovered.formatted()) sats into Taskify"
+            "Transferred \(formattedSats(outcome.recovered)) into Taskify"
         case .transfer:
             "Seed scan complete"
         case .rescan where outcome.recovered > 0:
-            "Recovered \(outcome.recovered.formatted()) sats"
+            "Recovered \(formattedSats(outcome.recovered))"
         case .rescan:
             "Wallet rescan complete"
         case .replace:
@@ -1162,7 +1162,7 @@ final class WalletViewModel: ObservableObject {
             mints: results
         )
         statusMessage = outcome.recovered > 0
-            ? "Recovered \(outcome.recovered.formatted()) sats"
+            ? "Recovered \(formattedSats(outcome.recovered))"
             : "Wallet seed replaced"
         return outcome
     }
@@ -1773,7 +1773,7 @@ private struct WalletMintSelectorCard: View {
                         Text(selectedMint?.name ?? "Select mint")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(TaskifyTheme.primaryText)
-                        Text(selectedMint.map { "\($0.available.formatted()) sats available" } ?? "No mint selected")
+                        Text(selectedMint.map { "\(WalletAmountFormat.formatSats($0.available, display: WalletCurrencySettings.denominationDisplay)) available" } ?? "No mint selected")
                             .font(.caption)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                     }
@@ -1796,7 +1796,7 @@ private struct WalletMintSelectorCard: View {
 
 private struct WalletAmountDisplayCard: View {
     let amountText: String
-    var suffix: String = "sats"
+    var suffix: String = WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay)
     var caption: String = "Enter amount"
 
     var body: some View {
@@ -1911,7 +1911,7 @@ private struct MintManagerSheet: View {
 
                                     Spacer()
 
-                                    Text("\(mint.available.formatted()) sats")
+                                    Text("\(wallet.formattedSats(mint.available))")
                                         .font(.subheadline.weight(.semibold).monospacedDigit())
                                         .foregroundStyle(TaskifyTheme.primaryText)
                                 }
@@ -2142,12 +2142,12 @@ private struct MintTransferSheet: View {
                     .font(.system(size: 46, weight: .bold, design: .rounded))
                     .foregroundStyle(TaskifyTheme.primaryText)
                     .focused($amountFocused)
-                Text("sats")
+                Text(WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay))
                     .font(.headline)
                     .foregroundStyle(TaskifyTheme.secondaryText)
 
                 if let sourceMint {
-                    Text("\(sourceMint.available.formatted()) sats available")
+                    Text("\(wallet.formattedSats(sourceMint.available)) available")
                         .font(.caption)
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                 }
@@ -2206,7 +2206,7 @@ private struct MintTransferSheet: View {
                 .foregroundStyle(TaskifyTheme.primaryText)
 
             if let result {
-                Text("\((transferHasCompleted ? max(result.receivedAmount, result.amount) : result.amount).formatted()) sats")
+                Text("\(wallet.formattedSats((transferHasCompleted ? max(result.receivedAmount, result.amount) : result.amount)))")
                     .font(.system(size: 38, weight: .bold, design: .rounded))
                     .foregroundStyle(TaskifyTheme.primaryText)
 
@@ -2214,7 +2214,7 @@ private struct MintTransferSheet: View {
                     transferResultRow("From", value: mintName(for: result.sourceMintURL))
                     transferResultRow("To", value: mintName(for: result.destinationMintURL))
                     if let fee = result.feePaid {
-                        transferResultRow("Fee paid", value: "\(fee.formatted()) sats")
+                        transferResultRow("Fee paid", value: "\(wallet.formattedSats(fee))")
                     }
                     transferResultRow("Status", value: transferHasCompleted ? "Received" : "Claiming in background")
                 }
@@ -2255,7 +2255,7 @@ private struct MintTransferSheet: View {
                     .font(.headline)
                     .foregroundStyle(TaskifyTheme.primaryText)
                 if let selectedMint {
-                    Text("\(selectedMint.available.formatted()) sats")
+                    Text("\(wallet.formattedSats(selectedMint.available))")
                         .font(.caption)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }
@@ -2263,7 +2263,7 @@ private struct MintTransferSheet: View {
             Spacer()
             Picker(title, selection: selection) {
                 ForEach(options) { mint in
-                    Text("\(mint.name) · \(mint.available.formatted()) sats").tag(mint.url)
+                    Text("\(mint.name) · \(wallet.formattedSats(mint.available))").tag(mint.url)
                 }
             }
             .labelsHidden()
@@ -2664,7 +2664,7 @@ private struct WalletRecoverySheet: View {
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
             if restoreOutcome.mode == .transfer, restoreOutcome.found > 0 {
-                Text("\(restoreOutcome.found.formatted()) sats found" + (restoreOutcome.fees > 0 ? " · \(restoreOutcome.fees.formatted()) sats mint fees" : ""))
+                Text("\(wallet.formattedSats(restoreOutcome.found)) found" + (restoreOutcome.fees > 0 ? " · \(wallet.formattedSats(restoreOutcome.fees)) mint fees" : ""))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(TaskifyTheme.tertiaryText)
             }
@@ -2684,7 +2684,7 @@ private struct WalletRecoverySheet: View {
                         }
                         Spacer()
                         if mint.succeeded {
-                            Text("\(mint.deposited.formatted()) sats")
+                            Text("\(wallet.formattedSats(mint.deposited))")
                                 .bold()
                         } else {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -2724,8 +2724,8 @@ private struct WalletRecoverySheet: View {
 
     private func successAmount(for restoreOutcome: WalletRestoreOutcome) -> String {
         switch restoreOutcome.mode {
-        case .transfer: "\(restoreOutcome.recovered.formatted()) sats added to Taskify"
-        case .rescan, .replace: "\(restoreOutcome.recovered.formatted()) sats recovered"
+        case .transfer: "\(wallet.formattedSats(restoreOutcome.recovered)) added to Taskify"
+        case .rescan, .replace: "\(wallet.formattedSats(restoreOutcome.recovered)) recovered"
         }
     }
 
@@ -3042,7 +3042,7 @@ private struct ReceiveCashuRequestSheet: View {
                 Text("Payment received")
                     .font(.title2.bold())
                     .foregroundStyle(TaskifyTheme.primaryText)
-                Text("\(request.receivedAmount.formatted()) sats were added to your wallet.")
+                Text("\(wallet.formattedSats(request.receivedAmount)) were added to your wallet.")
                     .foregroundStyle(TaskifyTheme.secondaryText)
             } else if request.state == .cancelled {
                 Image(systemName: "xmark.circle.fill")
@@ -3052,14 +3052,14 @@ private struct ReceiveCashuRequestSheet: View {
                     .font(.title2.bold())
                     .foregroundStyle(TaskifyTheme.primaryText)
             } else {
-                Text(request.amount.map { "\($0.formatted()) sats" } ?? "Any amount")
+                Text(request.amount.map { "\(wallet.formattedSats($0))" } ?? "Any amount")
                     .font(.system(size: 38, weight: .bold, design: .rounded))
                     .foregroundStyle(TaskifyTheme.primaryText)
 
                 Label(
                     request.receivedCount == 0
                         ? "Waiting for payment"
-                        : "Received \(request.receivedAmount.formatted()) sats",
+                        : "Received \(wallet.formattedSats(request.receivedAmount))",
                     systemImage: request.receivedCount == 0 ? "antenna.radiowaves.left.and.right" : "checkmark.circle.fill"
                 )
                 .font(.subheadline.weight(.semibold))
@@ -3282,7 +3282,7 @@ private struct ReceiveLightningSheet: View {
     private func invoiceView(_ quote: CashuLightningReceiveQuote) -> some View {
         VStack(spacing: 18) {
             VStack(spacing: 4) {
-                Text("\(quote.amount.formatted()) sats")
+                Text("\(wallet.formattedSats(quote.amount))")
                     .font(.largeTitle.bold().monospacedDigit())
                     .foregroundStyle(TaskifyTheme.primaryText)
                 Text(URL(string: quote.mintURL)?.host() ?? quote.mintURL)
@@ -3386,7 +3386,7 @@ private struct ReceiveLightningSheet: View {
             Text("Lightning received")
                 .font(.title.bold())
                 .foregroundStyle(TaskifyTheme.primaryText)
-            Text("\(amount.formatted()) sats")
+            Text("\(wallet.formattedSats(amount))")
                 .font(.title2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(TaskifyTheme.secondaryText)
             Text("The mint issued fresh ecash into your Taskify wallet.")
@@ -3707,7 +3707,7 @@ private struct SolifeAddressManagerSheet: View {
                             Button {
                                 showingPurchase = true
                             } label: {
-                                Text(price > 0 ? "New Custom Address (\(price.formatted()) sats)" : "New Custom Address")
+                                Text(price > 0 ? "New Custom Address (\(wallet.formattedSats(price)))" : "New Custom Address")
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 46)
                             }
@@ -3834,7 +3834,7 @@ private struct SolifeCustomAddressPurchaseSheet: View {
                                 .font(.title3.bold())
                                 .foregroundStyle(TaskifyTheme.primaryText)
                             if let price = wallet.solifeConfig?.customAddressPriceSats {
-                                Text(price > 0 ? "\(price.formatted()) sat one-time fee." : "Custom address claims are currently free.")
+                                Text(price > 0 ? "\(wallet.formattedSats(price)) one-time fee." : "Custom address claims are currently free.")
                                     .font(.subheadline)
                                     .foregroundStyle(TaskifyTheme.secondaryText)
                             }
@@ -3861,7 +3861,7 @@ private struct SolifeCustomAddressPurchaseSheet: View {
                             if let lightningQuote {
                                 payInvoiceView(pendingPurchase, quote: lightningQuote)
                             } else {
-                                Text("Paying \(pendingPurchase.priceSats.formatted()) sats to claim \(pendingPurchase.address)…")
+                                Text("Paying \(wallet.formattedSats(pendingPurchase.priceSats)) to claim \(pendingPurchase.address)…")
                                     .font(.caption)
                                     .foregroundStyle(TaskifyTheme.secondaryText)
                                 ProgressView()
@@ -3923,10 +3923,10 @@ private struct SolifeCustomAddressPurchaseSheet: View {
     private func payInvoiceView(_ purchase: SolifeAddressPurchase, quote: CashuLightningPaymentQuote) -> some View {
         VStack(spacing: 14) {
             VStack(spacing: 6) {
-                Text("\(quote.amount.formatted()) sats").font(.title2.bold())
+                Text("\(wallet.formattedSats(quote.amount))").font(.title2.bold())
                 let fee = quote.feeReserve + quote.walletFee
                 if fee > 0 {
-                    Text("+ \(fee.formatted()) sat fee").font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
+                    Text("+ \(wallet.formattedSats(fee)) fee").font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
                 }
             }
             Button {
@@ -4092,7 +4092,7 @@ struct ReceiveCashuSheet: View {
                                         }
                                     }
                                 } label: {
-                                    Label(wallet.isWorking ? "Receiving…" : "Receive \(preview.receivedAmount.formatted()) sats", systemImage: "checkmark")
+                                    Label(wallet.isWorking ? "Receiving…" : "Receive \(wallet.formattedSats(preview.receivedAmount))", systemImage: "checkmark")
                                         .font(.headline)
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 14)
@@ -4158,20 +4158,20 @@ struct ReceiveCashuSheet: View {
             HStack {
                 Text("Token value")
                 Spacer()
-                Text("\(preview.amount.formatted()) sats").bold()
+                Text("\(wallet.formattedSats(preview.amount))").bold()
             }
             if let fee = preview.fee, fee > 0 {
                 HStack {
                     Text("Mint fee")
                     Spacer()
-                    Text("−\(fee.formatted()) sats")
+                    Text("−\(wallet.formattedSats(fee))")
                 }
             }
             Divider().overlay(TaskifyTheme.border)
             HStack {
                 Text("You receive").bold()
                 Spacer()
-                Text("\(preview.receivedAmount.formatted()) sats").bold()
+                Text("\(wallet.formattedSats(preview.receivedAmount))").bold()
             }
             Text(preview.mintURL)
                 .font(.caption)
@@ -4199,7 +4199,7 @@ struct ReceiveCashuSheet: View {
             Text("Received")
                 .font(.title.bold())
                 .foregroundStyle(TaskifyTheme.primaryText)
-            Text("\(amount.formatted()) sats")
+            Text("\(wallet.formattedSats(amount))")
                 .font(.title2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(TaskifyTheme.secondaryText)
             Button("Done") { dismiss() }
@@ -4233,7 +4233,7 @@ struct ReceiveCashuSheet: View {
                 HStack {
                     Text("Token value")
                     Spacer()
-                    Text("\(pending.amount.formatted()) sats").bold()
+                    Text("\(wallet.formattedSats(pending.amount))").bold()
                 }
                 HStack {
                     Text("Mint")
@@ -4371,7 +4371,7 @@ private struct PendingEcashSheet: View {
                     )
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("\(pending.amount.formatted()) sats")
+                    Text("\(wallet.formattedSats(pending.amount))")
                         .font(.headline.monospacedDigit())
                         .foregroundStyle(TaskifyTheme.primaryText)
                     Text(URL(string: pending.mintURL)?.host() ?? pending.mintURL)
@@ -4914,7 +4914,7 @@ private struct SendLightningSheet: View {
         if fundedMints.count > 1 {
             Picker("Pay from", selection: $selectedMintURL) {
                 ForEach(fundedMints) { mint in
-                    Text("\(mint.name) · \(mint.available.formatted()) sats").tag(mint.url)
+                    Text("\(mint.name) · \(wallet.formattedSats(mint.available))").tag(mint.url)
                 }
             }
             .pickerStyle(.menu)
@@ -4926,7 +4926,7 @@ private struct SendLightningSheet: View {
             HStack {
                 Label(mint.name, systemImage: "building.columns")
                 Spacer()
-                Text("\(mint.available.formatted()) sats")
+                Text("\(wallet.formattedSats(mint.available))")
             }
             .font(.subheadline)
             .foregroundStyle(TaskifyTheme.secondaryText)
@@ -4948,13 +4948,13 @@ private struct SendLightningSheet: View {
                 .foregroundStyle(TaskifyTheme.primaryText)
 
             VStack(spacing: 14) {
-                paymentRow("Invoice amount", value: "\(quote.amount.formatted()) sats")
-                paymentRow("Maximum routing fee", value: "\(quote.feeReserve.formatted()) sats")
+                paymentRow("Invoice amount", value: "\(wallet.formattedSats(quote.amount))")
+                paymentRow("Maximum routing fee", value: "\(wallet.formattedSats(quote.feeReserve))")
                 if quote.walletFee > 0 {
-                    paymentRow("Mint input fee", value: "\(quote.walletFee.formatted()) sats")
+                    paymentRow("Mint input fee", value: "\(wallet.formattedSats(quote.walletFee))")
                 }
                 Divider().overlay(TaskifyTheme.border)
-                paymentRow("Maximum from balance", value: "\(quote.maximumTotal.formatted()) sats", emphasized: true)
+                paymentRow("Maximum from balance", value: "\(wallet.formattedSats(quote.maximumTotal))", emphasized: true)
 
                 Text(URL(string: quote.mintURL)?.host() ?? quote.mintURL)
                     .font(.caption)
@@ -4984,7 +4984,7 @@ private struct SendLightningSheet: View {
                 }
             } label: {
                 Label(
-                    wallet.isWorking ? "Paying…" : "Pay \(quote.amount.formatted()) sats",
+                    wallet.isWorking ? "Paying…" : "Pay \(wallet.formattedSats(quote.amount))",
                     systemImage: "bolt.fill"
                 )
                 .font(.headline)
@@ -5021,14 +5021,14 @@ private struct SendLightningSheet: View {
                 .font(.title2.bold())
                 .foregroundStyle(TaskifyTheme.primaryText)
 
-            Text("\(result.amount.formatted()) sats")
+            Text("\(wallet.formattedSats(result.amount))")
                 .font(.system(size: 42, weight: .bold, design: .rounded))
                 .foregroundStyle(TaskifyTheme.primaryText)
 
             VStack(spacing: 14) {
-                paymentRow("Amount", value: "\(result.amount.formatted()) sats")
+                paymentRow("Amount", value: "\(wallet.formattedSats(result.amount))")
                 if let feePaid = result.feePaid {
-                    paymentRow("Fee paid", value: "\(feePaid.formatted()) sats")
+                    paymentRow("Fee paid", value: "\(wallet.formattedSats(feePaid))")
                 }
                 paymentRow("Status", value: result.state == .completed ? "Completed" : "Pending")
             }
@@ -5141,7 +5141,7 @@ private struct PayCashuRequestSheet: View {
                 }
             }
             .confirmationDialog(
-                paymentAmount.map { "Pay \($0.formatted()) sats?" } ?? "Pay Cashu request?",
+                paymentAmount.map { "Pay \(wallet.formattedSats($0))?" } ?? "Pay Cashu request?",
                 isPresented: $confirmingPayment,
                 titleVisibility: .visible
             ) {
@@ -5264,18 +5264,13 @@ private struct PayCashuRequestSheet: View {
                 .foregroundStyle(TaskifyTheme.primaryText)
 
             if let fixedAmount = preview.amount {
-                VStack(spacing: 4) {
-                    Text(fixedAmount.formatted())
-                        .font(.system(size: 46, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                    Text("sats")
-                        .font(.headline)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                }
-                .foregroundStyle(TaskifyTheme.primaryText)
-                .padding(.vertical, 23)
-                .frame(maxWidth: .infinity)
-                .taskifyGlass(cornerRadius: 26)
+                Text(wallet.formattedSats(fixedAmount))
+                    .font(.system(size: 46, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(.vertical, 23)
+                    .frame(maxWidth: .infinity)
+                    .taskifyGlass(cornerRadius: 26)
             } else {
                 VStack(spacing: 5) {
                     TextField("0", text: $amountText)
@@ -5284,7 +5279,7 @@ private struct PayCashuRequestSheet: View {
                         .font(.system(size: 46, weight: .bold, design: .rounded))
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .focused($amountFocused)
-                    Text("sats")
+                    Text(WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay))
                         .font(.headline)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }
@@ -5307,7 +5302,7 @@ private struct PayCashuRequestSheet: View {
                       let mint = selectedMint,
                       mint.available < amount {
                 Label(
-                    "This mint needs \((amount - mint.available).formatted()) more sats.",
+                    "This mint needs \(wallet.formattedSats(amount - mint.available)) more.",
                     systemImage: "exclamationmark.circle"
                 )
                 .font(.footnote)
@@ -5364,7 +5359,7 @@ private struct PayCashuRequestSheet: View {
         if compatibleMints.count > 1 {
             Picker("Send from", selection: $selectedMintURL) {
                 ForEach(compatibleMints) { mint in
-                    Text("\(mint.name) · \(mint.available.formatted()) sats").tag(mint.url)
+                    Text("\(mint.name) · \(wallet.formattedSats(mint.available))").tag(mint.url)
                 }
             }
             .pickerStyle(.menu)
@@ -5373,7 +5368,7 @@ private struct PayCashuRequestSheet: View {
             HStack {
                 Label(mint.name, systemImage: "building.columns")
                 Spacer()
-                Text("\(mint.available.formatted()) sats")
+                Text("\(wallet.formattedSats(mint.available))")
             }
             .font(.subheadline)
             .foregroundStyle(TaskifyTheme.secondaryText)
@@ -5426,7 +5421,7 @@ private struct PayCashuRequestSheet: View {
             Text("Request paid")
                 .font(.title.bold())
                 .foregroundStyle(TaskifyTheme.primaryText)
-            Text("\(result.amount.formatted()) sats")
+            Text("\(wallet.formattedSats(result.amount))")
                 .font(.title2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(TaskifyTheme.secondaryText)
             Text("The ecash was delivered using the payment request's preferred transport.")
@@ -5637,18 +5632,18 @@ private struct SendCashuSheet: View {
                 HStack {
                     Text("Recipient receives")
                     Spacer()
-                    Text("\(quote.amount.formatted()) sats").bold()
+                    Text("\(wallet.formattedSats(quote.amount))").bold()
                 }
                 HStack {
                     Text("Mint fee")
                     Spacer()
-                    Text("\(quote.fee.formatted()) sats")
+                    Text("\(wallet.formattedSats(quote.fee))")
                 }
                 Divider().overlay(TaskifyTheme.border)
                 HStack {
                     Text("Total from balance").bold()
                     Spacer()
-                    Text("\((quote.amount + quote.fee).formatted()) sats").bold()
+                    Text("\(wallet.formattedSats((quote.amount + quote.fee)))").bold()
                 }
                 Text(quote.mintURL)
                     .font(.caption)
@@ -5884,7 +5879,7 @@ private struct WalletOutgoingTokenRow: View {
 
             Spacer(minLength: 8)
 
-            Text("−\(outgoing.amount.formatted())")
+            Text("−\(WalletAmountFormat.formatSats(outgoing.amount, display: WalletCurrencySettings.denominationDisplay))")
                 .font(.headline.monospacedDigit())
                 .foregroundStyle(TaskifyTheme.primaryText)
 
@@ -5961,7 +5956,7 @@ private struct WalletLightningInvoiceRow: View {
 
             Spacer(minLength: 8)
 
-            Text("+\(quote.amount.formatted())")
+            Text("+\(WalletAmountFormat.formatSats(quote.amount, display: WalletCurrencySettings.denominationDisplay))")
                 .font(.headline.monospacedDigit())
                 .foregroundStyle(.green)
 
@@ -6202,13 +6197,15 @@ private struct WalletTransactionDetailSheet: View {
                 .font(.headline)
                 .foregroundStyle(isIncoming ? Color.green : TaskifyTheme.primaryText)
 
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("\(amountPrefix)\(transaction.amount.formatted())")
+            VStack(spacing: 2) {
+                Text("\(amountPrefix)\(amountDisplay.primary)")
                     .font(.system(size: 38, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                Text("sats")
-                    .font(.headline)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+                if let secondary = amountDisplay.secondary {
+                    Text(secondary)
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
             }
             .foregroundStyle(TaskifyTheme.primaryText)
 
@@ -6611,7 +6608,7 @@ private struct WalletTransactionRow: View {
 
             Spacer()
 
-            Text("\(transaction.state == .failed ? "" : (isIncoming ? "+" : "−"))\(transaction.amount.formatted())")
+            Text("\(transaction.state == .failed ? "" : (isIncoming ? "+" : "−"))\(WalletAmountFormat.formatSats(transaction.amount, display: WalletCurrencySettings.denominationDisplay))")
                 .font(.headline.monospacedDigit())
                 .foregroundStyle(
                     transaction.state == .failed
@@ -6722,7 +6719,7 @@ private struct OutgoingTokenContent: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            Text("\(outgoing.amount.formatted()) sats")
+            Text("\(WalletAmountFormat.formatSats(outgoing.amount, display: WalletCurrencySettings.denominationDisplay))")
                 .font(.system(size: 38, weight: .bold, design: .rounded))
                 .foregroundStyle(TaskifyTheme.primaryText)
 
