@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State private var mediaServerValidationMessage: String?
     @State private var newAppRelayURL = ""
     @State private var appRelayMessage: String?
+    @State private var showingClearChatHistoryConfirmation = false
     @AppStorage(TaskPresentationSettings.completedTabKey)
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
@@ -40,6 +41,7 @@ struct SettingsView: View {
                     identityCard
                     syncCard
                     storageCard
+                    chatHistoryCard
                     boardsCard
                     bibleTrackerCard
                     fastingRemindersCard
@@ -72,6 +74,17 @@ struct SettingsView: View {
         .sheet(item: $model.pendingAccountBackup) { payload in
             PWAAccountBackupReviewSheet(payload: payload)
                 .environment(model)
+        }
+        .alert(
+            "Clear all message history?",
+            isPresented: $showingClearChatHistoryConfirmation
+        ) {
+            Button("Clear history", role: .destructive) {
+                model.clearDirectMessageHistory()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the chat messages stored on this device. It does not delete another participant's copy.")
         }
         .onAppear {
             mediaServerInput = model.encryptedMediaServerURL
@@ -422,6 +435,60 @@ struct SettingsView: View {
                 .textSelection(.enabled)
 
             Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works — enter its address above — but many public Blossom servers reject opaque encrypted uploads. Attachments remain limited to 50 MB because this version encrypts and validates each complete file in memory before upload.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var chatHistoryCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "bubble.left.and.text.bubble.right.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Chat history")
+                        .font(.headline)
+                    Text("\(model.storedDirectMessageCount) message\(model.storedDirectMessageCount == 1 ? "" : "s") stored")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+
+            HStack {
+                Text("Keep message history")
+                Spacer()
+                Picker(
+                    "Keep message history",
+                    selection: Binding(
+                        get: { model.chatMessageRetention },
+                        set: { model.setChatMessageRetention($0) }
+                    )
+                ) {
+                    ForEach(ChatMessageRetention.allCases, id: \.rawValue) { retention in
+                        Text(retention.label).tag(retention)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            if model.chatMessageRetention != .forever {
+                Text("Messages older than this are removed locally when Taskify loads or when this setting changes.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            Button("Clear all message history", role: .destructive) {
+                showingClearChatHistoryConfirmation = true
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.storedDirectMessageCount == 0)
+
+            Text("Retention and clearing are local privacy controls. They do not publish deletion events or erase messages from other participants' devices.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }

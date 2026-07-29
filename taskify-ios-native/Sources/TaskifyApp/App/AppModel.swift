@@ -293,6 +293,7 @@ final class AppModel {
     private(set) var streaksEnabled = TaskStreakSettings.enabled
     private(set) var newTaskPosition = TaskOrderingSettings.position
     private(set) var weekStart = WeekLayoutSettings.start
+    private(set) var chatMessageRetention = ChatHistorySettings.retention
     private(set) var startupTab = StartupViewSettings.tab
     private(set) var startupBoardIDsByWeekday = StartupViewSettings.boardIDsByWeekday
     private(set) var appRelays = AppRelaySettings.urls
@@ -386,6 +387,7 @@ final class AppModel {
     var directMessageThreads: [NostrDirectMessageThread] {
         snapshot.activeDirectMessageThreads()
     }
+    var storedDirectMessageCount: Int { snapshot.directMessages?.count ?? 0 }
     var groupConversations: [NostrGroupConversation] { snapshot.groupConversations }
     var syncIsOnline: Bool {
         if case .online = syncState { return true }
@@ -603,6 +605,22 @@ final class AppModel {
 
     func deleteDirectMessageThread(peerPublicKey: String) {
         guard snapshot.deleteDirectMessageThread(peerPublicKey: peerPublicKey) else { return }
+        scheduleSave()
+    }
+
+    func setChatMessageRetention(_ retention: ChatMessageRetention) {
+        guard retention != chatMessageRetention else { return }
+        ChatHistorySettings.setRetention(retention)
+        chatMessageRetention = retention
+        if let cutoff = retention.cutoffTimestamp(),
+           snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed {
+            scheduleSave()
+        }
+        scheduleAccountBackupPublish()
+    }
+
+    func clearDirectMessageHistory() {
+        guard snapshot.clearDirectMessageHistory().changed else { return }
         scheduleSave()
     }
 
@@ -2795,7 +2813,7 @@ final class AppModel {
         accountBackupBaseline = payload
         managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
         lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
-        applyEncryptedMediaServer(from: payload)
+        applyPWASettings(from: payload)
         let result = snapshot.mergePWAAccountBackup(payload)
         pendingAccountBackup = nil
         let imported = result.importedBoardCount
@@ -2848,7 +2866,7 @@ final class AppModel {
                    review.importableBoardCount == 0 {
                     accountBackupBaseline = decodedPayload
                     managedAccountBackupBoardIDs = decodedPayload.nativeManagedNostrBoardIDs
-                    applyEncryptedMediaServer(from: decodedPayload)
+                    applyPWASettings(from: decodedPayload)
                     lastAccountBackupCreatedAt = max(
                         lastAccountBackupCreatedAt,
                         decodedPayload.timestamp
@@ -2893,9 +2911,15 @@ final class AppModel {
         do {
             let loadResult = try await store.loadWithRepairStatus()
             snapshot = loadResult.snapshot
-            if loadResult.wasRepaired {
+            let retentionPruneChanged: Bool
+            if let cutoff = chatMessageRetention.cutoffTimestamp() {
+                retentionPruneChanged = snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed
+            } else {
+                retentionPruneChanged = false
+            }
+            if loadResult.wasRepaired || retentionPruneChanged {
                 do {
-                    try await store.save(loadResult.snapshot)
+                    try await store.save(snapshot)
                 } catch {
                     errorMessage = "Taskify repaired your local data but could not save the repair."
                 }
@@ -3393,6 +3417,10 @@ final class AppModel {
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex
         ) {
+            if let cutoff = chatMessageRetention.cutoffTimestamp(),
+               reaction.createdAt < cutoff {
+                return
+            }
             if updatedSnapshot.ingestDirectMessageReaction(reaction) {
                 effects.snapshotChanged = true
             }
@@ -3403,6 +3431,10 @@ final class AppModel {
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex
         ) else { return }
+        if let cutoff = chatMessageRetention.cutoffTimestamp(),
+           directMessage.createdAt < cutoff {
+            return
+        }
 
         // Unlike the NUT-18 payment-request path above, a Lightning-address forwarder (e.g.
         // solife.me) has no request on this device to match a payload against — it just drops a
@@ -4027,6 +4059,9 @@ final class AppModel {
         updatedPayload.settings[TaskifyMediaServerSettings.pwaSettingsKey] = .string(
             encryptedMediaServerURL
         )
+        updatedPayload.settings[ChatHistorySettings.pwaSettingsKey] = .string(
+            chatMessageRetention.rawValue
+        )
         let relayURLs = updatedPayload.defaultRelayURLs.isEmpty
             ? appRelays
             : updatedPayload.defaultRelayURLs
@@ -4065,12 +4100,20 @@ final class AppModel {
         }
     }
 
-    private func applyEncryptedMediaServer(from payload: NostrAppBackupPayload) {
-        guard case .string(let value)? = payload.settings[TaskifyMediaServerSettings.pwaSettingsKey],
-              let normalized = TaskifyMediaServerSettings.save(value) else {
-            return
+    private func applyPWASettings(from payload: NostrAppBackupPayload) {
+        if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.pwaSettingsKey],
+           let normalized = TaskifyMediaServerSettings.save(value) {
+            encryptedMediaServerURL = normalized
         }
-        encryptedMediaServerURL = normalized
+        if case .string(let value)? = payload.settings[ChatHistorySettings.pwaSettingsKey],
+           let retention = ChatMessageRetention(rawValue: value) {
+            ChatHistorySettings.setRetention(retention)
+            chatMessageRetention = retention
+            if let cutoff = retention.cutoffTimestamp(),
+               snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed {
+                scheduleSave()
+            }
+        }
     }
 
     private func refreshNotifications(requestPermission: Bool) {

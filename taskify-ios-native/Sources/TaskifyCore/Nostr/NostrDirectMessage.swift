@@ -238,6 +238,49 @@ public struct NostrGroupConversation: Identifiable, Codable, Equatable, Sendable
     }
 }
 
+public enum ChatMessageRetention: String, Codable, CaseIterable, Sendable {
+    case forever
+    case oneYear = "1year"
+    case sixMonths = "6months"
+    case threeMonths = "3months"
+    case thirtyDays = "30days"
+
+    public var label: String {
+        switch self {
+        case .forever: "Forever"
+        case .oneYear: "1 year"
+        case .sixMonths: "6 months"
+        case .threeMonths: "3 months"
+        case .thirtyDays: "30 days"
+        }
+    }
+
+    public func cutoffTimestamp(now: Int = Int(Date().timeIntervalSince1970)) -> Int? {
+        let day = 24 * 60 * 60
+        switch self {
+        case .forever: return nil
+        case .oneYear: return now - (365 * day)
+        case .sixMonths: return now - (182 * day)
+        case .threeMonths: return now - (91 * day)
+        case .thirtyDays: return now - (30 * day)
+        }
+    }
+}
+
+public struct DirectMessageHistoryPruneResult: Equatable, Sendable {
+    public var removedMessageCount: Int
+    public var removedReactionCount: Int
+
+    public init(removedMessageCount: Int = 0, removedReactionCount: Int = 0) {
+        self.removedMessageCount = removedMessageCount
+        self.removedReactionCount = removedReactionCount
+    }
+
+    public var changed: Bool {
+        removedMessageCount > 0 || removedReactionCount > 0
+    }
+}
+
 public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
     public var id: String { rumorEventID }
     public var rumorEventID: String
@@ -541,6 +584,70 @@ public extension TaskifySnapshot {
 
     var directMessageHistory: [NostrDirectMessage] {
         (directMessages ?? []).sorted(by: Self.directMessageSort)
+    }
+
+    /// Applies the same local cache-retention contract as the PWA. This deliberately does not
+    /// publish Nostr deletion events: retention is a device privacy/storage preference, not a
+    /// request to erase another participant's copy of a conversation.
+    @discardableResult
+    mutating func pruneDirectMessageHistory(olderThan cutoff: Int) -> DirectMessageHistoryPruneResult {
+        let messages = directMessages ?? []
+        let keptMessages = messages.filter { $0.createdAt >= cutoff }
+        let removedMessages = messages.filter { $0.createdAt < cutoff }
+        let removedEventIDs = Set(
+            removedMessages.flatMap { [$0.rumorEventID, $0.wrapEventID] }
+        )
+
+        let reactions = directMessageReactions ?? []
+        let keptReactions = reactions.filter {
+            $0.createdAt >= cutoff && !removedEventIDs.contains($0.targetEventID)
+        }
+
+        directMessages = keptMessages.nilIfEmpty
+        directMessageReactions = keptReactions.nilIfEmpty
+        return DirectMessageHistoryPruneResult(
+            removedMessageCount: messages.count - keptMessages.count,
+            removedReactionCount: reactions.count - keptReactions.count
+        )
+    }
+
+    /// Clears locally cached chat history while suppressing the recent relay replay window. The
+    /// inbox subscription intentionally looks back 30 days for NIP-17 timestamp jitter and missed
+    /// deliveries; without these temporary IDs, a user's cleared messages would return on launch.
+    @discardableResult
+    mutating func clearDirectMessageHistory(
+        now: Int = Int(Date().timeIntervalSince1970),
+        replayLookback: Int = 30 * 24 * 60 * 60,
+        suppressionDuration: Int = 31 * 24 * 60 * 60,
+        maximumSuppressedEventCount: Int = 1_600
+    ) -> DirectMessageHistoryPruneResult {
+        let messages = directMessages ?? []
+        let reactions = directMessageReactions ?? []
+        let replayCutoff = now - max(0, replayLookback)
+        let expiry = now + max(0, suppressionDuration)
+        var suppressed = (directMessageDeletedEventIDs ?? [:]).filter { $0.value > now }
+
+        for message in messages where message.createdAt >= replayCutoff {
+            suppressed[message.rumorEventID] = expiry
+            suppressed[message.wrapEventID] = expiry
+        }
+        if suppressed.count > maximumSuppressedEventCount {
+            let newest = suppressed
+                .sorted {
+                    if $0.value != $1.value { return $0.value > $1.value }
+                    return $0.key > $1.key
+                }
+                .prefix(maximumSuppressedEventCount)
+            suppressed = Dictionary(uniqueKeysWithValues: newest.map { ($0.key, $0.value) })
+        }
+
+        directMessages = nil
+        directMessageReactions = nil
+        directMessageDeletedEventIDs = suppressed.nilIfEmpty
+        return DirectMessageHistoryPruneResult(
+            removedMessageCount: messages.count,
+            removedReactionCount: reactions.count
+        )
     }
 
     func directMessages(with peerPublicKey: String) -> [NostrDirectMessage] {
@@ -943,8 +1050,15 @@ public extension TaskifySnapshot {
     @discardableResult
     mutating func ingestDirectMessageReaction(
         _ reaction: NostrDirectMessageReaction,
-        maximumCount: Int = 800
+        maximumCount: Int = 800,
+        now: Int = Int(Date().timeIntervalSince1970)
     ) -> Bool {
+        let suppressed = (directMessageDeletedEventIDs ?? [:]).filter { $0.value > now }
+        directMessageDeletedEventIDs = suppressed.nilIfEmpty
+        guard suppressed[reaction.rumorEventID] == nil,
+              suppressed[reaction.wrapEventID] == nil,
+              suppressed[reaction.targetEventID] == nil else { return false }
+
         let target = (directMessages ?? []).first(where: {
             $0.rumorEventID == reaction.targetEventID || $0.wrapEventID == reaction.targetEventID
         })

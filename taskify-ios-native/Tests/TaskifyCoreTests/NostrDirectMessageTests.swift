@@ -677,6 +677,116 @@ final class NostrDirectMessageTests: XCTestCase {
         XCTAssertEqual(snapshot.directMessageThreads().first?.unreadCount, 0)
     }
 
+    func testChatRetentionCutoffsMatchPWAIntervals() {
+        let now = 2_000_000_000
+        let day = 24 * 60 * 60
+        XCTAssertNil(ChatMessageRetention.forever.cutoffTimestamp(now: now))
+        XCTAssertEqual(ChatMessageRetention.oneYear.cutoffTimestamp(now: now), now - (365 * day))
+        XCTAssertEqual(ChatMessageRetention.sixMonths.cutoffTimestamp(now: now), now - (182 * day))
+        XCTAssertEqual(ChatMessageRetention.threeMonths.cutoffTimestamp(now: now), now - (91 * day))
+        XCTAssertEqual(ChatMessageRetention.thirtyDays.cutoffTimestamp(now: now), now - (30 * day))
+    }
+
+    func testRetentionPrunesExpiredMessagesAndTheirReactions() {
+        let peer = String(repeating: "1", count: 64)
+        let sender = String(repeating: "2", count: 64)
+        let expiredID = String(repeating: "a", count: 64)
+        let keptID = String(repeating: "b", count: 64)
+        let unknownID = String(repeating: "c", count: 64)
+        var snapshot = TaskifySnapshot.empty
+        XCTAssertTrue(snapshot.ingestDirectMessage(message(
+            rumorID: expiredID,
+            wrapID: String(repeating: "d", count: 64),
+            peer: peer,
+            sender: sender,
+            content: "Expired",
+            createdAt: 99,
+            incoming: true
+        )))
+        XCTAssertTrue(snapshot.ingestDirectMessage(message(
+            rumorID: keptID,
+            wrapID: String(repeating: "e", count: 64),
+            peer: peer,
+            sender: sender,
+            content: "At cutoff",
+            createdAt: 100,
+            incoming: true
+        )))
+        XCTAssertTrue(snapshot.ingestDirectMessageReaction(reaction(
+            rumorID: String(repeating: "3", count: 64),
+            targetID: expiredID,
+            sender: sender,
+            peer: peer,
+            emoji: "❤️",
+            createdAt: 110
+        )))
+        XCTAssertTrue(snapshot.ingestDirectMessageReaction(reaction(
+            rumorID: String(repeating: "4", count: 64),
+            targetID: keptID,
+            sender: sender,
+            peer: peer,
+            emoji: "👍",
+            createdAt: 110
+        )))
+        XCTAssertTrue(snapshot.ingestDirectMessageReaction(reaction(
+            rumorID: String(repeating: "5", count: 64),
+            targetID: unknownID,
+            sender: sender,
+            peer: peer,
+            emoji: "🎉",
+            createdAt: 110
+        )))
+
+        let result = snapshot.pruneDirectMessageHistory(olderThan: 100)
+
+        XCTAssertEqual(result, DirectMessageHistoryPruneResult(
+            removedMessageCount: 1,
+            removedReactionCount: 1
+        ))
+        XCTAssertEqual(snapshot.directMessageHistory.map(\.rumorEventID), [keptID])
+        XCTAssertEqual(
+            Set((snapshot.directMessageReactions ?? []).map(\.targetEventID)),
+            Set([keptID, unknownID])
+        )
+    }
+
+    func testClearHistorySuppressesRecentRelayReplay() {
+        let now = 2_000_000_000
+        let peer = String(repeating: "1", count: 64)
+        let sender = String(repeating: "2", count: 64)
+        let rumorID = String(repeating: "a", count: 64)
+        let original = message(
+            rumorID: rumorID,
+            wrapID: String(repeating: "b", count: 64),
+            peer: peer,
+            sender: sender,
+            content: "Clear me",
+            createdAt: now - 60,
+            incoming: true
+        )
+        let originalReaction = reaction(
+            rumorID: String(repeating: "c", count: 64),
+            targetID: rumorID,
+            sender: sender,
+            peer: peer,
+            emoji: "❤️",
+            createdAt: now - 30
+        )
+        var snapshot = TaskifySnapshot.empty
+        XCTAssertTrue(snapshot.ingestDirectMessage(original, now: now))
+        XCTAssertTrue(snapshot.ingestDirectMessageReaction(originalReaction, now: now))
+
+        XCTAssertEqual(
+            snapshot.clearDirectMessageHistory(now: now),
+            DirectMessageHistoryPruneResult(removedMessageCount: 1, removedReactionCount: 1)
+        )
+        XCTAssertTrue(snapshot.directMessageHistory.isEmpty)
+        XCTAssertTrue(snapshot.directMessageReactions?.isEmpty ?? true)
+        XCTAssertFalse(snapshot.ingestDirectMessage(original, now: now + 1))
+        XCTAssertFalse(snapshot.ingestDirectMessageReaction(originalReaction, now: now + 1))
+        XCTAssertTrue(snapshot.ingestDirectMessage(original, now: now + (32 * 24 * 60 * 60)))
+    }
+
     func testLegacySnapshotWithoutChatFieldsStillDecodes() throws {
         let encoded = try JSONEncoder().encode(TaskifySnapshot.empty)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])

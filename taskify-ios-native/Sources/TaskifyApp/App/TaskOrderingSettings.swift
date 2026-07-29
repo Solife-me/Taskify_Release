@@ -46,3 +46,19 @@ enum TaskPresentationSettings {
     static let completedTabDefault = true
     static let hideCompletedSubtasksDefault = false
 }
+
+/// Device-local Chat retention, using the same identifiers and default as the PWA. The selected
+/// value is also mirrored into the encrypted account backup when one is connected.
+enum ChatHistorySettings {
+    static let pwaSettingsKey = "chatMessageRetention"
+    private static let retentionKey = "taskify.chat.messageRetention"
+
+    static var retention: ChatMessageRetention {
+        UserDefaults.standard.string(forKey: retentionKey)
+            .flatMap(ChatMessageRetention.init(rawValue:)) ?? .forever
+    }
+
+    static func setRetention(_ retention: ChatMessageRetention) {
+        UserDefaults.standard.set(retention.rawValue, forKey: retentionKey)
+    }
+}
