@@ -6,6 +6,12 @@ enum TaskifyMediaServerSettings {
     static let storageKey = "taskify.encryptedMediaServerURL"
     static let pwaSettingsKey = "encryptedFileStorageServer"
     static let defaultServer = "https://originless.solife.me"
+    // Matches the PWA's default `encryptedFileServers` list (only "originless"-type entries):
+    // encrypted, opaque ciphertext trips up the content-sniffing many public Blossom servers do
+    // (e.g. blossom.band, which is backed by nostr.build's strict mime allowlist and 415s any
+    // upload it can't recognize as a real image/document). Blossom is still fully supported below
+    // if a user manually enters a server URL — just not pre-suggested here, since we can't vouch
+    // for whether a given public instance accepts arbitrary encrypted bytes.
     static let suggestedServers = [
         "https://originless.solife.me",
         "https://originless.besoeasy.com",
@@ -58,6 +64,7 @@ enum TaskAttachmentUploadError: LocalizedError {
     case fileTooLarge
     case unsupportedFile
     case invalidResponse
+    case missingIdentity
     case server(status: Int, message: String?)
 
     var errorDescription: String? {
@@ -70,6 +77,8 @@ enum TaskAttachmentUploadError: LocalizedError {
             "That file type is not supported yet."
         case .invalidResponse:
             "The encrypted file server returned an invalid response."
+        case .missingIdentity:
+            "Set up your Taskify identity before uploading to a Blossom server."
         case .server(let status, let message):
             if let message, !message.isEmpty {
                 "The encrypted file server rejected the upload (\(status)): \(message)"
@@ -192,6 +201,11 @@ actor TaskAttachmentUploadService {
               scheme == "https" else {
             throw TaskAttachmentUploadError.invalidServer
         }
+
+        if TaskifyFileServerType.inferred(for: serverURL.absoluteString) == .blossom {
+            return try await uploadViaBlossom(data, server: serverURL)
+        }
+
         let uploadURL = serverURL.appendingPathComponent("upload", isDirectory: false)
         let boundary = "TaskifyNative-\(UUID().uuidString)"
         var request = URLRequest(url: uploadURL)
@@ -213,6 +227,32 @@ actor TaskAttachmentUploadService {
             rawRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             rawRequest.httpBody = data
             return try await perform(rawRequest, serverURL: serverURL)
+        }
+    }
+
+    /// Blossom (BUD-01/BUD-02) upload path. The `PUT` is authorized with a kind-24242 event signed
+    /// by the device's own Nostr identity — never the board's key — since Blossom servers only
+    /// need to know which app-level identity is writing; `data` has already been encrypted with
+    /// the board's shared key by the caller, so anyone with board access can decrypt it regardless
+    /// of who uploaded it.
+    private func uploadViaBlossom(_ data: Data, server: URL) async throws -> String {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw TaskAttachmentUploadError.missingIdentity
+        }
+        do {
+            return try await BlossomClient.upload(
+                data,
+                privateKey: identity.privateKey,
+                server: server,
+                session: session
+            )
+        } catch let error as BlossomError {
+            switch error {
+            case .invalidServer: throw TaskAttachmentUploadError.invalidServer
+            case .invalidResponse: throw TaskAttachmentUploadError.invalidResponse
+            case .requestFailed(let status, let message):
+                throw TaskAttachmentUploadError.server(status: status, message: message)
+            }
         }
     }
 

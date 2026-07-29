@@ -343,15 +343,21 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Encrypted media storage")
                         .font(.headline)
-                    Text("Originless server")
+                    Text(mediaServerTypeLabel)
                         .font(.subheadline)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }
             }
 
-            Text("Task photos, documents, and chat attachments are encrypted on this device before they are uploaded. The server only receives opaque encrypted bytes.")
+            Text("Task photos, documents, and chat attachments are encrypted on this device before they are uploaded. The server only receives opaque encrypted bytes. Blossom servers additionally require sign-in, authorized with your Taskify identity — not the board's key — each time you upload.")
                 .font(.caption)
                 .foregroundStyle(TaskifyTheme.secondaryText)
+
+            if mediaServerTypeLabel == "Blossom server" {
+                Text("Warning: some Blossom servers inspect uploads and reject encrypted, unrecognizable file types. If uploads start failing, switch back to an Originless server.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
 
             TextField("https://originless.example", text: $mediaServerInput)
                 .textInputAutocapitalization(.never)
@@ -410,7 +416,7 @@ struct SettingsView: View {
                 .foregroundStyle(TaskifyTheme.tertiaryText)
                 .textSelection(.enabled)
 
-            Text("Originless is recommended for encrypted blobs. Attachments remain limited to 50 MB because this version encrypts and validates each complete file in memory before upload.")
+            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works — enter its address above — but many public Blossom servers reject opaque encrypted uploads. Attachments remain limited to 50 MB because this version encrypts and validates each complete file in memory before upload.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
@@ -419,12 +425,18 @@ struct SettingsView: View {
         .taskifyGlass(cornerRadius: 24)
     }
 
+    private var mediaServerTypeLabel: String {
+        TaskifyFileServerType.inferred(for: model.encryptedMediaServerURL) == .blossom
+            ? "Blossom server"
+            : "Originless server"
+    }
+
     private func saveMediaServer() {
         if model.updateEncryptedMediaServer(mediaServerInput) {
             mediaServerInput = model.encryptedMediaServerURL
             mediaServerValidationMessage = "Encrypted media server saved."
         } else {
-            mediaServerValidationMessage = "Enter a valid HTTPS Originless server address."
+            mediaServerValidationMessage = "Enter a valid HTTPS server address."
         }
     }
 
