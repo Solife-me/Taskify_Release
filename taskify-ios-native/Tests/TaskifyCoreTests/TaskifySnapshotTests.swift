@@ -1282,6 +1282,120 @@ final class TaskifySnapshotTests: XCTestCase {
         )
     }
 
+    func testMovingTaskifyEventAcrossBoardsReturnsSourceTombstoneMaterial() throws {
+        var snapshot = TaskifySnapshot.empty
+        let listBoard = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let destination = try XCTUnwrap(snapshot.addListColumn(
+            boardID: listBoard.id,
+            name: "Scheduled"
+        ))
+        let event = TaskifyEvent(
+            id: "event-1",
+            boardID: "week-default",
+            order: 2,
+            title: "Planning session",
+            schedule: .date,
+            startDateValue: "2026-07-30",
+            canonicalAddress: "30310:old:event-1",
+            viewAddress: "30311:old:event-1",
+            eventKey: Data(repeating: 5, count: 32).base64EncodedString(),
+            inviteToken: "",
+            relayURLs: ["wss://old.example"],
+            rsvpStatus: .accepted
+        )
+        snapshot.taskifyEvents = [event]
+
+        let result = try XCTUnwrap(snapshot.moveTaskifyEvent(
+            eventID: event.id,
+            toBoardID: listBoard.id,
+            columnID: destination.id,
+            editorPublicKey: "editor"
+        ))
+
+        XCTAssertTrue(result.crossedBoards)
+        XCTAssertEqual(result.movedEventIDs, [event.id])
+        XCTAssertEqual(result.sourceEvents, [event])
+        let moved = try XCTUnwrap(snapshot.taskifyEvents?.first)
+        XCTAssertEqual(moved.boardID, listBoard.id)
+        XCTAssertEqual(moved.columnID, destination.id)
+        XCTAssertEqual(moved.lastEditedBy, "editor")
+        XCTAssertEqual(moved.canonicalAddress, "")
+        XCTAssertEqual(moved.viewAddress, "")
+        XCTAssertEqual(moved.relayURLs, listBoard.effectiveRelayURLs)
+        XCTAssertNil(moved.nostrUpdatedAt)
+    }
+
+    func testMovingTaskifyEventSeriesBetweenListsMovesActiveInstancesTogether() throws {
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.createListBoard(name: "Projects"))
+        let firstColumn = try XCTUnwrap(board.columns.first)
+        let secondColumn = try XCTUnwrap(snapshot.addListColumn(
+            boardID: board.id,
+            name: "Scheduled"
+        ))
+        let seed = TaskifyEvent(
+            id: "event-seed",
+            boardID: board.id,
+            columnID: firstColumn.id,
+            order: 0,
+            title: "Daily planning",
+            schedule: .date,
+            startDateValue: "2026-07-30",
+            recurrence: .daily(),
+            seriesID: "event-seed",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 6, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        var instance = seed
+        instance.id = "recurrence_event-seed_2026-07-31"
+        instance.order = 1
+        instance.startDateValue = "2026-07-31"
+        instance.eventKey = Data(repeating: 7, count: 32).base64EncodedString()
+        snapshot.taskifyEvents = [seed, instance]
+
+        let result = try XCTUnwrap(snapshot.moveTaskifyEvent(
+            eventID: seed.id,
+            toBoardID: board.id,
+            columnID: secondColumn.id
+        ))
+
+        XCTAssertFalse(result.crossedBoards)
+        XCTAssertTrue(result.sourceEvents.isEmpty)
+        XCTAssertEqual(Set(result.movedEventIDs), Set([seed.id, instance.id]))
+        XCTAssertEqual(
+            Set((snapshot.taskifyEvents ?? []).compactMap(\.columnID)),
+            Set([secondColumn.id])
+        )
+    }
+
+    func testMovingReadOnlyTaskifyEventIsRejected() {
+        let event = TaskifyEvent(
+            id: "shared-event",
+            boardID: "week-default",
+            title: "Shared event",
+            schedule: .date,
+            startDateValue: "2026-07-30",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 8, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted,
+            readOnly: true
+        )
+        var snapshot = TaskifySnapshot.empty
+        snapshot.taskifyEvents = [event]
+
+        XCTAssertNil(snapshot.moveTaskifyEvent(
+            eventID: event.id,
+            toBoardID: "week-default",
+            columnID: nil
+        ))
+        XCTAssertEqual(snapshot.taskifyEvents, [event])
+    }
+
     func testRemovingTaskifyEventRecurrenceTombstonesGeneratedSeries() {
         let seed = TaskifyEvent(
             id: "event-seed",

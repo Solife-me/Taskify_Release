@@ -2214,6 +2214,7 @@ private struct NewUpcomingItemSheet: View {
     @State private var details = ""
     @State private var location = ""
     @State private var boardID = ""
+    @State private var columnID = ""
     @State private var timeZoneID = TimeZone.current.identifier
     @State private var reminders: [TaskReminder] = []
     @State private var reminderTime = Self.reminderClock(from: nil)
@@ -2224,6 +2225,15 @@ private struct NewUpcomingItemSheet: View {
 
     private var eventBoards: [Board] {
         model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }
+    }
+
+    private var selectedEventBoard: Board? {
+        eventBoards.first { $0.id == boardID }
+    }
+
+    private var selectedBoardColumns: [BoardColumn] {
+        guard selectedEventBoard?.kind == .list else { return [] }
+        return selectedEventBoard?.columns.sorted { $0.order < $1.order } ?? []
     }
 
     var body: some View {
@@ -2246,6 +2256,13 @@ private struct NewUpcomingItemSheet: View {
                         Picker("Board", selection: $boardID) {
                             ForEach(eventBoards) { board in
                                 Text(board.name).tag(board.id)
+                            }
+                        }
+                        if selectedEventBoard?.kind == .list {
+                            Picker("List", selection: $columnID) {
+                                ForEach(selectedBoardColumns) { column in
+                                    Text(column.name).tag(column.id)
+                                }
                             }
                         }
                         Toggle("All-day", isOn: $allDay)
@@ -2312,6 +2329,7 @@ private struct NewUpcomingItemSheet: View {
                                 endDate: endDate,
                                 isAllDay: allDay,
                                 boardID: boardID,
+                                columnID: columnID.isEmpty ? nil : columnID,
                                 startTimeZoneID: timeZoneID,
                                 reminders: reminders,
                                 reminderTime: formattedReminderTime,
@@ -2322,7 +2340,7 @@ private struct NewUpcomingItemSheet: View {
                     }
                     .disabled(
                         title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                            (itemType == .event && boardID.isEmpty)
+                            (itemType == .event && !eventPlacementIsValid)
                     )
                 }
             }
@@ -2340,7 +2358,9 @@ private struct NewUpcomingItemSheet: View {
             } else {
                 boardID = eventBoards.first?.id ?? ""
             }
+            resolveSelectedColumn()
         }
+        .onChange(of: boardID) { _, _ in resolveSelectedColumn() }
         .onChange(of: dueDate) { _, newStart in
             if endDate < newStart {
                 endDate = allDay
@@ -2360,6 +2380,21 @@ private struct NewUpcomingItemSheet: View {
 
     private var selectedTimeZone: TimeZone {
         TimeZone(identifier: timeZoneID) ?? .current
+    }
+
+    private var eventPlacementIsValid: Bool {
+        guard let board = selectedEventBoard else { return false }
+        return board.kind == .week || selectedBoardColumns.contains(where: { $0.id == columnID })
+    }
+
+    private func resolveSelectedColumn() {
+        guard selectedEventBoard?.kind == .list else {
+            columnID = ""
+            return
+        }
+        if !selectedBoardColumns.contains(where: { $0.id == columnID }) {
+            columnID = selectedBoardColumns.first?.id ?? ""
+        }
     }
 
     private var formattedReminderTime: String {
@@ -2391,6 +2426,8 @@ private struct TaskifyEventEditorSheet: View {
     @State private var title: String
     @State private var details: String
     @State private var location: String
+    @State private var boardID: String
+    @State private var columnID: String
     @State private var startDate: Date
     @State private var endDate: Date
     @State private var allDay: Bool
@@ -2410,6 +2447,8 @@ private struct TaskifyEventEditorSheet: View {
         _title = State(initialValue: event.title)
         _details = State(initialValue: event.details ?? "")
         _location = State(initialValue: event.locations?.first ?? "")
+        _boardID = State(initialValue: event.boardID ?? "")
+        _columnID = State(initialValue: event.columnID ?? "")
         _startDate = State(initialValue: start)
         _endDate = State(initialValue: event.endDate ?? start.addingTimeInterval(60 * 60))
         _allDay = State(initialValue: event.isAllDay)
@@ -2425,11 +2464,36 @@ private struct TaskifyEventEditorSheet: View {
         )
     }
 
+    private var eventBoards: [Board] {
+        model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }
+    }
+
+    private var selectedEventBoard: Board? {
+        eventBoards.first { $0.id == boardID }
+    }
+
+    private var selectedBoardColumns: [BoardColumn] {
+        guard selectedEventBoard?.kind == .list else { return [] }
+        return selectedEventBoard?.columns.sorted { $0.order < $1.order } ?? []
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section("Event") {
                     TextField("Title", text: $title)
+                    Picker("Board", selection: $boardID) {
+                        ForEach(eventBoards) { board in
+                            Text(board.name).tag(board.id)
+                        }
+                    }
+                    if selectedEventBoard?.kind == .list {
+                        Picker("List", selection: $columnID) {
+                            ForEach(selectedBoardColumns) { column in
+                                Text(column.name).tag(column.id)
+                            }
+                        }
+                    }
                     Toggle("All-day", isOn: $allDay)
                     DatePicker(
                         "Starts",
@@ -2505,6 +2569,8 @@ private struct TaskifyEventEditorSheet: View {
                             startDate: startDate,
                             endDate: endDate,
                             isAllDay: allDay,
+                            boardID: boardID,
+                            columnID: columnID.isEmpty ? nil : columnID,
                             startTimeZoneID: timeZoneID,
                             reminders: reminders,
                             reminderTime: formattedReminderTime,
@@ -2513,7 +2579,10 @@ private struct TaskifyEventEditorSheet: View {
                             dismiss()
                         }
                     }
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || !eventPlacementIsValid
+                    )
                 }
             }
             .confirmationDialog(
@@ -2544,6 +2613,13 @@ private struct TaskifyEventEditorSheet: View {
             TimeZonePickerSheet(selection: $timeZoneID, referenceDate: startDate)
                 .preferredColorScheme(.dark)
         }
+        .onAppear {
+            if !eventBoards.contains(where: { $0.id == boardID }) {
+                boardID = eventBoards.first?.id ?? ""
+            }
+            resolveSelectedColumn()
+        }
+        .onChange(of: boardID) { _, _ in resolveSelectedColumn() }
         .onChange(of: startDate) { _, newStart in
             if endDate < newStart {
                 endDate = allDay
@@ -2563,6 +2639,21 @@ private struct TaskifyEventEditorSheet: View {
 
     private var selectedTimeZone: TimeZone {
         TimeZone(identifier: timeZoneID) ?? .current
+    }
+
+    private var eventPlacementIsValid: Bool {
+        guard let board = selectedEventBoard else { return false }
+        return board.kind == .week || selectedBoardColumns.contains(where: { $0.id == columnID })
+    }
+
+    private func resolveSelectedColumn() {
+        guard selectedEventBoard?.kind == .list else {
+            columnID = ""
+            return
+        }
+        if !selectedBoardColumns.contains(where: { $0.id == columnID }) {
+            columnID = selectedBoardColumns.first?.id ?? ""
+        }
     }
 
     private var formattedReminderTime: String {

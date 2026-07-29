@@ -575,6 +575,33 @@ public struct TaskifyEventSeriesChanges: Equatable, Sendable {
     }
 }
 
+public struct TaskifyEventMoveResult: Equatable, Sendable {
+    public var eventID: String
+    public var sourceBoardID: String
+    public var targetBoardID: String
+    public var targetColumnID: String?
+    public var movedEventIDs: [String]
+    public var sourceEvents: [TaskifyEvent]
+
+    public init(
+        eventID: String,
+        sourceBoardID: String,
+        targetBoardID: String,
+        targetColumnID: String?,
+        movedEventIDs: [String],
+        sourceEvents: [TaskifyEvent]
+    ) {
+        self.eventID = eventID
+        self.sourceBoardID = sourceBoardID
+        self.targetBoardID = targetBoardID
+        self.targetColumnID = targetColumnID
+        self.movedEventIDs = movedEventIDs
+        self.sourceEvents = sourceEvents
+    }
+
+    public var crossedBoards: Bool { sourceBoardID != targetBoardID }
+}
+
 public struct TaskifyEventParticipant: Codable, Equatable, Sendable {
     public var publicKey: String
     public var relayURL: String?
@@ -1991,6 +2018,91 @@ public extension TaskifySnapshot {
         }
         taskifyEvents = events
         return true
+    }
+
+    /// Moves an editable Taskify event into the selected board/list. Moving a recurrence seed
+    /// carries its active generated instances with it, matching the PWA's series editing model.
+    /// The original events are returned for callers to publish source-board tombstones before
+    /// publishing the newer target-board versions.
+    @discardableResult
+    mutating func moveTaskifyEvent(
+        eventID: String,
+        toBoardID targetBoardID: String,
+        columnID requestedColumnID: String?,
+        editorPublicKey: String? = nil
+    ) -> TaskifyEventMoveResult? {
+        var events = taskifyEvents ?? []
+        guard let selectedIndex = events.firstIndex(where: {
+            $0.id == eventID && !$0.isReadOnly && !$0.isDeleted
+        }),
+        let sourceBoardID = events[selectedIndex].boardID,
+        let targetBoard = boards.first(where: {
+            $0.id == targetBoardID && $0.isVisible
+        }) else { return nil }
+
+        let targetColumnID: String?
+        switch targetBoard.kind {
+        case .week:
+            targetColumnID = nil
+        case .list:
+            let orderedColumns = targetBoard.columns.sorted { $0.order < $1.order }
+            guard let resolvedColumn = requestedColumnID.flatMap({ requested in
+                orderedColumns.first(where: { $0.id == requested })
+            }) ?? orderedColumns.first else { return nil }
+            targetColumnID = resolvedColumn.id
+        case .compound, .bible:
+            return nil
+        }
+
+        guard sourceBoardID != targetBoardID
+                || events[selectedIndex].columnID != targetColumnID else {
+            return nil
+        }
+
+        let selected = events[selectedIndex]
+        let movesWholeSeries = selected.recurrence?.isActive == true
+            && selected.seriesID == selected.id
+        let movedIndices = events.indices.filter { index in
+            guard !events[index].isDeleted, !events[index].isReadOnly else { return false }
+            return index == selectedIndex
+                || (movesWholeSeries && events[index].seriesID == selected.id)
+        }
+        let sourceEvents = movedIndices.map { events[$0] }
+        let movedSet = Set(movedIndices)
+        var nextOrder = (
+            events.indices
+                .filter { !movedSet.contains($0) && events[$0].boardID == targetBoardID }
+                .compactMap { events[$0].order }
+                .max() ?? -1
+        ) + 1
+        let orderedMovedIndices = movedIndices.sorted {
+            let lhsOrder = events[$0].order ?? Int.max
+            let rhsOrder = events[$1].order ?? Int.max
+            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+            return events[$0].id < events[$1].id
+        }
+
+        for index in orderedMovedIndices {
+            events[index].boardID = targetBoardID
+            events[index].columnID = targetColumnID
+            events[index].order = nextOrder
+            events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
+            events[index].canonicalAddress = ""
+            events[index].viewAddress = ""
+            events[index].relayURLs = targetBoard.effectiveRelayURLs
+            events[index].nostrUpdatedAt = nil
+            nextOrder += 1
+        }
+
+        taskifyEvents = events
+        return TaskifyEventMoveResult(
+            eventID: eventID,
+            sourceBoardID: sourceBoardID,
+            targetBoardID: targetBoardID,
+            targetColumnID: targetColumnID,
+            movedEventIDs: orderedMovedIndices.map { events[$0].id },
+            sourceEvents: sourceBoardID == targetBoardID ? [] : sourceEvents
+        )
     }
 
     @discardableResult

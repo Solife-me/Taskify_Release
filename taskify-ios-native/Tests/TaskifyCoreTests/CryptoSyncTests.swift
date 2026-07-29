@@ -364,6 +364,57 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(decoded.event.nostrUpdatedAt, 1_700_000_500)
     }
 
+    func testTaskifyCalendarMoveTombstoneRoundTripsThroughPWAContract() throws {
+        let board = Board(
+            id: "source-board",
+            name: "Source",
+            kind: .week,
+            columns: [],
+            nostrBoardID: "source-board-id"
+        )
+        let taskifyEvent = TaskifyEvent(
+            id: "moved-event",
+            boardID: board.id,
+            title: "Moved event",
+            schedule: .date,
+            startDateValue: "2026-07-30",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 10, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted,
+            readOnly: false,
+            deleted: true
+        )
+
+        let pair = try TaskifyCalendarEventCodec.eventPair(
+            event: taskifyEvent,
+            board: board,
+            createdAt: 1_700_000_700
+        )
+        let boardPrivateKey = BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID)
+        let boardPublicKey = try BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID)
+        let canonicalPlaintext = try NIP44V2.decrypt(
+            pair.canonical.content,
+            privateKey: boardPrivateKey,
+            publicKey: boardPublicKey
+        )
+        let canonical = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: canonicalPlaintext) as? [String: Any]
+        )
+
+        XCTAssertEqual(canonical["deleted"] as? Bool, true)
+        XCTAssertNil(canonical["title"])
+        XCTAssertNil(canonical["kind"])
+        let decoded = try TaskifyCalendarEventCodec.decodeCanonicalEvent(
+            pair.canonical,
+            board: board
+        )
+        XCTAssertTrue(decoded.event.isDeleted)
+        XCTAssertEqual(decoded.event.id, taskifyEvent.id)
+        XCTAssertEqual(decoded.event.nostrUpdatedAt, 1_700_000_700)
+    }
+
     func testTaskifyCalendarDecoderPreservesPWASchedulingFields() throws {
         let board = Board(
             id: "local-board",

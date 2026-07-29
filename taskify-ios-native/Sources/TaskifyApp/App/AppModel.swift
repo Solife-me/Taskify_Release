@@ -826,6 +826,7 @@ final class AppModel {
         endDate: Date,
         isAllDay: Bool,
         boardID requestedBoardID: String,
+        columnID requestedColumnID: String? = nil,
         startTimeZoneID: String? = nil,
         reminders: [TaskReminder] = [],
         reminderTime: String? = nil,
@@ -836,6 +837,19 @@ final class AppModel {
               let board = snapshot.boards.first(where: {
                   $0.id == requestedBoardID && $0.isVisible && ($0.kind == .week || $0.kind == .list)
               }) else { return false }
+        let columnID: String?
+        switch board.kind {
+        case .week:
+            columnID = nil
+        case .list:
+            let orderedColumns = board.columns.sorted { $0.order < $1.order }
+            guard let resolvedColumn = requestedColumnID.flatMap({ requested in
+                orderedColumns.first(where: { $0.id == requested })
+            }) ?? orderedColumns.first else { return false }
+            columnID = resolvedColumn.id
+        case .compound, .bible:
+            return false
+        }
         let eventID = UUID().uuidString
         let order = (snapshot.taskifyEvents ?? [])
             .filter { $0.boardID == board.id }
@@ -856,9 +870,7 @@ final class AppModel {
         let event = TaskifyEvent(
             id: eventID,
             boardID: board.id,
-            columnID: board.kind == .list
-                ? board.columns.sorted(by: { $0.order < $1.order }).first?.id
-                : nil,
+            columnID: columnID,
             order: order,
             title: trimmedTitle,
             details: details.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
@@ -904,6 +916,8 @@ final class AppModel {
         startDate: Date,
         endDate: Date,
         isAllDay: Bool,
+        boardID requestedBoardID: String? = nil,
+        columnID requestedColumnID: String? = nil,
         startTimeZoneID: String? = nil,
         reminders: [TaskReminder]? = nil,
         reminderTime: String? = nil,
@@ -911,10 +925,45 @@ final class AppModel {
     ) -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
-              var events = snapshot.taskifyEvents,
-              let index = events.firstIndex(where: { $0.id == eventID && !$0.isReadOnly && !$0.isDeleted }) else {
+              let existingEvent = snapshot.taskifyEvents?.first(where: {
+                  $0.id == eventID && !$0.isReadOnly && !$0.isDeleted
+              }),
+              let existingBoardID = existingEvent.boardID else {
             return false
         }
+        let targetBoardID = requestedBoardID ?? existingBoardID
+        guard let targetBoard = snapshot.boards.first(where: {
+            $0.id == targetBoardID && $0.isVisible && ($0.kind == .week || $0.kind == .list)
+        }) else { return false }
+        let targetColumnID: String?
+        switch targetBoard.kind {
+        case .week:
+            targetColumnID = nil
+        case .list:
+            let orderedColumns = targetBoard.columns.sorted { $0.order < $1.order }
+            guard let resolvedColumn = requestedColumnID.flatMap({ requested in
+                orderedColumns.first(where: { $0.id == requested })
+            }) ?? orderedColumns.first else { return false }
+            targetColumnID = resolvedColumn.id
+        case .compound, .bible:
+            return false
+        }
+
+        let moveResult: TaskifyEventMoveResult?
+        if existingBoardID != targetBoardID || existingEvent.columnID != targetColumnID {
+            guard let result = snapshot.moveTaskifyEvent(
+                eventID: eventID,
+                toBoardID: targetBoardID,
+                columnID: targetColumnID,
+                editorPublicKey: identityPublicKey.nilIfEmpty
+            ) else { return false }
+            moveResult = result
+        } else {
+            moveResult = nil
+        }
+
+        guard var events = snapshot.taskifyEvents,
+              let index = events.firstIndex(where: { $0.id == eventID }) else { return false }
         let previousSeriesID = events[index].seriesID
         let wasSeriesSeed = previousSeriesID == eventID
         let resolvedEnd = isAllDay
@@ -958,7 +1007,19 @@ final class AppModel {
                 editorPublicKey: identityPublicKey.nilIfEmpty
             )
             : TaskifyEventSeriesChanges()
-        synchronizeTaskifyEvents([eventID] + seriesChanges.allEventIDs)
+        let synchronizedEventIDs = Array(Set(
+            [eventID]
+                + seriesChanges.allEventIDs
+                + (moveResult?.movedEventIDs ?? [])
+        ))
+        if let moveResult, moveResult.crossedBoards {
+            synchronizeTaskifyEventMove(
+                sourceEvents: moveResult.sourceEvents,
+                targetEventIDs: synchronizedEventIDs
+            )
+        } else {
+            synchronizeTaskifyEvents(synchronizedEventIDs)
+        }
         refreshNotifications(requestPermission: !normalizedReminders.isEmpty)
         return true
     }
@@ -3680,6 +3741,103 @@ final class AppModel {
             } catch {
                 await MainActor.run {
                     self.errorMessage = "Taskify could not queue these events for Nostr sync."
+                }
+            }
+        }
+    }
+
+    /// Publishes tombstones to every source board before publishing newer versions to the target
+    /// board. The target timestamps are deliberately allocated last so relay replay and clients
+    /// that merge Taskify events globally by ID always prefer the moved event over its tombstone.
+    private func synchronizeTaskifyEventMove(
+        sourceEvents: [TaskifyEvent],
+        targetEventIDs: [String]
+    ) {
+        typealias Batch = (
+            board: Board,
+            pairs: [TaskifyCalendarEventPair],
+            boardTimestamp: Int
+        )
+        let requestedTargetIDs = Set(targetEventIDs)
+        guard !sourceEvents.isEmpty, !requestedTargetIDs.isEmpty else {
+            synchronizeTaskifyEvents(targetEventIDs)
+            return
+        }
+
+        var sourceBatches: [Batch] = []
+        var targetBatches: [Batch] = []
+        do {
+            let sourceByBoard = Dictionary(grouping: sourceEvents.compactMap {
+                event -> TaskifyEvent? in
+                guard event.boardID != nil else { return nil }
+                var tombstone = event
+                tombstone.deleted = true
+                tombstone.lastEditedBy = identityPublicKey.nilIfEmpty ?? tombstone.lastEditedBy
+                return tombstone
+            }) { $0.boardID! }
+            for (boardID, events) in sourceByBoard {
+                guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { continue }
+                let boardTimestamp = nextNostrTimestamp()
+                let pairs = try events.map {
+                    try TaskifyCalendarEventCodec.eventPair(
+                        event: $0,
+                        board: board,
+                        createdAt: nextNostrTimestamp()
+                    )
+                }
+                sourceBatches.append((board, pairs, boardTimestamp))
+            }
+
+            let targetByBoard = Dictionary(grouping: (snapshot.taskifyEvents ?? []).filter {
+                requestedTargetIDs.contains($0.id) && $0.boardID != nil
+            }) { $0.boardID! }
+            for (boardID, events) in targetByBoard {
+                guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { continue }
+                let boardTimestamp = nextNostrTimestamp()
+                var pairs: [TaskifyCalendarEventPair] = []
+                for event in events {
+                    let pair = try TaskifyCalendarEventCodec.eventPair(
+                        event: event,
+                        board: board,
+                        createdAt: nextNostrTimestamp()
+                    )
+                    _ = snapshot.upsertTaskifyEvent(pair.normalizedEvent)
+                    pairs.append(pair)
+                }
+                targetBatches.append((board, pairs, boardTimestamp))
+            }
+        } catch {
+            errorMessage = "Taskify could not prepare this event move for Nostr sync."
+            scheduleSave()
+            return
+        }
+
+        scheduleSave()
+        let batches = sourceBatches + targetBatches
+        Task { [syncEngine] in
+            do {
+                for batch in batches {
+                    let boardEvent = try TaskEventCodec.boardEvent(
+                        board: batch.board,
+                        createdAt: batch.boardTimestamp
+                    )
+                    try await syncEngine.publish(boardEvent, board: batch.board, taskID: "_board")
+                    for pair in batch.pairs {
+                        try await syncEngine.publish(
+                            pair.canonical,
+                            board: batch.board,
+                            taskID: "event:\(pair.normalizedEvent.id):canonical"
+                        )
+                        try await syncEngine.publish(
+                            pair.view,
+                            board: batch.board,
+                            taskID: "event:\(pair.normalizedEvent.id):view"
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Taskify could not queue this event move for Nostr sync."
                 }
             }
         }
