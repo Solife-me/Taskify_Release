@@ -1450,6 +1450,10 @@ private struct QuickAddTextField: UIViewRepresentable {
         field.returnKeyType = .default
         field.enablesReturnKeyAutomatically = true
         field.accessibilityLabel = accessibilityLabel
+        // Without this, the field's intrinsic width grows with its text (UITextField resists
+        // compression by default), so a long title pushes the capsule wider than the screen
+        // instead of scrolling its visible portion to track the cursor.
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }
 

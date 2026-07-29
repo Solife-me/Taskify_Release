@@ -147,6 +147,37 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertFalse(app.keyboards.element.waitForExistence(timeout: 1))
     }
 
+    /// Regression test: a long, still-being-typed title used to push the quick-add capsule wider
+    /// than the screen (UITextField resists compression to fit its text by default). The field
+    /// should instead stay within the screen bounds and let the UITextField scroll its visible
+    /// portion to keep the cursor on screen, the same way any bounded text field behaves.
+    func testQuickAddFieldStaysOnScreenWithALongTitle() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+
+        let quickAddField = app.textFields.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")
+        ).firstMatch
+        XCTAssertTrue(quickAddField.waitForExistence(timeout: 10))
+        quickAddField.tap()
+        quickAddField.typeText(
+            "This is a deliberately long task title meant to exercise the quick add field's width constraint"
+        )
+        XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 2))
+
+        let screenWidth = app.frame.width
+        XCTAssertGreaterThanOrEqual(quickAddField.frame.minX, 0, "The field should not overflow past the left edge")
+        XCTAssertLessThanOrEqual(
+            quickAddField.frame.maxX,
+            screenWidth,
+            "The field should not overflow past the right edge of the screen"
+        )
+    }
+
     func testQuickAddKeyboardDismissesWhenBoardIsSwipedDown() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
