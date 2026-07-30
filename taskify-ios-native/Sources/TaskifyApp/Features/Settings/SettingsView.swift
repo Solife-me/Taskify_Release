@@ -43,18 +43,18 @@ struct SettingsView: View {
                 .padding(.top, 14)
 
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: 14) {
                     // Ordered and grouped to track the PWA's Settings page (Boards, View, Wallet,
                     // Chat, Bible, Push, Nostr, ...) instead of an alphabet-soup of individually
                     // titled cards, so the two apps read as the same settings page. Each group is
                     // its own collapsed-by-default accordion, matching the PWA's Show/Hide
                     // sections, so opening Settings is a quick scan of category headers rather
                     // than a long scroll through every card.
-                    settingsGroup("Boards") {
+                    settingsGroup("Boards", systemImage: "square.grid.2x2.fill") {
                         boardsCard
                     }
 
-                    settingsGroup("View") {
+                    settingsGroup("View", systemImage: "eye.fill") {
                         taskPresentationCard
                         taskOrderingCard
                         startupTabCard
@@ -62,31 +62,31 @@ struct SettingsView: View {
                         appearanceCard
                     }
 
-                    settingsGroup("Wallet") {
+                    settingsGroup("Wallet", systemImage: "bitcoinsign.circle.fill") {
                         walletCurrencyCard
                     }
 
-                    settingsGroup("Chat") {
+                    settingsGroup("Chat", systemImage: "bubble.left.and.text.bubble.right.fill") {
                         chatHistoryCard
                     }
 
-                    settingsGroup("Bible") {
+                    settingsGroup("Bible", systemImage: "book.closed.fill") {
                         bibleTrackerCard
                         fastingRemindersCard
                         scriptureMemoryCard
                     }
 
-                    settingsGroup("Notifications") {
+                    settingsGroup("Notifications", systemImage: "bell.badge.fill") {
                         notificationsCard
                     }
 
-                    settingsGroup("Nostr & Sync") {
+                    settingsGroup("Nostr & Sync", systemImage: "network") {
                         identityCard
                         syncCard
                         storageCard
                     }
 
-                    settingsGroup("App") {
+                    settingsGroup("App", systemImage: "checkmark.seal.fill") {
                         migrationCard
                     }
                 }
@@ -142,13 +142,16 @@ struct SettingsView: View {
     /// Show/Hide accordions — native keeps each sub-topic as its own glass card rather than
     /// merging them into one PWA-style section (safer, since each card owns its own
     /// bindings/state), but collapsing the whole cluster behind one header still gets the same
-    /// "scan categories, expand only what you need" navigation speedup.
+    /// "scan categories, expand only what you need" navigation speedup. Styled as its own glass
+    /// card (icon + title + chevron) rather than bare text, so a collapsed group still looks like
+    /// a card in the list instead of a stray label floating on the background.
     private func settingsGroup<Content: View>(
         _ title: String,
+        systemImage: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         let isExpanded = expandedSettingsGroups.contains(title)
-        return VStack(alignment: .leading, spacing: 18) {
+        return VStack(alignment: .leading, spacing: 10) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     if isExpanded {
@@ -158,19 +161,22 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 6) {
-                    Text(title.uppercased())
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(TaskifyTheme.tertiaryText)
-                        .tracking(0.6)
+                HStack(spacing: 12) {
+                    Image(systemName: systemImage)
+                        .font(.title2)
+                        .foregroundStyle(TaskifyTheme.accent)
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(TaskifyTheme.primaryText)
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.bold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
-                .padding(.horizontal, 4)
-                .padding(.top, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .taskifyGlass(cornerRadius: 24)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
