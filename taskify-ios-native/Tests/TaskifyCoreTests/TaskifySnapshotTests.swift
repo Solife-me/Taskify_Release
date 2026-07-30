@@ -1494,6 +1494,7 @@ final class TaskifySnapshotTests: XCTestCase {
                 title: "Daily review",
                 dueDate: date,
                 dueDateEnabled: true,
+                dueTimeZone: "UTC",
                 recurrence: .daily(),
                 seriesID: seriesID,
                 columnID: WeekdayColumn.containing(date, calendar: calendar).rawValue
