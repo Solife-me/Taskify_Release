@@ -15,8 +15,10 @@ struct SettingsView: View {
     @State private var sharedBoardName = ""
     @State private var showingBoardScanner = false
     @State private var identityInput = ""
-    @State private var mediaServerInput = ""
-    @State private var mediaServerValidationMessage: String?
+    @State private var showingAddFileServer = false
+    @State private var newFileServerType: TaskifyFileServerType = .originless
+    @State private var newFileServerURL = ""
+    @State private var fileServerMessage: String?
     @State private var newAppRelayURL = ""
     @State private var appRelayMessage: String?
     @State private var showingClearChatHistoryConfirmation = false
@@ -86,9 +88,6 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the chat messages stored on this device. It does not delete another participant's copy.")
-        }
-        .onAppear {
-            mediaServerInput = model.encryptedMediaServerURL
         }
         .task {
 #if DEBUG
@@ -362,7 +361,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Encrypted media storage")
                         .font(.headline)
-                    Text(mediaServerTypeLabel)
+                    Text("\(model.encryptedFileServers.count) server\(model.encryptedFileServers.count == 1 ? "" : "s") configured")
                         .font(.subheadline)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }
@@ -372,18 +371,125 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
-            if mediaServerTypeLabel == "Blossom server" {
-                Text("Warning: some Blossom servers inspect uploads and reject encrypted, unrecognizable file types. If uploads start failing, switch back to an Originless server.")
+            VStack(spacing: 6) {
+                ForEach(model.encryptedFileServers) { entry in
+                    fileServerRow(entry)
+                }
+            }
+
+            if showingAddFileServer {
+                addFileServerForm
+            } else {
+                Button {
+                    newFileServerType = .originless
+                    newFileServerURL = ""
+                    fileServerMessage = nil
+                    showingAddFileServer = true
+                } label: {
+                    Label("Add server", systemImage: "plus")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Button("Restore Taskify defaults") {
+                model.resetEncryptedFileServers()
+                fileServerMessage = "Restored the default server list."
+            }
+            .buttonStyle(.bordered)
+
+            if let fileServerMessage {
+                Text(fileServerMessage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(
+                        fileServerMessage.hasPrefix("Enter") || fileServerMessage.hasPrefix("That")
+                            ? Color.red
+                            : TaskifyTheme.secondaryText
+                    )
+            }
+
+            if model.encryptedFileServers.contains(where: { $0.type == .blossom }) {
+                Text("Warning: some Blossom servers inspect uploads and reject encrypted, unrecognizable file types. If uploads start failing, switch to an Originless server.")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.orange)
             }
 
-            TextField("https://originless.example", text: $mediaServerInput)
+            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works, but many public Blossom servers reject opaque encrypted uploads. NIP-96 servers currently upload the same way as Originless (real NIP-96 authentication isn't implemented yet). Attachments remain limited to 50 MB because this version encrypts and validates each complete file in memory before upload.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func fileServerRow(_ entry: TaskifyFileServerEntry) -> some View {
+        let isSelected = entry.url == model.encryptedMediaServerURL
+        return HStack(spacing: 10) {
+            Button {
+                model.selectEncryptedFileServer(entry.url)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                        .foregroundStyle(isSelected ? TaskifyTheme.accent : TaskifyTheme.tertiaryText)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(entry.displayLabel)
+                                .font(.subheadline)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                                .lineLimit(1)
+                            Text(entry.type.displayLabel)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(TaskifyTheme.raisedFill, in: Capsule())
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        Text(entry.url)
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 8)
+
+            Button {
+                model.removeEncryptedFileServer(entry.url)
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.encryptedFileServers.count <= 1)
+            .accessibilityLabel("Remove \(entry.displayLabel)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            isSelected ? TaskifyTheme.raisedFill : Color.clear,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+    }
+
+    private var addFileServerForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Server type", selection: $newFileServerType) {
+                ForEach(TaskifyFileServerType.allCases, id: \.self) { type in
+                    Text(type.displayLabel).tag(type)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            TextField("https://example.com", text: $newFileServerURL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .submitLabel(.done)
-                .onSubmit(saveMediaServer)
+                .onSubmit(addFileServer)
                 .padding(.horizontal, 16)
                 .frame(height: 50)
                 .background(
@@ -396,52 +502,31 @@ struct SettingsView: View {
                 )
 
             HStack(spacing: 10) {
-                Button("Save server", action: saveMediaServer)
+                Button("Add server", action: addFileServer)
                     .buttonStyle(.borderedProminent)
+                    .disabled(newFileServerURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                Menu {
-                    ForEach(TaskifyMediaServerSettings.suggestedServers, id: \.self) { server in
-                        Button(server.replacingOccurrences(of: "https://", with: "")) {
-                            mediaServerInput = server
-                            saveMediaServer()
-                        }
-                    }
-                } label: {
-                    Label("Suggested", systemImage: "chevron.up.chevron.down")
+                Button("Cancel", role: .cancel) {
+                    showingAddFileServer = false
                 }
                 .buttonStyle(.bordered)
             }
-
-            Button("Restore Taskify default") {
-                model.resetEncryptedMediaServer()
-                mediaServerInput = model.encryptedMediaServerURL
-                mediaServerValidationMessage = "Using the Taskify default."
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.encryptedMediaServerURL == TaskifyMediaServerSettings.defaultServer)
-
-            if let mediaServerValidationMessage {
-                Text(mediaServerValidationMessage)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(
-                        mediaServerValidationMessage.hasPrefix("Enter")
-                            ? Color.red
-                            : TaskifyTheme.secondaryText
-                    )
-            }
-
-            Text("Active: \(model.encryptedMediaServerURL)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(TaskifyTheme.tertiaryText)
-                .textSelection(.enabled)
-
-            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works — enter its address above — but many public Blossom servers reject opaque encrypted uploads. Attachments remain limited to 50 MB because this version encrypts and validates each complete file in memory before upload.")
-                .font(.caption2)
-                .foregroundStyle(TaskifyTheme.tertiaryText)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func addFileServer() {
+        switch model.addEncryptedFileServer(url: newFileServerURL, type: newFileServerType) {
+        case .added:
+            newFileServerURL = ""
+            showingAddFileServer = false
+            fileServerMessage = "Server added and selected."
+        case .invalidURL:
+            fileServerMessage = "Enter a valid server address."
+        case .notHTTPS:
+            fileServerMessage = "Enter an HTTPS server address."
+        case .duplicate:
+            fileServerMessage = "That server is already in the list."
+        }
     }
 
     private var chatHistoryCard: some View {
@@ -574,21 +659,6 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
-    }
-
-    private var mediaServerTypeLabel: String {
-        TaskifyFileServerType.inferred(for: model.encryptedMediaServerURL) == .blossom
-            ? "Blossom server"
-            : "Originless server"
-    }
-
-    private func saveMediaServer() {
-        if model.updateEncryptedMediaServer(mediaServerInput) {
-            mediaServerInput = model.encryptedMediaServerURL
-            mediaServerValidationMessage = "Encrypted media server saved."
-        } else {
-            mediaServerValidationMessage = "Enter a valid HTTPS server address."
-        }
     }
 
     private var availableCompoundChildren: [Board] {

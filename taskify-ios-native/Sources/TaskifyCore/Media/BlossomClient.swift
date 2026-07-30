@@ -101,19 +101,123 @@ public enum BlossomClient {
     }
 }
 
-/// The subset of Blossom-vs-everything-else server types Taskify needs to distinguish at upload
-/// time. The native app only speaks two upload transports today: a plain unauthenticated POST
-/// (used for the "originless" IPFS-gateway-style servers that are the default for encrypted
-/// attachments) and Blossom's authenticated `PUT`. A NIP-96 transport isn't implemented natively,
-/// matching the fact that none of the app's default/suggested servers are NIP-96.
-public enum TaskifyFileServerType: Equatable, Sendable {
+/// The Blossom-vs-everything-else server types Taskify needs to distinguish at upload time. Only
+/// two upload transports are actually implemented: a plain unauthenticated POST (used for both
+/// "originless" IPFS-gateway-style servers and any server labeled `nip96`, since real NIP-96/NIP-98
+/// authenticated upload isn't implemented natively) and Blossom's authenticated `PUT`. `nip96` is
+/// still a selectable/displayable type -- for labeling servers the user adds that don't match the
+/// blossom/originless heuristics, and for parity with the PWA's `FileServerType` -- it just doesn't
+/// get its own upload path yet.
+public enum TaskifyFileServerType: String, Codable, CaseIterable, Equatable, Sendable {
+    case nip96
     case blossom
-    case other
+    case originless
 
     /// Mirrors the PWA's `inferFileServerType` (`taskify-pwa/src/lib/fileStorage.ts`): guess the
     /// server's protocol from its hostname since Taskify doesn't otherwise track a per-server type.
     public static func inferred(for serverURL: String) -> TaskifyFileServerType {
         let host = URL(string: serverURL)?.host?.lowercased() ?? serverURL.lowercased()
-        return host.contains("blossom") ? .blossom : .other
+        if host.contains("originless") { return .originless }
+        if host.contains("blossom") { return .blossom }
+        return .nip96
+    }
+
+    public var displayLabel: String {
+        switch self {
+        case .nip96: "NIP-96"
+        case .blossom: "Blossom"
+        case .originless: "Originless"
+        }
+    }
+}
+
+/// Mirrors the PWA's `FileServerEntry` (`taskify-pwa/src/lib/fileStorage.ts`) field-for-field, so
+/// the JSON this encodes to/decodes from is wire-compatible with the PWA's own
+/// `encryptedFileServers` setting value.
+public struct TaskifyFileServerEntry: Codable, Equatable, Sendable, Identifiable {
+    public var url: String
+    public var type: TaskifyFileServerType
+    public var label: String?
+
+    public var id: String { url }
+
+    public init(url: String, type: TaskifyFileServerType, label: String? = nil) {
+        self.url = url
+        self.type = type
+        self.label = label
+    }
+
+    public var displayLabel: String {
+        label ?? URL(string: url)?.host ?? url
+    }
+}
+
+/// A ported subset of the PWA's `lib/fileStorage.ts`: URL normalization plus JSON parse/serialize
+/// for a list of `TaskifyFileServerEntry`, matching the PWA's `normalizeFileServerUrl`/
+/// `parseFileServers`/`serializeFileServers`/`findServerEntry` closely enough that the resulting
+/// JSON round-trips through the encrypted PWA account backup unchanged.
+public enum TaskifyFileServerList {
+    /// Matches the PWA's default *encrypted*-context server list (`DEFAULT_FILE_SERVERS` filtered
+    /// to `type === "originless"`): encrypted, opaque ciphertext trips up the content-sniffing many
+    /// public Blossom/NIP-96 servers do, so only Originless servers are suggested by default.
+    /// Blossom and NIP-96 remain fully addable by the user.
+    public static let defaults: [TaskifyFileServerEntry] = [
+        TaskifyFileServerEntry(url: "https://originless.solife.me", type: .originless, label: "originless.solife.me"),
+        TaskifyFileServerEntry(url: "https://originless.besoeasy.com", type: .originless, label: "originless.besoeasy.com"),
+    ]
+
+    /// Scheme + host + path only, no query/fragment/credentials, no trailing slash -- mirrors the
+    /// PWA's `normalizeFileServerUrl`. HTTPS is not enforced here (the PWA's normalizer doesn't
+    /// either); native's own upload-time HTTPS requirement is checked separately by callers that
+    /// need it (e.g. when a user adds a new server).
+    public static func normalizedURL(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        func build(_ candidate: String) -> String? {
+            guard var components = URLComponents(string: candidate),
+                  let scheme = components.scheme, !scheme.isEmpty,
+                  let host = components.host, !host.isEmpty else { return nil }
+            var path = components.path
+            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+            components.path = path == "/" ? "" : path
+            components.query = nil
+            components.fragment = nil
+            components.user = nil
+            components.password = nil
+            return components.url?.absoluteString
+        }
+        return build(trimmed) ?? build("https://\(trimmed)")
+    }
+
+    public static func parse(_ raw: String?) -> [TaskifyFileServerEntry] {
+        guard let raw, let data = raw.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([TaskifyFileServerEntry].self, from: data) else {
+            return defaults
+        }
+        let normalized = decoded.compactMap { entry -> TaskifyFileServerEntry? in
+            guard let url = normalizedURL(entry.url) else { return nil }
+            return TaskifyFileServerEntry(url: url, type: entry.type, label: entry.label)
+        }
+        return normalized.isEmpty ? defaults : normalized
+    }
+
+    public static func serialize(_ servers: [TaskifyFileServerEntry]) -> String {
+        let normalized = servers.map { entry in
+            TaskifyFileServerEntry(
+                url: normalizedURL(entry.url) ?? entry.url,
+                type: entry.type,
+                label: entry.label
+            )
+        }
+        guard let data = try? JSONEncoder().encode(normalized),
+              let json = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return json
+    }
+
+    public static func find(_ servers: [TaskifyFileServerEntry], url: String) -> TaskifyFileServerEntry? {
+        guard let normalized = normalizedURL(url) else { return nil }
+        return servers.first { (normalizedURL($0.url) ?? $0.url) == normalized }
     }
 }

@@ -2,60 +2,104 @@ import Foundation
 import TaskifyCore
 import UniformTypeIdentifiers
 
+/// Manages the encrypted-context file server list task attachments and chat attachments upload
+/// to, following the PWA's `encryptedFileServers`/`encryptedFileStorageServer` settings pair
+/// (`taskify-pwa/src/ui/settings/FileServersSection.tsx`): a persisted list of servers plus which
+/// one is currently selected.
 enum TaskifyMediaServerSettings {
-    static let storageKey = "taskify.encryptedMediaServerURL"
-    static let pwaSettingsKey = "encryptedFileStorageServer"
+    static let selectedServerPWAKey = "encryptedFileStorageServer"
+    static let serverListPWAKey = "encryptedFileServers"
     static let defaultServer = "https://originless.solife.me"
-    // Matches the PWA's default `encryptedFileServers` list (only "originless"-type entries):
-    // encrypted, opaque ciphertext trips up the content-sniffing many public Blossom servers do
-    // (e.g. blossom.band, which is backed by nostr.build's strict mime allowlist and 415s any
-    // upload it can't recognize as a real image/document). Blossom is still fully supported below
-    // if a user manually enters a server URL — just not pre-suggested here, since we can't vouch
-    // for whether a given public instance accepts arbitrary encrypted bytes.
-    static let suggestedServers = [
-        "https://originless.solife.me",
-        "https://originless.besoeasy.com",
-    ]
+
+    private static let selectedServerKey = "taskify.encryptedMediaServerURL"
+    private static let serverListKey = "taskify.encryptedFileServers"
+
+    static var servers: [TaskifyFileServerEntry] {
+        if let stored = UserDefaults.standard.string(forKey: serverListKey), !stored.isEmpty {
+            return TaskifyFileServerList.parse(stored)
+        }
+        // Migrates a custom server saved before this list existed (a single free-text field), so
+        // upgrading users don't silently lose a self-hosted server they'd already configured.
+        if let legacy = UserDefaults.standard.string(forKey: selectedServerKey),
+           let normalized = TaskifyFileServerList.normalizedURL(legacy),
+           !TaskifyFileServerList.defaults.contains(where: { $0.url == normalized }) {
+            let entry = TaskifyFileServerEntry(
+                url: normalized,
+                type: TaskifyFileServerType.inferred(for: normalized),
+                label: URL(string: normalized)?.host
+            )
+            return TaskifyFileServerList.defaults + [entry]
+        }
+        return TaskifyFileServerList.defaults
+    }
 
     static var configuredServer: String {
-        let stored = UserDefaults.standard.string(forKey: storageKey)
-        return normalizedServer(stored ?? "") ?? defaultServer
+        let currentServers = servers
+        if let stored = UserDefaults.standard.string(forKey: selectedServerKey),
+           let normalized = TaskifyFileServerList.normalizedURL(stored),
+           currentServers.contains(where: { $0.url == normalized }) {
+            return normalized
+        }
+        return currentServers.first?.url ?? defaultServer
     }
 
     @discardableResult
-    static func save(_ value: String) -> String? {
-        guard let normalized = normalizedServer(value) else { return nil }
-        UserDefaults.standard.set(normalized, forKey: storageKey)
+    static func selectServer(_ url: String) -> String? {
+        guard let normalized = TaskifyFileServerList.normalizedURL(url),
+              servers.contains(where: { $0.url == normalized }) else { return nil }
+        UserDefaults.standard.set(normalized, forKey: selectedServerKey)
         return normalized
     }
 
-    static func reset() {
-        UserDefaults.standard.removeObject(forKey: storageKey)
+    enum AddResult: Equatable {
+        case added(TaskifyFileServerEntry)
+        case invalidURL
+        case notHTTPS
+        case duplicate
     }
 
-    static func normalizedServer(_ value: String) -> String? {
-        var candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !candidate.isEmpty else { return nil }
-        if !candidate.contains("://") {
-            candidate = "https://\(candidate)"
+    @discardableResult
+    static func addServer(url: String, type: TaskifyFileServerType) -> AddResult {
+        guard let normalized = TaskifyFileServerList.normalizedURL(url) else { return .invalidURL }
+        guard normalized.lowercased().hasPrefix("https://") else { return .notHTTPS }
+        var current = servers
+        guard !current.contains(where: { $0.url == normalized }) else { return .duplicate }
+        let entry = TaskifyFileServerEntry(url: normalized, type: type, label: URL(string: normalized)?.host)
+        current.append(entry)
+        UserDefaults.standard.set(TaskifyFileServerList.serialize(current), forKey: serverListKey)
+        UserDefaults.standard.set(normalized, forKey: selectedServerKey)
+        return .added(entry)
+    }
+
+    /// Removing the currently-selected server falls back to the first remaining one, matching the
+    /// PWA's `FileServersSection.handleDelete`. Refuses to remove the last server.
+    @discardableResult
+    static func removeServer(_ url: String) -> Bool {
+        guard let normalized = TaskifyFileServerList.normalizedURL(url) else { return false }
+        var current = servers
+        guard current.count > 1, let index = current.firstIndex(where: { $0.url == normalized }) else {
+            return false
         }
-        guard var components = URLComponents(string: candidate),
-              components.scheme?.lowercased() == "https",
-              let host = components.host,
-              !host.isEmpty,
-              components.user == nil,
-              components.password == nil,
-              components.query == nil,
-              components.fragment == nil else {
-            return nil
+        current.remove(at: index)
+        UserDefaults.standard.set(TaskifyFileServerList.serialize(current), forKey: serverListKey)
+        if UserDefaults.standard.string(forKey: selectedServerKey).flatMap(TaskifyFileServerList.normalizedURL) == normalized {
+            UserDefaults.standard.set(current[0].url, forKey: selectedServerKey)
         }
-        components.scheme = "https"
-        var path = components.path
-        while path.count > 1, path.hasSuffix("/") {
-            path.removeLast()
-        }
-        components.path = path == "/" ? "" : path
-        return components.url?.absoluteString
+        return true
+    }
+
+    static func resetToDefaults() {
+        UserDefaults.standard.removeObject(forKey: serverListKey)
+        UserDefaults.standard.removeObject(forKey: selectedServerKey)
+    }
+
+    /// Used by inbound account-backup application, which hands over the PWA's own raw settings
+    /// values directly rather than going through the add/remove mutators above.
+    @discardableResult
+    static func applyServerList(_ raw: String) -> [TaskifyFileServerEntry] {
+        let parsed = TaskifyFileServerList.parse(raw)
+        UserDefaults.standard.set(TaskifyFileServerList.serialize(parsed), forKey: serverListKey)
+        return parsed
     }
 }
 

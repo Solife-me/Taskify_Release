@@ -281,6 +281,7 @@ final class AppModel {
     private(set) var notificationStatus = "Checking"
     private(set) var backgroundSyncStatus = "Ready"
     private(set) var encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+    private(set) var encryptedFileServers = TaskifyMediaServerSettings.servers
     private(set) var fastingRemindersEnabled = FastingRemindersSettings.enabled
     private(set) var fastingRemindersMode = FastingRemindersSettings.mode
     private(set) var fastingRemindersPerMonth = FastingRemindersSettings.perMonth
@@ -1245,19 +1246,33 @@ final class AppModel {
         refreshNotifications(requestPermission: false)
     }
 
-    @discardableResult
-    func updateEncryptedMediaServer(_ value: String) -> Bool {
-        guard let normalized = TaskifyMediaServerSettings.save(value) else {
-            errorMessage = "Enter a valid HTTPS Originless server address."
-            return false
-        }
+    func selectEncryptedFileServer(_ url: String) {
+        guard let normalized = TaskifyMediaServerSettings.selectServer(url) else { return }
         encryptedMediaServerURL = normalized
         scheduleAccountBackupPublish()
-        return true
     }
 
-    func resetEncryptedMediaServer() {
-        TaskifyMediaServerSettings.reset()
+    @discardableResult
+    func addEncryptedFileServer(url: String, type: TaskifyFileServerType) -> TaskifyMediaServerSettings.AddResult {
+        let result = TaskifyMediaServerSettings.addServer(url: url, type: type)
+        if case .added = result {
+            encryptedFileServers = TaskifyMediaServerSettings.servers
+            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+            scheduleAccountBackupPublish()
+        }
+        return result
+    }
+
+    func removeEncryptedFileServer(_ url: String) {
+        guard TaskifyMediaServerSettings.removeServer(url) else { return }
+        encryptedFileServers = TaskifyMediaServerSettings.servers
+        encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+        scheduleAccountBackupPublish()
+    }
+
+    func resetEncryptedFileServers() {
+        TaskifyMediaServerSettings.resetToDefaults()
+        encryptedFileServers = TaskifyMediaServerSettings.servers
         encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
         scheduleAccountBackupPublish()
     }
@@ -4247,8 +4262,11 @@ final class AppModel {
             managedNostrBoardIDs: managedAccountBackupBoardIDs,
             timestamp: createdAt
         )
-        updatedPayload.settings[TaskifyMediaServerSettings.pwaSettingsKey] = .string(
+        updatedPayload.settings[TaskifyMediaServerSettings.selectedServerPWAKey] = .string(
             encryptedMediaServerURL
+        )
+        updatedPayload.settings[TaskifyMediaServerSettings.serverListPWAKey] = .string(
+            TaskifyFileServerList.serialize(encryptedFileServers)
         )
         updatedPayload.settings[ChatHistorySettings.pwaSettingsKey] = .string(
             chatMessageRetention.rawValue
@@ -4301,9 +4319,16 @@ final class AppModel {
     }
 
     private func applyPWASettings(from payload: NostrAppBackupPayload) {
-        if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.pwaSettingsKey],
-           let normalized = TaskifyMediaServerSettings.save(value) {
+        // Applied before the selected-server value below, since selectServer only accepts a URL
+        // that's already present in the list.
+        if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.serverListPWAKey] {
+            encryptedFileServers = TaskifyMediaServerSettings.applyServerList(value)
+        }
+        if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.selectedServerPWAKey],
+           let normalized = TaskifyMediaServerSettings.selectServer(value) {
             encryptedMediaServerURL = normalized
+        } else {
+            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
         }
         if case .string(let value)? = payload.settings[ChatHistorySettings.pwaSettingsKey],
            let retention = ChatMessageRetention(rawValue: value) {

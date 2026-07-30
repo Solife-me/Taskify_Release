@@ -44,8 +44,11 @@ final class BlossomClientTests: XCTestCase {
     func testFileServerTypeIsInferredFromHostname() {
         XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://blossom.band"), .blossom)
         XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://cdn.blossom.example.com"), .blossom)
-        XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://originless.solife.me"), .other)
-        XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://nostr.build"), .other)
+        XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://originless.solife.me"), .originless)
+        XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://nostr.build"), .nip96)
+        // "originless" wins if a hostname somehow matched both heuristics, matching the PWA's
+        // inferFileServerType check order (originless checked before blossom).
+        XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://originless-blossom.example.com"), .originless)
     }
 
     private func decodedEvent(from header: String) throws -> NostrEvent {
