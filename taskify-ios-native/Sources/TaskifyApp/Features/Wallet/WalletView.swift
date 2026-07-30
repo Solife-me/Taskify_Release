@@ -317,6 +317,8 @@ final class WalletViewModel: ObservableObject {
                     case .received(let amount):
                         claimedCount += 1
                         claimedTotal += amount
+                    case .alreadyReceived:
+                        lastError = "This eCash was already received."
                     case .queued:
                         claimedCount += 1
                     }
@@ -535,6 +537,8 @@ final class WalletViewModel: ObservableObject {
         case .received(let amount):
             statusMessage = "Received \(formattedSats(amount))"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .alreadyReceived:
+            statusMessage = "This ecash was already received"
         case .queued:
             await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
             statusMessage = "Ecash saved — Taskify will retry automatically"
@@ -831,17 +835,19 @@ final class WalletViewModel: ObservableObject {
                 case .received(let amount):
                     claimedTotal += amount
                     claimedCount += 1
+                case .alreadyReceived:
+                    // Idempotent replay of a token this wallet credited earlier. It is handled,
+                    // but it is not a fresh balance change and must not produce another receipt.
+                    break
                 case .queued:
                     // Now tracked by the pending-receive system's own retry loop.
                     break
                 }
-                // Removed immediately, not batched after the loop: if the app is interrupted
-                // partway through, an already-claimed delivery must not be left in the durable
-                // inbox to be re-claimed-and-reported all over again on the next cold launch.
-                try? CashuIncomingTokenInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
+                try? CashuIncomingTokenInboxStore.markHandled(delivery, at: inboxURL)
             } catch {
-                // Malformed or already-spent — this delivery will never succeed. Drop it.
-                try? CashuIncomingTokenInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
+                // Malformed, already-spent, or already owned by the pending-receive retry system:
+                // this NIP-17 delivery itself must never be replayed into another redemption.
+                try? CashuIncomingTokenInboxStore.markHandled(delivery, at: inboxURL)
             }
         }
         guard claimedCount > 0 else { return 0 }
@@ -4103,6 +4109,8 @@ struct ReceiveCashuSheet: View {
                                         do {
                                             switch try await wallet.submitReceive(token) {
                                             case .received(let amount):
+                                                receivedAmount = amount
+                                            case .alreadyReceived(let amount):
                                                 receivedAmount = amount
                                             case .queued(let pending):
                                                 queuedReceive = pending

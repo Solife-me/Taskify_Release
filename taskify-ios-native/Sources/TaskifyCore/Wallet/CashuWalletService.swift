@@ -516,6 +516,9 @@ public struct CashuPendingReceive: Identifiable, Codable, Equatable, Sendable {
 
 public enum CashuReceiveSubmissionResult: Equatable, Sendable {
     case received(UInt64)
+    /// This exact token was credited by this wallet in an earlier operation. It is a successful
+    /// idempotent lookup, not a new balance change, so callers must not announce another receipt.
+    case alreadyReceived(UInt64)
     case queued(CashuPendingReceive)
 }
 
@@ -2137,7 +2140,7 @@ public actor CashuWalletService {
         if let artifact = completedIncomingArtifact(for: trimmed) {
             pendingReceives.removeAll { $0.id == id }
             try persistPendingReceives()
-            return .received(artifact.amount ?? preview.receivedAmount)
+            return .alreadyReceived(artifact.amount ?? preview.receivedAmount)
         }
 
         if !pendingReceives.contains(where: { $0.id == id }) {

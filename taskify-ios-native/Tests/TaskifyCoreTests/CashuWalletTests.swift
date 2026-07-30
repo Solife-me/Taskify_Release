@@ -664,6 +664,84 @@ final class CashuWalletTests: XCTestCase {
         XCTAssertTrue(CashuIncomingTokenInboxStore.load(from: url, now: now).isEmpty)
     }
 
+    func testIncomingTokenInboxDurablySuppressesHandledRelayReplays() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-handled-token-inbox-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("inbox.json")
+        let now = Date(timeIntervalSince1970: 4_000_000)
+        let delivery = CashuIncomingTokenDelivery(
+            eventID: String(repeating: "a", count: 64),
+            token: "cashuAredeemed-by-another-client",
+            senderPublicKey: String(repeating: "b", count: 64),
+            receivedAt: now
+        )
+
+        XCTAssertTrue(try CashuIncomingTokenInboxStore.enqueue(delivery, at: url, now: now))
+        try CashuIncomingTokenInboxStore.markHandled(delivery, at: url, now: now)
+        XCTAssertTrue(CashuIncomingTokenInboxStore.load(from: url, now: now).isEmpty)
+
+        XCTAssertFalse(
+            try CashuIncomingTokenInboxStore.enqueue(delivery, at: url, now: now),
+            "A relay replay of the same NIP-17 wrap must not schedule another redemption"
+        )
+
+        let duplicateToken = CashuIncomingTokenDelivery(
+            eventID: String(repeating: "c", count: 64),
+            token: delivery.token,
+            senderPublicKey: delivery.senderPublicKey,
+            receivedAt: delivery.receivedAt
+        )
+        XCTAssertFalse(
+            try CashuIncomingTokenInboxStore.enqueue(duplicateToken, at: url, now: now),
+            "The same token inside a different relay wrap must also remain suppressed"
+        )
+
+        let freshToken = CashuIncomingTokenDelivery(
+            eventID: String(repeating: "d", count: 64),
+            token: "cashuAnew-payment",
+            senderPublicKey: delivery.senderPublicKey,
+            receivedAt: delivery.receivedAt
+        )
+        XCTAssertTrue(try CashuIncomingTokenInboxStore.enqueue(freshToken, at: url, now: now))
+        XCTAssertEqual(CashuIncomingTokenInboxStore.load(from: url, now: now), [freshToken])
+    }
+
+    func testIncomingTokenInboxHandledLedgerExpiresAfterRelayReplayWindow() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-expired-handled-token-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("inbox.json")
+        let now = Date(timeIntervalSince1970: 4_000_000)
+        let delivery = CashuIncomingTokenDelivery(
+            eventID: String(repeating: "a", count: 64),
+            token: "cashuAhandled-token",
+            senderPublicKey: String(repeating: "b", count: 64),
+            receivedAt: now
+        )
+
+        XCTAssertTrue(try CashuIncomingTokenInboxStore.enqueue(delivery, at: url, now: now))
+        try CashuIncomingTokenInboxStore.markHandled(delivery, at: url, now: now)
+
+        let afterReplayWindow = now.addingTimeInterval(32 * 24 * 60 * 60)
+        let laterDelivery = CashuIncomingTokenDelivery(
+            eventID: String(repeating: "c", count: 64),
+            token: delivery.token,
+            senderPublicKey: delivery.senderPublicKey,
+            receivedAt: afterReplayWindow
+        )
+        XCTAssertTrue(
+            try CashuIncomingTokenInboxStore.enqueue(
+                laterDelivery,
+                at: url,
+                now: afterReplayWindow
+            ),
+            "Handled fingerprints should not accumulate forever after relays stop replaying them"
+        )
+    }
+
     func testSolifeAddressIsDerivedFromNpubWithNoNetworkCall() {
         XCTAssertEqual(SolifeClient.address(npub: "npub1example"), "npub1example@solife.me")
     }

@@ -421,7 +421,18 @@ public struct CashuIncomingTokenDelivery: Identifiable, Codable, Equatable, Send
 
 public enum CashuIncomingTokenInboxStore {
     private static let maximumAge: TimeInterval = 30 * 24 * 60 * 60
+    /// The NIP-17 subscription replays up to 30 days of history. Keep handled identifiers one day
+    /// longer so a delivery completed or rejected near the boundary cannot be re-enqueued by a
+    /// later relay during that replay window.
+    private static let handledMaximumAge: TimeInterval = 31 * 24 * 60 * 60
     private static let maximumCount = 200
+    private static let maximumHandledCount = 1_000
+
+    private struct HandledDelivery: Codable, Equatable {
+        var eventID: String
+        var tokenFingerprint: String
+        var handledAt: Date
+    }
 
     public static func defaultURL() throws -> URL {
         let directory = FileManager.default.urls(
@@ -445,7 +456,14 @@ public enum CashuIncomingTokenInboxStore {
         now: Date = Date()
     ) throws -> Bool {
         var deliveries = load(from: url, now: now)
-        guard !deliveries.contains(where: { $0.eventID == delivery.eventID }) else { return false }
+        let fingerprint = tokenFingerprint(delivery.token)
+        let handled = handledDeliveries(at: url, now: now)
+        guard !handled.contains(where: {
+            $0.eventID == delivery.eventID || $0.tokenFingerprint == fingerprint
+        }),
+        !deliveries.contains(where: {
+            $0.eventID == delivery.eventID || tokenFingerprint($0.token) == fingerprint
+        }) else { return false }
         deliveries.append(delivery)
         deliveries = Array(deliveries.sorted { $0.receivedAt < $1.receivedAt }.suffix(maximumCount))
         try save(deliveries, to: url)
@@ -457,7 +475,14 @@ public enum CashuIncomingTokenInboxStore {
               let decoded = try? JSONDecoder().decode([CashuIncomingTokenDelivery].self, from: data) else {
             return []
         }
-        return decoded.filter { now.timeIntervalSince($0.receivedAt) <= maximumAge }
+        let handled = handledDeliveries(at: url, now: now)
+        let handledEventIDs = Set(handled.map(\.eventID))
+        let handledFingerprints = Set(handled.map(\.tokenFingerprint))
+        return decoded.filter {
+            now.timeIntervalSince($0.receivedAt) <= maximumAge
+                && !handledEventIDs.contains($0.eventID)
+                && !handledFingerprints.contains(tokenFingerprint($0.token))
+        }
     }
 
     public static func remove(eventIDs: Set<String>, at url: URL, now: Date = Date()) throws {
@@ -465,9 +490,72 @@ public enum CashuIncomingTokenInboxStore {
         try save(remaining, to: url)
     }
 
+    /// Atomically establishes replay suppression before removing the pending delivery. If the app
+    /// is interrupted between those writes, `load` still filters the pending copy using this
+    /// ledger, and relay replay cannot enqueue either the same wrap or the same token again.
+    public static func markHandled(
+        _ delivery: CashuIncomingTokenDelivery,
+        at url: URL,
+        now: Date = Date()
+    ) throws {
+        let fingerprint = tokenFingerprint(delivery.token)
+        var handled = handledDeliveries(at: url, now: now)
+        if let index = handled.firstIndex(where: {
+            $0.eventID == delivery.eventID || $0.tokenFingerprint == fingerprint
+        }) {
+            handled[index] = HandledDelivery(
+                eventID: delivery.eventID,
+                tokenFingerprint: fingerprint,
+                handledAt: now
+            )
+        } else {
+            handled.append(HandledDelivery(
+                eventID: delivery.eventID,
+                tokenFingerprint: fingerprint,
+                handledAt: now
+            ))
+        }
+        handled = Array(handled.sorted { $0.handledAt < $1.handledAt }.suffix(maximumHandledCount))
+        try saveHandled(handled, at: url)
+        try remove(eventIDs: [delivery.eventID], at: url, now: now)
+    }
+
     private static func save(_ deliveries: [CashuIncomingTokenDelivery], to url: URL) throws {
         let data = try JSONEncoder().encode(deliveries)
         try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+    }
+
+    private static func handledDeliveries(
+        at inboxURL: URL,
+        now: Date
+    ) -> [HandledDelivery] {
+        let url = handledURL(for: inboxURL)
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode([HandledDelivery].self, from: data) else {
+            return []
+        }
+        return decoded.filter { now.timeIntervalSince($0.handledAt) <= handledMaximumAge }
+    }
+
+    private static func saveHandled(
+        _ deliveries: [HandledDelivery],
+        at inboxURL: URL
+    ) throws {
+        let data = try JSONEncoder().encode(deliveries)
+        try data.write(
+            to: handledURL(for: inboxURL),
+            options: [.atomic, .completeFileProtectionUnlessOpen]
+        )
+    }
+
+    private static func handledURL(for inboxURL: URL) -> URL {
+        inboxURL
+            .deletingPathExtension()
+            .appendingPathExtension("handled.json")
+    }
+
+    private static func tokenFingerprint(_ token: String) -> String {
+        CashuWalletService.pendingReceiveFingerprint(token)
     }
 }
 
