@@ -1,6 +1,7 @@
 import SwiftUI
 import TaskifyCore
 import UIKit
+import UniformTypeIdentifiers
 import VisionKit
 
 struct SettingsView: View {
@@ -22,6 +23,12 @@ struct SettingsView: View {
     @State private var newAppRelayURL = ""
     @State private var appRelayMessage: String?
     @State private var showingClearChatHistoryConfirmation = false
+    @State private var localBackupExportDocument: LocalBackupDocument?
+    @State private var showingLocalBackupExporter = false
+    @State private var showingLocalBackupImporter = false
+    @State private var pendingLocalBackupRestore: TaskifySnapshot?
+    @State private var confirmingLocalBackupRestore = false
+    @State private var localBackupMessage: String?
     /// Empty by default -- every settings group starts collapsed, matching the PWA's
     /// collapsed-by-default accordions, so opening Settings shows a scannable list of category
     /// headers instead of every card's full contents at once.
@@ -86,6 +93,10 @@ struct SettingsView: View {
                         storageCard
                     }
 
+                    settingsGroup("Backup", systemImage: "arrow.down.doc.fill") {
+                        localBackupCard
+                    }
+
                     settingsGroup("App", systemImage: "checkmark.seal.fill") {
                         migrationCard
                     }
@@ -121,6 +132,46 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the chat messages stored on this device. It does not delete another participant's copy.")
+        }
+        .fileExporter(
+            isPresented: $showingLocalBackupExporter,
+            document: localBackupExportDocument,
+            contentType: .json,
+            defaultFilename: "taskify-backup"
+        ) { result in
+            switch result {
+            case .success:
+                localBackupMessage = "Backup saved."
+            case .failure(let error):
+                localBackupMessage = error.localizedDescription
+            }
+            localBackupExportDocument = nil
+        }
+        .fileImporter(
+            isPresented: $showingLocalBackupImporter,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            handleLocalBackupImport(result)
+        }
+        .confirmationDialog(
+            "Replace all local data with this backup?",
+            isPresented: $confirmingLocalBackupRestore,
+            titleVisibility: .visible
+        ) {
+            Button("Restore backup", role: .destructive) {
+                if let pendingLocalBackupRestore {
+                    let restored = pendingLocalBackupRestore
+                    Task { await model.restoreLocalBackup(restored) }
+                    localBackupMessage = "Local backup restored."
+                }
+                pendingLocalBackupRestore = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingLocalBackupRestore = nil
+            }
+        } message: {
+            Text("This replaces every board, task, and related setting on this device with the contents of the backup file. It does not change your Nostr identity or wallet. This can't be undone.")
         }
         .task {
 #if DEBUG
@@ -1435,6 +1486,80 @@ struct SettingsView: View {
         .taskifyGlass(cornerRadius: 24)
     }
 
+    private var localBackupCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.down.doc.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Local backup")
+                        .font(.headline)
+                    Text("An offline copy, independent of Nostr sync")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+
+            Text("Downloads every board, task, contact, and Bible/scripture-memory setting to one file on this device. It does not include your Nostr identity or wallet seed — those already have their own backup flows above and in the Wallet tab.")
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            HStack(spacing: 10) {
+                Button {
+                    exportLocalBackup()
+                } label: {
+                    Label("Download backup", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    localBackupMessage = nil
+                    showingLocalBackupImporter = true
+                } label: {
+                    Label("Restore", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if let localBackupMessage {
+                Text(localBackupMessage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func exportLocalBackup() {
+        do {
+            localBackupExportDocument = LocalBackupDocument(json: try model.localBackupJSON())
+            showingLocalBackupExporter = true
+        } catch {
+            localBackupMessage = "Could not prepare the backup file."
+        }
+    }
+
+    private func handleLocalBackupImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                pendingLocalBackupRestore = try JSONDecoder().decode(TaskifySnapshot.self, from: data)
+                confirmingLocalBackupRestore = true
+            } catch {
+                localBackupMessage = "That file isn't a valid Taskify backup."
+            }
+        case .failure(let error):
+            localBackupMessage = error.localizedDescription
+        }
+    }
+
     private var migrationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -2462,6 +2587,27 @@ private struct TaskifyBoardCodeScanner: UIViewControllerRepresentable {
         ) {
             onError("Camera scanning became unavailable. You can still paste the board share manually.")
         }
+    }
+}
+
+private struct LocalBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var json: String
+
+    init(json: String) {
+        self.json = json
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let json = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.json = json
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(json.utf8))
     }
 }
 

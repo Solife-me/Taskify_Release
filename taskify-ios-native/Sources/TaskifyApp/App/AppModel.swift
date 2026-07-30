@@ -1277,6 +1277,44 @@ final class AppModel {
         scheduleAccountBackupPublish()
     }
 
+    // MARK: - Local backup
+
+    /// A device-local snapshot of every board/task/contact/Bible-tracker/scripture-memory field,
+    /// matching the PWA's "Download backup" (`taskify-pwa/src/ui/settings/BackupSection.tsx`): an
+    /// additional offline copy independent of the encrypted Nostr account backup, so data survives
+    /// even if every relay is unreachable. Deliberately excludes the Nostr identity and wallet
+    /// seed -- both already have their own dedicated export flows (Settings' nsec copy, the
+    /// wallet's seed-phrase backup), and bundling secrets into a plain-JSON file here would make
+    /// this backup far more sensitive to lose track of.
+    func localBackupJSON() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(snapshot)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return json
+    }
+
+    /// Wholesale-replaces local app data from an imported local backup file. Unlike merging
+    /// remote sync updates, this is a full restore -- callers must confirm with the user first,
+    /// since it discards whatever was on the device. Re-runs the same post-load bookkeeping
+    /// `load()` does after reading the store from disk (notification scheduling, Bible/fasting
+    /// reminder reconciliation, sync reconfiguration for the restored boards' relays, Taskify-event
+    /// recurrence window, contacts) so the restored state is fully wired up, not just held in
+    /// memory. Identity/keys are untouched -- this only ever replaces task/board/contact data.
+    func restoreLocalBackup(_ restored: TaskifySnapshot) async {
+        snapshot = restored
+        await persistImmediately()
+        applyStartupBoardPreference()
+        refreshNotifications(requestPermission: false)
+        reconcileFastingReminders()
+        reconcileScriptureMemory()
+        reconfigureSync()
+        maintainTaskifyEventRecurrenceWindow()
+        refreshContacts()
+    }
+
     func retrySync() {
         syncStatus = "Connecting"
         syncDetail = "Retrying relay connections"
