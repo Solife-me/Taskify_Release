@@ -4749,6 +4749,7 @@ private struct SendLightningSheet: View {
     @State private var result: CashuLightningPaymentResult?
     @State private var localError: String?
     @State private var showingScanner = false
+    @State private var isResolvingAddress = false
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -4762,10 +4763,20 @@ private struct SendLightningSheet: View {
         return UInt64(value)
     }
 
+    /// A `name@domain` Lightning Address (LUD-16) rather than a pasted/scanned BOLT11 invoice --
+    /// matches the PWA's `isLnAddress` branch in `CashuWalletModal.tsx`'s `handlePayInvoice`.
+    private var isLightningAddress: Bool {
+        LnurlPayClient.isLightningAddress(invoice)
+    }
+
     private var canContinue: Bool {
-        !invoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !selectedMintURL.isEmpty
-            && (amountText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || customAmount != nil)
+        guard !invoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !selectedMintURL.isEmpty else {
+            return false
+        }
+        if isLightningAddress {
+            return (customAmount ?? 0) > 0
+        }
+        return amountText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || customAmount != nil
     }
 
     var body: some View {
@@ -4804,7 +4815,7 @@ private struct SendLightningSheet: View {
             }
         }
         .preferredColorScheme(.dark)
-        .interactiveDismissDisabled(wallet.isWorking)
+        .interactiveDismissDisabled(wallet.isWorking || isResolvingAddress)
         .onAppear {
             if selectedMintURL.isEmpty { selectedMintURL = wallet.activeMint?.url ?? "" }
         }
@@ -4832,7 +4843,7 @@ private struct SendLightningSheet: View {
                 Text("Pay a Lightning invoice")
                     .font(.title2.bold())
                     .foregroundStyle(TaskifyTheme.primaryText)
-                Text("Paste or scan a BOLT11 invoice, then review the exact amount and fees before paying.")
+                Text("Paste or scan a BOLT11 invoice or a lightning address (name@domain.com), then review the exact amount and fees before paying.")
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(TaskifyTheme.secondaryText)
@@ -4840,7 +4851,7 @@ private struct SendLightningSheet: View {
 
             ZStack(alignment: .topLeading) {
                 if invoice.isEmpty {
-                    Text("Lightning invoice")
+                    Text("Lightning invoice or address")
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                         .padding(.horizontal, 15)
                         .padding(.vertical, 14)
@@ -4885,11 +4896,11 @@ private struct SendLightningSheet: View {
             mintPicker
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("AMOUNTLESS INVOICE")
+                Text(isLightningAddress ? "AMOUNT" : "AMOUNTLESS INVOICE")
                     .font(.caption.bold())
                     .tracking(1)
                     .foregroundStyle(TaskifyTheme.accent)
-                TextField("Optional amount in sats", text: $amountText)
+                TextField(isLightningAddress ? "Amount in sats" : "Optional amount in sats", text: $amountText)
                     .keyboardType(.numberPad)
                     .focused($focusedField, equals: .amount)
                     .padding(.horizontal, 15)
@@ -4897,7 +4908,9 @@ private struct SendLightningSheet: View {
                     .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
                     .foregroundStyle(TaskifyTheme.primaryText)
-                Text("Leave this empty unless the invoice does not contain an amount.")
+                Text(isLightningAddress
+                    ? "A lightning address has no built-in amount, so enter how much to send."
+                    : "Leave this empty unless the invoice does not contain an amount.")
                     .font(.caption)
                     .foregroundStyle(TaskifyTheme.tertiaryText)
             }
@@ -4906,17 +4919,32 @@ private struct SendLightningSheet: View {
                 focusedField = nil
                 Task {
                     do {
-                        quote = try await wallet.prepareLightningPayment(
-                            mintURL: selectedMintURL,
-                            invoice: invoice,
-                            amount: customAmount
-                        )
+                        if isLightningAddress {
+                            isResolvingAddress = true
+                            let resolution = try await LnurlPayClient.resolveInvoice(
+                                address: invoice,
+                                amountSats: customAmount ?? 0
+                            )
+                            isResolvingAddress = false
+                            quote = try await wallet.prepareLightningPayment(
+                                mintURL: selectedMintURL,
+                                invoice: resolution.invoice,
+                                amount: resolution.amountSats
+                            )
+                        } else {
+                            quote = try await wallet.prepareLightningPayment(
+                                mintURL: selectedMintURL,
+                                invoice: invoice,
+                                amount: customAmount
+                            )
+                        }
                     } catch {
+                        isResolvingAddress = false
                         localError = WalletViewModel.message(for: error)
                     }
                 }
             } label: {
-                Text(wallet.isWorking ? "Checking invoice…" : "Review payment")
+                Text(isResolvingAddress ? "Resolving address…" : (wallet.isWorking ? "Checking invoice…" : "Review payment"))
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
@@ -4924,7 +4952,7 @@ private struct SendLightningSheet: View {
                     .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
             }
             .buttonStyle(.plain)
-            .disabled(wallet.isWorking || !canContinue)
+            .disabled(wallet.isWorking || isResolvingAddress || !canContinue)
 
             Label(
                 "The selected Cashu mint pays the invoice. Taskify never sends your recovery phrase.",
