@@ -378,6 +378,10 @@ final class CryptoSyncTests: XCTestCase {
             title: "Moved event",
             schedule: .date,
             startDateValue: "2026-07-30",
+            recurrence: .daily(
+                until: try XCTUnwrap(TaskifyEvent.dateOnly("2026-07-29"))
+            ),
+            seriesID: "event-series",
             canonicalAddress: "",
             viewAddress: "",
             eventKey: Data(repeating: 10, count: 32).base64EncodedString(),
@@ -406,12 +410,16 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(canonical["deleted"] as? Bool, true)
         XCTAssertNil(canonical["title"])
         XCTAssertNil(canonical["kind"])
+        XCTAssertEqual(canonical["seriesId"] as? String, "event-series")
+        XCTAssertNotNil(canonical["recurrence"])
         let decoded = try TaskifyCalendarEventCodec.decodeCanonicalEvent(
             pair.canonical,
             board: board
         )
         XCTAssertTrue(decoded.event.isDeleted)
         XCTAssertEqual(decoded.event.id, taskifyEvent.id)
+        XCTAssertEqual(decoded.event.recurrence, taskifyEvent.recurrence)
+        XCTAssertEqual(decoded.event.seriesID, taskifyEvent.seriesID)
         XCTAssertEqual(decoded.event.nostrUpdatedAt, 1_700_000_700)
     }
 

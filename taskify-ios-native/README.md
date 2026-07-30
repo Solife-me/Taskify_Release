@@ -11,7 +11,8 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Advanced list management with synced rename/reorder controls and guarded deletion that can preserve tasks by moving them to a neighboring list
 - Long-press task dragging and insertion feedback across weekly days and list columns, including synced reordering and cross-child movement within compound boards
 - Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
-- Local task completion and deletion
+- Local task completion and PWA-style recurring deletion choices, with synced durable series
+  cutoffs that prevent deleted future task/event occurrences from reappearing after relay replay
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks, with PWA-familiar interactive inline checklists on task cards
 - PWA-style completed-task presentation preferences, including a dedicated completed view or in-list completed tasks, optional hiding of finished subtasks, and synced per-board Clear completed controls
 - PWA-style per-weekday startup-board routing with a safe first-visible fallback and automatic cleanup when a destination is archived or deleted

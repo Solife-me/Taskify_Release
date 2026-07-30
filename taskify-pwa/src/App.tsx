@@ -13,6 +13,7 @@ import {
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   normalizeTaskRecurrence,
+  calendarRecurrenceSyncFields,
   compressedToRawHex,
   isExternalCalendarEvent,
   isListLikeBoard,
@@ -140,6 +141,14 @@ import {
   updateRecurringSeriesCutoff,
 } from "./domains/tasks/recurrenceCutoffs";
 import { useCalendarEvents } from "./domains/calendar/calendarHook";
+import {
+  CALENDAR_SERIES_CUTOFFS_KEY,
+  applyCalendarSeriesCutoff,
+  applyCalendarSeriesCutoffs,
+  parseCalendarSeriesCutoffs,
+  serializeCalendarSeriesCutoffs,
+  updateCalendarSeriesCutoff,
+} from "./domains/calendar/recurrenceCutoffs";
 import {
   useCalendarInvites,
   type CalendarInvite,
@@ -1138,7 +1147,35 @@ export default function App() {
   const sanitizeRecurringTasks = useCallback(<TTask extends Task,>(items: TTask[]): TTask[] => (
     applyRecurringSeriesCutoffs(items, recurringSeriesCutoffsRef.current)
   ), []);
+  const calendarSeriesCutoffsRef = useRef(
+    parseCalendarSeriesCutoffs(
+      idbKeyValue.getItem(TASKIFY_STORE_TASKS, CALENDAR_SERIES_CUTOFFS_KEY),
+    ),
+  );
+  const recordCalendarSeriesCutoff = useCallback((
+    boardId: string,
+    seriesId: string,
+    cutoffISO: string,
+  ) => {
+    const current = calendarSeriesCutoffsRef.current;
+    const next = updateCalendarSeriesCutoff(current, boardId, seriesId, cutoffISO);
+    if (next === current) return;
+    calendarSeriesCutoffsRef.current = next;
+    idbKeyValue.setItem(
+      TASKIFY_STORE_TASKS,
+      CALENDAR_SERIES_CUTOFFS_KEY,
+      serializeCalendarSeriesCutoffs(next),
+    );
+  }, []);
+  const sanitizeCalendarEvents = useCallback(<TEvent extends CalendarEvent,>(
+    events: TEvent[],
+  ): TEvent[] => (
+    applyCalendarSeriesCutoffs(events, calendarSeriesCutoffsRef.current)
+  ), []);
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
+  useEffect(() => {
+    setCalendarEvents((events) => sanitizeCalendarEvents(events));
+  }, [sanitizeCalendarEvents, setCalendarEvents]);
   const {
     clearSelection,
     exitSelectionMode,
@@ -6153,7 +6190,7 @@ export default function App() {
     try {
       await nostrPublish(relays, {
         kind: 5,
-        tags: [["a", aTag]],
+        tags: [["a", aTag], ["k", "30301"]],
         content: "Task deleted",
         created_at: Math.floor(Date.now() / 1000),
       }, { sk: boardKeys.sk });
@@ -6511,6 +6548,7 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    Object.assign(base, calendarRecurrenceSyncFields(event));
     const normalized = deleted
       ? normalizeCalendarDeleteMutationPayload(
           {
@@ -6594,6 +6632,7 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    Object.assign(base, calendarRecurrenceSyncFields(event));
     const normalized = deleted
       ? normalizeCalendarDeleteMutationPayload(
           {
@@ -10059,6 +10098,7 @@ export default function App() {
       if (Number.isNaN(cutoffDate.getTime())) return;
       const cutoffTime = cutoffDate.getTime();
       const nextUntil = new Date(cutoffTime - MS_PER_DAY).toISOString();
+      recordCalendarSeriesCutoff(existing.boardId, seriesId, nextUntil);
       const toPublish: CalendarEvent[] = [];
       const toDelete: CalendarEvent[] = [];
 
@@ -10077,7 +10117,11 @@ export default function App() {
             continue;
           }
           if (startKey >= cutoffKey) {
-            toDelete.push(event);
+            toDelete.push({
+              ...event,
+              seriesId,
+              recurrence: { ...event.recurrence, untilISO: nextUntil },
+            });
             changed = true;
             continue;
           }
@@ -11114,7 +11158,12 @@ export default function App() {
     }
     if (!payload || payload.eventId !== eventId) return;
     if (payload.deleted) {
-      setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
+      if (payload.recurrence?.untilISO && payload.seriesId) {
+        recordCalendarSeriesCutoff(lb.id, payload.seriesId, payload.recurrence.untilISO);
+        setCalendarEvents((prev) => sanitizeCalendarEvents(prev));
+      } else {
+        setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
+      }
       return;
     }
 
@@ -11156,6 +11205,8 @@ export default function App() {
       references: payload.references?.length ? payload.references : undefined,
       eventKey: payload.eventKey,
       inviteTokens: payload.inviteTokens,
+      recurrence: payload.recurrence,
+      seriesId: payload.seriesId,
       canonicalAddress: canonicalAddr,
       viewAddress: viewAddr,
     });
@@ -11194,18 +11245,26 @@ export default function App() {
     if (!nextEvent) return;
 
     setCalendarEvents((prev) => {
-      const idx = prev.findIndex((existing) => existing.id === nextEvent.id);
+      const boundedEvent = applyCalendarSeriesCutoff(
+        nextEvent,
+        calendarSeriesCutoffsRef.current,
+      );
+      if (!boundedEvent) {
+        const filtered = prev.filter((existing) => existing.id !== nextEvent.id);
+        return filtered.length === prev.length ? prev : filtered;
+      }
+      const idx = prev.findIndex((existing) => existing.id === boundedEvent.id);
       const existing = idx >= 0 ? prev[idx] : null;
       let merged: CalendarEvent = {
-        ...nextEvent,
-        ...(existing?.createdBy && !nextEvent.createdBy ? { createdBy: existing.createdBy } : {}),
-        ...(existing?.lastEditedBy && !nextEvent.lastEditedBy ? { lastEditedBy: existing.lastEditedBy } : {}),
+        ...boundedEvent,
+        ...(existing?.createdBy && !boundedEvent.createdBy ? { createdBy: existing.createdBy } : {}),
+        ...(existing?.lastEditedBy && !boundedEvent.lastEditedBy ? { lastEditedBy: existing.lastEditedBy } : {}),
         ...(Array.isArray(existing?.reminders) && existing.reminders.length ? { reminders: existing.reminders } : {}),
         ...(existing?.reminderTime ? { reminderTime: existing.reminderTime } : {}),
-        ...(existing?.recurrence ? { recurrence: existing.recurrence } : {}),
-        ...(existing?.seriesId ? { seriesId: existing.seriesId } : {}),
+        ...(!boundedEvent.recurrence && existing?.recurrence ? { recurrence: existing.recurrence } : {}),
+        ...(!boundedEvent.seriesId && existing?.seriesId ? { seriesId: existing.seriesId } : {}),
         ...(existing?.hiddenUntilISO ? { hiddenUntilISO: existing.hiddenUntilISO } : {}),
-        ...(typeof existing?.order === "number" && typeof nextEvent.order !== "number" ? { order: existing.order } : {}),
+        ...(typeof existing?.order === "number" && typeof boundedEvent.order !== "number" ? { order: existing.order } : {}),
       } as CalendarEvent;
       if (!existing) {
         merged = applyHiddenForCalendarEvent(merged, settings.weekStart, lb.kind);
@@ -11217,7 +11276,13 @@ export default function App() {
       }
       return [...prev, merged];
     });
-  }, [setCalendarEvents, settings.weekStart, tagValue]);
+  }, [
+    recordCalendarSeriesCutoff,
+    sanitizeCalendarEvents,
+    setCalendarEvents,
+    settings.weekStart,
+    tagValue,
+  ]);
 
   /* ---------- Drag & Drop: move or reorder ---------- */
   function moveTask(

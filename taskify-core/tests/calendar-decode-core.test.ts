@@ -19,6 +19,24 @@ test("parseCalendarCanonicalPayload accepts valid payload", () => {
   assert.equal(parsed?.kind, "time");
 });
 
+test("parseCalendarCanonicalPayload preserves recurrence cutoffs on deleted versions", () => {
+  const recurrence = {
+    type: "daily",
+    untilISO: "2026-07-28T00:00:00.000Z",
+  };
+  const parsed = parseCalendarCanonicalPayload({
+    v: 1,
+    eventId: "recurrence:event-series:2026-07-29",
+    eventKey: "abc",
+    deleted: true,
+    recurrence,
+    seriesId: "event-series",
+  });
+
+  assert.deepEqual(parsed?.recurrence, recurrence);
+  assert.equal(parsed?.seriesId, "event-series");
+});
+
 test("parseCalendarViewPayload rejects invalid payload", () => {
   assert.equal(parseCalendarViewPayload({ v: 1, eventId: "ev1" }), null);
 });

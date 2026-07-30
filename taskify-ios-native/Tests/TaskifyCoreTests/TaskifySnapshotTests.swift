@@ -1463,6 +1463,175 @@ final class TaskifySnapshotTests: XCTestCase {
                 Calendar.current.startOfDay(for: try XCTUnwrap(TaskifyEvent.dateOnly("2026-07-28")))
             )
         }
+        for event in snapshot.taskifyEvents ?? [] {
+            let until = try XCTUnwrap(event.recurrence?.untilDate)
+            XCTAssertEqual(
+                Calendar.current.startOfDay(for: until),
+                Calendar.current.startOfDay(for: try XCTUnwrap(TaskifyEvent.dateOnly("2026-07-28")))
+            )
+        }
+    }
+
+    func testDeletingThisAndFutureRecurringTasksCapsAndTombstonesTheSeries() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let seriesID = "task-series"
+        let dates = [
+            DateComponents(year: 2026, month: 7, day: 27),
+            DateComponents(year: 2026, month: 7, day: 28),
+            DateComponents(year: 2026, month: 7, day: 29),
+            DateComponents(year: 2026, month: 7, day: 30),
+        ].compactMap(calendar.date(from:))
+        XCTAssertEqual(dates.count, 4)
+
+        var snapshot = TaskifySnapshot.empty
+        snapshot.tasks = dates.enumerated().map { index, date in
+            TaskItem(
+                id: index == 0
+                    ? seriesID
+                    : "recurrence:\(seriesID):2026-07-\(27 + index)",
+                boardID: snapshot.boards[0].id,
+                title: "Daily review",
+                dueDate: date,
+                dueDateEnabled: true,
+                recurrence: .daily(),
+                seriesID: seriesID,
+                columnID: WeekdayColumn.containing(date, calendar: calendar).rawValue
+            )
+        }
+
+        let selectedID = "recurrence:\(seriesID):2026-07-29"
+        let changes = snapshot.deleteTask(
+            taskID: selectedID,
+            scope: .thisAndFuture,
+            editorPublicKey: "editor"
+        )
+
+        XCTAssertEqual(Set(changes.deletedTaskIDs), [
+            selectedID,
+            "recurrence:\(seriesID):2026-07-30",
+        ])
+        XCTAssertEqual(Set(changes.updatedTaskIDs), [
+            seriesID,
+            "recurrence:\(seriesID):2026-07-28",
+        ])
+        XCTAssertEqual(
+            snapshot.tasks.filter { !$0.isDeleted }.compactMap(\.dueDate),
+            Array(dates.prefix(2))
+        )
+        for task in snapshot.tasks {
+            XCTAssertEqual(task.seriesID, seriesID)
+            XCTAssertEqual(
+                task.recurrence?.untilDate,
+                calendar.date(from: DateComponents(year: 2026, month: 7, day: 28))
+            )
+        }
+    }
+
+    func testRemoteRecurringTaskTombstoneBlocksLaterStaleFutureOccurrencesAfterReload() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let board = TaskifySnapshot.empty.boards[0]
+        let seriesID = "remote-series"
+        let cutoff = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 28))
+        )
+        let tombstoneDate = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 29))
+        )
+        let tombstone = TaskItem(
+            id: "recurrence:\(seriesID):2026-07-29",
+            boardID: board.id,
+            title: "Remote recurring task",
+            dueDate: tombstoneDate,
+            dueDateEnabled: true,
+            recurrence: .daily(until: cutoff),
+            seriesID: seriesID,
+            deleted: true
+        )
+        var snapshot = TaskifySnapshot(
+            boards: [board],
+            tasks: [],
+            selectedBoardID: board.id
+        )
+
+        XCTAssertTrue(snapshot.mergeRemoteTask(tombstone, eventCreatedAt: 200))
+
+        let encoded = try JSONEncoder().encode(snapshot)
+        snapshot = try JSONDecoder().decode(TaskifySnapshot.self, from: encoded)
+        snapshot.repairSelection()
+
+        let futureDate = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 30))
+        )
+        let staleFuture = TaskItem(
+            id: "recurrence:\(seriesID):2026-07-30",
+            boardID: board.id,
+            title: "Remote recurring task",
+            dueDate: futureDate,
+            dueDateEnabled: true,
+            recurrence: .daily(),
+            seriesID: seriesID
+        )
+        XCTAssertTrue(snapshot.mergeRemoteTask(staleFuture, eventCreatedAt: 500))
+
+        let mergedFuture = try XCTUnwrap(snapshot.tasks.first { $0.id == staleFuture.id })
+        XCTAssertTrue(mergedFuture.isDeleted)
+        XCTAssertEqual(mergedFuture.recurrence?.untilDate, cutoff)
+    }
+
+    func testRemoteRecurringEventTombstoneBlocksLaterStaleFutureOccurrencesAfterReload() throws {
+        let board = TaskifySnapshot.empty.boards[0]
+        let seriesID = "remote-event-series"
+        let cutoff = try XCTUnwrap(TaskifyEvent.dateOnly("2026-07-28"))
+        let tombstone = TaskifyEvent(
+            id: "recurrence_remote-event-series_2026-07-29",
+            boardID: board.id,
+            title: "Remote recurring event",
+            schedule: .date,
+            startDateValue: "2026-07-29",
+            recurrence: .daily(until: cutoff),
+            seriesID: seriesID,
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 7, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted,
+            deleted: true
+        )
+        var snapshot = TaskifySnapshot(
+            boards: [board],
+            tasks: [],
+            selectedBoardID: board.id
+        )
+
+        XCTAssertTrue(snapshot.mergeRemoteTaskifyEvent(tombstone, eventCreatedAt: 200))
+
+        let encoded = try JSONEncoder().encode(snapshot)
+        snapshot = try JSONDecoder().decode(TaskifySnapshot.self, from: encoded)
+        snapshot.repairSelection()
+
+        let staleFuture = TaskifyEvent(
+            id: "recurrence_remote-event-series_2026-07-30",
+            boardID: board.id,
+            title: "Remote recurring event",
+            schedule: .date,
+            startDateValue: "2026-07-30",
+            recurrence: .daily(),
+            seriesID: seriesID,
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: Data(repeating: 8, count: 32).base64EncodedString(),
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )
+        XCTAssertTrue(snapshot.mergeRemoteTaskifyEvent(staleFuture, eventCreatedAt: 500))
+
+        let mergedFuture = try XCTUnwrap(
+            snapshot.taskifyEvents?.first { $0.id == staleFuture.id }
+        )
+        XCTAssertTrue(mergedFuture.isDeleted)
+        XCTAssertEqual(mergedFuture.recurrence?.untilDate, cutoff)
     }
 
     func testTaskifyEventRecurrenceWindowRefillsAsOccurrencesPass() throws {

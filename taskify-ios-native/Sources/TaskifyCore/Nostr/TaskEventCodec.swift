@@ -306,7 +306,10 @@ public enum TaskEventCodec {
             privateKey: BoardCrypto.signingPrivateKey(for: boardID),
             createdAt: createdAt,
             kind: 5,
-            tags: [["a", "\(taskEventKind):\(boardPublicKey):\(taskID)"]],
+            tags: [
+                ["a", "\(taskEventKind):\(boardPublicKey):\(taskID)"],
+                ["k", String(taskEventKind)],
+            ],
             content: "Task deleted"
         )
     }
@@ -670,6 +673,8 @@ public enum TaskifyCalendarEventCodec {
             lastEditedBy = event.lastEditedBy
             inviteTokens = includeSecrets ? event.inviteTokens : nil
             deleted = event.isDeleted ? true : nil
+            recurrence = event.recurrence?.isActive == true ? event.recurrence : nil
+            seriesID = recurrence == nil ? nil : (event.seriesID ?? event.id)
             guard !event.isDeleted else { return }
             kind = event.schedule
             title = event.title
@@ -690,8 +695,6 @@ public enum TaskifyCalendarEventCodec {
             endTimeZoneID = event.endTimeZoneID
             reminders = event.reminders
             reminderTime = event.reminderTime
-            recurrence = event.recurrence?.isActive == true ? event.recurrence : nil
-            seriesID = recurrence == nil ? nil : (event.seriesID ?? event.id)
         }
     }
 }

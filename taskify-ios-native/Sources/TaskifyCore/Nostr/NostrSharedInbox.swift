@@ -2110,22 +2110,30 @@ public extension TaskifySnapshot {
         _ remoteEvent: TaskifyEvent,
         eventCreatedAt: Int
     ) -> Bool {
+        var changed = recordRecurringTaskifyEventSeriesCutoff(from: remoteEvent)
+        let remoteEvent = taskifyEventApplyingRecurringSeriesCutoff(remoteEvent)
         var events = taskifyEvents ?? []
         if let index = events.firstIndex(where: { $0.id == remoteEvent.id }) {
-            guard eventCreatedAt > (events[index].nostrUpdatedAt ?? 0) else { return false }
-            var merged = remoteEvent
-            merged.nostrUpdatedAt = eventCreatedAt
-            events[index] = merged
-            events = events.enumerated().compactMap { offset, existing in
-                offset == index || existing.id != remoteEvent.id ? existing : nil
+            if eventCreatedAt > (events[index].nostrUpdatedAt ?? 0) {
+                var merged = remoteEvent
+                merged.nostrUpdatedAt = eventCreatedAt
+                events[index] = merged
+                events = events.enumerated().compactMap { offset, existing in
+                    offset == index || existing.id != remoteEvent.id ? existing : nil
+                }
+                changed = true
             }
         } else {
             var inserted = remoteEvent
             inserted.nostrUpdatedAt = eventCreatedAt
             events.append(inserted)
+            changed = true
         }
         taskifyEvents = events
-        return true
+        if applyRecurringTaskifyEventSeriesCutoffs() {
+            changed = true
+        }
+        return changed
     }
 
     /// Rebuilds the generated instances owned by a recurrence seed. IDs and instance caps match
@@ -2442,21 +2450,24 @@ public extension TaskifySnapshot {
                   events[index].recurrence?.isActive == true,
                   !events[index].isDeleted,
                   let start = events[index].startDate else { continue }
+            let original = events[index]
+            events[index].recurrence = events[index].recurrence?.withUntilDate(endDate)
+            events[index].seriesID = seriesID
+            events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
             if start >= cutoff {
                 events[index].deleted = true
-                events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
                 deletedIDs.insert(events[index].id)
                 continue
             }
-            let shortened = events[index].recurrence?.withUntilDate(endDate)
-            guard events[index].recurrence != shortened else { continue }
-            events[index].recurrence = shortened
-            events[index].seriesID = seriesID
-            events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
-            updatedIDs.insert(events[index].id)
+            if events[index] != original {
+                updatedIDs.insert(events[index].id)
+            }
         }
 
         taskifyEvents = events
+        for event in events where deletedIDs.contains(event.id) {
+            _ = recordRecurringTaskifyEventSeriesCutoff(from: event)
+        }
         return TaskifyEventSeriesChanges(
             updatedEventIDs: updatedIDs.sorted(),
             deletedEventIDs: deletedIDs.sorted()

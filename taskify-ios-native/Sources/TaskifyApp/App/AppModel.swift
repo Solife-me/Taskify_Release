@@ -1195,9 +1195,17 @@ final class AppModel {
         }
     }
 
-    func deleteTask(_ taskID: String) {
-        guard snapshot.deleteTask(taskID: taskID, editorPublicKey: identityPublicKey.nilIfEmpty) else { return }
-        synchronizeTask(taskID, includeDeletionEvent: true)
+    func deleteTask(_ taskID: String, scope: TaskDeletionScope = .single) {
+        let changes = snapshot.deleteTask(
+            taskID: taskID,
+            scope: scope,
+            editorPublicKey: identityPublicKey.nilIfEmpty
+        )
+        guard !changes.allTaskIDs.isEmpty else { return }
+        changes.updatedTaskIDs.forEach { synchronizeTask($0) }
+        changes.deletedTaskIDs.forEach {
+            synchronizeTask($0, includeDeletionEvent: true)
+        }
         refreshNotifications(requestPermission: false)
         reconcileScriptureMemory()
     }

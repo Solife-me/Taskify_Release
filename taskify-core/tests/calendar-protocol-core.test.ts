@@ -5,6 +5,7 @@ import {
   TASKIFY_CALENDAR_VIEW_KIND,
   TASKIFY_CALENDAR_RSVP_KIND,
   calendarAddress,
+  calendarRecurrenceSyncFields,
   parseCalendarAddress,
 } from "../dist/calendarProtocol.js";
 
@@ -31,4 +32,26 @@ test("parseCalendarAddress rejects invalid inputs", () => {
   assert.equal(parseCalendarAddress("30310:short:abc"), null);
   assert.equal(parseCalendarAddress("nan:" + "a".repeat(64) + ":abc"), null);
   assert.equal(parseCalendarAddress("30310:" + "a".repeat(64) + ":"), null);
+});
+
+test("calendarRecurrenceSyncFields carries the stable series cutoff into tombstones", () => {
+  const recurrence = {
+    type: "daily",
+    untilISO: "2026-07-28T00:00:00.000Z",
+  };
+  assert.deepEqual(
+    calendarRecurrenceSyncFields({
+      id: "recurrence:event-series:2026-07-29",
+      recurrence,
+      seriesId: "event-series",
+    }),
+    {
+      recurrence,
+      seriesId: "event-series",
+    },
+  );
+  assert.deepEqual(
+    calendarRecurrenceSyncFields({ id: "one-off" }),
+    {},
+  );
 });

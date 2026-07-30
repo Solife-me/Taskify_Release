@@ -76,4 +76,12 @@ The next native sync slice now adds:
 - immediate offline mutations backed by a persistent publish outbox, relay acknowledgements, and retry after reconnect
 - golden Swift tests built from fixed PWA signing, key derivation, and encrypted-content fixtures
 
+Recurring “this and future” deletion is a Taskify convergence rule shared by the PWA and
+native client. Each affected replaceable task (`30301`) or Taskify calendar event
+(`30310`/`30311`) publishes a deleted version that retains the stable `seriesId` and the
+shortened `recurrence.untilISO`. Both clients persist the earliest observed series cutoff and
+apply it across occurrence IDs, so a later stale occurrence cannot resurrect a terminated
+series. Kind `5` deletion requests are still published for relay cleanup, but clients do not
+depend on relays honoring them for correctness.
+
 This is an implemented compatibility foundation, not a claim of production sync parity. A real PWA/iOS two-client convergence pass is still required, and high-volume cursoring/live micro-batching remains stabilization work. Wallet, chat, recurrence, reminders, attachments, list/compound boards, and calendar parity remain later slices.

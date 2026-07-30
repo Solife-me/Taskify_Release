@@ -12,6 +12,25 @@ public enum ListColumnRemovalStrategy: Equatable, Sendable {
     case deleteTasks
 }
 
+public enum TaskDeletionScope: Equatable, Sendable {
+    case single
+    case thisAndFuture
+}
+
+public struct TaskSeriesChanges: Equatable, Sendable {
+    public var updatedTaskIDs: [String]
+    public var deletedTaskIDs: [String]
+
+    public init(updatedTaskIDs: [String] = [], deletedTaskIDs: [String] = []) {
+        self.updatedTaskIDs = updatedTaskIDs
+        self.deletedTaskIDs = deletedTaskIDs
+    }
+
+    public var allTaskIDs: [String] {
+        Array(Set(updatedTaskIDs + deletedTaskIDs)).sorted()
+    }
+}
+
 public struct TaskMoveResult: Equatable, Sendable {
     public let taskID: String
     public let sourceBoardID: String
@@ -71,7 +90,7 @@ public struct BoardDeletionResult: Equatable, Sendable {
 }
 
 public struct TaskifySnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 14
+    public static let currentSchemaVersion = 15
 
     public var schemaVersion: Int
     public var boards: [Board]
@@ -95,6 +114,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public var directMessageBlockedPeers: [String]?
     public var directMessageMutedGroups: [String: Int]?
     public var directMessageLeftGroups: [String]?
+    /// Board id → stable recurring series id → last permitted occurrence.
+    ///
+    /// This is intentionally durable and monotonic. A later stale per-occurrence event may
+    /// have a newer Nostr timestamp than a different occurrence's tombstone, so per-id clocks
+    /// alone cannot prevent a terminated series from being resurrected.
+    public var recurringTaskSeriesCutoffs: [String: [String: Date]]?
+    public var recurringTaskifyEventSeriesCutoffs: [String: [String: Date]]?
 
     public init(
         schemaVersion: Int = TaskifySnapshot.currentSchemaVersion,
@@ -118,7 +144,9 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         directMessageDeletedEventIDs: [String: Int]? = nil,
         directMessageBlockedPeers: [String]? = nil,
         directMessageMutedGroups: [String: Int]? = nil,
-        directMessageLeftGroups: [String]? = nil
+        directMessageLeftGroups: [String]? = nil,
+        recurringTaskSeriesCutoffs: [String: [String: Date]]? = nil,
+        recurringTaskifyEventSeriesCutoffs: [String: [String: Date]]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.boards = boards
@@ -142,6 +170,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         self.directMessageBlockedPeers = directMessageBlockedPeers
         self.directMessageMutedGroups = directMessageMutedGroups
         self.directMessageLeftGroups = directMessageLeftGroups
+        self.recurringTaskSeriesCutoffs = recurringTaskSeriesCutoffs
+        self.recurringTaskifyEventSeriesCutoffs = recurringTaskifyEventSeriesCutoffs
         repairSelection()
     }
 
@@ -1266,10 +1296,75 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
     @discardableResult
     public mutating func deleteTask(taskID: String, editorPublicKey: String? = nil) -> Bool {
-        guard let index = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }) else { return false }
-        tasks[index].deleted = true
-        tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
-        return true
+        !deleteTask(
+            taskID: taskID,
+            scope: .single,
+            editorPublicKey: editorPublicKey
+        ).allTaskIDs.isEmpty
+    }
+
+    @discardableResult
+    public mutating func deleteTask(
+        taskID: String,
+        scope: TaskDeletionScope,
+        editorPublicKey: String? = nil
+    ) -> TaskSeriesChanges {
+        guard let selectedIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }) else {
+            return TaskSeriesChanges()
+        }
+
+        guard scope == .thisAndFuture,
+              tasks[selectedIndex].recurrence?.isActive == true,
+              let selectedDueDate = tasks[selectedIndex].dueDate else {
+            tasks[selectedIndex].deleted = true
+            tasks[selectedIndex].lastEditedBy = editorPublicKey ?? tasks[selectedIndex].lastEditedBy
+            return TaskSeriesChanges(deletedTaskIDs: [taskID])
+        }
+
+        let selected = tasks[selectedIndex]
+        let seriesID = Self.stableRecurringSeriesID(for: selected)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = selected.dueTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
+        let selectedDay = calendar.startOfDay(for: selectedDueDate)
+        guard let proposedCutoff = calendar.date(byAdding: .day, value: -1, to: selectedDay) else {
+            return TaskSeriesChanges()
+        }
+        let cutoff = recordRecurringTaskSeriesCutoff(
+            boardID: selected.boardID,
+            seriesID: seriesID,
+            proposedCutoff: proposedCutoff
+        )
+
+        var updatedIDs = Set<String>()
+        var deletedIDs = Set<String>()
+        for index in tasks.indices {
+            guard tasks[index].boardID == selected.boardID,
+                  tasks[index].recurrence?.isActive == true,
+                  Self.stableRecurringSeriesID(for: tasks[index]) == seriesID,
+                  let dueDate = tasks[index].dueDate else { continue }
+
+            let original = tasks[index]
+            tasks[index] = Self.task(
+                tasks[index],
+                applyingSeriesID: seriesID,
+                cutoff: cutoff
+            )
+            if calendar.startOfDay(for: dueDate) > calendar.startOfDay(for: cutoff) {
+                tasks[index].deleted = true
+            }
+            guard tasks[index] != original else { continue }
+            tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
+            if tasks[index].isDeleted {
+                deletedIDs.insert(tasks[index].id)
+            } else {
+                updatedIDs.insert(tasks[index].id)
+            }
+        }
+
+        return TaskSeriesChanges(
+            updatedTaskIDs: updatedIDs.sorted(),
+            deletedTaskIDs: deletedIDs.sorted()
+        )
     }
 
     /// Batched form of `mergeRemoteTask`. Building one id→index map up front makes a backlog
@@ -1281,19 +1376,43 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     ) -> Bool {
         guard !records.isEmpty else { return false }
 
+        var changed = false
+        for record in records {
+            if record.task.isDeleted,
+               let recurrence = record.task.recurrence,
+               recurrence.isActive,
+               let cutoff = recurrence.untilDate,
+               let dueDate = record.task.dueDate,
+               Self.isDay(cutoff, before: dueDate, for: record.task) {
+                let seriesID = Self.stableRecurringSeriesID(for: record.task)
+                let previous = recurringTaskSeriesCutoffs?[record.task.boardID]?[seriesID]
+                let recorded = recordRecurringTaskSeriesCutoff(
+                    boardID: record.task.boardID,
+                    seriesID: seriesID,
+                    proposedCutoff: cutoff
+                )
+                if previous != recorded {
+                    changed = true
+                }
+            }
+        }
+        if applyRecurringTaskSeriesCutoffs() {
+            changed = true
+        }
+
         var indexByID = [String: Int](minimumCapacity: tasks.count)
         for (index, task) in tasks.enumerated() {
             indexByID[task.id] = index
         }
 
-        var changed = false
         for record in records {
-            if let index = indexByID[record.task.id] {
+            let remoteTask = taskApplyingRecurringSeriesCutoff(record.task)
+            if let index = indexByID[remoteTask.id] {
                 let localClock = tasks[index].nostrUpdatedAt ?? 0
                 guard record.eventCreatedAt > localClock else { continue }
-                var merged = record.task
+                var merged = remoteTask
                 var preservedFields = tasks[index].preservedSyncFields ?? [:]
-                for (name, value) in record.task.preservedSyncFields ?? [:] {
+                for (name, value) in remoteTask.preservedSyncFields ?? [:] {
                     preservedFields[name] = value
                 }
                 merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
@@ -1301,7 +1420,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 tasks[index] = merged
                 changed = true
             } else {
-                var inserted = record.task
+                var inserted = remoteTask
                 inserted.nostrUpdatedAt = record.eventCreatedAt
                 indexByID[inserted.id] = tasks.count
                 tasks.append(inserted)
@@ -1313,24 +1432,178 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
     @discardableResult
     public mutating func mergeRemoteTask(_ remoteTask: TaskItem, eventCreatedAt: Int) -> Bool {
-        if let index = tasks.firstIndex(where: { $0.id == remoteTask.id }) {
-            let localClock = tasks[index].nostrUpdatedAt ?? 0
-            guard eventCreatedAt > localClock else { return false }
-            var merged = remoteTask
-            var preservedFields = tasks[index].preservedSyncFields ?? [:]
-            for (name, value) in remoteTask.preservedSyncFields ?? [:] {
-                preservedFields[name] = value
+        mergeRemoteTasks([(task: remoteTask, eventCreatedAt: eventCreatedAt)])
+    }
+
+    private static func stableRecurringSeriesID(for task: TaskItem) -> String {
+        func recoverRoot(_ rawValue: String) -> String {
+            var current = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            var seen = Set<String>()
+            let pattern = #"^recurrence:(.+):(\d{4}-\d{2}-\d{2}(?:T.*)?)$"#
+            let expression = try? NSRegularExpression(pattern: pattern)
+            while !current.isEmpty, seen.insert(current).inserted {
+                let range = NSRange(current.startIndex..., in: current)
+                guard let match = expression?.firstMatch(in: current, range: range),
+                      match.numberOfRanges > 1,
+                      let parentRange = Range(match.range(at: 1), in: current) else { break }
+                let parent = String(current[parentRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !parent.isEmpty else { break }
+                current = parent
             }
-            merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
-            tasks[index] = merged
-            tasks[index].nostrUpdatedAt = eventCreatedAt
-            return true
+            return current
         }
 
-        var inserted = remoteTask
-        inserted.nostrUpdatedAt = eventCreatedAt
-        tasks.append(inserted)
+        let explicit = task.seriesID.map(recoverRoot) ?? ""
+        return explicit.isEmpty ? recoverRoot(task.id) : explicit
+    }
+
+    private static func recurrenceCalendar(for task: TaskItem) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = task.dueTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
+        return calendar
+    }
+
+    private static func isDay(_ lhs: Date, before rhs: Date, for task: TaskItem) -> Bool {
+        let calendar = recurrenceCalendar(for: task)
+        return calendar.startOfDay(for: lhs) < calendar.startOfDay(for: rhs)
+    }
+
+    @discardableResult
+    private mutating func recordRecurringTaskSeriesCutoff(
+        boardID: String,
+        seriesID: String,
+        proposedCutoff: Date
+    ) -> Date {
+        guard !boardID.isEmpty, !seriesID.isEmpty else { return proposedCutoff }
+        let existing = recurringTaskSeriesCutoffs?[boardID]?[seriesID]
+        let cutoff = existing.map { min($0, proposedCutoff) } ?? proposedCutoff
+        if existing != cutoff {
+            var boardCutoffs = recurringTaskSeriesCutoffs?[boardID] ?? [:]
+            boardCutoffs[seriesID] = cutoff
+            var allCutoffs = recurringTaskSeriesCutoffs ?? [:]
+            allCutoffs[boardID] = boardCutoffs
+            recurringTaskSeriesCutoffs = allCutoffs
+        }
+        return cutoff
+    }
+
+    private static func task(
+        _ task: TaskItem,
+        applyingSeriesID seriesID: String,
+        cutoff: Date
+    ) -> TaskItem {
+        guard let recurrence = task.recurrence, recurrence.isActive else { return task }
+        var updated = task
+        let calendar = recurrenceCalendar(for: task)
+        let existingUntil = recurrence.untilDate
+        let effectiveCutoff: Date
+        if let existingUntil,
+           calendar.startOfDay(for: existingUntil) <= calendar.startOfDay(for: cutoff) {
+            effectiveCutoff = existingUntil
+        } else {
+            effectiveCutoff = cutoff
+        }
+        updated.recurrence = recurrence.withUntilDate(effectiveCutoff)
+        updated.seriesID = seriesID
+        return updated
+    }
+
+    private func taskApplyingRecurringSeriesCutoff(_ task: TaskItem) -> TaskItem {
+        let seriesID = Self.stableRecurringSeriesID(for: task)
+        guard let cutoff = recurringTaskSeriesCutoffs?[task.boardID]?[seriesID],
+              task.recurrence?.isActive == true else { return task }
+        var updated = Self.task(task, applyingSeriesID: seriesID, cutoff: cutoff)
+        if let dueDate = updated.dueDate,
+           Self.isDay(cutoff, before: dueDate, for: updated) {
+            updated.deleted = true
+        }
+        return updated
+    }
+
+    @discardableResult
+    private mutating func applyRecurringTaskSeriesCutoffs() -> Bool {
+        guard recurringTaskSeriesCutoffs?.isEmpty == false else { return false }
+        var changed = false
+        for index in tasks.indices {
+            let updated = taskApplyingRecurringSeriesCutoff(tasks[index])
+            guard updated != tasks[index] else { continue }
+            tasks[index] = updated
+            changed = true
+        }
+        return changed
+    }
+
+    @discardableResult
+    mutating func recordRecurringTaskifyEventSeriesCutoff(from event: TaskifyEvent) -> Bool {
+        guard event.isDeleted,
+              let recurrence = event.recurrence,
+              recurrence.isActive,
+              let cutoff = recurrence.untilDate,
+              let startDate = event.startDate else { return false }
+        let calendar = Self.recurrenceCalendar(for: event)
+        guard calendar.startOfDay(for: cutoff) < calendar.startOfDay(for: startDate) else {
+            return false
+        }
+        let seriesID = event.seriesID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let boardID = event.boardID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !boardID.isEmpty,
+              !seriesID.isEmpty else { return false }
+        let existing = recurringTaskifyEventSeriesCutoffs?[boardID]?[seriesID]
+        let effective = existing.map { min($0, cutoff) } ?? cutoff
+        guard existing != effective else { return false }
+        var boardCutoffs = recurringTaskifyEventSeriesCutoffs?[boardID] ?? [:]
+        boardCutoffs[seriesID] = effective
+        var allCutoffs = recurringTaskifyEventSeriesCutoffs ?? [:]
+        allCutoffs[boardID] = boardCutoffs
+        recurringTaskifyEventSeriesCutoffs = allCutoffs
         return true
+    }
+
+    private static func recurrenceCalendar(for event: TaskifyEvent) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = event.isAllDay
+            ? TimeZone(secondsFromGMT: 0)!
+            : event.startTimeZoneID.flatMap(TimeZone.init(identifier:)) ?? .current
+        return calendar
+    }
+
+    func taskifyEventApplyingRecurringSeriesCutoff(_ event: TaskifyEvent) -> TaskifyEvent {
+        guard let recurrence = event.recurrence,
+              recurrence.isActive,
+              let seriesID = event.seriesID,
+              let boardID = event.boardID,
+              let cutoff = recurringTaskifyEventSeriesCutoffs?[boardID]?[seriesID] else {
+            return event
+        }
+        let calendar = Self.recurrenceCalendar(for: event)
+        let existingUntil = recurrence.untilDate
+        let effective = existingUntil.map {
+            calendar.startOfDay(for: $0) <= calendar.startOfDay(for: cutoff) ? $0 : cutoff
+        } ?? cutoff
+        var updated = event
+        updated.recurrence = recurrence.withUntilDate(effective)
+        if let startDate = event.startDate,
+           calendar.startOfDay(for: startDate) > calendar.startOfDay(for: effective) {
+            updated.deleted = true
+        }
+        return updated
+    }
+
+    @discardableResult
+    mutating func applyRecurringTaskifyEventSeriesCutoffs() -> Bool {
+        guard recurringTaskifyEventSeriesCutoffs?.isEmpty == false,
+              var events = taskifyEvents else { return false }
+        var changed = false
+        for index in events.indices {
+            let updated = taskifyEventApplyingRecurringSeriesCutoff(events[index])
+            guard updated != events[index] else { continue }
+            events[index] = updated
+            changed = true
+        }
+        if changed {
+            taskifyEvents = events
+        }
+        return changed
     }
 
     @discardableResult
@@ -1401,6 +1674,23 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             }
             taskifyEvents = repaired
         }
+        for event in taskifyEvents ?? [] where event.isDeleted {
+            _ = recordRecurringTaskifyEventSeriesCutoff(from: event)
+        }
+        _ = applyRecurringTaskifyEventSeriesCutoffs()
+        for task in tasks where task.isDeleted {
+            guard let recurrence = task.recurrence,
+                  recurrence.isActive,
+                  let cutoff = recurrence.untilDate,
+                  let dueDate = task.dueDate,
+                  Self.isDay(cutoff, before: dueDate, for: task) else { continue }
+            _ = recordRecurringTaskSeriesCutoff(
+                boardID: task.boardID,
+                seriesID: Self.stableRecurringSeriesID(for: task),
+                proposedCutoff: cutoff
+            )
+        }
+        _ = applyRecurringTaskSeriesCutoffs()
         for index in boards.indices {
             if boards[index].nostrBoardID?.isEmpty != false {
                 boards[index].nostrBoardID = UUID().uuidString

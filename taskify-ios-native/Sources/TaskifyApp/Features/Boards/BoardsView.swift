@@ -2899,6 +2899,7 @@ struct TaskCardView: View {
     @State private var showingEditor = false
     @State private var showingTaskShare = false
     @State private var taskShareMode: TaskShareMode = .share
+    @State private var confirmingRecurringDeletion = false
 
     init(task: TaskItem, allowsDragging: Bool = false) {
         self.task = task
@@ -3227,11 +3228,30 @@ struct TaskCardView: View {
                     }
                 }
                 Button(role: .destructive) {
-                    model.deleteTask(task.id)
+                    if task.recurrence?.isActive == true {
+                        confirmingRecurringDeletion = true
+                    } else {
+                        model.deleteTask(task.id, scope: .single)
+                    }
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
             }
+        }
+        .confirmationDialog(
+            "Delete recurring task?",
+            isPresented: $confirmingRecurringDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete This Task", role: .destructive) {
+                model.deleteTask(task.id, scope: .single)
+            }
+            Button("Delete This and Future Tasks", role: .destructive) {
+                model.deleteTask(task.id, scope: .thisAndFuture)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose whether to delete only this occurrence or end the recurring series here.")
         }
         .sheet(isPresented: $showingEditor) {
             TaskEditorView(task: task)

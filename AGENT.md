@@ -140,7 +140,8 @@ npx wrangler dev
 
 ### Important Notes
 
-- The test runner is **Node's built-in `--test`** (not Jest, not Vitest). Tests import native `assert` and `node:test`.
+- Test runners are package-specific: `taskify-core` uses Node's built-in `--test`, while
+  `taskify-pwa` uses Vitest through `npm test`.
 - No monorepo build tool — each package (`taskify-pwa`, `worker`) is independent.
 - PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via `[assets]` binding.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
@@ -156,6 +157,7 @@ npx wrangler dev
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
+| `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
 
 Additional tests exist on feature branches and are being promoted into `New_Features_Fixes`:
 

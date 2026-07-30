@@ -38,6 +38,7 @@ struct TaskEditorView: View {
     @State private var attachmentStatus: String?
     @State private var attachmentError: String?
     @State private var showingTaskShare = false
+    @State private var confirmingRecurringDeletion = false
 
     init(task: TaskItem) {
         let repeatDraft = RepeatDraft(recurrence: task.recurrence, dueDate: task.dueDate ?? Date())
@@ -128,6 +129,21 @@ struct TaskEditorView: View {
         .preferredColorScheme(.dark)
         .tint(TaskifyTheme.accent)
         .interactiveDismissDisabled(isUploadingAttachment)
+        .confirmationDialog(
+            "Delete recurring task?",
+            isPresented: $confirmingRecurringDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete This Task", role: .destructive) {
+                deleteTask(scope: .single)
+            }
+            Button("Delete This and Future Tasks", role: .destructive) {
+                deleteTask(scope: .thisAndFuture)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose whether to delete only this occurrence or end the recurring series here.")
+        }
         .fileImporter(
             isPresented: $showingFileImporter,
             allowedContentTypes: [.data],
@@ -259,11 +275,19 @@ struct TaskEditorView: View {
 
             Section {
                 Button("Delete Task", role: .destructive) {
-                    model.deleteTask(taskID)
-                    dismiss()
+                    if task?.recurrence?.isActive == true {
+                        confirmingRecurringDeletion = true
+                    } else {
+                        deleteTask(scope: .single)
+                    }
                 }
             }
         }
+    }
+
+    private func deleteTask(scope: TaskDeletionScope) {
+        model.deleteTask(taskID, scope: scope)
+        dismiss()
     }
 
     private func save() {
