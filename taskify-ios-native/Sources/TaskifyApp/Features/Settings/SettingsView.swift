@@ -40,22 +40,40 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(spacing: 18) {
-                    identityCard
-                    syncCard
-                    storageCard
-                    chatHistoryCard
-                    walletCurrencyCard
+                    // Ordered and grouped to track the PWA's Settings page (Boards, View, Wallet,
+                    // Chat, Bible, Push, Nostr, ...) instead of an alphabet-soup of individually
+                    // titled cards, so the two apps read as the same settings page.
+                    settingsGroupLabel("Boards")
                     boardsCard
-                    bibleTrackerCard
-                    fastingRemindersCard
-                    scriptureMemoryCard
-                    streaksCard
+
+                    settingsGroupLabel("View")
                     taskPresentationCard
                     taskOrderingCard
                     startupTabCard
-                    notificationsCard
-                    migrationCard
+                    streaksCard
                     appearanceCard
+
+                    settingsGroupLabel("Wallet")
+                    walletCurrencyCard
+
+                    settingsGroupLabel("Chat")
+                    chatHistoryCard
+
+                    settingsGroupLabel("Bible")
+                    bibleTrackerCard
+                    fastingRemindersCard
+                    scriptureMemoryCard
+
+                    settingsGroupLabel("Notifications")
+                    notificationsCard
+
+                    settingsGroupLabel("Nostr & Sync")
+                    identityCard
+                    syncCard
+                    storageCard
+
+                    settingsGroupLabel("App")
+                    migrationCard
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 18)
@@ -104,10 +122,29 @@ struct SettingsView: View {
         }
     }
 
+    /// A small uppercase category label above a cluster of related cards, matching the PWA's
+    /// Settings page grouping (Boards, View, Wallet, Chat, Bible, ...) — native keeps each
+    /// sub-topic as its own glass card rather than merging them into one PWA-style collapsible
+    /// section (safer, since each card owns its own bindings/state), but this ties them together
+    /// visually so the two apps read as the same page instead of a flat, unordered card list.
+    private func settingsGroupLabel(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(TaskifyTheme.tertiaryText)
+            .tracking(0.6)
+            .padding(.horizontal, 4)
+            .padding(.top, 4)
+    }
+
     private var identityCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Nostr identity")
-                .font(.headline)
+            HStack(spacing: 12) {
+                Image(systemName: "person.badge.key.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("Nostr identity")
+                    .font(.headline)
+            }
 
             Text(model.identityNpub.isEmpty ? "Creating secure identity…" : model.identityNpub)
                 .font(.caption.monospaced())
@@ -693,8 +730,13 @@ struct SettingsView: View {
 
     private var boardsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Boards & Lists")
-                .font(.headline)
+            HStack(spacing: 12) {
+                Image(systemName: "square.grid.2x2.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("Boards & Lists")
+                    .font(.headline)
+            }
 
             ForEach(model.visibleBoards.filter { $0.kind != .bible }) { board in
                 VStack(spacing: 7) {
@@ -1175,8 +1217,13 @@ struct SettingsView: View {
 
     private var taskPresentationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Task cards & completed items")
-                .font(.headline)
+            HStack(spacing: 12) {
+                Image(systemName: "checklist")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("Task cards & completed items")
+                    .font(.headline)
+            }
 
             Toggle("Completed view", isOn: $completedTabEnabled)
 
@@ -1203,8 +1250,13 @@ struct SettingsView: View {
 
     private var taskOrderingCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("New task position")
-                .font(.headline)
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("New task position")
+                    .font(.headline)
+            }
 
             Picker(
                 "New task position",
@@ -1253,8 +1305,13 @@ struct SettingsView: View {
 
     private var startupTabCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Launch tab")
-                .font(.headline)
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.up.forward.app.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("Launch tab")
+                    .font(.headline)
+            }
 
             Picker(
                 "Launch tab",
@@ -1323,8 +1380,13 @@ struct SettingsView: View {
 
     private var migrationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Native app status")
-                .font(.headline)
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("Native app status")
+                    .font(.headline)
+            }
 
             StatusRow(title: "Offline task storage", status: "Active", complete: true)
             StatusRow(title: "Weekly boards", status: "Active", complete: true)
