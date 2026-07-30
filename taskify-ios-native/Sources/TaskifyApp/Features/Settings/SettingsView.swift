@@ -22,6 +22,10 @@ struct SettingsView: View {
     @State private var newAppRelayURL = ""
     @State private var appRelayMessage: String?
     @State private var showingClearChatHistoryConfirmation = false
+    /// Empty by default -- every settings group starts collapsed, matching the PWA's
+    /// collapsed-by-default accordions, so opening Settings shows a scannable list of category
+    /// headers instead of every card's full contents at once.
+    @State private var expandedSettingsGroups: Set<String> = []
     @AppStorage(TaskPresentationSettings.completedTabKey)
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
@@ -39,41 +43,52 @@ struct SettingsView: View {
                 .padding(.top, 14)
 
             ScrollView {
-                VStack(spacing: 18) {
+                VStack(spacing: 10) {
                     // Ordered and grouped to track the PWA's Settings page (Boards, View, Wallet,
                     // Chat, Bible, Push, Nostr, ...) instead of an alphabet-soup of individually
-                    // titled cards, so the two apps read as the same settings page.
-                    settingsGroupLabel("Boards")
-                    boardsCard
+                    // titled cards, so the two apps read as the same settings page. Each group is
+                    // its own collapsed-by-default accordion, matching the PWA's Show/Hide
+                    // sections, so opening Settings is a quick scan of category headers rather
+                    // than a long scroll through every card.
+                    settingsGroup("Boards") {
+                        boardsCard
+                    }
 
-                    settingsGroupLabel("View")
-                    taskPresentationCard
-                    taskOrderingCard
-                    startupTabCard
-                    streaksCard
-                    appearanceCard
+                    settingsGroup("View") {
+                        taskPresentationCard
+                        taskOrderingCard
+                        startupTabCard
+                        streaksCard
+                        appearanceCard
+                    }
 
-                    settingsGroupLabel("Wallet")
-                    walletCurrencyCard
+                    settingsGroup("Wallet") {
+                        walletCurrencyCard
+                    }
 
-                    settingsGroupLabel("Chat")
-                    chatHistoryCard
+                    settingsGroup("Chat") {
+                        chatHistoryCard
+                    }
 
-                    settingsGroupLabel("Bible")
-                    bibleTrackerCard
-                    fastingRemindersCard
-                    scriptureMemoryCard
+                    settingsGroup("Bible") {
+                        bibleTrackerCard
+                        fastingRemindersCard
+                        scriptureMemoryCard
+                    }
 
-                    settingsGroupLabel("Notifications")
-                    notificationsCard
+                    settingsGroup("Notifications") {
+                        notificationsCard
+                    }
 
-                    settingsGroupLabel("Nostr & Sync")
-                    identityCard
-                    syncCard
-                    storageCard
+                    settingsGroup("Nostr & Sync") {
+                        identityCard
+                        syncCard
+                        storageCard
+                    }
 
-                    settingsGroupLabel("App")
-                    migrationCard
+                    settingsGroup("App") {
+                        migrationCard
+                    }
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 18)
@@ -122,18 +137,54 @@ struct SettingsView: View {
         }
     }
 
-    /// A small uppercase category label above a cluster of related cards, matching the PWA's
-    /// Settings page grouping (Boards, View, Wallet, Chat, Bible, ...) — native keeps each
-    /// sub-topic as its own glass card rather than merging them into one PWA-style collapsible
-    /// section (safer, since each card owns its own bindings/state), but this ties them together
-    /// visually so the two apps read as the same page instead of a flat, unordered card list.
-    private func settingsGroupLabel(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(TaskifyTheme.tertiaryText)
-            .tracking(0.6)
-            .padding(.horizontal, 4)
-            .padding(.top, 4)
+    /// A tappable category header above a cluster of related cards, matching the PWA's Settings
+    /// page grouping (Boards, View, Wallet, Chat, Bible, ...) and its collapsed-by-default
+    /// Show/Hide accordions — native keeps each sub-topic as its own glass card rather than
+    /// merging them into one PWA-style section (safer, since each card owns its own
+    /// bindings/state), but collapsing the whole cluster behind one header still gets the same
+    /// "scan categories, expand only what you need" navigation speedup.
+    private func settingsGroup<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isExpanded = expandedSettingsGroups.contains(title)
+        return VStack(alignment: .leading, spacing: 18) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if isExpanded {
+                        expandedSettingsGroups.remove(title)
+                    } else {
+                        expandedSettingsGroups.insert(title)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(title.uppercased())
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .tracking(0.6)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 4)
+                .padding(.top, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Double-tap to \(isExpanded ? "collapse" : "expand")")
+
+            if isExpanded {
+                VStack(spacing: 18) {
+                    content()
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 
     private var identityCard: some View {
