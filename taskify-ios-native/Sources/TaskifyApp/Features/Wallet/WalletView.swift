@@ -4348,7 +4348,13 @@ struct ReceiveCashuSheet: View {
     @ObservedObject var wallet: WalletViewModel
     /// Flips to the Lightning version of this action, matching the PWA sheet header's mode button.
     var onSwitchMode: (() -> Void)?
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    /// A standing multi-use, open-amount request so the page has something scannable the moment it
+    /// opens -- the ecash counterpart to leading Receive Lightning with the user's address.
+    @State private var openRequest: CashuCreatedPaymentRequest?
+    @State private var requestCopied = false
+    @State private var showingRequestBuilder = false
     @State private var token = ""
     @State private var preview: CashuTokenPreview?
     @State private var receivedAmount: UInt64?
@@ -4374,19 +4380,21 @@ struct ReceiveCashuSheet: View {
                         } else if let queuedReceive {
                             queuedView(queuedReceive)
                         } else {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 52))
-                                .foregroundStyle(TaskifyTheme.accent)
+                            openRequestCard
 
-                            VStack(spacing: 6) {
-                                Text("Receive Cashu ecash")
-                                    .font(.title2.bold())
-                                    .foregroundStyle(TaskifyTheme.primaryText)
+                            WalletPrimaryActionButton(title: "Create request") {
+                                showingRequestBuilder = true
+                            }
+                            .disabled(wallet.activeMint == nil || model.identityPublicKey.isEmpty)
+                            .opacity(wallet.activeMint == nil || model.identityPublicKey.isEmpty ? 0.45 : 1)
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                walletFieldLabel("REDEEM A TOKEN")
                                 Text("Paste a cashuA or cashuB token. Taskify verifies and swaps it with its mint before adding the balance.")
-                                    .font(.subheadline)
-                                    .multilineTextAlignment(.center)
+                                    .font(.footnote)
                                     .foregroundStyle(TaskifyTheme.secondaryText)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             TextEditor(text: $token)
                                 .font(.system(.footnote, design: .monospaced))
@@ -4452,8 +4460,14 @@ struct ReceiveCashuSheet: View {
                     .padding(22)
                 }
             }
-            .navigationTitle("Receive")
+            .navigationTitle("Receive eCash")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showingRequestBuilder) {
+                ReceiveCashuRequestSheet(wallet: wallet)
+            }
+            .task {
+                await ensureOpenRequest()
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if let onSwitchMode {
@@ -4525,6 +4539,58 @@ struct ReceiveCashuSheet: View {
         .foregroundStyle(TaskifyTheme.primaryText)
         .padding(18)
         .taskifyGlass(cornerRadius: 22)
+    }
+
+    /// A standing multi-use, open-amount request. Created quietly on open so there is always
+    /// something to scan; failure is silent because this is a convenience, not the page's purpose
+    /// -- pasting a token still works without it.
+    @ViewBuilder
+    private var openRequestCard: some View {
+        if let openRequest {
+            VStack(spacing: 14) {
+                HStack {
+                    walletFieldLabel("PAYMENT REQUEST")
+                    Spacer(minLength: 8)
+                    Text("Multi-use")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+
+                CashuQRCodeView(value: openRequest.encoded, accessibilityLabel: "Cashu payment request QR code")
+
+                Button {
+                    UIPasteboard.general.string = openRequest.encoded
+                    requestCopied = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_600_000_000)
+                        requestCopied = false
+                    }
+                } label: {
+                    Label(requestCopied ? "Copied" : "Copy request", systemImage: requestCopied ? "checkmark" : "doc.on.doc")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(requestCopied ? .green : TaskifyTheme.secondaryText)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity)
+            .taskifyGlass(cornerRadius: 24)
+        }
+    }
+
+    private func ensureOpenRequest() async {
+        guard openRequest == nil,
+              let mint = wallet.activeMint,
+              !model.identityPublicKey.isEmpty else { return }
+        openRequest = try? await wallet.createPaymentRequest(
+            amount: nil,
+            description: nil,
+            mintURLs: [mint.url],
+            recipientPublicKey: model.identityPublicKey,
+            relayURLs: model.walletPaymentRequestRelayURLs,
+            singleUse: false
+        )
     }
 
     private func successView(amount: UInt64) -> some View {
@@ -5921,7 +5987,7 @@ private struct SendCashuSheet: View {
                     }
                 }
             }
-            .navigationTitle(outgoing == nil ? "Send" : "Ecash token")
+            .navigationTitle(outgoing == nil ? "Send eCash" : "Ecash token")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
