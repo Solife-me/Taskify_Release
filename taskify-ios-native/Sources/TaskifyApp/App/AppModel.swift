@@ -843,6 +843,92 @@ final class AppModel {
         synchronizeTask(task.id)
     }
 
+    /// Creates the tasks a dictation session produced, resolving each one onto the same board the
+    /// quick-add bar would use. Tasks the model dated land on that date (so a week board files them
+    /// under the right weekday); undated ones fall back to today, since every week-board task needs
+    /// a column to live in.
+    ///
+    /// Returns how many were actually created -- the caller reports this back to the user, and a
+    /// partial result is possible when a board rejects a task (for example a list board with no
+    /// columns).
+    @discardableResult
+    func addTasksFromVoice(_ tasks: [VoiceFinalTask]) -> Int {
+        guard let selectedBoard else { return 0 }
+        let board: Board
+        switch selectedBoard.kind {
+        case .week, .list:
+            board = selectedBoard
+        case .compound:
+            guard let child = snapshot.compoundChildBoards(for: selectedBoard.id).first else { return 0 }
+            board = child
+        case .bible:
+            return 0
+        }
+
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plainISOFormatter = ISO8601DateFormatter()
+
+        var created = 0
+        for voiceTask in tasks {
+            let title = voiceTask.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { continue }
+
+            let dueDate = voiceTask.dueISO.flatMap { raw in
+                isoFormatter.date(from: raw) ?? plainISOFormatter.date(from: raw)
+            }
+            let effectiveDate = dueDate ?? Date()
+
+            let columnID: String?
+            switch board.kind {
+            case .week:
+                columnID = WeekdayColumn.containing(effectiveDate).rawValue
+            case .list:
+                columnID = board.columns.sorted { $0.order < $1.order }.first?.id
+            case .compound, .bible:
+                columnID = nil
+            }
+
+            guard let task = snapshot.addTask(
+                title: title,
+                boardID: board.id,
+                columnID: columnID,
+                dueDate: board.kind == .week ? effectiveDate : dueDate,
+                note: voiceTask.notes ?? "",
+                priority: voiceTask.priority.flatMap(TaskPriority.init(rawValue:)),
+                authorPublicKey: identityPublicKey.nilIfEmpty,
+                newTaskPosition: newTaskPosition
+            ) else { continue }
+
+            let subtasks = (voiceTask.subtasks ?? [])
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !subtasks.isEmpty {
+                snapshot.updateTask(
+                    taskID: task.id,
+                    title: task.title,
+                    note: task.note,
+                    dueDate: task.dueDate,
+                    dueDateEnabled: task.dueDate != nil,
+                    dueTimeEnabled: task.dueTimeEnabled,
+                    dueTimeZone: task.dueTimeZone,
+                    priority: task.priority,
+                    columnID: task.columnID,
+                    subtasks: subtasks.map { TaskSubtask(title: $0) },
+                    editorPublicKey: identityPublicKey.nilIfEmpty
+                )
+            }
+
+            synchronizeTask(task.id)
+            created += 1
+        }
+
+        if created > 0 {
+            refreshNotifications(requestPermission: false)
+        }
+        return created
+    }
+
     @discardableResult
     func addTaskifyEvent(
         title: String,

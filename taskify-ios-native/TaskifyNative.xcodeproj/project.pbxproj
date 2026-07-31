@@ -11,6 +11,8 @@
 		B00000000000000000000101 /* TaskifyNativeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000201 /* TaskifyNativeApp.swift */; };
 		B00000000000000000000102 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000202 /* AppModel.swift */; };
 		B00000000000000000000124 /* TaskifyAddTaskIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000225 /* TaskifyAddTaskIntent.swift */; };
+		B00000000000000000000125 /* SpeechDictationRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000226 /* SpeechDictationRecognizer.swift */; };
+		B00000000000000000000126 /* VoiceDictationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000227 /* VoiceDictationSheet.swift */; };
 		B00000000000000000000103 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000203 /* RootTabView.swift */; };
 		B00000000000000000000104 /* TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* TaskifyTheme.swift */; };
 		B00000000000000000000105 /* BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* BoardsView.swift */; };
@@ -71,6 +73,8 @@
 		B00000000000000000000201 /* TaskifyNativeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyNativeApp.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000202 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModel.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000225 /* TaskifyAddTaskIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000226 /* SpeechDictationRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000227 /* VoiceDictationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000203 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/RootTabView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000204 /* TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000205 /* BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
@@ -148,6 +152,8 @@
 				B00000000000000000000201 /* TaskifyNativeApp.swift */,
 				B00000000000000000000202 /* AppModel.swift */,
 				B00000000000000000000225 /* TaskifyAddTaskIntent.swift */,
+				B00000000000000000000226 /* SpeechDictationRecognizer.swift */,
+				B00000000000000000000227 /* VoiceDictationSheet.swift */,
 				B00000000000000000000203 /* RootTabView.swift */,
 				B00000000000000000000204 /* TaskifyTheme.swift */,
 				B00000000000000000000205 /* BoardsView.swift */,
@@ -354,6 +360,8 @@
 				B00000000000000000000101 /* TaskifyNativeApp.swift in Sources */,
 				B00000000000000000000102 /* AppModel.swift in Sources */,
 				B00000000000000000000124 /* TaskifyAddTaskIntent.swift in Sources */,
+				B00000000000000000000125 /* SpeechDictationRecognizer.swift in Sources */,
+				B00000000000000000000126 /* VoiceDictationSheet.swift in Sources */,
 				E5E7AD72EBBDFE980998BBE4 /* OnboardingSettings.swift in Sources */,
 				0B64CE2D2E8DC2C381D5DFA2 /* FirstRunOnboardingView.swift in Sources */,
 				B00000000000000000000103 /* RootTabView.swift in Sources */,

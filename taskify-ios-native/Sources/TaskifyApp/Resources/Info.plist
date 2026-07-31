@@ -34,8 +34,12 @@
 	<string>Scan Taskify board shares and Cashu ecash tokens from QR codes.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Protect access to your Cashu wallet recovery words.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Add tasks by speaking them out loud.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Show and complete your Apple Reminders alongside Taskify tasks in Upcoming.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Turn what you say into tasks. Speech is transcribed on your device where supported.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -584,6 +584,7 @@ struct BoardsView: View {
     @State private var showingSortOptions = false
     @State private var showingClearCompletedConfirmation = false
     @State private var showingSelectionMoveSheet = false
+    @State private var showingVoiceDictation = false
     @State private var newListName = ""
     @State private var quickTaskDraft = ""
     @State private var focusedPageID: String?
@@ -654,12 +655,20 @@ struct BoardsView: View {
                     isFocused: $quickTaskFieldIsFocused,
                     destinationName: quickAddDestination.displayName,
                     onSubmit: { addQuickTask(dismissKeyboard: false) },
-                    onAddButton: { addQuickTask(dismissKeyboard: true) }
+                    onAddButton: { addQuickTask(dismissKeyboard: true) },
+                    onVoice: {
+                        quickTaskFieldIsFocused = false
+                        showingVoiceDictation = true
+                    }
                 )
                 .padding(.horizontal, 18)
                 .padding(.bottom, 10)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .sheet(isPresented: $showingVoiceDictation) {
+            VoiceDictationSheet()
+                .environment(model)
         }
         .sheet(isPresented: $showingSelectionMoveSheet) {
             SelectionMoveSheet(selection: selection) {
@@ -1416,6 +1425,7 @@ private struct FloatingQuickAddBar: View {
     let destinationName: String
     let onSubmit: () -> Void
     let onAddButton: () -> Void
+    let onVoice: () -> Void
 
     var body: some View {
         HStack(spacing: 9) {
@@ -1431,6 +1441,25 @@ private struct FloatingQuickAddBar: View {
                     in: Capsule(),
                     fallbackFill: Color.black.opacity(0.32)
                 )
+
+            // Hidden while typing: the add button is the action you want in that moment, and two
+            // circular buttons plus a shrinking field gets cramped on narrow screens.
+            if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button(action: onVoice) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 48, height: 48)
+                        .contentShape(Circle())
+                        .foregroundStyle(.white)
+                        .taskifyGlassControl(
+                            in: Circle(),
+                            fallbackFill: Color.black.opacity(0.32)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add tasks by voice")
+                .transition(.scale.combined(with: .opacity))
+            }
 
             Button(action: onAddButton) {
                 Image(systemName: "plus")
