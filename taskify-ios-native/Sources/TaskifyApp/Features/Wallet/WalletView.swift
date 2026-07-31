@@ -703,6 +703,33 @@ final class WalletViewModel: ObservableObject {
         WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
     }
 
+    /// Swaps which currency leads, for the tap-the-amount gesture the PWA's amount displays have.
+    /// Returns nil when there's nothing to swap to (conversion off, or no price yet), which also
+    /// leaves the amount card non-interactive rather than tappable-but-inert.
+    ///
+    /// `onChange` exists because `WalletCurrencySettings` is UserDefaults-backed and not
+    /// observable: the calling view bumps a revision counter to re-render itself.
+    func currencyToggleAction(_ onChange: @escaping () -> Void) -> (() -> Void)? {
+        guard WalletCurrencySettings.conversionEnabled, btcUSDPrice != nil else { return nil }
+        return {
+            WalletCurrencySettings.setPrimaryCurrency(
+                WalletCurrencySettings.primaryCurrency == .sat ? .usd : .sat
+            )
+            onChange()
+        }
+    }
+
+    /// The "≈ $x.xx" line for an amount the user is currently typing on a keypad. Unlike
+    /// `displayAmount(forSats:)` this always leads with sats, because the keypad itself is
+    /// denominated in sats regardless of which currency is set as primary.
+    func conversionLine(forTypedSats amountText: String) -> String? {
+        guard WalletCurrencySettings.conversionEnabled,
+              let price = btcUSDPrice,
+              let sats = UInt64(amountText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              sats > 0 else { return nil }
+        return "≈ \(WalletAmountFormat.formatUSD(WalletAmountFormat.usdValue(sats: sats, btcUSDPrice: price)))"
+    }
+
     @discardableResult
     private func recoverPendingLightningReceives(
         presentInApp: Bool = true
@@ -1391,10 +1418,16 @@ struct WalletView: View {
             WalletHistorySheet(wallet: wallet)
         }
         .sheet(isPresented: $showingReceive) {
-            ReceiveCashuSheet(wallet: wallet, initialToken: scannedToken)
+            ReceiveCashuSheet(wallet: wallet, initialToken: scannedToken, onSwitchMode: {
+                showingReceive = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingLightningReceive = true }
+            })
         }
         .sheet(isPresented: $showingLightningReceive) {
-            ReceiveLightningSheet(wallet: wallet)
+            ReceiveLightningSheet(wallet: wallet, onSwitchMode: {
+                showingLightningReceive = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingReceive = true }
+            })
         }
         .sheet(isPresented: $showingScanner) {
             CashuTokenScannerSheet(onToken: { token in
@@ -1406,10 +1439,16 @@ struct WalletView: View {
             })
         }
         .sheet(isPresented: $showingSend) {
-            SendCashuSheet(wallet: wallet)
+            SendCashuSheet(wallet: wallet, onSwitchMode: {
+                showingSend = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingLightningSend = true }
+            })
         }
         .sheet(isPresented: $showingLightningSend) {
-            SendLightningSheet(wallet: wallet)
+            SendLightningSheet(wallet: wallet, onSwitchMode: {
+                showingLightningSend = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingSend = true }
+            })
         }
         .sheet(isPresented: $showingPaymentRequest) {
             PayCashuRequestSheet(wallet: wallet)
@@ -1765,6 +1804,90 @@ private struct WalletUtilityButton: View {
     }
 }
 
+/// The header every PWA result page opens with: a back affordance on the left ("← New token",
+/// "← New invoice", "← New request") and a quiet status/mode label on the right.
+private struct WalletResultHeaderRow: View {
+    let backTitle: String
+    var status: String?
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: onBack) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.subheadline.weight(.semibold))
+                    Text(backTitle)
+                        .font(.subheadline)
+                }
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 8)
+
+            if let status {
+                Text(status)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+    }
+}
+
+/// The two-up row of quiet glass buttons the PWA uses for a page's secondary choices
+/// (Contacts | Paste, Single-use | Multi-use).
+private struct WalletSecondaryActionGrid<Leading: View, Trailing: View>: View {
+    @ViewBuilder var leading: Leading
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            leading
+            trailing
+        }
+    }
+}
+
+/// One cell of `WalletSecondaryActionGrid`. `isSelected` renders the PWA's accent-outlined state
+/// used by the single-use/multi-use toggle; plain cells leave it false.
+private struct WalletSecondaryActionButton: View {
+    let title: String
+    var systemImage: String?
+    var isSelected: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let systemImage { Image(systemName: systemImage) }
+                Text(title)
+            }
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .foregroundStyle(isSelected ? TaskifyTheme.accent : TaskifyTheme.primaryText)
+            .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isSelected ? TaskifyTheme.accent : .clear, lineWidth: 1.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The uppercase micro-label the PWA puts above every field group in the wallet sheets
+/// (`text-[11px] uppercase tracking-wide`).
+@ViewBuilder
+private func walletFieldLabel(_ text: String) -> some View {
+    Text(text)
+        .font(.system(size: 11, weight: .semibold))
+        .tracking(1.1)
+        .foregroundStyle(TaskifyTheme.secondaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
+}
+
 private struct WalletMintSelectorCard: View {
     let label: String
     let mints: [CashuMintSummary]
@@ -1824,21 +1947,132 @@ private struct WalletAmountDisplayCard: View {
     let amountText: String
     var suffix: String = WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay)
     var caption: String = "Enter amount"
+    /// The "≈ $x.xx" conversion of what's currently typed. Matches the PWA amount display's
+    /// secondary line (`lightning-amount-display__secondary`), which sits directly under the
+    /// figure rather than being folded into the caption.
+    var secondary: String?
+    /// Tapping the display swaps which currency leads, as it does in the PWA. Omitted where there
+    /// is no conversion to swap to, which also leaves the card non-interactive.
+    var onToggleCurrency: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 4) {
+        let content = VStack(spacing: 4) {
             Text("\(amountText.isEmpty ? "0" : amountText) \(suffix)")
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .foregroundStyle(TaskifyTheme.primaryText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
+            if let secondary {
+                Text(secondary)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
             Text(caption)
                 .font(.footnote)
-                .foregroundStyle(TaskifyTheme.secondaryText)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 22)
         .taskifyGlass(cornerRadius: 24)
+
+        if let onToggleCurrency {
+            Button {
+                onToggleCurrency()
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } label: {
+                content
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Double-tap to switch which currency is shown first")
+        } else {
+            content
+        }
+    }
+}
+
+/// The single full-width primary action every wallet sheet ends with, matching the PWA's
+/// `accent-button accent-button--tall w-full` -- previously each sheet hand-rolled its own,
+/// so heights and label weights drifted between them.
+private struct WalletPrimaryActionButton: View {
+    let title: String
+    var busyTitle: String?
+    var isBusy: Bool = false
+    var systemImage: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if isBusy {
+                    ProgressView().controlSize(.small).tint(.white)
+                } else if let systemImage {
+                    Image(systemName: systemImage)
+                }
+                Text(isBusy ? (busyTitle ?? title) : title)
+            }
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .foregroundStyle(.white)
+            .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A label/value row for the review and result screens. The PWA lists these as
+/// `secondary label on the left, semibold value on the right` rows; keeping one implementation
+/// stops each sheet inventing its own spacing.
+private struct WalletDetailRow: View {
+    let title: String
+    let value: String
+    var emphasized: Bool = false
+    var valueColor: Color?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(emphasized ? .subheadline.weight(.bold) : .subheadline.weight(.semibold))
+                .foregroundStyle(valueColor ?? TaskifyTheme.primaryText)
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+/// The amount hero used at the top of review/result screens: an uppercase micro-label, the figure,
+/// and its conversion -- the same block the PWA shows above a Lightning invoice's details.
+private struct WalletAmountHero: View {
+    let label: String
+    let amount: String
+    var secondary: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(1.1)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Text(amount)
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            if let secondary {
+                Text(secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 22)
     }
 }
 
@@ -2921,6 +3155,8 @@ private struct ReceiveCashuRequestSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var wallet: WalletViewModel
 
+    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
+    @State private var currencyRevision: UInt8 = 0
     @State private var selectedMintURL = ""
     @State private var amountText = ""
     @State private var memo = ""
@@ -3005,7 +3241,12 @@ private struct ReceiveCashuRequestSheet: View {
         VStack(spacing: 20) {
             WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
 
-            WalletAmountDisplayCard(amountText: amountText, caption: "Leave at 0 to request any amount")
+            WalletAmountDisplayCard(
+                amountText: amountText,
+                caption: "Leave at 0 to request any amount",
+                secondary: wallet.conversionLine(forTypedSats: amountText),
+                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+            )
 
             Picker("Request type", selection: $singleUse) {
                 Text("Single-use").tag(true)
@@ -3190,7 +3431,11 @@ private struct ReceiveCashuRequestSheet: View {
 
 private struct ReceiveLightningSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
+    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
+    @State private var currencyRevision: UInt8 = 0
     @State private var amountText = ""
     @State private var selectedMintURL = ""
     @State private var quote: CashuLightningReceiveQuote?
@@ -3201,9 +3446,11 @@ private struct ReceiveLightningSheet: View {
 
     init(
         wallet: WalletViewModel,
-        initialQuote: CashuLightningReceiveQuote? = nil
+        initialQuote: CashuLightningReceiveQuote? = nil,
+        onSwitchMode: (() -> Void)? = nil
     ) {
         self.wallet = wallet
+        self.onSwitchMode = onSwitchMode
         _selectedMintURL = State(initialValue: initialQuote?.mintURL ?? "")
         _quote = State(initialValue: initialQuote)
     }
@@ -3240,6 +3487,11 @@ private struct ReceiveLightningSheet: View {
             .navigationTitle("Receive Lightning")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if let onSwitchMode {
+                        Button("Lightning", action: onSwitchMode)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
@@ -3277,7 +3529,12 @@ private struct ReceiveLightningSheet: View {
     private var amountView: some View {
         VStack(spacing: 20) {
             WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
-            WalletAmountDisplayCard(amountText: amountText, caption: "Enter amount to receive")
+            WalletAmountDisplayCard(
+                amountText: amountText,
+                caption: "Enter amount to receive",
+                secondary: wallet.conversionLine(forTypedSats: amountText),
+                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+            )
             WalletAmountKeypad(amountText: $amountText)
 
             Button {
@@ -4045,6 +4302,8 @@ private struct SolifeCustomAddressPurchaseSheet: View {
 
 struct ReceiveCashuSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    /// Flips to the Lightning version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var token = ""
     @State private var preview: CashuTokenPreview?
@@ -4053,8 +4312,9 @@ struct ReceiveCashuSheet: View {
     @State private var isInspecting = false
     @State private var localError: String?
 
-    init(wallet: WalletViewModel, initialToken: String = "") {
+    init(wallet: WalletViewModel, initialToken: String = "", onSwitchMode: (() -> Void)? = nil) {
         self.wallet = wallet
+        self.onSwitchMode = onSwitchMode
         _token = State(initialValue: initialToken)
     }
 
@@ -4151,6 +4411,11 @@ struct ReceiveCashuSheet: View {
             .navigationTitle("Receive")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if let onSwitchMode {
+                        Button("eCash", action: onSwitchMode)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
@@ -4741,7 +5006,11 @@ private struct CashuTokenCodeScanner: UIViewControllerRepresentable {
 
 private struct SendLightningSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
+    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
+    @State private var currencyRevision: UInt8 = 0
     @State private var invoice = ""
     @State private var amountText = ""
     @State private var selectedMintURL = ""
@@ -4750,11 +5019,20 @@ private struct SendLightningSheet: View {
     @State private var localError: String?
     @State private var showingScanner = false
     @State private var isResolvingAddress = false
+    @State private var step: Step = .destination
     @FocusState private var focusedField: Field?
+
+    /// Split across two screens the way the PWA's Lightning send sheet is (`lightningSendView`
+    /// "input" then "address"): a destination screen, then -- only when the destination doesn't
+    /// carry its own amount -- a keypad screen. Cramming a multi-line invoice field, a mint
+    /// selector and a keypad onto one screen is what the PWA avoids here.
+    private enum Step {
+        case destination
+        case amount
+    }
 
     private enum Field {
         case invoice
-        case amount
     }
 
     private var customAmount: UInt64? {
@@ -4769,14 +5047,20 @@ private struct SendLightningSheet: View {
         LnurlPayClient.isLightningAddress(invoice)
     }
 
-    private var canContinue: Bool {
-        guard !invoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !selectedMintURL.isEmpty else {
-            return false
-        }
-        if isLightningAddress {
-            return (customAmount ?? 0) > 0
-        }
-        return amountText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || customAmount != nil
+    private var trimmedInvoice: String {
+        invoice.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var fundedMints: [CashuMintSummary] {
+        wallet.snapshot.mints.filter { $0.available > 0 }
+    }
+
+    private var canLeaveDestinationStep: Bool {
+        !trimmedInvoice.isEmpty && !selectedMintURL.isEmpty
+    }
+
+    private var canSubmitAmount: Bool {
+        (customAmount ?? 0) > 0
     }
 
     var body: some View {
@@ -4790,8 +5074,10 @@ private struct SendLightningSheet: View {
                             successView(result)
                         } else if let quote {
                             confirmationView(quote)
+                        } else if step == .amount {
+                            amountView
                         } else {
-                            invoiceView
+                            destinationView
                         }
                     }
                     .padding(22)
@@ -4801,6 +5087,20 @@ private struct SendLightningSheet: View {
             .navigationTitle("Pay Lightning")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if step == .amount && quote == nil && result == nil {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { step = .destination }
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if let onSwitchMode {
+                        Button("eCash", action: onSwitchMode)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
@@ -4833,25 +5133,14 @@ private struct SendLightningSheet: View {
         }
     }
 
-    private var invoiceView: some View {
+    /// Step one, mirroring the PWA's "input" view: where the money is going and which mint pays.
+    private var destinationView: some View {
         VStack(spacing: 20) {
-            Image(systemName: "bolt.circle.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(.yellow)
-
-            VStack(spacing: 6) {
-                Text("Pay a Lightning invoice")
-                    .font(.title2.bold())
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                Text("Paste or scan a BOLT11 invoice or a lightning address (name@domain.com), then review the exact amount and fees before paying.")
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-            }
+            walletFieldLabel("SEND TO")
 
             ZStack(alignment: .topLeading) {
                 if invoice.isEmpty {
-                    Text("Lightning invoice or address")
+                    Text("Invoice or lightning address")
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                         .padding(.horizontal, 15)
                         .padding(.vertical, 14)
@@ -4864,7 +5153,7 @@ private struct SendLightningSheet: View {
                     .focused($focusedField, equals: .invoice)
                     .padding(10)
             }
-            .frame(minHeight: 116)
+            .frame(minHeight: 104)
             .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TaskifyTheme.border))
 
@@ -4893,66 +5182,33 @@ private struct SendLightningSheet: View {
             .font(.headline)
             .foregroundStyle(TaskifyTheme.primaryText)
 
-            mintPicker
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(isLightningAddress ? "AMOUNT" : "AMOUNTLESS INVOICE")
-                    .font(.caption.bold())
-                    .tracking(1)
-                    .foregroundStyle(TaskifyTheme.accent)
-                TextField(isLightningAddress ? "Amount in sats" : "Optional amount in sats", text: $amountText)
-                    .keyboardType(.numberPad)
-                    .focused($focusedField, equals: .amount)
-                    .padding(.horizontal, 15)
-                    .frame(height: 50)
-                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                Text(isLightningAddress
-                    ? "A lightning address has no built-in amount, so enter how much to send."
-                    : "Leave this empty unless the invoice does not contain an amount.")
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            if fundedMints.isEmpty {
+                Text("Add a mint with a balance in Wallet → Mints to start sending.")
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                WalletMintSelectorCard(
+                    label: "PAY FROM",
+                    mints: fundedMints,
+                    selectedMintURL: $selectedMintURL
+                )
             }
 
-            Button {
+            WalletPrimaryActionButton(
+                title: isLightningAddress ? "Continue" : "Review payment",
+                busyTitle: "Checking invoice…",
+                isBusy: wallet.isWorking
+            ) {
                 focusedField = nil
-                Task {
-                    do {
-                        if isLightningAddress {
-                            isResolvingAddress = true
-                            let resolution = try await LnurlPayClient.resolveInvoice(
-                                address: invoice,
-                                amountSats: customAmount ?? 0
-                            )
-                            isResolvingAddress = false
-                            quote = try await wallet.prepareLightningPayment(
-                                mintURL: selectedMintURL,
-                                invoice: resolution.invoice,
-                                amount: resolution.amountSats
-                            )
-                        } else {
-                            quote = try await wallet.prepareLightningPayment(
-                                mintURL: selectedMintURL,
-                                invoice: invoice,
-                                amount: customAmount
-                            )
-                        }
-                    } catch {
-                        isResolvingAddress = false
-                        localError = WalletViewModel.message(for: error)
-                    }
+                if isLightningAddress {
+                    withAnimation(.easeInOut(duration: 0.2)) { step = .amount }
+                } else {
+                    Task { await prepareQuote() }
                 }
-            } label: {
-                Text(isResolvingAddress ? "Resolving address…" : (wallet.isWorking ? "Checking invoice…" : "Review payment"))
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(.white)
-                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
             }
-            .buttonStyle(.plain)
-            .disabled(wallet.isWorking || isResolvingAddress || !canContinue)
+            .disabled(wallet.isWorking || !canLeaveDestinationStep)
+            .opacity(canLeaveDestinationStep ? 1 : 0.45)
 
             Label(
                 "The selected Cashu mint pays the invoice. Taskify never sends your recovery phrase.",
@@ -4964,72 +5220,117 @@ private struct SendLightningSheet: View {
         }
     }
 
-    @ViewBuilder
-    private var mintPicker: some View {
-        let fundedMints = wallet.snapshot.mints.filter { $0.available > 0 }
-        if fundedMints.count > 1 {
-            Picker("Pay from", selection: $selectedMintURL) {
-                ForEach(fundedMints) { mint in
-                    Text("\(mint.name) · \(wallet.formattedSats(mint.available))").tag(mint.url)
-                }
+    /// Step two, mirroring the PWA's "address" view: a lightning address carries no amount of its
+    /// own, so it gets the same keypad the rest of the wallet's amount entry uses.
+    private var amountView: some View {
+        VStack(spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                walletFieldLabel("SEND TO")
+                Text(trimmedInvoice)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .taskifyGlass(cornerRadius: 18)
             }
-            .pickerStyle(.menu)
-            .tint(TaskifyTheme.accent)
-            .padding(.horizontal, 15)
-            .frame(height: 50)
-            .taskifyGlass(cornerRadius: 18)
-        } else if let mint = fundedMints.first {
-            HStack {
-                Label(mint.name, systemImage: "building.columns")
-                Spacer()
-                Text("\(wallet.formattedSats(mint.available))")
+
+            WalletAmountDisplayCard(
+                amountText: amountText,
+                caption: "Enter amount to send",
+                secondary: wallet.conversionLine(forTypedSats: amountText),
+                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+            )
+
+            WalletAmountKeypad(amountText: $amountText)
+
+            WalletPrimaryActionButton(
+                title: "Review payment",
+                busyTitle: isResolvingAddress ? "Resolving address…" : "Checking invoice…",
+                isBusy: wallet.isWorking || isResolvingAddress
+            ) {
+                Task { await prepareQuote() }
             }
-            .font(.subheadline)
-            .foregroundStyle(TaskifyTheme.secondaryText)
-            .padding(16)
-            .taskifyGlass(cornerRadius: 18)
+            .disabled(wallet.isWorking || isResolvingAddress || !canSubmitAmount)
+            .opacity(canSubmitAmount ? 1 : 0.45)
         }
     }
 
-    private func confirmationView(_ quote: CashuLightningPaymentQuote) -> some View {
-        VStack(spacing: 20) {
-            Image(systemName: "bolt.fill")
-                .font(.system(size: 34, weight: .bold))
-                .frame(width: 70, height: 70)
-                .foregroundStyle(.yellow)
-                .taskifyGlassControl(in: Circle())
+    /// Resolves a lightning address to an invoice where needed, then asks the mint to quote the
+    /// payment. Success lands on the review screen rather than paying outright.
+    private func prepareQuote() async {
+        do {
+            if isLightningAddress {
+                isResolvingAddress = true
+                let resolution = try await LnurlPayClient.resolveInvoice(
+                    address: trimmedInvoice,
+                    amountSats: customAmount ?? 0
+                )
+                isResolvingAddress = false
+                quote = try await wallet.prepareLightningPayment(
+                    mintURL: selectedMintURL,
+                    invoice: resolution.invoice,
+                    amount: resolution.amountSats
+                )
+            } else {
+                quote = try await wallet.prepareLightningPayment(
+                    mintURL: selectedMintURL,
+                    invoice: trimmedInvoice,
+                    amount: customAmount
+                )
+            }
+        } catch {
+            isResolvingAddress = false
+            localError = WalletViewModel.message(for: error)
+        }
+    }
 
-            Text("Review payment")
-                .font(.title2.bold())
-                .foregroundStyle(TaskifyTheme.primaryText)
+
+    /// Native-only review step -- the PWA pays straight from its send sheet. Kept because a
+    /// Lightning payment is irreversible and the fee reserve isn't knowable until the mint quotes
+    /// it, but restyled to the PWA's grammar: amount hero, label/value rows, one full-width action.
+    private func confirmationView(_ quote: CashuLightningPaymentQuote) -> some View {
+        let amount = wallet.displayAmount(forSats: quote.amount)
+
+        return VStack(spacing: 20) {
+            WalletAmountHero(
+                label: "AMOUNT",
+                amount: amount.primary,
+                secondary: amount.secondary
+            )
 
             VStack(spacing: 14) {
-                paymentRow("Invoice amount", value: "\(wallet.formattedSats(quote.amount))")
-                paymentRow("Maximum routing fee", value: "\(wallet.formattedSats(quote.feeReserve))")
+                WalletDetailRow(title: "Maximum routing fee", value: wallet.formattedSats(quote.feeReserve))
                 if quote.walletFee > 0 {
-                    paymentRow("Mint input fee", value: "\(wallet.formattedSats(quote.walletFee))")
+                    WalletDetailRow(title: "Mint input fee", value: wallet.formattedSats(quote.walletFee))
                 }
                 Divider().overlay(TaskifyTheme.border)
-                paymentRow("Maximum from balance", value: "\(wallet.formattedSats(quote.maximumTotal))", emphasized: true)
-
-                Text(URL(string: quote.mintURL)?.host() ?? quote.mintURL)
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.tertiaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+                WalletDetailRow(
+                    title: "Maximum from balance",
+                    value: wallet.formattedSats(quote.maximumTotal),
+                    emphasized: true
+                )
+                WalletDetailRow(
+                    title: "Paid by",
+                    value: URL(string: quote.mintURL)?.host() ?? quote.mintURL
+                )
                 if let expiresAt = quote.expiresAt {
-                    Label("Invoice expires \(expiresAt, style: .relative)", systemImage: "clock")
-                        .font(.caption)
-                        .foregroundStyle(quote.isExpired() ? Color.orange : TaskifyTheme.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    WalletDetailRow(
+                        title: "Invoice expires",
+                        value: expiresAt.formatted(.relative(presentation: .named)),
+                        valueColor: quote.isExpired() ? .orange : nil
+                    )
                 }
             }
-            .font(.subheadline)
-            .foregroundStyle(TaskifyTheme.primaryText)
             .padding(18)
             .taskifyGlass(cornerRadius: 22)
 
-            Button {
+            WalletPrimaryActionButton(
+                title: "Pay \(wallet.formattedSats(quote.amount))",
+                busyTitle: "Paying…",
+                isBusy: wallet.isWorking,
+                systemImage: "bolt.fill"
+            ) {
                 Task {
                     do {
                         result = try await wallet.confirmLightningPayment(quote)
@@ -5038,19 +5339,9 @@ private struct SendLightningSheet: View {
                         self.quote = nil
                     }
                 }
-            } label: {
-                Label(
-                    wallet.isWorking ? "Paying…" : "Pay \(wallet.formattedSats(quote.amount))",
-                    systemImage: "bolt.fill"
-                )
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .foregroundStyle(.white)
-                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
             }
-            .buttonStyle(.plain)
             .disabled(wallet.isWorking || quote.isExpired())
+            .opacity(quote.isExpired() ? 0.45 : 1)
 
             Button("Back") {
                 Task { await wallet.cancelLightningPayment(quote) }
@@ -5066,6 +5357,7 @@ private struct SendLightningSheet: View {
         }
     }
 
+
     private func successView(_ result: CashuLightningPaymentResult) -> some View {
         VStack(spacing: 20) {
             Image(systemName: result.state == .completed ? "checkmark.circle.fill" : "clock.badge.checkmark.fill")
@@ -5077,19 +5369,26 @@ private struct SendLightningSheet: View {
                 .font(.title2.bold())
                 .foregroundStyle(TaskifyTheme.primaryText)
 
-            Text("\(wallet.formattedSats(result.amount))")
+            Text(wallet.displayAmount(forSats: result.amount).primary)
                 .font(.system(size: 42, weight: .bold, design: .rounded))
                 .foregroundStyle(TaskifyTheme.primaryText)
+            if let secondary = wallet.displayAmount(forSats: result.amount).secondary {
+                Text(secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
 
             VStack(spacing: 14) {
-                paymentRow("Amount", value: "\(wallet.formattedSats(result.amount))")
+                WalletDetailRow(title: "Amount", value: wallet.formattedSats(result.amount))
                 if let feePaid = result.feePaid {
-                    paymentRow("Fee paid", value: "\(wallet.formattedSats(feePaid))")
+                    WalletDetailRow(title: "Fee paid", value: wallet.formattedSats(feePaid))
                 }
-                paymentRow("Status", value: result.state == .completed ? "Completed" : "Pending")
+                WalletDetailRow(
+                    title: "Status",
+                    value: result.state == .completed ? "Completed" : "Pending",
+                    valueColor: result.state == .completed ? .green : .orange
+                )
             }
-            .font(.subheadline)
-            .foregroundStyle(TaskifyTheme.primaryText)
             .padding(18)
             .taskifyGlass(cornerRadius: 22)
 
@@ -5100,21 +5399,7 @@ private struct SendLightningSheet: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
-            Button("Done") { dismiss() }
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .foregroundStyle(.white)
-                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
-                .buttonStyle(.plain)
-        }
-    }
-
-    private func paymentRow(_ title: String, value: String, emphasized: Bool = false) -> some View {
-        HStack {
-            Text(title).fontWeight(emphasized ? .bold : .regular)
-            Spacer()
-            Text(value).fontWeight(emphasized ? .bold : .semibold).monospacedDigit()
+            WalletPrimaryActionButton(title: "Done") { dismiss() }
         }
     }
 }
@@ -5546,7 +5831,11 @@ private struct PayCashuRequestSheet: View {
 
 private struct SendCashuSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    /// Flips to the Lightning version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
+    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
+    @State private var currencyRevision: UInt8 = 0
     @State private var amountText = ""
     @State private var memo = ""
     @State private var selectedMintURL = ""
@@ -5591,6 +5880,11 @@ private struct SendCashuSheet: View {
             .navigationTitle(outgoing == nil ? "Send" : "Ecash token")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if let onSwitchMode {
+                        Button("Lightning", action: onSwitchMode)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
@@ -5643,33 +5937,38 @@ private struct SendCashuSheet: View {
                 selectedMintURL: $selectedMintURL
             )
 
-            WalletAmountDisplayCard(amountText: amountText, caption: "Enter amount to send")
+            WalletAmountDisplayCard(
+                amountText: amountText,
+                caption: "Enter amount to send",
+                secondary: wallet.conversionLine(forTypedSats: amountText),
+                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+            )
 
             WalletAmountKeypad(amountText: $amountText)
 
-            TextField("Memo (optional)", text: $memo)
-                .padding(.horizontal, 15)
-                .frame(height: 50)
-                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
-                .foregroundStyle(TaskifyTheme.primaryText)
+            VStack(alignment: .leading, spacing: 8) {
+                walletFieldLabel("MEMO")
+                TextField("Optional note for the recipient", text: $memo)
+                    .padding(.horizontal, 15)
+                    .frame(height: 50)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+            }
 
-            Button {
+            WalletPrimaryActionButton(
+                title: "Continue",
+                busyTitle: "Preparing…",
+                isBusy: wallet.isWorking
+            ) {
                 guard let amount, amount > 0 else { return }
                 Task {
                     do { quote = try await wallet.prepareSend(mintURL: selectedMintURL, amount: amount) }
                     catch { localError = WalletViewModel.message(for: error) }
                 }
-            } label: {
-                Text(wallet.isWorking ? "Preparing…" : "Continue")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(.white)
-                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
             }
-            .buttonStyle(.plain)
             .disabled(wallet.isWorking || amount == nil || amount == 0 || selectedMintURL.isEmpty)
+            .opacity((amount ?? 0) > 0 && !selectedMintURL.isEmpty ? 1 : 0.45)
 
             Text("The token remains reserved until its recipient redeems it or you reclaim it.")
                 .font(.caption)
@@ -5678,53 +5977,45 @@ private struct SendCashuSheet: View {
         }
     }
 
+    /// Native-only review step before minting the token, restyled to match the PWA's grammar
+    /// (amount hero, label/value rows, one full-width action) rather than the ad-hoc HStacks it
+    /// used before.
     private func confirmationView(_ quote: CashuPreparedSendQuote) -> some View {
-        VStack(spacing: 20) {
-            Text("Review send")
-                .font(.title2.bold())
-                .foregroundStyle(TaskifyTheme.primaryText)
+        let amount = wallet.displayAmount(forSats: quote.amount)
+
+        return VStack(spacing: 20) {
+            WalletAmountHero(
+                label: "RECIPIENT RECEIVES",
+                amount: amount.primary,
+                secondary: amount.secondary
+            )
 
             VStack(spacing: 14) {
-                HStack {
-                    Text("Recipient receives")
-                    Spacer()
-                    Text("\(wallet.formattedSats(quote.amount))").bold()
-                }
-                HStack {
-                    Text("Mint fee")
-                    Spacer()
-                    Text("\(wallet.formattedSats(quote.fee))")
-                }
+                WalletDetailRow(title: "Mint fee", value: wallet.formattedSats(quote.fee))
                 Divider().overlay(TaskifyTheme.border)
-                HStack {
-                    Text("Total from balance").bold()
-                    Spacer()
-                    Text("\(wallet.formattedSats((quote.amount + quote.fee)))").bold()
-                }
-                Text(quote.mintURL)
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.tertiaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                WalletDetailRow(
+                    title: "Total from balance",
+                    value: wallet.formattedSats(quote.amount + quote.fee),
+                    emphasized: true
+                )
+                WalletDetailRow(
+                    title: "Sent from",
+                    value: URL(string: quote.mintURL)?.host() ?? quote.mintURL
+                )
             }
-            .font(.subheadline)
-            .foregroundStyle(TaskifyTheme.primaryText)
             .padding(18)
             .taskifyGlass(cornerRadius: 22)
 
-            Button {
+            WalletPrimaryActionButton(
+                title: "Create token",
+                busyTitle: "Creating token…",
+                isBusy: wallet.isWorking
+            ) {
                 Task {
                     do { outgoing = try await wallet.confirmSend(quote, memo: memo) }
                     catch { localError = WalletViewModel.message(for: error) }
                 }
-            } label: {
-                Text(wallet.isWorking ? "Creating token…" : "Create token")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(.white)
-                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
             }
-            .buttonStyle(.plain)
             .disabled(wallet.isWorking)
 
             Button("Back") {
@@ -5734,6 +6025,7 @@ private struct SendCashuSheet: View {
             .foregroundStyle(TaskifyTheme.secondaryText)
         }
     }
+
 }
 
 private struct WalletHistorySheet: View {
