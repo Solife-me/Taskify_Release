@@ -1,4 +1,27 @@
+import AppIntents
 import SwiftUI
+import TaskifyCore
+
+/// Must live in the TaskifyApp target, not TaskifyCore: Xcode's App Intents metadata extraction
+/// picks up `TaskifyAddTaskIntent` fine from the TaskifyCore package (verified via
+/// `Metadata.appintents/extract.actionsdata` in the built app -- it shows up there with
+/// `isDiscoverable: true`), but an `AppShortcutsProvider` defined in that same package is silently
+/// dropped from the extracted metadata entirely. That's why Siri/Spotlight/Shortcuts never showed
+/// Taskify despite the intent itself building and running correctly.
+public struct TaskifyShortcuts: AppShortcutsProvider {
+    public static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: TaskifyAddTaskIntent(),
+            phrases: [
+                "Add a task to \(.applicationName)",
+                "Add a new task in \(.applicationName)",
+                "Create a task in \(.applicationName)",
+            ],
+            shortTitle: "Add Task",
+            systemImageName: "checklist"
+        )
+    }
+}
 
 @main
 @MainActor
@@ -14,6 +37,9 @@ struct TaskifyNativeApp: App {
         _model = State(initialValue: model)
         _wallet = StateObject(wrappedValue: wallet)
         TaskifyBackgroundSyncCoordinator.shared.register(model: model, wallet: wallet)
+
+        // Apple's documented API for keeping Shortcuts phrase/parameter data in sync after launch.
+        TaskifyShortcuts.updateAppShortcutParameters()
     }
 
     var body: some Scene {

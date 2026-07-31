@@ -8,6 +8,14 @@ import Foundation
 /// need SwiftUI or any app-target-only type, so there's no functional reason they couldn't live
 /// here.
 ///
+/// `AppShortcutsProvider` (`TaskifyShortcuts`), however, does *not* work this way and lives in
+/// `TaskifyNativeApp.swift` instead: inspecting the built `Metadata.appintents/extract.actionsdata`
+/// confirmed that Xcode's App Intents metadata extraction picks up `TaskifyAddTaskIntent` fine from
+/// this package target (it appears with `isDiscoverable: true`), but silently omits an
+/// `AppShortcutsProvider` defined here entirely -- no trace of it in the extracted metadata at all,
+/// which is why Siri/Spotlight/Shortcuts never showed Taskify. The provider must live in the app's
+/// own target.
+///
 /// Mirrors the PWA's headless Agent Mode `createTask` command (see `window.__taskifyAgent`): a
 /// no-UI way to add a task, this time surfaced through Siri, Spotlight, and the Shortcuts app
 /// instead of a JS console. `perform()` intentionally never constructs `AppModel` — that type
@@ -164,20 +172,5 @@ struct TaskifyAddTaskDestination {
         }
 
         return addable.compactMap(destination(for:)).first
-    }
-}
-
-public struct TaskifyShortcuts: AppShortcutsProvider {
-    public static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: TaskifyAddTaskIntent(),
-            phrases: [
-                "Add a task to \(.applicationName)",
-                "Add a new task in \(.applicationName)",
-                "Create a task in \(.applicationName)",
-            ],
-            shortTitle: "Add Task",
-            systemImageName: "checklist"
-        )
     }
 }
