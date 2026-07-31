@@ -703,6 +703,16 @@ final class WalletViewModel: ObservableObject {
         WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
     }
 
+    /// The address to lead the Receive screen with. Prefers a short custom solife.me address over
+    /// the npub-derived one -- an `npub1...@solife.me` string is technically valid but unreadable,
+    /// and this is the first thing someone is asked to scan or read aloud.
+    var preferredLightningAddress: String? {
+        if let custom = solifeAccount?.addresses.first?.address, !custom.isEmpty {
+            return custom
+        }
+        return solifeAddress ?? npubCashIdentity?.address
+    }
+
     /// Swaps which currency leads, for the tap-the-amount gesture the PWA's amount displays have.
     /// Returns nil when there's nothing to swap to (conversion off, or no price yet), which also
     /// leaves the amount card non-interactive rather than tappable-but-inert.
@@ -1334,8 +1344,6 @@ struct WalletView: View {
     @EnvironmentObject private var wallet: WalletViewModel
     @State private var showingMints = false
     @State private var showingHistory = false
-    @State private var showingReceiveOptions = false
-    @State private var showingSendOptions = false
     @State private var showingReceive = false
     @State private var showingLightningReceive = false
     @State private var showingLightningAddress = false
@@ -1469,48 +1477,6 @@ struct WalletView: View {
         .sheet(isPresented: $showingLightningAddress) {
             LightningAddressReceiveSheet(wallet: wallet)
         }
-        .confirmationDialog(
-            "Receive into Taskify",
-            isPresented: $showingReceiveOptions,
-            titleVisibility: .visible
-        ) {
-            Button("Lightning invoice", systemImage: "bolt.fill") {
-                showingLightningReceive = true
-            }
-            .disabled(wallet.activeMint == nil)
-            Button("Lightning address", systemImage: "at") {
-                showingLightningAddress = true
-            }
-            Button("Cashu token", systemImage: "banknote") {
-                scannedToken = ""
-                showingReceive = true
-            }
-            Button("Cashu payment request", systemImage: "qrcode") {
-                showingCreatePaymentRequest = true
-            }
-            .disabled(wallet.activeMint == nil || model.identityPublicKey.isEmpty)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Create a Lightning invoice or Cashu request, redeem an existing Cashu token, or receive at a Lightning address.")
-        }
-        .confirmationDialog(
-            "Send from Taskify",
-            isPresented: $showingSendOptions,
-            titleVisibility: .visible
-        ) {
-            Button("Pay Lightning invoice", systemImage: "bolt.fill") {
-                showingLightningSend = true
-            }
-            Button("Create Cashu token", systemImage: "banknote") {
-                showingSend = true
-            }
-            Button("Fulfill Cashu request", systemImage: "qrcode") {
-                showingPaymentRequest = true
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Pay a Lightning invoice, fulfill a Cashu request, or create an ecash token to share.")
-        }
         .alert(
             "Wallet",
             isPresented: Binding(
@@ -1618,7 +1584,7 @@ struct WalletView: View {
     private var actionRow: some View {
         HStack(spacing: 12) {
             WalletActionButton(title: "Receive", icon: "arrow.down", accent: true) {
-                showingReceiveOptions = true
+                showingLightningReceive = true
             }
 
             Button { showingScanner = true } label: {
@@ -1632,7 +1598,7 @@ struct WalletView: View {
             .accessibilityLabel("Scan a Cashu token")
 
             WalletActionButton(title: "Send", icon: "arrow.up", accent: false) {
-                showingSendOptions = true
+                showingLightningSend = true
             }
             .disabled(wallet.snapshot.available == 0)
             .opacity(wallet.snapshot.available == 0 ? 0.45 : 1)
@@ -3436,6 +3402,11 @@ private struct ReceiveLightningSheet: View {
     @Environment(\.dismiss) private var dismiss
     /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
     @State private var currencyRevision: UInt8 = 0
+    /// Opens on the user's Lightning address rather than an amount keypad: most people receiving
+    /// just want something scannable, and asking for a specific amount is the rarer case. Matches
+    /// the PWA's `lightningReceiveView` starting at "address".
+    @State private var step: Step = .address
+    @State private var addressCopied = false
     @State private var amountText = ""
     @State private var selectedMintURL = ""
     @State private var quote: CashuLightningReceiveQuote?
@@ -3443,6 +3414,11 @@ private struct ReceiveLightningSheet: View {
     @State private var isChecking = false
     @State private var copied = false
     @State private var localError: String?
+
+    private enum Step {
+        case address
+        case amount
+    }
 
     init(
         wallet: WalletViewModel,
@@ -3474,8 +3450,10 @@ private struct ReceiveLightningSheet: View {
                                 successView(amount: receivedAmount)
                             } else if let quote {
                                 invoiceView(quote)
-                            } else {
+                            } else if step == .amount {
                                 amountView
+                            } else {
+                                addressView
                             }
                         }
                         .padding(22)
@@ -3488,8 +3466,14 @@ private struct ReceiveLightningSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    if let onSwitchMode {
-                        Button("Lightning", action: onSwitchMode)
+                    if step == .amount && quote == nil && receivedAmount == nil {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { step = .address }
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                    } else if let onSwitchMode {
+                        Button("ecash", action: onSwitchMode)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -3523,6 +3507,66 @@ private struct ReceiveLightningSheet: View {
             if selectedMintURL.isEmpty {
                 selectedMintURL = wallet.activeMint?.url ?? wallet.snapshot.mints.first?.url ?? ""
             }
+        }
+    }
+
+    /// The landing page: a big scannable Lightning address, and one button for the less common
+    /// case of wanting a specific amount.
+    private var addressView: some View {
+        VStack(spacing: 20) {
+            if let address = wallet.preferredLightningAddress {
+                VStack(spacing: 14) {
+                    walletFieldLabel("LIGHTNING ADDRESS")
+
+                    CashuQRCodeView(value: address, accessibilityLabel: "Lightning address QR code")
+
+                    Button {
+                        UIPasteboard.general.string = address
+                        addressCopied = true
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_600_000_000)
+                            addressCopied = false
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(address)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                                .minimumScaleFactor(0.7)
+                            Image(systemName: addressCopied ? "checkmark" : "doc.on.doc")
+                                .font(.caption)
+                                .foregroundStyle(addressCopied ? .green : TaskifyTheme.secondaryText)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy lightning address \(address)")
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity)
+                .taskifyGlass(cornerRadius: 24)
+            } else {
+                VStack(spacing: 8) {
+                    Text("No Lightning address yet")
+                        .font(.headline)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text("Set up your Taskify Nostr identity in Settings to get an address anyone can pay.")
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity)
+                .taskifyGlass(cornerRadius: 24)
+            }
+
+            WalletPrimaryActionButton(title: "Create Invoice") {
+                withAnimation(.easeInOut(duration: 0.2)) { step = .amount }
+            }
+            .disabled(wallet.snapshot.mints.isEmpty)
+            .opacity(wallet.snapshot.mints.isEmpty ? 0.45 : 1)
         }
     }
 
@@ -4413,7 +4457,7 @@ struct ReceiveCashuSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if let onSwitchMode {
-                        Button("eCash", action: onSwitchMode)
+                        Button("Lightning", action: onSwitchMode)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
