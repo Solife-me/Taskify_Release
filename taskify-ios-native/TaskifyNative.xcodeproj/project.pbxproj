@@ -10,6 +10,7 @@
 		4DE210899E6D8A850055ABE6 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8A5E0768C8D7B1E2BECC61D8 /* Foundation.framework */; };
 		B00000000000000000000101 /* TaskifyNativeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000201 /* TaskifyNativeApp.swift */; };
 		B00000000000000000000102 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000202 /* AppModel.swift */; };
+		B00000000000000000000124 /* TaskifyAddTaskIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000225 /* TaskifyAddTaskIntent.swift */; };
 		B00000000000000000000103 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000203 /* RootTabView.swift */; };
 		B00000000000000000000104 /* TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* TaskifyTheme.swift */; };
 		B00000000000000000000105 /* BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* BoardsView.swift */; };
@@ -69,6 +70,7 @@
 		8A5E0768C8D7B1E2BECC61D8 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		B00000000000000000000201 /* TaskifyNativeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyNativeApp.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000202 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModel.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000225 /* TaskifyAddTaskIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000203 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/RootTabView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000204 /* TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000205 /* BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
@@ -145,6 +147,7 @@
 			children = (
 				B00000000000000000000201 /* TaskifyNativeApp.swift */,
 				B00000000000000000000202 /* AppModel.swift */,
+				B00000000000000000000225 /* TaskifyAddTaskIntent.swift */,
 				B00000000000000000000203 /* RootTabView.swift */,
 				B00000000000000000000204 /* TaskifyTheme.swift */,
 				B00000000000000000000205 /* BoardsView.swift */,
@@ -350,6 +353,7 @@
 			files = (
 				B00000000000000000000101 /* TaskifyNativeApp.swift in Sources */,
 				B00000000000000000000102 /* AppModel.swift in Sources */,
+				B00000000000000000000124 /* TaskifyAddTaskIntent.swift in Sources */,
 				E5E7AD72EBBDFE980998BBE4 /* OnboardingSettings.swift in Sources */,
 				0B64CE2D2E8DC2C381D5DFA2 /* FirstRunOnboardingView.swift in Sources */,
 				B00000000000000000000103 /* RootTabView.swift in Sources */,
