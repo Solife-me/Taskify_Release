@@ -762,24 +762,9 @@ struct SettingsView: View {
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
 
-            if model.walletConversionEnabled {
-                Divider()
-
-                Text("Primary currency")
-                    .font(.subheadline.weight(.semibold))
-                Picker(
-                    "Primary currency",
-                    selection: Binding(
-                        get: { model.walletPrimaryCurrency },
-                        set: { model.setWalletPrimaryCurrency($0) }
-                    )
-                ) {
-                    Text("Sats").tag(WalletPrimaryCurrency.sat)
-                    Text("USD").tag(WalletPrimaryCurrency.usd)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
+            // No "primary currency" picker here: tapping the wallet balance, or any amount
+            // display, switches it in place. Setting it from two screens away was redundant once
+            // the thing it affects became directly tappable.
 
             Divider()
 

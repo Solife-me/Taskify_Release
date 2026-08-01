@@ -766,10 +766,16 @@ final class WalletViewModel: ObservableObject {
     ///
     /// `onChange` exists because `WalletCurrencySettings` is UserDefaults-backed and not
     /// observable: the calling view bumps a revision counter to re-render itself.
-    func currencyToggleAction(_ onChange: @escaping () -> Void) -> (() -> Void)? {
+    /// Goes through `AppModel` rather than writing the preference directly: it also refreshes the
+    /// published copy other views read and schedules the account backup that carries the setting
+    /// to the PWA. Writing UserDefaults alone would leave both stale.
+    func currencyToggleAction(
+        using model: AppModel,
+        _ onChange: @escaping () -> Void
+    ) -> (() -> Void)? {
         guard WalletCurrencySettings.conversionEnabled, btcUSDPrice != nil else { return nil }
         return {
-            WalletCurrencySettings.setPrimaryCurrency(
+            model.setWalletPrimaryCurrency(
                 WalletCurrencySettings.primaryCurrency == .sat ? .usd : .sat
             )
             onChange()
@@ -1403,6 +1409,8 @@ struct WalletView: View {
     @State private var showingPendingEcash = false
     @State private var showingRecovery = false
     @State private var scannedToken = ""
+    /// Bumped to re-read the UserDefaults-backed currency preference after tapping the balance.
+    @State private var currencyRevision: UInt8 = 0
 
     var body: some View {
         ZStack {
@@ -1628,8 +1636,19 @@ struct WalletView: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 42)
         .taskifyGlass(cornerRadius: 30)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard let toggle = wallet.currencyToggleAction(using: model, { currencyRevision &+= 1 }) else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { toggle() }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Available balance, \(wallet.snapshot.available) sats")
+        .accessibilityHint(
+            wallet.currencyToggleAction(using: model, {}) == nil
+                ? ""
+                : "Double-tap to switch between sats and dollars"
+        )
     }
 
     private var actionRow: some View {
@@ -2140,24 +2159,19 @@ private struct WalletAmountKeypad: View {
     }
 
     private func handle(_ key: String) {
+        let keypadKey: WalletAmountKeypadKey
         switch key {
-        case "clear":
-            amountText = ""
-        case "backspace":
-            if !amountText.isEmpty { amountText.removeLast() }
-        case "decimal":
-            guard !amountText.contains(".") else { return }
-            amountText = amountText.isEmpty ? "0." : amountText + "."
-        default:
-            let next = amountText == "0" ? key : amountText + key
-            if allowsDecimal {
-                // Money has two decimal places; ignore anything typed past them.
-                if let dot = next.firstIndex(of: "."), next.distance(from: dot, to: next.endIndex) > 3 { return }
-                amountText = String(next.filter { $0.isNumber || $0 == "." }.prefix(maxDigits))
-            } else {
-                amountText = String(next.filter(\.isNumber).prefix(maxDigits))
-            }
+        case "clear": keypadKey = .clear
+        case "backspace": keypadKey = .backspace
+        case "decimal": keypadKey = .decimalPoint
+        default: keypadKey = .digit(Character(key))
         }
+        amountText = WalletAmountEntry.apply(
+            keypadKey,
+            to: amountText,
+            allowsDecimal: allowsDecimal,
+            maxDigits: maxDigits
+        )
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 }
@@ -3279,7 +3293,7 @@ private struct ReceiveCashuRequestSheet: View {
                 primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Leave at 0 to request any amount",
                 secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
-                onToggleCurrency: wallet.currencyToggleAction {
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
                     amountText = ""
                     entryCurrency = wallet.amountEntryCurrency
                 }
@@ -3468,6 +3482,7 @@ private struct ReceiveCashuRequestSheet: View {
 
 private struct ReceiveLightningSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
     /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
     var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -3648,7 +3663,7 @@ private struct ReceiveLightningSheet: View {
                 primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Enter amount to receive",
                 secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
-                onToggleCurrency: wallet.currencyToggleAction {
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
                     amountText = ""
                     entryCurrency = wallet.amountEntryCurrency
                 }
@@ -5285,6 +5300,7 @@ private struct CashuTokenCodeScanner: UIViewControllerRepresentable {
 
 private struct SendLightningSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
     /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
     var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -5519,7 +5535,7 @@ private struct SendLightningSheet: View {
                 primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Enter amount to send",
                 secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
-                onToggleCurrency: wallet.currencyToggleAction {
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
                     amountText = ""
                     entryCurrency = wallet.amountEntryCurrency
                 }
@@ -6114,6 +6130,7 @@ private struct PayCashuRequestSheet: View {
 
 private struct SendCashuSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
     /// Flips to the Lightning version of this action, matching the PWA sheet header's mode button.
     var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -6227,7 +6244,7 @@ private struct SendCashuSheet: View {
                 primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Enter amount to send",
                 secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
-                onToggleCurrency: wallet.currencyToggleAction {
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
                     amountText = ""
                     entryCurrency = wallet.amountEntryCurrency
                 }
