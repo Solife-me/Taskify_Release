@@ -4398,7 +4398,12 @@ struct ReceiveCashuSheet: View {
                 ReceiveCashuRequestSheet(wallet: wallet)
             }
             .sheet(item: $redeemable) { item in
-                RedeemCashuTokenSheet(wallet: wallet, redeemable: item)
+                RedeemCashuTokenSheet(wallet: wallet, redeemable: item) {
+                    // Close the redeem page first, then this sheet a beat later. Tearing both down
+                    // in the same frame leaves SwiftUI animating two dismissals at once.
+                    redeemable = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { dismiss() }
+                }
             }
             .task {
                 await inspectInitialToken()
@@ -4565,6 +4570,10 @@ struct RedeemableCashuToken: Identifiable {
 struct RedeemCashuTokenSheet: View {
     @ObservedObject var wallet: WalletViewModel
     let redeemable: RedeemableCashuToken
+    /// Dismisses the whole receive stack, not just this page. Redeeming is the end of the
+    /// errand -- dropping the user back on the Receive eCash sheet they passed through would
+    /// make them close a second screen to get anywhere.
+    var onFinish: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var receivedAmount: UInt64?
     @State private var queuedReceive: CashuPendingReceive?
@@ -4605,7 +4614,7 @@ struct RedeemCashuTokenSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button("Done") { finish() }
                 }
             }
             .alert("Redeem ecash", isPresented: Binding(
@@ -4619,6 +4628,10 @@ struct RedeemCashuTokenSheet: View {
         }
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(wallet.isWorking)
+    }
+
+    private func finish() {
+        if let onFinish { onFinish() } else { dismiss() }
     }
 
     private func receive() async {
@@ -4685,7 +4698,7 @@ struct RedeemCashuTokenSheet: View {
             Text("\(wallet.formattedSats(amount))")
                 .font(.title2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(TaskifyTheme.secondaryText)
-            Button("Done") { dismiss() }
+            Button("Done") { finish() }
                 .font(.headline)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
@@ -4752,7 +4765,7 @@ struct RedeemCashuTokenSheet: View {
             .buttonStyle(.plain)
             .disabled(wallet.isWorking)
 
-            Button("Done") { dismiss() }
+            Button("Done") { finish() }
                 .font(.headline)
                 .foregroundStyle(TaskifyTheme.accent)
         }
