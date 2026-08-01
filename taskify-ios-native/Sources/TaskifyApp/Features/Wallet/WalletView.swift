@@ -4376,31 +4376,15 @@ struct ReceiveCashuSheet: View {
                             .disabled(wallet.activeMint == nil || model.identityPublicKey.isEmpty)
                             .opacity(wallet.activeMint == nil || model.identityPublicKey.isEmpty ? 0.45 : 1)
 
-                            VStack(alignment: .leading, spacing: 6) {
-                                walletFieldLabel("REDEEM A TOKEN")
-                                Text("Paste a cashuA or cashuB token. Taskify verifies and swaps it with its mint before adding the balance.")
-                                    .font(.footnote)
-                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                            WalletPrimaryActionButton(
+                                title: "Paste from clipboard",
+                                busyTitle: "Checking token…",
+                                isBusy: isInspecting,
+                                systemImage: "doc.on.clipboard"
+                            ) {
+                                Task { await inspectClipboard() }
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            TextEditor(text: $token)
-                                .font(.system(.footnote, design: .monospaced))
-                                .scrollContentBackground(.hidden)
-                                .padding(12)
-                                .frame(minHeight: 130)
-                                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TaskifyTheme.border))
-                                .foregroundStyle(TaskifyTheme.primaryText)
-                                .onChange(of: token) { _, _ in preview = nil }
-
-                            Button {
-                                if let value = UIPasteboard.general.string { token = value }
-                            } label: {
-                                Label("Paste from clipboard", systemImage: "doc.on.clipboard")
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                            .foregroundStyle(TaskifyTheme.accent)
+                            .disabled(isInspecting)
 
                             if let preview {
                                 tokenPreview(preview)
@@ -4429,19 +4413,6 @@ struct ReceiveCashuSheet: View {
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(wallet.isWorking)
-                            } else {
-                                Button {
-                                    inspectToken()
-                                } label: {
-                                    Text(isInspecting ? "Checking token…" : "Continue")
-                                        .font(.headline)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 14)
-                                        .foregroundStyle(.white)
-                                        .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isInspecting || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                         }
                     }
@@ -4454,6 +4425,8 @@ struct ReceiveCashuSheet: View {
                 ReceiveCashuRequestSheet(wallet: wallet)
             }
             .task {
+                await inspectInitialToken()
+                await inspectClipboard()
                 await ensureOpenRequest()
             }
             .toolbar {
@@ -4483,13 +4456,37 @@ struct ReceiveCashuSheet: View {
         }
     }
 
-    private func inspectToken() {
+    /// A token handed in by the scanner. Unlike the clipboard this was an explicit act, so a
+    /// failure here is worth reporting rather than swallowing.
+    private func inspectInitialToken() async {
+        let candidate = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty, preview == nil else { return }
         isInspecting = true
-        Task {
-            defer { isInspecting = false }
-            do { preview = try await wallet.previewToken(token) }
-            catch { localError = WalletViewModel.message(for: error) }
-        }
+        defer { isInspecting = false }
+        do { preview = try await wallet.previewToken(candidate) }
+        catch { localError = WalletViewModel.message(for: error) }
+    }
+
+    /// Looks at the clipboard and, if it holds an ecash token, jumps straight to the receive
+    /// preview. Anything else is ignored in silence -- the clipboard usually has nothing to do
+    /// with this screen, so complaining about it would be noise rather than help. That means no
+    /// error is surfaced here even when the mint rejects a cashu-shaped string; the user did not
+    /// ask for this check.
+    private func inspectClipboard() async {
+        guard !isInspecting, preview == nil, receivedAmount == nil, queuedReceive == nil else { return }
+        guard let candidate = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !candidate.isEmpty else { return }
+
+        let normalized = candidate.lowercased().hasPrefix("cashu:")
+            ? String(candidate.dropFirst("cashu:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            : candidate
+        guard normalized.lowercased().hasPrefix("cashu") else { return }
+
+        isInspecting = true
+        defer { isInspecting = false }
+        guard let inspected = try? await wallet.previewToken(normalized) else { return }
+        token = normalized
+        preview = inspected
     }
 
     private func tokenPreview(_ preview: CashuTokenPreview) -> some View {
