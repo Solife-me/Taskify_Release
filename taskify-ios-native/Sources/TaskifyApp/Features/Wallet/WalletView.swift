@@ -1424,7 +1424,11 @@ struct WalletView: View {
         .sheet(isPresented: $showingHistory) {
             WalletHistorySheet(wallet: wallet)
         }
-        .sheet(isPresented: $showingReceive) {
+        // Clearing the scanned token on dismiss keeps it a one-shot hand-off. It used to persist,
+        // so every later visit to Receive eCash replayed the last scan through the scanner path --
+        // which reports failures -- and a token since redeemed greeted the user with an
+        // "already spent" alert they never asked for.
+        .sheet(isPresented: $showingReceive, onDismiss: { scannedToken = "" }) {
             ReceiveCashuSheet(wallet: wallet, initialToken: scannedToken, onSwitchMode: {
                 showingReceive = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingLightningReceive = true }
