@@ -682,13 +682,19 @@ final class WalletViewModel: ObservableObject {
     /// currency leads depends on `walletPrimaryCurrency`, and a secondary "≈" line only appears
     /// when conversion is enabled and a price is available. `amount` is assumed non-negative --
     /// callers that need a sign prefix (e.g. transaction history's +/-) apply it themselves.
-    func displayAmount<T: BinaryInteger>(forSats amount: T) -> (primary: String, secondary: String?) {
+    /// `primary` is a parameter rather than a settings read so callers can pass an observable
+    /// source. `WalletCurrencySettings` is backed by UserDefaults, which SwiftUI can't observe --
+    /// a view that only reads it here will not re-render when the currency is switched.
+    func displayAmount<T: BinaryInteger>(
+        forSats amount: T,
+        primary: WalletPrimaryCurrency? = nil
+    ) -> (primary: String, secondary: String?) {
         let satText = WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
         guard WalletCurrencySettings.conversionEnabled, let price = btcUSDPrice else {
             return (satText, nil)
         }
         let usdText = WalletAmountFormat.formatUSD(WalletAmountFormat.usdValue(sats: amount, btcUSDPrice: price))
-        switch WalletCurrencySettings.primaryCurrency {
+        switch primary ?? WalletCurrencySettings.primaryCurrency {
         case .usd:
             return (usdText, satText)
         case .sat:
@@ -1409,8 +1415,6 @@ struct WalletView: View {
     @State private var showingPendingEcash = false
     @State private var showingRecovery = false
     @State private var scannedToken = ""
-    /// Bumped to re-read the UserDefaults-backed currency preference after tapping the balance.
-    @State private var currencyRevision: UInt8 = 0
 
     var body: some View {
         ZStack {
@@ -1603,7 +1607,10 @@ struct WalletView: View {
     }
 
     private var balanceCard: some View {
-        let balance = wallet.displayAmount(forSats: wallet.snapshot.available)
+        let balance = wallet.displayAmount(
+            forSats: wallet.snapshot.available,
+            primary: model.walletPrimaryCurrency
+        )
         return VStack(spacing: 10) {
             Text(balance.primary)
                 .font(.system(size: 48, weight: .semibold, design: .rounded))
@@ -1638,7 +1645,7 @@ struct WalletView: View {
         .taskifyGlass(cornerRadius: 30)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard let toggle = wallet.currencyToggleAction(using: model, { currencyRevision &+= 1 }) else { return }
+            guard let toggle = wallet.currencyToggleAction(using: model, {}) else { return }
             withAnimation(.easeInOut(duration: 0.2)) { toggle() }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
