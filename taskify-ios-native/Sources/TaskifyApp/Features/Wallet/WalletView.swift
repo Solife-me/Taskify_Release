@@ -3184,11 +3184,9 @@ private struct ReceiveCashuRequestSheet: View {
             if selectedMintURL.isEmpty {
                 selectedMintURL = wallet.activeMint?.url ?? wallet.snapshot.mints.first?.url ?? ""
             }
-            if request == nil {
-                request = wallet.createdPaymentRequests.first(where: {
-                    $0.isActive && $0.mintURLs.contains(selectedMintURL)
-                })
-            }
+            // Deliberately does not restore a previously created request. Reopening the builder
+            // means "make me a request", not "here's the one you made earlier" -- same reasoning as
+            // Receive Lightning's address page. Existing requests stay reachable from History.
         }
         .onChange(of: wallet.createdPaymentRequests) { _, requests in
             guard let request else { return }
@@ -4573,6 +4571,17 @@ struct ReceiveCashuSheet: View {
         guard openRequest == nil,
               let mint = wallet.activeMint,
               !model.identityPublicKey.isEmpty else { return }
+
+        // Reuse the standing request if one is already open for this mint. This is the ecash
+        // equivalent of a Lightning address -- a durable thing to be paid at -- so opening the
+        // page repeatedly must not mint a fresh request each time.
+        if let existing = wallet.createdPaymentRequests.first(where: {
+            $0.isActive && !$0.singleUse && $0.amount == nil && $0.mintURLs.contains(mint.url)
+        }) {
+            openRequest = existing
+            return
+        }
+
         openRequest = try? await wallet.createPaymentRequest(
             amount: nil,
             description: nil,
