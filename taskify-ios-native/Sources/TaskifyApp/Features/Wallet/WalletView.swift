@@ -5305,6 +5305,113 @@ private struct CashuTokenCodeScanner: UIViewControllerRepresentable {
     }
 }
 
+/// Picks a Nostr contact to pay. Shared by both send sheets so the two payment rails present the
+/// same contact list, which is the point of the PWA's Contacts button: who you're paying is one
+/// decision, and how the money travels is another.
+private struct WalletContactPickerSheet: View {
+    let title: String
+    /// Contacts that can't be paid on this rail are still listed but not selectable, so someone
+    /// looking for a name finds it and learns why rather than wondering where it went.
+    let isSelectable: (NostrContact) -> Bool
+    let unavailableNote: String
+    let onSelect: (NostrContact) -> Void
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+
+    private var contacts: [NostrContact] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let all = model.nostrContacts.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+        guard !query.isEmpty else { return all }
+        return all.filter {
+            $0.displayName.lowercased().contains(query)
+                || $0.subtitle.lowercased().contains(query)
+                || $0.npub.lowercased().contains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                Group {
+                    if model.nostrContacts.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .font(.system(size: 42))
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                            Text("No contacts yet")
+                                .font(.headline)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text("Add someone in the Chat tab and they'll show up here.")
+                                .font(.subheadline)
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        .padding(32)
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 10) {
+                                ForEach(contacts) { contact in
+                                    row(contact)
+                                }
+                            }
+                            .padding(20)
+                        }
+                    }
+                }
+            }
+            .searchable(text: $search, prompt: "Search contacts")
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func row(_ contact: NostrContact) -> some View {
+        let selectable = isSelectable(contact)
+        return Button {
+            onSelect(contact)
+            dismiss()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(contact.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(selectable ? contact.subtitle : unavailableNote)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if selectable {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .taskifyGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .disabled(!selectable)
+        .opacity(selectable ? 1 : 0.45)
+    }
+}
+
 private struct SendLightningSheet: View {
     @ObservedObject var wallet: WalletViewModel
     @Environment(AppModel.self) private var model
@@ -5323,6 +5430,7 @@ private struct SendLightningSheet: View {
     @State private var showingScanner = false
     @State private var isResolvingAddress = false
     @State private var step: Step = .destination
+    @State private var showingContactPicker = false
     @FocusState private var focusedField: Field?
 
     /// Split across two screens the way the PWA's Lightning send sheet is (`lightningSendView`
@@ -5427,6 +5535,16 @@ private struct SendLightningSheet: View {
                 Task { await wallet.cancelLightningPayment(quote) }
             }
         }
+        .sheet(isPresented: $showingContactPicker) {
+            WalletContactPickerSheet(
+                title: "Pay a contact",
+                isSelectable: { _ in true },
+                unavailableNote: ""
+            ) { contact in
+                invoice = WalletContactPayment.lightningAddress(lud16: contact.profile?.lud16, npub: contact.npub)
+                focusedField = nil
+            }
+        }
         .sheet(isPresented: $showingScanner) {
             CashuTokenScannerSheet(lightningInvoice: { value in
                 invoice = value
@@ -5476,6 +5594,14 @@ private struct SendLightningSheet: View {
                     }
                 } label: {
                     Label("Paste", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button { showingContactPicker = true } label: {
+                    Label("Contacts", systemImage: "person.crop.circle")
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
                         .taskifyGlassControl(in: Capsule())
@@ -6151,10 +6277,24 @@ private struct SendCashuSheet: View {
     @State private var outgoing: CashuOutgoingToken?
     @State private var localError: String?
     @State private var confirmingReclaim = false
+    @State private var showingContactPicker = false
+    /// When set, the created token is delivered to this contact over an encrypted DM instead of
+    /// being handed back for the user to share themselves.
+    @State private var recipient: NostrContact?
+    @State private var isSendingToContact = false
+    @State private var sentToContact: NostrContact?
 
     private var amount: UInt64? {
         // Always sats, whatever currency the keypad is in -- dollar entry converts here.
         wallet.sats(fromEntry: amountText, currency: entryCurrency)
+    }
+
+    private func directMessageBody(token: String, sats: UInt64) -> String {
+        WalletContactPayment.ecashDirectMessage(
+            senderNpub: model.identityNpub,
+            formattedAmount: wallet.formattedSats(sats),
+            token: token
+        )
     }
 
     var body: some View {
@@ -6165,6 +6305,16 @@ private struct SendCashuSheet: View {
                     ScrollView {
                         Group {
                             if let outgoing {
+                                if let sentToContact {
+                                    Label(
+                                        "Sent to \(sentToContact.displayName)",
+                                        systemImage: "checkmark.circle.fill"
+                                    )
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.green)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.bottom, 4)
+                                }
                                 OutgoingTokenContent(
                                     outgoing: outgoing,
                                     checkAction: {
@@ -6196,6 +6346,15 @@ private struct SendCashuSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showingContactPicker) {
+                WalletContactPickerSheet(
+                    title: "Send ecash to",
+                    isSelectable: { _ in true },
+                    unavailableNote: ""
+                ) { contact in
+                    recipient = contact
                 }
             }
             .alert("Send ecash", isPresented: Binding(
@@ -6260,6 +6419,49 @@ private struct SendCashuSheet: View {
             WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
 
             VStack(alignment: .leading, spacing: 8) {
+                walletFieldLabel("SEND TO")
+                if let recipient {
+                    HStack(spacing: 10) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .foregroundStyle(TaskifyTheme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(recipient.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text("Delivered over an encrypted DM")
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        Spacer(minLength: 8)
+                        Button {
+                            self.recipient = nil
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Send as a shareable token instead")
+                    }
+                    .padding(16)
+                    .taskifyGlass(cornerRadius: 18)
+                } else {
+                    Button { showingContactPicker = true } label: {
+                        Label("Choose a contact", systemImage: "person.crop.circle")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .taskifyGlassControl(in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Text("Or leave this empty to get a token you can share yourself.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 walletFieldLabel("MEMO")
                 TextField("Optional note for the recipient", text: $memo)
                     .padding(.horizontal, 15)
@@ -6287,6 +6489,35 @@ private struct SendCashuSheet: View {
                 .font(.caption)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+    /// Mints the token and, when a contact was chosen, delivers it to them over a NIP-17 DM.
+    ///
+    /// The DM is sent after the token exists, and a failure to deliver deliberately does not
+    /// discard it: the money has already left the balance at that point, so the token is kept on
+    /// screen to share by hand rather than being silently stranded.
+    private func confirm(_ quote: CashuPreparedSendQuote) async {
+        let sentAmount = quote.amount
+        do {
+            let token = try await wallet.confirmSend(quote, memo: memo)
+            outgoing = token
+
+            guard let recipient else { return }
+            isSendingToContact = true
+            defer { isSendingToContact = false }
+            do {
+                try await model.sendDirectMessage(
+                    to: recipient.npub,
+                    content: directMessageBody(token: token.token, sats: sentAmount)
+                )
+                sentToContact = recipient
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                localError = "The token was created but couldn't be sent to \(recipient.displayName). Share it manually below. (\(WalletViewModel.message(for: error)))"
+            }
+        } catch {
+            localError = WalletViewModel.message(for: error)
         }
     }
 
@@ -6320,16 +6551,13 @@ private struct SendCashuSheet: View {
             .taskifyGlass(cornerRadius: 22)
 
             WalletPrimaryActionButton(
-                title: "Create token",
-                busyTitle: "Creating token…",
-                isBusy: wallet.isWorking
+                title: recipient == nil ? "Create token" : "Send to \(recipient?.displayName ?? "")",
+                busyTitle: isSendingToContact ? "Sending…" : "Creating token…",
+                isBusy: wallet.isWorking || isSendingToContact
             ) {
-                Task {
-                    do { outgoing = try await wallet.confirmSend(quote, memo: memo) }
-                    catch { localError = WalletViewModel.message(for: error) }
-                }
+                Task { await confirm(quote) }
             }
-            .disabled(wallet.isWorking)
+            .disabled(wallet.isWorking || isSendingToContact)
 
             Button("Back") {
                 Task { await wallet.cancelPreparedSend(quote) }
