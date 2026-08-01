@@ -570,13 +570,6 @@ final class WalletViewModel: ObservableObject {
         await refresh()
     }
 
-    func latestLightningReceiveQuote(
-        mintURL: String? = nil
-    ) async throws -> CashuLightningReceiveQuote? {
-        guard let service else { throw CashuWalletError.outgoingTokenMissing }
-        return try await service.latestLightningReceiveQuote(mintURL: mintURL)
-    }
-
     func createLightningReceiveQuote(
         mintURL: String,
         amount: UInt64
@@ -3490,14 +3483,11 @@ private struct ReceiveLightningSheet: View {
             }
         }
         .preferredColorScheme(.dark)
-        .task(id: selectedMintURL) {
-            guard !selectedMintURL.isEmpty, quote == nil else { return }
-            do {
-                quote = try await wallet.latestLightningReceiveQuote(mintURL: selectedMintURL)
-            } catch {
-                localError = WalletViewModel.message(for: error)
-            }
-        }
+        // Deliberately does not restore the mint's most recent outstanding quote on open. Reopening
+        // Receive means "show me something to be paid at", not "here's the invoice you already
+        // made" -- an invoice the user has moved on from would otherwise sit in front of the
+        // address page every time. Outstanding invoices remain reachable from History, which is
+        // where `initialQuote` comes from.
         .onChange(of: wallet.lightningReceiveQuotes) { _, trackedQuotes in
             guard let quote,
                   let updated = trackedQuotes.first(where: { $0.id == quote.id }) else { return }
