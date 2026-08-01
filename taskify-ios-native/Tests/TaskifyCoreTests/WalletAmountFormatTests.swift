@@ -48,6 +48,39 @@ final class WalletAmountFormatTests: XCTestCase {
         XCTAssertEqual(WalletAmountFormat.formatUSD(.nan), "—")
         XCTAssertEqual(WalletAmountFormat.formatUSD(.infinity), "—")
     }
+    // MARK: - USD -> sats (dollar-denominated keypad entry)
+
+    func testSatsValueConvertsUSDAtGivenSpotPrice() {
+        // $50 at $50k/BTC is exactly 0.001 BTC.
+        XCTAssertEqual(WalletAmountFormat.satsValue(usd: 50, btcUSDPrice: 50_000), 100_000)
+    }
+
+    func testSatsValueRoundsToNearestSatRatherThanTruncating() {
+        // At $50k/BTC a sat is $0.0005. $0.006 is 11.999... sats in floating point, so truncating
+        // would yield 11 -- rounding is what makes it the 12 the user asked for.
+        XCTAssertEqual(WalletAmountFormat.satsValue(usd: 0.006, btcUSDPrice: 50_000), 12)
+        // Exactly half a sat rounds away from zero.
+        XCTAssertEqual(WalletAmountFormat.satsValue(usd: 0.006_25, btcUSDPrice: 50_000), 13)
+    }
+
+    func testSatsValueRoundTripsWithUsdValue() {
+        let price = 63_421.17
+        let original: UInt64 = 250_000
+        let usd = WalletAmountFormat.usdValue(sats: original, btcUSDPrice: price)
+        XCTAssertEqual(WalletAmountFormat.satsValue(usd: usd, btcUSDPrice: price), original)
+    }
+
+    /// Anything that can't produce a sendable amount comes back nil, so a keypad in dollar mode
+    /// never hands the wallet a zero or garbage figure to act on.
+    func testSatsValueRejectsUnusableInput() {
+        XCTAssertNil(WalletAmountFormat.satsValue(usd: 0, btcUSDPrice: 50_000))
+        XCTAssertNil(WalletAmountFormat.satsValue(usd: -5, btcUSDPrice: 50_000))
+        XCTAssertNil(WalletAmountFormat.satsValue(usd: 10, btcUSDPrice: 0))
+        XCTAssertNil(WalletAmountFormat.satsValue(usd: .nan, btcUSDPrice: 50_000))
+        XCTAssertNil(WalletAmountFormat.satsValue(usd: .infinity, btcUSDPrice: 50_000))
+        // Rounds below one whole sat.
+        XCTAssertNil(WalletAmountFormat.satsValue(usd: 0.000_000_1, btcUSDPrice: 50_000))
+    }
 }
 
 final class CoinbasePriceClientTests: XCTestCase {
@@ -62,4 +95,5 @@ final class CoinbasePriceClientTests: XCTestCase {
         XCTAssertThrowsError(try CoinbasePriceClient.parseSpotPrice(Data(#"{"data":{"amount":"-5"}}"#.utf8)))
         XCTAssertThrowsError(try CoinbasePriceClient.parseSpotPrice(Data(#"{"data":{"amount":"0"}}"#.utf8)))
     }
+
 }

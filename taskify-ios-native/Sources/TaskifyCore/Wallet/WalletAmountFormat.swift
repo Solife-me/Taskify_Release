@@ -44,6 +44,17 @@ public enum WalletAmountFormat {
         (Double(amount) / satsPerBTC) * btcUSDPrice
     }
 
+    /// The inverse, for keypads denominated in dollars. Rounds to the nearest sat rather than
+    /// truncating, so entering a round dollar figure doesn't quietly lose a sat to floating point.
+    /// Returns nil for a price or amount that can't produce a sendable amount, so callers get one
+    /// "no usable amount" answer instead of having to sanity-check the result themselves.
+    public static func satsValue(usd amount: Double, btcUSDPrice: Double) -> UInt64? {
+        guard amount > 0, btcUSDPrice > 0, amount.isFinite, btcUSDPrice.isFinite else { return nil }
+        let sats = ((amount / btcUSDPrice) * satsPerBTC).rounded()
+        guard sats >= 1, sats <= Double(UInt64.max) else { return nil }
+        return UInt64(sats)
+    }
+
     /// Mirrors the PWA's `satInputUnitLabel` -- a bare unit label (not tied to a specific amount)
     /// for use next to a live numeric-entry field, where showing the full formatted string isn't
     /// appropriate.

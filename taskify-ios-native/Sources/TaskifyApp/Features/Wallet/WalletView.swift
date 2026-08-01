@@ -712,6 +712,54 @@ final class WalletViewModel: ObservableObject {
         return solifeAddress ?? npubCashIdentity?.address
     }
 
+    // MARK: - Amount entry
+
+    /// Which currency the amount keypads are entering in. Only ever dollars when there's a rate to
+    /// convert with, so a stale preference can't strand the user typing a currency the app can't
+    /// price.
+    var amountEntryCurrency: WalletPrimaryCurrency {
+        guard WalletCurrencySettings.conversionEnabled, btcUSDPrice != nil else { return .sat }
+        return WalletCurrencySettings.primaryCurrency
+    }
+
+    /// The figure as typed, in whichever currency is being entered.
+    func entryPrimaryText(_ text: String, currency: WalletPrimaryCurrency) -> String {
+        let value = text.isEmpty ? "0" : text
+        switch currency {
+        case .sat:
+            return "\(value) \(WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay))"
+        case .usd:
+            return "$\(value)"
+        }
+    }
+
+    /// The same amount in the other currency, for the line underneath.
+    func entrySecondaryText(_ text: String, currency: WalletPrimaryCurrency) -> String? {
+        guard let price = btcUSDPrice, price > 0, WalletCurrencySettings.conversionEnabled else { return nil }
+        switch currency {
+        case .sat:
+            guard let sats = UInt64(text.trimmingCharacters(in: .whitespacesAndNewlines)), sats > 0 else { return nil }
+            return "≈ \(WalletAmountFormat.formatUSD(WalletAmountFormat.usdValue(sats: sats, btcUSDPrice: price)))"
+        case .usd:
+            guard let sats = sats(fromEntry: text, currency: .usd), sats > 0 else { return nil }
+            return "≈ \(formattedSats(sats))"
+        }
+    }
+
+    /// What the sheet actually acts on. Every wallet operation is denominated in sats regardless of
+    /// what the user typed, so dollar entry converts here and nowhere else.
+    func sats(fromEntry text: String, currency: WalletPrimaryCurrency) -> UInt64? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        switch currency {
+        case .sat:
+            return UInt64(trimmed)
+        case .usd:
+            guard let price = btcUSDPrice, let usd = Double(trimmed) else { return nil }
+            return WalletAmountFormat.satsValue(usd: usd, btcUSDPrice: price)
+        }
+    }
+
     /// Swaps which currency leads, for the tap-the-amount gesture the PWA's amount displays have.
     /// Returns nil when there's nothing to swap to (conversion off, or no price yet), which also
     /// leaves the amount card non-interactive rather than tappable-but-inert.
@@ -1913,20 +1961,21 @@ private struct WalletMintSelectorCard: View {
 }
 
 private struct WalletAmountDisplayCard: View {
-    let amountText: String
-    var suffix: String = WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay)
+    /// The figure as the user is entering it, already denominated by the caller -- sats or
+    /// dollars depending on which way the display is currently flipped.
+    let primary: String
     var caption: String = "Enter amount"
-    /// The "≈ $x.xx" conversion of what's currently typed. Matches the PWA amount display's
-    /// secondary line (`lightning-amount-display__secondary`), which sits directly under the
-    /// figure rather than being folded into the caption.
+    /// The same amount in the other currency. Matches the PWA amount display's secondary line
+    /// (`lightning-amount-display__secondary`), which sits directly under the figure rather than
+    /// being folded into the caption.
     var secondary: String?
-    /// Tapping the display swaps which currency leads, as it does in the PWA. Omitted where there
-    /// is no conversion to swap to, which also leaves the card non-interactive.
+    /// Tapping the display swaps which currency you're typing in, as it does in the PWA. Omitted
+    /// where there is no conversion to swap to, which also leaves the card non-interactive.
     var onToggleCurrency: (() -> Void)?
 
     var body: some View {
         let content = VStack(spacing: 4) {
-            Text("\(amountText.isEmpty ? "0" : amountText) \(suffix)")
+            Text(primary)
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .foregroundStyle(TaskifyTheme.primaryText)
                 .lineLimit(1)
@@ -2048,15 +2097,20 @@ private struct WalletAmountHero: View {
 private struct WalletAmountKeypad: View {
     @Binding var amountText: String
     var maxDigits: Int = 12
+    /// Dollar entry needs a decimal point; sat entry has no fractional part and keeps Clear in
+    /// that slot instead. Same swap the PWA makes on its keypad.
+    var allowsDecimal: Bool = false
 
-    private static let keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "backspace"]
+    private var keys: [String] {
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9", allowsDecimal ? "decimal" : "clear", "0", "backspace"]
+    }
 
     var body: some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
             spacing: 12
         ) {
-            ForEach(Self.keys, id: \.self) { key in
+            ForEach(keys, id: \.self) { key in
                 Button {
                     handle(key)
                 } label: {
@@ -2064,6 +2118,9 @@ private struct WalletAmountKeypad: View {
                         if key == "clear" {
                             Text("Clear")
                                 .font(.subheadline.weight(.semibold))
+                        } else if key == "decimal" {
+                            Text(".")
+                                .font(.title3.weight(.semibold))
                         } else if key == "backspace" {
                             Image(systemName: "delete.left")
                                 .font(.system(size: 17, weight: .semibold))
@@ -2088,9 +2145,18 @@ private struct WalletAmountKeypad: View {
             amountText = ""
         case "backspace":
             if !amountText.isEmpty { amountText.removeLast() }
+        case "decimal":
+            guard !amountText.contains(".") else { return }
+            amountText = amountText.isEmpty ? "0." : amountText + "."
         default:
             let next = amountText == "0" ? key : amountText + key
-            amountText = String(next.filter(\.isNumber).prefix(maxDigits))
+            if allowsDecimal {
+                // Money has two decimal places; ignore anything typed past them.
+                if let dot = next.firstIndex(of: "."), next.distance(from: dot, to: next.endIndex) > 3 { return }
+                amountText = String(next.filter { $0.isNumber || $0 == "." }.prefix(maxDigits))
+            } else {
+                amountText = String(next.filter(\.isNumber).prefix(maxDigits))
+            }
         }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
@@ -3124,8 +3190,9 @@ private struct ReceiveCashuRequestSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var wallet: WalletViewModel
 
-    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
-    @State private var currencyRevision: UInt8 = 0
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
     @State private var selectedMintURL = ""
     @State private var amountText = ""
     @State private var memo = ""
@@ -3136,9 +3203,8 @@ private struct ReceiveCashuRequestSheet: View {
     @FocusState private var memoFocused: Bool
 
     private var parsedAmount: UInt64? {
-        let trimmed = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return UInt64(trimmed)
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
     }
 
     private var amountIsValid: Bool {
@@ -3191,6 +3257,7 @@ private struct ReceiveCashuRequestSheet: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
             if selectedMintURL.isEmpty {
                 selectedMintURL = wallet.activeMint?.url ?? wallet.snapshot.mints.first?.url ?? ""
             }
@@ -3209,10 +3276,13 @@ private struct ReceiveCashuRequestSheet: View {
             WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
 
             WalletAmountDisplayCard(
-                amountText: amountText,
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Leave at 0 to request any amount",
-                secondary: wallet.conversionLine(forTypedSats: amountText),
-                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
             )
 
             Picker("Request type", selection: $singleUse) {
@@ -3221,7 +3291,7 @@ private struct ReceiveCashuRequestSheet: View {
             }
             .pickerStyle(.segmented)
 
-            WalletAmountKeypad(amountText: $amountText)
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
 
             TextField("What is this payment for? (optional)", text: $memo, axis: .vertical)
                 .lineLimit(2...4)
@@ -3401,8 +3471,9 @@ private struct ReceiveLightningSheet: View {
     /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
     var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
-    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
-    @State private var currencyRevision: UInt8 = 0
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
     /// Opens on the user's Lightning address rather than an amount keypad: most people receiving
     /// just want something scannable, and asking for a specific amount is the rarer case. Matches
     /// the PWA's `lightningReceiveView` starting at "address".
@@ -3433,7 +3504,8 @@ private struct ReceiveLightningSheet: View {
     }
 
     private var amount: UInt64? {
-        UInt64(amountText.trimmingCharacters(in: .whitespacesAndNewlines))
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
     }
 
     private var outstandingInvoiceCount: Int {
@@ -3502,6 +3574,7 @@ private struct ReceiveLightningSheet: View {
             applyQuoteUpdate(updated)
         }
         .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
             if selectedMintURL.isEmpty {
                 selectedMintURL = wallet.activeMint?.url ?? wallet.snapshot.mints.first?.url ?? ""
             }
@@ -3572,12 +3645,15 @@ private struct ReceiveLightningSheet: View {
         VStack(spacing: 20) {
             WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
             WalletAmountDisplayCard(
-                amountText: amountText,
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Enter amount to receive",
-                secondary: wallet.conversionLine(forTypedSats: amountText),
-                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
             )
-            WalletAmountKeypad(amountText: $amountText)
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
 
             Button {
                 createInvoice()
@@ -5212,8 +5288,9 @@ private struct SendLightningSheet: View {
     /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
     var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
-    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
-    @State private var currencyRevision: UInt8 = 0
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
     @State private var invoice = ""
     @State private var amountText = ""
     @State private var selectedMintURL = ""
@@ -5239,9 +5316,8 @@ private struct SendLightningSheet: View {
     }
 
     private var customAmount: UInt64? {
-        let value = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
-        return UInt64(value)
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
     }
 
     /// A `name@domain` Lightning Address (LUD-16) rather than a pasted/scanned BOLT11 invoice --
@@ -5320,6 +5396,7 @@ private struct SendLightningSheet: View {
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(wallet.isWorking || isResolvingAddress)
         .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
             if selectedMintURL.isEmpty { selectedMintURL = wallet.activeMint?.url ?? "" }
         }
         .onDisappear {
@@ -5439,13 +5516,16 @@ private struct SendLightningSheet: View {
             }
 
             WalletAmountDisplayCard(
-                amountText: amountText,
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Enter amount to send",
-                secondary: wallet.conversionLine(forTypedSats: amountText),
-                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
             )
 
-            WalletAmountKeypad(amountText: $amountText)
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
 
             WalletPrimaryActionButton(
                 title: "Review payment",
@@ -6037,8 +6117,9 @@ private struct SendCashuSheet: View {
     /// Flips to the Lightning version of this action, matching the PWA sheet header's mode button.
     var onSwitchMode: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
-    /// Bumped to re-read the UserDefaults-backed currency setting after a tap-to-swap.
-    @State private var currencyRevision: UInt8 = 0
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
     @State private var amountText = ""
     @State private var memo = ""
     @State private var selectedMintURL = ""
@@ -6048,7 +6129,8 @@ private struct SendCashuSheet: View {
     @State private var confirmingReclaim = false
 
     private var amount: UInt64? {
-        UInt64(amountText.trimmingCharacters(in: .whitespacesAndNewlines))
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
     }
 
     var body: some View {
@@ -6123,6 +6205,7 @@ private struct SendCashuSheet: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
             if selectedMintURL.isEmpty { selectedMintURL = wallet.activeMint?.url ?? "" }
         }
         .onDisappear {
@@ -6141,13 +6224,16 @@ private struct SendCashuSheet: View {
             )
 
             WalletAmountDisplayCard(
-                amountText: amountText,
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
                 caption: "Enter amount to send",
-                secondary: wallet.conversionLine(forTypedSats: amountText),
-                onToggleCurrency: wallet.currencyToggleAction { currencyRevision &+= 1 }
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
             )
 
-            WalletAmountKeypad(amountText: $amountText)
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
 
             VStack(alignment: .leading, spacing: 8) {
                 walletFieldLabel("MEMO")
