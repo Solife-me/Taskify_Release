@@ -2279,6 +2279,37 @@ public actor CashuWalletService {
         return CashuTokenPreview(mintURL: mintURL, amount: amount, fee: fee, memo: token.memo())
     }
 
+    /// Decodes a token *and* asks its mint whether the proofs are still unspent.
+    ///
+    /// `previewToken` is purely local, so a token that has already been redeemed still previews as
+    /// a perfectly good one -- which is how an already-claimed token could be offered for redemption
+    /// a second time. Only a positive answer from the mint rejects the token: if the mint is unknown
+    /// to this wallet or unreachable, the preview is returned unchanged rather than blocking a
+    /// token that may well be fine.
+    public func previewUnspentToken(_ encodedToken: String) async throws -> CashuTokenPreview {
+        let trimmed = encodedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = try await previewToken(trimmed)
+
+        guard let token = try? Token.decode(encodedToken: trimmed),
+              let proofs = try? token.proofsSimple(),
+              !proofs.isEmpty,
+              await repository.hasMint(mintUrl: MintUrl(url: preview.mintURL)),
+              let wallet = try? await repository.getWallet(
+                  mintUrl: MintUrl(url: preview.mintURL),
+                  unit: .sat
+              ),
+              let spentStates = try? await wallet.checkProofsSpent(proofs: proofs),
+              spentStates.count == proofs.count
+        else {
+            return preview
+        }
+
+        guard spentStates.contains(false) else {
+            throw CashuWalletError.pendingReceiveAlreadySpent
+        }
+        return preview
+    }
+
     public func payPaymentRequest(
         _ rawValue: String,
         mintURL rawMintURL: String,

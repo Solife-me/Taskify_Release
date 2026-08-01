@@ -493,6 +493,12 @@ final class WalletViewModel: ObservableObject {
         return try await service.previewToken(token)
     }
 
+    /// Preview that also confirms with the mint that the token hasn't already been spent.
+    func previewUnspentToken(_ token: String) async throws -> CashuTokenPreview {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        return try await service.previewUnspentToken(token)
+    }
+
     func previewPaymentRequest(_ value: String) throws -> CashuPaymentRequestPreview {
         try CashuWalletService.previewPaymentRequest(value)
     }
@@ -4344,9 +4350,7 @@ struct ReceiveCashuSheet: View {
     @State private var requestCopied = false
     @State private var showingRequestBuilder = false
     @State private var token = ""
-    @State private var preview: CashuTokenPreview?
-    @State private var receivedAmount: UInt64?
-    @State private var queuedReceive: CashuPendingReceive?
+    @State private var redeemable: RedeemableCashuToken?
     @State private var isInspecting = false
     @State private var localError: String?
 
@@ -4363,58 +4367,23 @@ struct ReceiveCashuSheet: View {
 
                 ScrollView {
                     VStack(spacing: 18) {
-                        if let receivedAmount {
-                            successView(amount: receivedAmount)
-                        } else if let queuedReceive {
-                            queuedView(queuedReceive)
-                        } else {
-                            openRequestCard
+                        openRequestCard
 
-                            WalletPrimaryActionButton(title: "Create request") {
-                                showingRequestBuilder = true
-                            }
-                            .disabled(wallet.activeMint == nil || model.identityPublicKey.isEmpty)
-                            .opacity(wallet.activeMint == nil || model.identityPublicKey.isEmpty ? 0.45 : 1)
-
-                            WalletPrimaryActionButton(
-                                title: "Paste from clipboard",
-                                busyTitle: "Checking token…",
-                                isBusy: isInspecting,
-                                systemImage: "doc.on.clipboard"
-                            ) {
-                                Task { await inspectClipboard() }
-                            }
-                            .disabled(isInspecting)
-
-                            if let preview {
-                                tokenPreview(preview)
-                                Button {
-                                    Task {
-                                        do {
-                                            switch try await wallet.submitReceive(token) {
-                                            case .received(let amount):
-                                                receivedAmount = amount
-                                            case .alreadyReceived(let amount):
-                                                receivedAmount = amount
-                                            case .queued(let pending):
-                                                queuedReceive = pending
-                                            }
-                                        } catch {
-                                            localError = WalletViewModel.message(for: error)
-                                        }
-                                    }
-                                } label: {
-                                    Label(wallet.isWorking ? "Receiving…" : "Receive \(wallet.formattedSats(preview.receivedAmount))", systemImage: "checkmark")
-                                        .font(.headline)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 14)
-                                        .foregroundStyle(.white)
-                                        .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(wallet.isWorking)
-                            }
+                        WalletPrimaryActionButton(title: "Create request") {
+                            showingRequestBuilder = true
                         }
+                        .disabled(wallet.activeMint == nil || model.identityPublicKey.isEmpty)
+                        .opacity(wallet.activeMint == nil || model.identityPublicKey.isEmpty ? 0.45 : 1)
+
+                        WalletPrimaryActionButton(
+                            title: "Paste from clipboard",
+                            busyTitle: "Checking token…",
+                            isBusy: isInspecting,
+                            systemImage: "doc.on.clipboard"
+                        ) {
+                            Task { await pasteToken() }
+                        }
+                        .disabled(isInspecting)
                     }
                     .padding(22)
                 }
@@ -4423,6 +4392,9 @@ struct ReceiveCashuSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingRequestBuilder) {
                 ReceiveCashuRequestSheet(wallet: wallet)
+            }
+            .sheet(item: $redeemable) { item in
+                RedeemCashuTokenSheet(wallet: wallet, redeemable: item)
             }
             .task {
                 await inspectInitialToken()
@@ -4460,70 +4432,53 @@ struct ReceiveCashuSheet: View {
     /// failure here is worth reporting rather than swallowing.
     private func inspectInitialToken() async {
         let candidate = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !candidate.isEmpty, preview == nil else { return }
-        isInspecting = true
-        defer { isInspecting = false }
-        do { preview = try await wallet.previewToken(candidate) }
-        catch { localError = WalletViewModel.message(for: error) }
+        guard !candidate.isEmpty else { return }
+        await inspect(candidate, reportFailures: true)
     }
 
-    /// Looks at the clipboard and, if it holds an ecash token, jumps straight to the receive
-    /// preview. Anything else is ignored in silence -- the clipboard usually has nothing to do
-    /// with this screen, so complaining about it would be noise rather than help. That means no
-    /// error is surfaced here even when the mint rejects a cashu-shaped string; the user did not
-    /// ask for this check.
+    /// Explicit paste: the user asked, so tell them when it doesn't work -- including when the
+    /// mint says the token has already been spent.
+    private func pasteToken() async {
+        guard let candidate = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !candidate.isEmpty else {
+            localError = "There's nothing on the clipboard to paste."
+            return
+        }
+        await inspect(candidate, reportFailures: true)
+    }
+
+    /// Opportunistic read on open. Anything that isn't a live token is ignored in silence -- the
+    /// clipboard usually has nothing to do with this screen, so complaining about it would be
+    /// noise rather than help.
     private func inspectClipboard() async {
-        guard !isInspecting, preview == nil, receivedAmount == nil, queuedReceive == nil else { return }
         guard let candidate = UIPasteboard.general.string?
             .trimmingCharacters(in: .whitespacesAndNewlines), !candidate.isEmpty else { return }
+        await inspect(candidate, reportFailures: false)
+    }
+
+    /// Verifies a candidate with the mint and, only if it is a real unspent token, opens the
+    /// redeem page. The unspent check is what stops an already-claimed token -- which still
+    /// decodes perfectly well -- from being offered for redemption a second time.
+    private func inspect(_ candidate: String, reportFailures: Bool) async {
+        guard !isInspecting, redeemable == nil else { return }
 
         let normalized = candidate.lowercased().hasPrefix("cashu:")
             ? String(candidate.dropFirst("cashu:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             : candidate
-        guard normalized.lowercased().hasPrefix("cashu") else { return }
+        guard normalized.lowercased().hasPrefix("cashu") else {
+            if reportFailures { localError = "That doesn't look like an ecash token." }
+            return
+        }
 
         isInspecting = true
         defer { isInspecting = false }
-        guard let inspected = try? await wallet.previewToken(normalized) else { return }
-        token = normalized
-        preview = inspected
-    }
-
-    private func tokenPreview(_ preview: CashuTokenPreview) -> some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("Token value")
-                Spacer()
-                Text("\(wallet.formattedSats(preview.amount))").bold()
-            }
-            if let fee = preview.fee, fee > 0 {
-                HStack {
-                    Text("Mint fee")
-                    Spacer()
-                    Text("−\(wallet.formattedSats(fee))")
-                }
-            }
-            Divider().overlay(TaskifyTheme.border)
-            HStack {
-                Text("You receive").bold()
-                Spacer()
-                Text("\(wallet.formattedSats(preview.receivedAmount))").bold()
-            }
-            Text(preview.mintURL)
-                .font(.caption)
-                .foregroundStyle(TaskifyTheme.tertiaryText)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if let memo = preview.memo, !memo.isEmpty {
-                Text(memo)
-                    .font(.subheadline)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        do {
+            let preview = try await wallet.previewUnspentToken(normalized)
+            token = normalized
+            redeemable = RedeemableCashuToken(token: normalized, preview: preview)
+        } catch {
+            if reportFailures { localError = WalletViewModel.message(for: error) }
         }
-        .font(.subheadline)
-        .foregroundStyle(TaskifyTheme.primaryText)
-        .padding(18)
-        .taskifyGlass(cornerRadius: 22)
     }
 
     /// A standing multi-use, open-amount request. Created quietly on open so there is always
@@ -4587,6 +4542,131 @@ struct ReceiveCashuSheet: View {
             relayURLs: model.walletPaymentRequestRelayURLs,
             singleUse: false
         )
+    }
+
+
+}
+
+/// A token that previewed cleanly and that the mint confirms is still unspent.
+struct RedeemableCashuToken: Identifiable {
+    let id = UUID()
+    let token: String
+    let preview: CashuTokenPreview
+}
+
+/// Redeeming a token gets its own page rather than unfolding inside the Receive eCash sheet: it's
+/// a different job from handing out a request, it ends in its own success state, and it only ever
+/// opens once the mint has confirmed the token is valid and unspent -- so there is something
+/// definite to show by the time it appears.
+struct RedeemCashuTokenSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    let redeemable: RedeemableCashuToken
+    @Environment(\.dismiss) private var dismiss
+    @State private var receivedAmount: UInt64?
+    @State private var queuedReceive: CashuPendingReceive?
+    @State private var localError: String?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: 18) {
+                        if let receivedAmount {
+                            successView(amount: receivedAmount)
+                        } else if let queuedReceive {
+                            queuedView(queuedReceive)
+                        } else {
+                            Image(systemName: "banknote.fill")
+                                .font(.system(size: 46))
+                                .foregroundStyle(TaskifyTheme.accent)
+
+                            tokenPreview(redeemable.preview)
+
+                            WalletPrimaryActionButton(
+                                title: "Receive \(wallet.formattedSats(redeemable.preview.receivedAmount))",
+                                busyTitle: "Receiving…",
+                                isBusy: wallet.isWorking,
+                                systemImage: "checkmark"
+                            ) {
+                                Task { await receive() }
+                            }
+                            .disabled(wallet.isWorking)
+                        }
+                    }
+                    .padding(22)
+                }
+            }
+            .navigationTitle("Redeem ecash")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("Redeem ecash", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(wallet.isWorking)
+    }
+
+    private func receive() async {
+        do {
+            switch try await wallet.submitReceive(redeemable.token) {
+            case .received(let amount):
+                receivedAmount = amount
+            case .alreadyReceived(let amount):
+                receivedAmount = amount
+            case .queued(let pending):
+                queuedReceive = pending
+            }
+        } catch {
+            localError = WalletViewModel.message(for: error)
+        }
+    }
+
+    private func tokenPreview(_ preview: CashuTokenPreview) -> some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("Token value")
+                Spacer()
+                Text("\(wallet.formattedSats(preview.amount))").bold()
+            }
+            if let fee = preview.fee, fee > 0 {
+                HStack {
+                    Text("Mint fee")
+                    Spacer()
+                    Text("−\(wallet.formattedSats(fee))")
+                }
+            }
+            Divider().overlay(TaskifyTheme.border)
+            HStack {
+                Text("You receive").bold()
+                Spacer()
+                Text("\(wallet.formattedSats(preview.receivedAmount))").bold()
+            }
+            Text(preview.mintURL)
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let memo = preview.memo, !memo.isEmpty {
+                Text(memo)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(TaskifyTheme.primaryText)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 22)
     }
 
     private func successView(amount: UInt64) -> some View {
