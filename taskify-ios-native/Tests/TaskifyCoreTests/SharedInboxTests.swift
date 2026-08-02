@@ -6,6 +6,7 @@ final class SharedInboxTests: XCTestCase {
     private let senderPrivateKey = String(repeating: "0", count: 63) + "1"
     private let recipientPrivateKey = String(repeating: "0", count: 63) + "2"
     private let ephemeralPrivateKey = String(repeating: "0", count: 63) + "3"
+    private let fourthPrivateKey = String(repeating: "0", count: 63) + "4"
 
     func testDecodesPWATaskEnvelopeWithSubtaskWithoutID() throws {
         let recipient = try identity(recipientPrivateKey)
@@ -198,6 +199,101 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertEqual(object["eventId"] as? String, eventID)
         XCTAssertEqual(object["status"] as? String, "accepted")
         XCTAssertEqual(object["inviteToken"] as? String, "invite-secret")
+    }
+
+    func testCalendarInvitationPlanRetainsExistingTokensAndInvitesOnlyNewAttendees() throws {
+        let organizer = try identity(senderPrivateKey)
+        let existingAttendee = try identity(recipientPrivateKey)
+        let newAttendee = try identity(ephemeralPrivateKey)
+        let removedAttendee = try identity(fourthPrivateKey)
+        let board = Board(
+            id: "calendar-board",
+            name: "Calendar",
+            kind: .week,
+            nostrBoardID: "calendar-board-secret",
+            relayURLs: ["wss://relay.solife.me"]
+        )
+        let event = TaskifyEvent(
+            id: "event-1",
+            boardID: board.id,
+            title: "Native parity review",
+            participants: [
+                TaskifyEventParticipant(publicKey: existingAttendee.publicKeyHex, role: "attendee")
+            ],
+            schedule: .time,
+            startISO: "2026-08-03T15:00:00Z",
+            endISO: "2026-08-03T16:00:00Z",
+            canonicalAddress: "",
+            viewAddress: "",
+            eventKey: TaskifyCalendarEventCodec.generateEventKey(),
+            inviteToken: "",
+            inviteTokens: [
+                existingAttendee.publicKeyHex: "existing-token",
+                removedAttendee.publicKeyHex: "stale-token",
+            ],
+            relayURLs: board.relayURLs,
+            rsvpStatus: .accepted
+        )
+
+        var generatedTokens = ["new-token"]
+        let plan = TaskifyEventInvitationPlanner.prepare(
+            event: event,
+            participants: [
+                TaskifyEventParticipant(
+                    publicKey: existingAttendee.publicKeyHex,
+                    relayURL: "wss://relay.solife.me/",
+                    role: "attendee"
+                ),
+                TaskifyEventParticipant(
+                    publicKey: newAttendee.npub,
+                    relayURL: "relay.damus.io",
+                    role: "attendee"
+                ),
+                TaskifyEventParticipant(publicKey: organizer.publicKeyHex, role: "organizer"),
+                TaskifyEventParticipant(publicKey: "not-a-key", role: "attendee"),
+            ],
+            previousParticipants: event.participants ?? [],
+            senderPublicKey: organizer.publicKeyHex,
+            generateInviteToken: { generatedTokens.removeFirst() }
+        )
+
+        XCTAssertEqual(plan.event.participants?.map(\.publicKey), [
+            existingAttendee.publicKeyHex,
+            newAttendee.publicKeyHex,
+        ])
+        XCTAssertEqual(plan.event.participants?.map(\.relayURL), [
+            "wss://relay.solife.me",
+            "wss://relay.damus.io",
+        ])
+        XCTAssertEqual(plan.event.inviteTokens, [
+            existingAttendee.publicKeyHex: "existing-token",
+            newAttendee.publicKeyHex: "new-token",
+        ])
+        XCTAssertEqual(plan.addedRecipientPublicKeys, [newAttendee.publicKeyHex])
+
+        let pair = try TaskifyCalendarEventCodec.eventPair(
+            event: plan.event,
+            board: board,
+            createdAt: 1_785_775_200
+        )
+        let delivery = try XCTUnwrap(TaskifyEventInvitationPlanner.delivery(
+            event: pair.normalizedEvent,
+            recipientPublicKey: newAttendee.publicKeyHex
+        ))
+        XCTAssertEqual(delivery.eventID, event.id)
+        XCTAssertEqual(delivery.canonical, pair.normalizedEvent.canonicalAddress)
+        XCTAssertEqual(delivery.view, pair.normalizedEvent.viewAddress)
+        XCTAssertEqual(delivery.inviteToken, "new-token")
+        XCTAssertEqual(delivery.start, "2026-08-03T15:00:00Z")
+
+        let envelope = TaskifyShareEnvelope(
+            item: .calendarEvent(delivery),
+            senderNpub: organizer.npub
+        )
+        let decoded = try XCTUnwrap(TaskifyShareEnvelope.decode(
+            content: String(decoding: try envelope.encoded(), as: UTF8.self)
+        ))
+        XCTAssertEqual(decoded, envelope)
     }
 
     func testTaskifyEventViewDecryptsAndMaterializesSeparatelyFromAppleCalendar() throws {

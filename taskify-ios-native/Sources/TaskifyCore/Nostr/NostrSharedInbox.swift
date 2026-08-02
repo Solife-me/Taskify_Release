@@ -522,6 +522,96 @@ public struct SharedCalendarEventDelivery: Codable, Equatable, Sendable {
     }()
 }
 
+public struct TaskifyEventInvitationPlan: Equatable, Sendable {
+    public var event: TaskifyEvent
+    public var addedRecipientPublicKeys: [String]
+
+    public init(event: TaskifyEvent, addedRecipientPublicKeys: [String]) {
+        self.event = event
+        self.addedRecipientPublicKeys = addedRecipientPublicKeys
+    }
+}
+
+/// Keeps Taskify calendar invitations stable across event edits.
+///
+/// Every attendee receives an independent token. Retaining that token is important because an
+/// RSVP references it, while removing tokens for people no longer invited prevents a later edit
+/// from accidentally re-sharing an event with a former attendee.
+public enum TaskifyEventInvitationPlanner {
+    public static func prepare(
+        event: TaskifyEvent,
+        participants: [TaskifyEventParticipant],
+        previousParticipants: [TaskifyEventParticipant],
+        senderPublicKey: String?,
+        generateInviteToken: () -> String = TaskifyCalendarEventCodec.generateInviteToken
+    ) -> TaskifyEventInvitationPlan {
+        let sender = senderPublicKey.flatMap(normalizedPublicKey)
+        let normalizedParticipants = participants.compactMap { participant -> TaskifyEventParticipant? in
+            guard let publicKey = normalizedPublicKey(participant.publicKey),
+                  publicKey != sender else { return nil }
+            return TaskifyEventParticipant(
+                publicKey: publicKey,
+                relayURL: participant.relayURL.flatMap(TaskifyRelayURL.normalize),
+                role: participant.role?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            )
+        }.uniqued(by: \.publicKey)
+        let previousRecipients = Set(previousParticipants.compactMap {
+            normalizedPublicKey($0.publicKey)
+        })
+        let existingTokens = [String: String](
+            uniqueKeysWithValues: (event.inviteTokens ?? [:]).compactMap { key, token in
+                guard let publicKey = normalizedPublicKey(key),
+                      let token = token.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
+                    return nil
+                }
+                return (publicKey, token)
+            }
+        )
+
+        var invitationTokens: [String: String] = [:]
+        for participant in normalizedParticipants {
+            invitationTokens[participant.publicKey] = existingTokens[participant.publicKey]
+                ?? generateInviteToken()
+        }
+
+        var prepared = event
+        prepared.participants = normalizedParticipants.nilIfEmpty
+        prepared.inviteTokens = invitationTokens.isEmpty ? nil : invitationTokens
+        if Data(base64Encoded: prepared.eventKey)?.count != 32 {
+            prepared.eventKey = TaskifyCalendarEventCodec.generateEventKey()
+        }
+        return TaskifyEventInvitationPlan(
+            event: prepared,
+            addedRecipientPublicKeys: normalizedParticipants
+                .map(\.publicKey)
+                .filter { !previousRecipients.contains($0) }
+        )
+    }
+
+    public static func delivery(
+        event: TaskifyEvent,
+        recipientPublicKey: String
+    ) -> SharedCalendarEventDelivery? {
+        guard let recipient = normalizedPublicKey(recipientPublicKey),
+              let token = event.inviteTokens?[recipient]?.trimmedNilIfEmpty else { return nil }
+        return SharedCalendarEventDelivery(
+            eventID: event.id,
+            canonical: event.canonicalAddress,
+            view: event.viewAddress,
+            eventKey: event.eventKey,
+            inviteToken: token,
+            title: event.title,
+            start: event.isAllDay ? event.startDateValue : event.startISO,
+            end: event.isAllDay ? event.endDateValue : event.endISO,
+            relayURLs: event.relayURLs
+        ).normalized()
+    }
+
+    private static func normalizedPublicKey(_ value: String) -> String? {
+        NostrPublicKey.parse(value)?.hexString
+    }
+}
+
 public struct SharedCalendarInviteInboxItem: Identifiable, Codable, Equatable, Sendable {
     public var id: String { wrapEventID }
     public var wrapEventID: String

@@ -462,6 +462,12 @@ public enum TaskifyCalendarEventCodec {
             .base64EncodedString()
     }
 
+    public static func generateInviteToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return Data((0..<16).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
+            .base64EncodedString()
+    }
+
     public static func eventPair(
         event: TaskifyEvent,
         board: Board,

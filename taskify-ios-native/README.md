@@ -21,7 +21,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Multiple relative reminders, exact custom reminder times, and local iOS notification scheduling
 - PWA-familiar Upcoming list/calendar views with one-tap switching, native monthly task-day dots, search, add flow, persisted sorting, board grouping, and board filters
 - Opt-in Apple Calendar integration in both Upcoming views with native full-access permission handling, event-day dots, dated list sections, calendar colors, search, and live EventKit refreshes
-- Taskify event scheduling compatible with the PWA, including per-event time zones, reminder metadata and local notifications, board/list placement with replay-safe cross-board moves, plus lossless recurrence/series preservation across native edits
+- Taskify event scheduling compatible with the PWA, including per-event time zones, reminder metadata and local notifications, board/list placement with replay-safe cross-board moves, contact-based attendee selection, stable per-attendee invite tokens, encrypted outbound invitations, and lossless recurrence/series preservation across native edits
 - Native recurring Taskify events with PWA-compatible deterministic instance IDs, bounded rolling future windows, DST-safe generation, repeat presets/end dates, scoped single/future deletion, and logical-ID deduplication for newly published or previously saved events
 - Independently selectable Apple Reminders integration in both Upcoming views with due-day dots, dated list sections, list colors, priority/notes display, search, and completion writes back to Apple Reminders
 - Board creation, selection, synced rename, local archive/restore, and guarded deletion with task and compound-reference cleanup

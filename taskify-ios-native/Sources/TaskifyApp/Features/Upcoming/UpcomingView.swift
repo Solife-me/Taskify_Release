@@ -2222,6 +2222,8 @@ private struct NewUpcomingItemSheet: View {
     @State private var repeatChoice = TaskifyEventRepeatChoice.never
     @State private var repeatHasEnd = false
     @State private var repeatEndDate = Date().addingTimeInterval(180 * 24 * 60 * 60)
+    @State private var selectedAttendeePublicKeys: Set<String> = []
+    @State private var showingAttendeePicker = false
 
     private var eventBoards: [Board] {
         model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }
@@ -2292,6 +2294,11 @@ private struct NewUpcomingItemSheet: View {
                 }
 
                 if itemType == .event {
+                    TaskifyEventAttendeesSection(
+                        selectedPublicKeys: $selectedAttendeePublicKeys,
+                        contacts: model.nostrContacts,
+                        onAdd: { showingAttendeePicker = true }
+                    )
                     TaskifyEventRemindersSection(
                         isAllDay: allDay,
                         reminders: $reminders,
@@ -2333,7 +2340,8 @@ private struct NewUpcomingItemSheet: View {
                                 startTimeZoneID: timeZoneID,
                                 reminders: reminders,
                                 reminderTime: formattedReminderTime,
-                                recurrence: recurrence
+                                recurrence: recurrence,
+                                participants: selectedEventParticipants
                             )
                         }
                         dismiss()
@@ -2349,6 +2357,13 @@ private struct NewUpcomingItemSheet: View {
         .sheet(isPresented: $showingTimeZonePicker) {
             TimeZonePickerSheet(selection: $timeZoneID, referenceDate: dueDate)
                 .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showingAttendeePicker) {
+            TaskifyEventAttendeePickerSheet(
+                contacts: model.nostrContacts.filter { $0.publicKey != model.identityPublicKey },
+                selection: $selectedAttendeePublicKeys
+            )
+            .preferredColorScheme(.dark)
         }
         .onAppear {
             guard boardID.isEmpty else { return }
@@ -2412,6 +2427,17 @@ private struct NewUpcomingItemSheet: View {
         )
     }
 
+    private var selectedEventParticipants: [TaskifyEventParticipant] {
+        selectedAttendeePublicKeys.sorted().map { publicKey in
+            let contact = model.nostrContact(publicKey: publicKey)
+            return TaskifyEventParticipant(
+                publicKey: publicKey,
+                relayURL: contact?.relayURLs.first,
+                role: "attendee"
+            )
+        }
+    }
+
     private static func reminderClock(from value: String?) -> Date {
         let parts = (value ?? "09:00").split(separator: ":")
         let hour = parts.first.flatMap { Int($0) } ?? 9
@@ -2439,6 +2465,8 @@ private struct TaskifyEventEditorSheet: View {
     @State private var repeatHasEnd: Bool
     @State private var repeatEndDate: Date
     @State private var confirmingDeletion = false
+    @State private var selectedAttendeePublicKeys: Set<String>
+    @State private var showingAttendeePicker = false
     let event: TaskifyEvent
 
     init(event: TaskifyEvent) {
@@ -2462,6 +2490,11 @@ private struct TaskifyEventEditorSheet: View {
                 ?? Calendar.current.date(byAdding: .month, value: 6, to: start)
                 ?? start
         )
+        _selectedAttendeePublicKeys = State(initialValue: Set(
+            (event.participants ?? []).compactMap {
+                NostrPublicKey.parse($0.publicKey)?.hexString
+            }
+        ))
     }
 
     private var eventBoards: [Board] {
@@ -2525,6 +2558,12 @@ private struct TaskifyEventEditorSheet: View {
                     reminderTime: $reminderTime
                 )
 
+                TaskifyEventAttendeesSection(
+                    selectedPublicKeys: $selectedAttendeePublicKeys,
+                    contacts: model.nostrContacts,
+                    onAdd: { showingAttendeePicker = true }
+                )
+
                 if canEditSeriesRecurrence {
                     TaskifyEventRepeatSection(
                         choice: $repeatChoice,
@@ -2574,7 +2613,8 @@ private struct TaskifyEventEditorSheet: View {
                             startTimeZoneID: timeZoneID,
                             reminders: reminders,
                             reminderTime: formattedReminderTime,
-                            recurrence: recurrence
+                            recurrence: recurrence,
+                            participants: selectedEventParticipants
                         ) {
                             dismiss()
                         }
@@ -2612,6 +2652,13 @@ private struct TaskifyEventEditorSheet: View {
         .sheet(isPresented: $showingTimeZonePicker) {
             TimeZonePickerSheet(selection: $timeZoneID, referenceDate: startDate)
                 .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showingAttendeePicker) {
+            TaskifyEventAttendeePickerSheet(
+                contacts: model.nostrContacts.filter { $0.publicKey != model.identityPublicKey },
+                selection: $selectedAttendeePublicKeys
+            )
+            .preferredColorScheme(.dark)
         }
         .onAppear {
             if !eventBoards.contains(where: { $0.id == boardID }) {
@@ -2676,11 +2723,201 @@ private struct TaskifyEventEditorSheet: View {
         )
     }
 
+    private var selectedEventParticipants: [TaskifyEventParticipant] {
+        let existing = Dictionary(uniqueKeysWithValues: (event.participants ?? []).compactMap {
+            participant -> (String, TaskifyEventParticipant)? in
+            guard let publicKey = NostrPublicKey.parse(participant.publicKey)?.hexString else {
+                return nil
+            }
+            return (publicKey, participant)
+        })
+        return selectedAttendeePublicKeys.sorted().map { publicKey in
+            let contact = model.nostrContact(publicKey: publicKey)
+            return TaskifyEventParticipant(
+                publicKey: publicKey,
+                relayURL: contact?.relayURLs.first ?? existing[publicKey]?.relayURL,
+                role: existing[publicKey]?.role ?? "attendee"
+            )
+        }
+    }
+
     private static func reminderClock(from value: String?) -> Date {
         let parts = (value ?? "09:00").split(separator: ":")
         let hour = parts.first.flatMap { Int($0) } ?? 9
         let minute = parts.dropFirst().first.flatMap { Int($0) } ?? 0
         return Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date()) ?? Date()
+    }
+}
+
+private struct TaskifyEventAttendeesSection: View {
+    @Binding var selectedPublicKeys: Set<String>
+    let contacts: [NostrContact]
+    let onAdd: () -> Void
+
+    private var selectedContacts: [(publicKey: String, contact: NostrContact?)] {
+        selectedPublicKeys.map { publicKey in
+            (publicKey, contacts.first(where: { $0.publicKey == publicKey }))
+        }.sorted {
+            ($0.contact?.displayName ?? $0.publicKey)
+                .localizedCaseInsensitiveCompare($1.contact?.displayName ?? $1.publicKey)
+                == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        Section {
+            Button(action: onAdd) {
+                Label("Add People", systemImage: "person.badge.plus")
+            }
+
+            if selectedContacts.isEmpty {
+                Text("Invite people from your Taskify contacts.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(selectedContacts, id: \.publicKey) { item in
+                    HStack(spacing: 12) {
+                        TaskifyEventContactIcon(contact: item.contact)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.contact?.displayName ?? "Taskify contact")
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text(item.contact?.subtitle ?? shortenedPublicKey(item.publicKey))
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Button {
+                            selectedPublicKeys.remove(item.publicKey)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Remove \(item.contact?.displayName ?? "attendee")")
+                    }
+                }
+            }
+        } header: {
+            Text("Invitees")
+        } footer: {
+            if !selectedContacts.isEmpty {
+                Text("New invitees receive an encrypted Taskify event invitation when you save.")
+            }
+        }
+    }
+
+    private func shortenedPublicKey(_ value: String) -> String {
+        value.count > 18 ? "\(value.prefix(10))…\(value.suffix(6))" : value
+    }
+}
+
+private struct TaskifyEventAttendeePickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let contacts: [NostrContact]
+    @Binding var selection: Set<String>
+    @State private var searchText = ""
+
+    private var visibleContacts: [NostrContact] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return contacts.filter { contact in
+            query.isEmpty
+                || contact.displayName.localizedCaseInsensitiveContains(query)
+                || contact.subtitle.localizedCaseInsensitiveContains(query)
+                || contact.npub.localizedCaseInsensitiveContains(query)
+        }.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if visibleContacts.isEmpty {
+                    ContentUnavailableView(
+                        searchText.isEmpty ? "No Taskify Contacts" : "No Matches",
+                        systemImage: searchText.isEmpty ? "person.crop.circle.badge.plus" : "magnifyingglass",
+                        description: Text(
+                            searchText.isEmpty
+                                ? "Add contacts in Chat before inviting them to an event."
+                                : "Try another name, NIP-05 address, or public key."
+                        )
+                    )
+                    .listRowBackground(Color.clear)
+                } else {
+                    ForEach(visibleContacts) { contact in
+                        Button {
+                            if selection.contains(contact.publicKey) {
+                                selection.remove(contact.publicKey)
+                            } else {
+                                selection.insert(contact.publicKey)
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                TaskifyEventContactIcon(contact: contact)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(contact.displayName)
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                    Text(contact.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(TaskifyTheme.secondaryText)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: selection.contains(contact.publicKey)
+                                    ? "checkmark.circle.fill"
+                                    : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(selection.contains(contact.publicKey)
+                                        ? TaskifyTheme.accent
+                                        : TaskifyTheme.tertiaryText)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle("Invite People")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search contacts")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct TaskifyEventContactIcon: View {
+    let contact: NostrContact?
+
+    var body: some View {
+        Group {
+            if let url = contact?.pictureURL {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: 34, height: 34)
+        .clipShape(Circle())
+    }
+
+    private var fallback: some View {
+        ZStack {
+            Circle().fill(TaskifyTheme.accent.opacity(0.18))
+            Text(contact?.initials ?? "?")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.accent)
+        }
     }
 }
 

@@ -942,7 +942,8 @@ final class AppModel {
         startTimeZoneID: String? = nil,
         reminders: [TaskReminder] = [],
         reminderTime: String? = nil,
-        recurrence: TaskRecurrence? = nil
+        recurrence: TaskRecurrence? = nil,
+        participants: [TaskifyEventParticipant] = []
     ) -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
@@ -1009,12 +1010,22 @@ final class AppModel {
             readOnly: false,
             deleted: false
         )
-        _ = snapshot.upsertTaskifyEvent(event)
+        let invitationPlan = TaskifyEventInvitationPlanner.prepare(
+            event: event,
+            participants: participants,
+            previousParticipants: [],
+            senderPublicKey: identityPublicKey.nilIfEmpty
+        )
+        _ = snapshot.upsertTaskifyEvent(invitationPlan.event)
         let seriesChanges = snapshot.rebuildTaskifyEventSeries(
             seedID: eventID,
             editorPublicKey: identityPublicKey.nilIfEmpty
         )
         synchronizeTaskifyEvents([eventID] + seriesChanges.allEventIDs)
+        queueTaskifyEventInvitations(
+            eventID: eventID,
+            recipientPublicKeys: invitationPlan.addedRecipientPublicKeys
+        )
         refreshNotifications(requestPermission: !normalizedReminders.isEmpty)
         return true
     }
@@ -1033,7 +1044,8 @@ final class AppModel {
         startTimeZoneID: String? = nil,
         reminders: [TaskReminder]? = nil,
         reminderTime: String? = nil,
-        recurrence: TaskRecurrence? = nil
+        recurrence: TaskRecurrence? = nil,
+        participants: [TaskifyEventParticipant]? = nil
     ) -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
@@ -1076,6 +1088,7 @@ final class AppModel {
 
         guard var events = snapshot.taskifyEvents,
               let index = events.firstIndex(where: { $0.id == eventID }) else { return false }
+        let previousParticipants = events[index].participants ?? []
         let previousSeriesID = events[index].seriesID
         let wasSeriesSeed = previousSeriesID == eventID
         let resolvedEnd = isAllDay
@@ -1111,6 +1124,13 @@ final class AppModel {
             : (previousSeriesID ?? events[index].id)
         events[index].lastEditedBy = identityPublicKey.nilIfEmpty
         events[index].deleted = false
+        let invitationPlan = TaskifyEventInvitationPlanner.prepare(
+            event: events[index],
+            participants: participants ?? previousParticipants,
+            previousParticipants: previousParticipants,
+            senderPublicKey: identityPublicKey.nilIfEmpty
+        )
+        events[index] = invitationPlan.event
         snapshot.taskifyEvents = events
         let seriesChanges = wasSeriesSeed || (previousSeriesID == nil && normalizedRecurrence != nil)
             ? snapshot.rebuildTaskifyEventSeries(
@@ -1132,6 +1152,10 @@ final class AppModel {
         } else {
             synchronizeTaskifyEvents(synchronizedEventIDs)
         }
+        queueTaskifyEventInvitations(
+            eventID: eventID,
+            recipientPublicKeys: invitationPlan.addedRecipientPublicKeys
+        )
         refreshNotifications(requestPermission: !normalizedReminders.isEmpty)
         return true
     }
@@ -1566,6 +1590,79 @@ final class AppModel {
             return
         }
         scheduleSave()
+    }
+
+    private func queueTaskifyEventInvitations(
+        eventID: String,
+        recipientPublicKeys: [String]
+    ) {
+        guard !recipientPublicKeys.isEmpty,
+              let event = snapshot.taskifyEvents?.first(where: { $0.id == eventID }) else { return }
+        let isOnline = syncIsOnline
+        let targets = recipientPublicKeys.compactMap { value -> (
+            recipient: Data,
+            delivery: SharedCalendarEventDelivery,
+            fallbackRelays: [String]
+        )? in
+            guard let recipient = NostrPublicKey.parse(value),
+                  recipient.hexString != identityPublicKey,
+                  let delivery = TaskifyEventInvitationPlanner.delivery(
+                      event: event,
+                      recipientPublicKey: recipient.hexString
+                  ) else { return nil }
+            let participantRelay = event.participants?
+                .first(where: { $0.publicKey == recipient.hexString })?
+                .relayURL
+                .map { [$0] } ?? []
+            let contactRelays = snapshot.contact(publicKeyValue: recipient.hexString)?.relayURLs ?? []
+            let fallbackRelays = TaskifyRelayURL.normalizedList(
+                participantRelay + contactRelays + (event.relayURLs ?? []) + sharedInboxRelayURLs
+            )
+            guard !fallbackRelays.isEmpty else { return nil }
+            return (recipient, delivery, fallbackRelays)
+        }
+        guard !targets.isEmpty else { return }
+
+        Task { [identityStore, syncEngine, weak self] in
+            guard let identity = try? identityStore.load() else { return }
+            var failed = false
+            for target in targets {
+                do {
+                    let deliveryRelays = isOnline
+                        ? await NIP17InboxRelayResolver.resolve(
+                            recipientPublicKey: target.recipient.hexString,
+                            fallbackRelayURLs: target.fallbackRelays
+                        )
+                        : target.fallbackRelays
+                    guard !deliveryRelays.isEmpty else {
+                        failed = true
+                        continue
+                    }
+                    let envelope = TaskifyShareEnvelope(
+                        item: .calendarEvent(target.delivery),
+                        senderNpub: identity.npub
+                    )
+                    let wrap = try NIP17GiftWrap.wrap(
+                        envelope: envelope,
+                        sender: identity,
+                        recipientPublicKey: target.recipient
+                    )
+                    try await syncEngine.publish(
+                        wrap,
+                        relayURLs: deliveryRelays,
+                        outboxScope: Self.sharedInboxOutboxScope,
+                        recordID: "calendar-invite:\(eventID):\(target.recipient.hexString)"
+                    )
+                } catch {
+                    failed = true
+                }
+            }
+            if failed {
+                await MainActor.run {
+                    self?.errorMessage = "The event was saved, but Taskify could not queue every invitation yet."
+                }
+            }
+        }
     }
 
     func sendSharedTask(
