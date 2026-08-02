@@ -13,9 +13,15 @@ export const DEFAULT_FILE_STORAGE_SERVER = DEFAULT_PUBLIC_FILE_STORAGE_SERVER;
 export const DEFAULT_FILE_SERVERS: FileServerEntry[] = [
   { url: "https://nostr.build", type: "nip96", label: "nostr.build" },
   { url: "https://blossom.band", type: "blossom", label: "blossom.band" },
-  { url: "https://originless.besoeasy.com", type: "originless", label: "originless.besoeasy.com" },
+  // originless.besoeasy.com dropped in August 2026: the hostname stopped resolving, so picking it
+  // failed at DNS with nothing to explain why.
   { url: "https://originless.solife.me", type: "originless", label: "originless.solife.me" },
 ];
+
+/// Originless returns a CID and does not serve blobs itself -- `{server}/ipfs/{cid}` is not a route
+/// on it, so retrieval goes through a public gateway as its README recommends. Attachments are
+/// encrypted to the board key before upload, so a gateway only ever handles ciphertext.
+export const IPFS_GATEWAY_BASE = "https://dweb.link";
 
 function trimTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.replace(/\/+$/, "") : url;

@@ -161,9 +161,10 @@ public enum TaskifyFileServerList {
     /// to `type === "originless"`): encrypted, opaque ciphertext trips up the content-sniffing many
     /// public Blossom/NIP-96 servers do, so only Originless servers are suggested by default.
     /// Blossom and NIP-96 remain fully addable by the user.
+    /// `originless.besoeasy.com` was dropped in August 2026: the hostname stopped resolving, so
+    /// picking it failed at DNS with nothing to explain why.
     public static let defaults: [TaskifyFileServerEntry] = [
         TaskifyFileServerEntry(url: "https://originless.solife.me", type: .originless, label: "originless.solife.me"),
-        TaskifyFileServerEntry(url: "https://originless.besoeasy.com", type: .originless, label: "originless.besoeasy.com"),
     ]
 
     /// Scheme + host + path only, no query/fragment/credentials, no trailing slash -- mirrors the

@@ -340,12 +340,11 @@ actor TaskAttachmentUploadService {
             }
         }
 
-        if let cid = (payload?["cid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !cid.isEmpty {
-            return serverURL
-                .appendingPathComponent("ipfs", isDirectory: true)
-                .appendingPathComponent(cid, isDirectory: false)
-                .absoluteString
+        // Content-addressed servers (Originless) return a CID and don't serve the blob themselves;
+        // `{server}/ipfs/{cid}` 404s. Retrieval goes through a public gateway, as its README says.
+        if let cid = payload?["cid"] as? String,
+           let gatewayURL = TaskifyIPFSGateway.url(forCID: cid) {
+            return gatewayURL
         }
 
         if let path = (payload?["path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),

@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, type FileServerEntry } from "../lib/fileStorage";
+import { DEFAULT_FILE_STORAGE_SERVER, IPFS_GATEWAY_BASE, normalizeFileServerUrl, type FileServerEntry } from "../lib/fileStorage";
 
 export type Nip96ServerInfo = {
   baseUrl: string;
@@ -353,15 +353,22 @@ export async function uploadFileToBlossom(options: {
 }
 
 
+/** Deliberately shallow -- enough to tell a CID from a path or a sentence, not full validation. */
+function isPlausibleCid(value: string): boolean {
+  if (!(value.length >= 46 || value.startsWith("b"))) return false;
+  return /^[A-Za-z0-9]+$/.test(value);
+}
+
 function resolveOriginlessUrl(serverUrl: string, data: any): string {
   const direct = [data?.url, data?.cidUrl, data?.gatewayUrl, data?.fileUrl, data?.ipfs];
   for (const value of direct) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   const cid = typeof data?.cid === "string" ? data.cid.trim() : "";
-  if (cid) {
-    const base = normalizeFileServerUrl(serverUrl) || serverUrl;
-    return `${base}/ipfs/${cid}`;
+  if (cid && isPlausibleCid(cid)) {
+    // Originless does not serve blobs itself -- `{server}/ipfs/{cid}` is not a route on it and
+    // 404s -- so retrieval goes through a public gateway, as its README recommends.
+    return `${IPFS_GATEWAY_BASE}/ipfs/${cid}`;
   }
   const path = typeof data?.path === "string" ? data.path.trim() : "";
   if (path) {
