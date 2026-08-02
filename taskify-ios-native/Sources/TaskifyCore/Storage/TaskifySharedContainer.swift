@@ -9,8 +9,11 @@ import Foundation
 /// Falling back keeps the app fully working on its own; it just means anything outside the app
 /// sees no data.
 public enum TaskifySharedContainer {
-    /// Must match the App Groups capability on both the app and the widget extension.
-    public static let appGroupID = "group.solife.me.Taskify.Native"
+    /// Must match the App Groups capability on both the app and the widget extension exactly. A
+    /// mismatch is silent -- `containerURL(forSecurityApplicationGroupIdentifier:)` just returns
+    /// nil, the store quietly falls back to the app's private directory, and widgets show nothing
+    /// with no error anywhere to explain it.
+    public static let appGroupID = "group.solife.me.Taskify"
 
     /// True when the App Group capability is actually in effect. Widgets can only show real data
     /// when this is true.
