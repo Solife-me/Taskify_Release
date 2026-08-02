@@ -6,14 +6,12 @@ public actor JSONTaskStore {
         public let wasRepaired: Bool
     }
 
+    /// Resolves to the App Group container when that capability is in effect, so widgets and the
+    /// Add Task intent read the same file the app writes. Falls back to the app's own directory
+    /// otherwise -- see `TaskifySharedContainer`.
     public static var defaultURL: URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        return applicationSupport
-            .appendingPathComponent("TaskifyNative", isDirectory: true)
-            .appendingPathComponent("taskify.json", isDirectory: false)
+        TaskifySharedContainer.storeDirectory()
+            .appendingPathComponent(TaskifySharedContainer.storeFilename, isDirectory: false)
     }
 
     private let fileURL: URL

@@ -3227,6 +3227,10 @@ final class AppModel {
 
     private func load() async {
         defer { isLoading = false }
+        // Before the first read: if the App Group capability has just been enabled, bring the
+        // existing store into the shared container so enabling it doesn't look like data loss.
+        // No-ops once migrated, and when the capability isn't in effect.
+        TaskifySharedContainer.migrateIfNeeded()
         var loadedIdentity: NostrIdentity?
         do {
             let hadExistingIdentity = (try? identityStore.load()) != nil
