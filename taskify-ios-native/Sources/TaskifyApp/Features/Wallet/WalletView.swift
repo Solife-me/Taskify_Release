@@ -1414,7 +1414,8 @@ struct WalletView: View {
     @State private var showingMintTransfer = false
     @State private var showingPendingEcash = false
     @State private var showingRecovery = false
-    @State private var scannedToken = ""
+    @State private var scannedRedeemable: RedeemableCashuToken?
+    @State private var isInspectingScan = false
 
     var body: some View {
         ZStack {
@@ -1488,8 +1489,8 @@ struct WalletView: View {
         // so every later visit to Receive eCash replayed the last scan through the scanner path --
         // which reports failures -- and a token since redeemed greeted the user with an
         // "already spent" alert they never asked for.
-        .sheet(isPresented: $showingReceive, onDismiss: { scannedToken = "" }) {
-            ReceiveCashuSheet(wallet: wallet, initialToken: scannedToken, onSwitchMode: {
+        .sheet(isPresented: $showingReceive) {
+            ReceiveCashuSheet(wallet: wallet, onSwitchMode: {
                 showingReceive = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingLightningReceive = true }
             })
@@ -1502,12 +1503,14 @@ struct WalletView: View {
         }
         .sheet(isPresented: $showingScanner) {
             CashuTokenScannerSheet(onToken: { token in
-                scannedToken = token
                 showingScanner = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    showingReceive = true
-                }
+                // Scanning a token says exactly what the user wants. Opening Receive eCash first
+                // put a page about handing out requests in front of the thing they asked for.
+                Task { await redeemScannedToken(token) }
             })
+        }
+        .sheet(item: $scannedRedeemable) { item in
+            RedeemCashuTokenSheet(wallet: wallet, redeemable: item)
         }
         .sheet(isPresented: $showingSend) {
             SendCashuSheet(wallet: wallet, onSwitchMode: {
@@ -1603,6 +1606,25 @@ struct WalletView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Verifies a scanned token with its mint and opens the redeem page. Scanning is a deliberate
+    /// act, so an unusable token says so rather than failing quietly the way a clipboard read does.
+    private func redeemScannedToken(_ token: String) async {
+        guard !isInspectingScan else { return }
+        isInspectingScan = true
+        defer { isInspectingScan = false }
+
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased().hasPrefix("cashu:")
+            ? String(trimmed.dropFirst("cashu:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            : trimmed
+        do {
+            let preview = try await wallet.previewUnspentToken(normalized)
+            scannedRedeemable = RedeemableCashuToken(token: normalized, preview: preview)
+        } catch {
+            wallet.errorMessage = WalletViewModel.message(for: error)
         }
     }
 
@@ -4456,6 +4478,9 @@ struct ReceiveCashuSheet: View {
     @State private var isInspecting = false
     @State private var localError: String?
 
+    /// `initialToken` is how Chat hands over a token tapped in a DM -- the receiving end of
+    /// sending ecash to a contact. The wallet's own scanner opens the redeem page directly and
+    /// doesn't come through here.
     init(wallet: WalletViewModel, initialToken: String = "", onSwitchMode: (() -> Void)? = nil) {
         self.wallet = wallet
         self.onSwitchMode = onSwitchMode
@@ -4535,8 +4560,8 @@ struct ReceiveCashuSheet: View {
         }
     }
 
-    /// A token handed in by the scanner. Unlike the clipboard this was an explicit act, so a
-    /// failure here is worth reporting rather than swallowing.
+    /// A token handed over by Chat. Unlike the clipboard this was an explicit act, so a failure
+    /// here is worth reporting rather than swallowing.
     private func inspectInitialToken() async {
         let candidate = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !candidate.isEmpty else { return }
@@ -7693,6 +7718,8 @@ private struct CashuQRCodeView: View {
     let accessibilityLabel: String
     private let frames: [String]
     @State private var frameIndex = 0
+    @State private var renderedFrames: [UIImage] = []
+    @State private var singleImage: UIImage?
 
     init(value: String, accessibilityLabel: String = "Cashu token QR code") {
         self.value = value
@@ -7700,26 +7727,30 @@ private struct CashuQRCodeView: View {
         frames = CashuAnimatedQRAnimation(token: value)?.frames ?? []
     }
 
-    private var displayedValue: String {
-        guard !frames.isEmpty else { return value }
-        return frames[min(frameIndex, frames.count - 1)]
+    private var displayedImage: UIImage? {
+        guard !renderedFrames.isEmpty else { return singleImage }
+        return renderedFrames[min(frameIndex, renderedFrames.count - 1)]
     }
 
-    private func image(for value: String) -> UIImage? {
+    /// One context for the whole app. Building a `CIContext` is expensive and the old code built a
+    /// fresh one for every frame, from inside `body` -- which is what made animated tokens crawl
+    /// regardless of the frame interval.
+    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    private static func image(for value: String) -> UIImage? {
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(value.utf8)
         filter.correctionLevel = "M"
         guard let output = filter.outputImage else { return nil }
         let transformed = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
-        let context = CIContext(options: [.useSoftwareRenderer: false])
-        guard let cgImage = context.createCGImage(transformed, from: transformed.extent) else { return nil }
+        guard let cgImage = ciContext.createCGImage(transformed, from: transformed.extent) else { return nil }
         return UIImage(cgImage: cgImage)
     }
 
     var body: some View {
         VStack(spacing: 9) {
             Group {
-                if let image = image(for: displayedValue) {
+                if let image = displayedImage {
                     Image(uiImage: image)
                         .resizable()
                         .interpolation(.none)
@@ -7746,11 +7777,28 @@ private struct CashuQRCodeView: View {
         .accessibilityValue(frames.count > 1 ? "Animated frame \(frameIndex + 1) of \(frames.count)" : "")
         .task(id: value) {
             frameIndex = 0
-            guard frames.count > 1 else { return }
+            renderedFrames = []
+
+            guard frames.count > 1 else {
+                singleImage = Self.image(for: value)
+                return
+            }
+
+            // Rasterise every frame before playback starts, off the main actor. Generating them
+            // mid-animation made the cadence depend on how long each QR took to draw.
+            let source = frames
+            let rendered = await Task.detached(priority: .userInitiated) {
+                source.compactMap { CashuQRCodeView.image(for: $0) }
+            }.value
+            guard !Task.isCancelled, rendered.count == source.count else { return }
+            renderedFrames = rendered
+
+            // ~7fps. Fast enough to get through a long token quickly, slow enough that a camera
+            // still gets a clean read of each frame.
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(450))
+                try? await Task.sleep(for: .milliseconds(140))
                 guard !Task.isCancelled else { return }
-                frameIndex = (frameIndex + 1) % frames.count
+                frameIndex = (frameIndex + 1) % rendered.count
             }
         }
     }
