@@ -201,6 +201,150 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertEqual(object["inviteToken"] as? String, "invite-secret")
     }
 
+    func testOrganizerDecodesPWAEventRSVPAndKeepsLatestResponsePerAttendee() throws {
+        let attendee = try identity(recipientPrivateKey)
+        let secondAttendee = try identity(ephemeralPrivateKey)
+        let board = Board(
+            id: "calendar-board",
+            name: "Calendar",
+            kind: .week,
+            nostrBoardID: "calendar-board-secret",
+            relayURLs: ["wss://relay.solife.me"]
+        )
+        let eventID = "event-rsvp-1"
+        let boardPublicKey = try BoardCrypto.signingPublicKey(
+            for: board.effectiveNostrBoardID
+        ).hexString
+        let canonical = "30310:\(boardPublicKey):\(eventID)"
+        let taskifyEvent = TaskifyEvent(
+            id: eventID,
+            boardID: board.id,
+            title: "Dinner",
+            participants: [
+                TaskifyEventParticipant(publicKey: attendee.publicKeyHex),
+                TaskifyEventParticipant(publicKey: secondAttendee.publicKeyHex),
+            ],
+            schedule: .time,
+            startISO: "2026-08-03T23:00:00Z",
+            endISO: "2026-08-04T00:00:00Z",
+            canonicalAddress: canonical,
+            viewAddress: "30311:\(boardPublicKey):\(eventID)",
+            eventKey: TaskifyCalendarEventCodec.generateEventKey(),
+            inviteToken: "",
+            inviteTokens: [
+                attendee.publicKeyHex: "attendee-token",
+                secondAttendee.publicKeyHex: "second-token",
+            ],
+            relayURLs: board.relayURLs,
+            rsvpStatus: .accepted
+        )
+
+        func response(
+            from identity: NostrIdentity,
+            status: String,
+            token: String,
+            createdAt: Int,
+            freeBusy: String? = nil,
+            note: String? = nil
+        ) throws -> NostrEvent {
+            var payload: [String: Any] = [
+                "v": 1,
+                "eventId": eventID,
+                "status": status,
+                "inviteToken": token,
+            ]
+            if let freeBusy { payload["fb"] = freeBusy }
+            if let note { payload["note"] = note }
+            let plaintext = try JSONSerialization.data(withJSONObject: payload)
+            let encrypted = try NIP44V2.encrypt(
+                plaintext,
+                privateKey: identity.privateKey,
+                publicKey: try Data(hex: boardPublicKey),
+                nonce: Data(repeating: UInt8(createdAt % 255), count: 32)
+            )
+            return try NostrEvent.signed(
+                privateKey: identity.privateKey,
+                createdAt: createdAt,
+                kind: SharedCalendarRSVPContract.eventKind,
+                tags: [
+                    ["d", "\(eventID):\(identity.publicKeyHex)"],
+                    ["a", canonical],
+                ],
+                content: encrypted
+            )
+        }
+
+        let earlier = try response(
+            from: attendee,
+            status: "tentative",
+            token: "attendee-token",
+            createdAt: 1_785_775_200
+        )
+        let latest = try response(
+            from: attendee,
+            status: "accepted",
+            token: "attendee-token",
+            createdAt: 1_785_775_260,
+            freeBusy: "busy",
+            note: "Bringing dessert"
+        )
+        let declined = try response(
+            from: secondAttendee,
+            status: "declined",
+            token: "second-token",
+            createdAt: 1_785_775_230
+        )
+
+        let decoded = try SharedCalendarRSVPContract.decodeOrganizerResponse(
+            latest,
+            event: taskifyEvent,
+            board: board
+        )
+        XCTAssertEqual(decoded.eventID, eventID)
+        XCTAssertEqual(decoded.authorPublicKey, attendee.publicKeyHex)
+        XCTAssertEqual(decoded.status, .accepted)
+        XCTAssertEqual(decoded.freeBusy, .busy)
+        XCTAssertEqual(decoded.note, "Bringing dessert")
+        XCTAssertEqual(decoded.createdAt, 1_785_775_260)
+
+        let responses = SharedCalendarRSVPContract.latestResponses(
+            [
+                try SharedCalendarRSVPContract.decodeOrganizerResponse(
+                    latest,
+                    event: taskifyEvent,
+                    board: board
+                ),
+                try SharedCalendarRSVPContract.decodeOrganizerResponse(
+                    earlier,
+                    event: taskifyEvent,
+                    board: board
+                ),
+                try SharedCalendarRSVPContract.decodeOrganizerResponse(
+                    declined,
+                    event: taskifyEvent,
+                    board: board
+                ),
+            ]
+        )
+        XCTAssertEqual(responses.map(\.authorPublicKey), [
+            attendee.publicKeyHex,
+            secondAttendee.publicKeyHex,
+        ])
+        XCTAssertEqual(responses.map(\.status), [.accepted, .declined])
+
+        let wrongToken = try response(
+            from: attendee,
+            status: "accepted",
+            token: "wrong-token",
+            createdAt: 1_785_775_300
+        )
+        XCTAssertThrowsError(try SharedCalendarRSVPContract.decodeOrganizerResponse(
+            wrongToken,
+            event: taskifyEvent,
+            board: board
+        ))
+    }
+
     func testCalendarInvitationPlanRetainsExistingTokensAndInvitesOnlyNewAttendees() throws {
         let organizer = try identity(senderPrivateKey)
         let existingAttendee = try identity(recipientPrivateKey)

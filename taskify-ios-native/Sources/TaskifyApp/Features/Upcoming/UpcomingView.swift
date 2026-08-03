@@ -2594,6 +2594,20 @@ private struct TaskifyEventEditorSheet: View {
                     onAdd: { showingAttendeePicker = true }
                 )
 
+                if !selectedAttendeePublicKeys.isEmpty {
+                    TaskifyEventResponsesSection(
+                        responses: model.taskifyEventRSVPs(for: event.id),
+                        contacts: model.nostrContacts,
+                        isRefreshing: model.isRefreshingTaskifyEventRSVPs(for: event.id),
+                        refreshIsUnavailable: model.taskifyEventRSVPRefreshIsUnavailable(
+                            for: event.id
+                        ),
+                        onRefresh: {
+                            Task { await model.refreshTaskifyEventRSVPs(eventID: event.id) }
+                        }
+                    )
+                }
+
                 if canEditSeriesRecurrence {
                     TaskifyEventRepeatSection(
                         choice: $repeatChoice,
@@ -2696,6 +2710,9 @@ private struct TaskifyEventEditorSheet: View {
             }
             resolveSelectedColumn()
         }
+        .task(id: event.canonicalAddress) {
+            await model.refreshTaskifyEventRSVPs(eventID: event.id)
+        }
         .onChange(of: boardID) { _, _ in resolveSelectedColumn() }
         .onChange(of: startDate) { _, newStart in
             if endDate < newStart {
@@ -2776,6 +2793,119 @@ private struct TaskifyEventEditorSheet: View {
         let hour = parts.first.flatMap { Int($0) } ?? 9
         let minute = parts.dropFirst().first.flatMap { Int($0) } ?? 0
         return Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date()) ?? Date()
+    }
+}
+
+private struct TaskifyEventResponsesSection: View {
+    let responses: [TaskifyEventRSVPResponse]
+    let contacts: [NostrContact]
+    let isRefreshing: Bool
+    let refreshIsUnavailable: Bool
+    let onRefresh: () -> Void
+
+    private var countsLabel: String {
+        let accepted = responses.count { $0.status == .accepted }
+        let tentative = responses.count { $0.status == .tentative }
+        let declined = responses.count { $0.status == .declined }
+        return "Accepted \(accepted) · Tentative \(tentative) · Declined \(declined)"
+    }
+
+    var body: some View {
+        Section {
+            Text(countsLabel)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if responses.isEmpty {
+                Text("No responses yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(responses) { response in
+                    responseRow(response)
+                }
+            }
+        } header: {
+            HStack {
+                Text("Responses")
+                Spacer()
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Refreshing event responses")
+                } else {
+                    Button(action: onRefresh) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh event responses")
+                }
+            }
+        } footer: {
+            if refreshIsUnavailable {
+                Text("Responses could not be refreshed. Your last available results are still shown.")
+            } else {
+                Text("Responses are authenticated with each invitee's private event token.")
+            }
+        }
+    }
+
+    private func responseRow(_ response: TaskifyEventRSVPResponse) -> some View {
+        let contact = contacts.first { $0.publicKey == response.authorPublicKey }
+        return HStack(spacing: 12) {
+            TaskifyEventContactIcon(contact: contact)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(contact?.displayName ?? shortenedPublicKey(response.authorPublicKey))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                if let note = response.note {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            Label(responseLabel(response), systemImage: responseSymbol(response.status))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(responseColor(response.status))
+                .labelStyle(.titleAndIcon)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func responseLabel(_ response: TaskifyEventRSVPResponse) -> String {
+        let status = switch response.status {
+        case .accepted: "Accepted"
+        case .tentative: "Tentative"
+        case .declined: "Declined"
+        case .pending: "Pending"
+        case .deleted: "Removed"
+        }
+        guard let freeBusy = response.freeBusy else { return status }
+        return "\(status) · \(freeBusy == .busy ? "Busy" : "Free")"
+    }
+
+    private func responseSymbol(_ status: SharedInboxItemStatus) -> String {
+        switch status {
+        case .accepted: "checkmark.circle.fill"
+        case .tentative: "questionmark.circle.fill"
+        case .declined: "xmark.circle.fill"
+        case .pending: "clock"
+        case .deleted: "trash"
+        }
+    }
+
+    private func responseColor(_ status: SharedInboxItemStatus) -> Color {
+        switch status {
+        case .accepted: .green
+        case .tentative: .orange
+        case .declined: .red
+        case .pending, .deleted: TaskifyTheme.secondaryText
+        }
+    }
+
+    private func shortenedPublicKey(_ value: String) -> String {
+        value.count > 18 ? "\(value.prefix(10))…\(value.suffix(6))" : value
     }
 }
 

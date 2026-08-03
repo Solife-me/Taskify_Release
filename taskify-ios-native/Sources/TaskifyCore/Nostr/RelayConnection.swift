@@ -227,6 +227,22 @@ public actor NostrRelayConnection {
         ])
     }
 
+    public func subscribeToTaskifyEventRSVPs(
+        id: String,
+        canonicalAddress: String,
+        limit: Int = 200
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [SharedCalendarRSVPContract.eventKind],
+                "#a": [canonicalAddress],
+                "limit": min(max(1, limit), 500),
+            ] as [String: Any],
+        ])
+    }
+
     public func closeSubscription(id: String) async throws {
         try await send(["CLOSE", id])
     }

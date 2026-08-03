@@ -305,6 +305,9 @@ final class AppModel {
     private(set) var isRefreshingContacts = false
     private(set) var contactSyncStatus = "Preparing private contact sync"
     private(set) var accountBackupMessage: String?
+    private(set) var taskifyEventRSVPsByEventID: [String: [TaskifyEventRSVPResponse]] = [:]
+    private(set) var refreshingTaskifyEventRSVPIDs: Set<String> = []
+    private(set) var unavailableTaskifyEventRSVPIDs: Set<String> = []
     var pendingAccountBackup: NostrAppBackupPayload?
     var errorMessage: String?
     private(set) var showsFirstRunOnboarding = false
@@ -396,6 +399,18 @@ final class AppModel {
     var syncIsOnline: Bool {
         if case .online = syncState { return true }
         return false
+    }
+
+    func taskifyEventRSVPs(for eventID: String) -> [TaskifyEventRSVPResponse] {
+        taskifyEventRSVPsByEventID[eventID] ?? []
+    }
+
+    func isRefreshingTaskifyEventRSVPs(for eventID: String) -> Bool {
+        refreshingTaskifyEventRSVPIDs.contains(eventID)
+    }
+
+    func taskifyEventRSVPRefreshIsUnavailable(for eventID: String) -> Bool {
+        unavailableTaskifyEventRSVPIDs.contains(eventID)
     }
 
     // MARK: - App relays
@@ -1172,6 +1187,36 @@ final class AppModel {
         guard !changes.allEventIDs.isEmpty else { return }
         synchronizeTaskifyEvents(changes.allEventIDs)
         refreshNotifications(requestPermission: false)
+    }
+
+    func refreshTaskifyEventRSVPs(eventID: String) async {
+        guard !refreshingTaskifyEventRSVPIDs.contains(eventID),
+              let event = snapshot.taskifyEvents?.first(where: {
+                  $0.id == eventID && !$0.isReadOnly && !$0.isDeleted
+              }),
+              let boardID = event.boardID,
+              let board = snapshot.boards.first(where: { $0.id == boardID }),
+              !(event.participants ?? []).isEmpty else { return }
+        refreshingTaskifyEventRSVPIDs.insert(eventID)
+        unavailableTaskifyEventRSVPIDs.remove(eventID)
+        defer { refreshingTaskifyEventRSVPIDs.remove(eventID) }
+
+        let relayURLs = TaskifyRelayURL.normalizedList(
+            (event.relayURLs ?? [])
+                + board.effectiveRelayURLs
+                + appRelays
+                + sharedInboxRelayURLs
+        )
+        let result = await TaskifyEventRSVPResolver.fetch(
+            event: event,
+            board: board,
+            relayURLs: relayURLs
+        )
+        guard result.reachedRelay else {
+            unavailableTaskifyEventRSVPIDs.insert(eventID)
+            return
+        }
+        taskifyEventRSVPsByEventID[eventID] = result.responses
     }
 
     @discardableResult

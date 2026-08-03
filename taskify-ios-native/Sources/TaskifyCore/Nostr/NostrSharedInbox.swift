@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum NostrPublicKey {
@@ -1231,7 +1232,7 @@ public enum SharedCalendarRSVPContract {
         let payload = CalendarRSVPPayload(
             version: 1,
             eventID: invite.eventID,
-            status: status.rawValue,
+            status: status,
             inviteToken: invite.inviteToken
         )
         let plaintext = try JSONEncoder().encode(payload)
@@ -1251,19 +1252,266 @@ public enum SharedCalendarRSVPContract {
             content: encrypted
         )
     }
+
+    public static func decodeOrganizerResponse(
+        _ responseEvent: NostrEvent,
+        event: TaskifyEvent,
+        board: Board
+    ) throws -> TaskifyEventRSVPResponse {
+        guard responseEvent.kind == eventKind,
+              responseEvent.verify(),
+              event.boardID == board.id,
+              let authorPublicKey = NostrPublicKey.parse(responseEvent.publicKey),
+              !responseEvent.content.isEmpty else {
+            throw TaskifyEventRSVPError.invalidResponse
+        }
+        let normalizedAuthor = authorPublicKey.hexString
+        let boardPublicKey = try BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID)
+        let canonicalAddress = "\(TaskifyCalendarEventCodec.canonicalEventKind):\(boardPublicKey.hexString):\(event.id)"
+        guard event.canonicalAddress == canonicalAddress,
+              responseEvent.firstTagValue(named: "a") == canonicalAddress else {
+            throw TaskifyEventRSVPError.wrongEvent
+        }
+
+        let plaintext = try NIP44V2.decrypt(
+            responseEvent.content,
+            privateKey: BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID),
+            publicKey: authorPublicKey
+        )
+        let payload = try JSONDecoder().decode(CalendarRSVPPayload.self, from: plaintext)
+        guard payload.version == 1,
+              payload.eventID.trimmingCharacters(in: .whitespacesAndNewlines) == event.id,
+              payload.status == .accepted || payload.status == .declined || payload.status == .tentative else {
+            throw TaskifyEventRSVPError.invalidResponse
+        }
+        let token = payload.inviteToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { throw TaskifyEventRSVPError.invalidToken }
+        let tokens = event.inviteTokens ?? [:]
+        let expectedToken = tokens[normalizedAuthor]
+        let derivedToken = boardInviteToken(
+            boardID: board.effectiveNostrBoardID,
+            attendeePublicKey: normalizedAuthor
+        )
+        guard token == expectedToken || tokens.values.contains(token) || token == derivedToken else {
+            throw TaskifyEventRSVPError.invalidToken
+        }
+
+        return TaskifyEventRSVPResponse(
+            eventID: event.id,
+            authorPublicKey: normalizedAuthor,
+            createdAt: responseEvent.createdAt,
+            status: payload.status,
+            freeBusy: payload.freeBusy,
+            note: payload.note?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            inviteToken: token
+        )
+    }
+
+    public static func latestResponses(
+        _ responses: [TaskifyEventRSVPResponse]
+    ) -> [TaskifyEventRSVPResponse] {
+        var latestByAuthor: [String: TaskifyEventRSVPResponse] = [:]
+        for response in responses {
+            guard let existing = latestByAuthor[response.authorPublicKey] else {
+                latestByAuthor[response.authorPublicKey] = response
+                continue
+            }
+            if response.createdAt > existing.createdAt ||
+                (response.createdAt == existing.createdAt && response.inviteToken > existing.inviteToken) {
+                latestByAuthor[response.authorPublicKey] = response
+            }
+        }
+        return latestByAuthor.values.sorted { $0.authorPublicKey < $1.authorPublicKey }
+    }
+
+    private static func boardInviteToken(
+        boardID: String,
+        attendeePublicKey: String
+    ) -> String {
+        let label = Data("taskify-board-rsvp-token-v1".utf8)
+        let input = Data("\(boardID):\(attendeePublicKey)".utf8)
+        return Data(SHA256.hash(data: label + input)).base64EncodedString()
+    }
+}
+
+public enum TaskifyEventFreeBusyStatus: String, Codable, Equatable, Sendable {
+    case free
+    case busy
+}
+
+public struct TaskifyEventRSVPResponse: Identifiable, Codable, Equatable, Sendable {
+    public var id: String { authorPublicKey }
+    public let eventID: String
+    public let authorPublicKey: String
+    public let createdAt: Int
+    public let status: SharedInboxItemStatus
+    public let freeBusy: TaskifyEventFreeBusyStatus?
+    public let note: String?
+    public let inviteToken: String
+
+    public init(
+        eventID: String,
+        authorPublicKey: String,
+        createdAt: Int,
+        status: SharedInboxItemStatus,
+        freeBusy: TaskifyEventFreeBusyStatus? = nil,
+        note: String? = nil,
+        inviteToken: String
+    ) {
+        self.eventID = eventID
+        self.authorPublicKey = authorPublicKey
+        self.createdAt = createdAt
+        self.status = status
+        self.freeBusy = freeBusy
+        self.note = note
+        self.inviteToken = inviteToken
+    }
+}
+
+public enum TaskifyEventRSVPError: LocalizedError, Equatable {
+    case invalidResponse
+    case invalidToken
+    case wrongEvent
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidResponse: "This event response is invalid."
+        case .invalidToken: "This event response does not match an invitation."
+        case .wrongEvent: "This response belongs to another event."
+        }
+    }
 }
 
 private struct CalendarRSVPPayload: Codable {
     var version: Int
     var eventID: String
-    var status: String
+    var status: SharedInboxItemStatus
     var inviteToken: String
+    var freeBusy: TaskifyEventFreeBusyStatus? = nil
+    var note: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case version = "v"
         case eventID = "eventId"
         case status
         case inviteToken
+        case freeBusy = "fb"
+        case note
+    }
+}
+
+public struct TaskifyEventRSVPFetchResult: Equatable, Sendable {
+    public let responses: [TaskifyEventRSVPResponse]
+    public let reachedRelay: Bool
+
+    public init(responses: [TaskifyEventRSVPResponse], reachedRelay: Bool) {
+        self.responses = responses
+        self.reachedRelay = reachedRelay
+    }
+}
+
+public enum TaskifyEventRSVPResolver {
+    public static func fetch(
+        event: TaskifyEvent,
+        board: Board,
+        relayURLs: [String],
+        timeout: Duration = .seconds(3)
+    ) async -> TaskifyEventRSVPFetchResult {
+        let relays = TaskifyRelayURL.normalizedList(relayURLs)
+        guard !event.canonicalAddress.isEmpty, !relays.isEmpty else {
+            return TaskifyEventRSVPFetchResult(responses: [], reachedRelay: false)
+        }
+        let results = await withTaskGroup(of: RelayFetch.self) { group in
+            for relayURL in relays {
+                group.addTask {
+                    await fetchEvents(
+                        relayURL: relayURL,
+                        canonicalAddress: event.canonicalAddress,
+                        timeout: timeout
+                    )
+                }
+            }
+            var values: [RelayFetch] = []
+            for await result in group { values.append(result) }
+            return values
+        }
+
+        var eventsByID: [String: NostrEvent] = [:]
+        for result in results {
+            for responseEvent in result.events {
+                eventsByID[responseEvent.id] = responseEvent
+            }
+        }
+        let decoded = eventsByID.values.compactMap {
+            try? SharedCalendarRSVPContract.decodeOrganizerResponse(
+                $0,
+                event: event,
+                board: board
+            )
+        }
+        return TaskifyEventRSVPFetchResult(
+            responses: SharedCalendarRSVPContract.latestResponses(decoded),
+            reachedRelay: results.contains(where: \.reachedRelay)
+        )
+    }
+
+    private struct RelayFetch: Sendable {
+        var events: [NostrEvent]
+        var reachedRelay: Bool
+    }
+
+    private static func fetchEvents(
+        relayURL: String,
+        canonicalAddress: String,
+        timeout: Duration
+    ) async -> RelayFetch {
+        let connection = NostrRelayConnection(relayURL: relayURL)
+        let subscriptionID = "taskify-event-rsvps-\(UUID().uuidString)"
+        let stream = connection.messages()
+        do {
+            try await connection.connect()
+            try await connection.subscribeToTaskifyEventRSVPs(
+                id: subscriptionID,
+                canonicalAddress: canonicalAddress
+            )
+        } catch {
+            await connection.disconnect()
+            return RelayFetch(events: [], reachedRelay: false)
+        }
+
+        let result = await withTaskGroup(of: RelayFetch.self) { group in
+            group.addTask {
+                var events: [NostrEvent] = []
+                for await message in stream {
+                    guard !Task.isCancelled else {
+                        return RelayFetch(events: events, reachedRelay: false)
+                    }
+                    switch message {
+                    case .event(let id, let event) where id == subscriptionID:
+                        events.append(event)
+                    case .endOfStoredEvents(let id) where id == subscriptionID:
+                        return RelayFetch(events: events, reachedRelay: true)
+                    case .closed(let id, _) where id == subscriptionID:
+                        return RelayFetch(events: events, reachedRelay: false)
+                    case .disconnected:
+                        return RelayFetch(events: events, reachedRelay: false)
+                    default:
+                        continue
+                    }
+                }
+                return RelayFetch(events: events, reachedRelay: false)
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return RelayFetch(events: [], reachedRelay: false)
+            }
+            let first = await group.next() ?? RelayFetch(events: [], reachedRelay: false)
+            group.cancelAll()
+            return first
+        }
+        try? await connection.closeSubscription(id: subscriptionID)
+        await connection.disconnect()
+        return result
     }
 }
 
