@@ -163,6 +163,78 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(decodedTask.task.note, task.note)
     }
 
+    func testTemplateSnapshotRehomesTaskifyEventsUnderTheIndependentBoardKey() throws {
+        let source = Board(
+            id: "local-family-board",
+            name: "Family Week",
+            kind: .week,
+            nostrBoardID: "4f35858d-066b-4f2d-a2f4-235794c77780",
+            relayURLs: ["wss://relay.solife.me"]
+        )
+        let templateID = "f1a75d28-1ce5-489a-b53a-1e2a447b0cf7"
+        let template = source.templateSnapshot(boardID: templateID)
+        let event = TaskifyEvent(
+            id: "event-1",
+            boardID: source.id,
+            title: "Family dinner",
+            details: "Bring dessert",
+            schedule: .time,
+            startISO: "2026-08-04T23:00:00Z",
+            endISO: "2026-08-05T00:00:00Z",
+            canonicalAddress: "30310:old:event-1",
+            viewAddress: "30311:old:event-1",
+            eventKey: Data(repeating: 7, count: 32).base64EncodedString(),
+            inviteToken: "",
+            relayURLs: source.effectiveRelayURLs,
+            rsvpStatus: .accepted,
+            readOnly: false,
+            deleted: false,
+            nostrUpdatedAt: 1_700_000_000
+        )
+
+        let snapshot = try XCTUnwrap(TaskifyEventTemplateSnapshot.make(
+            event: event,
+            sourceBoard: source,
+            templateBoard: template
+        ))
+        XCTAssertEqual(snapshot.boardID, template.id)
+        XCTAssertEqual(snapshot.title, event.title)
+        XCTAssertEqual(snapshot.details, event.details)
+        XCTAssertEqual(snapshot.eventKey, event.eventKey)
+        XCTAssertEqual(snapshot.canonicalAddress, "")
+        XCTAssertEqual(snapshot.viewAddress, "")
+        XCTAssertEqual(snapshot.relayURLs, template.effectiveRelayURLs)
+        XCTAssertNil(snapshot.nostrUpdatedAt)
+
+        let pair = try TaskifyCalendarEventCodec.eventPair(
+            event: snapshot,
+            board: template,
+            createdAt: 1_700_000_100
+        )
+        let joinedTemplate = Board(
+            id: "joined-template",
+            name: "Shared Board",
+            kind: .week,
+            nostrBoardID: templateID,
+            relayURLs: template.effectiveRelayURLs
+        )
+        let decoded = try TaskifyCalendarEventCodec.decodeCanonicalEvent(
+            pair.canonical,
+            board: joinedTemplate
+        )
+        XCTAssertEqual(decoded.event.boardID, joinedTemplate.id)
+        XCTAssertEqual(decoded.event.title, event.title)
+        XCTAssertEqual(decoded.event.details, event.details)
+
+        var external = event
+        external.readOnly = true
+        XCTAssertNil(TaskifyEventTemplateSnapshot.make(
+            event: external,
+            sourceBoard: source,
+            templateBoard: template
+        ))
+    }
+
     func testBoardDerivationMatchesPWAReference() throws {
         let boardID = "test-board-id"
 

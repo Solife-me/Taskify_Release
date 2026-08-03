@@ -2350,12 +2350,17 @@ private struct CompoundBoardManagerSheet: View {
     }
 }
 
-private struct BoardQRJoinFlow: View {
+struct BoardQRJoinFlow: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    let onJoined: (() -> Void)?
     @State private var scannedShare: BoardSharePayload?
     @State private var rawShare = ""
     @State private var scanError: String?
+
+    init(onJoined: (() -> Void)? = nil) {
+        self.onJoined = onJoined
+    }
 
     private var scannerAvailable: Bool {
         DataScannerViewController.isSupported && DataScannerViewController.isAvailable
@@ -2454,6 +2459,7 @@ private struct BoardQRJoinFlow: View {
 
                 Button {
                     guard model.joinSharedBoard(shareText: rawShare, name: "") else { return }
+                    onJoined?()
                     dismiss()
                 } label: {
                     Label("Join live board", systemImage: "person.2.badge.plus")

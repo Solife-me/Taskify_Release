@@ -578,6 +578,7 @@ struct BoardsView: View {
     @AppStorage(TaskPresentationSettings.completedTabKey)
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var showCompleted = false
+    @State private var showingAddBoard = false
     @State private var showingAddList = false
     @State private var showingBoardShare = false
     @State private var showingBoardUpcoming = false
@@ -668,6 +669,10 @@ struct BoardsView: View {
         }
         .sheet(isPresented: $showingVoiceDictation) {
             VoiceDictationSheet()
+                .environment(model)
+        }
+        .sheet(isPresented: $showingAddBoard) {
+            BoardAddSheet()
                 .environment(model)
         }
         .sheet(isPresented: $showingSelectionMoveSheet) {
@@ -904,6 +909,14 @@ struct BoardsView: View {
                                     Text(board.name)
                                 }
                             }
+                        }
+
+                        Divider()
+
+                        Button {
+                            showingAddBoard = true
+                        } label: {
+                            Label("Add or join board", systemImage: "plus")
                         }
                     } label: {
                         HStack(spacing: 8) {
@@ -1416,6 +1429,366 @@ private struct BoardUpcomingSheet: View {
         if calendar.isDateInToday(date) { return "Today" }
         if calendar.isDateInTomorrow(date) { return "Tomorrow" }
         return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+    }
+}
+
+/// PWA-familiar board entry point: create a fresh board or join an existing share without
+/// detouring through Settings. Board management remains in Settings after the board is added.
+private struct BoardAddSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
+    @State private var boardName = ""
+    @State private var boardKind: BoardKind = .list
+    @State private var selectedChildBoardIDs: Set<String> = []
+    @State private var shareText = ""
+    @State private var customSharedName = ""
+    @State private var statusMessage: String?
+    @State private var statusIsError = false
+    @State private var showingScanner = false
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case boardName
+        case share
+    }
+
+    private var trimmedBoardName: String {
+        boardName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedShareText: String {
+        shareText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var availableCompoundChildren: [Board] {
+        model.visibleBoards.filter { $0.kind == .list }
+    }
+
+    private var decodedShare: BoardSharePayload? {
+        BoardShareContract.decode(trimmedShareText)
+    }
+
+    private var canCreate: Bool {
+        !trimmedBoardName.isEmpty && (boardKind != .compound || !selectedChildBoardIDs.isEmpty)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    createCard
+                    joinCard
+                }
+                .padding(18)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Add Board")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingScanner) {
+            BoardQRJoinFlow(onJoined: {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                dismiss()
+            })
+            .environment(model)
+        }
+    }
+
+    private var createCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardTitle(
+                "Create board",
+                subtitle: "Start fresh. New boards sync through Nostr and can be shared anytime.",
+                systemImage: "square.grid.2x2.fill"
+            )
+
+            TextField("New board name", text: $boardName)
+                .textInputAutocapitalization(.words)
+                .submitLabel(.done)
+                .focused($focusedField, equals: .boardName)
+                .onSubmit(createBoard)
+                .padding(.horizontal, 15)
+                .frame(height: 50)
+                .background(
+                    TaskifyTheme.raisedFill,
+                    in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                        .stroke(TaskifyTheme.border, lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("BOARD TYPE")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                Picker("Board type", selection: $boardKind) {
+                    Text("Weekly").tag(BoardKind.week)
+                    Text("Lists").tag(BoardKind.list)
+                    Text("Compound").tag(BoardKind.compound)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            if boardKind == .compound {
+                compoundBoardPicker
+            }
+
+            Button(action: createBoard) {
+                Label("Create board", systemImage: "plus")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canCreate)
+        }
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var compoundBoardPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("LINKED LIST BOARDS")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            if availableCompoundChildren.isEmpty {
+                Text("Create a list board before creating a compound board.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            } else {
+                ForEach(availableCompoundChildren) { board in
+                    Button {
+                        if selectedChildBoardIDs.contains(board.id) {
+                            selectedChildBoardIDs.remove(board.id)
+                        } else {
+                            selectedChildBoardIDs.insert(board.id)
+                        }
+                    } label: {
+                        HStack(spacing: 11) {
+                            Image(
+                                systemName: selectedChildBoardIDs.contains(board.id)
+                                    ? "checkmark.circle.fill"
+                                    : "circle"
+                            )
+                            .foregroundStyle(
+                                selectedChildBoardIDs.contains(board.id)
+                                    ? TaskifyTheme.accent
+                                    : TaskifyTheme.secondaryText
+                            )
+                            Text(board.name)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Spacer()
+                            Text("\(board.columns.count) lists")
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 44)
+                        .background(
+                            TaskifyTheme.raisedFill,
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var joinCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardTitle(
+                "Join board",
+                subtitle: "Paste a Taskify board ID or share, or scan its QR code.",
+                systemImage: "person.2.badge.plus"
+            )
+
+            TextField("Board ID or Taskify share", text: $shareText, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.system(.callout, design: .monospaced))
+                .lineLimit(2...5)
+                .submitLabel(.go)
+                .focused($focusedField, equals: .share)
+                .onSubmit(joinBoard)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 12)
+                .frame(minHeight: 50)
+                .background(
+                    TaskifyTheme.raisedFill,
+                    in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                        .stroke(TaskifyTheme.border, lineWidth: 1)
+                )
+                .onChange(of: shareText) { _, _ in
+                    statusMessage = nil
+                    statusIsError = false
+                }
+
+            HStack(spacing: 10) {
+                Button(action: pasteBoardShare) {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    focusedField = nil
+                    showingScanner = true
+                } label: {
+                    Label("Scan QR", systemImage: "qrcode.viewfinder")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if let decodedShare {
+                sharePreview(decodedShare)
+            }
+
+            TextField("Board name (optional)", text: $customSharedName)
+                .textInputAutocapitalization(.words)
+                .padding(.horizontal, 15)
+                .frame(height: 48)
+                .background(
+                    TaskifyTheme.raisedFill,
+                    in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+                )
+
+            if let statusMessage {
+                Label(
+                    statusMessage,
+                    systemImage: statusIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(statusIsError ? Color.orange : Color.green)
+            }
+
+            Button(action: joinBoard) {
+                Label("Join board", systemImage: "person.2.badge.plus")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(trimmedShareText.isEmpty || decodedShare == nil)
+        }
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func cardTitle(_ title: String, subtitle: String, systemImage: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .foregroundStyle(TaskifyTheme.accent)
+                .frame(width: 30)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+    }
+
+    private func sharePreview(_ share: BoardSharePayload) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(share.boardName ?? "Shared Board", systemImage: "checkmark.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+            Text(share.boardID)
+                .font(.caption2.monospaced())
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .lineLimit(1)
+            if !share.relayURLs.isEmpty {
+                Text("\(share.relayURLs.count) relay\(share.relayURLs.count == 1 ? "" : "s") included")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(13)
+        .background(
+            TaskifyTheme.raisedFill,
+            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+        )
+    }
+
+    private func createBoard() {
+        guard canCreate else { return }
+        let created: Bool
+        switch boardKind {
+        case .week:
+            created = model.createWeekBoard(name: trimmedBoardName)
+        case .list:
+            created = model.createListBoard(name: trimmedBoardName)
+        case .compound:
+            let childIDs = availableCompoundChildren
+                .filter { selectedChildBoardIDs.contains($0.id) }
+                .map(\.id)
+            created = model.createCompoundBoard(name: trimmedBoardName, childBoardIDs: childIDs)
+        case .bible:
+            created = false
+        }
+        guard created else {
+            statusMessage = "The board could not be created."
+            statusIsError = true
+            return
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        dismiss()
+    }
+
+    private func pasteBoardShare() {
+        guard let value = UIPasteboard.general.string?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !value.isEmpty else {
+            statusMessage = "The clipboard is empty."
+            statusIsError = true
+            return
+        }
+        shareText = value
+        if let share = BoardShareContract.decode(value) {
+            statusMessage = share.boardName.map { "Found “\($0)”." }
+            statusIsError = false
+        } else {
+            statusMessage = "Paste a valid Taskify board share or board ID."
+            statusIsError = true
+        }
+        focusedField = .share
+    }
+
+    private func joinBoard() {
+        guard decodedShare != nil, !trimmedShareText.isEmpty else {
+            statusMessage = "Enter a valid Taskify board share or board ID."
+            statusIsError = true
+            return
+        }
+        guard model.joinSharedBoard(shareText: trimmedShareText, name: customSharedName) else {
+            statusMessage = model.errorMessage ?? "The board could not be joined."
+            statusIsError = true
+            return
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        dismiss()
     }
 }
 
@@ -1965,9 +2338,18 @@ private struct BoardShareSheet: View {
                     }
 
                     if let templateShare, shareMode == .template {
-                        Label(templateStatus(templateShare), systemImage: templateShare.failedTaskCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        Label(
+                            templateStatus(templateShare),
+                            systemImage: templateShare.failedTaskCount == 0 && templateShare.failedEventCount == 0
+                                ? "checkmark.circle.fill"
+                                : "exclamationmark.triangle.fill"
+                        )
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(templateShare.failedTaskCount == 0 ? Color.green : Color.orange)
+                            .foregroundStyle(
+                                templateShare.failedTaskCount == 0 && templateShare.failedEventCount == 0
+                                    ? Color.green
+                                    : Color.orange
+                            )
                             .multilineTextAlignment(.center)
                     }
 
@@ -2062,13 +2444,22 @@ private struct BoardShareSheet: View {
     }
 
     private func templateStatus(_ result: BoardTemplateShareResult) -> String {
-        if result.failedTaskCount > 0 {
-            return "Template ready, but \(result.failedTaskCount) task\(result.failedTaskCount == 1 ? "" : "s") could not be added."
+        let failures = result.failedTaskCount + result.failedEventCount
+        if failures > 0 {
+            return "Template ready, but \(failures) item\(failures == 1 ? "" : "s") could not be added."
         }
-        if result.queuedTaskCount == 0 {
+        let taskLabel = "\(result.queuedTaskCount) task\(result.queuedTaskCount == 1 ? "" : "s")"
+        let eventLabel = "\(result.queuedEventCount) event\(result.queuedEventCount == 1 ? "" : "s")"
+        if result.queuedTaskCount == 0, result.queuedEventCount == 0 {
             return "Empty template ready to share. Publishing in the background."
         }
-        return "Template ready with \(result.queuedTaskCount) task\(result.queuedTaskCount == 1 ? "" : "s"). Publishing in the background."
+        if result.queuedEventCount == 0 {
+            return "Template ready with \(taskLabel). Publishing in the background."
+        }
+        if result.queuedTaskCount == 0 {
+            return "Template ready with \(eventLabel). Publishing in the background."
+        }
+        return "Template ready with \(taskLabel) and \(eventLabel). Publishing in the background."
     }
 
     private func generateTemplate() {

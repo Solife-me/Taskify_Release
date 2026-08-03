@@ -60,6 +60,38 @@ public struct TaskifyCalendarEventPair: Equatable, Sendable {
     }
 }
 
+/// Rehomes an organizer-owned Taskify event into an independent board template.
+///
+/// A template has a different local board identifier and a different Nostr board key. Clearing
+/// the old addresses is therefore required before `TaskifyCalendarEventCodec` signs the two new
+/// records. Read-only invitations and tombstones are deliberately omitted, matching the PWA's
+/// rule that a board template contains only the source board's active, native events.
+public enum TaskifyEventTemplateSnapshot {
+    public static func make(
+        event: TaskifyEvent,
+        sourceBoard: Board,
+        templateBoard: Board
+    ) -> TaskifyEvent? {
+        guard event.boardID == sourceBoard.id,
+              !event.isReadOnly,
+              !event.isDeleted,
+              sourceBoard.kind == templateBoard.kind,
+              templateBoard.kind == .week || templateBoard.kind == .list else {
+            return nil
+        }
+
+        var snapshot = event
+        snapshot.boardID = templateBoard.id
+        snapshot.canonicalAddress = ""
+        snapshot.viewAddress = ""
+        snapshot.relayURLs = templateBoard.effectiveRelayURLs
+        snapshot.sourceUpdatedAt = nil
+        snapshot.readOnly = false
+        snapshot.nostrUpdatedAt = nil
+        return snapshot
+    }
+}
+
 public struct TaskSyncPayload: Codable, Equatable, Sendable {
     public var title: String
     public var priority: Int?

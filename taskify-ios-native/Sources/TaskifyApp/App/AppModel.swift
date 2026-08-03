@@ -6,6 +6,8 @@ struct BoardTemplateShareResult: Sendable {
     let board: Board
     let queuedTaskCount: Int
     let failedTaskCount: Int
+    let queuedEventCount: Int
+    let failedEventCount: Int
 }
 
 enum BoardTemplateShareError: LocalizedError {
@@ -3080,6 +3082,42 @@ final class AppModel {
             }
         }
 
+        var queuedEventCount = 0
+        var failedEventCount = 0
+        let boardEvents = (snapshot.taskifyEvents ?? []).filter {
+            $0.boardID == sourceBoard.id && !$0.isReadOnly && !$0.isDeleted
+        }
+        for event in boardEvents {
+            do {
+                guard let templateEvent = TaskifyEventTemplateSnapshot.make(
+                    event: event,
+                    sourceBoard: sourceBoard,
+                    templateBoard: templateBoard
+                ) else {
+                    failedEventCount += 1
+                    continue
+                }
+                let pair = try TaskifyCalendarEventCodec.eventPair(
+                    event: templateEvent,
+                    board: templateBoard,
+                    createdAt: templateCreatedAt
+                )
+                publishRequests.append(TaskSyncPublishRequest(
+                    event: pair.canonical,
+                    board: templateBoard,
+                    taskID: "event:\(event.id):canonical"
+                ))
+                publishRequests.append(TaskSyncPublishRequest(
+                    event: pair.view,
+                    board: templateBoard,
+                    taskID: "event:\(event.id):view"
+                ))
+                queuedEventCount += 1
+            } catch {
+                failedEventCount += 1
+            }
+        }
+
         try await syncEngine.queueForPublish(publishRequests)
         Task { [syncEngine] in
             await syncEngine.flushQueuedPublishes()
@@ -3088,7 +3126,9 @@ final class AppModel {
         return BoardTemplateShareResult(
             board: templateBoard,
             queuedTaskCount: queuedTaskCount,
-            failedTaskCount: failedTaskCount
+            failedTaskCount: failedTaskCount,
+            queuedEventCount: queuedEventCount,
+            failedEventCount: failedEventCount
         )
     }
 
