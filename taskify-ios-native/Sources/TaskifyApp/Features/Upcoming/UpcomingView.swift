@@ -2513,43 +2513,73 @@ private struct TaskifyEventEditorSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Event") {
+                Section {
                     TextField("Title", text: $title)
-                    Picker("Board", selection: $boardID) {
+                    Picker(selection: $boardID) {
                         ForEach(eventBoards) { board in
                             Text(board.name).tag(board.id)
                         }
+                    } label: {
+                        Label("Board", systemImage: "square.grid.2x2")
                     }
+                    .pickerStyle(.navigationLink)
                     if selectedEventBoard?.kind == .list {
-                        Picker("List", selection: $columnID) {
+                        Picker(selection: $columnID) {
                             ForEach(selectedBoardColumns) { column in
                                 Text(column.name).tag(column.id)
                             }
+                        } label: {
+                            Label("List", systemImage: "list.bullet")
                         }
+                        .pickerStyle(.navigationLink)
                     }
-                    Toggle("All-day", isOn: $allDay)
+                }
+
+                Section("Date & Time") {
+                    Toggle(isOn: $allDay) {
+                        Label("All-day", systemImage: "calendar")
+                    }
                     DatePicker(
-                        "Starts",
                         selection: $startDate,
                         displayedComponents: allDay ? [.date] : [.date, .hourAndMinute]
-                    )
+                    ) {
+                        Label("Starts", systemImage: "calendar")
+                    }
                     .environment(\.timeZone, selectedTimeZone)
                     DatePicker(
-                        "Ends",
                         selection: $endDate,
                         in: startDate...,
                         displayedComponents: allDay ? [.date] : [.date, .hourAndMinute]
-                    )
+                    ) {
+                        Label("Ends", systemImage: "clock")
+                    }
                     .environment(\.timeZone, selectedTimeZone)
                     if !allDay {
                         Button {
                             showingTimeZonePicker = true
                         } label: {
-                            LabeledContent("Time Zone", value: timeZoneID)
+                            HStack {
+                                Label("Time Zone", systemImage: "globe")
+                                Spacer(minLength: 8)
+                                Text(timeZoneID)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                         .foregroundStyle(TaskifyTheme.primaryText)
                     }
-                    TextField("Location (optional)", text: $location)
+                }
+
+                Section("Location") {
+                    HStack {
+                        Label("Location", systemImage: "mappin.and.ellipse")
+                        Spacer(minLength: 8)
+                        TextField("Optional", text: $location)
+                            .multilineTextAlignment(.trailing)
+                    }
                 }
 
                 TaskifyEventRemindersSection(
@@ -3039,13 +3069,18 @@ private struct TaskifyEventRepeatSection: View {
 
     var body: some View {
         Section("Repeat") {
-            Picker("Repeat", selection: $choice) {
+            Picker(selection: $choice) {
                 ForEach(availableChoices) { option in
                     Text(option.label).tag(option)
                 }
+            } label: {
+                Label("Repeat", systemImage: "repeat")
             }
+            .pickerStyle(.navigationLink)
             if choice != .never {
-                Toggle("End repeat", isOn: $hasEnd)
+                Toggle(isOn: $hasEnd) {
+                    Label("End Repeat", systemImage: "calendar.badge.minus")
+                }
                 if hasEnd {
                     DatePicker(
                         "End date",
@@ -3076,10 +3111,14 @@ private struct TaskifyEventRemindersSection: View {
     var body: some View {
         Section("Reminders") {
             ForEach(presets) { reminder in
-                Toggle(reminder.eventLabel, isOn: binding(for: reminder))
+                Toggle(isOn: binding(for: reminder)) {
+                    Label(reminder.eventLabel, systemImage: "bell")
+                }
             }
             if isAllDay {
-                DatePicker("Reminder time", selection: $reminderTime, displayedComponents: .hourAndMinute)
+                DatePicker(selection: $reminderTime, displayedComponents: .hourAndMinute) {
+                    Label("Reminder time", systemImage: "bell")
+                }
                 Text("All-day events use your current time zone.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

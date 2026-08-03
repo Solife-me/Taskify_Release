@@ -188,41 +188,55 @@ struct TaskEditorView: View {
                     .lineLimit(3...8)
             }
 
-            Section("Priority") {
-                Picker("Priority", selection: $priority) {
+            Section {
+                Picker(selection: $priority) {
                     Text("None").tag(TaskPriority?.none)
                     ForEach(TaskPriority.allCases, id: \.rawValue) { value in
                         Text(value.editorLabel).tag(Optional(value))
                     }
+                } label: {
+                    Label("Priority", systemImage: "flag")
                 }
-                .pickerStyle(.segmented)
+                // .navigationLink gives the PWA's label -> value -> chevron row for free, rather
+                // than the segmented control that sat in its own section before.
+                .pickerStyle(.navigationLink)
             }
 
-            Section("Schedule") {
-                Toggle("Due date", isOn: $dueDateEnabled)
+            Section("Date & Time") {
+                Toggle(isOn: $dueDateEnabled) {
+                    Label("Due date", systemImage: "calendar")
+                }
                 if dueDateEnabled {
-                    DatePicker("Date", selection: $dueDate, displayedComponents: .date)
-                        .environment(\.timeZone, dueTimeEnabled ? selectedDueTimeZone : .current)
-                    Toggle("Include time", isOn: $dueTimeEnabled)
+                    DatePicker(selection: $dueDate, displayedComponents: .date) {
+                        Label("Date", systemImage: "calendar")
+                    }
+                    .environment(\.timeZone, dueTimeEnabled ? selectedDueTimeZone : .current)
+                    Toggle(isOn: $dueTimeEnabled) {
+                        Label("Include time", systemImage: "clock")
+                    }
                     if dueTimeEnabled {
-                        DatePicker("Time", selection: $dueDate, displayedComponents: .hourAndMinute)
-                            .environment(\.timeZone, selectedDueTimeZone)
+                        DatePicker(selection: $dueDate, displayedComponents: .hourAndMinute) {
+                            Label("Time", systemImage: "clock")
+                        }
+                        .environment(\.timeZone, selectedDueTimeZone)
                         Button {
                             showingTimeZonePicker = true
                         } label: {
                             HStack {
-                                LabeledContent(
-                                    "Time zone",
-                                    value: selectedDueTimeZone.localizedName(for: .generic, locale: .current)
+                                Label("Time Zone", systemImage: "globe")
+                                Spacer(minLength: 8)
+                                Text(
+                                    selectedDueTimeZone.localizedName(for: .generic, locale: .current)
                                         ?? dueTimeZone
                                 )
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                                 Image(systemName: "chevron.right")
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(.tertiary)
                             }
                         }
                         .foregroundStyle(.primary)
-                        .font(.caption)
                     }
                 }
             }
@@ -357,7 +371,7 @@ struct TaskEditorView: View {
     }
 
     private var attachmentSection: some View {
-        Section("Attachments & Links") {
+        Section("Attachments") {
             if let preview = attachmentPreviewTask, hasMedia(preview) {
                 TaskMediaView(
                     task: preview,
@@ -534,11 +548,14 @@ struct TaskEditorView: View {
 
     private var recurrenceSection: some View {
         Section("Repeat") {
-            Picker("Repeat", selection: $repeatChoice) {
+            Picker(selection: $repeatChoice) {
                 ForEach(RepeatChoice.allCases) { choice in
                     Text(choice.label).tag(choice)
                 }
+            } label: {
+                Label("Repeat", systemImage: "repeat")
             }
+            .pickerStyle(.navigationLink)
 
             if repeatChoice == .custom {
                 Picker("Frequency", selection: $customRepeatUnit) {
@@ -591,11 +608,15 @@ struct TaskEditorView: View {
     private var remindersSection: some View {
         Section("Reminders") {
             ForEach(reminderPresets) { reminder in
-                Toggle(reminder.label, isOn: reminderBinding(reminder))
+                Toggle(isOn: reminderBinding(reminder)) {
+                    Label(reminder.label, systemImage: "bell")
+                }
             }
 
             if !dueTimeEnabled {
-                DatePicker("Reminder time", selection: $reminderTime, displayedComponents: .hourAndMinute)
+                DatePicker(selection: $reminderTime, displayedComponents: .hourAndMinute) {
+                    Label("Reminder time", systemImage: "bell")
+                }
                 Text("Date-only tasks use your current time zone.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
