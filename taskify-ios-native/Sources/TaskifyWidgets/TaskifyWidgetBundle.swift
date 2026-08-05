@@ -7,6 +7,7 @@ import WidgetKit
 struct TaskifyWidgetBundle: WidgetBundle {
     var body: some Widget {
         TodayWidget()
+        UpcomingWidget()
         NextTaskWidget()
         BoardWidget()
         if #available(iOS 18.0, *) {
@@ -52,13 +53,16 @@ extension TaskifyWidgetData {
     static var preview: TaskifyWidgetData {
         TaskifyWidgetData(
             today: [
-                TaskifyWidgetTask(id: "1", title: "Review the roadmap", boardID: "b", boardName: "Work", dueDate: Date(), isOverdue: false),
-                TaskifyWidgetTask(id: "2", title: "Call the dentist", boardID: "b", boardName: "Personal", dueDate: Date(), isOverdue: false),
-                TaskifyWidgetTask(id: "3", title: "Buy oat milk", boardID: "b", boardName: "Errands", dueDate: Date(), isOverdue: false),
+                TaskifyWidgetTask(id: "1", title: "Review the roadmap", boardID: "b", boardName: "Work", dueDate: Date()),
+                TaskifyWidgetTask(id: "2", title: "Call the dentist", boardID: "b", boardName: "Personal", dueDate: Date()),
+                TaskifyWidgetTask(id: "3", title: "Buy oat milk", boardID: "b", boardName: "Errands", dueDate: Date()),
             ],
-            overdue: [
-                TaskifyWidgetTask(id: "0", title: "Send the invoice", boardID: "b", boardName: "Work", dueDate: Date(), isOverdue: true),
+            upcoming: [
+                TaskifyWidgetTask(id: "1", title: "Review the roadmap", boardID: "b", boardName: "Work", dueDate: Date()),
+                TaskifyWidgetTask(id: "4", title: "Renew the domain", boardID: "b", boardName: "Work", dueDate: Date().addingTimeInterval(86_400)),
+                TaskifyWidgetTask(id: "5", title: "Book the flights", boardID: "b", boardName: "Personal", dueDate: Date().addingTimeInterval(172_800)),
             ],
+
             boards: [TaskifyWidgetBoard(id: "b", name: "Work", openTaskCount: 4)]
         )
     }
@@ -82,11 +86,7 @@ struct TodayWidgetView: View {
     @Environment(\.widgetFamily) private var family
     let entry: TaskifyEntry
 
-    /// Overdue first: it's the work most likely to be forgotten, and the small sizes only have
-    /// room for a couple of rows.
-    private var rows: [TaskifyWidgetTask] {
-        Array((entry.data.overdue + entry.data.today).prefix(maxRows))
-    }
+    private var rows: [TaskifyWidgetTask] { Array(entry.data.today.prefix(maxRows)) }
 
     private var maxRows: Int {
         switch family {
@@ -97,36 +97,103 @@ struct TodayWidgetView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Today")
-                    .font(.headline)
-                Spacer()
-                if entry.data.remainingCount > rows.count {
-                    Text("+\(entry.data.remainingCount - rows.count)")
-                        .font(.caption.weight(.semibold))
+        TaskListWidgetBody(
+            title: "Today",
+            // Counting is the Today widget's job; Upcoming deliberately doesn't.
+            trailing: entry.data.todayCount > rows.count ? "+\(entry.data.todayCount - rows.count)" : nil,
+            rows: rows,
+            showsBoard: family != .systemSmall,
+            emptyMessage: "Nothing due today",
+            completable: true
+        )
+        // Tapping anywhere but a row opens the view this widget represents.
+        .widgetURL(TaskifyWidgetLink.upcoming.url)
+    }
+}
+
+// MARK: - Upcoming
+
+struct UpcomingWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "TaskifyUpcomingWidget", provider: TaskifyProvider()) { entry in
+            UpcomingWidgetView(entry: entry)
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("Upcoming")
+        .description("What's coming up next.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+struct UpcomingWidgetView: View {
+    @Environment(\.widgetFamily) private var family
+    let entry: TaskifyEntry
+
+    private var maxRows: Int {
+        switch family {
+        case .systemSmall: return 3
+        case .systemMedium: return 4
+        default: return 7
+        }
+    }
+
+    var body: some View {
+        TaskListWidgetBody(
+            title: "Upcoming",
+            // No total: a running count of everything ahead of you isn't a number that means much.
+            trailing: nil,
+            rows: Array(entry.data.upcoming.prefix(maxRows)),
+            showsBoard: family != .systemSmall,
+            emptyMessage: "Nothing scheduled",
+            completable: true
+        )
+        .widgetURL(TaskifyWidgetLink.upcoming.url)
+    }
+}
+
+/// Shared layout for the list widgets. Padding lives here rather than on each caller: without it
+/// the header sat flush against the container edge, which is what made the gallery preview look
+/// clipped.
+private struct TaskListWidgetBody: View {
+    let title: String
+    var trailing: String?
+    let rows: [TaskifyWidgetTask]
+    var showsBoard: Bool
+    let emptyMessage: String
+    var completable: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 4)
+                if let trailing {
+                    Text(trailing)
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
             }
 
             if rows.isEmpty {
-                Spacer()
+                Spacer(minLength: 0)
                 HStack {
                     Spacer()
                     VStack(spacing: 4) {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.title2)
+                            .font(.title3)
                             .foregroundStyle(.green)
-                        Text("All clear")
-                            .font(.caption)
+                        Text(emptyMessage)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
                     Spacer()
                 }
-                Spacer()
+                Spacer(minLength: 0)
             } else {
                 ForEach(rows) { task in
-                    TaskRow(task: task, showsBoard: family != .systemSmall)
+                    TaskRow(task: task, showsBoard: showsBoard, completable: completable)
                 }
                 Spacer(minLength: 0)
             }
@@ -138,29 +205,40 @@ struct TodayWidgetView: View {
 private struct TaskRow: View {
     let task: TaskifyWidgetTask
     var showsBoard: Bool
+    var completable: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            // Interactive: completes in place without opening the app (iOS 17+).
-            Button(intent: CompleteTaskIntent(taskID: task.id)) {
-                Image(systemName: "circle")
-                    .font(.callout)
-                    .foregroundStyle(task.isOverdue ? .orange : .secondary)
-            }
-            .buttonStyle(.plain)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(task.title)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(2)
-                if showsBoard, !task.boardName.isEmpty {
-                    Text(task.boardName)
-                        .font(.caption2)
+        HStack(alignment: .center, spacing: 8) {
+            if completable {
+                // Completes in place (iOS 17+). The tappable area is the padded frame, not the
+                // glyph -- a bare SF Symbol is a ~15pt target and near-impossible to hit.
+                Button(intent: CompleteTaskIntent(taskID: task.id)) {
+                    Image(systemName: "circle")
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
-            Spacer(minLength: 0)
+
+            // Only the text opens the task, so it can't swallow the checkbox's taps.
+            Link(destination: TaskifyWidgetLink.task(id: task.id, boardID: task.boardID).url) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(task.title)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if showsBoard, !task.boardName.isEmpty {
+                        Text(task.boardName)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
         }
     }
 }
@@ -184,12 +262,17 @@ struct NextTaskWidgetView: View {
     let entry: TaskifyEntry
 
     var body: some View {
+        content.widgetURL(TaskifyWidgetLink.upcoming.url)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch family {
         case .accessoryCircular:
             ZStack {
                 AccessoryWidgetBackground()
                 VStack(spacing: 0) {
-                    Text("\(entry.data.remainingCount)")
+                    Text("\(entry.data.todayCount)")
                         .font(.title2.bold())
                     Text("due")
                         .font(.caption2)
@@ -203,7 +286,7 @@ struct NextTaskWidgetView: View {
             }
         default:
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.data.remainingCount == 0 ? "All clear" : "\(entry.data.remainingCount) due today")
+                Text(entry.data.todayCount == 0 ? "All clear" : "\(entry.data.todayCount) due today")
                     .font(.headline)
                 if let next = entry.data.nextTask {
                     Text(next.title)
@@ -248,7 +331,7 @@ struct BoardWidgetView: View {
 
             // Widgets can't take text input, so this hands off to the app with the quick-add
             // field focused rather than pretending to capture a title here.
-            Link(destination: URL(string: "taskify://quick-add?board=\(board?.id ?? "")")!) {
+            Link(destination: TaskifyWidgetLink.quickAdd(boardID: board?.id).url) {
                 Label("Add task", systemImage: "plus.circle.fill")
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity)
@@ -257,6 +340,7 @@ struct BoardWidgetView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .widgetURL(TaskifyWidgetLink.boards.url)
     }
 }
 
@@ -287,6 +371,6 @@ struct OpenQuickAddIntent: AppIntent {
     init() {}
 
     func perform() async throws -> some IntentResult & OpensIntent {
-        .result(opensIntent: OpenURLIntent(URL(string: "taskify://quick-add")!))
+        .result(opensIntent: OpenURLIntent(TaskifyWidgetLink.quickAdd(boardID: nil).url))
     }
 }

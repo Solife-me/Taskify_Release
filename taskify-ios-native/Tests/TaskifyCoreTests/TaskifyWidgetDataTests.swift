@@ -40,21 +40,21 @@ final class TaskifyWidgetDataTests: XCTestCase {
         let data = snapshot([("Standup", at(2), false, false)])
             .widgetData(now: now, calendar: calendar)
         XCTAssertEqual(data.today.map(\.title), ["Standup"])
-        XCTAssertTrue(data.overdue.isEmpty)
     }
 
-    func testIncludesTasksDueEarlierTodayWithoutCallingThemOverdue() {
-        // Earlier today is still today -- only a previous day counts as overdue.
+    func testIncludesTasksDueEarlierToday() {
+        // Earlier today is still today; only a previous day is excluded.
         let data = snapshot([("Email", at(-3), false, false)])
             .widgetData(now: now, calendar: calendar)
         XCTAssertEqual(data.today.map(\.title), ["Email"])
-        XCTAssertTrue(data.overdue.isEmpty)
     }
 
-    func testExcludesTasksDueTomorrow() {
+    func testTomorrowIsUpcomingButNotToday() {
         let data = snapshot([("Later", at(30), false, false)])
             .widgetData(now: now, calendar: calendar)
-        XCTAssertTrue(data.isEmpty)
+        XCTAssertTrue(data.today.isEmpty)
+        XCTAssertEqual(data.todayCount, 0)
+        XCTAssertEqual(data.upcoming.map(\.title), ["Later"])
     }
 
     func testExcludesCompletedAndDeletedTasks() {
@@ -71,43 +71,68 @@ final class TaskifyWidgetDataTests: XCTestCase {
         XCTAssertTrue(data.today.isEmpty)
     }
 
-    // MARK: - Overdue
+    // MARK: - Overdue is not the widget's business
 
-    func testSeparatesOverdueFromToday() {
+    /// Upcoming filters to `dueDate >= startOfToday`, so overdue work appears nowhere in the app.
+    /// Week-board tasks are all created with a due date, so unfinished ones accumulate forever --
+    /// counting them here produced a widget reporting a dozen tasks against an Upcoming view
+    /// showing none.
+    func testExcludesOverdueTasksEntirely() {
         let data = snapshot([
             ("Yesterday", at(-30), false, false),
+            ("Last week", at(-24 * 7), false, false),
             ("Today", at(2), false, false),
         ]).widgetData(now: now, calendar: calendar)
 
-        XCTAssertEqual(data.overdue.map(\.title), ["Yesterday"])
         XCTAssertEqual(data.today.map(\.title), ["Today"])
-        XCTAssertTrue(data.overdue.allSatisfy(\.isOverdue))
-        XCTAssertTrue(data.today.allSatisfy { !$0.isOverdue })
+        XCTAssertEqual(data.todayCount, 1)
     }
 
-    /// The Lock Screen shows one task, so it has to be the most pressing one.
-    func testNextTaskPrefersOverdueWork() {
+    func testShowsNothingWhenOnlyOverdueWorkExists() {
+        let data = snapshot([("Yesterday", at(-30), false, false)])
+            .widgetData(now: now, calendar: calendar)
+        XCTAssertTrue(data.isEmpty)
+        XCTAssertNil(data.nextTask)
+        XCTAssertEqual(data.todayCount, 0)
+    }
+
+    // MARK: - Upcoming vs Today
+
+    /// The Upcoming widget looks ahead; the Today widget doesn't.
+    func testUpcomingLooksBeyondTodayButTodayDoesNot() {
+        let data = snapshot([
+            ("Today", at(2), false, false),
+            ("Tomorrow", at(26), false, false),
+            ("Next week", at(24 * 7), false, false),
+        ]).widgetData(now: now, calendar: calendar)
+
+        XCTAssertEqual(data.today.map(\.title), ["Today"])
+        XCTAssertEqual(data.upcoming.map(\.title), ["Today", "Tomorrow", "Next week"])
+        XCTAssertEqual(data.todayCount, 1)
+    }
+
+    func testUpcomingExcludesOverdueToo() {
         let data = snapshot([
             ("Yesterday", at(-30), false, false),
-            ("Today", at(1), false, false),
+            ("Tomorrow", at(26), false, false),
         ]).widgetData(now: now, calendar: calendar)
-        XCTAssertEqual(data.nextTask?.title, "Yesterday")
+        XCTAssertEqual(data.upcoming.map(\.title), ["Tomorrow"])
     }
 
-    func testNextTaskFallsBackToTodaysEarliest() {
+    /// With today clear, the Lock Screen should still name whatever is actually next.
+    func testNextTaskLooksAheadWhenTodayIsEmpty() {
+        let data = snapshot([("Thursday", at(48), false, false)])
+            .widgetData(now: now, calendar: calendar)
+        XCTAssertTrue(data.today.isEmpty)
+        XCTAssertEqual(data.nextTask?.title, "Thursday")
+    }
+
+    func testNextTaskIsTodaysEarliest() {
         let data = snapshot([
             ("Afternoon", at(5), false, false),
             ("Morning", at(1), false, false),
         ]).widgetData(now: now, calendar: calendar)
         XCTAssertEqual(data.nextTask?.title, "Morning")
-    }
-
-    func testRemainingCountIncludesOverdue() {
-        let data = snapshot([
-            ("Yesterday", at(-30), false, false),
-            ("Today", at(1), false, false),
-        ]).widgetData(now: now, calendar: calendar)
-        XCTAssertEqual(data.remainingCount, 2)
     }
 
     // MARK: - Ordering, limits, boards

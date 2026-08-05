@@ -586,6 +586,9 @@ struct BoardsView: View {
     @State private var showingClearCompletedConfirmation = false
     @State private var showingSelectionMoveSheet = false
     @State private var showingVoiceDictation = false
+    /// Raised by a quick-add deep link from a widget or the Control Center button. Cleared as soon
+    /// as the field takes focus so a later return to Boards doesn't pop the keyboard again.
+    @Binding var focusQuickAdd: Bool
     @State private var newListName = ""
     @State private var quickTaskDraft = ""
     @State private var focusedPageID: String?
@@ -727,6 +730,15 @@ struct BoardsView: View {
         }
         .onAppear(perform: resetFocusedPage)
         .onAppear(perform: TaskCompletionHaptics.warmUp)
+        .onChange(of: focusQuickAdd, initial: true) { _, requested in
+            guard requested else { return }
+            // A beat after the tab switch: focusing while the view is still appearing gets
+            // dropped, and the keyboard never comes up.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                quickTaskFieldIsFocused = true
+                focusQuickAdd = false
+            }
+        }
         .onChange(of: model.selectedBoardID) { _, _ in
             selection.exit()
             completionAnimations.reset()

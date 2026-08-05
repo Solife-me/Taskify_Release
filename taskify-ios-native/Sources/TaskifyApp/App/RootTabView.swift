@@ -1,4 +1,5 @@
 import SwiftUI
+import TaskifyCore
 
 enum AppTab: String, CaseIterable, Identifiable {
     case boards
@@ -28,6 +29,8 @@ struct RootTabView: View {
     @Environment(AppModel.self) private var model
     @State private var selectedTab: AppTab
     @State private var hasPresentedInitialContent = false
+    /// Set by a quick-add deep link; BoardsView clears it once it has focused its field.
+    @State private var pendingQuickAdd = false
 
     init() {
 #if DEBUG
@@ -40,6 +43,34 @@ struct RootTabView: View {
     }
 
     var body: some View {
+        content
+            .onOpenURL { url in
+                guard let link = TaskifyWidgetLink(url: url) else { return }
+                handle(link)
+            }
+    }
+
+    /// Routes a widget's `taskify://` link to the view it represents. Anything the app can't place
+    /// is ignored rather than guessed at -- landing somewhere arbitrary is worse than staying put.
+    private func handle(_ link: TaskifyWidgetLink) {
+        switch link {
+        case .upcoming:
+            selectedTab = .upcoming
+        case .boards:
+            selectedTab = .boards
+        case .task(_, let boardID):
+            // Open the board the task lives on. Selecting it first means Boards shows that board
+            // rather than whichever one happened to be open.
+            if !boardID.isEmpty { model.selectBoard(boardID) }
+            selectedTab = .boards
+        case .quickAdd(let boardID):
+            if let boardID { model.selectBoard(boardID) }
+            selectedTab = .boards
+            pendingQuickAdd = true
+        }
+    }
+
+    private var content: some View {
         ZStack {
             TaskifyTheme.background.ignoresSafeArea()
 
@@ -113,7 +144,7 @@ struct RootTabView: View {
     private var legacyContent: some View {
         switch selectedTab {
         case .boards:
-            BoardsView()
+            BoardsView(focusQuickAdd: $pendingQuickAdd)
         case .upcoming:
             UpcomingView()
         case .wallet:
@@ -128,7 +159,7 @@ struct RootTabView: View {
     @available(iOS 26.0, *)
     private var nativeTabView: some View {
         TabView(selection: $selectedTab) {
-            BoardsView()
+            BoardsView(focusQuickAdd: $pendingQuickAdd)
                 .tag(AppTab.boards)
                 .tabItem {
                     Label(AppTab.boards.title, systemImage: AppTab.boards.icon)

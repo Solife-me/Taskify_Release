@@ -6,6 +6,19 @@
 	<array>
 		<string>solife.me.Taskify.Native.refresh</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>solife.me.Taskify.Native</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>taskify</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

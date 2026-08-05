@@ -7,22 +7,19 @@ public struct TaskifyWidgetTask: Identifiable, Codable, Equatable, Sendable {
     public let boardID: String
     public let boardName: String
     public let dueDate: Date?
-    public let isOverdue: Bool
 
     public init(
         id: String,
         title: String,
         boardID: String,
         boardName: String,
-        dueDate: Date?,
-        isOverdue: Bool
+        dueDate: Date?
     ) {
         self.id = id
         self.title = title
         self.boardID = boardID
         self.boardName = boardName
         self.dueDate = dueDate
-        self.isOverdue = isOverdue
     }
 }
 
@@ -44,46 +41,48 @@ public struct TaskifyWidgetBoard: Identifiable, Codable, Equatable, Sendable {
 /// nothing more. Timelines are cheap to build and the payload stays well inside the memory a
 /// widget extension is allowed.
 public struct TaskifyWidgetData: Codable, Equatable, Sendable {
+    /// Due today. The Today widget shows these and counts them.
     public var today: [TaskifyWidgetTask]
-    public var overdue: [TaskifyWidgetTask]
+    /// Due today or later, earliest first. The Upcoming widget shows these and deliberately does
+    /// not count them -- a running total of everything ahead of you isn't a number that means much.
+    public var upcoming: [TaskifyWidgetTask]
     public var boards: [TaskifyWidgetBoard]
     public var generatedAt: Date
 
     public init(
         today: [TaskifyWidgetTask] = [],
-        overdue: [TaskifyWidgetTask] = [],
+        upcoming: [TaskifyWidgetTask] = [],
         boards: [TaskifyWidgetBoard] = [],
         generatedAt: Date = Date()
     ) {
         self.today = today
-        self.overdue = overdue
+        self.upcoming = upcoming
         self.boards = boards
         self.generatedAt = generatedAt
     }
 
-    /// What the Lock Screen "next task" widget shows: whatever is most pressing right now.
-    /// Overdue work outranks anything merely due today.
-    public var nextTask: TaskifyWidgetTask? {
-        overdue.first ?? today.first
-    }
+    /// The Lock Screen shows one thing, and the most useful one is whatever is next -- which may
+    /// be later this week if today is clear.
+    public var nextTask: TaskifyWidgetTask? { upcoming.first }
 
-    /// The count those small accessory slots show -- overdue included, since ignoring it would
-    /// under-report what's actually outstanding.
-    public var remainingCount: Int {
-        today.count + overdue.count
-    }
+    /// Today's workload. Counts tasks only, and structurally cannot do otherwise: `widgetData`
+    /// reads `tasks` alone, while Taskify events live in `taskifyEvents` and Apple Calendar items
+    /// are never in the snapshot at all.
+    public var todayCount: Int { today.count }
 
-    public var isEmpty: Bool { today.isEmpty && overdue.isEmpty }
+    public var isEmpty: Bool { today.isEmpty && upcoming.isEmpty }
 }
 
 extension TaskifySnapshot {
     /// Builds the widget payload for a moment in time.
     ///
-    /// "Today" matches what the Upcoming view shows for today rather than being defined afresh:
-    /// both start from `upcomingTasks(from:)`, so a task can't appear in one and not the other.
-    /// Anything due before today is split out as overdue -- Upcoming folds those into today's
-    /// group, but a widget has room for only a handful of rows and burying overdue work among
-    /// today's is how it gets missed.
+    /// "Today" means exactly what Upcoming's today group means: tasks due today, and nothing else.
+    /// An earlier version also surfaced overdue work, which read well in isolation but produced a
+    /// count the app could not account for -- Upcoming filters to `dueDate >= startOfToday`, so it
+    /// never shows overdue anywhere. Because week-board tasks are all created with a due date,
+    /// unfinished ones pile up indefinitely, and the widget was reporting a dozen-odd "due" tasks
+    /// against an Upcoming view showing nothing at all. A widget that disagrees with the app is
+    /// worse than one that shows less.
     public func widgetData(
         now: Date = Date(),
         calendar: Calendar = .current,
@@ -94,14 +93,13 @@ extension TaskifySnapshot {
 
         let boardNames = Dictionary(uniqueKeysWithValues: boards.map { ($0.id, $0.name) })
 
-        func item(_ task: TaskItem, overdue: Bool) -> TaskifyWidgetTask {
+        func item(_ task: TaskItem) -> TaskifyWidgetTask {
             TaskifyWidgetTask(
                 id: task.id,
                 title: task.title,
                 boardID: task.boardID,
                 boardName: boardNames[task.boardID] ?? "",
-                dueDate: task.dueDate,
-                isOverdue: overdue
+                dueDate: task.dueDate
             )
         }
 
@@ -112,18 +110,19 @@ extension TaskifySnapshot {
                 return $0.createdAt < $1.createdAt
             }
 
-        let overdue = live
-            .filter { ($0.dueDate ?? startOfToday) < startOfToday }
-            .prefix(limit)
-            .map { item($0, overdue: true) }
-
         let today = live
             .filter { task in
                 guard let due = task.dueDate else { return false }
                 return due >= startOfToday && due < endOfToday
             }
             .prefix(limit)
-            .map { item($0, overdue: false) }
+            .map(item)
+
+        // Everything from today onward, matching Upcoming's own `dueDate >= startOfToday` filter.
+        let upcoming = live
+            .filter { ($0.dueDate ?? startOfToday) >= startOfToday }
+            .prefix(limit)
+            .map(item)
 
         let openCounts = tasks.reduce(into: [String: Int]()) { counts, task in
             guard !task.isDeleted, !task.completed else { return }
@@ -136,7 +135,7 @@ extension TaskifySnapshot {
 
         return TaskifyWidgetData(
             today: Array(today),
-            overdue: Array(overdue),
+            upcoming: Array(upcoming),
             boards: boardSummaries,
             generatedAt: now
         )
