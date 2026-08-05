@@ -54,6 +54,7 @@ struct TaskifyNativeApp: App {
                     switch phase {
                     case .active:
                         TaskifyBackgroundSyncCoordinator.shared.appDidBecomeActive()
+                        model.reloadIfChangedExternally()
                         model.refreshNotificationStatus()
                         model.refreshSyncIfNeeded()
                         model.refreshContactsIfNeeded()

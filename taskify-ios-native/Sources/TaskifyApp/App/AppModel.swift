@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import TaskifyCore
+import WidgetKit
 
 struct BoardTemplateShareResult: Sendable {
     let board: Board
@@ -276,6 +277,9 @@ final class AppModel {
     private(set) var isLoading = true
     private(set) var identityPublicKey = ""
     private(set) var identityNpub = ""
+    /// When this process last wrote the store, so a newer file can be recognised as someone
+    /// else's write rather than an echo of our own.
+    private var lastStoreWriteAt = Date.distantPast
     private(set) var syncStatus = "Starting"
     private(set) var syncDetail = "Preparing secure relay connections"
     private(set) var relayStatuses: [TaskRelayStatus] = []
@@ -1480,6 +1484,29 @@ final class AppModel {
         }
         Task { [syncEngine] in
             await syncEngine.retryNow()
+        }
+    }
+
+    /// Re-reads the store when something outside the app has written to it -- currently the
+    /// widget's complete-task button, which edits the shared file directly.
+    ///
+    /// Without this the app keeps its in-memory snapshot across a backgrounding, so a task
+    /// completed from the widget reappears when the app comes forward, and the app's next save
+    /// writes that stale state back over the widget's. The file's modification date is the signal:
+    /// anything newer than our own last write came from elsewhere.
+    func reloadIfChangedExternally() {
+        guard !isLoading else { return }
+        guard let modified = try? FileManager.default.attributesOfItem(
+            atPath: JSONTaskStore.defaultURL.path
+        )[.modificationDate] as? Date else { return }
+        guard modified > lastStoreWriteAt.addingTimeInterval(0.5) else { return }
+
+        Task { @MainActor in
+            guard let reloaded = try? await store.load() else { return }
+            guard reloaded != snapshot else { return }
+            snapshot = reloaded
+            lastStoreWriteAt = Date()
+            refreshNotifications(requestPermission: false)
         }
     }
 
@@ -4348,6 +4375,10 @@ final class AppModel {
             let snapshotToSave = self.snapshot
             do {
                 try await store.save(snapshotToSave)
+                await MainActor.run {
+                    self.lastStoreWriteAt = Date()
+                    WidgetCenter.shared.reloadAllTimelines()
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
@@ -4362,6 +4393,8 @@ final class AppModel {
         saveTask = nil
         do {
             try await store.save(snapshot)
+            lastStoreWriteAt = Date()
+            WidgetCenter.shared.reloadAllTimelines()
         } catch {
             errorMessage = "Taskify could not save the latest change."
         }
