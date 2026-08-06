@@ -7,9 +7,11 @@ let package = Package(
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
+        .watchOS(.v10),
     ],
     products: [
         .library(name: "TaskifyCore", targets: ["TaskifyCore"]),
+        .library(name: "TaskifyWatchShared", targets: ["TaskifyWatchShared"]),
     ],
     dependencies: [
         .package(
@@ -29,15 +31,20 @@ let package = Package(
         .target(
             name: "TaskifyCore",
             dependencies: [
+                "TaskifyWatchShared",
                 .product(name: "P256K", package: "swift-secp256k1"),
                 .product(name: "Cdk", package: "cdk-swift"),
                 .product(name: "URKit", package: "URKit"),
             ],
             path: "Sources/TaskifyCore"
         ),
+        .target(
+            name: "TaskifyWatchShared",
+            path: "Sources/TaskifyWatchShared"
+        ),
         .testTarget(
             name: "TaskifyCoreTests",
-            dependencies: ["TaskifyCore"],
+            dependencies: ["TaskifyCore", "TaskifyWatchShared"],
             path: "Tests/TaskifyCoreTests"
         ),
     ]

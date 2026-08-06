@@ -34,6 +34,7 @@ struct TaskifyNativeApp: App {
         _model = State(initialValue: model)
         _wallet = StateObject(wrappedValue: wallet)
         TaskifyBackgroundSyncCoordinator.shared.register(model: model, wallet: wallet)
+        TaskifyWatchBridge.shared.activate()
 
         // Apple's documented API for keeping Shortcuts phrase/parameter data in sync after launch.
         TaskifyShortcuts.updateAppShortcutParameters()
@@ -67,6 +68,9 @@ struct TaskifyNativeApp: App {
                     @unknown default:
                         break
                     }
+                }
+                .onChange(of: model.snapshotRevision) { _, _ in
+                    TaskifyWatchBridge.shared.sendSnapshot(model.watchSnapshot())
                 }
         }
     }

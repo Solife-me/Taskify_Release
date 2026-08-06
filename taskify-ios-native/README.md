@@ -28,6 +28,9 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Native compound-board creation and management with ordered child list boards, aggregated task columns, optional child-board labels, and PWA-compatible linked-board sync
 - Atomic JSON persistence in Application Support
 - Keychain-backed Nostr identity creation and nsec import
+- Embedded native watchOS companion foundation with explicit reachable-only account provisioning,
+  passcode-required device-only Keychain protection, a non-secret bounded task cache, and native
+  Today, Upcoming, and Boards browsing; direct Watch-to-relay synchronization is the next slice
 - Review-before-apply PWA account bootstrap and ongoing native board-index publishing through signed kind-30078 Nostr backups, using interoperable NIP-44 v2 encryption, bounded multi-relay discovery, fetch-before-patch conflict protection, offline outbox delivery, and lossless wallet/PWA-only/future-field preservation
 - PWA-compatible deterministic board keys, AES-256-GCM task payloads, and signed Nostr events
 - Lossless preservation of assignments, bounties, inbox metadata, streaks, scripture state, and future encrypted PWA task fields across native edits, moves, completion, persistence, and relay merges
@@ -61,6 +64,13 @@ Nostr Cashu payment requests now work in both directions; advanced NWC, P2PK/con
 1. Open `TaskifyNative.xcodeproj` in Xcode 27 beta or newer.
 2. Select the `TaskifyNative` scheme.
 3. Run on an iOS 17.5 or newer simulator/device.
+
+The `TaskifyWatch` watchOS 10 target is embedded in the iPhone app. To provision it, install the
+companion build on a paired, passcode-protected Watch, keep Taskify open on the Watch, then open
+**Settings → Nostr & Sync → Apple Watch** on the iPhone and confirm **Enable Watch sync**. The raw
+Nostr key is sent only through an immediate paired-device message and stored with
+`kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`; it is not put in the task cache, transfer queue,
+backup, iCloud Keychain, logs, or UI. Wallet seeds, Cashu proofs, and tokens are never transferred.
 
 The migration bundle identifier is `solife.me.Taskify.Native`, which allows the native build to coexist with the release WebView app during parity testing.
 

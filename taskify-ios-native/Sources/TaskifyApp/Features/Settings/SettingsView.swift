@@ -7,6 +7,7 @@ import VisionKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
+    @StateObject private var watchBridge = TaskifyWatchBridge.shared
     @State private var newBoardName = ""
     @State private var newBoardKind: BoardKind = .week
     @State private var selectedCompoundChildIDs: Set<String> = []
@@ -29,6 +30,7 @@ struct SettingsView: View {
     @State private var pendingLocalBackupRestore: TaskifySnapshot?
     @State private var confirmingLocalBackupRestore = false
     @State private var localBackupMessage: String?
+    @State private var confirmingWatchProvisioning = false
     /// Empty by default -- every settings group starts collapsed, matching the PWA's
     /// collapsed-by-default accordions, so opening Settings shows a scannable list of category
     /// headers instead of every card's full contents at once.
@@ -90,6 +92,7 @@ struct SettingsView: View {
                     settingsGroup("Nostr & Sync", systemImage: "network") {
                         identityCard
                         syncCard
+                        watchCard
                         storageCard
                     }
 
@@ -172,6 +175,18 @@ struct SettingsView: View {
             }
         } message: {
             Text("This replaces every board, task, and related setting on this device with the contents of the backup file. It does not change your Nostr identity or wallet. This can't be undone.")
+        }
+        .confirmationDialog(
+            "Enable independent Watch sync?",
+            isPresented: $confirmingWatchProvisioning,
+            titleVisibility: .visible
+        ) {
+            Button("Send Nostr identity to Watch") {
+                watchBridge.provision(using: model)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your Nostr private key will be sent through the encrypted paired-device connection and stored only in the Watch's passcode-protected, device-only Keychain. Wallet keys and ecash are never sent.")
         }
         .task {
 #if DEBUG
@@ -392,6 +407,44 @@ struct SettingsView: View {
             appRelaysSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var watchCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "applewatch")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Apple Watch")
+                        .font(.headline)
+                    Text("Secure Nostr companion")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+
+            Text(watchBridge.state.message)
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            Button {
+                confirmingWatchProvisioning = true
+            } label: {
+                Label(
+                    watchBridge.state == .provisioned ? "Send account again" : "Enable Watch sync",
+                    systemImage: "lock.shield.fill"
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(watchBridge.state == .activating || watchBridge.state == .provisioning)
+
+            Text("Setup requires Taskify to be open on an unlocked, passcode-protected Watch. This first Watch slice securely caches tasks; direct relay updates are the next Watch milestone. Removing the Watch passcode deletes its stored identity.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
     }

@@ -1,6 +1,8 @@
 import Foundation
+import Security
 import SwiftUI
 import TaskifyCore
+import TaskifyWatchShared
 import WidgetKit
 
 struct BoardTemplateShareResult: Sendable {
@@ -3165,6 +3167,27 @@ final class AppModel {
     func currentIdentityNsec() -> String? {
         guard let identity = try? identityStore.load(), !identity.nsec.isEmpty else { return nil }
         return identity.nsec
+    }
+
+    func watchSnapshot(now: Date = Date()) -> TaskifyWatchSnapshot {
+        snapshot.watchData(now: now, calendar: weekCalendar)
+    }
+
+    /// Called only after the user confirms Watch provisioning in Settings. The raw key remains
+    /// binary (never converted to an nsec string) and is immediately handed to the encrypted,
+    /// reachable-only WatchConnectivity message path.
+    func watchProvisioningPayload() throws -> TaskifyWatchProvisioningPayload {
+        guard let identity = try identityStore.load() else {
+            throw KeychainIdentityError.keychain(errSecItemNotFound)
+        }
+        return try TaskifyWatchProvisioningPayload(
+            privateKey: identity.privateKey,
+            publicKeyHex: identity.publicKeyHex,
+            relayURLs: TaskifyRelayURL.normalizedList(
+                appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            ),
+            snapshot: watchSnapshot()
+        )
     }
 
     func completeFirstRunOnboarding() {
