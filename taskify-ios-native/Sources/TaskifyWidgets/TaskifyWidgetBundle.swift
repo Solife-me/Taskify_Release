@@ -350,13 +350,11 @@ struct BoardWidgetView: View {
 struct NewTaskControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "TaskifyNewTaskControl") {
-            // The system's own OpenURLIntent, not a custom one.
-            //
-            // A custom intent with openAppWhenRun = true is performed in the *app's* process, and
-            // this intent only existed in the widget extension -- so iOS launched the app, found
-            // no such type, and did nothing. That's why the button appeared dead. OpenURLIntent is
-            // a system type present everywhere, so there's nothing to be missing.
-            ControlWidgetButton(action: OpenURLIntent(TaskifyWidgetLink.quickAdd(boardID: nil).url)) {
+            // TaskifyQuickAddIntent is compiled into the app as well as this extension. A
+            // control's action runs with openAppWhenRun in the *app's* process, so a type that
+            // exists only here leaves iOS with nothing to run -- which is exactly why this button
+            // did nothing. See the intent's own notes.
+            ControlWidgetButton(action: TaskifyQuickAddIntent()) {
                 Label("New Task", systemImage: "plus.circle.fill")
             }
         }
