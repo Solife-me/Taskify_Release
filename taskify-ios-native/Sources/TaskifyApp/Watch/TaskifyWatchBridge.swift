@@ -8,6 +8,8 @@ import WatchConnectivity
 /// in application context or a background transfer queue.
 final class TaskifyWatchBridge: NSObject, ObservableObject {
     static let shared = TaskifyWatchBridge()
+    private static let acknowledgedCommandIDsKey = "taskify.watch.acknowledged-command-ids.v1"
+    private static let acknowledgedCommandLimit = 100
 
     enum State: Equatable {
         case unavailable(String)
@@ -30,12 +32,15 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     }
 
     @Published private(set) var state: State = .activating
+    private weak var model: AppModel?
 
     private override init() {
         super.init()
     }
 
-    func activate() {
+    @MainActor
+    func activate(model: AppModel) {
+        self.model = model
         guard WCSession.isSupported() else {
             state = .unavailable("Apple Watch connectivity is unavailable on this device.")
             return
@@ -94,7 +99,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     func sendSnapshot(_ snapshot: TaskifyWatchSnapshot) {
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
         do {
-            let data = try TaskifyWatchTransfer.encode(snapshot)
+            let data = try TaskifyWatchTransfer.encode(snapshotIncludingAcknowledgements(snapshot))
             // Application context contains task display data only. It never contains an nsec,
             // raw private key, wallet seed, or Cashu proof.
             try WCSession.default.updateApplicationContext([
@@ -103,6 +108,50 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
         } catch {
             // A later model revision will retry. Avoid logging payloads or key-adjacent state.
         }
+    }
+
+    @MainActor
+    private func accept(_ command: TaskifyWatchCommand) throws -> TaskifyWatchCommandReceipt {
+        guard let model else { throw TaskifyWatchBridgeError.modelUnavailable }
+
+        switch command.kind {
+        case .completeTask:
+            // Completion commands are deliberately idempotent. Replayed background deliveries
+            // acknowledge an already-completed/deleted task without toggling it back open.
+            model.completeTasks([command.taskID])
+        }
+
+        recordAcknowledgement(command.id)
+        let snapshot = snapshotIncludingAcknowledgements(model.watchSnapshot())
+        sendSnapshot(snapshot)
+        return TaskifyWatchCommandReceipt(commandID: command.id, snapshot: snapshot)
+    }
+
+    private func recordAcknowledgement(_ commandID: String) {
+        var commandIDs = UserDefaults.standard.stringArray(
+            forKey: Self.acknowledgedCommandIDsKey
+        ) ?? []
+        commandIDs.removeAll { $0 == commandID }
+        commandIDs.append(commandID)
+        if commandIDs.count > Self.acknowledgedCommandLimit {
+            commandIDs.removeFirst(commandIDs.count - Self.acknowledgedCommandLimit)
+        }
+        UserDefaults.standard.set(commandIDs, forKey: Self.acknowledgedCommandIDsKey)
+    }
+
+    private func snapshotIncludingAcknowledgements(
+        _ snapshot: TaskifyWatchSnapshot
+    ) -> TaskifyWatchSnapshot {
+        TaskifyWatchSnapshot(
+            schemaVersion: snapshot.schemaVersion,
+            tasks: snapshot.tasks,
+            boards: snapshot.boards,
+            selectedBoardID: snapshot.selectedBoardID,
+            generatedAt: snapshot.generatedAt,
+            acknowledgedCommandIDs: UserDefaults.standard.stringArray(
+                forKey: Self.acknowledgedCommandIDsKey
+            )
+        )
     }
 
     private func refreshState(for session: WCSession, error: Error? = nil) {
@@ -138,8 +187,40 @@ extension TaskifyWatchBridge: WCSessionDelegate {
     func sessionWatchStateDidChange(_ session: WCSession) {
         refreshState(for: session)
     }
+
+    func session(
+        _ session: WCSession,
+        didReceiveMessageData messageData: Data,
+        replyHandler: @escaping (Data) -> Void
+    ) {
+        do {
+            let command = try TaskifyWatchTransfer.decodeCommand(messageData)
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    replyHandler(Data())
+                    return
+                }
+                do {
+                    replyHandler(try TaskifyWatchTransfer.encode(self.accept(command)))
+                } catch {
+                    replyHandler(Data())
+                }
+            }
+        } catch {
+            replyHandler(Data())
+        }
+    }
+
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        guard let data = userInfo[TaskifyWatchTransfer.commandDataKey] as? Data,
+              let command = try? TaskifyWatchTransfer.decodeCommand(data) else { return }
+        Task { @MainActor [weak self] in
+            _ = try? self?.accept(command)
+        }
+    }
 }
 
 private enum TaskifyWatchBridgeError: Error {
     case receiptMismatch
+    case modelUnavailable
 }

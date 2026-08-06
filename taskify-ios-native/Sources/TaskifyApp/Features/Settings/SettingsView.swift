@@ -53,6 +53,10 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(spacing: 14) {
+                    // Watch setup stays visible instead of being buried inside the collapsed
+                    // Nostr group; the matching Watch screen points users directly here.
+                    watchCard
+
                     // Ordered and grouped to track the PWA's Settings page (Boards, View, Wallet,
                     // Chat, Bible, Push, Nostr, ...) instead of an alphabet-soup of individually
                     // titled cards, so the two apps read as the same settings page. Each group is
@@ -92,7 +96,6 @@ struct SettingsView: View {
                     settingsGroup("Nostr & Sync", systemImage: "network") {
                         identityCard
                         syncCard
-                        watchCard
                         storageCard
                     }
 
@@ -441,7 +444,7 @@ struct SettingsView: View {
             .buttonStyle(.borderedProminent)
             .disabled(watchBridge.state == .activating || watchBridge.state == .provisioning)
 
-            Text("Setup requires Taskify to be open on an unlocked, passcode-protected Watch. This first Watch slice securely caches tasks; direct relay updates are the next Watch milestone. Removing the Watch passcode deletes its stored identity.")
+            Text("Open Taskify on an unlocked, passcode-protected Watch, then enable sync here. Tasks can be checked off from the Watch and are delivered immediately or safely queued for the iPhone. Direct Watch-to-relay updates are the next Watch milestone. Removing the Watch passcode deletes its stored identity.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }

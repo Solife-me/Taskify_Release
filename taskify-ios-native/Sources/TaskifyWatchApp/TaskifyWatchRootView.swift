@@ -1,5 +1,6 @@
 import SwiftUI
 import TaskifyWatchShared
+import WatchKit
 
 struct TaskifyWatchRootView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
@@ -10,7 +11,7 @@ struct TaskifyWatchRootView: View {
                 List {
                     Section {
                         NavigationLink {
-                            TaskifyWatchTaskList(title: "Today", tasks: model.todayTasks)
+                            TaskifyWatchTaskList(title: "Today", source: .today)
                         } label: {
                             WatchDestinationLabel(
                                 title: "Today",
@@ -21,7 +22,7 @@ struct TaskifyWatchRootView: View {
                         }
 
                         NavigationLink {
-                            TaskifyWatchTaskList(title: "Upcoming", tasks: model.upcomingTasks)
+                            TaskifyWatchTaskList(title: "Upcoming", source: .upcoming)
                         } label: {
                             WatchDestinationLabel(
                                 title: "Upcoming",
@@ -37,12 +38,12 @@ struct TaskifyWatchRootView: View {
                             NavigationLink {
                                 TaskifyWatchTaskList(
                                     title: board.name,
-                                    tasks: model.tasks(for: board.id)
+                                    source: .board(board.id)
                                 )
                             } label: {
                                 WatchDestinationLabel(
                                     title: board.name,
-                                    count: board.openTaskCount,
+                                    count: model.openTaskCount(for: board.id),
                                     systemImage: "rectangle.stack.fill",
                                     color: .purple
                                 )
@@ -59,22 +60,48 @@ struct TaskifyWatchRootView: View {
                 .navigationTitle("Taskify")
             }
         } else {
-            VStack(spacing: 12) {
-                Image(systemName: "applewatch.and.arrow.forward")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(.blue)
-                Text("Finish setup")
-                    .font(.headline)
-                Text("Keep Taskify open here, then choose Enable Watch sync in Taskify Settings on your iPhone.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Text(model.statusMessage)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "applewatch.and.arrow.forward")
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(.blue)
+                            Text("Connect Taskify")
+                                .font(.headline)
+                        }
+
+                        WatchSetupStep(number: 1, text: "Keep this screen open.")
+                        WatchSetupStep(number: 2, text: "Open Taskify Settings on your iPhone.")
+                        WatchSetupStep(number: 3, text: "Find Apple Watch and tap Enable Watch sync.")
+
+                        Label(model.statusMessage, systemImage: "lock.shield.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                }
+                .navigationTitle("Setup")
             }
-            .padding()
+        }
+    }
+}
+
+private struct WatchSetupStep: View {
+    let number: Int
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Text(number, format: .number)
+                .font(.caption.bold())
+                .frame(width: 24, height: 24)
+                .background(.blue, in: Circle())
+                .foregroundStyle(.white)
+            Text(text)
+                .font(.body)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -100,9 +127,27 @@ private struct WatchDestinationLabel: View {
     }
 }
 
+private enum TaskifyWatchTaskSource {
+    case today
+    case upcoming
+    case board(String)
+}
+
 private struct TaskifyWatchTaskList: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
     let title: String
-    let tasks: [TaskifyWatchTask]
+    let source: TaskifyWatchTaskSource
+
+    private var tasks: [TaskifyWatchTask] {
+        switch source {
+        case .today:
+            model.todayTasks
+        case .upcoming:
+            model.upcomingTasks
+        case .board(let boardID):
+            model.tasks(for: boardID)
+        }
+    }
 
     var body: some View {
         List {
@@ -114,31 +159,48 @@ private struct TaskifyWatchTaskList: View {
                 )
             } else {
                 ForEach(tasks) { task in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(task.title)
-                            .font(.body.weight(.semibold))
-                        HStack(spacing: 4) {
-                            Text(task.boardName)
-                            if let columnName = task.columnName {
-                                Text("·")
-                                Text(columnName)
+                    HStack(alignment: .top, spacing: 9) {
+                        Button {
+                            WKInterfaceDevice.current().play(.success)
+                            withAnimation(.snappy(duration: 0.2)) {
+                                model.completeTask(task.id)
                             }
+                        } label: {
+                            Image(systemName: "circle")
+                                .font(.title3)
+                                .foregroundStyle(.blue)
+                                .frame(width: 40, height: 40)
+                                .contentShape(Circle())
                         }
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Complete \(task.title)")
 
-                        if let dueDate = task.dueDate {
-                            Label {
-                                if task.dueTimeEnabled {
-                                    Text(dueDate, format: .dateTime.month(.abbreviated).day().hour().minute())
-                                } else {
-                                    Text(dueDate, format: .dateTime.month(.abbreviated).day())
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(task.title)
+                                .font(.body.weight(.semibold))
+                            HStack(spacing: 4) {
+                                Text(task.boardName)
+                                if let columnName = task.columnName {
+                                    Text("·")
+                                    Text(columnName)
                                 }
-                            } icon: {
-                                Image(systemName: "calendar")
                             }
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+
+                            if let dueDate = task.dueDate {
+                                Label {
+                                    if task.dueTimeEnabled {
+                                        Text(dueDate, format: .dateTime.month(.abbreviated).day().hour().minute())
+                                    } else {
+                                        Text(dueDate, format: .dateTime.month(.abbreviated).day())
+                                    }
+                                } icon: {
+                                    Image(systemName: "calendar")
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .padding(.vertical, 2)

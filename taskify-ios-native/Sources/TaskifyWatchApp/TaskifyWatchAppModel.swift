@@ -78,17 +78,23 @@ final class TaskifyWatchAppModel: NSObject {
     private(set) var snapshot = TaskifyWatchSnapshot()
     private(set) var isProvisioned = false
     private(set) var statusMessage = "Open Taskify Settings on your iPhone to enable Watch sync."
+    private(set) var pendingCompletionIDs: Set<String> = []
 
     @ObservationIgnored private let identityStore = TaskifyWatchIdentityStore()
     @ObservationIgnored private let cacheURL: URL
+    @ObservationIgnored private let commandCacheURL: URL
+    @ObservationIgnored private var pendingCommands: [TaskifyWatchCommand] = []
+    @ObservationIgnored private var immediateCommandIDs: Set<String> = []
 
     override init() {
         let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         cacheURL = supportURL.appendingPathComponent("taskify-watch-snapshot-v1.json")
+        commandCacheURL = supportURL.appendingPathComponent("taskify-watch-commands-v1.json")
         super.init()
         isProvisioned = identityStore.containsIdentity()
         loadCachedSnapshot()
+        loadPendingCommands()
         activateConnectivity()
         if isProvisioned {
             statusMessage = "Secure account ready"
@@ -96,15 +102,37 @@ final class TaskifyWatchAppModel: NSObject {
     }
 
     var todayTasks: [TaskifyWatchTask] {
-        snapshot.todayTasks()
+        visible(snapshot.todayTasks())
     }
 
     var upcomingTasks: [TaskifyWatchTask] {
-        snapshot.upcomingTasks()
+        visible(snapshot.upcomingTasks())
     }
 
     func tasks(for boardID: String) -> [TaskifyWatchTask] {
-        snapshot.tasks(for: boardID)
+        visible(snapshot.tasks(for: boardID))
+    }
+
+    func openTaskCount(for boardID: String) -> Int {
+        guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { return 0 }
+        let pendingCount = snapshot.tasks.lazy.filter {
+            $0.boardID == boardID && self.pendingCompletionIDs.contains($0.id)
+        }.count
+        return max(0, board.openTaskCount - pendingCount)
+    }
+
+    func completeTask(_ taskID: String) {
+        guard snapshot.tasks.contains(where: { $0.id == taskID }),
+              !pendingCompletionIDs.contains(taskID) else { return }
+        let command = TaskifyWatchCommand(kind: .completeTask, taskID: taskID)
+        pendingCommands.append(command)
+        pendingCompletionIDs.insert(taskID)
+        persistPendingCommands()
+        deliver(command)
+    }
+
+    private func visible(_ tasks: [TaskifyWatchTask]) -> [TaskifyWatchTask] {
+        tasks.filter { !pendingCompletionIDs.contains($0.id) }
     }
 
     private func activateConnectivity() {
@@ -113,6 +141,60 @@ final class TaskifyWatchAppModel: NSObject {
         session.delegate = self
         session.activate()
         apply(applicationContext: session.receivedApplicationContext)
+    }
+
+    private func retryPendingCommands() {
+        pendingCommands.forEach(deliver)
+    }
+
+    private func deliver(_ command: TaskifyWatchCommand) {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated,
+              let data = try? TaskifyWatchTransfer.encode(command) else { return }
+
+        if session.isReachable, immediateCommandIDs.insert(command.id).inserted {
+            session.sendMessageData(data) { [weak self] replyData in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.immediateCommandIDs.remove(command.id)
+                    guard let receipt = try? TaskifyWatchTransfer.decodeCommandReceipt(replyData),
+                          receipt.commandID == command.id else {
+                        self.queueBackgroundDelivery(command, data: data)
+                        return
+                    }
+                    self.apply(snapshot: receipt.snapshot)
+                    self.finish(commandID: command.id)
+                }
+            } errorHandler: { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.immediateCommandIDs.remove(command.id)
+                    self.queueBackgroundDelivery(command, data: data)
+                }
+            }
+        } else if !session.isReachable {
+            queueBackgroundDelivery(command, data: data)
+        }
+    }
+
+    private func queueBackgroundDelivery(_ command: TaskifyWatchCommand, data: Data) {
+        let session = WCSession.default
+        let alreadyQueued = session.outstandingUserInfoTransfers.contains { transfer in
+            guard let queuedData = transfer.userInfo[TaskifyWatchTransfer.commandDataKey] as? Data,
+                  let queued = try? TaskifyWatchTransfer.decodeCommand(queuedData) else { return false }
+            return queued.id == command.id
+        }
+        guard !alreadyQueued else { return }
+        session.transferUserInfo([TaskifyWatchTransfer.commandDataKey: data])
+        statusMessage = "Completion saved — it will sync when the iPhone is available."
+    }
+
+    private func finish(commandID: String) {
+        pendingCommands.removeAll { $0.id == commandID }
+        pendingCompletionIDs = Set(pendingCommands.map(\.taskID))
+        persistPendingCommands()
+        statusMessage = pendingCommands.isEmpty ? "Tasks are up to date" : "Waiting to sync completions"
     }
 
     private func acceptProvisioning(_ data: Data) throws -> Data {
@@ -137,6 +219,12 @@ final class TaskifyWatchAppModel: NSObject {
     private func apply(snapshot received: TaskifyWatchSnapshot) {
         guard received.generatedAt >= snapshot.generatedAt else { return }
         snapshot = received
+        let acknowledged = Set(received.acknowledgedCommandIDs ?? [])
+        if !acknowledged.isEmpty {
+            pendingCommands.removeAll { acknowledged.contains($0.id) }
+            pendingCompletionIDs = Set(pendingCommands.map(\.taskID))
+            persistPendingCommands()
+        }
         persistSnapshot()
     }
 
@@ -144,6 +232,30 @@ final class TaskifyWatchAppModel: NSObject {
         guard let data = try? Data(contentsOf: cacheURL),
               let cached = try? TaskifyWatchTransfer.decodeSnapshot(data) else { return }
         snapshot = cached
+    }
+
+    private func loadPendingCommands() {
+        guard let data = try? Data(contentsOf: commandCacheURL),
+              let cached = try? JSONDecoder().decode([TaskifyWatchCommand].self, from: data) else { return }
+        let oldestRetainedDate = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        pendingCommands = cached.filter { $0.createdAt >= oldestRetainedDate }
+        pendingCompletionIDs = Set(pendingCommands.map(\.taskID))
+        persistPendingCommands()
+    }
+
+    private func persistPendingCommands() {
+        do {
+            try FileManager.default.createDirectory(
+                at: commandCacheURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONEncoder().encode(pendingCommands).write(
+                to: commandCacheURL,
+                options: [.atomic, .completeFileProtection]
+            )
+        } catch {
+            statusMessage = "A completion could not be saved for later delivery."
+        }
     }
 
     private func persistSnapshot() {
@@ -168,9 +280,19 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
         activationDidCompleteWith activationState: WCSessionActivationState,
         error: Error?
     ) {
-        guard error != nil else { return }
         Task { @MainActor [weak self] in
-            self?.statusMessage = "The iPhone connection is unavailable. Cached tasks remain available."
+            if error != nil {
+                self?.statusMessage = "The iPhone connection is unavailable. Cached tasks remain available."
+            } else {
+                self?.retryPendingCommands()
+            }
+        }
+    }
+
+    nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        guard session.isReachable else { return }
+        Task { @MainActor [weak self] in
+            self?.retryPendingCommands()
         }
     }
 

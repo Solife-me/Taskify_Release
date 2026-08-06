@@ -148,6 +148,11 @@ final class TaskifyWatchDataTests: XCTestCase {
             try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command)),
             command
         )
+        let receipt = TaskifyWatchCommandReceipt(commandID: command.id, snapshot: snapshot)
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeCommandReceipt(TaskifyWatchTransfer.encode(receipt)),
+            receipt
+        )
     }
 
     func testProvisioningPayloadValidatesAndRoundTripsWithoutChangingKeyMaterial() throws {
@@ -166,6 +171,17 @@ final class TaskifyWatchDataTests: XCTestCase {
             try TaskifyWatchTransfer.decodeProvisioningPayload(TaskifyWatchTransfer.encode(payload)),
             payload
         )
+    }
+
+    func testSnapshotWrittenBeforeCommandAcknowledgementsStillDecodes() throws {
+        let legacyJSON = """
+        {"schemaVersion":1,"tasks":[],"boards":[],"generatedAt":1785945600000}
+        """
+
+        let snapshot = try TaskifyWatchTransfer.decodeSnapshot(Data(legacyJSON.utf8))
+
+        XCTAssertNil(snapshot.acknowledgedCommandIDs)
+        XCTAssertTrue(snapshot.tasks.isEmpty)
     }
 
     func testProvisioningPayloadRejectsMalformedKeyMaterial() {

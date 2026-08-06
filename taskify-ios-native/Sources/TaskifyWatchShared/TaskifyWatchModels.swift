@@ -54,19 +54,24 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
     public let boards: [TaskifyWatchBoard]
     public let selectedBoardID: String?
     public let generatedAt: Date
+    /// Recent command IDs accepted by the iPhone. Optional keeps snapshots written by the first
+    /// Watch build decodable after upgrading.
+    public let acknowledgedCommandIDs: [String]?
 
     public init(
         schemaVersion: Int = TaskifyWatchSnapshot.currentSchemaVersion,
         tasks: [TaskifyWatchTask] = [],
         boards: [TaskifyWatchBoard] = [],
         selectedBoardID: String? = nil,
-        generatedAt: Date = Date()
+        generatedAt: Date = Date(),
+        acknowledgedCommandIDs: [String]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.tasks = tasks
         self.boards = boards
         self.selectedBoardID = selectedBoardID
         self.generatedAt = generatedAt
+        self.acknowledgedCommandIDs = acknowledgedCommandIDs
     }
 
     public func tasks(for boardID: String) -> [TaskifyWatchTask] {
@@ -177,6 +182,18 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// A successful iPhone acknowledgement. Returning the refreshed snapshot in the same reply keeps
+/// an optimistically completed task from briefly reappearing while application context catches up.
+public struct TaskifyWatchCommandReceipt: Codable, Equatable, Sendable {
+    public let commandID: String
+    public let snapshot: TaskifyWatchSnapshot
+
+    public init(commandID: String, snapshot: TaskifyWatchSnapshot) {
+        self.commandID = commandID
+        self.snapshot = snapshot
+    }
+}
+
 public enum TaskifyWatchTransfer {
     public static let snapshotDataKey = "taskify.watch.snapshot.v1"
     public static let commandDataKey = "taskify.watch.command.v1"
@@ -202,6 +219,18 @@ public enum TaskifyWatchTransfer {
 
     public static func decodeCommand(_ data: Data) throws -> TaskifyWatchCommand {
         try decoder.decode(TaskifyWatchCommand.self, from: data)
+    }
+
+    public static func encode(_ receipt: TaskifyWatchCommandReceipt) throws -> Data {
+        try encoder.encode(receipt)
+    }
+
+    public static func decodeCommandReceipt(_ data: Data) throws -> TaskifyWatchCommandReceipt {
+        let receipt = try decoder.decode(TaskifyWatchCommandReceipt.self, from: data)
+        guard receipt.snapshot.schemaVersion <= TaskifyWatchSnapshot.currentSchemaVersion else {
+            throw TransferError.unsupportedSchema(receipt.snapshot.schemaVersion)
+        }
+        return receipt
     }
 
     public static func encode(_ payload: TaskifyWatchProvisioningPayload) throws -> Data {
