@@ -20,6 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Show your Apple Calendar events in the Taskify widget.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Show your Apple Reminders in the Taskify widget.</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>

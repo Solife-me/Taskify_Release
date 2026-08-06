@@ -170,6 +170,27 @@ final class TaskifyWidgetDataTests: XCTestCase {
         XCTAssertEqual(data.boards.first?.openTaskCount, 1)
     }
 
+    // MARK: - Kinds
+
+    func testTasksAreMarkedAsTasksAndAreCompletable() {
+        let data = snapshot([("Standup", at(1), false, false)])
+            .widgetData(now: now, calendar: calendar)
+        XCTAssertEqual(data.today.first?.kind, .task)
+        XCTAssertTrue(TaskifyWidgetItemKind.task.isCompletable)
+    }
+
+    /// Only tasks can be ticked off from a widget -- the rest belong to other apps.
+    func testOnlyTasksAreCompletable() {
+        for kind in [TaskifyWidgetItemKind.event, .calendar, .reminder] {
+            XCTAssertFalse(kind.isCompletable, "\(kind)")
+        }
+    }
+
+    func testEveryKindHasADistinctGlyph() {
+        let symbols = [TaskifyWidgetItemKind.task, .event, .calendar, .reminder].map(\.symbolName)
+        XCTAssertEqual(Set(symbols).count, symbols.count)
+    }
+
     func testSurvivesAJSONRoundTrip() throws {
         let data = snapshot([("Standup", at(1), false, false)])
             .widgetData(now: now, calendar: calendar)

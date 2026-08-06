@@ -23,14 +23,34 @@ struct TaskifyEntry: TimelineEntry {
     let data: TaskifyWidgetData
 }
 
+/// Upcoming lists Apple Calendar and Reminders alongside Taskify's own items, mirroring the
+/// Upcoming tab. Today does not: its count is tasks only, so pulling device items into the same
+/// payload would risk them being counted.
+private func loadUpcomingData(now: Date = Date()) async -> TaskifyWidgetData {
+    var data = await TaskifyWidgetStore.load(now: now)
+    let device = await DeviceItemsReader.upcomingItems(from: now)
+    guard !device.isEmpty else { return data }
+    data.upcoming = (data.upcoming + device)
+        .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+    return data
+}
+
 struct TaskifyProvider: TimelineProvider {
+    /// Reading EventKit costs a permission check and a store query, so only the widgets that show
+    /// device items pay for it.
+    var includesDeviceItems = false
+
+    private func load(now: Date) async -> TaskifyWidgetData {
+        includesDeviceItems ? await loadUpcomingData(now: now) : await TaskifyWidgetStore.load(now: now)
+    }
+
     func placeholder(in context: Context) -> TaskifyEntry {
         TaskifyEntry(date: Date(), data: .preview)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (TaskifyEntry) -> Void) {
         Task {
-            let data = context.isPreview ? .preview : await TaskifyWidgetStore.load()
+            let data = context.isPreview ? .preview : await load(now: Date())
             completion(TaskifyEntry(date: Date(), data: data))
         }
     }
@@ -38,7 +58,7 @@ struct TaskifyProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<TaskifyEntry>) -> Void) {
         Task {
             let now = Date()
-            let entry = TaskifyEntry(date: now, data: await TaskifyWidgetStore.load(now: now))
+            let entry = TaskifyEntry(date: now, data: await load(now: now))
             completion(Timeline(
                 entries: [entry],
                 policy: .after(TaskifyWidgetStore.nextReloadDate(after: now))
@@ -115,7 +135,7 @@ struct TodayWidgetView: View {
 
 struct UpcomingWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "TaskifyUpcomingWidget", provider: TaskifyProvider()) { entry in
+        StaticConfiguration(kind: "TaskifyUpcomingWidget", provider: TaskifyProvider(includesDeviceItems: true)) { entry in
             UpcomingWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
@@ -209,17 +229,24 @@ private struct TaskRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            if completable {
+            if completable, task.kind.isCompletable {
                 // Completes in place (iOS 17+). The tappable area is the padded frame, not the
                 // glyph -- a bare SF Symbol is a ~15pt target and near-impossible to hit.
                 Button(intent: CompleteTaskIntent(taskID: task.id)) {
-                    Image(systemName: "circle")
+                    Image(systemName: task.kind.symbolName)
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 26, height: 26)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            } else {
+                // Events, calendar entries and reminders aren't Taskify's to complete, so they get
+                // the glyph without a button around it.
+                Image(systemName: task.kind.symbolName)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26, height: 26)
             }
 
             // Only the text opens the task, so it can't swallow the checkbox's taps.
@@ -247,7 +274,7 @@ private struct TaskRow: View {
 
 struct NextTaskWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "TaskifyNextTaskWidget", provider: TaskifyProvider()) { entry in
+        StaticConfiguration(kind: "TaskifyNextTaskWidget", provider: TaskifyProvider(includesDeviceItems: true)) { entry in
             NextTaskWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
         }

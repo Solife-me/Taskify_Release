@@ -1,25 +1,48 @@
 import Foundation
 
-/// A single task as a widget shows it: enough to render a row and act on it, and nothing else.
+/// What kind of thing a row is. Only tasks can be completed from a widget or counted as work due
+/// today; the rest are context.
+public enum TaskifyWidgetItemKind: String, Codable, Equatable, Sendable {
+    case task
+    case event
+    case calendar
+    case reminder
+
+    public var symbolName: String {
+        switch self {
+        case .task: "circle"
+        case .event: "calendar"
+        case .calendar: "calendar.badge.clock"
+        case .reminder: "bell"
+        }
+    }
+
+    public var isCompletable: Bool { self == .task }
+}
+
+/// A single row as a widget shows it: enough to render and act on, and nothing else.
 public struct TaskifyWidgetTask: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let boardID: String
     public let boardName: String
     public let dueDate: Date?
+    public var kind: TaskifyWidgetItemKind
 
     public init(
         id: String,
         title: String,
         boardID: String,
         boardName: String,
-        dueDate: Date?
+        dueDate: Date?,
+        kind: TaskifyWidgetItemKind = .task
     ) {
         self.id = id
         self.title = title
         self.boardID = boardID
         self.boardName = boardName
         self.dueDate = dueDate
+        self.kind = kind
     }
 }
 
@@ -119,10 +142,31 @@ extension TaskifySnapshot {
             .map(item)
 
         // Everything from today onward, matching Upcoming's own `dueDate >= startOfToday` filter.
-        let upcoming = live
+        // Taskify events sit alongside tasks here because Upcoming lists them together -- but they
+        // are never counted as tasks due today, which is what `today` is for.
+        let upcomingTasks = live
             .filter { ($0.dueDate ?? startOfToday) >= startOfToday }
-            .prefix(limit)
             .map(item)
+
+        let upcomingEvents = (taskifyEvents ?? [])
+            .filter { event in
+                guard !event.isDeleted, let start = event.startDate else { return false }
+                return start >= startOfToday
+            }
+            .map { event in
+                TaskifyWidgetTask(
+                    id: event.id,
+                    title: event.title,
+                    boardID: event.boardID ?? "",
+                    boardName: event.boardID.flatMap { boardNames[$0] } ?? "",
+                    dueDate: event.startDate,
+                    kind: .event
+                )
+            }
+
+        let upcoming = (upcomingTasks + upcomingEvents)
+            .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+            .prefix(limit)
 
         let openCounts = tasks.reduce(into: [String: Int]()) { counts, task in
             guard !task.isDeleted, !task.completed else { return }
