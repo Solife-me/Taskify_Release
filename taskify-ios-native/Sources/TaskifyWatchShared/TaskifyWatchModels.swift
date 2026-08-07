@@ -159,10 +159,62 @@ public struct TaskifyWatchProvisioningReceipt: Codable, Equatable, Sendable {
     }
 }
 
+public struct TaskifyWatchVoiceDraft: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let dueISO: String?
+    public let notes: String?
+    public let subtasks: [String]?
+    public let priority: Int?
+
+    public init(
+        id: String = UUID().uuidString,
+        title: String,
+        dueISO: String? = nil,
+        notes: String? = nil,
+        subtasks: [String]? = nil,
+        priority: Int? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.dueISO = dueISO
+        self.notes = notes
+        self.subtasks = subtasks
+        self.priority = priority
+    }
+}
+
+public struct TaskifyWatchVoicePreviewRequest: Identifiable, Codable, Equatable, Sendable {
+    public let type: String
+    public let id: String
+    public let transcript: String
+    public let boardID: String
+
+    public init(id: String = UUID().uuidString, transcript: String, boardID: String) {
+        self.type = "voicePreview"
+        self.id = id
+        self.transcript = transcript
+        self.boardID = boardID
+    }
+}
+
+public struct TaskifyWatchVoicePreview: Codable, Equatable, Sendable {
+    public let requestID: String
+    public let transcript: String
+    public let tasks: [TaskifyWatchVoiceDraft]
+
+    public init(requestID: String, transcript: String, tasks: [TaskifyWatchVoiceDraft]) {
+        self.requestID = requestID
+        self.transcript = transcript
+        self.tasks = tasks
+    }
+}
+
 public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Hashable, Sendable {
         case completeTask
         case createTask
+        case createVoiceTasks
         case processVoiceTranscript
     }
 
@@ -172,6 +224,7 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
     public let title: String?
     public let boardID: String?
     public let transcript: String?
+    public let voiceTasks: [TaskifyWatchVoiceDraft]?
     public let createdAt: Date
 
     public init(
@@ -181,6 +234,7 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
         title: String? = nil,
         boardID: String? = nil,
         transcript: String? = nil,
+        voiceTasks: [TaskifyWatchVoiceDraft]? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -189,6 +243,7 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
         self.title = title
         self.boardID = boardID
         self.transcript = transcript
+        self.voiceTasks = voiceTasks
         self.createdAt = createdAt
     }
 }
@@ -246,6 +301,12 @@ public enum TaskifyWatchTransfer {
         case .createTask:
             isValid = !(command.boardID ?? "").isEmpty &&
                 !(command.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .createVoiceTasks:
+            isValid = !(command.boardID ?? "").isEmpty &&
+                !(command.voiceTasks ?? []).isEmpty &&
+                (command.voiceTasks ?? []).allSatisfy {
+                    !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
         case .processVoiceTranscript:
             isValid = !(command.boardID ?? "").isEmpty &&
                 !(command.transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -264,6 +325,36 @@ public enum TaskifyWatchTransfer {
             throw TransferError.unsupportedSchema(receipt.snapshot.schemaVersion)
         }
         return receipt
+    }
+
+    public static func encode(_ request: TaskifyWatchVoicePreviewRequest) throws -> Data {
+        try encoder.encode(request)
+    }
+
+    public static func decodeVoicePreviewRequest(_ data: Data) throws -> TaskifyWatchVoicePreviewRequest {
+        let request = try decoder.decode(TaskifyWatchVoicePreviewRequest.self, from: data)
+        guard request.type == "voicePreview",
+              !request.boardID.isEmpty,
+              !request.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TransferError.invalidVoicePreview
+        }
+        return request
+    }
+
+    public static func encode(_ preview: TaskifyWatchVoicePreview) throws -> Data {
+        try encoder.encode(preview)
+    }
+
+    public static func decodeVoicePreview(_ data: Data) throws -> TaskifyWatchVoicePreview {
+        let preview = try decoder.decode(TaskifyWatchVoicePreview.self, from: data)
+        guard !preview.requestID.isEmpty,
+              !preview.tasks.isEmpty,
+              preview.tasks.allSatisfy({
+                  !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              }) else {
+            throw TransferError.invalidVoicePreview
+        }
+        return preview
     }
 
     public static func encode(_ payload: TaskifyWatchProvisioningPayload) throws -> Data {
@@ -296,6 +387,7 @@ public enum TaskifyWatchTransfer {
         case invalidPrivateKey
         case invalidPublicKey
         case invalidCommand
+        case invalidVoicePreview
 
         public var errorDescription: String? {
             switch self {
@@ -307,6 +399,8 @@ public enum TaskifyWatchTransfer {
                 "The Watch provisioning message does not contain a valid public key."
             case .invalidCommand:
                 "The Watch command is incomplete."
+            case .invalidVoicePreview:
+                "The Watch dictation preview is incomplete."
             }
         }
     }

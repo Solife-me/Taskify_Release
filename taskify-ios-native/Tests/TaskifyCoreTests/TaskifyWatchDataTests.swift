@@ -190,6 +190,20 @@ final class TaskifyWatchDataTests: XCTestCase {
             transcript: "Remind me to call Sam tomorrow",
             createdAt: now
         )
+        let voiceDraft = TaskifyWatchVoiceDraft(
+            id: "draft",
+            title: "Call Sam",
+            dueISO: "2026-08-08T14:00:00Z",
+            subtasks: ["Confirm agenda"],
+            priority: 2
+        )
+        let createVoiceTasks = TaskifyWatchCommand(
+            id: "create-voice",
+            kind: .createVoiceTasks,
+            boardID: "board",
+            voiceTasks: [voiceDraft],
+            createdAt: now
+        )
         XCTAssertEqual(
             try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(create)),
             create
@@ -197,6 +211,33 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertEqual(
             try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(voice)),
             voice
+        )
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(createVoiceTasks)),
+            createVoiceTasks
+        )
+        let previewRequest = TaskifyWatchVoicePreviewRequest(
+            id: "preview",
+            transcript: "Call Sam tomorrow",
+            boardID: "board"
+        )
+        let preview = TaskifyWatchVoicePreview(
+            requestID: previewRequest.id,
+            transcript: previewRequest.transcript,
+            tasks: [voiceDraft]
+        )
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeVoicePreviewRequest(
+                TaskifyWatchTransfer.encode(previewRequest)
+            ),
+            previewRequest
+        )
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeVoicePreview(TaskifyWatchTransfer.encode(preview)),
+            preview
+        )
+        XCTAssertThrowsError(
+            try TaskifyWatchTransfer.decodeVoicePreviewRequest(TaskifyWatchTransfer.encode(voice))
         )
         let receipt = TaskifyWatchCommandReceipt(commandID: command.id, snapshot: snapshot)
         XCTAssertEqual(
@@ -257,6 +298,7 @@ final class TaskifyWatchDataTests: XCTestCase {
         for command in [
             TaskifyWatchCommand(kind: .completeTask),
             TaskifyWatchCommand(kind: .createTask, title: "Task without a board"),
+            TaskifyWatchCommand(kind: .createVoiceTasks, boardID: "board", voiceTasks: []),
             TaskifyWatchCommand(kind: .processVoiceTranscript, boardID: "board"),
         ] {
             XCTAssertThrowsError(

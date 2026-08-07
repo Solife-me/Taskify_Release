@@ -18,6 +18,20 @@ enum TaskifyWatchKeychainError: LocalizedError {
     }
 }
 
+enum TaskifyWatchDictationError: LocalizedError {
+    case phoneUnavailable
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .phoneUnavailable:
+            "Open Taskify on your iPhone to interpret this dictation."
+        case .invalidResponse:
+            "Taskify couldn't interpret that. Try saying it another way."
+        }
+    }
+}
+
 /// Stores the Nostr private key only in the Watch's system Keychain. This protection class does
 /// not sync, is not backed up, is unavailable while locked, and is destroyed if the Watch
 /// passcode is removed.
@@ -204,6 +218,54 @@ final class TaskifyWatchAppModel: NSObject {
         return true
     }
 
+    func previewVoiceTasks(
+        transcript input: String,
+        boardID: String
+    ) async throws -> TaskifyWatchVoicePreview {
+        let transcript = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty,
+              WCSession.isSupported(),
+              WCSession.default.activationState == .activated,
+              WCSession.default.isReachable else {
+            throw TaskifyWatchDictationError.phoneUnavailable
+        }
+        let request = TaskifyWatchVoicePreviewRequest(
+            transcript: transcript,
+            boardID: boardID
+        )
+        let data = try TaskifyWatchTransfer.encode(request)
+        return try await withCheckedThrowingContinuation { continuation in
+            WCSession.default.sendMessageData(data) { replyData in
+                do {
+                    let preview = try TaskifyWatchTransfer.decodeVoicePreview(replyData)
+                    guard preview.requestID == request.id else {
+                        throw TaskifyWatchDictationError.invalidResponse
+                    }
+                    continuation.resume(returning: preview)
+                } catch {
+                    continuation.resume(throwing: TaskifyWatchDictationError.invalidResponse)
+                }
+            } errorHandler: { _ in
+                continuation.resume(throwing: TaskifyWatchDictationError.phoneUnavailable)
+            }
+        }
+    }
+
+    @discardableResult
+    func addVoiceTasks(_ tasks: [TaskifyWatchVoiceDraft], boardID: String) -> Bool {
+        guard !tasks.isEmpty else { return false }
+        let command = TaskifyWatchCommand(
+            kind: .createVoiceTasks,
+            boardID: boardID,
+            voiceTasks: tasks
+        )
+        pendingCommands.append(command)
+        persistPendingCommands()
+        statusMessage = tasks.count == 1 ? "Adding task…" : "Adding \(tasks.count) tasks…"
+        deliver(command)
+        return true
+    }
+
     private func visible(_ tasks: [TaskifyWatchTask]) -> [TaskifyWatchTask] {
         tasks.filter { !pendingCompletionIDs.contains($0.id) }
     }
@@ -265,6 +327,8 @@ final class TaskifyWatchAppModel: NSObject {
             statusMessage = "Completion saved — it will sync when the iPhone is available."
         case .createTask:
             statusMessage = "Task saved — it will be added when the iPhone is available."
+        case .createVoiceTasks:
+            statusMessage = "Dictated tasks saved — they will be added when the iPhone is available."
         case .processVoiceTranscript:
             statusMessage = "Voice request saved — the iPhone will process it when available."
         }
@@ -317,6 +381,7 @@ final class TaskifyWatchAppModel: NSObject {
             persistPendingCommands()
             if pendingCommands.isEmpty {
                 statusMessage = acknowledgedKinds.contains(.createTask) ||
+                    acknowledgedKinds.contains(.createVoiceTasks) ||
                     acknowledgedKinds.contains(.processVoiceTranscript)
                     ? "Task added"
                     : "Tasks are up to date"

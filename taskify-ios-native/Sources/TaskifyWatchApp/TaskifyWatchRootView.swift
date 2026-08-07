@@ -152,9 +152,9 @@ struct TaskifyWatchRootView: View {
 }
 
 private struct TaskifyWatchQuickAddSheet: View {
-    private enum Mode {
+    private enum Mode: Equatable {
         case choices
-        case type
+        case dictationReview
     }
 
     @Environment(TaskifyWatchAppModel.self) private var model
@@ -162,9 +162,13 @@ private struct TaskifyWatchQuickAddSheet: View {
     let destinationBoardID: String?
 
     @State private var mode: Mode = .choices
-    @State private var draft = ""
     @State private var isRequestingSystemInput = false
     @State private var selectedBoardID: String?
+    @State private var dictatedTranscript = ""
+    @State private var voicePreview: TaskifyWatchVoicePreview?
+    @State private var dictationError: String?
+    @State private var isInterpreting = false
+    @State private var interpretationTask: Task<Void, Never>?
 
     private var effectiveBoardID: String? {
         destinationBoardID ?? selectedBoardID
@@ -190,68 +194,100 @@ private struct TaskifyWatchQuickAddSheet: View {
                     }
                 }
 
-                if mode == .choices {
-                    Section("Input") {
+                switch mode {
+                case .choices:
+                    Section {
                         Button {
-                            mode = .type
+                            requestSystemInput(for: .type)
                         } label: {
-                            QuickAddOptionLabel(
-                                title: "Type task name",
-                                subtitle: "Keyboard or Scribble",
+                            QuickAddChoiceLabel(
+                                title: "Type",
                                 systemImage: "keyboard"
                             )
                         }
 
                         Button {
-                            requestSystemInput(usingTaskifyVoice: false)
+                            requestSystemInput(for: .dictation)
                         } label: {
-                            QuickAddOptionLabel(
-                                title: "Watch Dictation",
-                                subtitle: "One task, exact wording",
-                                systemImage: "mic.fill"
-                            )
-                        }
-
-                        Button {
-                            requestSystemInput(usingTaskifyVoice: true)
-                        } label: {
-                            QuickAddOptionLabel(
-                                title: "Taskify Voice",
-                                subtitle: "Dates or multiple tasks",
+                            QuickAddChoiceLabel(
+                                title: "Dictation",
                                 systemImage: "waveform.and.sparkles"
                             )
                         }
                     }
-                } else {
-                    Section("Task name") {
-                        TextField("What needs doing?", text: $draft)
-                            .onSubmit { submit(draft, usingTaskifyVoice: false) }
 
-                        Button("Add Task") {
-                            submit(draft, usingTaskifyVoice: false)
-                        }
-                        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                case .dictationReview:
+                    Section("You said") {
+                        Text(dictatedTranscript)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
-                    Button("Back") { mode = .choices }
-                }
+                    Section("Tasks") {
+                        if isInterpreting {
+                            VStack(spacing: 8) {
+                                ProgressView()
+                                    .tint(TaskifyWatchTheme.accent)
+                                Text("Understanding…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                        } else if let voicePreview {
+                            ForEach(voicePreview.tasks) { task in
+                                TaskifyWatchVoiceDraftRow(task: task)
+                            }
+                        } else if let dictationError {
+                            Label(dictationError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
 
-                if isRequestingSystemInput {
-                    ProgressView("Opening input…")
-                }
+                    if let tasks = voicePreview?.tasks, !tasks.isEmpty {
+                        Button {
+                            addDictatedTasks(tasks)
+                        } label: {
+                            Label(
+                                tasks.count == 1 ? "Add Task" : "Add \(tasks.count) Tasks",
+                                systemImage: "checkmark"
+                            )
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(TaskifyWatchTheme.accent)
+                    } else if dictationError != nil {
+                        Button("Try Again") {
+                            interpretDictation()
+                        }
+                    }
 
-                Button("Cancel", role: .cancel) { dismiss() }
+                    Button("Dictate Again") {
+                        resetDictation()
+                        requestSystemInput(for: .dictation)
+                    }
+                }
             }
-            .navigationTitle("New Task")
+            .navigationTitle(mode == .choices ? "New Task" : "Review")
             .onAppear {
                 guard destinationBoardID == nil, selectedBoardID == nil else { return }
                 selectedBoardID = model.snapshot.selectedBoardID ?? model.snapshot.boards.first?.id
             }
+            .onDisappear {
+                interpretationTask?.cancel()
+                interpretationTask = nil
+            }
         }
     }
 
-    private func requestSystemInput(usingTaskifyVoice: Bool) {
+    private enum InputKind {
+        case type
+        case dictation
+    }
+
+    private func requestSystemInput(for kind: InputKind) {
         guard !isRequestingSystemInput,
+              effectiveBoardID != nil,
               let controller = WKApplication.shared().visibleInterfaceController else { return }
         isRequestingSystemInput = true
         controller.presentTextInputController(
@@ -260,24 +296,73 @@ private struct TaskifyWatchQuickAddSheet: View {
         ) { results in
             isRequestingSystemInput = false
             guard let text = results?.first as? String else { return }
-            submit(text, usingTaskifyVoice: usingTaskifyVoice)
+            switch kind {
+            case .type:
+                addTypedTask(text)
+            case .dictation:
+                dictatedTranscript = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !dictatedTranscript.isEmpty else { return }
+                mode = .dictationReview
+                interpretDictation()
+            }
         }
     }
 
-    private func submit(_ value: String, usingTaskifyVoice: Bool) {
+    private func addTypedTask(_ value: String) {
         guard model.addTask(
             value,
             boardID: effectiveBoardID,
-            usingTaskifyVoice: usingTaskifyVoice
+            usingTaskifyVoice: false
         ) else { return }
         WKInterfaceDevice.current().play(.success)
         dismiss()
     }
+
+    private func interpretDictation() {
+        guard let boardID = effectiveBoardID, !dictatedTranscript.isEmpty else { return }
+        voicePreview = nil
+        dictationError = nil
+        isInterpreting = true
+        interpretationTask?.cancel()
+        interpretationTask = Task {
+            do {
+                let preview = try await model.previewVoiceTasks(
+                    transcript: dictatedTranscript,
+                    boardID: boardID
+                )
+                guard !Task.isCancelled else { return }
+                voicePreview = preview
+                WKInterfaceDevice.current().play(.directionUp)
+            } catch {
+                guard !Task.isCancelled else { return }
+                dictationError = error.localizedDescription
+                WKInterfaceDevice.current().play(.failure)
+            }
+            isInterpreting = false
+            interpretationTask = nil
+        }
+    }
+
+    private func addDictatedTasks(_ tasks: [TaskifyWatchVoiceDraft]) {
+        guard let boardID = effectiveBoardID,
+              model.addVoiceTasks(tasks, boardID: boardID) else { return }
+        WKInterfaceDevice.current().play(.success)
+        dismiss()
+    }
+
+    private func resetDictation() {
+        dictatedTranscript = ""
+        voicePreview = nil
+        dictationError = nil
+        isInterpreting = false
+        interpretationTask?.cancel()
+        interpretationTask = nil
+        mode = .choices
+    }
 }
 
-private struct QuickAddOptionLabel: View {
+private struct QuickAddChoiceLabel: View {
     let title: String
-    let subtitle: String
     let systemImage: String
 
     var body: some View {
@@ -286,14 +371,49 @@ private struct QuickAddOptionLabel: View {
                 .font(.body.weight(.semibold))
                 .foregroundStyle(TaskifyWatchTheme.accent)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+            Text(title)
+                .font(.body.weight(.semibold))
+        }
+    }
+}
+
+private struct TaskifyWatchVoiceDraftRow: View {
+    let task: TaskifyWatchVoiceDraft
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(TaskifyWatchTheme.accent)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task.title)
                     .font(.body.weight(.semibold))
-                Text(subtitle)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let dueDate {
+                    Label(
+                        dueDate.formatted(.dateTime.month(.abbreviated).day().hour().minute()),
+                        systemImage: "calendar"
+                    )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                }
+                if let subtasks = task.subtasks, !subtasks.isEmpty {
+                    Label(
+                        "\(subtasks.count) subtask\(subtasks.count == 1 ? "" : "s")",
+                        systemImage: "checklist"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
             }
         }
+        .padding(.vertical, 2)
+    }
+
+    private var dueDate: Date? {
+        guard let dueISO = task.dueISO else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: dueISO) ?? ISO8601DateFormatter().date(from: dueISO)
     }
 }
 

@@ -175,6 +175,29 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                 throw TaskifyWatchBridgeError.invalidCommand
             }
 
+        case .createVoiceTasks:
+            guard let boardID = command.boardID,
+                  let drafts = command.voiceTasks,
+                  !drafts.isEmpty else {
+                throw TaskifyWatchBridgeError.invalidCommand
+            }
+            let tasks = drafts.map {
+                VoiceFinalTask(
+                    title: $0.title,
+                    dueISO: $0.dueISO,
+                    notes: $0.notes,
+                    subtasks: $0.subtasks,
+                    priority: $0.priority
+                )
+            }
+            guard model.addTasksFromVoice(
+                tasks,
+                defaultBoardID: boardID,
+                taskIDPrefix: "watch-\(command.id)"
+            ) == tasks.count else {
+                throw TaskifyWatchBridgeError.invalidCommand
+            }
+
         case .processVoiceTranscript:
             guard let transcript = command.transcript?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !transcript.isEmpty,
@@ -183,23 +206,10 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                 throw TaskifyWatchBridgeError.invalidCommand
             }
 
-            let client = VoiceDictationClient()
-            let extraction = try await client.extract(
-                npub: model.identityNpub,
+            let finalTasks = try await finalizedVoiceTasks(
                 transcript: transcript,
-                candidates: [],
-                sessionDurationSeconds: max(1, transcript.split(whereSeparator: { $0.isWhitespace }).count / 2)
-            )
-            var voiceSession = VoiceSessionState()
-            voiceSession.commitTranscript(transcript)
-            voiceSession.apply(extraction.operations)
-            let candidates = voiceSession.confirmedCandidates.isEmpty
-                ? [VoiceTaskCandidate(title: transcript)]
-                : voiceSession.confirmedCandidates
-            let finalTasks = await client.finalize(
-                npub: model.identityNpub,
-                candidates: candidates,
-                boardID: boardID
+                boardID: boardID,
+                using: model
             )
             guard model.addTasksFromVoice(
                 finalTasks,
@@ -214,6 +224,66 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
         let snapshot = snapshotIncludingAcknowledgements(model.watchSnapshot())
         sendSnapshot(snapshot)
         return TaskifyWatchCommandReceipt(commandID: command.id, snapshot: snapshot)
+    }
+
+    @MainActor
+    private func voicePreview(
+        for request: TaskifyWatchVoicePreviewRequest
+    ) async throws -> TaskifyWatchVoicePreview {
+        guard let model else { throw TaskifyWatchBridgeError.modelUnavailable }
+        let transcript = request.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalTasks = try await finalizedVoiceTasks(
+            transcript: transcript,
+            boardID: request.boardID,
+            using: model
+        )
+        guard !finalTasks.isEmpty else { throw TaskifyWatchBridgeError.invalidCommand }
+        return TaskifyWatchVoicePreview(
+            requestID: request.id,
+            transcript: transcript,
+            tasks: finalTasks.enumerated().map { index, task in
+                TaskifyWatchVoiceDraft(
+                    id: "\(request.id)-\(index)",
+                    title: task.title,
+                    dueISO: task.dueISO,
+                    notes: task.notes,
+                    subtasks: task.subtasks,
+                    priority: task.priority
+                )
+            }
+        )
+    }
+
+    @MainActor
+    private func finalizedVoiceTasks(
+        transcript: String,
+        boardID: String,
+        using model: AppModel
+    ) async throws -> [VoiceFinalTask] {
+        guard !transcript.isEmpty, !model.identityNpub.isEmpty else {
+            throw TaskifyWatchBridgeError.invalidCommand
+        }
+        let client = VoiceDictationClient()
+        let extraction = try await client.extract(
+            npub: model.identityNpub,
+            transcript: transcript,
+            candidates: [],
+            sessionDurationSeconds: max(
+                1,
+                transcript.split(whereSeparator: { $0.isWhitespace }).count / 2
+            )
+        )
+        var voiceSession = VoiceSessionState()
+        voiceSession.commitTranscript(transcript)
+        voiceSession.apply(extraction.operations)
+        let candidates = voiceSession.confirmedCandidates.isEmpty
+            ? [VoiceTaskCandidate(title: transcript)]
+            : voiceSession.confirmedCandidates
+        return await client.finalize(
+            npub: model.identityNpub,
+            candidates: candidates,
+            boardID: boardID
+        )
     }
 
     private func recordAcknowledgement(_ commandID: String) {
@@ -284,6 +354,20 @@ extension TaskifyWatchBridge: WCSessionDelegate {
         didReceiveMessageData messageData: Data,
         replyHandler: @escaping (Data) -> Void
     ) {
+        if let request = try? TaskifyWatchTransfer.decodeVoicePreviewRequest(messageData) {
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    replyHandler(Data())
+                    return
+                }
+                do {
+                    replyHandler(try TaskifyWatchTransfer.encode(await self.voicePreview(for: request)))
+                } catch {
+                    replyHandler(Data())
+                }
+            }
+            return
+        }
         do {
             let command = try TaskifyWatchTransfer.decodeCommand(messageData)
             Task { @MainActor [weak self] in

@@ -460,7 +460,7 @@ struct SettingsView: View {
             .buttonStyle(.borderedProminent)
             .disabled(watchBridge.state == .activating || watchBridge.state == .provisioning)
 
-            Text("Open Taskify on an unlocked, passcode-protected Watch, then enable sync here. Watch task additions and completions are delivered immediately or safely queued for the iPhone. Quick Add supports typing, Watch Dictation, and Taskify Voice. Direct Watch-to-relay updates are the next Watch milestone. Removing the Watch passcode deletes its stored identity.")
+            Text("Open Taskify on an unlocked, passcode-protected Watch, then enable sync here. Watch task additions and completions are delivered immediately or safely queued for the iPhone. Quick Add offers native Watch text input or Taskify Dictation with a task review before saving. Direct Watch-to-relay updates are the next Watch milestone. Removing the Watch passcode deletes its stored identity.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
