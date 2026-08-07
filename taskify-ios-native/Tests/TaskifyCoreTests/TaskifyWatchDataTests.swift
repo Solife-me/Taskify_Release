@@ -147,6 +147,57 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertEqual(snapshot.watchData(now: now).boards.map(\.id), ["first", "second"])
     }
 
+    func testWatchWidgetSnapshotContainsOnlyGlanceableTodayData() {
+        let widgetSource = TaskifyWatchSnapshot(
+            tasks: [
+                TaskifyWatchTask(
+                    id: "earlier",
+                    title: "Morning task",
+                    boardID: "board",
+                    boardName: "Work",
+                    columnName: "Inbox",
+                    dueDate: now.addingTimeInterval(-3_600),
+                    dueTimeEnabled: true,
+                    priority: 2,
+                    order: 1,
+                    syncPayload: Data("private board payload".utf8)
+                ),
+                TaskifyWatchTask(
+                    id: "later",
+                    title: "Afternoon task",
+                    boardID: "board",
+                    boardName: "Work",
+                    columnName: "Inbox",
+                    dueDate: now.addingTimeInterval(3_600),
+                    dueTimeEnabled: true,
+                    priority: nil,
+                    order: 2
+                ),
+                TaskifyWatchTask(
+                    id: "tomorrow",
+                    title: "Tomorrow task",
+                    boardID: "board",
+                    boardName: "Work",
+                    columnName: "Inbox",
+                    dueDate: now.addingTimeInterval(86_400),
+                    dueTimeEnabled: false,
+                    priority: nil,
+                    order: 3
+                ),
+            ],
+            generatedAt: now
+        )
+
+        let widget = TaskifyWatchWidgetSnapshot(
+            snapshot: widgetSource,
+            excludingTaskIDs: ["earlier"]
+        )
+
+        XCTAssertEqual(widget.tasks.map(\.id), ["later", "tomorrow"])
+        XCTAssertEqual(widget.tasks.first?.boardName, "Work")
+        XCTAssertEqual(widget.todayTasks(now: now, calendar: calendar).map(\.id), ["later"])
+    }
+
     func testWatchTransferRoundTripsSnapshotsAndCommands() throws {
         let snapshot = TaskifyWatchSnapshot(
             tasks: [

@@ -3,6 +3,7 @@ import Observation
 import Security
 import TaskifyWatchShared
 import WatchConnectivity
+import WidgetKit
 
 enum TaskifyWatchKeychainError: LocalizedError {
     case passcodeRequired
@@ -226,6 +227,7 @@ final class TaskifyWatchAppModel: NSObject {
         pendingCommands.append(command)
         pendingCompletionIDs.insert(taskID)
         persistPendingCommands()
+        persistWidgetSnapshot()
         deliver(command)
         beginDirectSync(command)
     }
@@ -854,6 +856,7 @@ final class TaskifyWatchAppModel: NSObject {
         guard let data = try? Data(contentsOf: cacheURL),
               let cached = try? TaskifyWatchTransfer.decodeSnapshot(data) else { return }
         snapshot = cached
+        persistWidgetSnapshot()
     }
 
     private func loadPendingCommands() {
@@ -869,6 +872,7 @@ final class TaskifyWatchAppModel: NSObject {
         pendingCompletionIDs = Set(pendingCommands.compactMap { command in
             command.kind == .completeTask ? command.taskID : nil
         })
+        persistWidgetSnapshot()
     }
 
     private func persistPendingCommands() {
@@ -896,9 +900,19 @@ final class TaskifyWatchAppModel: NSObject {
                 to: cacheURL,
                 options: [.atomic, .completeFileProtection]
             )
+            persistWidgetSnapshot()
         } catch {
             statusMessage = "Tasks are available, but the local cache could not be updated."
         }
+    }
+
+    private func persistWidgetSnapshot() {
+        let widgetSnapshot = TaskifyWatchWidgetSnapshot(
+            snapshot: snapshot,
+            excludingTaskIDs: pendingCompletionIDs
+        )
+        guard TaskifyWatchWidgetCache.saveIfChanged(widgetSnapshot) else { return }
+        WidgetCenter.shared.reloadTimelines(ofKind: TaskifyWatchWidgetCache.todayWidgetKind)
     }
 
     private func sessionSetupTransfers() -> [WCSessionUserInfoTransfer] {

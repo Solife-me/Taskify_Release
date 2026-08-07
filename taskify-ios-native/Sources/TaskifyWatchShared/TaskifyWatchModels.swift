@@ -132,6 +132,99 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Watch widget snapshot
+
+/// The intentionally small subset of a Watch task that is safe and useful in a WidgetKit
+/// extension. Relay addresses, encrypted board payloads, and all signing material stay in the
+/// Watch app process.
+public struct TaskifyWatchWidgetTask: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let boardName: String
+    public let dueDate: Date?
+
+    public init(id: String, title: String, boardName: String, dueDate: Date?) {
+        self.id = id
+        self.title = title
+        self.boardName = boardName
+        self.dueDate = dueDate
+    }
+}
+
+public struct TaskifyWatchWidgetSnapshot: Codable, Equatable, Sendable {
+    public let tasks: [TaskifyWatchWidgetTask]
+    public let generatedAt: Date
+
+    public init(tasks: [TaskifyWatchWidgetTask] = [], generatedAt: Date = Date()) {
+        self.tasks = tasks
+        self.generatedAt = generatedAt
+    }
+
+    public init(
+        snapshot: TaskifyWatchSnapshot,
+        excludingTaskIDs: Set<String> = []
+    ) {
+        tasks = snapshot.tasks.compactMap { task in
+            guard !excludingTaskIDs.contains(task.id) else { return nil }
+            return TaskifyWatchWidgetTask(
+                id: task.id,
+                title: task.title,
+                boardName: task.boardName,
+                dueDate: task.dueDate
+            )
+        }
+        generatedAt = snapshot.generatedAt
+    }
+
+    public func todayTasks(
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [TaskifyWatchWidgetTask] {
+        let start = calendar.startOfDay(for: now)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        return tasks
+            .filter { task in
+                guard let dueDate = task.dueDate else { return false }
+                return dueDate >= start && dueDate < end
+            }
+            .sorted { lhs, rhs in
+                if lhs.dueDate != rhs.dueDate {
+                    return (lhs.dueDate ?? .distantFuture) < (rhs.dueDate ?? .distantFuture)
+                }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
+}
+
+/// Shares non-secret widget data between the Watch app and its WidgetKit extension. App Groups
+/// are device-local here: this container lives on Apple Watch and does not copy the iPhone store.
+public enum TaskifyWatchWidgetCache {
+    public static let appGroupIdentifier = "group.solife.me.Taskify"
+    public static let todayWidgetKind = "TaskifyWatchTodayWidget"
+
+    private static let snapshotKey = "taskify-watch-widget-snapshot-v1"
+
+    public static func load() -> TaskifyWatchWidgetSnapshot {
+        guard let defaults = UserDefaults(suiteName: appGroupIdentifier),
+              let data = defaults.data(forKey: snapshotKey),
+              let snapshot = try? JSONDecoder().decode(TaskifyWatchWidgetSnapshot.self, from: data) else {
+            return TaskifyWatchWidgetSnapshot()
+        }
+        return snapshot
+    }
+
+    /// Returns true only when the stored value changed, allowing the Watch app to preserve the
+    /// system's WidgetKit reload budget.
+    @discardableResult
+    public static func saveIfChanged(_ snapshot: TaskifyWatchWidgetSnapshot) -> Bool {
+        guard let defaults = UserDefaults(suiteName: appGroupIdentifier),
+              let data = try? JSONEncoder().encode(snapshot),
+              defaults.data(forKey: snapshotKey) != data else { return false }
+        defaults.set(data, forKey: snapshotKey)
+        return true
+    }
+}
+
 /// The only message that is allowed to carry private account material to the Watch.
 ///
 /// This payload is intentionally used with WatchConnectivity's immediate message API rather
