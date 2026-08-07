@@ -8,11 +8,12 @@ It is written for contributors/agents who need to safely modify reminder deliver
 
 ## 1) Purpose and runtime boundaries
 
-The Worker is responsible for three backend concerns:
+The Worker is responsible for four backend concerns:
 
 1. **Push device + reminder orchestration** (HTTP APIs + cron)
 2. **Google Calendar OAuth and synchronization**
-3. **Static PWA asset serving** (`ASSETS` binding fallback)
+3. **Independent Apple Watch opaque Nostr transport**
+4. **Static PWA asset serving** (`ASSETS` binding fallback)
 
 Primary entry points:
 - Fetch router: `worker/src/index.ts` (around lines 261–337)
@@ -50,6 +51,8 @@ Router dispatch in `fetch()`:
 - `DELETE /api/devices/:deviceId` → delete device + associated reminder/pending rows
 - `PUT /api/reminders` → replace reminder set for a device
 - `POST /api/reminders/poll` → fetch and acknowledge pending reminder notifications
+- `POST /api/watch/nostr/publish` → forward one Watch-signed encrypted task event to bounded `wss` relays
+- `POST /api/watch/nostr/query` → fetch signed encrypted task events for bounded board authors
 
 Reference: `worker/src/index.ts:290–307`.
 
@@ -64,6 +67,24 @@ Use this table before changing handler logic so caller contracts stay aligned.
 | `DELETE /api/devices/:deviceId` | path param `deviceId` | `204` empty body | `taskify-pwa/src/App.tsx:13321` | `worker/src/index.ts:2305` (`handleDeleteDevice`) |
 | `PUT /api/reminders` | `{ deviceId, reminders[] }` | `204` empty body | reminder sync in PWA | `worker/src/index.ts:2335` (`handleSaveReminders`) |
 | `POST /api/reminders/poll` | `{ endpoint }` or authenticated `{ deviceId, subscriptionId }`; optional acknowledgement IDs | `PendingReminder[]` | `taskify-pwa/public/sw.js` | `worker/src/reminders.ts` (`handlePollReminders`) |
+| `POST /api/watch/nostr/publish` | signed request; `{ relays, event }` where `event` is a valid kind-30301 Nostr event | `{ accepted, attempted, results }` | independent watchOS client | `worker/src/nostr-bridge.ts` |
+| `POST /api/watch/nostr/query` | signed request; `{ relays, filter: { authors, limit } }` | `{ events }` containing valid kind-30301 events | independent watchOS client | `worker/src/nostr-bridge.ts` |
+
+### Independent Watch privacy boundary
+
+The Watch bridge is transport, not a custody or decryption service:
+
+- The Apple Watch constructs, AES-GCM encrypts, and Schnorr-signs task events locally.
+- HTTPS requests are authenticated with a short-lived Schnorr signature over the exact body.
+- The Worker validates authentication and event signatures, restricts relay destinations to a
+  bounded list of public `wss` endpoints, and narrows reads to kind 30301 plus explicit authors.
+- The Worker receives the account public key, relay URLs, outer Nostr tags/IDs/timestamps, and
+  ciphertext. It never receives the account private key, raw board sync identifier, derived board
+  private key, AES key, or decrypted task content, and it does not persist bridged events.
+
+The iPhone remains responsible for initial authorization and sending the protected board context.
+Once authorized, the Watch can use its own Wi-Fi/cellular HTTPS path and does not require the
+iPhone to be reachable for task creation, completion, Dictation processing, or task refresh.
 
 ---
 

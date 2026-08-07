@@ -24,6 +24,7 @@ import {
   processDueReminders,
 } from "./reminders.ts";
 import { handleNip05Lookup } from "./nip05.ts";
+import { handleWatchNostrPublish, handleWatchNostrQuery } from "./nostr-bridge.ts";
 import type { Env, D1Database } from "./lib.ts";
 import { jsonResponse, requireDb } from "./lib.ts";
 // Re-export shared lib for trailing test re-exports that import from "./index.ts".
@@ -211,6 +212,12 @@ export default {
       }
       if (url.pathname === "/api/voice/finalize" && request.method === "POST") {
         return await handleVoiceFinalize(request, env);
+      }
+      if (url.pathname === "/api/watch/nostr/publish" && request.method === "POST") {
+        return await handleWatchNostrPublish(request);
+      }
+      if (url.pathname === "/api/watch/nostr/query" && request.method === "POST") {
+        return await handleWatchNostrQuery(request);
       }
       // Google Calendar routes
       if (url.pathname === "/api/gcal/auth/url" && request.method === "GET") {

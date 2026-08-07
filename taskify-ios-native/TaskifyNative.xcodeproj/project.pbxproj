@@ -55,6 +55,7 @@
 		A10000000000000000000201 /* TaskifyWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000101 /* TaskifyWatchApp.swift */; };
 		A10000000000000000000202 /* TaskifyWatchAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000102 /* TaskifyWatchAppModel.swift */; };
 		A10000000000000000000203 /* TaskifyWatchRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000103 /* TaskifyWatchRootView.swift */; };
+		A10000000000000000000207 /* TaskifyWatchIndependentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000105 /* TaskifyWatchIndependentClient.swift */; };
 		A10000000000000000000204 /* Sources/TaskifyApp/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000212 /* Sources/TaskifyApp/Resources/Assets.xcassets */; };
 		A10000000000000000000205 /* TaskifyWatchShared in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000401 /* TaskifyWatchShared */; };
 		A10000000000000000000206 /* TaskifyWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* TaskifyWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -151,6 +152,7 @@
 		A10000000000000000000102 /* TaskifyWatchAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchAppModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000103 /* TaskifyWatchRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchRootView.swift; sourceTree = "<group>"; };
 		A10000000000000000000104 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A10000000000000000000105 /* TaskifyWatchIndependentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchIndependentClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -318,6 +320,7 @@
 				A10000000000000000000101 /* TaskifyWatchApp.swift */,
 				A10000000000000000000102 /* TaskifyWatchAppModel.swift */,
 				A10000000000000000000103 /* TaskifyWatchRootView.swift */,
+				A10000000000000000000105 /* TaskifyWatchIndependentClient.swift */,
 				A10000000000000000000104 /* Info.plist */,
 			);
 			name = TaskifyWatch;
@@ -576,6 +579,7 @@
 				A10000000000000000000201 /* TaskifyWatchApp.swift in Sources */,
 				A10000000000000000000202 /* TaskifyWatchAppModel.swift in Sources */,
 				A10000000000000000000203 /* TaskifyWatchRootView.swift in Sources */,
+				A10000000000000000000207 /* TaskifyWatchIndependentClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

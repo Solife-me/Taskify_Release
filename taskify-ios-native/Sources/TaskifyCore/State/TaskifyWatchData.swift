@@ -50,14 +50,25 @@ public extension TaskifySnapshot {
                 dueDate: task.dueDateEnabled ? task.dueDate : nil,
                 dueTimeEnabled: task.dueTimeEnabled,
                 priority: task.priority?.rawValue,
-                order: task.order
+                order: task.order,
+                columnID: task.columnID,
+                nostrBoardID: board.effectiveNostrBoardID,
+                relayURLs: board.effectiveRelayURLs,
+                syncPayload: try? JSONEncoder().encode(TaskSyncPayload(task: task)),
+                nostrUpdatedAt: task.nostrUpdatedAt
             )
         }
         let watchBoards = visibleBoards.map { board in
             TaskifyWatchBoard(
                 id: board.id,
                 name: board.name,
-                openTaskCount: eligibleTasks.lazy.filter { $0.boardID == board.id }.count
+                openTaskCount: eligibleTasks.lazy.filter { $0.boardID == board.id }.count,
+                kind: board.kind.rawValue,
+                nostrBoardID: board.effectiveNostrBoardID,
+                relayURLs: board.effectiveRelayURLs,
+                defaultColumnID: board.kind == .week
+                    ? WeekdayColumn.containing(now).rawValue
+                    : board.columns.sorted { $0.order < $1.order }.first?.id
             )
         }
 

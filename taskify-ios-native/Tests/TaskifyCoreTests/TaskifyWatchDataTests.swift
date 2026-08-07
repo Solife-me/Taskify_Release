@@ -77,9 +77,14 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertEqual(watch.tasks.first?.boardName, "Work")
         XCTAssertEqual(watch.tasks.first?.columnName, "Inbox")
         XCTAssertEqual(watch.tasks.first?.priority, TaskPriority.high.rawValue)
+        XCTAssertEqual(watch.tasks.first?.columnID, "inbox")
+        XCTAssertEqual(watch.tasks.first?.nostrBoardID, work.effectiveNostrBoardID)
+        XCTAssertFalse(watch.tasks.first?.syncPayload?.isEmpty ?? true)
         XCTAssertEqual(watch.todayTasks(now: now, calendar: calendar).map(\.id), ["today"])
         XCTAssertEqual(watch.boards.map(\.name), ["Work", "Personal"])
         XCTAssertEqual(watch.boards.map(\.openTaskCount), [2, 0])
+        XCTAssertEqual(watch.boards.first?.kind, BoardKind.list.rawValue)
+        XCTAssertEqual(watch.boards.first?.defaultColumnID, "inbox")
         XCTAssertEqual(watch.selectedBoardID, work.id)
     }
 
@@ -252,15 +257,89 @@ final class TaskifyWatchDataTests: XCTestCase {
         let payload = try TaskifyWatchProvisioningPayload(
             privateKey: privateKey,
             publicKeyHex: publicKey,
+            publicKeyNpub: "npub1example",
             relayURLs: [" wss://relay.example/ ", "wss://relay.example", "https://not-a-relay.example"],
             snapshot: TaskifyWatchSnapshot(generatedAt: now)
         )
 
         XCTAssertEqual(payload.privateKey, privateKey)
+        XCTAssertEqual(payload.publicKeyNpub, "npub1example")
         XCTAssertEqual(payload.relayURLs, ["wss://relay.example"])
         XCTAssertEqual(
             try TaskifyWatchTransfer.decodeProvisioningPayload(TaskifyWatchTransfer.encode(payload)),
             payload
+        )
+    }
+
+    func testWatchNostrTaskEventIsNativeCodecCompatible() throws {
+        let board = Board(
+            id: "local-board",
+            name: "Work",
+            kind: .list,
+            columns: [BoardColumn(id: "inbox", name: "Inbox", order: 0)],
+            nostrBoardID: "shared-board-secret",
+            relayURLs: ["wss://relay.example"]
+        )
+        let task = TaskItem(
+            id: "watch-task",
+            boardID: board.id,
+            title: "Created independently",
+            note: "Encrypted on Apple Watch",
+            dueDate: now,
+            dueDateEnabled: true,
+            priority: .high,
+            columnID: "inbox",
+            createdBy: String(repeating: "a", count: 64)
+        )
+        let payload = try JSONEncoder().encode(TaskSyncPayload(task: task))
+        let watchEvent = try TaskifyWatchNostrCrypto.taskEvent(
+            taskID: task.id,
+            boardID: board.effectiveNostrBoardID,
+            columnTag: "inbox",
+            status: "open",
+            payload: payload,
+            createdAt: 1_786_000_000
+        )
+        let nativeEvent = NostrEvent(
+            id: watchEvent.id,
+            publicKey: watchEvent.publicKey,
+            createdAt: watchEvent.createdAt,
+            kind: watchEvent.kind,
+            tags: watchEvent.tags,
+            content: watchEvent.content,
+            signature: watchEvent.signature
+        )
+
+        XCTAssertTrue(TaskifyWatchNostrCrypto.verify(watchEvent))
+        XCTAssertTrue(nativeEvent.verify())
+        let decoded = try TaskEventCodec.decodeTaskEvent(nativeEvent, board: board, calendar: calendar)
+        XCTAssertEqual(decoded.task.id, task.id)
+        XCTAssertEqual(decoded.task.title, task.title)
+        XCTAssertEqual(decoded.task.note, task.note)
+        XCTAssertEqual(decoded.task.priority, task.priority)
+        XCTAssertEqual(decoded.task.columnID, "inbox")
+    }
+
+    func testWatchRequestAuthenticationIsStableForFixtureTimestamp() throws {
+        let privateKey = Data(repeating: 7, count: 32)
+        let identity = try NostrIdentity(privateKey: privateKey)
+        let authentication = try TaskifyWatchNostrCrypto.requestAuthentication(
+            privateKey: privateKey,
+            publicKeyHex: identity.publicKeyHex,
+            body: Data("{\"test\":true}".utf8),
+            timestamp: 1_786_000_000
+        )
+
+        XCTAssertEqual(authentication.publicKeyHex, identity.publicKeyHex)
+        XCTAssertEqual(authentication.timestamp, "1786000000")
+        XCTAssertEqual(authentication.signature.count, 128)
+        XCTAssertThrowsError(
+            try TaskifyWatchNostrCrypto.requestAuthentication(
+                privateKey: privateKey,
+                publicKeyHex: String(repeating: "b", count: 64),
+                body: Data("{}".utf8),
+                timestamp: 1_786_000_000
+            )
         )
     }
 
@@ -273,6 +352,26 @@ final class TaskifyWatchDataTests: XCTestCase {
 
         XCTAssertNil(snapshot.acknowledgedCommandIDs)
         XCTAssertTrue(snapshot.tasks.isEmpty)
+    }
+
+    func testCompanionOnlySnapshotStillDecodesAfterIndependentSyncUpgrade() throws {
+        let legacyJSON = """
+        {
+          "schemaVersion":1,
+          "tasks":[{
+            "id":"legacy-task","title":"Legacy","boardID":"legacy-board",
+            "boardName":"Board","dueTimeEnabled":false,"order":0
+          }],
+          "boards":[{"id":"legacy-board","name":"Board","openTaskCount":1}],
+          "selectedBoardID":"legacy-board","generatedAt":1785945600000
+        }
+        """
+
+        let snapshot = try TaskifyWatchTransfer.decodeSnapshot(Data(legacyJSON.utf8))
+
+        XCTAssertEqual(snapshot.tasks.first?.id, "legacy-task")
+        XCTAssertNil(snapshot.tasks.first?.nostrBoardID)
+        XCTAssertNil(snapshot.boards.first?.relayURLs)
     }
 
     func testProvisioningPayloadRejectsMalformedKeyMaterial() {

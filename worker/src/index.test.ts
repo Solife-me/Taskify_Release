@@ -4,6 +4,7 @@ import worker from "./index.ts";
 import { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth } from "./index.ts";
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { watchNostrBridgeTestHooks } from "./nostr-bridge.ts";
 
 type DeviceRow = {
   device_id: string;
@@ -1857,6 +1858,63 @@ test("verifyGcalAuth: tampered body returns null", async () => {
     body: tamperedBody,
   });
   assert.equal(await verifyGcalAuth(req), null);
+});
+
+test("Watch Nostr bridge only accepts bounded public wss relay URLs", () => {
+  const relays = watchNostrBridgeTestHooks.normalizedRelayURLs([
+    "wss://relay.example/",
+    "wss://relay.example",
+    "ws://insecure.example",
+    "wss://localhost",
+    "wss://127.0.0.1",
+    ...Array.from({ length: 12 }, (_, index) => `wss://relay-${index}.example`),
+  ]);
+
+  assert.equal(relays[0], "wss://relay.example");
+  assert.equal(relays.length, 8);
+  assert.ok(relays.every((relay) => relay.startsWith("wss://")));
+});
+
+test("Watch Nostr bridge narrows query filters to Taskify task authors", () => {
+  const author = "ab".repeat(32);
+  assert.deepEqual(
+    watchNostrBridgeTestHooks.normalizedFilter({
+      kinds: [1, 30_301],
+      authors: [author, author, "invalid"],
+      limit: 50_000,
+      since: 0,
+    }),
+    { kinds: [30_301], authors: [author], limit: 1_000 },
+  );
+});
+
+test("POST /api/watch/nostr/query requires signed Taskify authentication", async () => {
+  const env = await makeGcalEnv();
+  const response = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/watch/nostr/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relays: ["wss://relay.example"], filter: {} }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 401);
+});
+
+test("POST /api/watch/nostr/query rejects broad filters before opening relays", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = gcalBytesToHex(schnorr.getPublicKey(privateKey));
+  const body = JSON.stringify({ relays: ["wss://relay.example"], filter: { kinds: [1] } });
+  const env = await makeGcalEnv();
+  const response = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/watch/nostr/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...makeGcalAuthHeaders(privateKey, publicKey, body) },
+      body,
+    }),
+    env,
+  );
+  assert.equal(response.status, 400);
 });
 
 // ── C. Endpoint isolation: 401 without valid auth ────────────────────────────

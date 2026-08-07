@@ -28,13 +28,14 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Native compound-board creation and management with ordered child list boards, aggregated task columns, optional child-board labels, and PWA-compatible linked-board sync
 - Atomic JSON persistence in Application Support
 - Keychain-backed Nostr identity creation and nsec import
-- Embedded native watchOS companion foundation with explicit reachable-only account provisioning,
-  passcode-required device-only Keychain protection, a non-secret bounded task cache, and native
-  Today, Upcoming, and Boards browsing. Watch task completion is optimistic and haptic, with
-  idempotent immediate delivery or a protected 30-day offline queue; direct Watch-to-relay
-  synchronization is the next slice. A persistent Watch quick-add control supports Apple's native
-  Watch text input and Taskify Dictation with the same extraction/finalization flow and a compact
-  task review before saving.
+- Embedded independent watchOS companion with explicit reachable-only account provisioning,
+  passcode-required device-only Keychain protection, a protected bounded task cache, and native
+  Today, Upcoming, and Boards browsing. Watch task creation, Taskify Dictation, completion, and
+  relay refresh work over the Watch's own Wi-Fi or cellular connection. Because general-purpose
+  persistent relay WebSockets are not a supported watchOS data path, the Watch signs and encrypts
+  task events locally and an authenticated HTTPS bridge only forwards the opaque Nostr events to
+  the configured relays. The paired-iPhone path remains the preferred fast path and an idempotent,
+  protected 30-day command queue reconciles direct changes with local iPhone state later.
 - Review-before-apply PWA account bootstrap and ongoing native board-index publishing through signed kind-30078 Nostr backups, using interoperable NIP-44 v2 encryption, bounded multi-relay discovery, fetch-before-patch conflict protection, offline outbox delivery, and lossless wallet/PWA-only/future-field preservation
 - PWA-compatible deterministic board keys, AES-256-GCM task payloads, and signed Nostr events
 - Lossless preservation of assignments, bounties, inbox metadata, streaks, scripture state, and future encrypted PWA task fields across native edits, moves, completion, persistence, and relay merges
@@ -70,12 +71,19 @@ Nostr Cashu payment requests now work in both directions; advanced NWC, P2PK/con
 3. Run on an iOS 17.5 or newer simulator/device.
 
 The `TaskifyWatch` watchOS 10 target is embedded in the iPhone app. To provision it, install the
-companion build on a paired, passcode-protected Watch, keep Taskify open on the Watch, then open
-open Taskify on the Watch, then open Taskify on the iPhone when prompted. The app automatically
+companion build on a paired, passcode-protected Watch, open Taskify on the Watch, then open Taskify
+on the iPhone when prompted. The app automatically
 opens **Settings → Nostr & Sync → Apple Watch** for **Enable Watch sync**. The raw
 Nostr key is sent only through an immediate paired-device message and stored with
 `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`; it is not put in the task cache, transfer queue,
 backup, iCloud Keychain, logs, or UI. Wallet seeds, Cashu proofs, and tokens are never transferred.
+After provisioning, the Watch can create and complete tasks and refresh already-authorized boards
+without a reachable iPhone. Task plaintext, the account private key, board sync identifiers, board
+signing material, and board encryption keys stay on the Watch. The HTTPS bridge receives the
+account public key used for request authentication, configured relay URLs, signed event metadata,
+and encrypted event content—the same public/opaque envelope delivered to Nostr relays. New board
+membership or changed relay configuration still comes from the iPhone's protected snapshot during
+a later companion sync.
 
 The migration bundle identifier is `solife.me.Taskify.Native`, which allows the native build to coexist with the release WebView app during parity testing.
 

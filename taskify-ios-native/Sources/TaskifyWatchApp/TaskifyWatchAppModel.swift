@@ -25,11 +25,17 @@ enum TaskifyWatchDictationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .phoneUnavailable:
-            "Open Taskify on your iPhone to interpret this dictation."
+            "Connect this Watch to the internet or open Taskify on your iPhone."
         case .invalidResponse:
             "Taskify couldn't interpret that. Try saying it another way."
         }
     }
+}
+
+private struct TaskifyWatchDirectMutation {
+    let event: TaskifyWatchNostrEvent
+    let task: TaskifyWatchTask?
+    let relayURLs: [String]
 }
 
 /// Stores the Nostr private key only in the Watch's system Keychain. This protection class does
@@ -78,6 +84,23 @@ struct TaskifyWatchIdentityStore {
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
+    func load() throws -> Data {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data, data.count == 32 else {
+            throw map(status)
+        }
+        return data
+    }
+
     private func map(_ status: OSStatus) -> TaskifyWatchKeychainError {
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
             return .passcodeRequired
@@ -98,8 +121,12 @@ final class TaskifyWatchAppModel: NSObject {
     @ObservationIgnored private let identityStore = TaskifyWatchIdentityStore()
     @ObservationIgnored private let cacheURL: URL
     @ObservationIgnored private let commandCacheURL: URL
+    @ObservationIgnored private let profileCacheURL: URL
+    @ObservationIgnored private let independentClient = TaskifyWatchIndependentClient()
     @ObservationIgnored private var pendingCommands: [TaskifyWatchCommand] = []
     @ObservationIgnored private var immediateCommandIDs: Set<String> = []
+    @ObservationIgnored private var directSyncCommandIDs: Set<String> = []
+    @ObservationIgnored private var independentProfile: TaskifyWatchIndependentProfile?
     @ObservationIgnored private var requestedInitialSetupNavigation = false
 
     override init() {
@@ -107,13 +134,17 @@ final class TaskifyWatchAppModel: NSObject {
             ?? FileManager.default.temporaryDirectory
         cacheURL = supportURL.appendingPathComponent("taskify-watch-snapshot-v1.json")
         commandCacheURL = supportURL.appendingPathComponent("taskify-watch-commands-v1.json")
+        profileCacheURL = supportURL.appendingPathComponent("taskify-watch-independent-profile-v1.json")
         super.init()
         isProvisioned = identityStore.containsIdentity()
+        loadIndependentProfile()
         loadCachedSnapshot()
         loadPendingCommands()
         activateConnectivity()
         if isProvisioned {
-            statusMessage = "Secure account ready"
+            statusMessage = independentProfile == nil
+                ? "Open Taskify on iPhone once to upgrade independent sync."
+                : "Independent sync ready"
         }
     }
 
@@ -196,6 +227,7 @@ final class TaskifyWatchAppModel: NSObject {
         pendingCompletionIDs.insert(taskID)
         persistPendingCommands()
         deliver(command)
+        beginDirectSync(command)
     }
 
     @discardableResult
@@ -215,6 +247,7 @@ final class TaskifyWatchAppModel: NSObject {
         persistPendingCommands()
         statusMessage = usingTaskifyVoice ? "Sending to Taskify Voice…" : "Adding task…"
         deliver(command)
+        beginDirectSync(command)
         return true
     }
 
@@ -223,8 +256,22 @@ final class TaskifyWatchAppModel: NSObject {
         boardID: String
     ) async throws -> TaskifyWatchVoicePreview {
         let transcript = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty,
-              WCSession.isSupported(),
+        guard !transcript.isEmpty else {
+            throw TaskifyWatchDictationError.invalidResponse
+        }
+        if let profile = independentProfile, !profile.publicKeyNpub.isEmpty {
+            do {
+                return try await independentClient.interpretVoice(
+                    transcript: transcript,
+                    boardID: boardID,
+                    npub: profile.publicKeyNpub
+                )
+            } catch {
+                // A reachable iPhone remains a seamless fallback while the Watch service or its
+                // network route is temporarily unavailable.
+            }
+        }
+        guard WCSession.isSupported(),
               WCSession.default.activationState == .activated,
               WCSession.default.isReachable else {
             throw TaskifyWatchDictationError.phoneUnavailable
@@ -263,7 +310,382 @@ final class TaskifyWatchAppModel: NSObject {
         persistPendingCommands()
         statusMessage = tasks.count == 1 ? "Adding task…" : "Adding \(tasks.count) tasks…"
         deliver(command)
+        beginDirectSync(command)
         return true
+    }
+
+    /// Refreshes encrypted Taskify task records through the Watch HTTPS transport. This works
+    /// over the Watch's own Wi-Fi/cellular route and does not require a reachable iPhone.
+    func refreshFromRelays() async {
+        guard isProvisioned,
+              !snapshot.boards.isEmpty,
+              let profile = independentProfile,
+              !directSyncCommandIDs.contains("_refresh"),
+              let privateKey = try? identityStore.load() else { return }
+        directSyncCommandIDs.insert("_refresh")
+        defer { directSyncCommandIDs.remove("_refresh") }
+
+        do {
+            let events = try await independentClient.fetchTasks(
+                boards: snapshot.boards,
+                profile: profile,
+                privateKey: privateKey
+            )
+            mergeRelayEvents(events)
+            statusMessage = pendingCommands.isEmpty ? "Independent sync up to date" : "Watch changes waiting for iPhone"
+        } catch {
+            // Cached tasks and the phone transport remain fully usable when the independent
+            // service or every configured relay is temporarily unavailable.
+            if pendingCommands.isEmpty {
+                statusMessage = "Showing saved tasks — relay refresh will retry."
+            }
+        }
+    }
+
+    private func beginDirectSync(_ command: TaskifyWatchCommand) {
+        if WCSession.isSupported(),
+           WCSession.default.activationState == .activated,
+           WCSession.default.isReachable {
+            return
+        }
+        guard independentProfile != nil,
+              directSyncCommandIDs.insert(command.id).inserted else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.directSyncCommandIDs.remove(command.id) }
+            await self.publishDirectly(command)
+        }
+    }
+
+    private func publishDirectly(_ command: TaskifyWatchCommand) async {
+        guard let profile = independentProfile,
+              let privateKey = try? identityStore.load(),
+              let mutations = try? directMutations(for: command),
+              !mutations.isEmpty else { return }
+
+        var published: [TaskifyWatchDirectMutation] = []
+        for mutation in mutations {
+            do {
+                try await independentClient.publish(
+                    mutation.event,
+                    relayURLs: mutation.relayURLs,
+                    profile: profile,
+                    privateKey: privateKey
+                )
+                published.append(mutation)
+            } catch {
+                // Keep the idempotent command in the durable phone queue. A later direct retry or
+                // iPhone reconciliation can safely publish the same stable task identifier.
+            }
+        }
+        guard !published.isEmpty else { return }
+        applyDirectMutations(published)
+        if published.count == mutations.count {
+            statusMessage = command.kind == .completeTask
+                ? "Completed directly from Watch"
+                : (published.count == 1 ? "Task synced directly" : "Tasks synced directly")
+        } else {
+            statusMessage = "Some Watch changes synced; the rest are safely queued."
+        }
+    }
+
+    private func directMutations(
+        for command: TaskifyWatchCommand
+    ) throws -> [TaskifyWatchDirectMutation] {
+        guard let profile = independentProfile else { return [] }
+        switch command.kind {
+        case .completeTask:
+            guard let taskID = command.taskID,
+                  let task = snapshot.tasks.first(where: { $0.id == taskID }),
+                  let board = snapshot.boards.first(where: { $0.id == task.boardID }),
+                  let boardNostrID = task.nostrBoardID ?? board.nostrBoardID,
+                  let originalPayload = task.syncPayload else { return [] }
+            let createdAt = max(Int(Date().timeIntervalSince1970), (task.nostrUpdatedAt ?? 0) + 1)
+            let completedAt = taskifyISODate(Date())
+            let payload = try updatingPayload(originalPayload, values: [
+                "completedAt": completedAt,
+                "completedBy": profile.publicKeyHex,
+                "lastEditedBy": profile.publicKeyHex,
+            ])
+            let event = try TaskifyWatchNostrCrypto.taskEvent(
+                taskID: task.id,
+                boardID: boardNostrID,
+                columnTag: board.kind == "week" ? "day" : (task.columnID ?? board.defaultColumnID ?? ""),
+                status: "done",
+                payload: payload,
+                createdAt: createdAt
+            )
+            return [TaskifyWatchDirectMutation(
+                event: event,
+                task: nil,
+                relayURLs: normalizedRelays(task.relayURLs ?? board.relayURLs ?? profile.relayURLs)
+            )]
+
+        case .createTask:
+            guard let title = command.title else { return [] }
+            return try directCreationMutations(
+                command: command,
+                drafts: [TaskifyWatchVoiceDraft(title: title)]
+            )
+
+        case .createVoiceTasks:
+            return try directCreationMutations(command: command, drafts: command.voiceTasks ?? [])
+
+        case .processVoiceTranscript:
+            // This legacy command is interpreted by the iPhone. Current Watch UI converts
+            // dictation into createVoiceTasks through the independent voice endpoint first.
+            return []
+        }
+    }
+
+    private func directCreationMutations(
+        command: TaskifyWatchCommand,
+        drafts: [TaskifyWatchVoiceDraft]
+    ) throws -> [TaskifyWatchDirectMutation] {
+        guard let boardID = command.boardID,
+              let board = snapshot.boards.first(where: { $0.id == boardID }),
+              let boardNostrID = board.nostrBoardID,
+              let profile = independentProfile else { return [] }
+        let relays = normalizedRelays(board.relayURLs ?? profile.relayURLs)
+        guard !relays.isEmpty else { return [] }
+
+        return try drafts.enumerated().compactMap { index, draft -> TaskifyWatchDirectMutation? in
+            let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            let stableTaskID = "watch-\(command.id)-\(index)"
+            if snapshot.tasks.contains(where: { $0.id == stableTaskID }) { return nil }
+
+            let parsedDueDate = draft.dueISO.flatMap(taskifyParseISODate)
+            let dueDate = board.kind == "week" ? (parsedDueDate ?? Date()) : parsedDueDate
+            let columnID = board.kind == "week"
+                ? taskifyWeekdayID(for: dueDate ?? Date())
+                : board.defaultColumnID
+            let created = Date()
+            let order = (snapshot.tasks
+                .filter { $0.boardID == board.id && $0.columnID == columnID }
+                .map(\.order)
+                .min() ?? 0) - 1
+            let payload = try newTaskPayload(
+                id: stableTaskID,
+                draft: draft,
+                dueDate: dueDate,
+                profile: profile,
+                createdAt: created
+            )
+            let eventCreatedAt = Int(created.timeIntervalSince1970)
+            let event = try TaskifyWatchNostrCrypto.taskEvent(
+                taskID: stableTaskID,
+                boardID: boardNostrID,
+                columnTag: board.kind == "week" ? "day" : (columnID ?? ""),
+                status: "open",
+                payload: payload,
+                createdAt: eventCreatedAt
+            )
+            let task = TaskifyWatchTask(
+                id: stableTaskID,
+                title: title,
+                boardID: board.id,
+                boardName: board.name,
+                columnName: board.kind == "week" ? taskifyWeekdayName(for: dueDate ?? created) : nil,
+                dueDate: dueDate,
+                dueTimeEnabled: false,
+                priority: draft.priority,
+                order: order,
+                columnID: columnID,
+                nostrBoardID: boardNostrID,
+                relayURLs: relays,
+                syncPayload: payload,
+                nostrUpdatedAt: eventCreatedAt
+            )
+            return TaskifyWatchDirectMutation(event: event, task: task, relayURLs: relays)
+        }
+    }
+
+    private func newTaskPayload(
+        id: String,
+        draft: TaskifyWatchVoiceDraft,
+        dueDate: Date?,
+        profile: TaskifyWatchIndependentProfile,
+        createdAt: Date
+    ) throws -> Data {
+        var payload: [String: Any] = [
+            "title": draft.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            "createdAt": Int64(createdAt.timeIntervalSince1970 * 1_000),
+            "createdBy": profile.publicKeyHex,
+            "lastEditedBy": profile.publicKeyHex,
+            "dueDateEnabled": dueDate != nil,
+            "dueTimeEnabled": false,
+        ]
+        if let dueDate { payload["dueISO"] = taskifyISODate(dueDate) }
+        if let note = draft.notes, !note.isEmpty { payload["note"] = note }
+        if let priority = draft.priority { payload["priority"] = priority }
+        let subtasks = (draft.subtasks ?? []).enumerated().compactMap { index, raw -> [String: Any]? in
+            let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            return ["id": "\(id)-subtask-\(index)", "title": title, "completed": false]
+        }
+        if !subtasks.isEmpty { payload["subtasks"] = subtasks }
+        return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes])
+    }
+
+    private func updatingPayload(_ data: Data, values: [String: Any]) throws -> Data {
+        guard var payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw TaskifyWatchNostrCryptoError.invalidPayload
+        }
+        for (key, value) in values { payload[key] = value }
+        return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes])
+    }
+
+    private func applyDirectMutations(_ mutations: [TaskifyWatchDirectMutation]) {
+        let createdTasks = mutations.compactMap(\.task)
+        guard !createdTasks.isEmpty else { return }
+        var tasks = snapshot.tasks
+        for task in createdTasks where !tasks.contains(where: { $0.id == task.id }) {
+            tasks.append(task)
+        }
+        replaceSnapshot(tasks: tasks, generatedAt: Date())
+    }
+
+    private func mergeRelayEvents(_ events: [TaskifyWatchNostrEvent]) {
+        let boardPairs: [(String, TaskifyWatchBoard)] = snapshot.boards.compactMap { board in
+            guard let boardID = board.nostrBoardID,
+                  let author = try? TaskifyWatchNostrCrypto.boardPublicKeyHex(for: boardID) else {
+                return nil
+            }
+            return (author, board)
+        }
+        let boardByAuthor = Dictionary(uniqueKeysWithValues: boardPairs)
+        var latestByTaskID: [String: (TaskifyWatchNostrEvent, TaskifyWatchBoard)] = [:]
+        for event in events {
+            guard let taskID = event.firstTagValue(named: "d"),
+                  let board = boardByAuthor[event.publicKey.lowercased()] else { continue }
+            if let current = latestByTaskID[taskID], current.0.createdAt >= event.createdAt { continue }
+            latestByTaskID[taskID] = (event, board)
+        }
+
+        var tasks = snapshot.tasks
+        for (taskID, pair) in latestByTaskID {
+            let event = pair.0
+            let board = pair.1
+            let existingIndex = tasks.firstIndex { $0.id == taskID }
+            if let existingIndex,
+               (tasks[existingIndex].nostrUpdatedAt ?? 0) > event.createdAt {
+                continue
+            }
+            let status = event.firstTagValue(named: "status")
+            if status == "done" || status == "deleted" {
+                if let existingIndex { tasks.remove(at: existingIndex) }
+                continue
+            }
+            guard let decoded = decodeRelayTask(event, board: board, existing: existingIndex.map { tasks[$0] }) else {
+                continue
+            }
+            if let existingIndex { tasks[existingIndex] = decoded } else { tasks.append(decoded) }
+        }
+        replaceSnapshot(tasks: tasks, generatedAt: Date())
+    }
+
+    private func decodeRelayTask(
+        _ event: TaskifyWatchNostrEvent,
+        board: TaskifyWatchBoard,
+        existing: TaskifyWatchTask?
+    ) -> TaskifyWatchTask? {
+        guard let boardNostrID = board.nostrBoardID,
+              let payload = try? TaskifyWatchNostrCrypto.decryptTaskPayload(event, boardID: boardNostrID),
+              let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let title = (object["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty,
+              let taskID = event.firstTagValue(named: "d") else { return nil }
+        let dueDate = (object["dueISO"] as? String).flatMap(taskifyParseISODate)
+        let columnID = board.kind == "week"
+            ? taskifyWeekdayID(for: dueDate ?? Date())
+            : event.firstTagValue(named: "col")
+        let number = object["priority"] as? NSNumber
+        return TaskifyWatchTask(
+            id: taskID,
+            title: title,
+            boardID: board.id,
+            boardName: board.name,
+            columnName: board.kind == "week" ? taskifyWeekdayName(for: dueDate ?? Date()) : existing?.columnName,
+            dueDate: (object["dueDateEnabled"] as? Bool) == false ? nil : dueDate,
+            dueTimeEnabled: object["dueTimeEnabled"] as? Bool ?? false,
+            priority: number?.intValue,
+            order: existing?.order ?? 0,
+            columnID: columnID,
+            nostrBoardID: boardNostrID,
+            relayURLs: board.relayURLs,
+            syncPayload: payload,
+            nostrUpdatedAt: event.createdAt
+        )
+    }
+
+    private func replaceSnapshot(tasks: [TaskifyWatchTask], generatedAt: Date) {
+        let boards = snapshot.boards.map { board in
+            TaskifyWatchBoard(
+                id: board.id,
+                name: board.name,
+                openTaskCount: tasks.lazy.filter { $0.boardID == board.id }.count,
+                kind: board.kind,
+                nostrBoardID: board.nostrBoardID,
+                relayURLs: board.relayURLs,
+                defaultColumnID: board.defaultColumnID
+            )
+        }
+        snapshot = TaskifyWatchSnapshot(
+            tasks: tasks,
+            boards: boards,
+            selectedBoardID: snapshot.selectedBoardID,
+            generatedAt: generatedAt,
+            acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs
+        )
+        persistSnapshot()
+    }
+
+    private func normalizedRelays(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let normalized = value.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
+            guard normalized.hasPrefix("wss://"), seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
+    }
+
+    private func taskifyISODate(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter.string(from: date)
+    }
+
+    private func taskifyParseISODate(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+
+    private func taskifyWeekdayID(for date: Date) -> String {
+        switch Calendar.current.component(.weekday, from: date) {
+        case 1: "sunday"
+        case 2: "monday"
+        case 3: "tuesday"
+        case 4: "wednesday"
+        case 5: "thursday"
+        case 6: "friday"
+        default: "saturday"
+        }
+    }
+
+    private func taskifyWeekdayName(for date: Date) -> String {
+        switch Calendar.current.component(.weekday, from: date) {
+        case 1: "Sun"
+        case 2: "Mon"
+        case 3: "Tue"
+        case 4: "Wed"
+        case 5: "Thu"
+        case 6: "Fri"
+        default: "Sat"
+        }
     }
 
     private func visible(_ tasks: [TaskifyWatchTask]) -> [TaskifyWatchTask] {
@@ -279,7 +701,10 @@ final class TaskifyWatchAppModel: NSObject {
     }
 
     private func retryPendingCommands() {
-        pendingCommands.forEach(deliver)
+        for command in pendingCommands {
+            deliver(command)
+            beginDirectSync(command)
+        }
     }
 
     private func deliver(_ command: TaskifyWatchCommand) {
@@ -296,6 +721,7 @@ final class TaskifyWatchAppModel: NSObject {
                     guard let receipt = try? TaskifyWatchTransfer.decodeCommandReceipt(replyData),
                           receipt.commandID == command.id else {
                         self.queueBackgroundDelivery(command, data: data)
+                        self.beginDirectSync(command)
                         return
                     }
                     self.apply(snapshot: receipt.snapshot)
@@ -306,6 +732,7 @@ final class TaskifyWatchAppModel: NSObject {
                     guard let self else { return }
                     self.immediateCommandIDs.remove(command.id)
                     self.queueBackgroundDelivery(command, data: data)
+                    self.beginDirectSync(command)
                 }
             }
         } else if !session.isReachable {
@@ -348,13 +775,27 @@ final class TaskifyWatchAppModel: NSObject {
 
     private func acceptProvisioning(_ data: Data) throws -> Data {
         let payload = try TaskifyWatchTransfer.decodeProvisioningPayload(data)
+        // Reject a malformed/mismatched envelope before it can replace the device-only key.
+        _ = try TaskifyWatchNostrCrypto.requestAuthentication(
+            privateKey: payload.privateKey,
+            publicKeyHex: payload.publicKeyHex,
+            body: Data(),
+            timestamp: 0
+        )
         // The only durable write of private material is this Keychain call. The decoded envelope
         // goes out of scope immediately after the receipt is produced.
         try identityStore.save(payload.privateKey)
+        let npub = payload.publicKeyNpub?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        independentProfile = TaskifyWatchIndependentProfile(
+            publicKeyHex: payload.publicKeyHex,
+            publicKeyNpub: npub,
+            relayURLs: payload.relayURLs
+        )
+        try persistIndependentProfile()
         isProvisioned = true
         sessionSetupTransfers().forEach { $0.cancel() }
         apply(snapshot: payload.snapshot)
-        statusMessage = "Secure account stored"
+        statusMessage = npub.isEmpty ? "Secure account stored" : "Independent sync ready"
         return try TaskifyWatchTransfer.encode(
             TaskifyWatchProvisioningReceipt(publicKeyHex: payload.publicKeyHex)
         )
@@ -388,6 +829,25 @@ final class TaskifyWatchAppModel: NSObject {
             }
         }
         persistSnapshot()
+    }
+
+    private func loadIndependentProfile() {
+        guard let data = try? Data(contentsOf: profileCacheURL),
+              let profile = try? JSONDecoder().decode(TaskifyWatchIndependentProfile.self, from: data),
+              profile.publicKeyHex.count == 64 else { return }
+        independentProfile = profile
+    }
+
+    private func persistIndependentProfile() throws {
+        guard let independentProfile else { return }
+        try FileManager.default.createDirectory(
+            at: profileCacheURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(independentProfile).write(
+            to: profileCacheURL,
+            options: [.atomic, .completeFileProtection]
+        )
     }
 
     private func loadCachedSnapshot() {

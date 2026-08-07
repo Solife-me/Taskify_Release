@@ -22,5 +22,9 @@
 	<true/>
 	<key>WKCompanionAppBundleIdentifier</key>
 	<string>solife.me.Taskify.Native</string>
+	<key>WKRunsIndependentlyOfCompanionApp</key>
+	<true/>
+	<key>WKPrefersNetworkUponForeground</key>
+	<true/>
 </dict>
 </plist>

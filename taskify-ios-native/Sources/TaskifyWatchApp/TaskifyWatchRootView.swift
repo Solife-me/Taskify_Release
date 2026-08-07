@@ -110,6 +110,9 @@ struct TaskifyWatchRootView: View {
                 TaskifyWatchQuickAddSheet(destinationBoardID: quickAddBoardID)
                     .environment(model)
             }
+            .task {
+                await model.refreshFromRelays()
+            }
         } else {
             NavigationStack {
                 ScrollView {

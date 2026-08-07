@@ -194,9 +194,9 @@ type Board =
   | { kind: "bible" };
 ```
 
-### Cloudflare Worker: `worker/src/index.ts`
+### Cloudflare Worker: `worker/src/index.ts` and feature modules
 
-All Worker logic is in a single file (~98KB). Responsibilities:
+The router delegates feature-specific behavior to modules under `worker/src/`. Responsibilities:
 
 | Area | Detail |
 |------|--------|
@@ -206,6 +206,7 @@ All Worker logic is in a single file (~98KB). Responsibilities:
 | **Reminder delivery polling** | `POST /api/reminders/poll` — drains pending reminder rows for clients that poll after push wake-up |
 | **Cron handler** | Runs every minute; reads due reminders from D1, appends pending notifications, sends Web Push ping |
 | **Google Calendar** | Browser-bound OAuth plus calendar/watch/event synchronization in D1 |
+| **Independent Apple Watch sync** | Authenticated HTTPS transport forwards Watch-signed, board-encrypted kind-30301 events to configured public Nostr relays without receiving decryption keys or task plaintext |
 | **VAPID signing** | Signs Web Push requests using P-256 ECDSA; private key resolved from `VAPID_PRIVATE_KEY` env/KV binding |
 
 **Cloudflare bindings** (`wrangler.toml`):

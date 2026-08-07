@@ -3211,6 +3211,7 @@ final class AppModel {
         return try TaskifyWatchProvisioningPayload(
             privateKey: identity.privateKey,
             publicKeyHex: identity.publicKeyHex,
+            publicKeyNpub: identity.npub,
             relayURLs: TaskifyRelayURL.normalizedList(
                 appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
             ),

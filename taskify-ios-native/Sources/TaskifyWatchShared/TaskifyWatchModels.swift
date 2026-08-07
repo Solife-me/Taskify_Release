@@ -10,6 +10,13 @@ public struct TaskifyWatchTask: Identifiable, Codable, Equatable, Sendable {
     public let dueTimeEnabled: Bool
     public let priority: Int?
     public let order: Int
+    /// Lossless Taskify sync context. These optional fields keep snapshots written by the first
+    /// companion-only Watch builds decodable while allowing an authorized Watch to sync directly.
+    public let columnID: String?
+    public let nostrBoardID: String?
+    public let relayURLs: [String]?
+    public let syncPayload: Data?
+    public let nostrUpdatedAt: Int?
 
     public init(
         id: String,
@@ -20,7 +27,12 @@ public struct TaskifyWatchTask: Identifiable, Codable, Equatable, Sendable {
         dueDate: Date?,
         dueTimeEnabled: Bool,
         priority: Int?,
-        order: Int
+        order: Int,
+        columnID: String? = nil,
+        nostrBoardID: String? = nil,
+        relayURLs: [String]? = nil,
+        syncPayload: Data? = nil,
+        nostrUpdatedAt: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -31,6 +43,11 @@ public struct TaskifyWatchTask: Identifiable, Codable, Equatable, Sendable {
         self.dueTimeEnabled = dueTimeEnabled
         self.priority = priority
         self.order = order
+        self.columnID = columnID
+        self.nostrBoardID = nostrBoardID
+        self.relayURLs = relayURLs
+        self.syncPayload = syncPayload
+        self.nostrUpdatedAt = nostrUpdatedAt
     }
 }
 
@@ -38,16 +55,32 @@ public struct TaskifyWatchBoard: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let name: String
     public let openTaskCount: Int
+    public let kind: String?
+    public let nostrBoardID: String?
+    public let relayURLs: [String]?
+    public let defaultColumnID: String?
 
-    public init(id: String, name: String, openTaskCount: Int) {
+    public init(
+        id: String,
+        name: String,
+        openTaskCount: Int,
+        kind: String? = nil,
+        nostrBoardID: String? = nil,
+        relayURLs: [String]? = nil,
+        defaultColumnID: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.openTaskCount = openTaskCount
+        self.kind = kind
+        self.nostrBoardID = nostrBoardID
+        self.relayURLs = relayURLs
+        self.defaultColumnID = defaultColumnID
     }
 }
 
 public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public let schemaVersion: Int
     public let tasks: [TaskifyWatchTask]
@@ -105,11 +138,12 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
 /// than application context or background user-info transfers. The receiver must move
 /// `privateKey` directly into its device-only Keychain and must never persist the envelope.
 public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public let schemaVersion: Int
     public let privateKey: Data
     public let publicKeyHex: String
+    public let publicKeyNpub: String?
     public let relayURLs: [String]
     public let snapshot: TaskifyWatchSnapshot
 
@@ -117,6 +151,7 @@ public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
         schemaVersion: Int = TaskifyWatchProvisioningPayload.currentSchemaVersion,
         privateKey: Data,
         publicKeyHex: String,
+        publicKeyNpub: String? = nil,
         relayURLs: [String],
         snapshot: TaskifyWatchSnapshot
     ) throws {
@@ -132,6 +167,7 @@ public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion
         self.privateKey = privateKey
         self.publicKeyHex = normalizedPublicKey
+        self.publicKeyNpub = publicKeyNpub?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.relayURLs = Self.normalizedRelays(relayURLs)
         self.snapshot = snapshot
     }

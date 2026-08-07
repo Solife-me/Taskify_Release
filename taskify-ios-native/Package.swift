@@ -40,6 +40,9 @@ let package = Package(
         ),
         .target(
             name: "TaskifyWatchShared",
+            dependencies: [
+                .product(name: "P256K", package: "swift-secp256k1"),
+            ],
             path: "Sources/TaskifyWatchShared"
         ),
         .testTarget(
