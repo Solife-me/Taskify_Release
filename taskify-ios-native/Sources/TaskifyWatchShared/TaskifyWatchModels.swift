@@ -211,6 +211,15 @@ public enum TaskifyWatchTransfer {
     public static let requestSnapshotKey = "taskify.watch.requestSnapshot.v1"
     public static let commandAcceptedKey = "taskify.watch.commandAccepted.v1"
     public static let provisioningDataKey = "taskify.watch.provisioning.v1"
+    public static let setupNavigationRequestKey = "taskify.watch.setup-navigation-request.v1"
+
+    public static var setupNavigationRequest: [String: Any] {
+        [setupNavigationRequestKey: true]
+    }
+
+    public static func isSetupNavigationRequest(_ values: [String: Any]) -> Bool {
+        values[setupNavigationRequestKey] as? Bool == true
+    }
 
     public static func encode(_ snapshot: TaskifyWatchSnapshot) throws -> Data {
         try encoder.encode(snapshot)

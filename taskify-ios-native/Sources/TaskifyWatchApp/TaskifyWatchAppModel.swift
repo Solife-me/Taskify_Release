@@ -77,7 +77,7 @@ struct TaskifyWatchIdentityStore {
 final class TaskifyWatchAppModel: NSObject {
     private(set) var snapshot = TaskifyWatchSnapshot()
     private(set) var isProvisioned = false
-    private(set) var statusMessage = "Open Taskify Settings on your iPhone to enable Watch sync."
+    private(set) var statusMessage = "Open Taskify on your iPhone to authorize this Watch."
     private(set) var pendingCompletionIDs: Set<String> = []
     private(set) var activeQuickAddBoardID: String?
 
@@ -86,6 +86,7 @@ final class TaskifyWatchAppModel: NSObject {
     @ObservationIgnored private let commandCacheURL: URL
     @ObservationIgnored private var pendingCommands: [TaskifyWatchCommand] = []
     @ObservationIgnored private var immediateCommandIDs: Set<String> = []
+    @ObservationIgnored private var requestedInitialSetupNavigation = false
 
     override init() {
         let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -136,6 +137,41 @@ final class TaskifyWatchAppModel: NSObject {
 
     func setActiveQuickAddBoardID(_ boardID: String?) {
         activeQuickAddBoardID = boardID
+    }
+
+    func requestInitialSetupNavigation() {
+        guard !isProvisioned,
+              !requestedInitialSetupNavigation,
+              WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated else { return }
+
+        requestedInitialSetupNavigation = true
+        statusMessage = "Open Taskify on your iPhone. Watch authorization will open automatically."
+        let request = TaskifyWatchTransfer.setupNavigationRequest
+        if session.isReachable {
+            session.sendMessage(request) { _ in
+                // The iPhone accepted the navigation request. Provisioning still requires the
+                // explicit confirmation button on the phone.
+            } errorHandler: { [weak self] _ in
+                Task { @MainActor in
+                    self?.queueInitialSetupNavigation(request, using: session)
+                }
+            }
+        } else {
+            queueInitialSetupNavigation(request, using: session)
+        }
+    }
+
+    private func queueInitialSetupNavigation(
+        _ request: [String: Any],
+        using session: WCSession
+    ) {
+        let alreadyQueued = session.outstandingUserInfoTransfers.contains {
+            TaskifyWatchTransfer.isSetupNavigationRequest($0.userInfo)
+        }
+        guard !alreadyQueued else { return }
+        session.transferUserInfo(request)
     }
 
     func completeTask(_ taskID: String) {
@@ -252,6 +288,7 @@ final class TaskifyWatchAppModel: NSObject {
         // goes out of scope immediately after the receipt is produced.
         try identityStore.save(payload.privateKey)
         isProvisioned = true
+        sessionSetupTransfers().forEach { $0.cancel() }
         apply(snapshot: payload.snapshot)
         statusMessage = "Secure account stored"
         return try TaskifyWatchTransfer.encode(
@@ -338,6 +375,13 @@ final class TaskifyWatchAppModel: NSObject {
             statusMessage = "Tasks are available, but the local cache could not be updated."
         }
     }
+
+    private func sessionSetupTransfers() -> [WCSessionUserInfoTransfer] {
+        guard WCSession.isSupported() else { return [] }
+        return WCSession.default.outstandingUserInfoTransfers.filter {
+            TaskifyWatchTransfer.isSetupNavigationRequest($0.userInfo)
+        }
+    }
 }
 
 extension TaskifyWatchAppModel: WCSessionDelegate {
@@ -350,6 +394,7 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
             if error != nil {
                 self?.statusMessage = "The iPhone connection is unavailable. Cached tasks remain available."
             } else {
+                self?.requestInitialSetupNavigation()
                 self?.retryPendingCommands()
             }
         }
@@ -358,6 +403,7 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         guard session.isReachable else { return }
         Task { @MainActor [weak self] in
+            self?.requestInitialSetupNavigation()
             self?.retryPendingCommands()
         }
     }

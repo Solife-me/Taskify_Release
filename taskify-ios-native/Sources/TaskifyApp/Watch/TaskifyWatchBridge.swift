@@ -10,6 +10,7 @@ import WatchConnectivity
 final class TaskifyWatchBridge: NSObject, ObservableObject {
     static let shared = TaskifyWatchBridge()
     private static let acknowledgedCommandIDsKey = "taskify.watch.acknowledged-command-ids.v1"
+    private static let pendingSetupNavigationRequestKey = "taskify.watch.pending-setup-navigation-request.v1"
     private static let acknowledgedCommandLimit = 100
 
     enum State: Equatable {
@@ -33,10 +34,15 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     }
 
     @Published private(set) var state: State = .activating
+    @Published private(set) var pendingSetupNavigationRequestID: UUID?
     private weak var model: AppModel?
     private var processingCommandIDs: Set<String> = []
+    private var hasProvisionedCurrentWatch = false
 
     private override init() {
+        pendingSetupNavigationRequestID = UserDefaults.standard
+            .string(forKey: Self.pendingSetupNavigationRequestKey)
+            .flatMap(UUID.init(uuidString:))
         super.init()
     }
 
@@ -80,6 +86,8 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                         throw TaskifyWatchBridgeError.receiptMismatch
                     }
                     DispatchQueue.main.async {
+                        self?.hasProvisionedCurrentWatch = true
+                        self?.clearPendingSetupNavigationRequest()
                         self?.state = .provisioned
                         self?.sendSnapshot(payload.snapshot)
                     }
@@ -109,6 +117,32 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             ])
         } catch {
             // A later model revision will retry. Avoid logging payloads or key-adjacent state.
+        }
+    }
+
+    @MainActor
+    func consumeSetupNavigationRequest(_ requestID: UUID) {
+        guard pendingSetupNavigationRequestID == requestID else { return }
+        clearPendingSetupNavigationRequest()
+    }
+
+    @MainActor
+    private func clearPendingSetupNavigationRequest() {
+        pendingSetupNavigationRequestID = nil
+        UserDefaults.standard.removeObject(forKey: Self.pendingSetupNavigationRequestKey)
+    }
+
+    private func recordSetupNavigationRequest() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  !self.hasProvisionedCurrentWatch,
+                  self.pendingSetupNavigationRequestID == nil else { return }
+            let requestID = UUID()
+            self.pendingSetupNavigationRequestID = requestID
+            UserDefaults.standard.set(
+                requestID.uuidString,
+                forKey: Self.pendingSetupNavigationRequestKey
+            )
         }
     }
 
@@ -217,6 +251,8 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                 self?.state = .unavailable("No Apple Watch is paired with this iPhone.")
             } else if !session.isWatchAppInstalled {
                 self?.state = .unavailable("Install Taskify on the paired Apple Watch first.")
+            } else if self?.hasProvisionedCurrentWatch == true {
+                self?.state = .provisioned
             } else {
                 self?.state = .ready
             }
@@ -266,7 +302,24 @@ extension TaskifyWatchBridge: WCSessionDelegate {
         }
     }
 
+    func session(
+        _ session: WCSession,
+        didReceiveMessage message: [String: Any],
+        replyHandler: @escaping ([String: Any]) -> Void
+    ) {
+        guard TaskifyWatchTransfer.isSetupNavigationRequest(message) else {
+            replyHandler([:])
+            return
+        }
+        recordSetupNavigationRequest()
+        replyHandler([TaskifyWatchTransfer.commandAcceptedKey: true])
+    }
+
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        if TaskifyWatchTransfer.isSetupNavigationRequest(userInfo) {
+            recordSetupNavigationRequest()
+            return
+        }
         guard let data = userInfo[TaskifyWatchTransfer.commandDataKey] as? Data,
               let command = try? TaskifyWatchTransfer.decodeCommand(data) else { return }
         Task { @MainActor [weak self] in

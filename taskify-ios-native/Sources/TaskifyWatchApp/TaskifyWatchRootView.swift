@@ -6,6 +6,8 @@ struct TaskifyWatchRootView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
     @State private var showingQuickAdd = false
     @State private var quickAddBoardID: String?
+    @State private var showingInitialSetupPrompt = false
+    @State private var hasShownInitialSetupPrompt = false
 
     var body: some View {
         if model.isProvisioned {
@@ -88,46 +90,40 @@ struct TaskifyWatchRootView: View {
         } else {
             NavigationStack {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "applewatch.and.arrow.forward")
-                                .font(.title2.weight(.semibold))
-                                .foregroundStyle(.blue)
-                            Text("Connect Taskify")
-                                .font(.headline)
-                        }
+                    VStack(spacing: 12) {
+                        Image(systemName: "iphone.and.arrow.forward")
+                            .font(.largeTitle.weight(.semibold))
+                            .foregroundStyle(.blue)
 
-                        WatchSetupStep(number: 1, text: "Keep this screen open.")
-                        WatchSetupStep(number: 2, text: "Open Taskify Settings on your iPhone.")
-                        WatchSetupStep(number: 3, text: "Find Apple Watch and tap Enable Watch sync.")
+                        Text("Open Taskify on iPhone")
+                            .font(.headline)
+                            .multilineTextAlignment(.center)
 
-                        Label(model.statusMessage, systemImage: "lock.shield.fill")
+                        Text("Taskify will open Watch authorization automatically. Keep this Watch app open, then tap Enable Watch sync on your iPhone.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Label(model.statusMessage, systemImage: "lock.shield.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, 6)
                 }
                 .navigationTitle("Setup")
             }
-        }
-    }
-}
-
-private struct WatchSetupStep: View {
-    let number: Int
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Text(number, format: .number)
-                .font(.caption.bold())
-                .frame(width: 24, height: 24)
-                .background(.blue, in: Circle())
-                .foregroundStyle(.white)
-            Text(text)
-                .font(.body)
-                .fixedSize(horizontal: false, vertical: true)
+            .task {
+                model.requestInitialSetupNavigation()
+                guard !hasShownInitialSetupPrompt else { return }
+                hasShownInitialSetupPrompt = true
+                showingInitialSetupPrompt = true
+            }
+            .alert("Open Taskify on iPhone", isPresented: $showingInitialSetupPrompt) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Taskify will take you directly to Apple Watch authorization.")
+            }
         }
     }
 }

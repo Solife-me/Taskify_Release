@@ -28,10 +28,12 @@ enum AppTab: String, CaseIterable, Identifiable {
 struct RootTabView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var watchBridge = TaskifyWatchBridge.shared
     @State private var selectedTab: AppTab
     @State private var hasPresentedInitialContent = false
     /// Set by a quick-add deep link; BoardsView clears it once it has focused its field.
     @State private var pendingQuickAdd = false
+    @State private var pendingWatchSetupRequestID: UUID?
 
     init() {
 #if DEBUG
@@ -51,16 +53,31 @@ struct RootTabView: View {
             }
             // The Control Center button leaves its request in shared defaults rather than opening
             // a URL, so it has to be picked up on launch as well as on every return to the front.
-            .onAppear(perform: consumeQuickAddRequest)
+            .onAppear {
+                consumeQuickAddRequest()
+                routePendingWatchSetup()
+            }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
                 consumeQuickAddRequest()
+                routePendingWatchSetup()
+            }
+            .onChange(of: watchBridge.pendingSetupNavigationRequestID) { _, requestID in
+                guard let requestID else { return }
+                pendingWatchSetupRequestID = requestID
+                selectedTab = .settings
             }
     }
 
     private func consumeQuickAddRequest() {
         guard TaskifyQuickAddRequest.consume() else { return }
         handle(.quickAdd(boardID: nil))
+    }
+
+    private func routePendingWatchSetup() {
+        guard let requestID = watchBridge.pendingSetupNavigationRequestID else { return }
+        pendingWatchSetupRequestID = requestID
+        selectedTab = .settings
     }
 
     /// Routes a widget's `taskify://` link to the view it represents. Anything the app can't place
@@ -165,7 +182,7 @@ struct RootTabView: View {
         case .chat:
             ContactsView()
         case .settings:
-            SettingsView()
+            SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
         }
     }
 
@@ -196,7 +213,7 @@ struct RootTabView: View {
                     Label(AppTab.chat.title, systemImage: AppTab.chat.icon)
                 }
 
-            SettingsView()
+            SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
                 .tag(AppTab.settings)
                 .tabItem {
                     Label(AppTab.settings.title, systemImage: AppTab.settings.icon)

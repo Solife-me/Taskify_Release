@@ -70,7 +70,8 @@ Nostr Cashu payment requests now work in both directions; advanced NWC, P2PK/con
 
 The `TaskifyWatch` watchOS 10 target is embedded in the iPhone app. To provision it, install the
 companion build on a paired, passcode-protected Watch, keep Taskify open on the Watch, then open
-**Settings → Nostr & Sync → Apple Watch** on the iPhone and confirm **Enable Watch sync**. The raw
+open Taskify on the Watch, then open Taskify on the iPhone when prompted. The app automatically
+opens **Settings → Nostr & Sync → Apple Watch** for **Enable Watch sync**. The raw
 Nostr key is sent only through an immediate paired-device message and stored with
 `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`; it is not put in the task cache, transfer queue,
 backup, iCloud Keychain, logs, or UI. Wallet seeds, Cashu proofs, and tokens are never transferred.

@@ -5,9 +5,12 @@ import UniformTypeIdentifiers
 import VisionKit
 
 struct SettingsView: View {
+    private static let watchCardID = "taskify-settings-watch-authorization"
+
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @StateObject private var watchBridge = TaskifyWatchBridge.shared
+    @Binding private var watchSetupRequestID: UUID?
     @State private var newBoardName = ""
     @State private var newBoardKind: BoardKind = .week
     @State private var selectedCompoundChildIDs: Set<String> = []
@@ -40,6 +43,10 @@ struct SettingsView: View {
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
     private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
 
+    init(watchSetupRequestID: Binding<UUID?> = .constant(nil)) {
+        _watchSetupRequestID = watchSetupRequestID
+    }
+
     var body: some View {
         // @Environment values aren't bindable directly; @Bindable re-wraps the same model
         // reference so `$model.pendingAccountBackup` below still works post-@Observable.
@@ -51,66 +58,75 @@ struct SettingsView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 14)
 
-            ScrollView {
-                VStack(spacing: 14) {
-                    // Watch setup stays visible instead of being buried inside the collapsed
-                    // Nostr group; the matching Watch screen points users directly here.
-                    watchCard
+            ScrollViewReader { settingsProxy in
+                ScrollView {
+                    VStack(spacing: 14) {
+                        // Ordered and grouped to track the PWA's Settings page (Boards, View,
+                        // Wallet, Chat, Bible, Push, Nostr, ...) instead of an alphabet-soup of
+                        // individually titled cards, so the two apps read as the same page.
+                        settingsGroup("Boards", systemImage: "square.grid.2x2.fill") {
+                            boardsCard
+                        }
 
-                    // Ordered and grouped to track the PWA's Settings page (Boards, View, Wallet,
-                    // Chat, Bible, Push, Nostr, ...) instead of an alphabet-soup of individually
-                    // titled cards, so the two apps read as the same settings page. Each group is
-                    // its own collapsed-by-default accordion, matching the PWA's Show/Hide
-                    // sections, so opening Settings is a quick scan of category headers rather
-                    // than a long scroll through every card.
-                    settingsGroup("Boards", systemImage: "square.grid.2x2.fill") {
-                        boardsCard
-                    }
+                        settingsGroup("View", systemImage: "eye.fill") {
+                            taskPresentationCard
+                            taskOrderingCard
+                            startupTabCard
+                            streaksCard
+                            appearanceCard
+                        }
 
-                    settingsGroup("View", systemImage: "eye.fill") {
-                        taskPresentationCard
-                        taskOrderingCard
-                        startupTabCard
-                        streaksCard
-                        appearanceCard
-                    }
+                        settingsGroup("Wallet", systemImage: "bitcoinsign.circle.fill") {
+                            walletCurrencyCard
+                        }
 
-                    settingsGroup("Wallet", systemImage: "bitcoinsign.circle.fill") {
-                        walletCurrencyCard
-                    }
+                        settingsGroup("Chat", systemImage: "bubble.left.and.text.bubble.right.fill") {
+                            chatHistoryCard
+                        }
 
-                    settingsGroup("Chat", systemImage: "bubble.left.and.text.bubble.right.fill") {
-                        chatHistoryCard
-                    }
+                        settingsGroup("Bible", systemImage: "book.closed.fill") {
+                            bibleTrackerCard
+                            fastingRemindersCard
+                            scriptureMemoryCard
+                        }
 
-                    settingsGroup("Bible", systemImage: "book.closed.fill") {
-                        bibleTrackerCard
-                        fastingRemindersCard
-                        scriptureMemoryCard
-                    }
+                        settingsGroup("Notifications", systemImage: "bell.badge.fill") {
+                            notificationsCard
+                        }
 
-                    settingsGroup("Notifications", systemImage: "bell.badge.fill") {
-                        notificationsCard
-                    }
+                        settingsGroup("Nostr & Sync", systemImage: "network") {
+                            identityCard
+                            syncCard
+                            watchCard
+                                .id(Self.watchCardID)
+                            storageCard
+                        }
 
-                    settingsGroup("Nostr & Sync", systemImage: "network") {
-                        identityCard
-                        syncCard
-                        storageCard
-                    }
+                        settingsGroup("Backup", systemImage: "arrow.down.doc.fill") {
+                            localBackupCard
+                        }
 
-                    settingsGroup("Backup", systemImage: "arrow.down.doc.fill") {
-                        localBackupCard
+                        settingsGroup("App", systemImage: "checkmark.seal.fill") {
+                            migrationCard
+                        }
                     }
-
-                    settingsGroup("App", systemImage: "checkmark.seal.fill") {
-                        migrationCard
-                    }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 18)
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 18)
+                .scrollIndicators(.hidden)
+                .task(id: watchSetupRequestID) {
+                    guard let requestID = watchSetupRequestID else { return }
+                    expandedSettingsGroups.insert("Nostr & Sync")
+                    await Task.yield()
+                    try? await Task.sleep(for: .milliseconds(80))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        settingsProxy.scrollTo(Self.watchCardID, anchor: .center)
+                    }
+                    watchBridge.consumeSetupNavigationRequest(requestID)
+                    watchSetupRequestID = nil
+                }
             }
-            .scrollIndicators(.hidden)
         }
         .sheet(isPresented: $showingBoardScanner) {
             BoardQRJoinFlow()

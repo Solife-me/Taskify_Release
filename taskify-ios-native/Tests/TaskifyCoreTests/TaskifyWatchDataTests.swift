@@ -4,6 +4,20 @@ import XCTest
 import TaskifyWatchShared
 
 final class TaskifyWatchDataTests: XCTestCase {
+    func testSetupNavigationRequestHasAnExplicitTypedMarker() {
+        XCTAssertTrue(
+            TaskifyWatchTransfer.isSetupNavigationRequest(
+                TaskifyWatchTransfer.setupNavigationRequest
+            )
+        )
+        XCTAssertFalse(
+            TaskifyWatchTransfer.isSetupNavigationRequest([
+                TaskifyWatchTransfer.setupNavigationRequestKey: false,
+            ])
+        )
+        XCTAssertFalse(TaskifyWatchTransfer.isSetupNavigationRequest([:]))
+    }
+
     private let now = Date(timeIntervalSince1970: 1_785_945_600) // 2026-08-06 12:00 UTC
 
     private var calendar: Calendar {
