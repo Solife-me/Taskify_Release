@@ -2,6 +2,19 @@ import SwiftUI
 import TaskifyWatchShared
 import WatchKit
 
+private enum TaskifyWatchTheme {
+    static let accent = Color(
+        red: TaskifyBrand.accentRed,
+        green: TaskifyBrand.accentGreen,
+        blue: TaskifyBrand.accentBlue
+    )
+    static let accentOn = Color(
+        red: TaskifyBrand.accentOnRed,
+        green: TaskifyBrand.accentOnGreen,
+        blue: TaskifyBrand.accentOnBlue
+    )
+}
+
 struct TaskifyWatchRootView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
     @State private var showingQuickAdd = false
@@ -64,23 +77,33 @@ struct TaskifyWatchRootView: View {
                 .navigationTitle("Taskify")
             }
             .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: 30)
+                Color.clear.frame(height: 16)
             }
             .overlay(alignment: .bottomTrailing) {
                 Button {
-                    quickAddBoardID = model.quickAddBoardID
+                    // A board task list supplies a fixed destination. Home, Today, and Upcoming
+                    // deliberately pass nil so the sheet asks the user which board to use.
+                    quickAddBoardID = model.activeQuickAddBoardID
                     WKInterfaceDevice.current().play(.click)
                     showingQuickAdd = true
                 } label: {
-                    Image(systemName: "plus")
-                        .font(.headline.weight(.semibold))
-                        .frame(width: 38, height: 38)
+                    ZStack {
+                        Circle()
+                            .fill(TaskifyWatchTheme.accent)
+                            .frame(width: 26, height: 26)
+                        Image(systemName: "plus")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(TaskifyWatchTheme.accentOn)
+                    }
+                    // Keep a comfortable invisible hit target without making the visible button
+                    // dominate the small screen.
+                    .frame(width: 40, height: 40)
+                    .contentShape(Circle())
                 }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.circle)
-                .padding(.trailing, 5)
-                .padding(.bottom, 3)
-                .disabled(model.quickAddBoardID == nil)
+                .buttonStyle(.plain)
+                .padding(.trailing, -2)
+                .padding(.bottom, -2)
+                .disabled(model.snapshot.boards.isEmpty)
                 .accessibilityLabel("Add task")
             }
             .sheet(isPresented: $showingQuickAdd) {
@@ -141,14 +164,30 @@ private struct TaskifyWatchQuickAddSheet: View {
     @State private var mode: Mode = .choices
     @State private var draft = ""
     @State private var isRequestingSystemInput = false
+    @State private var selectedBoardID: String?
+
+    private var effectiveBoardID: String? {
+        destinationBoardID ?? selectedBoardID
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Label(model.boardName(for: destinationBoardID), systemImage: "rectangle.stack.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if let destinationBoardID {
+                    Section {
+                        Label(model.boardName(for: destinationBoardID), systemImage: "rectangle.stack.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section("Add to board") {
+                        Picker("Board", selection: $selectedBoardID) {
+                            ForEach(model.snapshot.boards) { board in
+                                Text(board.name)
+                                    .tag(Optional(board.id))
+                            }
+                        }
+                    }
                 }
 
                 if mode == .choices {
@@ -204,6 +243,10 @@ private struct TaskifyWatchQuickAddSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
             }
             .navigationTitle("New Task")
+            .onAppear {
+                guard destinationBoardID == nil, selectedBoardID == nil else { return }
+                selectedBoardID = model.snapshot.selectedBoardID ?? model.snapshot.boards.first?.id
+            }
         }
     }
 
@@ -224,7 +267,7 @@ private struct TaskifyWatchQuickAddSheet: View {
     private func submit(_ value: String, usingTaskifyVoice: Bool) {
         guard model.addTask(
             value,
-            boardID: destinationBoardID,
+            boardID: effectiveBoardID,
             usingTaskifyVoice: usingTaskifyVoice
         ) else { return }
         WKInterfaceDevice.current().play(.success)
@@ -241,7 +284,7 @@ private struct QuickAddOptionLabel: View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
                 .font(.body.weight(.semibold))
-                .foregroundStyle(.blue)
+                .foregroundStyle(TaskifyWatchTheme.accent)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -321,7 +364,7 @@ private struct TaskifyWatchTaskList: View {
                         } label: {
                             Image(systemName: "circle")
                                 .font(.title3)
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(TaskifyWatchTheme.accent)
                                 .frame(width: 40, height: 40)
                                 .contentShape(Circle())
                         }

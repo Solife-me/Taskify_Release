@@ -128,6 +128,20 @@ final class TaskifyWatchDataTests: XCTestCase {
         )
     }
 
+    func testWatchSnapshotPreservesTheIPhoneBoardOrder() {
+        var first = Board.week(id: "first", name: "First on iPhone")
+        first.createdAt = now
+        var second = Board.week(id: "second", name: "Second on iPhone")
+        second.createdAt = now.addingTimeInterval(-86_400)
+        let snapshot = TaskifySnapshot(
+            boards: [first, second],
+            tasks: [],
+            selectedBoardID: first.id
+        )
+
+        XCTAssertEqual(snapshot.watchData(now: now).boards.map(\.id), ["first", "second"])
+    }
+
     func testWatchTransferRoundTripsSnapshotsAndCommands() throws {
         let snapshot = TaskifyWatchSnapshot(
             tasks: [

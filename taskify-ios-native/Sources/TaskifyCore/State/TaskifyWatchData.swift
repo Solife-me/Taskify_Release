@@ -10,12 +10,10 @@ public extension TaskifySnapshot {
         calendar: Calendar = .current,
         taskLimit: Int = 500
     ) -> TaskifyWatchSnapshot {
+        // Board array position is the user's local board order on iPhone. Preserve it exactly on
+        // Watch rather than reconstructing a creation-date order that diverges after reordering.
         let visibleBoards = boards
             .filter { $0.isVisible && $0.kind != .bible }
-            .sorted {
-                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
-                return $0.id < $1.id
-            }
         let boardByID = Dictionary(uniqueKeysWithValues: visibleBoards.map { ($0.id, $0) })
 
         let eligibleTasks = tasks.filter { task in

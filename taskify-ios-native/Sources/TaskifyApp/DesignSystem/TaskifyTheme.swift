@@ -1,9 +1,18 @@
 import SwiftUI
+import TaskifyWatchShared
 
 enum TaskifyTheme {
-    static let accent = Color(red: 0.04, green: 0.52, blue: 1.0)
+    static let accent = Color(
+        red: TaskifyBrand.accentRed,
+        green: TaskifyBrand.accentGreen,
+        blue: TaskifyBrand.accentBlue
+    )
     /// Foreground used on top of a filled `accent` surface — the PWA's `--accent-on` (#061428).
-    static let accentOn = Color(red: 0.024, green: 0.078, blue: 0.157)
+    static let accentOn = Color(
+        red: TaskifyBrand.accentOnRed,
+        green: TaskifyBrand.accentOnGreen,
+        blue: TaskifyBrand.accentOnBlue
+    )
     /// Translucent accent wash for rings and halos — the PWA's `--accent-soft`.
     static let accentSoft = Color(red: 0.251, green: 0.612, blue: 1.0).opacity(0.2)
     static let backgroundTop = Color(red: 0.10, green: 0.20, blue: 0.33)
