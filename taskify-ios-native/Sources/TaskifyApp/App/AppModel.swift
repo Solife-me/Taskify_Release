@@ -710,6 +710,19 @@ final class AppModel {
         }.count
     }
 
+    func boardUpcomingGroups(for board: Board, now: Date = Date()) -> [BoardUpcomingGroup] {
+        var scopedBoardIDs: Set<String> = [board.id]
+        if board.kind == .compound {
+            scopedBoardIDs.formUnion(compoundChildBoards(for: board.id).map(\.id))
+        }
+        return BoardUpcomingOrganizer.groups(
+            tasks: snapshot.tasks,
+            events: snapshot.acceptedTaskifyEvents,
+            includedBoardIDs: scopedBoardIDs,
+            now: now
+        )
+    }
+
     func tasks(for weekday: WeekdayColumn, includeCompleted: Bool) -> [TaskItem] {
         guard let boardID = selectedBoard?.id else { return [] }
         return snapshotLookupCache.tasks(

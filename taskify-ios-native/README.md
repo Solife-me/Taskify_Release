@@ -16,6 +16,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks, with PWA-familiar interactive inline checklists on task cards
 - PWA-style completed-task presentation preferences, including a dedicated completed view or in-list completed tasks, optional hiding of finished subtasks, and synced per-board Clear completed controls
 - PWA-style per-weekday startup-board routing with a safe first-visible fallback and automatic cleanup when a destination is archived or deleted
+- PWA-style board-scoped Upcoming timelines for week, list, and compound boards, with future tasks and Taskify events grouped by day and multi-day all-day events repeated across each future date
 - PWA-compatible Saturday, Sunday, or Monday week starts across board ordering, quick-add dates, task moves, and recurring-task visibility
 - PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, and next-instance generation on completion
 - Multiple relative reminders, exact custom reminder times, and local iOS notification scheduling

@@ -598,7 +598,7 @@ struct BoardsView: View {
     @State private var showingAddBoard = false
     @State private var showingAddList = false
     @State private var showingBoardShare = false
-    @State private var showingBoardUpcoming = false
+    @State private var showBoardUpcoming = false
     @State private var showingSortOptions = false
     @State private var showingClearCompletedConfirmation = false
     @State private var showingSelectionMoveSheet = false
@@ -722,12 +722,6 @@ struct BoardsView: View {
                 BoardShareSheet(board: board)
             }
         }
-        .sheet(isPresented: $showingBoardUpcoming) {
-            if let board = model.selectedBoard {
-                BoardUpcomingSheet(board: board)
-                    .environment(model)
-            }
-        }
         .sheet(isPresented: $showingSortOptions) {
             BoardSortOptionsSheet(
                 sortMode: sortMode,
@@ -764,6 +758,7 @@ struct BoardsView: View {
         .onChange(of: model.selectedBoardID) { _, _ in
             selection.exit()
             completionAnimations.reset()
+            showBoardUpcoming = false
             quickTaskDraft = ""
             quickTaskFieldIsFocused = false
             resetFocusedPage()
@@ -784,43 +779,50 @@ struct BoardsView: View {
 
     @ViewBuilder
     private var boardContent: some View {
-        switch model.selectedBoard?.kind {
-        case .week:
-            WeekBoardView(
-                showCompleted: completedTasksAreVisible,
-                sortMode: sortMode,
-                sortDirection: sortDirection,
-                focusedPageID: $focusedPageID
-            )
-        case .list:
-            if let board = model.selectedBoard {
-                ListBoardView(
-                    board: board,
+        if showBoardUpcoming,
+           let board = model.selectedBoard,
+           board.kind != .bible {
+            BoardUpcomingView(board: board)
+        } else {
+            switch model.selectedBoard?.kind {
+            case .week:
+                WeekBoardView(
                     showCompleted: completedTasksAreVisible,
                     sortMode: sortMode,
                     sortDirection: sortDirection,
                     focusedPageID: $focusedPageID
                 )
+            case .list:
+                if let board = model.selectedBoard {
+                    ListBoardView(
+                        board: board,
+                        showCompleted: completedTasksAreVisible,
+                        sortMode: sortMode,
+                        sortDirection: sortDirection,
+                        focusedPageID: $focusedPageID
+                    )
+                }
+            case .compound:
+                if let board = model.selectedBoard {
+                    CompoundBoardView(
+                        board: board,
+                        showCompleted: completedTasksAreVisible,
+                        sortMode: sortMode,
+                        sortDirection: sortDirection,
+                        focusedPageID: $focusedPageID
+                    )
+                }
+            case .bible:
+                BibleTrackerView(showCompletedBooks: showCompleted)
+            case nil:
+                ContentUnavailableView("No board selected", systemImage: "square.grid.2x2")
+                    .foregroundStyle(TaskifyTheme.secondaryText)
             }
-        case .compound:
-            if let board = model.selectedBoard {
-                CompoundBoardView(
-                    board: board,
-                    showCompleted: completedTasksAreVisible,
-                    sortMode: sortMode,
-                    sortDirection: sortDirection,
-                    focusedPageID: $focusedPageID
-                )
-            }
-        case .bible:
-            BibleTrackerView(showCompletedBooks: showCompleted)
-        case nil:
-            ContentUnavailableView("No board selected", systemImage: "square.grid.2x2")
-                .foregroundStyle(TaskifyTheme.secondaryText)
         }
     }
 
     private var quickAddDestination: BoardQuickAddDestination? {
+        guard !showBoardUpcoming else { return nil }
         guard let board = model.selectedBoard else { return nil }
 
         switch board.kind {
@@ -998,7 +1000,10 @@ struct BoardsView: View {
                         accent: showCompleted,
                         accessibilityLabel: showCompleted ? "Hide completed tasks" : "Show completed tasks"
                     ) {
-                        withAnimation(.snappy) { showCompleted.toggle() }
+                        withAnimation(.snappy) {
+                            showBoardUpcoming = false
+                            showCompleted.toggle()
+                        }
                     }
                     .background {
                         GeometryReader { proxy in
@@ -1038,12 +1043,19 @@ struct BoardsView: View {
                     ) {
                         showingAddList = true
                     }
-                } else if model.selectedBoard?.kind != .bible {
+                }
+
+                if model.selectedBoard?.kind != .bible {
                     HeaderIconButton(
                         systemName: "calendar",
-                        accessibilityLabel: "Board upcoming"
+                        accent: showBoardUpcoming,
+                        accessibilityLabel: showBoardUpcoming ? "Show board" : "Show board upcoming"
                     ) {
-                        showingBoardUpcoming = true
+                        selection.exit()
+                        withAnimation(.snappy) {
+                            showCompleted = false
+                            showBoardUpcoming.toggle()
+                        }
                     }
                 }
 
@@ -1380,90 +1392,55 @@ private struct BoardSortOptionsSheet: View {
     }
 }
 
-private struct BoardUpcomingSheet: View {
-    @Environment(\.dismiss) private var dismiss
+private struct BoardUpcomingView: View {
     @Environment(AppModel.self) private var model
     let board: Board
 
-    private struct DayGroup: Identifiable {
-        let date: Date
-        let tasks: [TaskItem]
-        var id: Date { date }
-    }
-
-    private var scopedBoardIDs: Set<String> {
-        if board.kind == .compound {
-            return Set(model.compoundChildBoards(for: board.id).map(\.id))
-        }
-        return [board.id]
-    }
-
-    private var groups: [DayGroup] {
-        let calendar = Calendar.current
-        let tasks = model.upcomingTasks().filter { scopedBoardIDs.contains($0.boardID) }
-        let byDate = Dictionary(grouping: tasks) { calendar.startOfDay(for: $0.dueDate ?? Date()) }
-        return byDate
-            .map { date, tasks in
-                DayGroup(
-                    date: date,
-                    tasks: UpcomingTaskOrganizer.sort(
-                        tasks,
-                        mode: .dueDate,
-                        direction: .ascending,
-                        boardGrouping: .mixed,
-                        boardOrder: []
-                    )
-                )
-            }
-            .sorted { $0.date < $1.date }
-    }
+    private var groups: [BoardUpcomingGroup] { model.boardUpcomingGroups(for: board) }
 
     var body: some View {
-        NavigationStack {
-            Group {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Label("Upcoming", systemImage: "calendar")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+
                 if groups.isEmpty {
-                    ContentUnavailableView(
-                        "No upcoming items",
-                        systemImage: "calendar",
-                        description: Text("Tasks with a due date on \(board.name) will appear here.")
-                    )
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    Text("No upcoming items on this board.")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
                 } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
-                            ForEach(groups) { group in
-                                VStack(alignment: .leading, spacing: 9) {
-                                    Text(dayLabel(group.date))
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundStyle(TaskifyTheme.tertiaryText)
-                                    ForEach(group.tasks) { task in
-                                        TaskCardView(task: task)
-                                    }
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        ForEach(groups) { group in
+                            VStack(alignment: .leading, spacing: 9) {
+                                Text(dayLabel(group.date).uppercased())
+                                    .font(.system(size: 12, weight: .bold))
+                                    .tracking(0.6)
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                                ForEach(group.events) { event in
+                                    TaskifyEventCard(event: event)
+                                }
+                                ForEach(group.tasks) { task in
+                                    TaskCardView(task: task)
                                 }
                             }
                         }
-                        .padding(18)
                     }
-                    .scrollIndicators(.hidden)
                 }
             }
-            .background(TaskifyTheme.background.ignoresSafeArea())
-            .navigationTitle("\(board.name) Upcoming")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            .padding(16)
+            .taskifyGlass(cornerRadius: 22)
+            .padding(.horizontal, 18)
+            .padding(.bottom, 12)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        .preferredColorScheme(.dark)
+        .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private func dayLabel(_ date: Date) -> String {
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Today" }
         if calendar.isDateInTomorrow(date) { return "Tomorrow" }
         return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
     }
