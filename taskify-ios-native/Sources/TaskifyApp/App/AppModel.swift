@@ -701,7 +701,7 @@ final class AppModel {
     func completedTaskCount(forBoardID boardID: String) -> Int {
         let scopeIDs: Set<String>
         if let board = board(withID: boardID), board.kind == .compound {
-            scopeIDs = Set(compoundChildBoards(for: boardID).map(\.id))
+            scopeIDs = Set([boardID] + compoundChildBoards(for: boardID).map(\.id))
         } else {
             scopeIDs = [boardID]
         }
@@ -720,6 +720,17 @@ final class AppModel {
             events: snapshot.acceptedTaskifyEvents,
             includedBoardIDs: scopedBoardIDs,
             now: now
+        )
+    }
+
+    func boardCompletedTasks(for board: Board) -> [TaskItem] {
+        var scopedBoardIDs: Set<String> = [board.id]
+        if board.kind == .compound {
+            scopedBoardIDs.formUnion(compoundChildBoards(for: board.id).map(\.id))
+        }
+        return BoardCompletedOrganizer.tasks(
+            snapshot.tasks,
+            includedBoardIDs: scopedBoardIDs
         )
     }
 

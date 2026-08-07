@@ -630,7 +630,7 @@ struct BoardsView: View {
     }
 
     private var completedTasksAreVisible: Bool {
-        model.selectedBoard?.kind == .bible ? showCompleted : (!completedTabEnabled || showCompleted)
+        model.selectedBoard?.kind == .bible ? showCompleted : !completedTabEnabled
     }
 
     private var hasCompletedTasks: Bool {
@@ -779,7 +779,15 @@ struct BoardsView: View {
 
     @ViewBuilder
     private var boardContent: some View {
-        if showBoardUpcoming,
+        if completedTabEnabled,
+           showCompleted,
+           let board = model.selectedBoard,
+           board.kind != .bible {
+            BoardCompletedView(
+                board: board,
+                onClear: { showingClearCompletedConfirmation = true }
+            )
+        } else if showBoardUpcoming,
            let board = model.selectedBoard,
            board.kind != .bible {
             BoardUpcomingView(board: board)
@@ -823,6 +831,7 @@ struct BoardsView: View {
 
     private var quickAddDestination: BoardQuickAddDestination? {
         guard !showBoardUpcoming else { return nil }
+        guard !completedTabEnabled || !showCompleted else { return nil }
         guard let board = model.selectedBoard else { return nil }
 
         switch board.kind {
@@ -1443,6 +1452,128 @@ private struct BoardUpcomingView: View {
         let calendar = Calendar.current
         if calendar.isDateInTomorrow(date) { return "Tomorrow" }
         return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+    }
+}
+
+private struct BoardCompletedView: View {
+    @Environment(AppModel.self) private var model
+    let board: Board
+    let onClear: () -> Void
+
+    private var tasks: [TaskItem] { model.boardCompletedTasks(for: board) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Label("Completed", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+
+                    Spacer()
+
+                    if !tasks.isEmpty, board.clearCompletedDisabled == false {
+                        Button("Clear", role: .destructive, action: onClear)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.red)
+                            .buttonStyle(.plain)
+                    }
+                }
+
+                if tasks.isEmpty {
+                    Text("No completed tasks yet.")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(tasks) { task in
+                            BoardCompletedTaskEntry(task: task)
+                        }
+                    }
+                }
+            }
+            .padding(16)
+            .taskifyGlass(cornerRadius: 22)
+            .padding(.horizontal, 18)
+            .padding(.bottom, 12)
+        }
+        .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+    }
+}
+
+private struct BoardCompletedTaskEntry: View {
+    @Environment(AppModel.self) private var model
+    let task: TaskItem
+    @State private var confirmingRecurringDeletion = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            TaskCardView(task: task)
+
+            HStack(spacing: 8) {
+                Text(completionLabel)
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                Button {
+                    withAnimation(.snappy) {
+                        model.toggleCompletion(task.id)
+                    }
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                } label: {
+                    Label("Restore", systemImage: "arrow.uturn.backward")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(Color.green.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button(role: .destructive) {
+                    if task.recurrence?.isActive == true {
+                        confirmingRecurringDeletion = true
+                    } else {
+                        model.deleteTask(task.id, scope: .single)
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.red)
+                        .frame(width: 32, height: 32)
+                        .background(Color.red.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete \(task.title)")
+            }
+            .padding(.horizontal, 6)
+        }
+        .confirmationDialog(
+            "Delete recurring task?",
+            isPresented: $confirmingRecurringDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete This Task", role: .destructive) {
+                model.deleteTask(task.id, scope: .single)
+            }
+            Button("Delete This and Future Tasks", role: .destructive) {
+                model.deleteTask(task.id, scope: .thisAndFuture)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose whether to delete only this occurrence or end the recurring series here.")
+        }
+    }
+
+    private var completionLabel: String {
+        guard let completedAt = task.completedAt else { return "Completed item" }
+        return "Completed \(completedAt.formatted(date: .abbreviated, time: .shortened))"
     }
 }
 
