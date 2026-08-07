@@ -160,24 +160,35 @@ public struct TaskifyWatchProvisioningReceipt: Codable, Equatable, Sendable {
 }
 
 public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable {
+    public enum Kind: String, Codable, Hashable, Sendable {
         case completeTask
+        case createTask
+        case processVoiceTranscript
     }
 
     public let id: String
     public let kind: Kind
-    public let taskID: String
+    public let taskID: String?
+    public let title: String?
+    public let boardID: String?
+    public let transcript: String?
     public let createdAt: Date
 
     public init(
         id: String = UUID().uuidString,
         kind: Kind,
-        taskID: String,
+        taskID: String? = nil,
+        title: String? = nil,
+        boardID: String? = nil,
+        transcript: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.kind = kind
         self.taskID = taskID
+        self.title = title
+        self.boardID = boardID
+        self.transcript = transcript
         self.createdAt = createdAt
     }
 }
@@ -218,7 +229,20 @@ public enum TaskifyWatchTransfer {
     }
 
     public static func decodeCommand(_ data: Data) throws -> TaskifyWatchCommand {
-        try decoder.decode(TaskifyWatchCommand.self, from: data)
+        let command = try decoder.decode(TaskifyWatchCommand.self, from: data)
+        let isValid: Bool
+        switch command.kind {
+        case .completeTask:
+            isValid = !(command.taskID ?? "").isEmpty
+        case .createTask:
+            isValid = !(command.boardID ?? "").isEmpty &&
+                !(command.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .processVoiceTranscript:
+            isValid = !(command.boardID ?? "").isEmpty &&
+                !(command.transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard isValid else { throw TransferError.invalidCommand }
+        return command
     }
 
     public static func encode(_ receipt: TaskifyWatchCommandReceipt) throws -> Data {
@@ -262,6 +286,7 @@ public enum TaskifyWatchTransfer {
         case unsupportedSchema(Int)
         case invalidPrivateKey
         case invalidPublicKey
+        case invalidCommand
 
         public var errorDescription: String? {
             switch self {
@@ -271,6 +296,8 @@ public enum TaskifyWatchTransfer {
                 "The Watch provisioning message does not contain a valid private key."
             case .invalidPublicKey:
                 "The Watch provisioning message does not contain a valid public key."
+            case .invalidCommand:
+                "The Watch command is incomplete."
             }
         }
     }

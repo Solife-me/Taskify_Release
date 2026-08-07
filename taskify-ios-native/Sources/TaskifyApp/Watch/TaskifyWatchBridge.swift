@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import TaskifyCore
 import TaskifyWatchShared
 import WatchConnectivity
 
@@ -33,6 +34,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
 
     @Published private(set) var state: State = .activating
     private weak var model: AppModel?
+    private var processingCommandIDs: Set<String> = []
 
     private override init() {
         super.init()
@@ -111,14 +113,67 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func accept(_ command: TaskifyWatchCommand) throws -> TaskifyWatchCommandReceipt {
+    private func accept(_ command: TaskifyWatchCommand) async throws -> TaskifyWatchCommandReceipt {
         guard let model else { throw TaskifyWatchBridgeError.modelUnavailable }
+
+        if acknowledgedCommandIDs().contains(command.id) {
+            return TaskifyWatchCommandReceipt(
+                commandID: command.id,
+                snapshot: snapshotIncludingAcknowledgements(model.watchSnapshot())
+            )
+        }
+        guard processingCommandIDs.insert(command.id).inserted else {
+            throw TaskifyWatchBridgeError.commandAlreadyProcessing
+        }
+        defer { processingCommandIDs.remove(command.id) }
 
         switch command.kind {
         case .completeTask:
             // Completion commands are deliberately idempotent. Replayed background deliveries
             // acknowledge an already-completed/deleted task without toggling it back open.
-            model.completeTasks([command.taskID])
+            guard let taskID = command.taskID else { throw TaskifyWatchBridgeError.invalidCommand }
+            model.completeTasks([taskID])
+
+        case .createTask:
+            guard let title = command.title,
+                  let boardID = command.boardID,
+                  model.addTaskFromWatch(title: title, boardID: boardID, commandID: command.id) else {
+                throw TaskifyWatchBridgeError.invalidCommand
+            }
+
+        case .processVoiceTranscript:
+            guard let transcript = command.transcript?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !transcript.isEmpty,
+                  let boardID = command.boardID,
+                  !model.identityNpub.isEmpty else {
+                throw TaskifyWatchBridgeError.invalidCommand
+            }
+
+            let client = VoiceDictationClient()
+            let extraction = try await client.extract(
+                npub: model.identityNpub,
+                transcript: transcript,
+                candidates: [],
+                sessionDurationSeconds: max(1, transcript.split(whereSeparator: { $0.isWhitespace }).count / 2)
+            )
+            var voiceSession = VoiceSessionState()
+            voiceSession.commitTranscript(transcript)
+            voiceSession.apply(extraction.operations)
+            let candidates = voiceSession.confirmedCandidates.isEmpty
+                ? [VoiceTaskCandidate(title: transcript)]
+                : voiceSession.confirmedCandidates
+            let finalTasks = await client.finalize(
+                npub: model.identityNpub,
+                candidates: candidates,
+                boardID: boardID
+            )
+            guard model.addTasksFromVoice(
+                finalTasks,
+                defaultBoardID: boardID,
+                taskIDPrefix: "watch-\(command.id)"
+            ) > 0 else {
+                throw TaskifyWatchBridgeError.invalidCommand
+            }
         }
 
         recordAcknowledgement(command.id)
@@ -128,15 +183,17 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     }
 
     private func recordAcknowledgement(_ commandID: String) {
-        var commandIDs = UserDefaults.standard.stringArray(
-            forKey: Self.acknowledgedCommandIDsKey
-        ) ?? []
+        var commandIDs = acknowledgedCommandIDs()
         commandIDs.removeAll { $0 == commandID }
         commandIDs.append(commandID)
         if commandIDs.count > Self.acknowledgedCommandLimit {
             commandIDs.removeFirst(commandIDs.count - Self.acknowledgedCommandLimit)
         }
         UserDefaults.standard.set(commandIDs, forKey: Self.acknowledgedCommandIDsKey)
+    }
+
+    private func acknowledgedCommandIDs() -> [String] {
+        UserDefaults.standard.stringArray(forKey: Self.acknowledgedCommandIDsKey) ?? []
     }
 
     private func snapshotIncludingAcknowledgements(
@@ -148,9 +205,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             boards: snapshot.boards,
             selectedBoardID: snapshot.selectedBoardID,
             generatedAt: snapshot.generatedAt,
-            acknowledgedCommandIDs: UserDefaults.standard.stringArray(
-                forKey: Self.acknowledgedCommandIDsKey
-            )
+            acknowledgedCommandIDs: acknowledgedCommandIDs()
         )
     }
 
@@ -201,7 +256,7 @@ extension TaskifyWatchBridge: WCSessionDelegate {
                     return
                 }
                 do {
-                    replyHandler(try TaskifyWatchTransfer.encode(self.accept(command)))
+                    replyHandler(try TaskifyWatchTransfer.encode(await self.accept(command)))
                 } catch {
                     replyHandler(Data())
                 }
@@ -215,7 +270,7 @@ extension TaskifyWatchBridge: WCSessionDelegate {
         guard let data = userInfo[TaskifyWatchTransfer.commandDataKey] as? Data,
               let command = try? TaskifyWatchTransfer.decodeCommand(data) else { return }
         Task { @MainActor [weak self] in
-            _ = try? self?.accept(command)
+            _ = try? await self?.accept(command)
         }
     }
 }
@@ -223,4 +278,6 @@ extension TaskifyWatchBridge: WCSessionDelegate {
 private enum TaskifyWatchBridgeError: Error {
     case receiptMismatch
     case modelUnavailable
+    case commandAlreadyProcessing
+    case invalidCommand
 }

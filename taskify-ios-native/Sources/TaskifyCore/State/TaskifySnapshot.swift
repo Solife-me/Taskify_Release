@@ -833,6 +833,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
     @discardableResult
     public mutating func addTask(
+        id: String = UUID().uuidString,
         title: String,
         boardID: String,
         columnID: String?,
@@ -860,6 +861,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             nextOrder = (columnOrders.max() ?? -1) + 1
         }
         let task = TaskItem(
+            id: id,
             boardID: boardID,
             title: trimmedTitle,
             note: note,

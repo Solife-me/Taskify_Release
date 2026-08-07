@@ -32,7 +32,8 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
   passcode-required device-only Keychain protection, a non-secret bounded task cache, and native
   Today, Upcoming, and Boards browsing. Watch task completion is optimistic and haptic, with
   idempotent immediate delivery or a protected 30-day offline queue; direct Watch-to-relay
-  synchronization is the next slice
+  synchronization is the next slice. A persistent Watch quick-add control supports typed input,
+  native Watch dictation, and the same Taskify Voice extraction/finalization flow as the iPhone
 - Review-before-apply PWA account bootstrap and ongoing native board-index publishing through signed kind-30078 Nostr backups, using interoperable NIP-44 v2 encryption, bounded multi-relay discovery, fetch-before-patch conflict protection, offline outbox delivery, and lossless wallet/PWA-only/future-field preservation
 - PWA-compatible deterministic board keys, AES-256-GCM task payloads, and signed Nostr events
 - Lossless preservation of assignments, bounties, inbox metadata, streaks, scripture state, and future encrypted PWA task fields across native edits, moves, completion, persistence, and relay merges

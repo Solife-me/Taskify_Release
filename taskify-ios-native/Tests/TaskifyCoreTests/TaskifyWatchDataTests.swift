@@ -148,6 +148,28 @@ final class TaskifyWatchDataTests: XCTestCase {
             try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command)),
             command
         )
+        let create = TaskifyWatchCommand(
+            id: "create",
+            kind: .createTask,
+            title: "Pick up groceries",
+            boardID: "board",
+            createdAt: now
+        )
+        let voice = TaskifyWatchCommand(
+            id: "voice",
+            kind: .processVoiceTranscript,
+            boardID: "board",
+            transcript: "Remind me to call Sam tomorrow",
+            createdAt: now
+        )
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(create)),
+            create
+        )
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(voice)),
+            voice
+        )
         let receipt = TaskifyWatchCommandReceipt(commandID: command.id, snapshot: snapshot)
         XCTAssertEqual(
             try TaskifyWatchTransfer.decodeCommandReceipt(TaskifyWatchTransfer.encode(receipt)),
@@ -201,5 +223,17 @@ final class TaskifyWatchDataTests: XCTestCase {
                 snapshot: TaskifyWatchSnapshot()
             )
         )
+    }
+
+    func testWatchCommandRejectsMissingKindSpecificPayload() throws {
+        for command in [
+            TaskifyWatchCommand(kind: .completeTask),
+            TaskifyWatchCommand(kind: .createTask, title: "Task without a board"),
+            TaskifyWatchCommand(kind: .processVoiceTranscript, boardID: "board"),
+        ] {
+            XCTAssertThrowsError(
+                try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command))
+            )
+        }
     }
 }

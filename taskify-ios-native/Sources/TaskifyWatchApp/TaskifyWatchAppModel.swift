@@ -79,6 +79,7 @@ final class TaskifyWatchAppModel: NSObject {
     private(set) var isProvisioned = false
     private(set) var statusMessage = "Open Taskify Settings on your iPhone to enable Watch sync."
     private(set) var pendingCompletionIDs: Set<String> = []
+    private(set) var activeQuickAddBoardID: String?
 
     @ObservationIgnored private let identityStore = TaskifyWatchIdentityStore()
     @ObservationIgnored private let cacheURL: URL
@@ -121,6 +122,22 @@ final class TaskifyWatchAppModel: NSObject {
         return max(0, board.openTaskCount - pendingCount)
     }
 
+    var quickAddBoardID: String? {
+        activeQuickAddBoardID ?? snapshot.selectedBoardID ?? snapshot.boards.first?.id
+    }
+
+    func boardName(for boardID: String?) -> String {
+        guard let boardID,
+              let board = snapshot.boards.first(where: { $0.id == boardID }) else {
+            return "No board available"
+        }
+        return board.name
+    }
+
+    func setActiveQuickAddBoardID(_ boardID: String?) {
+        activeQuickAddBoardID = boardID
+    }
+
     func completeTask(_ taskID: String) {
         guard snapshot.tasks.contains(where: { $0.id == taskID }),
               !pendingCompletionIDs.contains(taskID) else { return }
@@ -129,6 +146,26 @@ final class TaskifyWatchAppModel: NSObject {
         pendingCompletionIDs.insert(taskID)
         persistPendingCommands()
         deliver(command)
+    }
+
+    @discardableResult
+    func addTask(_ input: String, boardID requestedBoardID: String?, usingTaskifyVoice: Bool) -> Bool {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, let boardID = requestedBoardID ?? quickAddBoardID else {
+            statusMessage = "Choose a board before adding a task."
+            return false
+        }
+        let command = TaskifyWatchCommand(
+            kind: usingTaskifyVoice ? .processVoiceTranscript : .createTask,
+            title: usingTaskifyVoice ? nil : value,
+            boardID: boardID,
+            transcript: usingTaskifyVoice ? value : nil
+        )
+        pendingCommands.append(command)
+        persistPendingCommands()
+        statusMessage = usingTaskifyVoice ? "Sending to Taskify Voice…" : "Adding task…"
+        deliver(command)
+        return true
     }
 
     private func visible(_ tasks: [TaskifyWatchTask]) -> [TaskifyWatchTask] {
@@ -187,14 +224,26 @@ final class TaskifyWatchAppModel: NSObject {
         }
         guard !alreadyQueued else { return }
         session.transferUserInfo([TaskifyWatchTransfer.commandDataKey: data])
-        statusMessage = "Completion saved — it will sync when the iPhone is available."
+        switch command.kind {
+        case .completeTask:
+            statusMessage = "Completion saved — it will sync when the iPhone is available."
+        case .createTask:
+            statusMessage = "Task saved — it will be added when the iPhone is available."
+        case .processVoiceTranscript:
+            statusMessage = "Voice request saved — the iPhone will process it when available."
+        }
     }
 
     private func finish(commandID: String) {
+        let completedKind = pendingCommands.first(where: { $0.id == commandID })?.kind
         pendingCommands.removeAll { $0.id == commandID }
-        pendingCompletionIDs = Set(pendingCommands.map(\.taskID))
+        refreshPendingCompletionIDs()
         persistPendingCommands()
-        statusMessage = pendingCommands.isEmpty ? "Tasks are up to date" : "Waiting to sync completions"
+        if pendingCommands.isEmpty {
+            statusMessage = completedKind == .completeTask ? "Tasks are up to date" : "Task added"
+        } else {
+            statusMessage = "Waiting to sync Watch changes"
+        }
     }
 
     private func acceptProvisioning(_ data: Data) throws -> Data {
@@ -221,9 +270,20 @@ final class TaskifyWatchAppModel: NSObject {
         snapshot = received
         let acknowledged = Set(received.acknowledgedCommandIDs ?? [])
         if !acknowledged.isEmpty {
+            let acknowledgedKinds = Set(
+                pendingCommands.lazy
+                    .filter { acknowledged.contains($0.id) }
+                    .map(\.kind)
+            )
             pendingCommands.removeAll { acknowledged.contains($0.id) }
-            pendingCompletionIDs = Set(pendingCommands.map(\.taskID))
+            refreshPendingCompletionIDs()
             persistPendingCommands()
+            if pendingCommands.isEmpty {
+                statusMessage = acknowledgedKinds.contains(.createTask) ||
+                    acknowledgedKinds.contains(.processVoiceTranscript)
+                    ? "Task added"
+                    : "Tasks are up to date"
+            }
         }
         persistSnapshot()
     }
@@ -239,8 +299,14 @@ final class TaskifyWatchAppModel: NSObject {
               let cached = try? JSONDecoder().decode([TaskifyWatchCommand].self, from: data) else { return }
         let oldestRetainedDate = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         pendingCommands = cached.filter { $0.createdAt >= oldestRetainedDate }
-        pendingCompletionIDs = Set(pendingCommands.map(\.taskID))
+        refreshPendingCompletionIDs()
         persistPendingCommands()
+    }
+
+    private func refreshPendingCompletionIDs() {
+        pendingCompletionIDs = Set(pendingCommands.compactMap { command in
+            command.kind == .completeTask ? command.taskID : nil
+        })
     }
 
     private func persistPendingCommands() {
@@ -254,7 +320,7 @@ final class TaskifyWatchAppModel: NSObject {
                 options: [.atomic, .completeFileProtection]
             )
         } catch {
-            statusMessage = "A completion could not be saved for later delivery."
+            statusMessage = "A Watch change could not be saved for later delivery."
         }
     }
 

@@ -4,6 +4,8 @@ import WatchKit
 
 struct TaskifyWatchRootView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
+    @State private var showingQuickAdd = false
+    @State private var quickAddBoardID: String?
 
     var body: some View {
         if model.isProvisioned {
@@ -59,6 +61,30 @@ struct TaskifyWatchRootView: View {
                 }
                 .navigationTitle("Taskify")
             }
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: 30)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                Button {
+                    quickAddBoardID = model.quickAddBoardID
+                    WKInterfaceDevice.current().play(.click)
+                    showingQuickAdd = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.headline.weight(.semibold))
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.circle)
+                .padding(.trailing, 5)
+                .padding(.bottom, 3)
+                .disabled(model.quickAddBoardID == nil)
+                .accessibilityLabel("Add task")
+            }
+            .sheet(isPresented: $showingQuickAdd) {
+                TaskifyWatchQuickAddSheet(destinationBoardID: quickAddBoardID)
+                    .environment(model)
+            }
         } else {
             NavigationStack {
                 ScrollView {
@@ -106,6 +132,132 @@ private struct WatchSetupStep: View {
     }
 }
 
+private struct TaskifyWatchQuickAddSheet: View {
+    private enum Mode {
+        case choices
+        case type
+    }
+
+    @Environment(TaskifyWatchAppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let destinationBoardID: String?
+
+    @State private var mode: Mode = .choices
+    @State private var draft = ""
+    @State private var isRequestingSystemInput = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Label(model.boardName(for: destinationBoardID), systemImage: "rectangle.stack.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if mode == .choices {
+                    Section("Input") {
+                        Button {
+                            mode = .type
+                        } label: {
+                            QuickAddOptionLabel(
+                                title: "Type task name",
+                                subtitle: "Keyboard or Scribble",
+                                systemImage: "keyboard"
+                            )
+                        }
+
+                        Button {
+                            requestSystemInput(usingTaskifyVoice: false)
+                        } label: {
+                            QuickAddOptionLabel(
+                                title: "Watch Dictation",
+                                subtitle: "One task, exact wording",
+                                systemImage: "mic.fill"
+                            )
+                        }
+
+                        Button {
+                            requestSystemInput(usingTaskifyVoice: true)
+                        } label: {
+                            QuickAddOptionLabel(
+                                title: "Taskify Voice",
+                                subtitle: "Dates or multiple tasks",
+                                systemImage: "waveform.and.sparkles"
+                            )
+                        }
+                    }
+                } else {
+                    Section("Task name") {
+                        TextField("What needs doing?", text: $draft)
+                            .onSubmit { submit(draft, usingTaskifyVoice: false) }
+
+                        Button("Add Task") {
+                            submit(draft, usingTaskifyVoice: false)
+                        }
+                        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    Button("Back") { mode = .choices }
+                }
+
+                if isRequestingSystemInput {
+                    ProgressView("Opening input…")
+                }
+
+                Button("Cancel", role: .cancel) { dismiss() }
+            }
+            .navigationTitle("New Task")
+        }
+    }
+
+    private func requestSystemInput(usingTaskifyVoice: Bool) {
+        guard !isRequestingSystemInput,
+              let controller = WKApplication.shared().visibleInterfaceController else { return }
+        isRequestingSystemInput = true
+        controller.presentTextInputController(
+            withSuggestions: nil,
+            allowedInputMode: .plain
+        ) { results in
+            isRequestingSystemInput = false
+            guard let text = results?.first as? String else { return }
+            submit(text, usingTaskifyVoice: usingTaskifyVoice)
+        }
+    }
+
+    private func submit(_ value: String, usingTaskifyVoice: Bool) {
+        guard model.addTask(
+            value,
+            boardID: destinationBoardID,
+            usingTaskifyVoice: usingTaskifyVoice
+        ) else { return }
+        WKInterfaceDevice.current().play(.success)
+        dismiss()
+    }
+}
+
+private struct QuickAddOptionLabel: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.blue)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 private struct WatchDestinationLabel: View {
     let title: String
     let count: Int
@@ -131,6 +283,11 @@ private enum TaskifyWatchTaskSource {
     case today
     case upcoming
     case board(String)
+
+    var boardID: String? {
+        if case .board(let boardID) = self { return boardID }
+        return nil
+    }
 }
 
 private struct TaskifyWatchTaskList: View {
@@ -208,5 +365,11 @@ private struct TaskifyWatchTaskList: View {
             }
         }
         .navigationTitle(title)
+        .onAppear { model.setActiveQuickAddBoardID(source.boardID) }
+        .onDisappear {
+            if model.activeQuickAddBoardID == source.boardID {
+                model.setActiveQuickAddBoardID(nil)
+            }
+        }
     }
 }

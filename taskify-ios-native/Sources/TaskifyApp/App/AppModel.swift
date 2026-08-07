@@ -876,13 +876,25 @@ final class AppModel {
     /// columns).
     @discardableResult
     func addTasksFromVoice(_ tasks: [VoiceFinalTask]) -> Int {
-        guard let selectedBoard else { return 0 }
+        addTasksFromVoice(tasks, defaultBoardID: selectedBoardID)
+    }
+
+    /// Explicit-board counterpart used by the Watch. A stable ID prefix makes delivery
+    /// idempotent even if WatchConnectivity retries after the phone created the task but before
+    /// its acknowledgement reached the Watch.
+    @discardableResult
+    func addTasksFromVoice(
+        _ tasks: [VoiceFinalTask],
+        defaultBoardID: String?,
+        taskIDPrefix: String? = nil
+    ) -> Int {
+        guard let requestedBoard = defaultBoardID.flatMap({ board(withID: $0) }) else { return 0 }
         let board: Board
-        switch selectedBoard.kind {
+        switch requestedBoard.kind {
         case .week, .list:
-            board = selectedBoard
+            board = requestedBoard
         case .compound:
-            guard let child = snapshot.compoundChildBoards(for: selectedBoard.id).first else { return 0 }
+            guard let child = snapshot.compoundChildBoards(for: requestedBoard.id).first else { return 0 }
             board = child
         case .bible:
             return 0
@@ -893,9 +905,15 @@ final class AppModel {
         let plainISOFormatter = ISO8601DateFormatter()
 
         var created = 0
-        for voiceTask in tasks {
+        for (taskIndex, voiceTask) in tasks.enumerated() {
             let title = voiceTask.title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { continue }
+
+            let stableTaskID = taskIDPrefix.map { "\($0)-\(taskIndex)" }
+            if let stableTaskID, task(withID: stableTaskID) != nil {
+                created += 1
+                continue
+            }
 
             let dueDate = voiceTask.dueISO.flatMap { raw in
                 isoFormatter.date(from: raw) ?? plainISOFormatter.date(from: raw)
@@ -913,6 +931,7 @@ final class AppModel {
             }
 
             guard let task = snapshot.addTask(
+                id: stableTaskID ?? UUID().uuidString,
                 title: title,
                 boardID: board.id,
                 columnID: columnID,
@@ -950,6 +969,15 @@ final class AppModel {
             refreshNotifications(requestPermission: false)
         }
         return created
+    }
+
+    @discardableResult
+    func addTaskFromWatch(title: String, boardID: String, commandID: String) -> Bool {
+        addTasksFromVoice(
+            [VoiceFinalTask(title: title)],
+            defaultBoardID: boardID,
+            taskIDPrefix: "watch-\(commandID)"
+        ) == 1
     }
 
     @discardableResult

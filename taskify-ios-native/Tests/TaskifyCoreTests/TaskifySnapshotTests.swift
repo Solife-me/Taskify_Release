@@ -71,6 +71,21 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertTrue(snapshot.tasks[0].dueDateEnabled)
     }
 
+    func testQuickAddCanUseAStableCallerProvidedID() throws {
+        var snapshot = TaskifySnapshot.empty
+
+        let task = try XCTUnwrap(snapshot.addTask(
+            id: "watch-command-123",
+            title: "Created from Watch",
+            boardID: "week-default",
+            columnID: WeekdayColumn.monday.rawValue,
+            dueDate: Date(timeIntervalSince1970: 1_700_000_000)
+        ))
+
+        XCTAssertEqual(task.id, "watch-command-123")
+        XCTAssertEqual(snapshot.tasks.first?.id, "watch-command-123")
+    }
+
     func testCompletionRemovesTaskFromUpcoming() {
         var snapshot = TaskifySnapshot.empty
         let dueDate = Date(timeIntervalSince1970: 1_700_086_400)
