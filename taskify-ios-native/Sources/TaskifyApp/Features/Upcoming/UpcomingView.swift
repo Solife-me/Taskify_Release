@@ -1647,14 +1647,38 @@ private struct DeviceReminderCard: View {
     }
 }
 
-private struct TaskifyEventCard: View {
+struct TaskifyEventCard: View {
     @Environment(AppModel.self) private var model
+    @Environment(TaskSelectionController.self) private var selection: TaskSelectionController?
     @State private var showingEditor = false
     let event: TaskifyEvent
+    let showDate: Bool
+    let allowsSelection: Bool
+
+    init(event: TaskifyEvent, showDate: Bool = false, allowsSelection: Bool = false) {
+        self.event = event
+        self.showDate = showDate
+        self.allowsSelection = allowsSelection
+    }
+
+    private var isSelecting: Bool {
+        allowsSelection && selection?.isActive == true
+    }
+
+    private var isSelected: Bool {
+        selection?.selectedEventIDs.contains(event.id) == true
+    }
 
     var body: some View {
         Group {
-            if event.isReadOnly {
+            if isSelecting {
+                Button {
+                    selection?.toggleEvent(event.id)
+                } label: {
+                    cardContent
+                }
+                .buttonStyle(.plain)
+            } else if event.isReadOnly {
                 cardContent
             } else {
                 Button {
@@ -1675,6 +1699,13 @@ private struct TaskifyEventCard: View {
 
     private var cardContent: some View {
         HStack(alignment: .top, spacing: 12) {
+            if isSelecting {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(isSelected ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                    .frame(width: 24, height: 38)
+            }
+
             Image(systemName: "calendar.badge.clock")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.green)
@@ -1742,9 +1773,14 @@ private struct TaskifyEventCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .taskifyGlass(cornerRadius: 20)
         .accessibilityElement(children: .combine)
-        .accessibilityHint(event.isReadOnly
-            ? "A read-only Taskify event shared through Nostr"
-            : "Opens the Taskify event editor")
+        .accessibilityLabel(isSelecting
+            ? "\(event.title), \(isSelected ? "selected" : "not selected")"
+            : event.title)
+        .accessibilityHint(isSelecting
+            ? "Toggles this event in the current selection"
+            : (event.isReadOnly
+                ? "A read-only Taskify event shared through Nostr"
+                : "Opens the Taskify event editor"))
     }
 
     private var timeText: String {
@@ -1752,18 +1788,25 @@ private struct TaskifyEventCard: View {
         if event.isAllDay {
             guard let end = event.endDate,
                   !Calendar.current.isDate(start, inSameDayAs: end) else {
+                if showDate {
+                    return "All-day · \(start.formatted(date: .abbreviated, time: .omitted))"
+                }
                 return "All-day"
             }
             return "All-day · \(start.formatted(date: .abbreviated, time: .omitted)) – \(end.formatted(date: .abbreviated, time: .omitted))"
         }
         guard let end = event.endDate else {
-            return formattedTime(start)
+            let time = formattedTime(start)
+            guard showDate else { return time }
+            return "\(start.formatted(date: .abbreviated, time: .omitted)) · \(time)"
         }
         let timeZoneSuffix = event.startTimeZoneID
             .flatMap(TimeZone.init(identifier:))
             .flatMap { $0.abbreviation(for: start) }
             .map { " · \($0)" } ?? ""
-        return "\(formattedTime(start)) – \(formattedTime(end))\(timeZoneSuffix)"
+        let timeRange = "\(formattedTime(start)) – \(formattedTime(end))\(timeZoneSuffix)"
+        guard showDate else { return timeRange }
+        return "\(start.formatted(date: .abbreviated, time: .omitted)) · \(timeRange)"
     }
 
     private func formattedTime(_ date: Date) -> String {

@@ -750,6 +750,20 @@ final class TaskifySnapshotTests: XCTestCase {
             dueDate: nil,
             newTaskPosition: .bottom
         ))
+        snapshot.taskifyEvents = [TaskifyEvent(
+            id: "event-to-move",
+            boardID: board.id,
+            columnID: source.id,
+            order: 0,
+            title: "Planning call",
+            schedule: .date,
+            startDateValue: "2026-08-07",
+            canonicalAddress: "canonical",
+            viewAddress: "view",
+            eventKey: "event-key",
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )]
 
         let result = try XCTUnwrap(snapshot.removeListColumn(
             boardID: board.id,
@@ -760,6 +774,8 @@ final class TaskifySnapshotTests: XCTestCase {
 
         XCTAssertEqual(result.movedTaskIDs, [firstMoved.id, secondMoved.id])
         XCTAssertTrue(result.deletedTaskIDs.isEmpty)
+        XCTAssertEqual(result.movedEventIDs, ["event-to-move"])
+        XCTAssertTrue(result.deletedEventIDs.isEmpty)
         XCTAssertEqual(snapshot.selectedBoard?.columns.map(\.id), [destination.id])
         let movedTasks = snapshot.tasks
             .filter { result.movedTaskIDs.contains($0.id) }
@@ -767,6 +783,11 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertEqual(movedTasks.map(\.columnID), [destination.id, destination.id])
         XCTAssertEqual(movedTasks.map(\.order), [1, 2])
         XCTAssertEqual(movedTasks.map(\.lastEditedBy), ["editor", "editor"])
+        let movedEvent = try XCTUnwrap(snapshot.taskifyEvents?.first)
+        XCTAssertEqual(movedEvent.columnID, destination.id)
+        XCTAssertEqual(movedEvent.lastEditedBy, "editor")
+        XCTAssertTrue(movedEvent.canonicalAddress.isEmpty)
+        XCTAssertTrue(movedEvent.viewAddress.isEmpty)
     }
 
     func testRemovingListCanDeleteTasksButProtectsFinalList() throws {
@@ -780,6 +801,19 @@ final class TaskifySnapshotTests: XCTestCase {
             columnID: deletedColumn.id,
             dueDate: nil
         ))
+        snapshot.taskifyEvents = [TaskifyEvent(
+            id: "event-to-delete",
+            boardID: board.id,
+            columnID: deletedColumn.id,
+            title: "Cancelled meeting",
+            schedule: .date,
+            startDateValue: "2026-08-07",
+            canonicalAddress: "canonical",
+            viewAddress: "view",
+            eventKey: "event-key",
+            inviteToken: "",
+            rsvpStatus: .accepted
+        )]
 
         let result = try XCTUnwrap(snapshot.removeListColumn(
             boardID: board.id,
@@ -788,7 +822,9 @@ final class TaskifySnapshotTests: XCTestCase {
         ))
 
         XCTAssertEqual(result.deletedTaskIDs, [task.id])
+        XCTAssertEqual(result.deletedEventIDs, ["event-to-delete"])
         XCTAssertTrue(snapshot.tasks.first(where: { $0.id == task.id })?.isDeleted == true)
+        XCTAssertTrue(snapshot.taskifyEvents?.first?.isDeleted == true)
         XCTAssertNil(snapshot.removeListColumn(
             boardID: board.id,
             columnID: finalColumn.id,

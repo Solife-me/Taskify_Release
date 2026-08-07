@@ -62,11 +62,21 @@ public struct ListColumnRemovalResult: Equatable, Sendable {
     public var removedColumnID: String
     public var movedTaskIDs: [String]
     public var deletedTaskIDs: [String]
+    public var movedEventIDs: [String]
+    public var deletedEventIDs: [String]
 
-    public init(removedColumnID: String, movedTaskIDs: [String] = [], deletedTaskIDs: [String] = []) {
+    public init(
+        removedColumnID: String,
+        movedTaskIDs: [String] = [],
+        deletedTaskIDs: [String] = [],
+        movedEventIDs: [String] = [],
+        deletedEventIDs: [String] = []
+    ) {
         self.removedColumnID = removedColumnID
         self.movedTaskIDs = movedTaskIDs
         self.deletedTaskIDs = deletedTaskIDs
+        self.movedEventIDs = movedEventIDs
+        self.deletedEventIDs = deletedEventIDs
     }
 }
 
@@ -758,6 +768,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         let affectedIndices = tasks.indices.filter {
             tasks[$0].boardID == boardID && tasks[$0].columnID == columnID && !tasks[$0].isDeleted
         }
+        var events = taskifyEvents ?? []
+        let affectedEventIndices = events.indices.filter {
+            events[$0].boardID == boardID && events[$0].columnID == columnID && !events[$0].isDeleted
+        }
         var result = ListColumnRemovalResult(removedColumnID: columnID)
 
         switch strategy {
@@ -777,12 +791,37 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 nextOrder += 1
                 result.movedTaskIDs.append(tasks[taskIndex].id)
             }
+            var nextEventOrder = (events
+                .filter { $0.boardID == boardID && $0.columnID == destinationColumnID && !$0.isDeleted }
+                .compactMap(\.order)
+                .max() ?? -1) + 1
+            for eventIndex in affectedEventIndices.sorted(by: {
+                (events[$0].order ?? Int.max) < (events[$1].order ?? Int.max)
+            }) {
+                events[eventIndex].columnID = destinationColumnID
+                events[eventIndex].order = nextEventOrder
+                events[eventIndex].lastEditedBy = editorPublicKey ?? events[eventIndex].lastEditedBy
+                events[eventIndex].canonicalAddress = ""
+                events[eventIndex].viewAddress = ""
+                events[eventIndex].nostrUpdatedAt = nil
+                nextEventOrder += 1
+                result.movedEventIDs.append(events[eventIndex].id)
+            }
         case .deleteTasks:
             for taskIndex in affectedIndices {
                 tasks[taskIndex].deleted = true
                 tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
                 result.deletedTaskIDs.append(tasks[taskIndex].id)
             }
+            for eventIndex in affectedEventIndices {
+                events[eventIndex].deleted = true
+                events[eventIndex].lastEditedBy = editorPublicKey ?? events[eventIndex].lastEditedBy
+                result.deletedEventIDs.append(events[eventIndex].id)
+            }
+        }
+
+        if !affectedEventIndices.isEmpty {
+            taskifyEvents = events
         }
 
         boards[boardIndex].columns.removeAll { $0.id == columnID }

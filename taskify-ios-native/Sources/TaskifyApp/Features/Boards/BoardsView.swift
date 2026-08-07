@@ -247,23 +247,27 @@ private extension View {
     }
 }
 
-/// Drives Boards' multi-select mode (ported from the PWA's `useSelectionMode`). Owned as `@State`
-/// by `BoardsView` and handed down via `.environment(_:)` so column views and `TaskCardView` —
-/// several layers deep across three different board-kind view trees — can read/mutate it without
-/// threading a binding through every intermediate initializer.
+/// Drives Boards' multi-select mode (ported from the PWA's `useSelectionMode`). It tracks both
+/// tasks and Taskify events so mixed selections can move or delete together.
 @Observable
 final class TaskSelectionController {
     private(set) var isActive = false
     private(set) var selectedTaskIDs: Set<String> = []
+    private(set) var selectedEventIDs: Set<String> = []
+
+    var selectedCount: Int { selectedTaskIDs.count + selectedEventIDs.count }
+    var isEmpty: Bool { selectedTaskIDs.isEmpty && selectedEventIDs.isEmpty }
 
     func enter() {
         isActive = true
         selectedTaskIDs.removeAll()
+        selectedEventIDs.removeAll()
     }
 
     func exit() {
         isActive = false
         selectedTaskIDs.removeAll()
+        selectedEventIDs.removeAll()
     }
 
     func toggle(_ taskID: String) {
@@ -274,12 +278,25 @@ final class TaskSelectionController {
         }
     }
 
-    func clear() {
-        selectedTaskIDs.removeAll()
+    func toggleEvent(_ eventID: String) {
+        if selectedEventIDs.contains(eventID) {
+            selectedEventIDs.remove(eventID)
+        } else {
+            selectedEventIDs.insert(eventID)
+        }
     }
 
-    func retainOnly(_ availableTaskIDs: Set<String>) {
+    func clear() {
+        selectedTaskIDs.removeAll()
+        selectedEventIDs.removeAll()
+    }
+
+    func retainOnlyTasks(_ availableTaskIDs: Set<String>) {
         selectedTaskIDs.formIntersection(availableTaskIDs)
+    }
+
+    func retainOnlyEvents(_ availableEventIDs: Set<String>) {
+        selectedEventIDs.formIntersection(availableEventIDs)
     }
 }
 
@@ -608,6 +625,10 @@ struct BoardsView: View {
         model.activeTaskIDs
     }
 
+    private var availableTaskifyEventIDs: Set<String> {
+        Set(model.taskifyEvents.map(\.id))
+    }
+
     private var completedTasksAreVisible: Bool {
         model.selectedBoard?.kind == .bible ? showCompleted : (!completedTabEnabled || showCompleted)
     }
@@ -647,6 +668,7 @@ struct BoardsView: View {
                     },
                     onDelete: {
                         model.deleteTasks(selection.selectedTaskIDs)
+                        model.deleteTaskifyEvents(selection.selectedEventIDs)
                         selection.exit()
                     }
                 )
@@ -747,7 +769,10 @@ struct BoardsView: View {
             resetFocusedPage()
         }
         .onChange(of: availableTaskIDs) { _, taskIDs in
-            selection.retainOnly(taskIDs)
+            selection.retainOnlyTasks(taskIDs)
+        }
+        .onChange(of: availableTaskifyEventIDs) { _, eventIDs in
+            selection.retainOnlyEvents(eventIDs)
         }
         .onChange(of: completedTabEnabled) { _, enabled in
             showCompleted = false
@@ -2043,7 +2068,7 @@ private struct SelectionActionBar: View {
     let onComplete: () -> Void
     let onDelete: () -> Void
 
-    private var selectedCount: Int { selection.selectedTaskIDs.count }
+    private var selectedCount: Int { selection.selectedCount }
 
     private var hasIncompleteSelected: Bool {
         selection.selectedTaskIDs.contains { model.task(withID: $0)?.completed == false }
@@ -2152,7 +2177,7 @@ private struct SelectionMoveSheet: View {
                             }
                         }
                     }
-                } else if selection.selectedTaskIDs.isEmpty {
+                } else if selection.isEmpty {
                     Text("Select one or more items to move.")
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 } else {
@@ -2240,6 +2265,7 @@ private struct SelectionMoveSheet: View {
 
     private func move(toBoardID boardID: String, columnID: String) {
         model.moveTasks(selection.selectedTaskIDs, toBoardID: boardID, columnID: columnID)
+        model.moveTaskifyEvents(selection.selectedEventIDs, toBoardID: boardID, columnID: columnID)
         dismiss()
         onMoved()
     }
@@ -2920,8 +2946,18 @@ private struct CompoundColumnView: View {
         return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
     }
 
+    private var events: [TaskifyEvent] {
+        TaskifyEventBoardOrganizer.events(
+            model.taskifyEvents,
+            boardID: reference.board.id,
+            columnID: reference.column.id,
+            weekStartsOn: model.weekStart
+        )
+    }
+
     var body: some View {
         let tasks = tasks
+        let events = events
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center) {
@@ -2941,7 +2977,7 @@ private struct CompoundColumnView: View {
 
                 Spacer()
 
-                Text("\(tasks.count)")
+                Text("\(tasks.count + events.count)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(TaskifyTheme.tertiaryText)
                     .padding(.horizontal, 9)
@@ -2959,7 +2995,7 @@ private struct CompoundColumnView: View {
                         }
                     } label: {
                         Label(
-                            selection?.isActive == true ? "Exit selection" : "Select tasks",
+                            selection?.isActive == true ? "Exit selection" : "Select items",
                             systemImage: selection?.isActive == true ? "xmark.circle" : "checklist"
                         )
                     }
@@ -2976,6 +3012,9 @@ private struct CompoundColumnView: View {
 
             ScrollView {
                 LazyVStack(spacing: 9) {
+                    ForEach(events) { event in
+                        TaskifyEventCard(event: event, showDate: true, allowsSelection: true)
+                    }
                     ForEach(tasks) { task in
                         TaskCardView(task: task, allowsDragging: true)
                             .taskDropTarget(
@@ -3019,9 +3058,26 @@ private struct ListColumnView: View {
         return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
     }
 
+    private var events: [TaskifyEvent] {
+        TaskifyEventBoardOrganizer.events(
+            model.taskifyEvents,
+            boardID: model.selectedBoardID,
+            columnID: column.id,
+            weekStartsOn: model.weekStart
+        )
+    }
+
     private var allTasks: [TaskItem] {
         model.tasks(forColumnID: column.id, includeCompleted: true)
     }
+
+    private var allEvents: [TaskifyEvent] {
+        model.taskifyEvents.filter {
+            $0.boardID == model.selectedBoardID && $0.columnID == column.id
+        }
+    }
+
+    private var allItemsAreEmpty: Bool { allTasks.isEmpty && allEvents.isEmpty }
 
     private var orderedColumns: [BoardColumn] {
         guard let board = model.selectedBoard, board.kind == .list else { return [] }
@@ -3044,6 +3100,7 @@ private struct ListColumnView: View {
 
     var body: some View {
         let tasks = tasks
+        let events = events
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -3051,7 +3108,7 @@ private struct ListColumnView: View {
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(TaskifyTheme.secondaryText)
                 Spacer()
-                Text("\(tasks.count)")
+                Text("\(tasks.count + events.count)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(TaskifyTheme.tertiaryText)
                     .padding(.horizontal, 9)
@@ -3069,7 +3126,7 @@ private struct ListColumnView: View {
                         }
                     } label: {
                         Label(
-                            selection?.isActive == true ? "Exit selection" : "Select tasks",
+                            selection?.isActive == true ? "Exit selection" : "Select items",
                             systemImage: selection?.isActive == true ? "xmark.circle" : "checklist"
                         )
                     }
@@ -3124,6 +3181,9 @@ private struct ListColumnView: View {
 
             ScrollView {
                 LazyVStack(spacing: 9) {
+                    ForEach(events) { event in
+                        TaskifyEventCard(event: event, showDate: true, allowsSelection: true)
+                    }
                     ForEach(tasks) { task in
                         TaskCardView(task: task, allowsDragging: true)
                             .taskDropTarget(
@@ -3162,8 +3222,8 @@ private struct ListColumnView: View {
             isPresented: $showingDeleteConfirmation,
             titleVisibility: .visible
         ) {
-            if let moveDestination, !allTasks.isEmpty {
-                Button("Move \(taskCountLabel) to \(moveDestination.name)") {
+            if let moveDestination, !allItemsAreEmpty {
+                Button("Move \(itemCountLabel) to \(moveDestination.name)") {
                     _ = model.removeListColumn(
                         columnID: column.id,
                         moveTasksTo: moveDestination.id
@@ -3172,7 +3232,7 @@ private struct ListColumnView: View {
             }
 
             Button(
-                allTasks.isEmpty ? "Delete empty list" : "Delete list and \(taskCountLabel)",
+                allItemsAreEmpty ? "Delete empty list" : "Delete list and \(itemCountLabel)",
                 role: .destructive
             ) {
                 _ = model.removeListColumn(columnID: column.id, moveTasksTo: nil)
@@ -3180,16 +3240,17 @@ private struct ListColumnView: View {
 
             Button("Cancel", role: .cancel) {}
         } message: {
-            if allTasks.isEmpty {
+            if allItemsAreEmpty {
                 Text("This removes the list from the shared board.")
             } else {
-                Text("Choose whether to keep its tasks or delete them. This change syncs to everyone sharing the board.")
+                Text("Choose whether to keep its items or delete them. This change syncs to everyone sharing the board.")
             }
         }
     }
 
-    private var taskCountLabel: String {
-        "\(allTasks.count) task\(allTasks.count == 1 ? "" : "s")"
+    private var itemCountLabel: String {
+        let count = allTasks.count + allEvents.count
+        return "\(count) item\(count == 1 ? "" : "s")"
     }
 }
 
@@ -3253,8 +3314,18 @@ private struct DayColumnView: View {
         return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
     }
 
+    private var events: [TaskifyEvent] {
+        TaskifyEventBoardOrganizer.events(
+            model.taskifyEvents,
+            boardID: model.selectedBoardID,
+            weekday: weekday,
+            weekStartsOn: model.weekStart
+        )
+    }
+
     var body: some View {
         let tasks = tasks
+        let events = events
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -3273,7 +3344,7 @@ private struct DayColumnView: View {
                         }
                     } label: {
                         Label(
-                            selection?.isActive == true ? "Exit selection" : "Select tasks",
+                            selection?.isActive == true ? "Exit selection" : "Select items",
                             systemImage: selection?.isActive == true ? "xmark.circle" : "checklist"
                         )
                     }
@@ -3286,6 +3357,9 @@ private struct DayColumnView: View {
 
             ScrollView {
                 LazyVStack(spacing: 9) {
+                    ForEach(events) { event in
+                        TaskifyEventCard(event: event, allowsSelection: true)
+                    }
                     ForEach(tasks) { task in
                         TaskCardView(task: task, allowsDragging: true)
                             .taskDropTarget(

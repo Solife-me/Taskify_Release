@@ -1387,6 +1387,55 @@ final class AppModel {
         }
     }
 
+    /// Bulk Taskify-event counterpart to `deleteTasks`, matching the PWA selection bar. A bulk
+    /// delete removes the selected occurrences only; recurring-series deletion remains an
+    /// explicit choice in the individual event editor.
+    func deleteTaskifyEvents<S: Sequence>(_ eventIDs: S) where S.Element == String {
+        for eventID in eventIDs {
+            deleteTaskifyEvent(eventID, scope: .single)
+        }
+    }
+
+    /// Moves editable Taskify events with the selected tasks. Cross-board moves publish source
+    /// tombstones before the new target-board versions, preserving the same replay protection as
+    /// an event move performed through its editor.
+    func moveTaskifyEvents<S: Sequence>(
+        _ eventIDs: S,
+        toBoardID boardID: String,
+        columnID: String
+    ) where S.Element == String {
+        let eventsByID = (snapshot.taskifyEvents ?? []).reduce(into: [String: TaskifyEvent]()) {
+            $0[$1.id] = $1
+        }
+        let orderedEventIDs = Array(Set(eventIDs)).sorted { lhsID, rhsID in
+            let lhsIsSeed = eventsByID[lhsID].map { $0.recurrence?.isActive == true && $0.seriesID == $0.id } == true
+            let rhsIsSeed = eventsByID[rhsID].map { $0.recurrence?.isActive == true && $0.seriesID == $0.id } == true
+            if lhsIsSeed != rhsIsSeed { return lhsIsSeed }
+            return lhsID < rhsID
+        }
+        var movedAny = false
+        for eventID in orderedEventIDs {
+            guard let result = snapshot.moveTaskifyEvent(
+                eventID: eventID,
+                toBoardID: boardID,
+                columnID: columnID,
+                editorPublicKey: identityPublicKey.nilIfEmpty
+            ) else { continue }
+            movedAny = true
+            if result.crossedBoards {
+                synchronizeTaskifyEventMove(
+                    sourceEvents: result.sourceEvents,
+                    targetEventIDs: result.movedEventIDs
+                )
+            } else {
+                synchronizeTaskifyEvents(result.movedEventIDs)
+            }
+        }
+        if movedAny {
+            refreshNotifications(requestPermission: false)
+        }
+    }
+
     func deleteTask(_ taskID: String, scope: TaskDeletionScope = .single) {
         let changes = snapshot.deleteTask(
             taskID: taskID,
@@ -3053,7 +3102,8 @@ final class AppModel {
         publishBoard(updatedBoard)
         result.movedTaskIDs.forEach { synchronizeTask($0) }
         result.deletedTaskIDs.forEach { synchronizeTask($0, includeDeletionEvent: true) }
-        if !result.deletedTaskIDs.isEmpty {
+        synchronizeTaskifyEvents(result.movedEventIDs + result.deletedEventIDs)
+        if !result.deletedTaskIDs.isEmpty || !result.deletedEventIDs.isEmpty {
             refreshNotifications(requestPermission: false)
         }
         return true
