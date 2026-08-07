@@ -16,3 +16,9 @@ test("week board task publish uses canonical col=day tag", () => {
     /else if \(entry\.kind === "week"\) \{\s*colId = "day";\s*\}/s,
   );
 });
+
+test("task and calendar fetches require the deterministic board author", () => {
+  const authorFilterCount = (RUNTIME_SOURCE.match(/authors: \[boardPubkey\]/g) ?? []).length;
+  assert.ok(authorFilterCount >= 3, `expected board author filters, got ${authorFilterCount}`);
+  assert.match(RUNTIME_SOURCE, /event\.pubkey !== deriveBoardKeyPair\(boardId\)\.pk/);
+});

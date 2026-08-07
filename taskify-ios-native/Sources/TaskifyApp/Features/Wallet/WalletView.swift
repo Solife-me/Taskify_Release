@@ -1,0 +1,7805 @@
+import CoreImage
+import CoreImage.CIFilterBuiltins
+import LocalAuthentication
+import SwiftUI
+import TaskifyCore
+import UIKit
+import UniformTypeIdentifiers
+import VisionKit
+
+enum WalletRecoveryMode: Equatable {
+    case transfer
+    case rescan
+    case replace
+}
+
+struct WalletMintRecoveryOutcome: Equatable {
+    let mintURL: String
+    let found: UInt64
+    let deposited: UInt64
+    let spent: UInt64
+    let pending: UInt64
+    let errorMessage: String?
+
+    var fee: UInt64 { found > deposited ? found - deposited : 0 }
+    var succeeded: Bool { errorMessage == nil }
+}
+
+struct WalletRestoreOutcome: Equatable {
+    let mode: WalletRecoveryMode
+    let mints: [WalletMintRecoveryOutcome]
+
+    var recovered: UInt64 { mints.reduce(0) { $0 + $1.deposited } }
+    var found: UInt64 { mints.reduce(0) { $0 + $1.found } }
+    var spent: UInt64 { mints.reduce(0) { $0 + $1.spent } }
+    var pending: UInt64 { mints.reduce(0) { $0 + $1.pending } }
+    var fees: UInt64 { mints.reduce(0) { $0 + $1.fee } }
+    var failures: [WalletMintRecoveryOutcome] { mints.filter { !$0.succeeded } }
+}
+
+enum NpubCashClaimStatus: Equatable {
+    case idle
+    case checking
+    case success
+    case error
+}
+
+enum SolifeAccountStatus: Equatable {
+    case idle
+    case loading
+    case error
+}
+
+/// A last-known BTC/USD price, so the wallet has an immediate (if possibly stale) conversion
+/// available before the first live fetch completes -- matches the PWA's `LS_BTC_USD_PRICE_CACHE`
+/// localStorage cache, minus the `updatedAt` timestamp, which nothing in this app's UI surfaces.
+enum WalletPriceCache {
+    private static let key = "taskify.wallet.btcUsdPriceCache"
+
+    static var cachedPrice: Double? {
+        let value = UserDefaults.standard.double(forKey: key)
+        return value > 0 ? value : nil
+    }
+
+    static func save(_ price: Double) {
+        UserDefaults.standard.set(price, forKey: key)
+    }
+}
+
+@MainActor
+final class WalletViewModel: ObservableObject {
+    static let suggestedMintURL = "https://mint.solife.me"
+
+    @Published private(set) var snapshot = CashuWalletSnapshot.empty
+    @Published private(set) var isLoading = false
+    @Published private(set) var isWorking = false
+    @Published var errorMessage: String?
+    @Published var statusMessage: String?
+    @Published private(set) var activeMintURL: String
+    @Published private(set) var lightningReceiveQuotes: [CashuLightningReceiveQuote] = []
+    @Published private(set) var pendingEcashReceives: [CashuPendingReceive] = []
+    @Published private(set) var createdPaymentRequests: [CashuCreatedPaymentRequest] = []
+    @Published private(set) var solifeAddress: String?
+    @Published private(set) var solifeAccount: SolifeAccount?
+    @Published private(set) var solifeConfig: SolifeConfig?
+    @Published private(set) var solifeAccountStatus: SolifeAccountStatus = .idle
+    @Published private(set) var solifeAccountMessage: String?
+    @Published private(set) var npubCashIdentity: NpubCashIdentity?
+    @Published private(set) var npubCashIdentityError: String?
+    @Published private(set) var npubCashClaimStatus: NpubCashClaimStatus = .idle
+    @Published private(set) var npubCashClaimMessage: String?
+    @Published private(set) var btcUSDPrice: Double? = WalletPriceCache.cachedPrice
+
+    private var service: CashuWalletService?
+    private var hasStarted = false
+    private var isAppActive = true
+    private var lightningMonitorTask: Task<Void, Never>?
+    private var priceMonitorTask: Task<Void, Never>?
+    private var paymentInboxTask: Task<Void, Never>?
+    private var paymentInboxNeedsAnotherPass = false
+    private var isRecoveringPaymentInbox = false
+    private var isRecoveringIncomingTokenInbox = false
+    private var isClaimingNpubCash = false
+    private var announcedLightningQuoteIDs: Set<String> = []
+    private let paymentNotificationCoordinator = WalletPaymentNotificationCoordinator()
+    private let activeMintKey = "taskify.wallet.active-mint"
+
+    init() {
+        activeMintURL = UserDefaults.standard.string(forKey: activeMintKey) ?? ""
+    }
+
+    var activeMint: CashuMintSummary? {
+        snapshot.mints.first { $0.url == activeMintURL } ?? snapshot.mints.first
+    }
+
+    var activeLightningReceiveQuotes: [CashuLightningReceiveQuote] {
+        lightningReceiveQuotes
+            .filter { $0.isOutstanding() }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    var hasOutstandingLightningInvoices: Bool {
+        !activeLightningReceiveQuotes.isEmpty
+    }
+
+    var recoverablePendingEcashReceives: [CashuPendingReceive] {
+        pendingEcashReceives.filter(\.isRecoverable)
+    }
+
+    func start(recoverLightningReceives: Bool = true) async {
+        guard !hasStarted else {
+            while isLoading && service == nil {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            await refresh()
+            startLightningMonitoring()
+            startPriceMonitoring()
+            return
+        }
+        hasStarted = true
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            // Opening the CDK SQLite repository and deriving its wallet identifier are
+            // synchronous. Performing them on MainActor caused the first Boards frame to
+            // pause even though the wallet tab was not visible.
+            let service = try await Task.detached(priority: .userInitiated) {
+                let mnemonic = try KeychainWalletSeedStore().loadOrCreate()
+                return try Self.makeService(
+                    mnemonic: mnemonic,
+                    migrateLegacyFiles: true
+                )
+            }.value
+            self.service = service
+            await service.recoverInterruptedOperations()
+            await refresh()
+            announcedLightningQuoteIDs = Set(
+                lightningReceiveQuotes.lazy.filter { $0.state == .issued }.map(\.id)
+            )
+            await recoverPendingEcashReceives(force: true)
+            await recoverNostrPaymentRequests()
+            await recoverIncomingTokenInbox()
+            if recoverLightningReceives {
+                await recoverPendingLightningReceives()
+            }
+            startLightningMonitoring()
+            startPriceMonitoring()
+            refreshLightningAddresses()
+            if NpubCashSettings.autoClaimEnabled {
+                await claimNpubCash(auto: true)
+            }
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    func refresh() async {
+        guard let service else { return }
+        await service.refreshPendingLightningPayments()
+        await service.refreshOutgoingTokenStates()
+        snapshot = await service.snapshot()
+        if let quotes = try? await service.trackedLightningReceiveQuotes() {
+            lightningReceiveQuotes = quotes
+        }
+        pendingEcashReceives = await service.savedPendingReceives()
+        createdPaymentRequests = await service.savedCreatedPaymentRequests()
+        repairActiveMintSelection()
+    }
+
+    func appDidBecomeActive() {
+        isAppActive = true
+        guard hasStarted else { return }
+        if hasOutstandingLightningInvoices {
+            Task { await paymentNotificationCoordinator.requestAuthorizationIfNeeded() }
+        }
+        restartLightningMonitoring()
+        restartPriceMonitoring()
+        refreshLightningAddresses()
+        Task {
+            await service?.recoverInterruptedOperations()
+            await recoverPendingEcashReceives(force: true)
+            await recoverNostrPaymentRequests()
+            await recoverIncomingTokenInbox()
+            if NpubCashSettings.autoClaimEnabled {
+                await claimNpubCash(auto: true)
+            }
+            await refresh()
+        }
+    }
+
+    func appDidEnterBackground() {
+        isAppActive = false
+        lightningMonitorTask?.cancel()
+        lightningMonitorTask = nil
+        stopPriceMonitoring()
+    }
+
+    func performBackgroundLightningRefresh() async -> Bool {
+        appDidEnterBackground()
+        if !hasStarted {
+            await start(recoverLightningReceives: false)
+        }
+        guard service != nil else { return false }
+
+        let newlyIssued = await recoverPendingLightningReceives(
+            presentInApp: false
+        )
+        let recoveredEcash = await recoverPendingEcashReceives(
+            force: true,
+            presentInApp: false
+        )
+        let paymentRequestReceipts = await recoverNostrPaymentRequests(presentInApp: false)
+        await service?.refreshPendingLightningPayments(force: true)
+        if let service {
+            snapshot = await service.snapshot()
+        }
+        await paymentNotificationCoordinator.notifyPayments(newlyIssued)
+        await paymentNotificationCoordinator.notifyEcashReceipts(recoveredEcash)
+        await paymentNotificationCoordinator.notifyCashuRequestReceipts(paymentRequestReceipts)
+        return true
+    }
+
+    func paymentDeliveryWasQueued() {
+        guard hasStarted else { return }
+        paymentInboxNeedsAnotherPass = true
+        guard paymentInboxTask == nil else { return }
+        paymentInboxTask = Task { [weak self] in
+            guard let self else { return }
+            repeat {
+                self.paymentInboxNeedsAnotherPass = false
+                _ = await self.recoverNostrPaymentRequests(presentInApp: self.isAppActive)
+                _ = await self.recoverIncomingTokenInbox(presentInApp: self.isAppActive)
+            } while self.paymentInboxNeedsAnotherPass && !Task.isCancelled
+            self.paymentInboxTask = nil
+        }
+    }
+
+    /// Derives the `<npub>@npub.cash` address from the stored Nostr identity — local only, no
+    /// network call. Called whenever the wallet starts or the app returns to the foreground, and
+    /// whenever the user turns receiving on, so the address is ready to show immediately.
+    /// Derives the always-on `<npub>@solife.me` address (a pure forwarder — any Nostr key works,
+    /// nothing to enable) and, if the user has opted in, the `<npub>@npub.cash` address. Both are
+    /// local-only, no network call.
+    func refreshLightningAddresses() {
+        let identity = try? KeychainIdentityStore().load()
+        solifeAddress = identity.map { SolifeClient.address(npub: $0.npub) }
+
+        guard NpubCashSettings.receivingEnabled else {
+            npubCashIdentity = nil
+            npubCashIdentityError = nil
+            return
+        }
+        guard let identity else {
+            npubCashIdentity = nil
+            npubCashIdentityError = "Set up your Taskify Nostr identity to use npub.cash."
+            return
+        }
+        npubCashIdentity = NpubCashClient.identity(npub: identity.npub)
+        npubCashIdentityError = nil
+    }
+
+    /// Checks npub.cash for a pending balance and, if any, redeems each token through the normal
+    /// receive path (`submitReceive`) — the same preview-free flow already used for NUT-18
+    /// payment-request receipts, so a claimed token gets identical mint verification, retry, and
+    /// history handling as any other incoming ecash.
+    @discardableResult
+    func claimNpubCash(auto: Bool) async -> Int {
+        guard NpubCashSettings.receivingEnabled, !isClaimingNpubCash else { return 0 }
+        guard let identity = try? KeychainIdentityStore().load() else {
+            if !auto {
+                npubCashClaimStatus = .error
+                npubCashClaimMessage = "Set up your Taskify Nostr identity to use npub.cash."
+            }
+            return 0
+        }
+        isClaimingNpubCash = true
+        defer { isClaimingNpubCash = false }
+        npubCashClaimStatus = .checking
+        npubCashClaimMessage = "Checking npub.cash for pending tokens…"
+
+        do {
+            let result = try await NpubCashClient.claim(identity: identity)
+            guard !result.tokens.isEmpty else {
+                npubCashClaimStatus = .idle
+                npubCashClaimMessage = result.balance > 0
+                    ? "npub.cash reported a balance, but no token was returned. Try again shortly."
+                    : "No pending eCash found."
+                return 0
+            }
+
+            var claimedCount = 0
+            var claimedTotal: UInt64 = 0
+            var lastError: String?
+            for token in result.tokens {
+                do {
+                    switch try await submitReceive(token) {
+                    case .received(let amount):
+                        claimedCount += 1
+                        claimedTotal += amount
+                    case .alreadyReceived:
+                        lastError = "This eCash was already received."
+                    case .queued:
+                        claimedCount += 1
+                    }
+                } catch {
+                    lastError = Self.message(for: error)
+                }
+            }
+
+            if claimedCount > 0 {
+                npubCashClaimStatus = .success
+                npubCashClaimMessage = claimedTotal > 0
+                    ? "Claimed \(formattedSats(claimedTotal)) via npub.cash"
+                    : "Claimed \(claimedCount) token\(claimedCount == 1 ? "" : "s") via npub.cash"
+                if !auto {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            } else {
+                npubCashClaimStatus = .error
+                npubCashClaimMessage = lastError ?? "Unable to claim eCash from npub.cash."
+            }
+            return Int(claimedTotal)
+        } catch {
+            npubCashClaimStatus = .error
+            npubCashClaimMessage = Self.message(for: error)
+            return 0
+        }
+    }
+
+    /// Loads the solife.me account: default address, mint routing, and any purchased custom
+    /// addresses. Unlike npub.cash there's no "enable" step — any Nostr identity already
+    /// authenticates, so this is only fetched when the user opens address management, not
+    /// automatically on wallet start.
+    func refreshSolifeAccount() async {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            solifeAccountStatus = .error
+            solifeAccountMessage = "Set up your Taskify Nostr identity to manage solife.me addresses."
+            return
+        }
+        solifeAccountStatus = .loading
+        solifeAccountMessage = nil
+        do {
+            let (config, account) = try await SolifeClient.fetchAccount(identity: identity)
+            solifeConfig = config
+            solifeAccount = account
+            solifeAccountStatus = .idle
+        } catch {
+            solifeAccountStatus = .error
+            solifeAccountMessage = Self.message(for: error)
+        }
+    }
+
+    func checkSolifeAddressAvailability(handle: String) async throws -> SolifeAddressAvailability {
+        try await SolifeClient.fetchAddressAvailability(handle: handle)
+    }
+
+    /// Claims a custom handle. A free handle settles immediately; a priced one returns an invoice
+    /// the caller must pay (via `prepareLightningPayment`/`confirmLightningPayment`) and then
+    /// confirm with `verifySolifePurchase`.
+    func purchaseSolifeCustomAddress(handle: String) async throws -> SolifeCustomAddressClaim {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        let (_, claim) = try await SolifeClient.claimCustomAddress(
+            identity: identity,
+            handle: handle,
+            relays: TaskifyRelayDefaults.urls,
+            mintURL: nil
+        )
+        if case .address = claim {
+            await refreshSolifeAccount()
+        }
+        return claim
+    }
+
+    func verifySolifePurchase(purchaseID: String) async throws -> SolifeAddressPurchase {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        let (_, purchase) = try await SolifeClient.verifyAddressPurchase(
+            identity: identity,
+            purchaseID: purchaseID
+        )
+        if purchase.status == "address_claimed" {
+            await refreshSolifeAccount()
+        }
+        return purchase
+    }
+
+    func updateSolifeDefaultMint(_ mintURL: String?) async throws {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        _ = try await SolifeClient.updateDefaultMint(identity: identity, mintURL: mintURL)
+        await refreshSolifeAccount()
+    }
+
+    func updateSolifeCustomAddressMint(handle: String, mintURL: String?) async throws {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw SolifeError.authenticationFailed
+        }
+        _ = try await SolifeClient.updateCustomAddressMint(identity: identity, handle: handle, mintURL: mintURL)
+        await refreshSolifeAccount()
+    }
+
+    func createPaymentRequest(
+        amount: UInt64?,
+        description: String?,
+        mintURLs: [String],
+        recipientPublicKey: String,
+        relayURLs: [String],
+        singleUse: Bool
+    ) async throws -> CashuCreatedPaymentRequest {
+        guard let service else { throw CashuWalletError.paymentRequestNotFound }
+        isWorking = true
+        defer { isWorking = false }
+        let request = try await service.createNostrPaymentRequest(
+            amount: amount,
+            description: description,
+            mintURLs: mintURLs,
+            recipientPublicKey: recipientPublicKey,
+            relayURLs: relayURLs,
+            singleUse: singleUse
+        )
+        await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
+        createdPaymentRequests = await service.savedCreatedPaymentRequests()
+        return request
+    }
+
+    func cancelPaymentRequest(_ request: CashuCreatedPaymentRequest) async throws {
+        guard let service else { throw CashuWalletError.paymentRequestNotFound }
+        isWorking = true
+        defer { isWorking = false }
+        try await service.cancelCreatedPaymentRequest(id: request.requestID)
+        createdPaymentRequests = await service.savedCreatedPaymentRequests()
+    }
+
+    @discardableResult
+    func performBackgroundPaymentRequestRefresh() async -> Bool {
+        guard service != nil else { return false }
+        let receipts = await recoverNostrPaymentRequests(presentInApp: false)
+        await paymentNotificationCoordinator.notifyCashuRequestReceipts(receipts)
+        return true
+    }
+
+    func selectMint(_ mintURL: String) {
+        activeMintURL = mintURL
+        UserDefaults.standard.set(mintURL, forKey: activeMintKey)
+    }
+
+    func addMint(_ mintURL: String) async throws {
+        guard let service else { return }
+        isWorking = true
+        defer { isWorking = false }
+        try await service.addMint(mintURL)
+        let normalized = try CashuWalletService.normalizedMintURL(mintURL)
+        selectMint(normalized)
+        await refresh()
+        statusMessage = "Mint added"
+    }
+
+    func removeMint(_ mintURL: String) async throws {
+        guard let service else { return }
+        isWorking = true
+        defer { isWorking = false }
+        try await service.removeMint(mintURL)
+        await refresh()
+        statusMessage = "Mint removed"
+    }
+
+    func previewToken(_ token: String) async throws -> CashuTokenPreview {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        return try await service.previewToken(token)
+    }
+
+    /// Preview that also confirms with the mint that the token hasn't already been spent.
+    func previewUnspentToken(_ token: String) async throws -> CashuTokenPreview {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        return try await service.previewUnspentToken(token)
+    }
+
+    func previewPaymentRequest(_ value: String) throws -> CashuPaymentRequestPreview {
+        try CashuWalletService.previewPaymentRequest(value)
+    }
+
+    func payPaymentRequest(
+        _ preview: CashuPaymentRequestPreview,
+        mintURL: String,
+        customAmount: UInt64?
+    ) async throws -> CashuPaymentRequestPaymentResult {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let result = try await service.payPaymentRequest(
+                preview.encoded,
+                mintURL: mintURL,
+                customAmount: customAmount
+            )
+            await refresh()
+            statusMessage = "Paid \(formattedSats(result.amount)) to Cashu request"
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return result
+        } catch {
+            await refresh()
+            throw error
+        }
+    }
+
+    func submitReceive(_ token: String) async throws -> CashuReceiveSubmissionResult {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        isWorking = true
+        defer { isWorking = false }
+        let result: CashuReceiveSubmissionResult
+        do {
+            result = try await service.submitReceive(token)
+        } catch {
+            await refresh()
+            throw error
+        }
+        await refresh()
+        switch result {
+        case .received(let amount):
+            statusMessage = "Received \(formattedSats(amount))"
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .alreadyReceived:
+            statusMessage = "This ecash was already received"
+        case .queued:
+            await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
+            statusMessage = "Ecash saved — Taskify will retry automatically"
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        return result
+    }
+
+    func retryPendingReceive(_ pending: CashuPendingReceive) async throws -> UInt64 {
+        guard let service else { throw CashuWalletError.pendingReceiveMissing }
+        isWorking = true
+        defer { isWorking = false }
+        let amount: UInt64
+        do {
+            amount = try await service.redeemPendingReceive(id: pending.id)
+        } catch {
+            await refresh()
+            throw error
+        }
+        await refresh()
+        statusMessage = "Received \(formattedSats(amount))"
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        return amount
+    }
+
+    func discardPendingReceive(_ pending: CashuPendingReceive) async throws {
+        guard let service else { throw CashuWalletError.pendingReceiveMissing }
+        try await service.discardPendingReceive(id: pending.id)
+        await refresh()
+    }
+
+    func createLightningReceiveQuote(
+        mintURL: String,
+        amount: UInt64
+    ) async throws -> CashuLightningReceiveQuote {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        isWorking = true
+        defer { isWorking = false }
+        let quote = try await service.createLightningReceiveQuote(
+            mintURL: mintURL,
+            amount: amount
+        )
+        await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
+        await refreshLightningReceiveQuotes()
+        restartLightningMonitoring()
+        return quote
+    }
+
+    func checkLightningReceiveQuote(
+        id: String
+    ) async throws -> CashuLightningReceiveQuote {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        let quote = try await service.checkAndClaimLightningReceiveQuote(id: id)
+        await refreshLightningReceiveQuotes()
+        if quote.state == .issued {
+            await announceNewlyIssuedLightningQuotes([quote])
+        }
+        return quote
+    }
+
+    private func startLightningMonitoring() {
+        guard isAppActive, service != nil, lightningMonitorTask == nil else { return }
+        lightningMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let hasOutstandingInvoices = self.hasOutstandingLightningInvoices
+                let hasPendingEcash = !self.recoverablePendingEcashReceives.isEmpty
+                if hasOutstandingInvoices {
+                    await self.recoverPendingLightningReceives()
+                }
+                if hasPendingEcash {
+                    await self.recoverPendingEcashReceives()
+                }
+                do {
+                    try await Task.sleep(
+                        for: .seconds(hasOutstandingInvoices ? 4 : (hasPendingEcash ? 15 : 30))
+                    )
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func restartLightningMonitoring() {
+        lightningMonitorTask?.cancel()
+        lightningMonitorTask = nil
+        startLightningMonitoring()
+    }
+
+    /// Matches the PWA's `useWalletPrice` gating: only poll while conversion is turned on and the
+    /// app is in the foreground (the PWA also requires the wallet modal to be open, which doesn't
+    /// have a clean native analogue since the wallet is an always-mounted tab rather than a
+    /// dismissable modal -- app-foreground is the natural equivalent cost-control here). Every
+    /// 5 minutes, matching the PWA's `BACKGROUND_REFRESH_INTERVAL_MS`.
+    func startPriceMonitoringIfNeeded() {
+        startPriceMonitoring()
+    }
+
+    func stopPriceMonitoring() {
+        priceMonitorTask?.cancel()
+        priceMonitorTask = nil
+    }
+
+    private func startPriceMonitoring() {
+        guard WalletCurrencySettings.conversionEnabled, isAppActive, priceMonitorTask == nil else { return }
+        priceMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard WalletCurrencySettings.conversionEnabled else {
+                    self.priceMonitorTask = nil
+                    return
+                }
+                if let price = try? await CoinbasePriceClient.fetchSpotPriceUSD() {
+                    self.btcUSDPrice = price
+                    WalletPriceCache.save(price)
+                }
+                do {
+                    try await Task.sleep(for: .seconds(300))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func restartPriceMonitoring() {
+        priceMonitorTask?.cancel()
+        priceMonitorTask = nil
+        startPriceMonitoring()
+    }
+
+    /// The primary/secondary amount pair for a sat amount, following the PWA's `formatSatAmount`/
+    /// `formatUsdAmount` + `walletPrimaryCurrency`/`walletDenominationDisplay` settings: which
+    /// currency leads depends on `walletPrimaryCurrency`, and a secondary "≈" line only appears
+    /// when conversion is enabled and a price is available. `amount` is assumed non-negative --
+    /// callers that need a sign prefix (e.g. transaction history's +/-) apply it themselves.
+    /// `primary` is a parameter rather than a settings read so callers can pass an observable
+    /// source. `WalletCurrencySettings` is backed by UserDefaults, which SwiftUI can't observe --
+    /// a view that only reads it here will not re-render when the currency is switched.
+    func displayAmount<T: BinaryInteger>(
+        forSats amount: T,
+        primary: WalletPrimaryCurrency? = nil
+    ) -> (primary: String, secondary: String?) {
+        let satText = WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
+        guard WalletCurrencySettings.conversionEnabled, let price = btcUSDPrice else {
+            return (satText, nil)
+        }
+        let usdText = WalletAmountFormat.formatUSD(WalletAmountFormat.usdValue(sats: amount, btcUSDPrice: price))
+        switch primary ?? WalletCurrencySettings.primaryCurrency {
+        case .usd:
+            return (usdText, satText)
+        case .sat:
+            return (satText, "≈ \(usdText)")
+        }
+    }
+
+    /// The denomination-aware sat string alone (no USD line) -- for call sites where a secondary
+    /// currency line doesn't fit (status toasts, inline labels).
+    func formattedSats<T: BinaryInteger>(_ amount: T) -> String {
+        WalletAmountFormat.formatSats(amount, display: WalletCurrencySettings.denominationDisplay)
+    }
+
+    /// The address to lead the Receive screen with. Prefers a short custom solife.me address over
+    /// the npub-derived one -- an `npub1...@solife.me` string is technically valid but unreadable,
+    /// and this is the first thing someone is asked to scan or read aloud.
+    var preferredLightningAddress: String? {
+        if let custom = solifeAccount?.addresses.first?.address, !custom.isEmpty {
+            return custom
+        }
+        return solifeAddress ?? npubCashIdentity?.address
+    }
+
+    // MARK: - Amount entry
+
+    /// Which currency the amount keypads are entering in. Only ever dollars when there's a rate to
+    /// convert with, so a stale preference can't strand the user typing a currency the app can't
+    /// price.
+    var amountEntryCurrency: WalletPrimaryCurrency {
+        guard WalletCurrencySettings.conversionEnabled, btcUSDPrice != nil else { return .sat }
+        return WalletCurrencySettings.primaryCurrency
+    }
+
+    /// The figure as typed, in whichever currency is being entered.
+    func entryPrimaryText(_ text: String, currency: WalletPrimaryCurrency) -> String {
+        let value = text.isEmpty ? "0" : text
+        switch currency {
+        case .sat:
+            return "\(value) \(WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay))"
+        case .usd:
+            return "$\(value)"
+        }
+    }
+
+    /// The same amount in the other currency, for the line underneath.
+    func entrySecondaryText(_ text: String, currency: WalletPrimaryCurrency) -> String? {
+        guard let price = btcUSDPrice, price > 0, WalletCurrencySettings.conversionEnabled else { return nil }
+        switch currency {
+        case .sat:
+            guard let sats = UInt64(text.trimmingCharacters(in: .whitespacesAndNewlines)), sats > 0 else { return nil }
+            return "≈ \(WalletAmountFormat.formatUSD(WalletAmountFormat.usdValue(sats: sats, btcUSDPrice: price)))"
+        case .usd:
+            guard let sats = sats(fromEntry: text, currency: .usd), sats > 0 else { return nil }
+            return "≈ \(formattedSats(sats))"
+        }
+    }
+
+    /// What the sheet actually acts on. Every wallet operation is denominated in sats regardless of
+    /// what the user typed, so dollar entry converts here and nowhere else.
+    func sats(fromEntry text: String, currency: WalletPrimaryCurrency) -> UInt64? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        switch currency {
+        case .sat:
+            return UInt64(trimmed)
+        case .usd:
+            guard let price = btcUSDPrice, let usd = Double(trimmed) else { return nil }
+            return WalletAmountFormat.satsValue(usd: usd, btcUSDPrice: price)
+        }
+    }
+
+    /// Swaps which currency leads, for the tap-the-amount gesture the PWA's amount displays have.
+    /// Returns nil when there's nothing to swap to (conversion off, or no price yet), which also
+    /// leaves the amount card non-interactive rather than tappable-but-inert.
+    ///
+    /// `onChange` exists because `WalletCurrencySettings` is UserDefaults-backed and not
+    /// observable: the calling view bumps a revision counter to re-render itself.
+    /// Goes through `AppModel` rather than writing the preference directly: it also refreshes the
+    /// published copy other views read and schedules the account backup that carries the setting
+    /// to the PWA. Writing UserDefaults alone would leave both stale.
+    func currencyToggleAction(
+        using model: AppModel,
+        _ onChange: @escaping () -> Void
+    ) -> (() -> Void)? {
+        guard WalletCurrencySettings.conversionEnabled, btcUSDPrice != nil else { return nil }
+        return {
+            model.setWalletPrimaryCurrency(
+                WalletCurrencySettings.primaryCurrency == .sat ? .usd : .sat
+            )
+            onChange()
+        }
+    }
+
+    /// The "≈ $x.xx" line for an amount the user is currently typing on a keypad. Unlike
+    /// `displayAmount(forSats:)` this always leads with sats, because the keypad itself is
+    /// denominated in sats regardless of which currency is set as primary.
+    func conversionLine(forTypedSats amountText: String) -> String? {
+        guard WalletCurrencySettings.conversionEnabled,
+              let price = btcUSDPrice,
+              let sats = UInt64(amountText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              sats > 0 else { return nil }
+        return "≈ \(WalletAmountFormat.formatUSD(WalletAmountFormat.usdValue(sats: sats, btcUSDPrice: price)))"
+    }
+
+    @discardableResult
+    private func recoverPendingLightningReceives(
+        presentInApp: Bool = true
+    ) async -> [CashuLightningReceiveQuote] {
+        guard let service else { return [] }
+        let checkedQuotes = await service.recoverPendingLightningReceives()
+        await refreshLightningReceiveQuotes()
+        return await announceNewlyIssuedLightningQuotes(
+            checkedQuotes,
+            presentInApp: presentInApp
+        )
+    }
+
+    private func refreshLightningReceiveQuotes() async {
+        guard let service,
+              let quotes = try? await service.trackedLightningReceiveQuotes() else { return }
+        lightningReceiveQuotes = quotes
+    }
+
+    @discardableResult
+    private func recoverPendingEcashReceives(
+        force: Bool = false,
+        presentInApp: Bool = true
+    ) async -> [CashuRecoveredReceive] {
+        guard let service else { return [] }
+        let recovered = await service.recoverPendingReceives(force: force)
+        pendingEcashReceives = await service.savedPendingReceives()
+        guard !recovered.isEmpty else { return [] }
+        await refresh()
+        guard presentInApp else { return recovered }
+
+        let total = recovered.reduce(UInt64(0)) { $0 + $1.receivedAmount }
+        statusMessage = recovered.count == 1
+            ? "Received \(formattedSats(total)) from saved ecash"
+            : "Received \(formattedSats(total)) from \(recovered.count) saved tokens"
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        return recovered
+    }
+
+    @discardableResult
+    private func recoverNostrPaymentRequests(
+        presentInApp: Bool = true
+    ) async -> [CashuPaymentRequestReceipt] {
+        guard !isRecoveringPaymentInbox else {
+            paymentInboxNeedsAnotherPass = true
+            return []
+        }
+        isRecoveringPaymentInbox = true
+        defer { isRecoveringPaymentInbox = false }
+        guard let service,
+              let inboxURL = try? CashuNostrPaymentInboxStore.defaultURL() else { return [] }
+        let deliveries = CashuNostrPaymentInboxStore.load(from: inboxURL)
+        guard !deliveries.isEmpty else {
+            createdPaymentRequests = await service.savedCreatedPaymentRequests()
+            return []
+        }
+
+        var receipts: [CashuPaymentRequestReceipt] = []
+        for delivery in deliveries {
+            guard !Task.isCancelled else { break }
+            do {
+                let receipt = try await service.receiveNostrPayment(delivery)
+                receipts.append(receipt)
+                // Removed immediately, not batched after the loop: if the app is interrupted
+                // partway through (backgrounded and killed before this pass finishes), a delivery
+                // that already succeeded here must not be left sitting in the durable inbox to be
+                // redeemed-and-notified-about all over again on the next cold launch.
+                try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
+            } catch let error as CashuWalletError where Self.isTerminalPaymentDeliveryError(error) {
+                try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
+            } catch CashuWalletError.paymentRequestUncertain {
+                // The mint rejected this as already spent, but nothing on this device shows *we*
+                // were the one who spent it -- most likely someone else redeemed it first (a
+                // different wallet holding the same request, or a race with another delivery of
+                // the same payment). A few retries across separate recovery passes give a same-
+                // device timing race (the evidence just hasn't landed yet) a chance to resolve;
+                // past that, retrying forever would just repeat the same failed mint call on every
+                // future launch for money that's already gone, so give up for good.
+                let attempts = (delivery.uncertainAttempts ?? 0) + 1
+                if attempts >= Self.maximumUncertainPaymentAttempts {
+                    try? CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: inboxURL)
+                } else {
+                    var retried = delivery
+                    retried.uncertainAttempts = attempts
+                    try? CashuNostrPaymentInboxStore.update(retried, at: inboxURL)
+                }
+            } catch {
+                // Keep transient mint/network failures in the durable inbox.
+            }
+        }
+        guard !receipts.isEmpty else {
+            createdPaymentRequests = await service.savedCreatedPaymentRequests()
+            return []
+        }
+
+        await refresh()
+        if presentInApp {
+            let total = receipts.reduce(UInt64(0)) { $0 + $1.amount }
+            statusMessage = receipts.count == 1
+                ? "Received \(formattedSats(total)) from a Cashu request"
+                : "Received \(formattedSats(total)) from \(receipts.count) Cashu payments"
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        return receipts
+    }
+
+    /// Claims unsolicited incoming tokens — e.g. eCash a Lightning-address forwarder like
+    /// solife.me drops in a DM — through the same `submitReceive` path as a manually pasted
+    /// token. Unlike `recoverNostrPaymentRequests`, there's no request on this device to match:
+    /// any decodable token found in an incoming DM is fair game.
+    @discardableResult
+    private func recoverIncomingTokenInbox(presentInApp: Bool = true) async -> UInt64 {
+        guard !isRecoveringIncomingTokenInbox else {
+            paymentInboxNeedsAnotherPass = true
+            return 0
+        }
+        isRecoveringIncomingTokenInbox = true
+        defer { isRecoveringIncomingTokenInbox = false }
+        guard let service,
+              let inboxURL = try? CashuIncomingTokenInboxStore.defaultURL() else { return 0 }
+        let deliveries = CashuIncomingTokenInboxStore.load(from: inboxURL)
+        guard !deliveries.isEmpty else { return 0 }
+
+        var claimedTotal: UInt64 = 0
+        var claimedCount = 0
+        for delivery in deliveries {
+            guard !Task.isCancelled else { break }
+            do {
+                switch try await service.submitReceive(delivery.token) {
+                case .received(let amount):
+                    claimedTotal += amount
+                    claimedCount += 1
+                case .alreadyReceived:
+                    // Idempotent replay of a token this wallet credited earlier. It is handled,
+                    // but it is not a fresh balance change and must not produce another receipt.
+                    break
+                case .queued:
+                    // Now tracked by the pending-receive system's own retry loop.
+                    break
+                }
+                try? CashuIncomingTokenInboxStore.markHandled(delivery, at: inboxURL)
+            } catch {
+                // Malformed, already-spent, or already owned by the pending-receive retry system:
+                // this NIP-17 delivery itself must never be replayed into another redemption.
+                try? CashuIncomingTokenInboxStore.markHandled(delivery, at: inboxURL)
+            }
+        }
+        guard claimedCount > 0 else { return 0 }
+
+        await refresh()
+        if presentInApp {
+            statusMessage = claimedCount == 1
+                ? "Received \(formattedSats(claimedTotal))"
+                : "Received \(formattedSats(claimedTotal)) from \(claimedCount) payments"
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        return claimedTotal
+    }
+
+    /// `.paymentRequestUncertain` deliveries get this many recovery passes (not raw retries --
+    /// once per `recoverNostrPaymentRequests` call, so roughly once per cold launch/background
+    /// refresh) before being dropped as unrecoverable.
+    private static let maximumUncertainPaymentAttempts = 3
+
+    private static func isTerminalPaymentDeliveryError(_ error: CashuWalletError) -> Bool {
+        switch error {
+        case .invalidPaymentRequest,
+             .unsupportedUnit,
+             .paymentRequestNotFound,
+             .paymentRequestAlreadyCompleted,
+             .paymentRequestAlreadyProcessed,
+             .paymentRequestAmountMismatch,
+             .paymentRequestMintUnavailable:
+            true
+        default:
+            false
+        }
+    }
+
+    @discardableResult
+    private func announceNewlyIssuedLightningQuotes(
+        _ quotes: [CashuLightningReceiveQuote],
+        presentInApp: Bool = true
+    ) async -> [CashuLightningReceiveQuote] {
+        var newlyIssued: [CashuLightningReceiveQuote] = []
+        for quote in quotes where quote.state == .issued {
+            if announcedLightningQuoteIDs.insert(quote.id).inserted {
+                newlyIssued.append(quote)
+            }
+        }
+        guard !newlyIssued.isEmpty else { return [] }
+
+        await refresh()
+        guard presentInApp else { return newlyIssued }
+        let total = newlyIssued.reduce(UInt64(0)) { partial, quote in
+            partial + (quote.issuedAmount > 0 ? quote.issuedAmount : quote.amount)
+        }
+        if newlyIssued.count == 1 {
+            statusMessage = "Received \(formattedSats(total)) over Lightning"
+        } else {
+            statusMessage = "Received \(formattedSats(total)) from \(newlyIssued.count) Lightning invoices"
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        return newlyIssued
+    }
+
+    func prepareSend(mintURL: String, amount: UInt64) async throws -> CashuPreparedSendQuote {
+        guard let service else { throw CashuWalletError.preparedSendMissing }
+        isWorking = true
+        defer { isWorking = false }
+        return try await service.prepareSend(mintURL: mintURL, amount: amount)
+    }
+
+    func confirmSend(_ quote: CashuPreparedSendQuote, memo: String?) async throws -> CashuOutgoingToken {
+        guard let service else { throw CashuWalletError.preparedSendMissing }
+        isWorking = true
+        defer { isWorking = false }
+        let outgoing = try await service.confirmPreparedSend(id: quote.id, memo: memo)
+        await refresh()
+        return outgoing
+    }
+
+    func cancelPreparedSend(_ quote: CashuPreparedSendQuote) async {
+        await service?.cancelPreparedSend(id: quote.id)
+        await refresh()
+    }
+
+    func prepareLightningPayment(
+        mintURL: String,
+        invoice: String,
+        amount: UInt64?
+    ) async throws -> CashuLightningPaymentQuote {
+        guard let service else { throw CashuWalletError.lightningPaymentMissing }
+        isWorking = true
+        defer { isWorking = false }
+        return try await service.prepareLightningPayment(
+            mintURL: mintURL,
+            invoice: invoice,
+            amount: amount
+        )
+    }
+
+    func cancelLightningPayment(_ quote: CashuLightningPaymentQuote) async {
+        await service?.cancelLightningPayment(id: quote.id)
+        await refresh()
+    }
+
+    func confirmLightningPayment(
+        _ quote: CashuLightningPaymentQuote
+    ) async throws -> CashuLightningPaymentResult {
+        guard let service else { throw CashuWalletError.lightningPaymentMissing }
+        isWorking = true
+        defer { isWorking = false }
+        let result = try await service.confirmLightningPayment(id: quote.id)
+        await refresh()
+        if result.state == .completed {
+            statusMessage = "Paid \(formattedSats(result.amount)) over Lightning"
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else {
+            statusMessage = "Lightning payment is processing"
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        return result
+    }
+
+    func transferBetweenMints(
+        amount: UInt64,
+        sourceMintURL: String,
+        destinationMintURL: String
+    ) async throws -> CashuMintTransferResult {
+        guard let service else { throw CashuWalletError.lightningPaymentMissing }
+        isWorking = true
+        defer { isWorking = false }
+
+        let result = try await service.transferBetweenMints(
+            amount: amount,
+            from: sourceMintURL,
+            to: destinationMintURL
+        )
+        await refreshLightningReceiveQuotes()
+        await refresh()
+        restartLightningMonitoring()
+
+        if result.state == .completed {
+            statusMessage = "Moved \(formattedSats(result.receivedAmount)) between mints"
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else {
+            statusMessage = "Mint transfer is finishing in the background"
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        return result
+    }
+
+    func reclaim(_ outgoing: CashuOutgoingToken) async throws -> UInt64 {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        isWorking = true
+        defer { isWorking = false }
+        let amount = try await service.reclaimOutgoingToken(id: outgoing.id)
+        await refresh()
+        statusMessage = "Reclaimed \(formattedSats(amount))"
+        return amount
+    }
+
+    func checkOutgoingToken(_ outgoing: CashuOutgoingToken) async throws -> CashuOutgoingToken {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        isWorking = true
+        defer { isWorking = false }
+        let checked = try await service.checkOutgoingTokenState(id: outgoing.id)
+        snapshot = await service.snapshot()
+        return checked
+    }
+
+    func recoveryPhrase() async throws -> String {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        return await service.recoveryPhrase()
+    }
+
+    func recoveryBackupJSON() async throws -> String {
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        return try await service.seedBackupJSON()
+    }
+
+    func parseRecoveryMaterial(_ value: String) throws -> CashuRecoveryMaterial {
+        try CashuWalletService.parseRecoveryMaterial(value)
+    }
+
+    func transferFromSeed(
+        material: CashuRecoveryMaterial,
+        additionalMintURLs: [String]
+    ) async throws -> WalletRestoreOutcome {
+        guard let currentService = service else { throw CashuWalletError.outgoingTokenMissing }
+
+        let currentPhrase = await currentService.recoveryPhrase()
+        let isCurrentWallet = currentPhrase == material.mnemonic
+        let requestedMints = material.mintURLs
+            + additionalMintURLs
+            + snapshot.mints.map(\.url)
+            + [Self.suggestedMintURL]
+        let mintURLs = try normalizedUniqueMintURLs(requestedMints)
+
+        isWorking = true
+        defer { isWorking = false }
+
+        let candidate: CashuWalletService
+        if isCurrentWallet {
+            candidate = currentService
+        } else {
+            candidate = try await Self.makeServiceOffMain(
+                mnemonic: material.mnemonic,
+                migrateLegacyFiles: false
+            )
+        }
+        var results: [WalletMintRecoveryOutcome] = []
+        var firstError: Error?
+        for mintURL in mintURLs {
+            do {
+                let restored = try await candidate.restoreMint(mintURL)
+                if isCurrentWallet {
+                    results.append(WalletMintRecoveryOutcome(
+                        mintURL: mintURL,
+                        found: restored.unspent,
+                        deposited: restored.unspent,
+                        spent: restored.spent,
+                        pending: restored.pending,
+                        errorMessage: nil
+                    ))
+                } else {
+                    let transferred = try await candidate.transferRestoredBalance(
+                        fromMint: mintURL,
+                        into: currentService
+                    )
+                    results.append(WalletMintRecoveryOutcome(
+                        mintURL: mintURL,
+                        found: transferred.recovered,
+                        deposited: transferred.deposited,
+                        spent: restored.spent,
+                        pending: transferred.pending,
+                        errorMessage: nil
+                    ))
+                }
+            } catch {
+                firstError = firstError ?? error
+                results.append(WalletMintRecoveryOutcome(
+                    mintURL: mintURL,
+                    found: 0,
+                    deposited: 0,
+                    spent: 0,
+                    pending: 0,
+                    errorMessage: Self.message(for: error)
+                ))
+            }
+        }
+        await candidate.recoverInterruptedOperations()
+        await currentService.recoverInterruptedOperations()
+        await refresh()
+        if results.allSatisfy({ !$0.succeeded }), let firstError { throw firstError }
+
+        let outcome = WalletRestoreOutcome(
+            mode: isCurrentWallet ? .rescan : .transfer,
+            mints: results
+        )
+        statusMessage = switch outcome.mode {
+        case .transfer where outcome.recovered > 0:
+            "Transferred \(formattedSats(outcome.recovered)) into Taskify"
+        case .transfer:
+            "Seed scan complete"
+        case .rescan where outcome.recovered > 0:
+            "Recovered \(formattedSats(outcome.recovered))"
+        case .rescan:
+            "Wallet rescan complete"
+        case .replace:
+            "Wallet seed replaced"
+        }
+        return outcome
+    }
+
+    func replaceWalletSeed(
+        material: CashuRecoveryMaterial,
+        additionalMintURLs: [String]
+    ) async throws -> WalletRestoreOutcome {
+        guard let currentService = service else { throw CashuWalletError.outgoingTokenMissing }
+
+        let currentPhrase = await currentService.recoveryPhrase()
+        let isCurrentWallet = currentPhrase == material.mnemonic
+        if !isCurrentWallet {
+            let hasTrackedTokens = snapshot.outgoingTokens.contains {
+                $0.status == .ready || $0.status == .partiallyRedeemed
+            }
+            guard
+                snapshot.available == 0,
+                snapshot.pending == 0,
+                snapshot.reserved == 0,
+                !hasTrackedTokens
+            else {
+                throw CashuWalletError.walletReplacementBlocked
+            }
+        }
+
+        let requestedMints = material.mintURLs
+            + additionalMintURLs
+            + snapshot.mints.map(\.url)
+            + [Self.suggestedMintURL]
+        let mintURLs = try normalizedUniqueMintURLs(requestedMints)
+
+        isWorking = true
+        defer { isWorking = false }
+
+        let candidate: CashuWalletService
+        if isCurrentWallet {
+            candidate = currentService
+        } else {
+            candidate = try await Self.makeServiceOffMain(
+                mnemonic: material.mnemonic,
+                migrateLegacyFiles: false
+            )
+        }
+        var results: [WalletMintRecoveryOutcome] = []
+        for mintURL in mintURLs {
+            let restored = try await candidate.restoreMint(mintURL)
+            results.append(WalletMintRecoveryOutcome(
+                mintURL: mintURL,
+                found: restored.unspent,
+                deposited: restored.unspent,
+                spent: restored.spent,
+                pending: restored.pending,
+                errorMessage: nil
+            ))
+        }
+        await candidate.recoverInterruptedOperations()
+
+        if !isCurrentWallet {
+            // The Keychain switch is the commit point. Until every selected mint
+            // restores successfully, the currently active wallet stays untouched.
+            try KeychainWalletSeedStore().save(material.mnemonic)
+            service = candidate
+            UserDefaults.standard.removeObject(forKey: activeMintKey)
+            activeMintURL = ""
+        }
+
+        await refresh()
+        let outcome = WalletRestoreOutcome(
+            mode: isCurrentWallet ? .rescan : .replace,
+            mints: results
+        )
+        statusMessage = outcome.recovered > 0
+            ? "Recovered \(formattedSats(outcome.recovered))"
+            : "Wallet seed replaced"
+        return outcome
+    }
+
+    private nonisolated static func makeServiceOffMain(
+        mnemonic: String,
+        migrateLegacyFiles: Bool
+    ) async throws -> CashuWalletService {
+        try await Task.detached(priority: .userInitiated) {
+            try makeService(
+                mnemonic: mnemonic,
+                migrateLegacyFiles: migrateLegacyFiles
+            )
+        }.value
+    }
+
+    private nonisolated static func makeService(
+        mnemonic: String,
+        migrateLegacyFiles: Bool
+    ) throws -> CashuWalletService {
+        let directory = try walletDirectory()
+        let identifier = try CashuWalletService.walletIdentifier(for: mnemonic)
+        let databaseURL = directory.appendingPathComponent("cashu-\(identifier).sqlite")
+        let outgoingURL = directory.appendingPathComponent("outgoing-\(identifier).json")
+        if migrateLegacyFiles {
+            try migrateLegacyWalletFiles(
+                directory: directory,
+                databaseURL: databaseURL,
+                outgoingURL: outgoingURL
+            )
+        }
+        return try CashuWalletService(
+            databaseURL: databaseURL,
+            outgoingTokensURL: outgoingURL,
+            mnemonic: mnemonic
+        )
+    }
+
+    private nonisolated static func walletDirectory() throws -> URL {
+        let directory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+            .appendingPathComponent("TaskifyNative", isDirectory: true)
+            .appendingPathComponent("Wallet", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        )
+        return directory
+    }
+
+    private nonisolated static func migrateLegacyWalletFiles(
+        directory: URL,
+        databaseURL: URL,
+        outgoingURL: URL
+    ) throws {
+        let fileManager = FileManager.default
+        let legacyDatabase = directory.appendingPathComponent("cashu.sqlite")
+        if !fileManager.fileExists(atPath: databaseURL.path),
+           fileManager.fileExists(atPath: legacyDatabase.path) {
+            try fileManager.moveItem(at: legacyDatabase, to: databaseURL)
+        }
+        // Move each SQLite sidecar independently so an interrupted upgrade can
+        // finish on the next launch even when the main database already moved.
+        for suffix in ["-wal", "-shm"] {
+            let source = URL(fileURLWithPath: legacyDatabase.path + suffix)
+            let destination = URL(fileURLWithPath: databaseURL.path + suffix)
+            if fileManager.fileExists(atPath: source.path),
+               !fileManager.fileExists(atPath: destination.path) {
+                try fileManager.moveItem(at: source, to: destination)
+            }
+        }
+
+        let legacyOutgoing = directory.appendingPathComponent("outgoing-tokens.json")
+        if !fileManager.fileExists(atPath: outgoingURL.path),
+           fileManager.fileExists(atPath: legacyOutgoing.path) {
+            try fileManager.moveItem(at: legacyOutgoing, to: outgoingURL)
+        }
+    }
+
+    private func normalizedUniqueMintURLs(_ values: [String]) throws -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let normalized = try CashuWalletService.normalizedMintURL(trimmed)
+            guard seen.insert(normalized).inserted else { continue }
+            result.append(normalized)
+        }
+        return result
+    }
+
+    private func repairActiveMintSelection() {
+        if snapshot.mints.contains(where: { $0.url == activeMintURL }) { return }
+        if let first = snapshot.mints.first {
+            selectMint(first.url)
+        } else {
+            activeMintURL = ""
+            UserDefaults.standard.removeObject(forKey: activeMintKey)
+        }
+    }
+
+    static func message(for error: Error) -> String {
+        if let localized = error as? LocalizedError, let message = localized.errorDescription {
+            return message
+        }
+        return error.localizedDescription
+    }
+}
+
+struct WalletView: View {
+    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var wallet: WalletViewModel
+    @State private var showingMints = false
+    @State private var showingHistory = false
+    @State private var showingReceive = false
+    @State private var showingLightningReceive = false
+    @State private var showingLightningAddress = false
+    @State private var showingScanner = false
+    @State private var showingSend = false
+    @State private var showingLightningSend = false
+    @State private var showingPaymentRequest = false
+    @State private var showingCreatePaymentRequest = false
+    @State private var showingMintTransfer = false
+    @State private var showingPendingEcash = false
+    @State private var showingRecovery = false
+    @State private var scannedRedeemable: RedeemableCashuToken?
+    @State private var isInspectingScan = false
+
+    var body: some View {
+        ZStack {
+            TaskifyTheme.background.ignoresSafeArea()
+
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        header
+
+                        utilityToolbar
+                            .padding(.top, 14)
+
+                        Group {
+                            if wallet.snapshot.mints.isEmpty && !wallet.isLoading {
+                                setupCard
+                            } else {
+                                VStack(spacing: 20) {
+                                    balanceCard
+                                    actionRow
+
+                                    if !wallet.pendingEcashReceives.isEmpty {
+                                        pendingEcashCard
+                                            .padding(.top, 4)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(
+                            minHeight: max(360, geometry.size.height - 250),
+                            alignment: .center
+                        )
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 12)
+                    .padding(.bottom, 110)
+                }
+                .scrollIndicators(.hidden)
+                .refreshable { await wallet.refresh() }
+            }
+
+            if wallet.isLoading {
+                ProgressView("Opening wallet…")
+                    .tint(.white)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(22)
+                    .taskifyGlass(cornerRadius: 20)
+            }
+        }
+        .task {
+#if DEBUG
+            if ProcessInfo.processInfo.environment["TASKIFY_SHOW_WALLET_RECOVERY"] == "1" {
+                showingRecovery = true
+            }
+#endif
+        }
+        .onChange(of: model.walletConversionEnabled) { _, enabled in
+            if enabled {
+                wallet.startPriceMonitoringIfNeeded()
+            } else {
+                wallet.stopPriceMonitoring()
+            }
+        }
+        .sheet(isPresented: $showingMints) {
+            MintManagerSheet(wallet: wallet)
+        }
+        .sheet(isPresented: $showingHistory) {
+            WalletHistorySheet(wallet: wallet)
+        }
+        // Clearing the scanned token on dismiss keeps it a one-shot hand-off. It used to persist,
+        // so every later visit to Receive eCash replayed the last scan through the scanner path --
+        // which reports failures -- and a token since redeemed greeted the user with an
+        // "already spent" alert they never asked for.
+        .sheet(isPresented: $showingReceive) {
+            ReceiveCashuSheet(wallet: wallet, onSwitchMode: {
+                showingReceive = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingLightningReceive = true }
+            })
+        }
+        .sheet(isPresented: $showingLightningReceive) {
+            ReceiveLightningSheet(wallet: wallet, onSwitchMode: {
+                showingLightningReceive = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingReceive = true }
+            })
+        }
+        .sheet(isPresented: $showingScanner) {
+            CashuTokenScannerSheet(onToken: { token in
+                showingScanner = false
+                // Scanning a token says exactly what the user wants. Opening Receive eCash first
+                // put a page about handing out requests in front of the thing they asked for.
+                Task { await redeemScannedToken(token) }
+            })
+        }
+        .sheet(item: $scannedRedeemable) { item in
+            RedeemCashuTokenSheet(wallet: wallet, redeemable: item)
+        }
+        .sheet(isPresented: $showingSend) {
+            SendCashuSheet(wallet: wallet, onSwitchMode: {
+                showingSend = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingLightningSend = true }
+            })
+        }
+        .sheet(isPresented: $showingLightningSend) {
+            SendLightningSheet(wallet: wallet, onSwitchMode: {
+                showingLightningSend = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingSend = true }
+            })
+        }
+        .sheet(isPresented: $showingPaymentRequest) {
+            PayCashuRequestSheet(wallet: wallet)
+        }
+        .sheet(isPresented: $showingCreatePaymentRequest) {
+            ReceiveCashuRequestSheet(wallet: wallet)
+                .environment(model)
+        }
+        .sheet(isPresented: $showingMintTransfer) {
+            MintTransferSheet(wallet: wallet)
+        }
+        .sheet(isPresented: $showingPendingEcash) {
+            PendingEcashSheet(wallet: wallet)
+        }
+        .sheet(isPresented: $showingRecovery) {
+            WalletRecoverySheet(wallet: wallet)
+        }
+        .sheet(isPresented: $showingLightningAddress) {
+            LightningAddressReceiveSheet(wallet: wallet)
+        }
+        .alert(
+            "Wallet",
+            isPresented: Binding(
+                get: { wallet.errorMessage != nil },
+                set: { if !$0 { wallet.errorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { wallet.errorMessage = nil }
+        } message: {
+            Text(wallet.errorMessage ?? "")
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            Text("Wallet")
+                .taskifyScreenTitle()
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text("SATS")
+                .font(.caption.weight(.bold))
+                .tracking(1.1)
+                .foregroundStyle(TaskifyTheme.accent)
+                .padding(.horizontal, 15)
+                .frame(height: 40)
+                .taskifyGlassControl(in: Capsule())
+                .accessibilityLabel("Balance shown in sats")
+
+            Button { showingHistory = true } label: {
+                Text("History")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(.horizontal, 15)
+                    .frame(height: 40)
+                    .taskifyGlassControl(in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .accessibilityLabel("Wallet history")
+        }
+    }
+
+    private var utilityToolbar: some View {
+        HStack(alignment: .top) {
+            Spacer()
+
+            TaskifyGlassControlGroup(spacing: 8) {
+                VStack(alignment: .trailing, spacing: 9) {
+                    WalletUtilityButton(title: "Mints", systemImage: "building.columns") {
+                        showingMints = true
+                    }
+
+                    WalletUtilityButton(title: "Swap", systemImage: "arrow.left.arrow.right") {
+                        showingMintTransfer = true
+                    }
+                    .disabled(wallet.snapshot.mints.count < 2 || wallet.snapshot.available == 0)
+                    .opacity(wallet.snapshot.mints.count < 2 || wallet.snapshot.available == 0 ? 0.45 : 1)
+
+                    WalletUtilityButton(title: "Backup", systemImage: "key.viewfinder") {
+                        showingRecovery = true
+                    }
+                }
+            }
+        }
+    }
+
+    /// Verifies a scanned token with its mint and opens the redeem page. Scanning is a deliberate
+    /// act, so an unusable token says so rather than failing quietly the way a clipboard read does.
+    private func redeemScannedToken(_ token: String) async {
+        guard !isInspectingScan else { return }
+        isInspectingScan = true
+        defer { isInspectingScan = false }
+
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased().hasPrefix("cashu:")
+            ? String(trimmed.dropFirst("cashu:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            : trimmed
+        do {
+            let preview = try await wallet.previewUnspentToken(normalized)
+            scannedRedeemable = RedeemableCashuToken(token: normalized, preview: preview)
+        } catch {
+            wallet.errorMessage = WalletViewModel.message(for: error)
+        }
+    }
+
+    private var balanceCard: some View {
+        let balance = wallet.displayAmount(
+            forSats: wallet.snapshot.available,
+            primary: model.walletPrimaryCurrency
+        )
+        return VStack(spacing: 10) {
+            Text(balance.primary)
+                .font(.system(size: 48, weight: .semibold, design: .rounded))
+                .minimumScaleFactor(0.62)
+                .lineLimit(1)
+                .contentTransition(.numericText())
+                .monospacedDigit()
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            if let secondary = balance.secondary {
+                Text(secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            if wallet.snapshot.pending > 0 || wallet.snapshot.reserved > 0 {
+                VStack(spacing: 5) {
+                    if wallet.snapshot.pending > 0 {
+                        Text("\(wallet.formattedSats(wallet.snapshot.pending)) pending")
+                    }
+                    if wallet.snapshot.reserved > 0 {
+                        Text("\(wallet.formattedSats(wallet.snapshot.reserved)) in outgoing tokens")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 42)
+        .taskifyGlass(cornerRadius: 30)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard let toggle = wallet.currencyToggleAction(using: model, {}) else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { toggle() }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Available balance, \(wallet.snapshot.available) sats")
+        .accessibilityHint(
+            wallet.currencyToggleAction(using: model, {}) == nil
+                ? ""
+                : "Double-tap to switch between sats and dollars"
+        )
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 12) {
+            WalletActionButton(title: "Receive", icon: "arrow.down", accent: true) {
+                showingLightningReceive = true
+            }
+
+            Button { showingScanner = true } label: {
+                Image(systemName: "qrcode.viewfinder")
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 52, height: 52)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Scan a Cashu token")
+
+            WalletActionButton(title: "Send", icon: "arrow.up", accent: false) {
+                showingLightningSend = true
+            }
+            .disabled(wallet.snapshot.available == 0)
+            .opacity(wallet.snapshot.available == 0 ? 0.45 : 1)
+        }
+    }
+
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Set up your wallet", systemImage: "sparkles")
+                .font(.headline)
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            Text("Add a Cashu mint to receive and send ecash. Taskify suggests the same mint used by the PWA, but you can choose another.")
+                .font(.subheadline)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            Button {
+                Task {
+                    do {
+                        try await wallet.addMint(WalletViewModel.suggestedMintURL)
+                    } catch {
+                        wallet.errorMessage = WalletViewModel.message(for: error)
+                    }
+                }
+            } label: {
+                Label(wallet.isWorking ? "Connecting…" : "Add Taskify mint", systemImage: "plus")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .foregroundStyle(.white)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.75))
+            }
+            .buttonStyle(.plain)
+            .disabled(wallet.isWorking)
+
+            Button("Choose a different mint") { showingMints = true }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.accent)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(20)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var pendingEcashCard: some View {
+        Button { showingPendingEcash = true } label: {
+            HStack(spacing: 14) {
+                Image(systemName: wallet.recoverablePendingEcashReceives.isEmpty
+                    ? "exclamationmark.triangle.fill"
+                    : "arrow.clockwise.circle.fill")
+                    .font(.title3)
+                    .frame(width: 46, height: 46)
+                    .foregroundStyle(wallet.recoverablePendingEcashReceives.isEmpty ? .orange : TaskifyTheme.accent)
+                    .background(
+                        (wallet.recoverablePendingEcashReceives.isEmpty ? Color.orange : TaskifyTheme.accent)
+                            .opacity(0.12),
+                        in: Circle()
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Saved ecash")
+                        .font(.headline)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(pendingEcashDescription)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer()
+
+                Text(wallet.pendingEcashReceives.count.formatted())
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+            .padding(16)
+            .taskifyGlass(cornerRadius: 22)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var pendingEcashDescription: String {
+        if wallet.recoverablePendingEcashReceives.isEmpty {
+            return "A token needs your attention"
+        }
+        return wallet.recoverablePendingEcashReceives.count == 1
+            ? "Waiting for its mint — retrying automatically"
+            : "Waiting for their mints — retrying automatically"
+    }
+}
+
+private enum WalletActivityItem: Identifiable {
+    case outgoingToken(CashuOutgoingToken)
+    case transaction(CashuTransactionSummary)
+    case lightningInvoice(CashuLightningReceiveQuote)
+
+    var id: String {
+        switch self {
+        case .outgoingToken(let outgoing): "outgoing-token-\(outgoing.id)"
+        case .transaction(let transaction): "transaction-\(transaction.id)"
+        case .lightningInvoice(let quote): "lightning-invoice-\(quote.id)"
+        }
+    }
+
+    var date: Date {
+        switch self {
+        case .outgoingToken(let outgoing): outgoing.createdAt
+        case .transaction(let transaction): transaction.date
+        case .lightningInvoice(let quote): quote.createdAt
+        }
+    }
+
+    var isPending: Bool {
+        switch self {
+        case .outgoingToken(let outgoing):
+            outgoing.status == .ready || outgoing.status == .partiallyRedeemed
+        case .transaction(let transaction):
+            transaction.state == .pending
+                || transaction.outgoingTokenStatus == .ready
+                || transaction.outgoingTokenStatus == .partiallyRedeemed
+        case .lightningInvoice(let quote):
+            quote.state == .unpaid || quote.state == .paid || quote.state == .pending
+        }
+    }
+}
+
+private struct WalletActionButton: View {
+    let title: String
+    let icon: String
+    let accent: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .taskifyGlassControl(
+                    in: Capsule(),
+                    tint: accent ? TaskifyTheme.accent.opacity(0.72) : nil
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct WalletUtilityButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .padding(.horizontal, 15)
+                .frame(height: 40)
+                .taskifyGlassControl(in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
+/// The header every PWA result page opens with: a back affordance on the left ("← New token",
+/// "← New invoice", "← New request") and a quiet status/mode label on the right.
+private struct WalletResultHeaderRow: View {
+    let backTitle: String
+    var status: String?
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: onBack) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.subheadline.weight(.semibold))
+                    Text(backTitle)
+                        .font(.subheadline)
+                }
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 8)
+
+            if let status {
+                Text(status)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+    }
+}
+
+/// The two-up row of quiet glass buttons the PWA uses for a page's secondary choices
+/// (Contacts | Paste, Single-use | Multi-use).
+private struct WalletSecondaryActionGrid<Leading: View, Trailing: View>: View {
+    @ViewBuilder var leading: Leading
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            leading
+            trailing
+        }
+    }
+}
+
+/// One cell of `WalletSecondaryActionGrid`. `isSelected` renders the PWA's accent-outlined state
+/// used by the single-use/multi-use toggle; plain cells leave it false.
+private struct WalletSecondaryActionButton: View {
+    let title: String
+    var systemImage: String?
+    var isSelected: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let systemImage { Image(systemName: systemImage) }
+                Text(title)
+            }
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .foregroundStyle(isSelected ? TaskifyTheme.accent : TaskifyTheme.primaryText)
+            .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isSelected ? TaskifyTheme.accent : .clear, lineWidth: 1.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The uppercase micro-label the PWA puts above every field group in the wallet sheets
+/// (`text-[11px] uppercase tracking-wide`).
+@ViewBuilder
+private func walletFieldLabel(_ text: String) -> some View {
+    Text(text)
+        .font(.system(size: 11, weight: .semibold))
+        .tracking(1.1)
+        .foregroundStyle(TaskifyTheme.secondaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
+}
+
+private struct WalletMintSelectorCard: View {
+    let label: String
+    let mints: [CashuMintSummary]
+    @Binding var selectedMintURL: String
+
+    private var selectedMint: CashuMintSummary? {
+        mints.first { $0.url == selectedMintURL }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(1.1)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            Menu {
+                ForEach(mints) { mint in
+                    Button {
+                        selectedMintURL = mint.url
+                    } label: {
+                        if mint.url == selectedMintURL {
+                            Label(mint.name, systemImage: "checkmark")
+                        } else {
+                            Text(mint.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedMint?.name ?? "Select mint")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                        Text(selectedMint.map { "\(WalletAmountFormat.formatSats($0.available, display: WalletCurrencySettings.denominationDisplay)) available" } ?? "No mint selected")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    Spacer()
+                    if mints.count > 1 {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 52)
+                .taskifyGlass(cornerRadius: 20)
+            }
+            .buttonStyle(.plain)
+            .disabled(mints.count <= 1)
+        }
+    }
+}
+
+private struct WalletAmountDisplayCard: View {
+    /// The figure as the user is entering it, already denominated by the caller -- sats or
+    /// dollars depending on which way the display is currently flipped.
+    let primary: String
+    var caption: String = "Enter amount"
+    /// The same amount in the other currency. Matches the PWA amount display's secondary line
+    /// (`lightning-amount-display__secondary`), which sits directly under the figure rather than
+    /// being folded into the caption.
+    var secondary: String?
+    /// Tapping the display swaps which currency you're typing in, as it does in the PWA. Omitted
+    /// where there is no conversion to swap to, which also leaves the card non-interactive.
+    var onToggleCurrency: (() -> Void)?
+
+    var body: some View {
+        let content = VStack(spacing: 4) {
+            Text(primary)
+                .font(.system(size: 44, weight: .bold, design: .rounded))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            if let secondary {
+                Text(secondary)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            Text(caption)
+                .font(.footnote)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+        .taskifyGlass(cornerRadius: 24)
+
+        if let onToggleCurrency {
+            Button {
+                onToggleCurrency()
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } label: {
+                content
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Double-tap to switch which currency is shown first")
+        } else {
+            content
+        }
+    }
+}
+
+/// The single full-width primary action every wallet sheet ends with, matching the PWA's
+/// `accent-button accent-button--tall w-full` -- previously each sheet hand-rolled its own,
+/// so heights and label weights drifted between them.
+private struct WalletPrimaryActionButton: View {
+    let title: String
+    var busyTitle: String?
+    var isBusy: Bool = false
+    var systemImage: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if isBusy {
+                    ProgressView().controlSize(.small).tint(.white)
+                } else if let systemImage {
+                    Image(systemName: systemImage)
+                }
+                Text(isBusy ? (busyTitle ?? title) : title)
+            }
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .foregroundStyle(.white)
+            .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A label/value row for the review and result screens. The PWA lists these as
+/// `secondary label on the left, semibold value on the right` rows; keeping one implementation
+/// stops each sheet inventing its own spacing.
+private struct WalletDetailRow: View {
+    let title: String
+    let value: String
+    var emphasized: Bool = false
+    var valueColor: Color?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(emphasized ? .subheadline.weight(.bold) : .subheadline.weight(.semibold))
+                .foregroundStyle(valueColor ?? TaskifyTheme.primaryText)
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+/// The amount hero used at the top of review/result screens: an uppercase micro-label, the figure,
+/// and its conversion -- the same block the PWA shows above a Lightning invoice's details.
+private struct WalletAmountHero: View {
+    let label: String
+    let amount: String
+    var secondary: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(1.1)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Text(amount)
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            if let secondary {
+                Text(secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 22)
+    }
+}
+
+private struct WalletAmountKeypad: View {
+    @Binding var amountText: String
+    var maxDigits: Int = 12
+    /// Dollar entry needs a decimal point; sat entry has no fractional part and keeps Clear in
+    /// that slot instead. Same swap the PWA makes on its keypad.
+    var allowsDecimal: Bool = false
+
+    private var keys: [String] {
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9", allowsDecimal ? "decimal" : "clear", "0", "backspace"]
+    }
+
+    var body: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+            spacing: 12
+        ) {
+            ForEach(keys, id: \.self) { key in
+                Button {
+                    handle(key)
+                } label: {
+                    Group {
+                        if key == "clear" {
+                            Text("Clear")
+                                .font(.subheadline.weight(.semibold))
+                        } else if key == "decimal" {
+                            Text(".")
+                                .font(.title3.weight(.semibold))
+                        } else if key == "backspace" {
+                            Image(systemName: "delete.left")
+                                .font(.system(size: 17, weight: .semibold))
+                        } else {
+                            Text(key)
+                                .font(.title3.weight(.semibold))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func handle(_ key: String) {
+        let keypadKey: WalletAmountKeypadKey
+        switch key {
+        case "clear": keypadKey = .clear
+        case "backspace": keypadKey = .backspace
+        case "decimal": keypadKey = .decimalPoint
+        default: keypadKey = .digit(Character(key))
+        }
+        amountText = WalletAmountEntry.apply(
+            keypadKey,
+            to: amountText,
+            allowsDecimal: allowsDecimal,
+            maxDigits: maxDigits
+        )
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+}
+
+private struct MintManagerSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var mintURL = ""
+    @State private var localError: String?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Mints hold your ecash. A balance at one mint is separate from balances at other mints.")
+                            .font(.subheadline)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+
+                        if wallet.snapshot.mints.isEmpty {
+                            ContentUnavailableView(
+                                "No mints yet",
+                                systemImage: "building.columns",
+                                description: Text("Add a mint below to begin.")
+                            )
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+
+                        ForEach(wallet.snapshot.mints) { mint in
+                            Button { wallet.selectMint(mint.url) } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: wallet.activeMint?.url == mint.url ? "checkmark.circle.fill" : "circle")
+                                        .font(.title3)
+                                        .foregroundStyle(wallet.activeMint?.url == mint.url ? TaskifyTheme.accent : TaskifyTheme.tertiaryText)
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(mint.name)
+                                            .font(.headline)
+                                            .foregroundStyle(TaskifyTheme.primaryText)
+                                        Text(mint.url)
+                                            .font(.caption)
+                                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                                            .lineLimit(1)
+                                    }
+
+                                    Spacer()
+
+                                    Text("\(wallet.formattedSats(mint.available))")
+                                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                }
+                                .padding(15)
+                                .taskifyGlass(cornerRadius: 20)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("Remove mint", systemImage: "trash", role: .destructive) {
+                                    Task {
+                                        do { try await wallet.removeMint(mint.url) }
+                                        catch { localError = WalletViewModel.message(for: error) }
+                                    }
+                                }
+                                .disabled(mint.total > 0)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Add a mint")
+                                .font(.headline)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+
+                            TextField("https://mint.example.com", text: $mintURL)
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                                .autocorrectionDisabled()
+                                .padding(.horizontal, 15)
+                                .frame(height: 50)
+                                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+
+                            Button {
+                                Task {
+                                    do {
+                                        try await wallet.addMint(mintURL)
+                                        mintURL = ""
+                                    } catch {
+                                        localError = WalletViewModel.message(for: error)
+                                    }
+                                }
+                            } label: {
+                                Label(wallet.isWorking ? "Connecting…" : "Add mint", systemImage: "plus")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 13)
+                                    .foregroundStyle(.white)
+                                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.75))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(wallet.isWorking || mintURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                            if mintURL.isEmpty && wallet.snapshot.mints.isEmpty {
+                                Button("Use \(WalletViewModel.suggestedMintURL)") {
+                                    mintURL = WalletViewModel.suggestedMintURL
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.accent)
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(18)
+                        .taskifyGlass(cornerRadius: 22)
+                    }
+                    .padding(18)
+                    .padding(.bottom, 30)
+                }
+            }
+            .navigationTitle("Mints")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("Mint", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct MintTransferSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var sourceMintURL = ""
+    @State private var destinationMintURL = ""
+    @State private var amountText = ""
+    @State private var result: CashuMintTransferResult?
+    @State private var localError: String?
+    @FocusState private var amountFocused: Bool
+
+    private var amount: UInt64? {
+        UInt64(amountText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private var sourceMint: CashuMintSummary? {
+        wallet.snapshot.mints.first { $0.url == sourceMintURL }
+    }
+
+    private var destinationMint: CashuMintSummary? {
+        wallet.snapshot.mints.first { $0.url == destinationMintURL }
+    }
+
+    private var canTransfer: Bool {
+        guard let amount, amount > 0, let sourceMint else { return false }
+        return sourceMintURL != destinationMintURL
+            && !destinationMintURL.isEmpty
+            && amount <= sourceMint.available
+            && !wallet.isWorking
+    }
+
+    private var transferHasCompleted: Bool {
+        guard let result else { return false }
+        if result.state == .completed { return true }
+        return wallet.lightningReceiveQuotes.contains {
+            $0.id == result.receiveQuoteID && $0.state == .issued
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    Group {
+                        if result != nil {
+                            resultView
+                        } else if wallet.snapshot.mints.count < 2 {
+                            ContentUnavailableView {
+                                Label("Two mints needed", systemImage: "arrow.left.arrow.right")
+                            } description: {
+                                Text("Add another mint from Wallet → Mints before moving a balance.")
+                            }
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .padding(.top, 70)
+                        } else {
+                            transferForm
+                        }
+                    }
+                    .padding(22)
+                }
+            }
+            .navigationTitle("Move between mints")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .disabled(wallet.isWorking)
+                }
+            }
+            .alert("Mint transfer", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(wallet.isWorking)
+        .onAppear(perform: chooseInitialMints)
+        .onChange(of: sourceMintURL) { _, source in
+            guard source == destinationMintURL else { return }
+            destinationMintURL = wallet.snapshot.mints.first { $0.url != source }?.url ?? ""
+        }
+    }
+
+    private var transferForm: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "arrow.left.arrow.right.circle.fill")
+                .font(.system(size: 54))
+                .foregroundStyle(TaskifyTheme.accent)
+
+            Text("Move your balance")
+                .font(.title2.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            Text("Taskify creates an invoice at the destination mint, pays it from the source mint, and claims the new ecash automatically.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            VStack(spacing: 12) {
+                mintPicker(
+                    title: "FROM",
+                    selection: $sourceMintURL,
+                    selectedMint: sourceMint,
+                    options: wallet.snapshot.mints.filter { $0.available > 0 }
+                )
+
+                Button {
+                    let oldSource = sourceMintURL
+                    sourceMintURL = destinationMintURL
+                    destinationMintURL = oldSource
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.subheadline.bold())
+                        .frame(width: 42, height: 42)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Swap source and destination mints")
+                .disabled((destinationMint?.available ?? 0) == 0)
+                .opacity((destinationMint?.available ?? 0) == 0 ? 0.45 : 1)
+
+                mintPicker(
+                    title: "TO",
+                    selection: $destinationMintURL,
+                    selectedMint: destinationMint,
+                    options: wallet.snapshot.mints.filter { $0.url != sourceMintURL }
+                )
+            }
+
+            VStack(spacing: 5) {
+                TextField("0", text: $amountText)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 46, weight: .bold, design: .rounded))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .focused($amountFocused)
+                Text(WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay))
+                    .font(.headline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+
+                if let sourceMint {
+                    Text("\(wallet.formattedSats(sourceMint.available)) available")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+            .padding(.vertical, 22)
+            .frame(maxWidth: .infinity)
+            .taskifyGlass(cornerRadius: 26)
+
+            Button {
+                guard let amount else { return }
+                amountFocused = false
+                Task {
+                    do {
+                        result = try await wallet.transferBetweenMints(
+                            amount: amount,
+                            sourceMintURL: sourceMintURL,
+                            destinationMintURL: destinationMintURL
+                        )
+                    } catch {
+                        localError = WalletViewModel.message(for: error)
+                    }
+                }
+            } label: {
+                HStack(spacing: 9) {
+                    if wallet.isWorking { ProgressView().tint(.white) }
+                    Text(wallet.isWorking ? "Moving balance…" : "Transfer")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .foregroundStyle(.white)
+                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canTransfer)
+            .opacity(canTransfer || wallet.isWorking ? 1 : 0.45)
+
+            Label(
+                "The source balance also covers Lightning and mint fees. If claiming takes longer, it continues through Taskify's saved invoice monitor.",
+                systemImage: "bolt.horizontal.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+    private var resultView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: transferHasCompleted ? "checkmark.circle.fill" : "clock.badge.checkmark.fill")
+                .font(.system(size: 72))
+                .foregroundStyle(transferHasCompleted ? Color.green : Color.orange)
+                .symbolEffect(.bounce, value: transferHasCompleted)
+
+            Text(transferHasCompleted ? "Transfer complete" : "Transfer is finishing")
+                .font(.title2.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            if let result {
+                Text("\(wallet.formattedSats((transferHasCompleted ? max(result.receivedAmount, result.amount) : result.amount)))")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+
+                VStack(spacing: 13) {
+                    transferResultRow("From", value: mintName(for: result.sourceMintURL))
+                    transferResultRow("To", value: mintName(for: result.destinationMintURL))
+                    if let fee = result.feePaid {
+                        transferResultRow("Fee paid", value: "\(wallet.formattedSats(fee))")
+                    }
+                    transferResultRow("Status", value: transferHasCompleted ? "Received" : "Claiming in background")
+                }
+                .padding(18)
+                .taskifyGlass(cornerRadius: 22)
+            }
+
+            Text(transferHasCompleted
+                ? "The destination mint balance is ready to use."
+                : "The Lightning payment was submitted. You can close this sheet; Taskify will keep checking and claim the destination balance automatically.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            Button("Done") { dismiss() }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .foregroundStyle(.white)
+                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+                .buttonStyle(.plain)
+        }
+    }
+
+    private func mintPicker(
+        title: String,
+        selection: Binding<String>,
+        selectedMint: CashuMintSummary?,
+        options: [CashuMintSummary]
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption2.bold())
+                    .tracking(1.1)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                Text(selectedMint?.name ?? "Select mint")
+                    .font(.headline)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                if let selectedMint {
+                    Text("\(wallet.formattedSats(selectedMint.available))")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            Spacer()
+            Picker(title, selection: selection) {
+                ForEach(options) { mint in
+                    Text("\(mint.name) · \(wallet.formattedSats(mint.available))").tag(mint.url)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .tint(TaskifyTheme.accent)
+        }
+        .padding(16)
+        .taskifyGlass(cornerRadius: 20)
+    }
+
+    private func transferResultRow(_ title: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).foregroundStyle(TaskifyTheme.secondaryText)
+            Spacer()
+            Text(value)
+                .multilineTextAlignment(.trailing)
+                .foregroundStyle(TaskifyTheme.primaryText)
+        }
+        .font(.subheadline)
+    }
+
+    private func chooseInitialMints() {
+        guard sourceMintURL.isEmpty else { return }
+        let mints = wallet.snapshot.mints
+        sourceMintURL = wallet.activeMint.flatMap { $0.available > 0 ? $0.url : nil }
+            ?? mints.first(where: { $0.available > 0 })?.url
+            ?? mints.first?.url
+            ?? ""
+        destinationMintURL = mints.first { $0.url != sourceMintURL }?.url ?? ""
+    }
+
+    private func mintName(for url: String) -> String {
+        wallet.snapshot.mints.first { $0.url == url }?.name ?? url
+    }
+}
+
+private struct WalletRecoverySheet: View {
+    private enum Page: String, CaseIterable, Identifiable {
+        case backup = "Back Up"
+        case restore = "Restore"
+
+        var id: String { rawValue }
+    }
+
+    private enum RecoveryAction {
+        case transfer
+        case replace
+    }
+
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("taskify.wallet.recovery-acknowledged") private var recoveryAcknowledged = false
+    @State private var page: Page = .backup
+    @State private var phrase: String?
+    @State private var isAuthenticating = false
+    @State private var localError: String?
+    @State private var copied = false
+    @State private var exportDocument: WalletSeedBackupDocument?
+    @State private var showingExporter = false
+    @State private var showingImporter = false
+    @State private var recoveryInput = ""
+    @State private var mintURLs = WalletViewModel.suggestedMintURL
+    @State private var material: CashuRecoveryMaterial?
+    @State private var confirmingRestore = false
+    @State private var recoveryAction: RecoveryAction = .transfer
+    @State private var showingAdvancedReplacement = false
+    @State private var outcome: WalletRestoreOutcome?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: 18) {
+                        Picker("Wallet recovery", selection: $page) {
+                            ForEach(Page.allCases) { page in
+                                Text(page.rawValue).tag(page)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        if page == .backup {
+                            backupView
+                        } else {
+                            restoreView
+                        }
+                    }
+                    .padding(20)
+                    .padding(.bottom, 32)
+                }
+            }
+            .navigationTitle("Wallet recovery")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("Wallet recovery", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+            .confirmationDialog(
+                recoveryAction == .transfer ? "Transfer ecash into Taskify?" : "Replace the Taskify wallet seed?",
+                isPresented: $confirmingRestore,
+                titleVisibility: .visible
+            ) {
+                if recoveryAction == .transfer {
+                    Button("Transfer ecash") { performRestore() }
+                } else {
+                    Button("Replace wallet seed", role: .destructive) { performRestore() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if recoveryAction == .transfer {
+                    Text("Taskify keeps its current recovery words. Spendable ecash recovered from the imported seed is reissued into this wallet; normal mint receive fees may reduce the deposited amount.")
+                } else {
+                    Text("This advanced action changes Taskify's recovery words. It is allowed only when the current wallet has no balance, pending ecash, or unredeemed outgoing tokens.")
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .fileExporter(
+            isPresented: $showingExporter,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: Self.backupFilename
+        ) { result in
+            switch result {
+            case .success:
+                recoveryAcknowledged = true
+                wallet.statusMessage = "Wallet backup saved"
+            case .failure(let error):
+                localError = error.localizedDescription
+            }
+            exportDocument = nil
+        }
+        .fileImporter(
+            isPresented: $showingImporter,
+            allowedContentTypes: [.json, .plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            importBackup(result)
+        }
+#if DEBUG
+        .onAppear {
+            let environment = ProcessInfo.processInfo.environment
+            if environment["TASKIFY_WALLET_RECOVERY_PAGE"] == "restore" {
+                page = .restore
+            }
+        }
+#endif
+    }
+
+    private var backupView: some View {
+        VStack(spacing: 18) {
+            Image(systemName: recoveryAcknowledged ? "checkmark.shield.fill" : "key.fill")
+                .font(.system(size: 52))
+                .foregroundStyle(recoveryAcknowledged ? Color.green : TaskifyTheme.accent)
+
+            VStack(spacing: 6) {
+                Text(recoveryAcknowledged ? "Recovery backup saved" : "Protect your ecash")
+                    .font(.title2.bold())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Text("These 12 words restore the deterministic Cashu wallet. Keep them private—anyone with the words can recover and spend its ecash.")
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            if let phrase {
+                recoveryWords(phrase)
+
+                Button {
+                    recoveryAcknowledged = true
+                } label: {
+                    Label(
+                        recoveryAcknowledged ? "Recovery words saved" : "I saved these words",
+                        systemImage: recoveryAcknowledged ? "checkmark.circle.fill" : "circle"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(recoveryAcknowledged ? Color.green : TaskifyTheme.accent)
+            }
+
+            VStack(spacing: 12) {
+                Button {
+                    phrase == nil ? revealPhrase() : hidePhrase()
+                } label: {
+                    Label(
+                        isAuthenticating ? "Authenticating…" : (phrase == nil ? "Show recovery words" : "Hide recovery words"),
+                        systemImage: phrase == nil ? "eye" : "eye.slash"
+                    )
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: Capsule(), tint: phrase == nil ? TaskifyTheme.accent.opacity(0.72) : nil)
+                }
+                .buttonStyle(.plain)
+                .disabled(isAuthenticating)
+
+                HStack(spacing: 12) {
+                    Button { copyPhrase() } label: {
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .taskifyGlassControl(in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(phrase == nil)
+
+                    Button { exportBackup() } label: {
+                        Label("Save file", systemImage: "square.and.arrow.down")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .taskifyGlassControl(in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAuthenticating)
+                }
+            }
+
+            Label(
+                "The JSON backup uses the same nut13-wallet-backup envelope as the Taskify PWA and includes the mint list. The phrase remains the source of recovery.",
+                systemImage: "arrow.triangle.2.circlepath"
+            )
+            .font(.caption)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .taskifyGlass(cornerRadius: 18)
+        }
+    }
+
+    private var restoreView: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if let outcome {
+                restoreSuccess(outcome)
+            } else {
+                VStack(spacing: 7) {
+                    Image(systemName: "arrow.right.arrow.left.circle.fill")
+                        .font(.system(size: 52))
+                        .foregroundStyle(TaskifyTheme.accent)
+                    Text("Transfer ecash from a seed")
+                        .font(.title2.bold())
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text("Paste recovery words or import a PWA/native backup. Your current Taskify recovery words stay unchanged.")
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                .frame(maxWidth: .infinity)
+
+                TextEditor(text: $recoveryInput)
+                    .font(.system(.footnote, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(12)
+                    .frame(minHeight: 145)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TaskifyTheme.border))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .privacySensitive()
+                    .onChange(of: recoveryInput) { _, _ in material = nil }
+
+                Button { showingImporter = true } label: {
+                    Label("Choose PWA or native backup file", systemImage: "doc.badge.plus")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(TaskifyTheme.accent)
+                .frame(maxWidth: .infinity)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Mints to scan")
+                        .font(.headline)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text("One HTTPS mint URL per line. Backup files fill this automatically; add any other mints where this seed was used.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                    TextEditor(text: $mintURLs)
+                        .font(.system(.footnote, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(10)
+                        .frame(minHeight: 82)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 15).stroke(TaskifyTheme.border))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                }
+                .padding(16)
+                .taskifyGlass(cornerRadius: 20)
+
+                if material != nil {
+                    Label(
+                        "Valid recovery phrase · \(parsedMintURLs.count) mint\(parsedMintURLs.count == 1 ? "" : "s") ready to scan",
+                        systemImage: "checkmark.seal.fill"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.green)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Button {
+                    reviewRestore(action: .transfer)
+                } label: {
+                    Text(material == nil ? "Review transfer" : (wallet.isWorking ? "Transferring…" : "Transfer ecash"))
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
+                }
+                .buttonStyle(.plain)
+                .disabled(wallet.isWorking || recoveryInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Label(
+                    "The imported seed is used only for this recovery scan and is never saved as the Taskify wallet seed.",
+                    systemImage: "checkmark.shield"
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+                .padding(15)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+
+                DisclosureGroup(isExpanded: $showingAdvancedReplacement) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Only use this when you intentionally want the imported words to become Taskify's wallet recovery words. The current wallet must be completely empty first.")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                        Button(role: .destructive) {
+                            reviewRestore(action: .replace)
+                        } label: {
+                            Label("Replace Taskify wallet seed", systemImage: "exclamationmark.triangle")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 46)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(wallet.isWorking || recoveryInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .padding(.top, 10)
+                } label: {
+                    Text("Advanced: replace wallet seed")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .tint(.orange)
+                .padding(15)
+                .taskifyGlass(cornerRadius: 18)
+            }
+        }
+    }
+
+    private func recoveryWords(_ phrase: String) -> some View {
+        let words = phrase.split(separator: " ").map(String.init)
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 2), spacing: 10) {
+            ForEach(Array(words.enumerated()), id: \.offset) { index, word in
+                HStack(spacing: 8) {
+                    Text("\(index + 1)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                    Text(word)
+                        .font(.subheadline.weight(.semibold).monospaced())
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 42)
+                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 13))
+            }
+        }
+        .padding(14)
+        .taskifyGlass(cornerRadius: 22)
+        .privacySensitive()
+        .textSelection(.enabled)
+    }
+
+    private func restoreSuccess(_ restoreOutcome: WalletRestoreOutcome) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 72))
+                .foregroundStyle(.green)
+                .symbolEffect(.bounce, value: restoreOutcome.recovered)
+            Text(successTitle(for: restoreOutcome))
+                .font(.title.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+            Text(successAmount(for: restoreOutcome))
+                .font(.title3.weight(.semibold).monospacedDigit())
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            if restoreOutcome.mode == .transfer, restoreOutcome.found > 0 {
+                Text("\(wallet.formattedSats(restoreOutcome.found)) found" + (restoreOutcome.fees > 0 ? " · \(wallet.formattedSats(restoreOutcome.fees)) mint fees" : ""))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+
+            VStack(spacing: 10) {
+                ForEach(restoreOutcome.mints, id: \.mintURL) { mint in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(URL(string: mint.mintURL)?.host() ?? mint.mintURL)
+                                .lineLimit(1)
+                            if let errorMessage = mint.errorMessage {
+                                Text(errorMessage)
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(2)
+                            }
+                        }
+                        Spacer()
+                        if mint.succeeded {
+                            Text("\(wallet.formattedSats(mint.deposited))")
+                                .bold()
+                        } else {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(TaskifyTheme.primaryText)
+            .padding(16)
+            .taskifyGlass(cornerRadius: 20)
+
+            Button(restoreOutcome.mode == .transfer ? "View Taskify wallet backup" : "Back up this wallet") {
+                page = .backup
+                phrase = nil
+                outcome = nil
+            }
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .foregroundStyle(TaskifyTheme.primaryText)
+            .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 36)
+    }
+
+    private func successTitle(for restoreOutcome: WalletRestoreOutcome) -> String {
+        switch restoreOutcome.mode {
+        case .transfer: "Ecash transferred"
+        case .rescan: "Wallet rescanned"
+        case .replace: "Wallet seed replaced"
+        }
+    }
+
+    private func successAmount(for restoreOutcome: WalletRestoreOutcome) -> String {
+        switch restoreOutcome.mode {
+        case .transfer: "\(wallet.formattedSats(restoreOutcome.recovered)) added to Taskify"
+        case .rescan, .replace: "\(wallet.formattedSats(restoreOutcome.recovered)) recovered"
+        }
+    }
+
+    private var parsedMintURLs: [String] {
+        mintURLs
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func revealPhrase() {
+        isAuthenticating = true
+        Task {
+            defer { isAuthenticating = false }
+            do {
+                try await authenticate(reason: "Show your Cashu wallet recovery words")
+                phrase = try await wallet.recoveryPhrase()
+            } catch {
+                localError = WalletViewModel.message(for: error)
+            }
+        }
+    }
+
+    private func hidePhrase() {
+        phrase = nil
+        if copied { UIPasteboard.general.items = [] }
+        copied = false
+    }
+
+    private func copyPhrase() {
+        guard let phrase else { return }
+        UIPasteboard.general.setItems(
+            [[UTType.plainText.identifier: phrase]],
+            options: [
+                .localOnly: true,
+                .expirationDate: Date().addingTimeInterval(60),
+            ]
+        )
+        copied = true
+    }
+
+    private func exportBackup() {
+        isAuthenticating = true
+        Task {
+            defer { isAuthenticating = false }
+            do {
+                try await authenticate(reason: "Export your Cashu wallet recovery backup")
+                let json = try await wallet.recoveryBackupJSON()
+                exportDocument = WalletSeedBackupDocument(json: json)
+                showingExporter = true
+            } catch {
+                localError = WalletViewModel.message(for: error)
+            }
+        }
+    }
+
+    private func reviewRestore(action: RecoveryAction) {
+        do {
+            let parsed = try wallet.parseRecoveryMaterial(recoveryInput)
+            material = parsed
+            if !parsed.mintURLs.isEmpty {
+                let combined = Array(Set(parsedMintURLs + parsed.mintURLs)).sorted()
+                mintURLs = combined.joined(separator: "\n")
+            }
+            recoveryAction = action
+            confirmingRestore = true
+        } catch {
+            localError = WalletViewModel.message(for: error)
+        }
+    }
+
+    private func performRestore() {
+        guard let material else { return }
+        Task {
+            do {
+                switch recoveryAction {
+                case .transfer:
+                    outcome = try await wallet.transferFromSeed(
+                        material: material,
+                        additionalMintURLs: parsedMintURLs
+                    )
+                case .replace:
+                    outcome = try await wallet.replaceWalletSeed(
+                        material: material,
+                        additionalMintURLs: parsedMintURLs
+                    )
+                }
+                recoveryInput = ""
+                phrase = nil
+                if recoveryAction == .replace { recoveryAcknowledged = false }
+            } catch {
+                localError = WalletViewModel.message(for: error)
+            }
+        }
+    }
+
+    private func importBackup(_ result: Result<[URL], Error>) {
+        do {
+            let url = try result.get().first
+            guard let url else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            recoveryInput = try String(contentsOf: url, encoding: .utf8)
+            material = nil
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
+    private func authenticate(reason: String) async throws {
+        let context = LAContext()
+        context.localizedCancelTitle = "Cancel"
+        var authenticationError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authenticationError) else {
+            if let authenticationError { throw authenticationError }
+            throw WalletRecoveryAuthenticationError.unavailable
+        }
+        guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) else {
+            throw WalletRecoveryAuthenticationError.failed
+        }
+    }
+
+    private static var backupFilename: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd-HHmm"
+        return "taskify-wallet-seed-\(formatter.string(from: Date()))"
+    }
+}
+
+private enum WalletRecoveryAuthenticationError: LocalizedError {
+    case unavailable
+    case failed
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "Set a device passcode before viewing or exporting wallet recovery words."
+        case .failed:
+            "Device authentication did not complete."
+        }
+    }
+}
+
+private struct WalletSeedBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var json: String
+
+    init(json: String) {
+        self.json = json
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let json = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.json = json
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(json.utf8))
+    }
+}
+
+private struct ReceiveCashuRequestSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var wallet: WalletViewModel
+
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
+    @State private var selectedMintURL = ""
+    @State private var amountText = ""
+    @State private var memo = ""
+    @State private var singleUse = true
+    @State private var request: CashuCreatedPaymentRequest?
+    @State private var localError: String?
+    @State private var copied = false
+    @FocusState private var memoFocused: Bool
+
+    private var parsedAmount: UInt64? {
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
+    }
+
+    private var amountIsValid: Bool {
+        amountText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (parsedAmount ?? 0) > 0
+    }
+
+    private var selectedMint: CashuMintSummary? {
+        wallet.snapshot.mints.first { $0.url == selectedMintURL }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                GeometryReader { proxy in
+                    ScrollView {
+                        Group {
+                            if let request {
+                                requestView(request)
+                            } else {
+                                createView
+                            }
+                        }
+                        .padding(22)
+                        .padding(.bottom, 28)
+                        .frame(minHeight: proxy.size.height, alignment: .center)
+                    }
+                }
+            }
+            .navigationTitle("Receive Cashu")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { memoFocused = false }
+                }
+            }
+            .alert("Cashu request", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
+            if selectedMintURL.isEmpty {
+                selectedMintURL = wallet.activeMint?.url ?? wallet.snapshot.mints.first?.url ?? ""
+            }
+            // Deliberately does not restore a previously created request. Reopening the builder
+            // means "make me a request", not "here's the one you made earlier" -- same reasoning as
+            // Receive Lightning's address page. Existing requests stay reachable from History.
+        }
+        .onChange(of: wallet.createdPaymentRequests) { _, requests in
+            guard let request else { return }
+            self.request = requests.first { $0.requestID == request.requestID } ?? request
+        }
+    }
+
+    private var createView: some View {
+        VStack(spacing: 20) {
+            WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
+
+            WalletAmountDisplayCard(
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
+                caption: "Leave at 0 to request any amount",
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
+            )
+
+            Picker("Request type", selection: $singleUse) {
+                Text("Single-use").tag(true)
+                Text("Multi-use").tag(false)
+            }
+            .pickerStyle(.segmented)
+
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
+
+            TextField("What is this payment for? (optional)", text: $memo, axis: .vertical)
+                .lineLimit(2...4)
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .focused($memoFocused)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 12)
+                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
+                .onChange(of: memo) { _, value in
+                    if value.count > 280 { memo = String(value.prefix(280)) }
+                }
+
+            Button(action: createRequest) {
+                Text(wallet.isWorking ? "Creating request…" : "Create request")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
+            }
+            .buttonStyle(.plain)
+            .disabled(
+                wallet.isWorking
+                    || selectedMintURL.isEmpty
+                    || model.identityPublicKey.isEmpty
+                    || model.walletPaymentRequestRelayURLs.isEmpty
+                    || !amountIsValid
+            )
+
+            Label(
+                singleUse
+                    ? "The request closes after its first successful payment."
+                    : "A reusable request stays active and can receive multiple payments.",
+                systemImage: singleUse ? "1.circle" : "arrow.trianglehead.2.clockwise"
+            )
+            .font(.caption)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(15)
+            .taskifyGlass(cornerRadius: 18)
+        }
+    }
+
+    private func requestView(_ request: CashuCreatedPaymentRequest) -> some View {
+        VStack(spacing: 18) {
+            if request.state == .completed {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 62))
+                    .foregroundStyle(.green)
+                    .symbolEffect(.bounce, value: request.receivedCount)
+                Text("Payment received")
+                    .font(.title2.bold())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Text("\(wallet.formattedSats(request.receivedAmount)) were added to your wallet.")
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            } else if request.state == .cancelled {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 58))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                Text("Request closed")
+                    .font(.title2.bold())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+            } else {
+                Text(request.amount.map { "\(wallet.formattedSats($0))" } ?? "Any amount")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+
+                Label(
+                    request.receivedCount == 0
+                        ? "Waiting for payment"
+                        : "Received \(wallet.formattedSats(request.receivedAmount))",
+                    systemImage: request.receivedCount == 0 ? "antenna.radiowaves.left.and.right" : "checkmark.circle.fill"
+                )
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(request.receivedCount == 0 ? TaskifyTheme.accent : .green)
+
+                CashuQRCodeView(
+                    value: request.encoded,
+                    accessibilityLabel: "Cashu payment request QR code"
+                )
+                .frame(maxWidth: 300)
+                .padding(16)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+                HStack(spacing: 12) {
+                    Button {
+                        UIPasteboard.general.string = request.encoded
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                    } label: {
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .taskifyGlassControl(in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    ShareLink(item: request.encoded) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .taskifyGlassControl(in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .foregroundStyle(TaskifyTheme.primaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                if let description = request.description {
+                    Label(description, systemImage: "text.alignleft")
+                }
+                Label(
+                    request.singleUse ? "Single payment" : "Reusable request",
+                    systemImage: request.singleUse ? "1.circle" : "arrow.trianglehead.2.clockwise"
+                )
+                Label(
+                    URL(string: request.mintURLs.first ?? "")?.host() ?? request.mintURLs.first ?? "Cashu mint",
+                    systemImage: "building.columns"
+                )
+                Label("Delivered privately over Nostr", systemImage: "lock.fill")
+            }
+            .font(.caption)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .taskifyGlass(cornerRadius: 18)
+
+            Button {
+                self.request = nil
+                amountText = ""
+                memo = ""
+            } label: {
+                Label("Create another request", systemImage: "plus")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(TaskifyTheme.primaryText)
+
+            if request.isActive {
+                Button("Close this request", role: .destructive) {
+                    Task {
+                        do { try await wallet.cancelPaymentRequest(request) }
+                        catch { localError = WalletViewModel.message(for: error) }
+                    }
+                }
+                .disabled(wallet.isWorking)
+            }
+        }
+    }
+
+    private func createRequest() {
+        memoFocused = false
+        Task {
+            do {
+                request = try await wallet.createPaymentRequest(
+                    amount: parsedAmount,
+                    description: memo,
+                    mintURLs: [selectedMintURL],
+                    recipientPublicKey: model.identityPublicKey,
+                    relayURLs: model.walletPaymentRequestRelayURLs,
+                    singleUse: singleUse
+                )
+            } catch {
+                localError = WalletViewModel.message(for: error)
+            }
+        }
+    }
+}
+
+private struct ReceiveLightningSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
+    /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
+    /// Opens on the user's Lightning address rather than an amount keypad: most people receiving
+    /// just want something scannable, and asking for a specific amount is the rarer case. Matches
+    /// the PWA's `lightningReceiveView` starting at "address".
+    @State private var step: Step = .address
+    @State private var addressCopied = false
+    @State private var amountText = ""
+    @State private var selectedMintURL = ""
+    @State private var quote: CashuLightningReceiveQuote?
+    @State private var receivedAmount: UInt64?
+    @State private var isChecking = false
+    @State private var copied = false
+    @State private var localError: String?
+
+    private enum Step {
+        case address
+        case amount
+    }
+
+    init(
+        wallet: WalletViewModel,
+        initialQuote: CashuLightningReceiveQuote? = nil,
+        onSwitchMode: (() -> Void)? = nil
+    ) {
+        self.wallet = wallet
+        self.onSwitchMode = onSwitchMode
+        _selectedMintURL = State(initialValue: initialQuote?.mintURL ?? "")
+        _quote = State(initialValue: initialQuote)
+    }
+
+    private var amount: UInt64? {
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
+    }
+
+    private var outstandingInvoiceCount: Int {
+        wallet.activeLightningReceiveQuotes.count
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                GeometryReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            if let receivedAmount {
+                                successView(amount: receivedAmount)
+                            } else if let quote {
+                                invoiceView(quote)
+                            } else if step == .amount {
+                                amountView
+                            } else {
+                                addressView
+                            }
+                        }
+                        .padding(22)
+                        .padding(.bottom, 26)
+                        .frame(minHeight: proxy.size.height, alignment: .center)
+                    }
+                }
+            }
+            .navigationTitle("Receive Lightning")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if step == .amount && quote == nil && receivedAmount == nil {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { step = .address }
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                    } else if let onSwitchMode {
+                        Button("ecash", action: onSwitchMode)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("Lightning receive", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        // Deliberately does not restore the mint's most recent outstanding quote on open. Reopening
+        // Receive means "show me something to be paid at", not "here's the invoice you already
+        // made" -- an invoice the user has moved on from would otherwise sit in front of the
+        // address page every time. Outstanding invoices remain reachable from History, which is
+        // where `initialQuote` comes from.
+        .onChange(of: wallet.lightningReceiveQuotes) { _, trackedQuotes in
+            guard let quote,
+                  let updated = trackedQuotes.first(where: { $0.id == quote.id }) else { return }
+            applyQuoteUpdate(updated)
+        }
+        .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
+            if selectedMintURL.isEmpty {
+                selectedMintURL = wallet.activeMint?.url ?? wallet.snapshot.mints.first?.url ?? ""
+            }
+        }
+    }
+
+    /// The landing page: a big scannable Lightning address, and one button for the less common
+    /// case of wanting a specific amount.
+    private var addressView: some View {
+        VStack(spacing: 20) {
+            if let address = wallet.preferredLightningAddress {
+                VStack(spacing: 14) {
+                    walletFieldLabel("LIGHTNING ADDRESS")
+
+                    CashuQRCodeView(value: address, accessibilityLabel: "Lightning address QR code")
+
+                    Button {
+                        UIPasteboard.general.string = address
+                        addressCopied = true
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_600_000_000)
+                            addressCopied = false
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(address)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                                .minimumScaleFactor(0.7)
+                            Image(systemName: addressCopied ? "checkmark" : "doc.on.doc")
+                                .font(.caption)
+                                .foregroundStyle(addressCopied ? .green : TaskifyTheme.secondaryText)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy lightning address \(address)")
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity)
+                .taskifyGlass(cornerRadius: 24)
+            } else {
+                VStack(spacing: 8) {
+                    Text("No Lightning address yet")
+                        .font(.headline)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text("Set up your Taskify Nostr identity in Settings to get an address anyone can pay.")
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity)
+                .taskifyGlass(cornerRadius: 24)
+            }
+
+            WalletPrimaryActionButton(title: "Create Invoice") {
+                withAnimation(.easeInOut(duration: 0.2)) { step = .amount }
+            }
+            .disabled(wallet.snapshot.mints.isEmpty)
+            .opacity(wallet.snapshot.mints.isEmpty ? 0.45 : 1)
+        }
+    }
+
+    private var amountView: some View {
+        VStack(spacing: 20) {
+            WalletMintSelectorCard(label: "RECEIVE TO", mints: wallet.snapshot.mints, selectedMintURL: $selectedMintURL)
+            WalletAmountDisplayCard(
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
+                caption: "Enter amount to receive",
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
+            )
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
+
+            Button {
+                createInvoice()
+            } label: {
+                Text(wallet.isWorking ? "Creating invoice…" : "Create invoice")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
+            }
+            .buttonStyle(.plain)
+            .disabled(wallet.isWorking || amount == nil || amount == 0 || selectedMintURL.isEmpty)
+
+            if outstandingInvoiceCount > 0 {
+                Label(
+                    "Taskify is monitoring \(outstandingInvoiceCount) other outstanding \(outstandingInvoiceCount == 1 ? "invoice" : "invoices").",
+                    systemImage: "bolt.horizontal.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func invoiceView(_ quote: CashuLightningReceiveQuote) -> some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 4) {
+                Text("\(wallet.formattedSats(quote.amount))")
+                    .font(.largeTitle.bold().monospacedDigit())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Text(URL(string: quote.mintURL)?.host() ?? quote.mintURL)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            CashuQRCodeView(value: quote.invoice, accessibilityLabel: "Lightning invoice QR code")
+                .padding(16)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .frame(maxWidth: 310)
+
+            VStack(spacing: 10) {
+                Label(statusText(for: quote), systemImage: statusIcon(for: quote))
+                    .font(.headline)
+                    .foregroundStyle(statusColor(for: quote))
+                if quote.state == .unpaid || quote.state == .pending {
+                    ProgressView()
+                        .tint(TaskifyTheme.accent)
+                }
+                if let expiresAt = quote.expiresAt, quote.state != .issued {
+                    if quote.state == .expired {
+                        Text("Invoice expired")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                    } else {
+                        Text("Expires \(expiresAt, style: .relative)")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                    }
+                }
+            }
+
+            Label(
+                "You can leave this screen or close Taskify. Every outstanding invoice will be checked while the app is active and again when it reopens.",
+                systemImage: "checkmark.shield"
+            )
+            .font(.caption)
+            .multilineTextAlignment(.leading)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 12) {
+                Button {
+                    UIPasteboard.general.setItems(
+                        [[UTType.plainText.identifier: quote.invoice]],
+                        options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(600)]
+                    )
+                    copied = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                ShareLink(item: quote.invoice) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button {
+                Task { await checkPayment(showError: true) }
+            } label: {
+                Text(isChecking ? "Checking payment…" : "Check payment")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.60))
+            }
+            .buttonStyle(.plain)
+            .disabled(isChecking || quote.state == .expired)
+
+            Button("Create a new invoice") {
+                self.quote = nil
+                amountText = ""
+                copied = false
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(TaskifyTheme.accent)
+        }
+    }
+
+    private func successView(amount: UInt64) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 74))
+                .foregroundStyle(.green)
+                .symbolEffect(.bounce, value: amount)
+            Text("Lightning received")
+                .font(.title.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+            Text("\(wallet.formattedSats(amount))")
+                .font(.title2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Text("The mint issued fresh ecash into your Taskify wallet.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Button("Done") { dismiss() }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
+                .buttonStyle(.plain)
+        }
+        .padding(.top, 42)
+    }
+
+    private func createInvoice() {
+        guard let amount, amount > 0 else { return }
+        Task {
+            do {
+                quote = try await wallet.createLightningReceiveQuote(
+                    mintURL: selectedMintURL,
+                    amount: amount
+                )
+            } catch {
+                localError = WalletViewModel.message(for: error)
+            }
+        }
+    }
+
+    @MainActor
+    private func checkPayment(showError: Bool) async {
+        guard let quote, !isChecking else { return }
+        isChecking = true
+        defer { isChecking = false }
+        do {
+            let updated = try await wallet.checkLightningReceiveQuote(id: quote.id)
+            applyQuoteUpdate(updated)
+        } catch {
+            if showError { localError = WalletViewModel.message(for: error) }
+        }
+    }
+
+    private func applyQuoteUpdate(_ updated: CashuLightningReceiveQuote) {
+        quote = updated
+        guard updated.state == .issued, receivedAmount == nil else { return }
+        let amount = updated.issuedAmount > 0 ? updated.issuedAmount : updated.amount
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.72)) {
+            receivedAmount = amount
+        }
+    }
+
+    private func statusText(for quote: CashuLightningReceiveQuote) -> String {
+        switch quote.state {
+        case .unpaid: "Waiting for payment"
+        case .paid: "Payment found"
+        case .pending: "Payment pending"
+        case .issued: "Ecash issued"
+        case .expired: "Invoice expired"
+        }
+    }
+
+    private func statusIcon(for quote: CashuLightningReceiveQuote) -> String {
+        switch quote.state {
+        case .unpaid, .pending: "bolt.fill"
+        case .paid, .issued: "checkmark.circle.fill"
+        case .expired: "clock.badge.exclamationmark"
+        }
+    }
+
+    private func statusColor(for quote: CashuLightningReceiveQuote) -> Color {
+        switch quote.state {
+        case .unpaid, .pending: TaskifyTheme.accent
+        case .paid, .issued: .green
+        case .expired: .orange
+        }
+    }
+}
+
+/// A `<npub>@npub.cash` Lightning address that resolves without any signup step. Enabling it
+/// only derives and displays the address; claiming pending eCash is a separate, explicit step
+/// (or automatic if the user opts into that too) that redeems through the wallet's normal
+/// receive path.
+private struct LightningAddressReceiveSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var receivingEnabled = NpubCashSettings.receivingEnabled
+    @State private var autoClaimEnabled = NpubCashSettings.autoClaimEnabled
+    @State private var copiedSolife = false
+    @State private var copied = false
+    @State private var showingSolifeManager = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    VStack(spacing: 6) {
+                        Image(systemName: "at.circle.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(TaskifyTheme.accent)
+                        Text("Lightning Address")
+                            .font(.title3.bold())
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                        Text("Permanent addresses derived from your Taskify Nostr identity. Anyone can pay them like a normal Lightning address.")
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+
+                    if let solifeAddress = wallet.solifeAddress {
+                        VStack(spacing: 8) {
+                            Text("solife.me")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                            Button {
+                                UIPasteboard.general.string = solifeAddress
+                                withAnimation(.snappy) { copiedSolife = true }
+                            } label: {
+                                VStack(spacing: 8) {
+                                    Text(solifeAddress)
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                        .multilineTextAlignment(.center)
+                                    Label(
+                                        copiedSolife ? "Copied" : "Tap to copy",
+                                        systemImage: copiedSolife ? "checkmark" : "doc.on.doc"
+                                    )
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(copiedSolife ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            Text("Always on — solife.me forwards payments to this address as eCash automatically. No setup needed.")
+                                .font(.caption2)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                                .multilineTextAlignment(.center)
+
+                            Button {
+                                showingSolifeManager = true
+                            } label: {
+                                Label("Manage custom addresses & mint", systemImage: "slider.horizontal.3")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(TaskifyTheme.accent)
+                            .padding(.top, 2)
+                        }
+                        .padding(16)
+                        .taskifyGlass(cornerRadius: 18)
+                    }
+
+                    Toggle("Enable npub.cash receiving", isOn: $receivingEnabled)
+                        .padding(16)
+                        .taskifyGlass(cornerRadius: 18)
+                        .onChange(of: receivingEnabled) { _, enabled in
+                            NpubCashSettings.setReceivingEnabled(enabled)
+                            if !enabled { autoClaimEnabled = false; NpubCashSettings.setAutoClaimEnabled(false) }
+                            wallet.refreshLightningAddresses()
+                        }
+
+                    if receivingEnabled {
+                        if let identity = wallet.npubCashIdentity {
+                            VStack(spacing: 12) {
+                                Button {
+                                    UIPasteboard.general.string = identity.address
+                                    withAnimation(.snappy) { copied = true }
+                                } label: {
+                                    VStack(spacing: 8) {
+                                        Text(identity.address)
+                                            .font(.system(.body, design: .monospaced))
+                                            .foregroundStyle(TaskifyTheme.primaryText)
+                                            .multilineTextAlignment(.center)
+                                        Label(copied ? "Copied" : "Tap to copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(copied ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
+                                    .onChange(of: autoClaimEnabled) { _, enabled in
+                                        NpubCashSettings.setAutoClaimEnabled(enabled)
+                                    }
+                                Text("Automatically check for and redeem pending eCash each time the wallet opens.")
+                                    .font(.caption2)
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                Button {
+                                    Task { await wallet.claimNpubCash(auto: false) }
+                                } label: {
+                                    if wallet.npubCashClaimStatus == .checking {
+                                        ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                                    } else {
+                                        Text("Check for pending eCash")
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 46)
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(wallet.npubCashClaimStatus == .checking)
+
+                                if let message = wallet.npubCashClaimMessage {
+                                    Label(message, systemImage: statusIcon)
+                                        .font(.caption)
+                                        .foregroundStyle(statusColor)
+                                }
+                            }
+                            .padding(16)
+                            .taskifyGlass(cornerRadius: 18)
+                        } else if let identityError = wallet.npubCashIdentityError {
+                            Label(identityError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .padding(16)
+                                .taskifyGlass(cornerRadius: 18)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Lightning Address")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .onAppear {
+            wallet.refreshLightningAddresses()
+        }
+        .sheet(isPresented: $showingSolifeManager) {
+            SolifeAddressManagerSheet(wallet: wallet)
+        }
+    }
+
+    private var statusIcon: String {
+        switch wallet.npubCashClaimStatus {
+        case .success: "checkmark.circle.fill"
+        case .error: "exclamationmark.triangle.fill"
+        case .checking, .idle: "info.circle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch wallet.npubCashClaimStatus {
+        case .success: .green
+        case .error: .orange
+        case .checking, .idle: TaskifyTheme.secondaryText
+        }
+    }
+}
+
+/// solife.me's default address always works with no setup. This sheet is for the optional
+/// enhancements that do need the server's authenticated API: buying a vanity handle instead of
+/// the default npub-based one, and choosing which mint receives payments for either.
+private struct SolifeAddressManagerSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingPurchase = false
+    @State private var mintUpdateError: String?
+
+    private var mintChoices: [String] {
+        var urls = wallet.snapshot.mints.map(\.url)
+        if let configured = wallet.solifeConfig?.mintUrl, !urls.contains(configured) {
+            urls.append(configured)
+        }
+        return urls
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    if wallet.solifeAccountStatus == .loading, wallet.solifeAccount == nil {
+                        ProgressView("Loading your solife.me account…")
+                            .padding(.top, 40)
+                    } else if let account = wallet.solifeAccount {
+                        addressCard(
+                            title: "Default address",
+                            address: account.lightningAddress,
+                            mintURL: account.lightningAddressMintUrl,
+                            onSelectMint: { mintURL in
+                                await updateMint { try await wallet.updateSolifeDefaultMint(mintURL) }
+                            }
+                        )
+
+                        if !account.addresses.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Custom addresses")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                ForEach(account.addresses, id: \.handle) { customAddress in
+                                    addressCard(
+                                        title: customAddress.handle,
+                                        address: customAddress.address,
+                                        mintURL: customAddress.mintUrl,
+                                        onSelectMint: { mintURL in
+                                            await updateMint {
+                                                try await wallet.updateSolifeCustomAddressMint(
+                                                    handle: customAddress.handle,
+                                                    mintURL: mintURL
+                                                )
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        if let price = wallet.solifeConfig?.customAddressPriceSats {
+                            Button {
+                                showingPurchase = true
+                            } label: {
+                                Text(price > 0 ? "New Custom Address (\(wallet.formattedSats(price)))" : "New Custom Address")
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 46)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+
+                        if let mintUpdateError {
+                            Label(mintUpdateError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    } else if let message = wallet.solifeAccountMessage {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .padding(.top, 40)
+                    }
+                }
+                .padding(20)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("solife.me")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .task {
+            await wallet.refreshSolifeAccount()
+        }
+        .sheet(isPresented: $showingPurchase) {
+            SolifeCustomAddressPurchaseSheet(wallet: wallet)
+        }
+    }
+
+    private func addressCard(
+        title: String,
+        address: String,
+        mintURL: String,
+        onSelectMint: @escaping (String?) async -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Text(address)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Menu {
+                Button("Server default") {
+                    Task { await onSelectMint(nil) }
+                }
+                ForEach(mintChoices, id: \.self) { url in
+                    Button(url) {
+                        Task { await onSelectMint(url) }
+                    }
+                }
+            } label: {
+                Label(mintURL, systemImage: "building.columns")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .taskifyGlass(cornerRadius: 18)
+    }
+
+    private func updateMint(_ action: () async throws -> Void) async {
+        mintUpdateError = nil
+        do {
+            try await action()
+        } catch {
+            mintUpdateError = WalletViewModel.message(for: error)
+        }
+    }
+}
+
+/// Handle availability check, purchase, invoice payment (when the handle isn't free), and
+/// settlement verification — the same sequence as the PWA's `handlePurchaseCustomAddress`.
+private struct SolifeCustomAddressPurchaseSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var handle = ""
+    @State private var availability: SolifeAddressAvailability?
+    @State private var isChecking = false
+    @State private var isPurchasing = false
+    @State private var pendingPurchase: SolifeAddressPurchase?
+    @State private var lightningQuote: CashuLightningPaymentQuote?
+    @State private var claimedAddress: String?
+    @State private var errorMessage: String?
+    @FocusState private var handleFocused: Bool
+
+    private var normalizedHandle: String { handle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    private var handleIsValid: Bool {
+        normalizedHandle.range(of: "^[a-z0-9][a-z0-9_-]{1,31}$", options: .regularExpression) != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    if let claimedAddress {
+                        VStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.green)
+                            Text("Claimed \(claimedAddress)")
+                                .font(.title3.bold())
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                        }
+                        .padding(.top, 30)
+                    } else {
+                        VStack(spacing: 6) {
+                            Text("New Custom Address")
+                                .font(.title3.bold())
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            if let price = wallet.solifeConfig?.customAddressPriceSats {
+                                Text(price > 0 ? "\(wallet.formattedSats(price)) one-time fee." : "Custom address claims are currently free.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                            }
+                        }
+
+                        HStack(spacing: 6) {
+                            TextField("handle", text: $handle)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .focused($handleFocused)
+                                .onChange(of: handle) { _, newValue in
+                                    handle = newValue.lowercased()
+                                    availability = nil
+                                }
+                            Text("@solife.me")
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 46)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(TaskifyTheme.border))
+
+                        if let pendingPurchase {
+                            if let lightningQuote {
+                                payInvoiceView(pendingPurchase, quote: lightningQuote)
+                            } else {
+                                Text("Paying \(wallet.formattedSats(pendingPurchase.priceSats)) to claim \(pendingPurchase.address)…")
+                                    .font(.caption)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                ProgressView()
+                            }
+                        } else {
+                            if let availability {
+                                Label(
+                                    availability.available ? "Available" : (availability.reason ?? "Not available"),
+                                    systemImage: availability.available ? "checkmark.circle" : "xmark.circle"
+                                )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(availability.available ? Color.green : Color.orange)
+                            }
+
+                            Button {
+                                Task { await checkAvailabilityThenPurchase() }
+                            } label: {
+                                if isChecking || isPurchasing {
+                                    ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                                } else {
+                                    Text("Purchase Address")
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 46)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!handleIsValid || isChecking || isPurchasing)
+                        }
+
+                        if let errorMessage {
+                            Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .padding(22)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(claimedAddress == nil ? "Cancel" : "Done") { dismiss() }
+                        .disabled(isChecking || isPurchasing)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+        .interactiveDismissDisabled(isChecking || isPurchasing)
+        .task {
+            handleFocused = true
+            if wallet.solifeConfig == nil {
+                await wallet.refreshSolifeAccount()
+            }
+        }
+    }
+
+    private func payInvoiceView(_ purchase: SolifeAddressPurchase, quote: CashuLightningPaymentQuote) -> some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 6) {
+                Text("\(wallet.formattedSats(quote.amount))").font(.title2.bold())
+                let fee = quote.feeReserve + quote.walletFee
+                if fee > 0 {
+                    Text("+ \(wallet.formattedSats(fee)) fee").font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            Button {
+                Task { await payAndVerify(purchase, quote: quote) }
+            } label: {
+                if isPurchasing {
+                    ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                } else {
+                    Text("Pay & Claim").frame(maxWidth: .infinity).frame(height: 46)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isPurchasing)
+        }
+    }
+
+    private func checkAvailabilityThenPurchase() async {
+        guard handleIsValid else { return }
+        isChecking = true
+        errorMessage = nil
+        do {
+            let result = try await wallet.checkSolifeAddressAvailability(handle: normalizedHandle)
+            availability = result
+            guard result.available else {
+                isChecking = false
+                return
+            }
+            isChecking = false
+            await purchase()
+        } catch {
+            isChecking = false
+            errorMessage = WalletViewModel.message(for: error)
+        }
+    }
+
+    private func purchase() async {
+        isPurchasing = true
+        errorMessage = nil
+        do {
+            switch try await wallet.purchaseSolifeCustomAddress(handle: normalizedHandle) {
+            case .address(let address):
+                claimedAddress = address.address
+            case .purchase(let purchase):
+                pendingPurchase = purchase
+                guard let mintURL = wallet.activeMint?.url else {
+                    throw CashuWalletError.lightningPaymentMissing
+                }
+                lightningQuote = try await wallet.prepareLightningPayment(
+                    mintURL: mintURL,
+                    invoice: purchase.bolt11,
+                    amount: nil
+                )
+            }
+        } catch {
+            errorMessage = WalletViewModel.message(for: error)
+        }
+        isPurchasing = false
+    }
+
+    private func payAndVerify(_ purchase: SolifeAddressPurchase, quote: CashuLightningPaymentQuote) async {
+        isPurchasing = true
+        errorMessage = nil
+        do {
+            _ = try await wallet.confirmLightningPayment(quote)
+            lightningQuote = nil
+
+            var latest = purchase
+            for _ in 0..<5 where !latest.isSettled {
+                try? await Task.sleep(for: .milliseconds(1_500))
+                latest = try await wallet.verifySolifePurchase(purchaseID: purchase.purchaseID)
+            }
+            if latest.status == "address_claimed" {
+                claimedAddress = latest.address
+                pendingPurchase = nil
+            } else if latest.status == "expired" {
+                errorMessage = "The invoice expired for \(latest.address)."
+                pendingPurchase = nil
+            } else if let error = latest.error, !error.isEmpty {
+                errorMessage = error
+                pendingPurchase = nil
+            } else {
+                errorMessage = "Payment sent, but solife.me hasn't confirmed \(latest.address) yet. Check back shortly."
+            }
+        } catch {
+            errorMessage = WalletViewModel.message(for: error)
+        }
+        isPurchasing = false
+    }
+}
+
+struct ReceiveCashuSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    /// Flips to the Lightning version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    /// A standing multi-use, open-amount request so the page has something scannable the moment it
+    /// opens -- the ecash counterpart to leading Receive Lightning with the user's address.
+    @State private var openRequest: CashuCreatedPaymentRequest?
+    @State private var requestCopied = false
+    @State private var showingRequestBuilder = false
+    @State private var token = ""
+    @State private var redeemable: RedeemableCashuToken?
+    @State private var isInspecting = false
+    @State private var localError: String?
+
+    /// `initialToken` is how Chat hands over a token tapped in a DM -- the receiving end of
+    /// sending ecash to a contact. The wallet's own scanner opens the redeem page directly and
+    /// doesn't come through here.
+    init(wallet: WalletViewModel, initialToken: String = "", onSwitchMode: (() -> Void)? = nil) {
+        self.wallet = wallet
+        self.onSwitchMode = onSwitchMode
+        _token = State(initialValue: initialToken)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(spacing: 18) {
+                        openRequestCard
+
+                        WalletPrimaryActionButton(title: "Create request") {
+                            showingRequestBuilder = true
+                        }
+                        .disabled(wallet.activeMint == nil || model.identityPublicKey.isEmpty)
+                        .opacity(wallet.activeMint == nil || model.identityPublicKey.isEmpty ? 0.45 : 1)
+
+                        WalletPrimaryActionButton(
+                            title: "Paste from clipboard",
+                            busyTitle: "Checking token…",
+                            isBusy: isInspecting,
+                            systemImage: "doc.on.clipboard"
+                        ) {
+                            Task { await pasteToken() }
+                        }
+                        .disabled(isInspecting)
+                    }
+                    .padding(22)
+                }
+            }
+            .navigationTitle("Receive eCash")
+            .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showingRequestBuilder) {
+                ReceiveCashuRequestSheet(wallet: wallet)
+            }
+            .sheet(item: $redeemable) { item in
+                RedeemCashuTokenSheet(wallet: wallet, redeemable: item) {
+                    // Close the redeem page first, then this sheet a beat later. Tearing both down
+                    // in the same frame leaves SwiftUI animating two dismissals at once.
+                    redeemable = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { dismiss() }
+                }
+            }
+            .task {
+                await inspectInitialToken()
+                await inspectClipboard()
+                await ensureOpenRequest()
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if let onSwitchMode {
+                        Button("Lightning", action: onSwitchMode)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("Receive ecash", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onAppear {
+            guard token.isEmpty, let pasted = UIPasteboard.general.string else { return }
+            let trimmed = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("cashuA") || trimmed.hasPrefix("cashuB") { token = trimmed }
+        }
+    }
+
+    /// A token handed over by Chat. Unlike the clipboard this was an explicit act, so a failure
+    /// here is worth reporting rather than swallowing.
+    private func inspectInitialToken() async {
+        let candidate = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else { return }
+        await inspect(candidate, reportFailures: true)
+    }
+
+    /// Explicit paste: the user asked, so tell them when it doesn't work -- including when the
+    /// mint says the token has already been spent.
+    private func pasteToken() async {
+        guard let candidate = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !candidate.isEmpty else {
+            localError = "There's nothing on the clipboard to paste."
+            return
+        }
+        await inspect(candidate, reportFailures: true)
+    }
+
+    /// Opportunistic read on open. Anything that isn't a live token is ignored in silence -- the
+    /// clipboard usually has nothing to do with this screen, so complaining about it would be
+    /// noise rather than help.
+    private func inspectClipboard() async {
+        guard let candidate = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !candidate.isEmpty else { return }
+        await inspect(candidate, reportFailures: false)
+    }
+
+    /// Verifies a candidate with the mint and, only if it is a real unspent token, opens the
+    /// redeem page. The unspent check is what stops an already-claimed token -- which still
+    /// decodes perfectly well -- from being offered for redemption a second time.
+    private func inspect(_ candidate: String, reportFailures: Bool) async {
+        guard !isInspecting, redeemable == nil else { return }
+
+        let normalized = candidate.lowercased().hasPrefix("cashu:")
+            ? String(candidate.dropFirst("cashu:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            : candidate
+        guard normalized.lowercased().hasPrefix("cashu") else {
+            if reportFailures { localError = "That doesn't look like an ecash token." }
+            return
+        }
+
+        isInspecting = true
+        defer { isInspecting = false }
+        do {
+            let preview = try await wallet.previewUnspentToken(normalized)
+            token = normalized
+            redeemable = RedeemableCashuToken(token: normalized, preview: preview)
+        } catch {
+            if reportFailures { localError = WalletViewModel.message(for: error) }
+        }
+    }
+
+    /// A standing multi-use, open-amount request. Created quietly on open so there is always
+    /// something to scan; failure is silent because this is a convenience, not the page's purpose
+    /// -- pasting a token still works without it.
+    @ViewBuilder
+    private var openRequestCard: some View {
+        if let openRequest {
+            VStack(spacing: 14) {
+                HStack {
+                    walletFieldLabel("PAYMENT REQUEST")
+                    Spacer(minLength: 8)
+                    Text("Multi-use")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+
+                CashuQRCodeView(value: openRequest.encoded, accessibilityLabel: "Cashu payment request QR code")
+
+                Button {
+                    UIPasteboard.general.string = openRequest.encoded
+                    requestCopied = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_600_000_000)
+                        requestCopied = false
+                    }
+                } label: {
+                    Label(requestCopied ? "Copied" : "Copy request", systemImage: requestCopied ? "checkmark" : "doc.on.doc")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(requestCopied ? .green : TaskifyTheme.secondaryText)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity)
+            .taskifyGlass(cornerRadius: 24)
+        }
+    }
+
+    private func ensureOpenRequest() async {
+        guard openRequest == nil,
+              let mint = wallet.activeMint,
+              !model.identityPublicKey.isEmpty else { return }
+
+        // Reuse the standing request if one is already open for this mint. This is the ecash
+        // equivalent of a Lightning address -- a durable thing to be paid at -- so opening the
+        // page repeatedly must not mint a fresh request each time.
+        if let existing = wallet.createdPaymentRequests.first(where: {
+            $0.isActive && !$0.singleUse && $0.amount == nil && $0.mintURLs.contains(mint.url)
+        }) {
+            openRequest = existing
+            return
+        }
+
+        openRequest = try? await wallet.createPaymentRequest(
+            amount: nil,
+            description: nil,
+            mintURLs: [mint.url],
+            recipientPublicKey: model.identityPublicKey,
+            relayURLs: model.walletPaymentRequestRelayURLs,
+            singleUse: false
+        )
+    }
+
+
+}
+
+/// A token that previewed cleanly and that the mint confirms is still unspent.
+struct RedeemableCashuToken: Identifiable {
+    let id = UUID()
+    let token: String
+    let preview: CashuTokenPreview
+}
+
+/// Redeeming a token gets its own page rather than unfolding inside the Receive eCash sheet: it's
+/// a different job from handing out a request, it ends in its own success state, and it only ever
+/// opens once the mint has confirmed the token is valid and unspent -- so there is something
+/// definite to show by the time it appears.
+struct RedeemCashuTokenSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    let redeemable: RedeemableCashuToken
+    /// Dismisses the whole receive stack, not just this page. Redeeming is the end of the
+    /// errand -- dropping the user back on the Receive eCash sheet they passed through would
+    /// make them close a second screen to get anywhere.
+    var onFinish: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
+    @State private var receivedAmount: UInt64?
+    @State private var queuedReceive: CashuPendingReceive?
+    @State private var localError: String?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: 18) {
+                        if let receivedAmount {
+                            successView(amount: receivedAmount)
+                        } else if let queuedReceive {
+                            queuedView(queuedReceive)
+                        } else {
+                            Image(systemName: "banknote.fill")
+                                .font(.system(size: 46))
+                                .foregroundStyle(TaskifyTheme.accent)
+
+                            tokenPreview(redeemable.preview)
+
+                            WalletPrimaryActionButton(
+                                title: "Receive \(wallet.formattedSats(redeemable.preview.receivedAmount))",
+                                busyTitle: "Receiving…",
+                                isBusy: wallet.isWorking,
+                                systemImage: "checkmark"
+                            ) {
+                                Task { await receive() }
+                            }
+                            .disabled(wallet.isWorking)
+                        }
+                    }
+                    .padding(22)
+                }
+            }
+            .navigationTitle("Redeem ecash")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { finish() }
+                }
+            }
+            .alert("Redeem ecash", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(wallet.isWorking)
+    }
+
+    private func finish() {
+        if let onFinish { onFinish() } else { dismiss() }
+    }
+
+    private func receive() async {
+        do {
+            switch try await wallet.submitReceive(redeemable.token) {
+            case .received(let amount):
+                receivedAmount = amount
+            case .alreadyReceived(let amount):
+                receivedAmount = amount
+            case .queued(let pending):
+                queuedReceive = pending
+            }
+        } catch {
+            localError = WalletViewModel.message(for: error)
+        }
+    }
+
+    private func tokenPreview(_ preview: CashuTokenPreview) -> some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("Token value")
+                Spacer()
+                Text("\(wallet.formattedSats(preview.amount))").bold()
+            }
+            if let fee = preview.fee, fee > 0 {
+                HStack {
+                    Text("Mint fee")
+                    Spacer()
+                    Text("−\(wallet.formattedSats(fee))")
+                }
+            }
+            Divider().overlay(TaskifyTheme.border)
+            HStack {
+                Text("You receive").bold()
+                Spacer()
+                Text("\(wallet.formattedSats(preview.receivedAmount))").bold()
+            }
+            Text(preview.mintURL)
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let memo = preview.memo, !memo.isEmpty {
+                Text(memo)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(TaskifyTheme.primaryText)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 22)
+    }
+
+    private func successView(amount: UInt64) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 72))
+                .foregroundStyle(.green)
+                .symbolEffect(.bounce, value: amount)
+            Text("Received")
+                .font(.title.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+            Text("\(wallet.formattedSats(amount))")
+                .font(.title2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Button("Done") { finish() }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .foregroundStyle(.white)
+                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+                .buttonStyle(.plain)
+        }
+        .padding(.top, 54)
+    }
+
+    private func queuedView(_ pending: CashuPendingReceive) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 66))
+                .foregroundStyle(TaskifyTheme.accent)
+                .symbolEffect(.pulse)
+
+            Text("Ecash saved safely")
+                .font(.title2.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            Text("Taskify kept the token on this device and will retry its mint automatically. You can close this screen without losing it.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            VStack(spacing: 9) {
+                HStack {
+                    Text("Token value")
+                    Spacer()
+                    Text("\(wallet.formattedSats(pending.amount))").bold()
+                }
+                HStack {
+                    Text("Mint")
+                    Spacer()
+                    Text(URL(string: pending.mintURL)?.host() ?? pending.mintURL)
+                        .lineLimit(1)
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(TaskifyTheme.primaryText)
+            .padding(16)
+            .taskifyGlass(cornerRadius: 20)
+
+            Button {
+                Task {
+                    do {
+                        receivedAmount = try await wallet.retryPendingReceive(pending)
+                        queuedReceive = nil
+                    } catch CashuWalletError.pendingReceiveAlreadySpent {
+                        localError = CashuWalletError.pendingReceiveAlreadySpent.errorDescription
+                    } catch {
+                        localError = "The mint is still unavailable. Your token remains saved. \(WalletViewModel.message(for: error))"
+                    }
+                }
+            } label: {
+                Label(wallet.isWorking ? "Retrying…" : "Retry now", systemImage: "arrow.clockwise")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .foregroundStyle(.white)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+            }
+            .buttonStyle(.plain)
+            .disabled(wallet.isWorking)
+
+            Button("Done") { finish() }
+                .font(.headline)
+                .foregroundStyle(TaskifyTheme.accent)
+        }
+        .padding(.top, 34)
+    }
+}
+
+private struct PendingEcashSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var retryingID: String?
+    @State private var discardCandidate: CashuPendingReceive?
+    @State private var localError: String?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+
+                if wallet.pendingEcashReceives.isEmpty {
+                    ContentUnavailableView {
+                        Label("All caught up", systemImage: "checkmark.circle.fill")
+                    } description: {
+                        Text("There are no saved ecash tokens waiting to be redeemed.")
+                    }
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            Text("Tokens waiting on a mint stay encrypted by iOS file protection on this device. Cashu tokens do not have a normal expiration, so Taskify keeps retrying recoverable tokens until they succeed, the mint confirms they are spent, or you remove them.")
+                                .font(.footnote)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(16)
+                                .taskifyGlass(cornerRadius: 20)
+
+                            ForEach(wallet.pendingEcashReceives) { pending in
+                                pendingRow(pending)
+                            }
+                        }
+                        .padding(18)
+                        .padding(.bottom, 24)
+                    }
+                    .refreshable { await wallet.refresh() }
+                }
+            }
+            .navigationTitle("Saved ecash")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .confirmationDialog(
+                "Remove this saved token?",
+                isPresented: Binding(
+                    get: { discardCandidate != nil },
+                    set: { if !$0 { discardCandidate = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Remove from Taskify", role: .destructive) {
+                    guard let pending = discardCandidate else { return }
+                    discardCandidate = nil
+                    Task {
+                        do {
+                            try await wallet.discardPendingReceive(pending)
+                        } catch {
+                            localError = WalletViewModel.message(for: error)
+                        }
+                    }
+                }
+                Button("Keep token", role: .cancel) { discardCandidate = nil }
+            } message: {
+                Text("Only remove it if you kept the original token somewhere else or know it was already redeemed.")
+            }
+            .alert("Saved ecash", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func pendingRow(_ pending: CashuPendingReceive) -> some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(spacing: 12) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.title3)
+                    .frame(width: 42, height: 42)
+                    .foregroundStyle(TaskifyTheme.accent)
+                    .background(
+                        TaskifyTheme.accent.opacity(0.12),
+                        in: Circle()
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(wallet.formattedSats(pending.amount))")
+                        .font(.headline.monospacedDigit())
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(URL(string: pending.mintURL)?.host() ?? pending.mintURL)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Text("Saved")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.accent)
+            }
+
+            if let memo = pending.memo, !memo.isEmpty {
+                Text(memo)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            if let lastAttemptAt = pending.lastAttemptAt {
+                Text("Last tried \(lastAttemptAt, style: .relative) · \(pending.attemptCount) attempt\(pending.attemptCount == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    retry(pending)
+                } label: {
+                    Label(
+                        retryingID == pending.id ? "Retrying…" : "Retry now",
+                        systemImage: "arrow.clockwise"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.52))
+                }
+                .buttonStyle(.plain)
+                .disabled(retryingID != nil || wallet.isWorking)
+
+                Button {
+                    discardCandidate = pending
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 46, height: 42)
+                        .foregroundStyle(.orange)
+                        .taskifyGlassControl(in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(retryingID != nil || wallet.isWorking)
+                .accessibilityLabel("Remove saved ecash token")
+            }
+        }
+        .padding(16)
+        .taskifyGlass(cornerRadius: 22)
+    }
+
+    private func retry(_ pending: CashuPendingReceive) {
+        retryingID = pending.id
+        Task {
+            defer { retryingID = nil }
+            do {
+                _ = try await wallet.retryPendingReceive(pending)
+            } catch CashuWalletError.pendingReceiveAlreadySpent {
+                localError = CashuWalletError.pendingReceiveAlreadySpent.errorDescription
+            } catch {
+                localError = "The token remains saved. \(WalletViewModel.message(for: error))"
+            }
+        }
+    }
+}
+
+private struct CashuTokenScannerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let guidanceTitle: String
+    let guidanceText: String
+    let unavailableText: String
+    let acceptedPrefixes: [String]
+    let invalidCodeMessage: String
+    let acceptsAnimatedCashu: Bool
+    let onToken: (String) -> Void
+    @State private var scanError: String?
+    @State private var scanStatus: String?
+
+    init(onToken: @escaping (String) -> Void) {
+        title = "Scan ecash"
+        guidanceTitle = "Scan a Cashu token"
+        guidanceText = "Point the camera at a Cashu QR code. Keep it steady while animated frames are captured."
+        unavailableText = "You can still paste the Cashu token from the Receive screen."
+        acceptedPrefixes = ["cashua", "cashub", "ur:"]
+        invalidCodeMessage = "That QR code is not a Cashu token."
+        acceptsAnimatedCashu = true
+        self.onToken = onToken
+    }
+
+    init(lightningInvoice onInvoice: @escaping (String) -> Void) {
+        title = "Scan invoice"
+        guidanceTitle = "Scan a Lightning invoice"
+        guidanceText = "Point the camera at a BOLT11 Lightning invoice."
+        unavailableText = "You can still paste the invoice from the Lightning payment screen."
+        acceptedPrefixes = ["lightning:ln", "lnbc", "lntb", "lnbcrt", "lnsb"]
+        invalidCodeMessage = "That QR code is not a Lightning invoice."
+        acceptsAnimatedCashu = false
+        onToken = onInvoice
+    }
+
+    init(paymentRequest onRequest: @escaping (String) -> Void) {
+        title = "Scan request"
+        guidanceTitle = "Scan a Cashu request"
+        guidanceText = "Point the camera at a creqA, creqB, or unified Bitcoin payment QR code."
+        unavailableText = "You can still paste the Cashu request from the payment screen."
+        acceptedPrefixes = ["creqa", "creqb1", "bitcoin:", "cashu:creq"]
+        invalidCodeMessage = "That QR code is not a Cashu payment request."
+        acceptsAnimatedCashu = false
+        onToken = onRequest
+    }
+
+    private var scannerAvailable: Bool {
+        DataScannerViewController.isSupported && DataScannerViewController.isAvailable
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if scannerAvailable {
+                    ZStack(alignment: .bottom) {
+                        CashuTokenCodeScanner(
+                            acceptedPrefixes: acceptedPrefixes,
+                            invalidCodeMessage: invalidCodeMessage,
+                            acceptsAnimatedCashu: acceptsAnimatedCashu,
+                            onCode: onToken,
+                            onProgress: {
+                                scanError = nil
+                                scanStatus = $0
+                            },
+                            onError: { scanError = $0 }
+                        )
+                        .ignoresSafeArea(edges: .bottom)
+
+                        VStack(spacing: 8) {
+                            Label(guidanceTitle, systemImage: "viewfinder")
+                                .font(.subheadline.weight(.semibold))
+                            Text(scanError ?? scanStatus ?? guidanceText)
+                                .font(.caption)
+                                .foregroundStyle(scanError == nil ? TaskifyTheme.secondaryText : Color.orange)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity)
+                        .taskifyGlass(cornerRadius: 22)
+                        .padding(16)
+                    }
+                } else {
+                    ContentUnavailableView {
+                        Label("Camera scanning unavailable", systemImage: "qrcode.viewfinder")
+                    } description: {
+                        Text(unavailableText)
+                    } actions: {
+                        Button("Use paste instead") { dismiss() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .background(TaskifyTheme.background.ignoresSafeArea())
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct CashuTokenCodeScanner: UIViewControllerRepresentable {
+    let acceptedPrefixes: [String]
+    let invalidCodeMessage: String
+    let acceptsAnimatedCashu: Bool
+    let onCode: (String) -> Void
+    let onProgress: (String) -> Void
+    let onError: (String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            acceptedPrefixes: acceptedPrefixes,
+            invalidCodeMessage: invalidCodeMessage,
+            acceptsAnimatedCashu: acceptsAnimatedCashu,
+            onCode: onCode,
+            onProgress: onProgress,
+            onError: onError
+        )
+    }
+
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let scanner = DataScannerViewController(
+            recognizedDataTypes: [.barcode(symbologies: [.qr])],
+            qualityLevel: .balanced,
+            recognizesMultipleItems: false,
+            isHighFrameRateTrackingEnabled: true,
+            isPinchToZoomEnabled: true,
+            isGuidanceEnabled: true,
+            isHighlightingEnabled: true
+        )
+        scanner.delegate = context.coordinator
+        context.coordinator.scanner = scanner
+        DispatchQueue.main.async {
+            do {
+                try scanner.startScanning()
+            } catch {
+                context.coordinator.onError("The camera scanner could not start. Check camera access in iOS Settings.")
+            }
+        }
+        return scanner
+    }
+
+    func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {}
+
+    static func dismantleUIViewController(_ uiViewController: DataScannerViewController, coordinator: Coordinator) {
+        uiViewController.stopScanning()
+    }
+
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        let acceptedPrefixes: [String]
+        let invalidCodeMessage: String
+        let acceptsAnimatedCashu: Bool
+        let onCode: (String) -> Void
+        let onProgress: (String) -> Void
+        let onError: (String) -> Void
+        weak var scanner: DataScannerViewController?
+        private var deliveredCode = false
+        private let animatedCollector = CashuAnimatedQRCollector()
+        private let haptic = UISelectionFeedbackGenerator()
+
+        init(
+            acceptedPrefixes: [String],
+            invalidCodeMessage: String,
+            acceptsAnimatedCashu: Bool,
+            onCode: @escaping (String) -> Void,
+            onProgress: @escaping (String) -> Void,
+            onError: @escaping (String) -> Void
+        ) {
+            self.acceptedPrefixes = acceptedPrefixes
+            self.invalidCodeMessage = invalidCodeMessage
+            self.acceptsAnimatedCashu = acceptsAnimatedCashu
+            self.onCode = onCode
+            self.onProgress = onProgress
+            self.onError = onError
+            haptic.prepare()
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            didAdd addedItems: [RecognizedItem],
+            allItems: [RecognizedItem]
+        ) {
+            process(addedItems, with: dataScanner)
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            didUpdate updatedItems: [RecognizedItem],
+            allItems: [RecognizedItem]
+        ) {
+            process(updatedItems, with: dataScanner)
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable
+        ) {
+            onError("Camera scanning became unavailable. You can still paste the token manually.")
+        }
+
+        private func process(
+            _ items: [RecognizedItem],
+            with dataScanner: DataScannerViewController
+        ) {
+            guard !deliveredCode else { return }
+            var sawBarcode = false
+            for item in items {
+                guard case let .barcode(barcode) = item,
+                      let value = barcode.payloadStringValue else {
+                    continue
+                }
+                sawBarcode = true
+                let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard acceptedPrefixes.contains(where: normalized.lowercased().hasPrefix) else {
+                    continue
+                }
+
+                if acceptsAnimatedCashu {
+                    switch animatedCollector.add(normalized) {
+                    case .progress(let received, let expected, let duplicate):
+                        if !duplicate {
+                            haptic.selectionChanged()
+                            haptic.prepare()
+                        }
+                        let progress = expected.map { "\(min(received, $0))/\($0)" } ?? "\(received)"
+                        onProgress(duplicate
+                            ? "Frame already captured · \(progress)"
+                            : "Captured frame \(progress) · Keep scanning")
+                        return
+                    case .complete(let token):
+                        deliver(token, with: dataScanner)
+                        return
+                    case .invalid(let message):
+                        onError(message)
+                        return
+                    case .notAnimated:
+                        break
+                    }
+                }
+
+                deliver(normalized, with: dataScanner)
+                return
+            }
+            if sawBarcode {
+                onError(invalidCodeMessage)
+            }
+        }
+
+        private func deliver(_ value: String, with dataScanner: DataScannerViewController) {
+            deliveredCode = true
+            dataScanner.stopScanning()
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            onCode(value)
+        }
+    }
+}
+
+/// Picks a Nostr contact to pay. Shared by both send sheets so the two payment rails present the
+/// same contact list, which is the point of the PWA's Contacts button: who you're paying is one
+/// decision, and how the money travels is another.
+private struct WalletContactPickerSheet: View {
+    let title: String
+    /// Contacts that can't be paid on this rail are still listed but not selectable, so someone
+    /// looking for a name finds it and learns why rather than wondering where it went.
+    let isSelectable: (NostrContact) -> Bool
+    let unavailableNote: String
+    let onSelect: (NostrContact) -> Void
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+
+    private var contacts: [NostrContact] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let all = model.nostrContacts.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+        guard !query.isEmpty else { return all }
+        return all.filter {
+            $0.displayName.lowercased().contains(query)
+                || $0.subtitle.lowercased().contains(query)
+                || $0.npub.lowercased().contains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                Group {
+                    if model.nostrContacts.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .font(.system(size: 42))
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                            Text("No contacts yet")
+                                .font(.headline)
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text("Add someone in the Chat tab and they'll show up here.")
+                                .font(.subheadline)
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        .padding(32)
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 10) {
+                                ForEach(contacts) { contact in
+                                    row(contact)
+                                }
+                            }
+                            .padding(20)
+                        }
+                    }
+                }
+            }
+            .searchable(text: $search, prompt: "Search contacts")
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func row(_ contact: NostrContact) -> some View {
+        let selectable = isSelectable(contact)
+        return Button {
+            onSelect(contact)
+            dismiss()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(contact.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(selectable ? contact.subtitle : unavailableNote)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if selectable {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .taskifyGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .disabled(!selectable)
+        .opacity(selectable ? 1 : 0.45)
+    }
+}
+
+private struct SendLightningSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
+    /// Flips to the eCash version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
+    @State private var invoice = ""
+    @State private var amountText = ""
+    @State private var selectedMintURL = ""
+    @State private var quote: CashuLightningPaymentQuote?
+    @State private var result: CashuLightningPaymentResult?
+    @State private var localError: String?
+    @State private var showingScanner = false
+    @State private var isResolvingAddress = false
+    @State private var step: Step = .destination
+    @State private var showingContactPicker = false
+    @FocusState private var focusedField: Field?
+
+    /// Split across two screens the way the PWA's Lightning send sheet is (`lightningSendView`
+    /// "input" then "address"): a destination screen, then -- only when the destination doesn't
+    /// carry its own amount -- a keypad screen. Cramming a multi-line invoice field, a mint
+    /// selector and a keypad onto one screen is what the PWA avoids here.
+    private enum Step {
+        case destination
+        case amount
+    }
+
+    private enum Field {
+        case invoice
+    }
+
+    private var customAmount: UInt64? {
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
+    }
+
+    /// A `name@domain` Lightning Address (LUD-16) rather than a pasted/scanned BOLT11 invoice --
+    /// matches the PWA's `isLnAddress` branch in `CashuWalletModal.tsx`'s `handlePayInvoice`.
+    private var isLightningAddress: Bool {
+        LnurlPayClient.isLightningAddress(invoice)
+    }
+
+    private var trimmedInvoice: String {
+        invoice.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var fundedMints: [CashuMintSummary] {
+        wallet.snapshot.mints.filter { $0.available > 0 }
+    }
+
+    private var canLeaveDestinationStep: Bool {
+        !trimmedInvoice.isEmpty && !selectedMintURL.isEmpty
+    }
+
+    private var canSubmitAmount: Bool {
+        (customAmount ?? 0) > 0
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+
+                ScrollView {
+                    Group {
+                        if let result {
+                            successView(result)
+                        } else if let quote {
+                            confirmationView(quote)
+                        } else if step == .amount {
+                            amountView
+                        } else {
+                            destinationView
+                        }
+                    }
+                    .padding(22)
+                }
+                .scrollDismissesKeyboard(.interactively)
+            }
+            .navigationTitle("Pay Lightning")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if step == .amount && quote == nil && result == nil {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { step = .destination }
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if let onSwitchMode {
+                        Button("eCash", action: onSwitchMode)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("Lightning payment", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(wallet.isWorking || isResolvingAddress)
+        .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
+            if selectedMintURL.isEmpty { selectedMintURL = wallet.activeMint?.url ?? "" }
+        }
+        .onDisappear {
+            if let quote, result == nil {
+                Task { await wallet.cancelLightningPayment(quote) }
+            }
+        }
+        .sheet(isPresented: $showingContactPicker) {
+            WalletContactPickerSheet(
+                title: "Pay a contact",
+                isSelectable: { _ in true },
+                unavailableNote: ""
+            ) { contact in
+                invoice = WalletContactPayment.lightningAddress(lud16: contact.profile?.lud16, npub: contact.npub)
+                focusedField = nil
+            }
+        }
+        .sheet(isPresented: $showingScanner) {
+            CashuTokenScannerSheet(lightningInvoice: { value in
+                invoice = value
+                showingScanner = false
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            })
+        }
+    }
+
+    /// Step one, mirroring the PWA's "input" view: where the money is going and which mint pays.
+    private var destinationView: some View {
+        VStack(spacing: 20) {
+            walletFieldLabel("SEND TO")
+
+            ZStack(alignment: .topLeading) {
+                if invoice.isEmpty {
+                    Text("Invoice or lightning address")
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 14)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $invoice)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .scrollContentBackground(.hidden)
+                    .focused($focusedField, equals: .invoice)
+                    .padding(10)
+            }
+            .frame(minHeight: 104)
+            .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TaskifyTheme.border))
+
+            HStack(spacing: 12) {
+                Button { showingScanner = true } label: {
+                    Label("Scan", systemImage: "qrcode.viewfinder")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    if let pasted = UIPasteboard.general.string {
+                        invoice = pasted
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button { showingContactPicker = true } label: {
+                    Label("Contacts", systemImage: "person.crop.circle")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .font(.headline)
+            .foregroundStyle(TaskifyTheme.primaryText)
+
+            if fundedMints.isEmpty {
+                Text("Add a mint with a balance in Wallet → Mints to start sending.")
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                WalletMintSelectorCard(
+                    label: "PAY FROM",
+                    mints: fundedMints,
+                    selectedMintURL: $selectedMintURL
+                )
+            }
+
+            WalletPrimaryActionButton(
+                title: isLightningAddress ? "Continue" : "Review payment",
+                busyTitle: "Checking invoice…",
+                isBusy: wallet.isWorking
+            ) {
+                focusedField = nil
+                if isLightningAddress {
+                    withAnimation(.easeInOut(duration: 0.2)) { step = .amount }
+                } else {
+                    Task { await prepareQuote() }
+                }
+            }
+            .disabled(wallet.isWorking || !canLeaveDestinationStep)
+            .opacity(canLeaveDestinationStep ? 1 : 0.45)
+
+            Label(
+                "The selected Cashu mint pays the invoice. Taskify never sends your recovery phrase.",
+                systemImage: "lock.shield"
+            )
+            .font(.caption)
+            .multilineTextAlignment(.center)
+            .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+    /// Step two, mirroring the PWA's "address" view: a lightning address carries no amount of its
+    /// own, so it gets the same keypad the rest of the wallet's amount entry uses.
+    private var amountView: some View {
+        VStack(spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                walletFieldLabel("SEND TO")
+                Text(trimmedInvoice)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .taskifyGlass(cornerRadius: 18)
+            }
+
+            WalletAmountDisplayCard(
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
+                caption: "Enter amount to send",
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
+            )
+
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
+
+            WalletPrimaryActionButton(
+                title: "Review payment",
+                busyTitle: isResolvingAddress ? "Resolving address…" : "Checking invoice…",
+                isBusy: wallet.isWorking || isResolvingAddress
+            ) {
+                Task { await prepareQuote() }
+            }
+            .disabled(wallet.isWorking || isResolvingAddress || !canSubmitAmount)
+            .opacity(canSubmitAmount ? 1 : 0.45)
+        }
+    }
+
+    /// Resolves a lightning address to an invoice where needed, then asks the mint to quote the
+    /// payment. Success lands on the review screen rather than paying outright.
+    private func prepareQuote() async {
+        do {
+            if isLightningAddress {
+                isResolvingAddress = true
+                let resolution = try await LnurlPayClient.resolveInvoice(
+                    address: trimmedInvoice,
+                    amountSats: customAmount ?? 0
+                )
+                isResolvingAddress = false
+                quote = try await wallet.prepareLightningPayment(
+                    mintURL: selectedMintURL,
+                    invoice: resolution.invoice,
+                    amount: resolution.amountSats
+                )
+            } else {
+                quote = try await wallet.prepareLightningPayment(
+                    mintURL: selectedMintURL,
+                    invoice: trimmedInvoice,
+                    amount: customAmount
+                )
+            }
+        } catch {
+            isResolvingAddress = false
+            localError = WalletViewModel.message(for: error)
+        }
+    }
+
+
+    /// Native-only review step -- the PWA pays straight from its send sheet. Kept because a
+    /// Lightning payment is irreversible and the fee reserve isn't knowable until the mint quotes
+    /// it, but restyled to the PWA's grammar: amount hero, label/value rows, one full-width action.
+    private func confirmationView(_ quote: CashuLightningPaymentQuote) -> some View {
+        let amount = wallet.displayAmount(forSats: quote.amount)
+
+        return VStack(spacing: 20) {
+            WalletAmountHero(
+                label: "AMOUNT",
+                amount: amount.primary,
+                secondary: amount.secondary
+            )
+
+            VStack(spacing: 14) {
+                WalletDetailRow(title: "Maximum routing fee", value: wallet.formattedSats(quote.feeReserve))
+                if quote.walletFee > 0 {
+                    WalletDetailRow(title: "Mint input fee", value: wallet.formattedSats(quote.walletFee))
+                }
+                Divider().overlay(TaskifyTheme.border)
+                WalletDetailRow(
+                    title: "Maximum from balance",
+                    value: wallet.formattedSats(quote.maximumTotal),
+                    emphasized: true
+                )
+                WalletDetailRow(
+                    title: "Paid by",
+                    value: URL(string: quote.mintURL)?.host() ?? quote.mintURL
+                )
+                if let expiresAt = quote.expiresAt {
+                    WalletDetailRow(
+                        title: "Invoice expires",
+                        value: expiresAt.formatted(.relative(presentation: .named)),
+                        valueColor: quote.isExpired() ? .orange : nil
+                    )
+                }
+            }
+            .padding(18)
+            .taskifyGlass(cornerRadius: 22)
+
+            WalletPrimaryActionButton(
+                title: "Pay \(wallet.formattedSats(quote.amount))",
+                busyTitle: "Paying…",
+                isBusy: wallet.isWorking,
+                systemImage: "bolt.fill"
+            ) {
+                Task {
+                    do {
+                        result = try await wallet.confirmLightningPayment(quote)
+                    } catch {
+                        localError = WalletViewModel.message(for: error)
+                        self.quote = nil
+                    }
+                }
+            }
+            .disabled(wallet.isWorking || quote.isExpired())
+            .opacity(quote.isExpired() ? 0.45 : 1)
+
+            Button("Back") {
+                Task { await wallet.cancelLightningPayment(quote) }
+                self.quote = nil
+            }
+            .disabled(wallet.isWorking)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+
+            Text("The actual routing fee can be lower than the maximum. Unused fee reserve returns to your wallet automatically.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+
+    private func successView(_ result: CashuLightningPaymentResult) -> some View {
+        VStack(spacing: 20) {
+            Image(systemName: result.state == .completed ? "checkmark.circle.fill" : "clock.badge.checkmark.fill")
+                .font(.system(size: 72))
+                .foregroundStyle(result.state == .completed ? Color.green : Color.orange)
+                .symbolEffect(.bounce, value: result.quoteID)
+
+            Text(result.state == .completed ? "Payment sent" : "Payment processing")
+                .font(.title2.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            Text(wallet.displayAmount(forSats: result.amount).primary)
+                .font(.system(size: 42, weight: .bold, design: .rounded))
+                .foregroundStyle(TaskifyTheme.primaryText)
+            if let secondary = wallet.displayAmount(forSats: result.amount).secondary {
+                Text(secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            VStack(spacing: 14) {
+                WalletDetailRow(title: "Amount", value: wallet.formattedSats(result.amount))
+                if let feePaid = result.feePaid {
+                    WalletDetailRow(title: "Fee paid", value: wallet.formattedSats(feePaid))
+                }
+                WalletDetailRow(
+                    title: "Status",
+                    value: result.state == .completed ? "Completed" : "Pending",
+                    valueColor: result.state == .completed ? .green : .orange
+                )
+            }
+            .padding(18)
+            .taskifyGlass(cornerRadius: 22)
+
+            Text(result.state == .completed
+                ? "The payment and its technical details are now available in Wallet History."
+                : "The mint is still processing this payment. Do not retry it. Taskify will reconcile the reserved balance when the wallet next refreshes online.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            WalletPrimaryActionButton(title: "Done") { dismiss() }
+        }
+    }
+}
+
+private struct PayCashuRequestSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var requestValue = ""
+    @State private var preview: CashuPaymentRequestPreview?
+    @State private var selectedMintURL = ""
+    @State private var amountText = ""
+    @State private var result: CashuPaymentRequestPaymentResult?
+    @State private var isInspecting = false
+    @State private var showingScanner = false
+    @State private var confirmingPayment = false
+    @State private var paymentUncertain = false
+    @State private var localError: String?
+    @FocusState private var amountFocused: Bool
+    @FocusState private var requestFocused: Bool
+
+    private var compatibleMints: [CashuMintSummary] {
+        guard let preview else { return [] }
+        return wallet.snapshot.mints.filter {
+            CashuWalletService.paymentRequestAcceptsMint(preview, mintURL: $0.url)
+        }
+    }
+
+    private var selectedMint: CashuMintSummary? {
+        compatibleMints.first { $0.url == selectedMintURL }
+    }
+
+    private var paymentAmount: UInt64? {
+        if let fixed = preview?.amount { return fixed }
+        return UInt64(amountText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private var canReview: Bool {
+        guard let amount = paymentAmount,
+              amount > 0,
+              let mint = selectedMint,
+              !paymentUncertain,
+              preview?.transports.isEmpty == false else { return false }
+        return mint.available >= amount && !wallet.isWorking
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+
+                ScrollView {
+                    Group {
+                        if let result {
+                            successView(result)
+                        } else if let preview {
+                            requestPreview(preview)
+                        } else {
+                            requestInput
+                        }
+                    }
+                    .padding(22)
+                }
+                .scrollDismissesKeyboard(.interactively)
+            }
+            .navigationTitle("Cashu request")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if result == nil {
+                        Button {
+                            showingScanner = true
+                        } label: {
+                            Image(systemName: "qrcode.viewfinder")
+                        }
+                        .accessibilityLabel("Scan Cashu payment request")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .confirmationDialog(
+                paymentAmount.map { "Pay \(wallet.formattedSats($0))?" } ?? "Pay Cashu request?",
+                isPresented: $confirmingPayment,
+                titleVisibility: .visible
+            ) {
+                Button("Pay request") { pay() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This creates bearer ecash and sends it using the request's Nostr or HTTP delivery method. The payment cannot be reversed.")
+            }
+            .alert("Cashu payment request", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+            .sheet(isPresented: $showingScanner) {
+                CashuTokenScannerSheet(paymentRequest: { value in
+                    requestValue = value
+                    showingScanner = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        inspectRequest()
+                    }
+                })
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onAppear {
+            guard requestValue.isEmpty,
+                  let pasted = UIPasteboard.general.string,
+                  (try? CashuWalletService.normalizedPaymentRequest(pasted)) != nil else { return }
+            requestValue = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async { inspectRequest() }
+        }
+    }
+
+    private var requestInput: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "qrcode")
+                .font(.system(size: 52))
+                .foregroundStyle(TaskifyTheme.accent)
+
+            VStack(spacing: 6) {
+                Text("Fulfill an ecash request")
+                    .font(.title2.bold())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                Text("Scan or paste a PWA-compatible creqA, creqB, or unified Bitcoin payment request.")
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            TextEditor(text: $requestValue)
+                .font(.system(.footnote, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(12)
+                .frame(minHeight: 130)
+                .background(
+                    TaskifyTheme.raisedFill,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(TaskifyTheme.border)
+                )
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .focused($requestFocused)
+
+            HStack(spacing: 12) {
+                Button {
+                    guard let value = UIPasteboard.general.string else { return }
+                    requestValue = value
+                    requestFocused = false
+                    DispatchQueue.main.async { inspectRequest() }
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button { showingScanner = true } label: {
+                    Label("Scan", systemImage: "qrcode.viewfinder")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(TaskifyTheme.primaryText)
+
+            Button { inspectRequest() } label: {
+                Text(isInspecting ? "Reading request…" : "Continue")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .contentShape(Capsule())
+                    .foregroundStyle(.white)
+                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+            }
+            .buttonStyle(.plain)
+            .disabled(
+                isInspecting
+                    || requestValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
+        }
+    }
+
+    private func requestPreview(_ preview: CashuPaymentRequestPreview) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: 52))
+                .foregroundStyle(TaskifyTheme.accent)
+
+            Text(preview.amount == nil ? "Choose an amount" : "Review request")
+                .font(.title2.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            if let fixedAmount = preview.amount {
+                Text(wallet.formattedSats(fixedAmount))
+                    .font(.system(size: 46, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(.vertical, 23)
+                    .frame(maxWidth: .infinity)
+                    .taskifyGlass(cornerRadius: 26)
+            } else {
+                VStack(spacing: 5) {
+                    TextField("0", text: $amountText)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.center)
+                        .font(.system(size: 46, weight: .bold, design: .rounded))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .focused($amountFocused)
+                    Text(WalletAmountFormat.inputUnitLabel(display: WalletCurrencySettings.denominationDisplay))
+                        .font(.headline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                .padding(.vertical, 23)
+                .frame(maxWidth: .infinity)
+                .taskifyGlass(cornerRadius: 26)
+            }
+
+            mintPicker
+            requestDetails(preview)
+
+            if compatibleMints.isEmpty {
+                Label(
+                    "None of your configured mints are accepted by this request.",
+                    systemImage: "building.columns.fill"
+                )
+                .font(.footnote)
+                .foregroundStyle(.orange)
+            } else if let amount = paymentAmount,
+                      let mint = selectedMint,
+                      mint.available < amount {
+                Label(
+                    "This mint needs \(wallet.formattedSats(amount - mint.available)) more.",
+                    systemImage: "exclamationmark.circle"
+                )
+                .font(.footnote)
+                .foregroundStyle(.orange)
+            }
+
+            if preview.transports.isEmpty {
+                Label(
+                    "This request has no Nostr or HTTP return address, so it cannot be fulfilled from a scanned code.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.footnote)
+                .foregroundStyle(.orange)
+            }
+
+            if paymentUncertain {
+                Label(
+                    "Payment delivery is uncertain. Verify with the recipient before doing anything else.",
+                    systemImage: "exclamationmark.shield"
+                )
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.orange)
+            }
+
+            Button {
+                amountFocused = false
+                confirmingPayment = true
+            } label: {
+                Label(
+                    wallet.isWorking ? "Sending…" : "Review payment",
+                    systemImage: "arrow.up"
+                )
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .foregroundStyle(.white)
+                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canReview)
+
+            Button("Use a different request") {
+                self.preview = nil
+                selectedMintURL = ""
+                amountText = ""
+                paymentUncertain = false
+            }
+            .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+    }
+
+    @ViewBuilder
+    private var mintPicker: some View {
+        if compatibleMints.count > 1 {
+            Picker("Send from", selection: $selectedMintURL) {
+                ForEach(compatibleMints) { mint in
+                    Text("\(mint.name) · \(wallet.formattedSats(mint.available))").tag(mint.url)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(TaskifyTheme.accent)
+        } else if let mint = compatibleMints.first {
+            HStack {
+                Label(mint.name, systemImage: "building.columns")
+                Spacer()
+                Text("\(wallet.formattedSats(mint.available))")
+            }
+            .font(.subheadline)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .padding(16)
+            .taskifyGlass(cornerRadius: 18)
+        }
+    }
+
+    private func requestDetails(_ preview: CashuPaymentRequestPreview) -> some View {
+        VStack(spacing: 11) {
+            if let description = preview.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !description.isEmpty {
+                HStack(alignment: .top) {
+                    Text("Memo")
+                    Spacer()
+                    Text(description)
+                        .multilineTextAlignment(.trailing)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                }
+            }
+
+            HStack {
+                Text("Delivery")
+                Spacer()
+                Text(preview.transports.map { $0 == .nostr ? "Nostr" : "HTTP" }.joined(separator: ", "))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+            }
+
+            if let singleUse = preview.singleUse {
+                HStack {
+                    Text("Request")
+                    Spacer()
+                    Text(singleUse ? "Single-use" : "Reusable")
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                }
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(TaskifyTheme.secondaryText)
+        .padding(17)
+        .taskifyGlass(cornerRadius: 22)
+    }
+
+    private func successView(_ result: CashuPaymentRequestPaymentResult) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 72))
+                .foregroundStyle(.green)
+                .symbolEffect(.bounce, value: result.amount)
+            Text("Request paid")
+                .font(.title.bold())
+                .foregroundStyle(TaskifyTheme.primaryText)
+            Text("\(wallet.formattedSats(result.amount))")
+                .font(.title2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Text("The ecash was delivered using the payment request's preferred transport.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Button("Done") { dismiss() }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .foregroundStyle(.white)
+                .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.78))
+                .buttonStyle(.plain)
+        }
+        .padding(.top, 54)
+    }
+
+    private func inspectRequest() {
+        guard !isInspecting else { return }
+        requestFocused = false
+        isInspecting = true
+        defer { isInspecting = false }
+        do {
+            let preview = try wallet.previewPaymentRequest(requestValue)
+            withAnimation(.snappy(duration: 0.22)) {
+                self.preview = preview
+            }
+            paymentUncertain = false
+            let active = wallet.activeMint
+            if let active,
+               CashuWalletService.paymentRequestAcceptsMint(preview, mintURL: active.url) {
+                selectedMintURL = active.url
+            } else {
+                selectedMintURL = wallet.snapshot.mints.first(where: {
+                    CashuWalletService.paymentRequestAcceptsMint(preview, mintURL: $0.url)
+                })?.url ?? ""
+            }
+            if preview.amount == nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    amountFocused = true
+                }
+            }
+        } catch {
+            localError = WalletViewModel.message(for: error)
+        }
+    }
+
+    private func pay() {
+        guard let preview, let amount = paymentAmount else { return }
+        Task {
+            do {
+                result = try await wallet.payPaymentRequest(
+                    preview,
+                    mintURL: selectedMintURL,
+                    customAmount: preview.amount == nil ? amount : nil
+                )
+            } catch CashuWalletError.paymentRequestUncertain {
+                paymentUncertain = true
+                localError = CashuWalletError.paymentRequestUncertain.errorDescription
+            } catch {
+                localError = WalletViewModel.message(for: error)
+            }
+        }
+    }
+}
+
+private struct SendCashuSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
+    /// Flips to the Lightning version of this action, matching the PWA sheet header's mode button.
+    var onSwitchMode: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
+    /// Which currency this sheet's keypad is entering in. Seeded from the saved preference and
+    /// flipped by tapping the amount display.
+    @State private var entryCurrency: WalletPrimaryCurrency = .sat
+    @State private var amountText = ""
+    @State private var memo = ""
+    @State private var selectedMintURL = ""
+    @State private var quote: CashuPreparedSendQuote?
+    @State private var outgoing: CashuOutgoingToken?
+    @State private var localError: String?
+    @State private var confirmingReclaim = false
+    @State private var showingContactPicker = false
+    /// When set, the created token is delivered to this contact over an encrypted DM instead of
+    /// being handed back for the user to share themselves.
+    @State private var recipient: NostrContact?
+    @State private var isSendingToContact = false
+    @State private var sentToContact: NostrContact?
+
+    private var amount: UInt64? {
+        // Always sats, whatever currency the keypad is in -- dollar entry converts here.
+        wallet.sats(fromEntry: amountText, currency: entryCurrency)
+    }
+
+    private func directMessageBody(token: String, sats: UInt64) -> String {
+        WalletContactPayment.ecashDirectMessage(
+            senderNpub: model.identityNpub,
+            formattedAmount: wallet.formattedSats(sats),
+            token: token
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                GeometryReader { proxy in
+                    ScrollView {
+                        Group {
+                            if let outgoing {
+                                if let sentToContact {
+                                    Label(
+                                        "Sent to \(sentToContact.displayName)",
+                                        systemImage: "checkmark.circle.fill"
+                                    )
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.green)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.bottom, 4)
+                                }
+                                OutgoingTokenContent(
+                                    outgoing: outgoing,
+                                    checkAction: {
+                                        Task {
+                                            do { self.outgoing = try await wallet.checkOutgoingToken(outgoing) }
+                                            catch { localError = WalletViewModel.message(for: error) }
+                                        }
+                                    },
+                                    reclaimAction: { confirmingReclaim = true }
+                                )
+                            } else if let quote {
+                                confirmationView(quote)
+                            } else {
+                                amountView
+                            }
+                        }
+                        .padding(22)
+                        .frame(minHeight: proxy.size.height, alignment: .center)
+                    }
+                }
+            }
+            .navigationTitle(outgoing == nil ? "Send eCash" : "Ecash token")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if let onSwitchMode {
+                        Button("Lightning", action: onSwitchMode)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showingContactPicker) {
+                WalletContactPickerSheet(
+                    title: "Send ecash to",
+                    isSelectable: { _ in true },
+                    unavailableNote: ""
+                ) { contact in
+                    recipient = contact
+                }
+            }
+            .alert("Send ecash", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+            .confirmationDialog(
+                "Reclaim this token?",
+                isPresented: $confirmingReclaim,
+                titleVisibility: .visible
+            ) {
+                Button("Reclaim ecash") {
+                    guard let outgoing else { return }
+                    Task {
+                        do {
+                            _ = try await wallet.reclaim(outgoing)
+                            dismiss()
+                        } catch {
+                            localError = "The token may already have been redeemed. \(WalletViewModel.message(for: error))"
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Only reclaim a token you have not given to someone else.")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onAppear {
+            entryCurrency = wallet.amountEntryCurrency
+            if selectedMintURL.isEmpty { selectedMintURL = wallet.activeMint?.url ?? "" }
+        }
+        .onDisappear {
+            if let quote, outgoing == nil {
+                Task { await wallet.cancelPreparedSend(quote) }
+            }
+        }
+    }
+
+    private var amountView: some View {
+        VStack(spacing: 20) {
+            WalletMintSelectorCard(
+                label: "SEND FROM",
+                mints: wallet.snapshot.mints.filter { $0.available > 0 },
+                selectedMintURL: $selectedMintURL
+            )
+
+            WalletAmountDisplayCard(
+                primary: wallet.entryPrimaryText(amountText, currency: entryCurrency),
+                caption: "Enter amount to send",
+                secondary: wallet.entrySecondaryText(amountText, currency: entryCurrency),
+                onToggleCurrency: wallet.currencyToggleAction(using: model) {
+                    amountText = ""
+                    entryCurrency = wallet.amountEntryCurrency
+                }
+            )
+
+            WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
+
+            VStack(alignment: .leading, spacing: 8) {
+                walletFieldLabel("SEND TO")
+                if let recipient {
+                    HStack(spacing: 10) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .foregroundStyle(TaskifyTheme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(recipient.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                            Text("Delivered over an encrypted DM")
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        Spacer(minLength: 8)
+                        Button {
+                            self.recipient = nil
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Send as a shareable token instead")
+                    }
+                    .padding(16)
+                    .taskifyGlass(cornerRadius: 18)
+                } else {
+                    Button { showingContactPicker = true } label: {
+                        Label("Choose a contact", systemImage: "person.crop.circle")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .taskifyGlassControl(in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Text("Or leave this empty to get a token you can share yourself.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                walletFieldLabel("MEMO")
+                TextField("Optional note for the recipient", text: $memo)
+                    .padding(.horizontal, 15)
+                    .frame(height: 50)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+            }
+
+            WalletPrimaryActionButton(
+                title: "Continue",
+                busyTitle: "Preparing…",
+                isBusy: wallet.isWorking
+            ) {
+                guard let amount, amount > 0 else { return }
+                Task {
+                    do { quote = try await wallet.prepareSend(mintURL: selectedMintURL, amount: amount) }
+                    catch { localError = WalletViewModel.message(for: error) }
+                }
+            }
+            .disabled(wallet.isWorking || amount == nil || amount == 0 || selectedMintURL.isEmpty)
+            .opacity((amount ?? 0) > 0 && !selectedMintURL.isEmpty ? 1 : 0.45)
+
+            Text("The token remains reserved until its recipient redeems it or you reclaim it.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+    /// Mints the token and, when a contact was chosen, delivers it to them over a NIP-17 DM.
+    ///
+    /// The DM is sent after the token exists, and a failure to deliver deliberately does not
+    /// discard it: the money has already left the balance at that point, so the token is kept on
+    /// screen to share by hand rather than being silently stranded.
+    private func confirm(_ quote: CashuPreparedSendQuote) async {
+        let sentAmount = quote.amount
+        do {
+            let token = try await wallet.confirmSend(quote, memo: memo)
+            outgoing = token
+
+            guard let recipient else { return }
+            isSendingToContact = true
+            defer { isSendingToContact = false }
+            do {
+                try await model.sendDirectMessage(
+                    to: recipient.npub,
+                    content: directMessageBody(token: token.token, sats: sentAmount)
+                )
+                sentToContact = recipient
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                localError = "The token was created but couldn't be sent to \(recipient.displayName). Share it manually below. (\(WalletViewModel.message(for: error)))"
+            }
+        } catch {
+            localError = WalletViewModel.message(for: error)
+        }
+    }
+
+    /// Native-only review step before minting the token, restyled to match the PWA's grammar
+    /// (amount hero, label/value rows, one full-width action) rather than the ad-hoc HStacks it
+    /// used before.
+    private func confirmationView(_ quote: CashuPreparedSendQuote) -> some View {
+        let amount = wallet.displayAmount(forSats: quote.amount)
+
+        return VStack(spacing: 20) {
+            WalletAmountHero(
+                label: "RECIPIENT RECEIVES",
+                amount: amount.primary,
+                secondary: amount.secondary
+            )
+
+            VStack(spacing: 14) {
+                WalletDetailRow(title: "Mint fee", value: wallet.formattedSats(quote.fee))
+                Divider().overlay(TaskifyTheme.border)
+                WalletDetailRow(
+                    title: "Total from balance",
+                    value: wallet.formattedSats(quote.amount + quote.fee),
+                    emphasized: true
+                )
+                WalletDetailRow(
+                    title: "Sent from",
+                    value: URL(string: quote.mintURL)?.host() ?? quote.mintURL
+                )
+            }
+            .padding(18)
+            .taskifyGlass(cornerRadius: 22)
+
+            WalletPrimaryActionButton(
+                title: recipient == nil ? "Create token" : "Send to \(recipient?.displayName ?? "")",
+                busyTitle: isSendingToContact ? "Sending…" : "Creating token…",
+                isBusy: wallet.isWorking || isSendingToContact
+            ) {
+                Task { await confirm(quote) }
+            }
+            .disabled(wallet.isWorking || isSendingToContact)
+
+            Button("Back") {
+                Task { await wallet.cancelPreparedSend(quote) }
+                self.quote = nil
+            }
+            .foregroundStyle(TaskifyTheme.secondaryText)
+        }
+    }
+
+}
+
+private struct WalletHistorySheet: View {
+    private enum Filter: String, CaseIterable {
+        case all = "All"
+        case pending = "Pending"
+    }
+
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedOutgoing: CashuOutgoingToken?
+    @State private var selectedLightningQuote: CashuLightningReceiveQuote?
+    @State private var selectedTransaction: CashuTransactionSummary?
+    @State private var filter: Filter = .all
+
+    private var activityItems: [WalletActivityItem] {
+        let actionableTokens = wallet.snapshot.outgoingTokens.filter {
+            $0.status == .ready || $0.status == .partiallyRedeemed
+        }
+        let actionableTokenIDs = Set(actionableTokens.map(\.id))
+        let transactions = wallet.snapshot.transactions
+            .filter { transaction in
+                guard let outgoingTokenID = transaction.outgoingTokenID else { return true }
+                return !actionableTokenIDs.contains(outgoingTokenID)
+            }
+            .map(WalletActivityItem.transaction)
+        let invoices = wallet.activeLightningReceiveQuotes.map(WalletActivityItem.lightningInvoice)
+        let outgoing = actionableTokens.map(WalletActivityItem.outgoingToken)
+        return (transactions + invoices + outgoing).sorted { $0.date > $1.date }
+    }
+
+    var body: some View {
+        let allItems = activityItems
+        let pendingItems = allItems.filter(\.isPending)
+        let filteredItems = filter == .pending ? pendingItems : allItems
+
+        return NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        if !allItems.isEmpty {
+                            historyFilters(pendingItems: pendingItems)
+                                .padding(.bottom, 2)
+                        }
+
+                        if filteredItems.isEmpty {
+                            ContentUnavailableView(
+                                filter == .pending ? "No pending entries" : "No wallet activity",
+                                systemImage: filter == .pending ? "checkmark.circle" : "clock",
+                                description: Text(filter == .pending
+                                    ? "Pending invoices and unredeemed ecash will appear here."
+                                    : "Lightning invoices and ecash activity will appear here.")
+                            )
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                        } else {
+                            ForEach(filteredItems) { item in
+                                switch item {
+                                case .outgoingToken(let outgoing):
+                                    Button { selectedOutgoing = outgoing } label: {
+                                        WalletOutgoingTokenRow(outgoing: outgoing)
+                                    }
+                                    .buttonStyle(.plain)
+                                case .transaction(let transaction):
+                                    Button { selectedTransaction = transaction } label: {
+                                        WalletTransactionRow(transaction: transaction)
+                                    }
+                                    .buttonStyle(.plain)
+                                case .lightningInvoice(let quote):
+                                    Button { selectedLightningQuote = quote } label: {
+                                        WalletLightningInvoiceRow(quote: quote)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                    .padding(18)
+                    .padding(.bottom, 30)
+                }
+            }
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(item: $selectedOutgoing) { outgoing in
+                OutgoingTokenSheet(wallet: wallet, outgoing: outgoing)
+            }
+            .sheet(item: $selectedLightningQuote) { quote in
+                ReceiveLightningSheet(wallet: wallet, initialQuote: quote)
+            }
+            .sheet(item: $selectedTransaction) { transaction in
+                WalletTransactionDetailSheet(wallet: wallet, transaction: transaction)
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func historyFilters(pendingItems: [WalletActivityItem]) -> some View {
+        HStack(spacing: 13) {
+            ForEach(Filter.allCases, id: \.self) { option in
+                if option != Filter.all {
+                    Text("•")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .accessibilityHidden(true)
+                }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        filter = option
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(option.rawValue.uppercased())
+                            .font(.caption2.weight(.bold))
+                            .tracking(1)
+
+                        if option == .pending, !pendingItems.isEmpty {
+                            Text(pendingItems.count.formatted())
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(TaskifyTheme.raisedFill, in: Capsule())
+                        }
+                    }
+                    .foregroundStyle(filter == option ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .disabled(option == .pending && pendingItems.isEmpty)
+                .opacity(option == .pending && pendingItems.isEmpty ? 0.45 : 1)
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 42)
+        .taskifyGlass(cornerRadius: 18)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Filter wallet history")
+    }
+}
+
+private struct WalletOutgoingTokenRow: View {
+    let outgoing: CashuOutgoingToken
+
+    private var statusLabel: String {
+        switch outgoing.status {
+        case .ready: "Ready to share"
+        case .partiallyRedeemed: "Partially redeemed"
+        case .redeemed: "Redeemed"
+        case .reclaimed: "Reclaimed"
+        }
+    }
+
+    private var statusColor: Color {
+        switch outgoing.status {
+        case .ready: TaskifyTheme.accent
+        case .partiallyRedeemed: .orange
+        case .redeemed: .green
+        case .reclaimed: TaskifyTheme.secondaryText
+        }
+    }
+
+    private var mintName: String {
+        URL(string: outgoing.mintURL)?.host() ?? outgoing.mintURL
+    }
+
+    var body: some View {
+        HStack(spacing: 13) {
+            Image(systemName: "banknote")
+                .font(.headline)
+                .frame(width: 42, height: 42)
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .background(TaskifyTheme.raisedFill, in: Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text("Ecash")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(outgoing.createdAt, style: .relative)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 5) {
+                    Text(statusLabel)
+                        .foregroundStyle(statusColor)
+                    Text("•")
+                    Text(mintName)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+                .font(.caption)
+            }
+
+            Spacer(minLength: 8)
+
+            Text("−\(WalletAmountFormat.formatSats(outgoing.amount, display: WalletCurrencySettings.denominationDisplay))")
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .padding(14)
+        .taskifyGlass(cornerRadius: 18)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens the Cashu token")
+    }
+}
+
+private struct WalletLightningInvoiceRow: View {
+    let quote: CashuLightningReceiveQuote
+
+    private var mintName: String {
+        URL(string: quote.mintURL)?.host() ?? quote.mintURL
+    }
+
+    private var status: String {
+        switch quote.state {
+        case .unpaid: "Pending"
+        case .paid: "Payment found"
+        case .pending: "Claiming payment"
+        case .issued: "Received"
+        case .expired: "Expired"
+        }
+    }
+
+    private var statusColor: Color {
+        switch quote.state {
+        case .unpaid, .pending: TaskifyTheme.accent
+        case .paid, .issued: .green
+        case .expired: .orange
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 13) {
+            Image(systemName: "bolt.fill")
+                .font(.headline)
+                .frame(width: 42, height: 42)
+                .foregroundStyle(.yellow)
+                .background(TaskifyTheme.raisedFill, in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text("Lightning")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(quote.createdAt, style: .relative)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 5) {
+                    Text(status)
+                        .foregroundStyle(statusColor)
+                    Text("•")
+                    Text(mintName)
+                        .lineLimit(1)
+                }
+                .font(.caption)
+
+                if let expiresAt = quote.expiresAt, quote.state == .unpaid {
+                    Text("Expires \(expiresAt, style: .relative)")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Text("+\(WalletAmountFormat.formatSats(quote.amount, display: WalletCurrencySettings.denominationDisplay))")
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.green)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .padding(14)
+        .taskifyGlass(cornerRadius: 18)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Pending Lightning invoice for \(quote.amount) sats, \(status)")
+        .accessibilityHint("Opens the invoice")
+    }
+}
+
+private struct WalletTransactionDetailSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    private let initialTransaction: CashuTransactionSummary
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var copiedField: CopiedField?
+    @State private var isRefreshing = false
+    @State private var statusError: String?
+
+    init(wallet: WalletViewModel, transaction: CashuTransactionSummary) {
+        self.wallet = wallet
+        self.initialTransaction = transaction
+    }
+
+    private enum CopiedField {
+        case cashuRequest
+        case cashuToken
+        case mint
+        case reference
+        case invoice
+        case preimage
+        case quote
+    }
+
+    private struct PaymentArtifact {
+        let title: String
+        let value: String
+        let accessibilityLabel: String
+        let systemImage: String
+        let isBearerToken: Bool
+        let copiedField: CopiedField
+    }
+
+    private var transaction: CashuTransactionSummary {
+        wallet.snapshot.transactions.first(where: {
+            $0.id == initialTransaction.id
+                || (initialTransaction.quoteID != nil && $0.quoteID == initialTransaction.quoteID)
+        }) ?? initialTransaction
+    }
+
+    private var amountDisplay: (primary: String, secondary: String?) {
+        wallet.displayAmount(forSats: transaction.amount)
+    }
+
+    private var statusLabel: String {
+        if let tokenStatus = transaction.outgoingTokenStatus {
+            return switch tokenStatus {
+            case .ready: "Ready to share"
+            case .partiallyRedeemed: "Partially redeemed"
+            case .redeemed: "Redeemed"
+            case .reclaimed: "Reclaimed"
+            }
+        }
+        return switch transaction.state {
+        case .pending: "Pending"
+        case .completed: "Completed"
+        case .failed: "Failed"
+        }
+    }
+
+    private var statusColor: Color {
+        if let tokenStatus = transaction.outgoingTokenStatus {
+            return switch tokenStatus {
+            case .ready: TaskifyTheme.accent
+            case .partiallyRedeemed: .orange
+            case .redeemed: .green
+            case .reclaimed: TaskifyTheme.secondaryText
+            }
+        }
+        return switch transaction.state {
+        case .pending: TaskifyTheme.accent
+        case .completed: .green
+        case .failed: .orange
+        }
+    }
+
+    private var statusIcon: String {
+        if let tokenStatus = transaction.outgoingTokenStatus {
+            return switch tokenStatus {
+            case .ready: "qrcode"
+            case .partiallyRedeemed: "circle.lefthalf.filled"
+            case .redeemed: "checkmark.circle.fill"
+            case .reclaimed: "arrow.uturn.backward.circle.fill"
+            }
+        }
+        return switch transaction.state {
+        case .pending: "clock.fill"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var amountPrefix: String {
+        if transaction.state == .failed { return "" }
+        return isIncoming ? "+" : "−"
+    }
+
+    private var canRefreshStatus: Bool {
+        if transaction.state == .pending { return true }
+        return transaction.outgoingTokenStatus == .ready
+            || transaction.outgoingTokenStatus == .partiallyRedeemed
+    }
+
+    private var isIncoming: Bool {
+        transaction.direction == .incoming
+    }
+
+    private var directionLabel: String {
+        if transaction.kind == .lightning {
+            return isIncoming ? "Lightning received" : "Lightning payment"
+        }
+        if transaction.cashuPaymentRequest != nil { return "Cashu request paid" }
+        return isIncoming ? "Received" : "Sent"
+    }
+
+    private var timeLabel: String {
+        isIncoming ? "Time received" : "Time sent"
+    }
+
+    private var mintName: String {
+        URL(string: transaction.mintURL)?.host() ?? transaction.mintURL
+    }
+
+    private var summaryIcon: String {
+        transaction.kind == .lightning ? "bolt.fill" : (isIncoming ? "arrow.down" : "arrow.up")
+    }
+
+    private var paymentArtifacts: [PaymentArtifact] {
+        var artifacts: [PaymentArtifact] = []
+        if transaction.kind == .lightning,
+           let invoice = transaction.paymentRequest?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !invoice.isEmpty {
+            artifacts.append(PaymentArtifact(
+                title: "Lightning invoice",
+                value: invoice,
+                accessibilityLabel: "Lightning invoice QR code",
+                systemImage: "bolt.fill",
+                isBearerToken: false,
+                copiedField: .invoice
+            ))
+        }
+        if transaction.kind == .ecash,
+           let token = transaction.cashuToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            artifacts.append(PaymentArtifact(
+                title: "Cashu token",
+                value: token,
+                accessibilityLabel: "Cashu token QR code",
+                systemImage: "banknote",
+                isBearerToken: true,
+                copiedField: .cashuToken
+            ))
+        }
+        if let request = transaction.cashuPaymentRequest?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !request.isEmpty {
+            artifacts.append(PaymentArtifact(
+                title: "Cashu payment request",
+                value: request,
+                accessibilityLabel: "Cashu payment request QR code",
+                systemImage: "qrcode",
+                isBearerToken: false,
+                copiedField: .cashuRequest
+            ))
+        }
+        return artifacts
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(spacing: 18) {
+                        summaryCard
+                        detailCard
+
+                        ForEach(paymentArtifacts, id: \.title) { artifact in
+                            paymentArtifactCard(artifact)
+                        }
+
+                        if let memo = transaction.memo?.trimmingCharacters(in: .whitespacesAndNewlines),
+                           !memo.isEmpty {
+                            memoCard(memo)
+                        }
+
+                        technicalDetails
+                    }
+                    .padding(20)
+                    .padding(.bottom, 24)
+                }
+            }
+            .navigationTitle("Transaction details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .presentationDragIndicator(.visible)
+        .alert("Could not check status", isPresented: Binding(
+            get: { statusError != nil },
+            set: { if !$0 { statusError = nil } }
+        )) {
+            Button("OK", role: .cancel) { statusError = nil }
+        } message: {
+            Text(statusError ?? "")
+        }
+    }
+
+    private var summaryCard: some View {
+        VStack(spacing: 13) {
+            Image(systemName: summaryIcon)
+                .font(.system(size: 24, weight: .bold))
+                .frame(width: 58, height: 58)
+                .foregroundStyle(isIncoming ? Color.green : TaskifyTheme.primaryText)
+                .taskifyGlassControl(in: Circle(), tint: isIncoming ? Color.green.opacity(0.16) : nil)
+
+            Text(directionLabel)
+                .font(.headline)
+                .foregroundStyle(isIncoming ? Color.green : TaskifyTheme.primaryText)
+
+            VStack(spacing: 2) {
+                Text("\(amountPrefix)\(amountDisplay.primary)")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                if let secondary = amountDisplay.secondary {
+                    Text(secondary)
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            .foregroundStyle(TaskifyTheme.primaryText)
+
+            Label(statusLabel, systemImage: statusIcon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(statusColor)
+
+            if canRefreshStatus {
+                Button {
+                    Task {
+                        isRefreshing = true
+                        do {
+                            if let outgoingTokenID = transaction.outgoingTokenID,
+                               let outgoing = wallet.snapshot.outgoingTokens.first(where: {
+                                   $0.id == outgoingTokenID
+                               }) {
+                                _ = try await wallet.checkOutgoingToken(outgoing)
+                            } else {
+                                await wallet.refresh()
+                            }
+                        } catch {
+                            statusError = WalletViewModel.message(for: error)
+                        }
+                        isRefreshing = false
+                    }
+                } label: {
+                    Label(isRefreshing ? "Checking…" : "Check status", systemImage: "arrow.clockwise")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 18)
+                        .frame(height: 42)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isRefreshing)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
+        .taskifyGlass(cornerRadius: 28)
+    }
+
+    private var detailCard: some View {
+        VStack(spacing: 0) {
+            WalletTransactionDetailRow(
+                title: "Amount",
+                value: amountDisplay.primary,
+                secondaryValue: amountDisplay.secondary
+            )
+
+            Divider().overlay(TaskifyTheme.border)
+
+            WalletTransactionDetailRow(
+                title: "Status",
+                value: statusLabel
+            )
+
+            if let spent = transaction.tokenSpentProofCount,
+               let total = transaction.tokenProofCount,
+               total > 0 {
+                Divider().overlay(TaskifyTheme.border)
+                WalletTransactionDetailRow(
+                    title: "Proofs redeemed",
+                    value: "\(spent) of \(total)"
+                )
+            }
+
+            Divider().overlay(TaskifyTheme.border)
+
+            WalletTransactionDetailRow(
+                title: "Type",
+                value: transaction.kind == .lightning
+                    ? "Lightning"
+                    : (transaction.cashuPaymentRequest == nil ? "Cashu token" : "Cashu payment request")
+            )
+
+            if transaction.fee > 0 {
+                Divider().overlay(TaskifyTheme.border)
+                WalletTransactionDetailRow(
+                    title: "Fee paid",
+                    value: wallet.formattedSats(transaction.fee)
+                )
+            }
+
+            Divider().overlay(TaskifyTheme.border)
+
+            WalletTransactionDetailRow(
+                title: timeLabel,
+                value: transaction.date.formatted(date: .abbreviated, time: .standard)
+            )
+
+            Divider().overlay(TaskifyTheme.border)
+
+            WalletTransactionDetailRow(
+                title: "Mint",
+                value: mintName
+            )
+        }
+        .padding(.horizontal, 16)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func memoCard(_ memo: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Note", systemImage: "text.alignleft")
+                .font(.caption.bold())
+                .foregroundStyle(TaskifyTheme.accent)
+            Text(memo)
+                .font(.subheadline)
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(17)
+        .taskifyGlass(cornerRadius: 22)
+    }
+
+    private func paymentArtifactCard(_ artifact: PaymentArtifact) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(artifact.title, systemImage: artifact.systemImage)
+                .font(.headline)
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            CashuQRCodeView(value: artifact.value, accessibilityLabel: artifact.accessibilityLabel)
+                .frame(maxWidth: 240)
+                .padding(14)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .frame(maxWidth: .infinity)
+
+            HStack(spacing: 12) {
+                Button {
+                    copy(artifact.value, field: artifact.copiedField)
+                } label: {
+                    Label(
+                        copiedField == artifact.copiedField ? "Copied" : "Copy",
+                        systemImage: copiedField == artifact.copiedField ? "checkmark" : "doc.on.doc"
+                    )
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                ShareLink(item: artifact.value) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(TaskifyTheme.primaryText)
+
+            if artifact.isBearerToken,
+               isIncoming
+                    || transaction.outgoingTokenStatus == .redeemed
+                    || transaction.outgoingTokenStatus == .reclaimed {
+                Text("This historical token is no longer spendable.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            } else if artifact.isBearerToken {
+                Label(
+                    "Cashu tokens are bearer money. Share this token only when you intend to give it to someone.",
+                    systemImage: "exclamationmark.shield"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            } else {
+                Text(transaction.cashuPaymentRequest == nil
+                    ? "This is the original invoice saved with the transaction."
+                    : "This is the original Cashu request saved with the transaction.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+        }
+        .padding(17)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var technicalDetails: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("TRANSACTION INFORMATION")
+                .font(.caption.bold())
+                .tracking(1.1)
+                .foregroundStyle(TaskifyTheme.accent)
+
+            CopyableTransactionField(
+                title: "Mint URL",
+                value: transaction.mintURL,
+                copied: copiedField == .mint
+            ) {
+                copy(transaction.mintURL, field: .mint)
+            }
+
+            CopyableTransactionField(
+                title: "Transaction reference",
+                value: transaction.id,
+                copied: copiedField == .reference
+            ) {
+                copy(transaction.id, field: .reference)
+            }
+
+            if let quoteID = transaction.quoteID, !quoteID.isEmpty {
+                CopyableTransactionField(
+                    title: "Mint quote reference",
+                    value: quoteID,
+                    copied: copiedField == .quote
+                ) {
+                    copy(quoteID, field: .quote)
+                }
+            }
+
+            if let invoice = transaction.paymentRequest, !invoice.isEmpty {
+                CopyableTransactionField(
+                    title: "Lightning invoice",
+                    value: invoice,
+                    copied: copiedField == .invoice
+                ) {
+                    copy(invoice, field: .invoice)
+                }
+            }
+
+            if let request = transaction.cashuPaymentRequest, !request.isEmpty {
+                CopyableTransactionField(
+                    title: "Cashu payment request",
+                    value: request,
+                    copied: copiedField == .cashuRequest
+                ) {
+                    copy(request, field: .cashuRequest)
+                }
+            }
+
+            if let preimage = transaction.paymentProof, !preimage.isEmpty {
+                CopyableTransactionField(
+                    title: "Payment proof",
+                    value: preimage,
+                    copied: copiedField == .preimage
+                ) {
+                    copy(preimage, field: .preimage)
+                }
+            }
+
+            Label(
+                "The transaction reference identifies this local Cashu wallet operation. It does not reveal your wallet recovery phrase.",
+                systemImage: "lock.shield"
+            )
+            .font(.caption)
+            .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+    private func copy(_ value: String, field: CopiedField) {
+        UIPasteboard.general.setItems(
+            [[UTType.plainText.identifier: value]],
+            options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(600)]
+        )
+        copiedField = field
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+}
+
+private struct WalletTransactionDetailRow: View {
+    let title: String
+    let value: String
+    var secondaryValue: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text(title)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(value)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                if let secondaryValue {
+                    Text(secondaryValue)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            .multilineTextAlignment(.trailing)
+        }
+        .font(.subheadline)
+        .padding(.vertical, 14)
+    }
+}
+
+private struct CopyableTransactionField: View {
+    let title: String
+    let value: String
+    let copied: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                    Text(value)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(copied ? Color.green : TaskifyTheme.accent)
+                    .frame(width: 38, height: 38)
+                    .taskifyGlassControl(in: Circle())
+            }
+            .padding(15)
+            .taskifyGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy \(title)")
+    }
+}
+
+private struct WalletTransactionRow: View {
+    let transaction: CashuTransactionSummary
+
+    private var isIncoming: Bool { transaction.direction == .incoming }
+
+    private var typeLabel: String {
+        transaction.kind == .lightning ? "Lightning" : "Ecash"
+    }
+
+    private var mintName: String {
+        URL(string: transaction.mintURL)?.host() ?? transaction.mintURL
+    }
+
+    private var statusLabel: String {
+        if let tokenStatus = transaction.outgoingTokenStatus {
+            return switch tokenStatus {
+            case .ready: "Ready to share"
+            case .partiallyRedeemed: "Partially redeemed"
+            case .redeemed: "Redeemed"
+            case .reclaimed: "Reclaimed"
+            }
+        }
+        return switch transaction.state {
+        case .pending: "Pending"
+        case .completed: isIncoming ? "Received" : "Sent"
+        case .failed: "Failed"
+        }
+    }
+
+    private var statusColor: Color {
+        if let tokenStatus = transaction.outgoingTokenStatus {
+            return switch tokenStatus {
+            case .ready: TaskifyTheme.accent
+            case .partiallyRedeemed: .orange
+            case .redeemed: .green
+            case .reclaimed: TaskifyTheme.secondaryText
+            }
+        }
+        return switch transaction.state {
+        case .pending: TaskifyTheme.accent
+        case .completed: isIncoming ? .green : TaskifyTheme.secondaryText
+        case .failed: .orange
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 13) {
+            Image(systemName: transaction.kind == .lightning
+                ? "bolt.fill"
+                : (transaction.cashuPaymentRequest == nil ? (isIncoming ? "arrow.down" : "arrow.up") : "qrcode"))
+                .font(.headline)
+                .frame(width: 42, height: 42)
+                .foregroundStyle(transaction.kind == .lightning ? Color.yellow : (isIncoming ? Color.green : TaskifyTheme.primaryText))
+                .background(TaskifyTheme.raisedFill, in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text(typeLabel)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text(transaction.date, style: .relative)
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 5) {
+                    Text(statusLabel)
+                        .foregroundStyle(statusColor)
+                    Text("•")
+                    Text(mintName)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+                .font(.caption)
+            }
+
+            Spacer()
+
+            Text("\(transaction.state == .failed ? "" : (isIncoming ? "+" : "−"))\(WalletAmountFormat.formatSats(transaction.amount, display: WalletCurrencySettings.denominationDisplay))")
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(
+                    transaction.state == .failed
+                        ? TaskifyTheme.secondaryText
+                        : (isIncoming ? Color.green : TaskifyTheme.primaryText)
+                )
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .padding(14)
+        .taskifyGlass(cornerRadius: 18)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens transaction details")
+    }
+}
+
+private struct OutgoingTokenSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    let outgoing: CashuOutgoingToken
+    @State private var localError: String?
+    @State private var confirmingReclaim = false
+
+    private var currentOutgoing: CashuOutgoingToken {
+        wallet.snapshot.outgoingTokens.first(where: { $0.id == outgoing.id }) ?? outgoing
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TaskifyTheme.background.ignoresSafeArea()
+                ScrollView {
+                    OutgoingTokenContent(
+                        outgoing: currentOutgoing,
+                        checkAction: {
+                            Task {
+                                do { _ = try await wallet.checkOutgoingToken(currentOutgoing) }
+                                catch { localError = WalletViewModel.message(for: error) }
+                            }
+                        },
+                        reclaimAction: { confirmingReclaim = true }
+                    )
+                    .padding(22)
+                }
+            }
+            .navigationTitle("Ecash token")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+            .confirmationDialog("Reclaim this token?", isPresented: $confirmingReclaim) {
+                Button("Reclaim ecash") {
+                    Task {
+                        do {
+                            _ = try await wallet.reclaim(currentOutgoing)
+                            dismiss()
+                        } catch {
+                            localError = "The token may already have been redeemed. \(WalletViewModel.message(for: error))"
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Only reclaim a token you have not given to someone else.")
+            }
+            .alert("Outgoing token", isPresented: Binding(
+                get: { localError != nil },
+                set: { if !$0 { localError = nil } }
+            )) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: {
+                Text(localError ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct OutgoingTokenContent: View {
+    let outgoing: CashuOutgoingToken
+    let checkAction: () -> Void
+    let reclaimAction: () -> Void
+    @State private var copied = false
+
+    private var isSpendable: Bool {
+        outgoing.status == .ready || outgoing.status == .partiallyRedeemed
+    }
+
+    private var statusLabel: String {
+        switch outgoing.status {
+        case .ready: "Ready to share"
+        case .partiallyRedeemed: "Partially redeemed"
+        case .redeemed: "Redeemed"
+        case .reclaimed: "Reclaimed"
+        }
+    }
+
+    private var statusColor: Color {
+        switch outgoing.status {
+        case .ready: TaskifyTheme.accent
+        case .partiallyRedeemed: .orange
+        case .redeemed: .green
+        case .reclaimed: TaskifyTheme.secondaryText
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("\(WalletAmountFormat.formatSats(outgoing.amount, display: WalletCurrencySettings.denominationDisplay))")
+                .font(.system(size: 38, weight: .bold, design: .rounded))
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            Label(statusLabel, systemImage: outgoing.status == .redeemed ? "checkmark.circle.fill" : "qrcode")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(statusColor)
+
+            CashuQRCodeView(value: outgoing.token)
+                .frame(maxWidth: 300)
+                .padding(16)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+            Text(isSpendable
+                ? "The recipient can scan this code or redeem the copied Cashu token."
+                : "This historical token is no longer spendable.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+
+            if outgoing.status == .ready {
+                HStack(spacing: 12) {
+                Button {
+                    UIPasteboard.general.string = outgoing.token
+                    copied = true
+                } label: {
+                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.72))
+                }
+                .buttonStyle(.plain)
+
+                ShareLink(item: outgoing.token) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+                }
+            }
+
+            if isSpendable {
+                Button(action: checkAction) {
+                    Label("Check redemption status", systemImage: "arrow.clockwise")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .taskifyGlassControl(in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if isSpendable {
+                Button("Reclaim unredeemed token", action: reclaimAction)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+
+            if let spent = outgoing.spentProofCount,
+               let total = outgoing.proofCount,
+               total > 0 {
+                Text("\(spent) of \(total) proofs redeemed")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+
+            Text(outgoing.mintURL)
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+}
+
+private struct CashuQRCodeView: View {
+    let value: String
+    let accessibilityLabel: String
+    private let frames: [String]
+    @State private var frameIndex = 0
+    @State private var renderedFrames: [UIImage] = []
+    @State private var singleImage: UIImage?
+
+    init(value: String, accessibilityLabel: String = "Cashu token QR code") {
+        self.value = value
+        self.accessibilityLabel = accessibilityLabel
+        frames = CashuAnimatedQRAnimation(token: value)?.frames ?? []
+    }
+
+    private var displayedImage: UIImage? {
+        guard !renderedFrames.isEmpty else { return singleImage }
+        return renderedFrames[min(frameIndex, renderedFrames.count - 1)]
+    }
+
+    /// One context for the whole app. Building a `CIContext` is expensive and the old code built a
+    /// fresh one for every frame, from inside `body` -- which is what made animated tokens crawl
+    /// regardless of the frame interval.
+    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    private static func image(for value: String) -> UIImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(value.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        let transformed = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        guard let cgImage = ciContext.createCGImage(transformed, from: transformed.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
+    var body: some View {
+        VStack(spacing: 9) {
+            Group {
+                if let image = displayedImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .interpolation(.none)
+                        .scaledToFit()
+                } else {
+                    ContentUnavailableView("Payment detail is too large for a QR code", systemImage: "qrcode")
+                        .foregroundStyle(Color.black)
+                }
+            }
+            .aspectRatio(1, contentMode: .fit)
+
+            if frames.count > 1 {
+                HStack(spacing: 6) {
+                    Image(systemName: "qrcode")
+                    Text("Animated QR")
+                    Text("\(frameIndex + 1)/\(frames.count)")
+                        .monospacedDigit()
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.black.opacity(0.68))
+            }
+        }
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(frames.count > 1 ? "Animated frame \(frameIndex + 1) of \(frames.count)" : "")
+        .task(id: value) {
+            frameIndex = 0
+            renderedFrames = []
+
+            guard frames.count > 1 else {
+                singleImage = Self.image(for: value)
+                return
+            }
+
+            // Rasterise every frame before playback starts, off the main actor. Generating them
+            // mid-animation made the cadence depend on how long each QR took to draw.
+            let source = frames
+            let rendered = await Task.detached(priority: .userInitiated) {
+                source.compactMap { CashuQRCodeView.image(for: $0) }
+            }.value
+            guard !Task.isCancelled, rendered.count == source.count else { return }
+            renderedFrames = rendered
+
+            // ~7fps. Fast enough to get through a long token quickly, slow enough that a camera
+            // still gets a clean read of each frame.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(140))
+                guard !Task.isCancelled else { return }
+                frameIndex = (frameIndex + 1) % rendered.count
+            }
+        }
+    }
+}

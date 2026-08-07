@@ -92,7 +92,13 @@ function inferKind(filePath: string, mimeType: string): string {
 function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
   return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
 }
+const ATTACHMENT_KEY_LABEL = "taskify-board-attachment-v2";
+const ATTACHMENT_V2_MAGIC = Buffer.from("TFA2", "ascii");
+
 function deriveBoardKey(boardId: string): Buffer {
+  return createHash("sha256").update(ATTACHMENT_KEY_LABEL).update(boardId).digest();
+}
+function deriveLegacyBoardKey(boardId: string): Buffer {
   return createHash("sha256").update(boardId).digest();
 }
 function encryptAttachmentBytes(boardId: string, plaintext: Uint8Array): Uint8Array {
@@ -101,17 +107,20 @@ function encryptAttachmentBytes(boardId: string, plaintext: Uint8Array): Uint8Ar
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const ciphertext = Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return new Uint8Array(Buffer.concat([iv, ciphertext, tag]));
+  return new Uint8Array(Buffer.concat([ATTACHMENT_V2_MAGIC, iv, ciphertext, tag]));
 }
 export async function decryptAttachmentToDataUrl(boardId: string, url: string, mimeType: string): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
   const bytes = new Uint8Array(await res.arrayBuffer());
-  if (bytes.length < 28) throw new Error("Encrypted attachment too small");
-  const iv = bytes.slice(0, 12);
+  const versioned = Buffer.from(bytes.subarray(0, ATTACHMENT_V2_MAGIC.length)).equals(ATTACHMENT_V2_MAGIC);
+  const offset = versioned ? ATTACHMENT_V2_MAGIC.length : 0;
+  if (bytes.length < offset + 28) throw new Error("Encrypted attachment too small");
+  const iv = bytes.slice(offset, offset + 12);
   const tag = bytes.slice(bytes.length - 16);
-  const ct = bytes.slice(12, bytes.length - 16);
-  const decipher = createDecipheriv("aes-256-gcm", deriveBoardKey(boardId), Buffer.from(iv));
+  const ct = bytes.slice(offset + 12, bytes.length - 16);
+  const key = versioned ? deriveBoardKey(boardId) : deriveLegacyBoardKey(boardId);
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv));
   decipher.setAuthTag(Buffer.from(tag));
   const pt = Buffer.concat([decipher.update(Buffer.from(ct)), decipher.final()]);
   return bytesToDataUrl(new Uint8Array(pt), mimeType || "application/octet-stream");

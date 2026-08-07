@@ -74,8 +74,17 @@ export function ensureWeekRecurrencesForCurrentWeek(options) {
         }
         const seriesSeed = task.seriesId ? task : { ...task, seriesId };
         let nextISO = nextOccurrence(task.dueISO, task.recurrence, !!task.dueTimeEnabled, task.dueTimeZone);
+        let previousOccurrenceMs = Date.parse(task.dueISO);
+        let generatedOccurrences = 0;
         while (nextISO) {
             const nextDate = new Date(nextISO);
+            const nextOccurrenceMs = nextDate.getTime();
+            generatedOccurrences += 1;
+            if (generatedOccurrences > 10_000 ||
+                Number.isNaN(nextOccurrenceMs) ||
+                (!Number.isNaN(previousOccurrenceMs) && nextOccurrenceMs <= previousOccurrenceMs)) {
+                break;
+            }
             const nextStartOfWeek = startOfWeek(nextDate, weekStart).getTime();
             if (nextStartOfWeek > sow)
                 break;
@@ -108,6 +117,7 @@ export function ensureWeekRecurrencesForCurrentWeek(options) {
                     changed = true;
                 }
             }
+            previousOccurrenceMs = nextOccurrenceMs;
             nextISO = nextOccurrence(nextISO, task.recurrence, !!task.dueTimeEnabled, task.dueTimeZone);
         }
     }

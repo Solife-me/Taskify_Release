@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { boardTag } from "../boardCrypto";
 import type { Board, Task } from "../domains/tasks/taskTypes";
 import { dedupeRecurringInstances } from "../domains/tasks/taskUtils";
@@ -7,11 +7,9 @@ import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS } from "../storage/taskifyDb";
 
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
-const NOSTR_MIGRATION_BUFFER_MS = 15000;
 const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000;
 const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 const NOSTR_BOARD_YIELD_INTERVAL = 50;
-const NOSTR_INITIAL_SYNC_FALLBACK_DAYS = 30;
 
 type MutableRef<T> = { current: T };
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
@@ -45,7 +43,6 @@ export type BoardSyncNostrPool = {
 
 type UseBoardSyncParams = {
   boards: Board[];
-  currentBoard: Board | null | undefined;
   boardsRef: MutableRef<Board[]>;
   tasksRef: MutableRef<BoardSyncTask[]>;
   setTasks: StateSetter<BoardSyncTask[]>;
@@ -61,8 +58,6 @@ type UseBoardSyncParams = {
   completedNostrInitialSyncRef: MutableRef<Set<string>>;
   setPendingNostrInitialSyncByBoardTag: StateSetter<Record<string, true>>;
   markNostrBoardInitialSyncComplete: (bTag: string) => void;
-  ensureMigrationState: (bTag: string) => unknown;
-  migrateBoardRef: MutableRef<(bTag: string) => void>;
   tagValue: (ev: BoardSyncNostrEvent, name: string) => string | undefined;
   applyBoardEvent: (ev: BoardSyncNostrEvent) => Promise<void>;
   applyTaskEvent: (ev: BoardSyncNostrEvent) => Promise<void>;
@@ -97,18 +92,16 @@ export function buildBoardSyncFilters({
   bTag,
   cursor,
   fullHistory,
-  nowSecs = Math.floor(Date.now() / 1000),
 }: {
   bTag: string;
   cursor?: number;
   fullHistory?: boolean;
-  nowSecs?: number;
 }): Array<Record<string, unknown>> {
   const sinceFilter = fullHistory
     ? {}
     : cursor
       ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
-      : { since: nowSecs - NOSTR_INITIAL_SYNC_FALLBACK_DAYS * 24 * 3600 };
+      : {};
   return [
     { kinds: [30300, 30301], "#b": [bTag], ...sinceFilter },
     { kinds: [30300], "#d": [bTag], limit: 1 },
@@ -118,7 +111,6 @@ export function buildBoardSyncFilters({
 
 export function useBoardSync({
   boards,
-  currentBoard,
   boardsRef,
   tasksRef,
   setTasks,
@@ -134,8 +126,6 @@ export function useBoardSync({
   completedNostrInitialSyncRef,
   setPendingNostrInitialSyncByBoardTag,
   markNostrBoardInitialSyncComplete,
-  ensureMigrationState,
-  migrateBoardRef,
   tagValue,
   applyBoardEvent,
   applyTaskEvent,
@@ -152,13 +142,6 @@ export function useBoardSync({
       .sort((a, b) => (a.id + a.relays).localeCompare(b.id + b.relays));
     return JSON.stringify(items);
   }, [boards, getBoardRelays]);
-
-  const [nostrRefresh, setNostrRefresh] = useState(0);
-
-  useEffect(() => {
-    if (!currentBoard?.nostr?.boardId) return;
-    setNostrRefresh((n) => n + 1);
-  }, [currentBoard?.nostr?.boardId]);
 
   const handledFullHistorySyncNonceRef = useRef(0);
 
@@ -292,7 +275,6 @@ export function useBoardSync({
       completedNostrInitialSyncRef.current.add(bTag);
       markNostrBoardInitialSyncComplete(bTag);
       persistCursors();
-      window.setTimeout(() => migrateBoardRef.current(bTag), NOSTR_MIGRATION_BUFFER_MS);
       window.setTimeout(() => verifyUnseenTasks(bTag, relayList), 500);
     };
 
@@ -326,8 +308,6 @@ export function useBoardSync({
       syncTimeoutByBoard.set(item.id, timeoutId);
 
       pool.setRelays(relayList);
-      ensureMigrationState(item.id);
-
       const filters = buildBoardSyncFilters({
         bTag: item.id,
         cursor: boardSyncCursorsRef.current[item.id],
@@ -403,12 +383,9 @@ export function useBoardSync({
     boardSyncCursorsRef,
     completedNostrInitialSyncRef,
     enqueueForBoard,
-    ensureMigrationState,
     flushRelayBatch,
     markNostrBoardInitialSyncComplete,
-    migrateBoardRef,
     nostrBoardsKey,
-    nostrRefresh,
     fullHistorySyncNonce,
     pendingRelaysByBoardRef,
     pool,

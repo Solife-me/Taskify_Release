@@ -12,12 +12,21 @@ self.addEventListener('activate', (event) => {
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v7`;
+const CACHE = `${CACHE_PREFIX}v8`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
+const CACHE_TIMESTAMP_HEADER = 'x-taskify-sw-cached-at';
+const MAX_CACHE_ENTRIES = 160;
+const CACHE_TRIM_TARGET = 140;
+const MAX_CACHEABLE_BYTES = 8 * 1024 * 1024;
+const MAX_STATIC_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_DOCUMENT_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
 let workerBaseUrlReady = restoreWorkerBaseUrl();
 const notifiedClients = new Set();
+const cacheAccessTimes = new Map();
+let cachePutsSinceTrim = 16;
+let cacheTrimPromise = null;
 let activatedAt = 0;
 
 self.addEventListener('fetch', (event) => {
@@ -33,11 +42,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Do not turn the service worker into a cache for arbitrary cross-origin or
+  // data fetches. The app shell and same-origin static assets are the only
+  // resources that need offline behavior.
+  if (!shouldHandleCachedRequest(event.request)) return;
+
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
-      const cached = await cache.match(event.request);
+      const cached = await matchFreshCachedResponse(cache, event.request);
       const cachedForCompare = cached ? cached.clone() : null;
+
+      // Vite content-hashed assets are immutable: a new deployment produces a
+      // new URL. Cache-first avoids a background network request for every
+      // chunk while HTML keeps its network/update comparison below.
+      if (cached && isImmutableAssetRequest(event.request)) {
+        return cached;
+      }
 
       // Fast app-shell loading: race network briefly, then fall back to cache.
       // This keeps startup snappy while still refreshing cached HTML when network is available.
@@ -77,14 +98,16 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-function isCacheableResponse(response) {
+function isCacheableResponse(request, response) {
   if (!response || !response.ok) return false;
   if (response.type === 'opaque') return false;
   const cacheControl = response.headers.get('cache-control') || '';
-  if (cacheControl.includes('no-store')) return false;
+  if (/\b(?:no-store|private)\b/i.test(cacheControl)) return false;
+  const contentLength = Number(response.headers.get('content-length') || '0');
+  if (Number.isFinite(contentLength) && contentLength > MAX_CACHEABLE_BYTES) return false;
   const status = response.status;
   if (status === 401 || status === 403 || status === 407) return false;
-  return true;
+  return shouldHandleCachedRequest(request);
 }
 
 async function fetchAndUpdateCache(cache, request, cachedResponse) {
@@ -92,18 +115,18 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
       let cacheUpdated = false;
-      if (isCacheableResponse(networkResponse)) {
+      if (isCacheableResponse(request, networkResponse)) {
         let cacheError = null;
         try {
-          await cache.put(request, networkResponse.clone());
+          await putStampedResponse(cache, request, networkResponse);
           cacheUpdated = true;
         } catch (err) {
           cacheError = err;
           const message = (err && err.message) || '';
           if (message && message.toLowerCase().includes('quotaexceeded')) {
             try {
-              await clearOldCaches();
-              await cache.put(request, networkResponse.clone());
+              await evictOldestCacheEntries(cache, Math.max(1, Math.ceil((await cache.keys()).length / 4)));
+              await putStampedResponse(cache, request, networkResponse);
               cacheUpdated = true;
               cacheError = null;
             } catch (retryErr) {
@@ -124,6 +147,103 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
     if (!cachedResponse) throw err;
     return null;
   }
+}
+
+function shouldHandleCachedRequest(request) {
+  try {
+    const url = new URL(request.url);
+    if (url.origin !== self.location.origin) return false;
+    if (url.pathname.startsWith('/api/')) return false;
+    if (isDocumentRequest(request)) return true;
+    if (['script', 'style', 'worker', 'font', 'image', 'manifest'].includes(request.destination)) return true;
+    return /\.(?:js|css|woff2?|png|jpe?g|webp|gif|svg|ico|webmanifest)$/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isImmutableAssetRequest(request) {
+  try {
+    const url = new URL(request.url);
+    if (url.origin !== self.location.origin || !url.pathname.startsWith('/assets/')) return false;
+    return /[-.][A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function cacheMaxAgeForRequest(request) {
+  return isDocumentRequest(request) ? MAX_DOCUMENT_CACHE_AGE_MS : MAX_STATIC_CACHE_AGE_MS;
+}
+
+async function matchFreshCachedResponse(cache, request) {
+  const cached = await cache.match(request);
+  if (!cached) return null;
+
+  const cachedAt = Number(cached.headers.get(CACHE_TIMESTAMP_HEADER) || '0');
+  const age = Date.now() - cachedAt;
+  if (!Number.isFinite(cachedAt) || cachedAt <= 0 || age > cacheMaxAgeForRequest(request)) {
+    await cache.delete(request);
+    cacheAccessTimes.delete(request.url);
+    return null;
+  }
+
+  cacheAccessTimes.set(request.url, Date.now());
+  return cached;
+}
+
+function stampedResponse(response) {
+  const clone = response.clone();
+  const headers = new Headers(clone.headers);
+  headers.set(CACHE_TIMESTAMP_HEADER, String(Date.now()));
+  // Fetch exposes a decoded body stream. Do not retain transport-encoding
+  // headers when constructing a new response around that decoded stream.
+  headers.delete('content-encoding');
+  headers.delete('content-length');
+  return new Response(clone.body, {
+    status: clone.status,
+    statusText: clone.statusText,
+    headers,
+  });
+}
+
+async function putStampedResponse(cache, request, response) {
+  await cache.put(request, stampedResponse(response));
+  cacheAccessTimes.set(request.url, Date.now());
+  await maybeTrimCurrentCache(cache);
+}
+
+async function maybeTrimCurrentCache(cache) {
+  cachePutsSinceTrim += 1;
+  if (cachePutsSinceTrim < 16) return;
+  if (cacheTrimPromise) return cacheTrimPromise;
+
+  cachePutsSinceTrim = 0;
+  cacheTrimPromise = (async () => {
+    const keys = await cache.keys();
+    if (keys.length <= MAX_CACHE_ENTRIES) return;
+    await evictOldestCacheEntries(cache, keys.length - CACHE_TRIM_TARGET, keys);
+  })().finally(() => {
+    cacheTrimPromise = null;
+  });
+  return cacheTrimPromise;
+}
+
+async function evictOldestCacheEntries(cache, count, knownKeys) {
+  if (count <= 0) return;
+  const keys = knownKeys || await cache.keys();
+  const ranked = keys
+    .map((request, insertionIndex) => ({
+      request,
+      insertionIndex,
+      lastAccess: cacheAccessTimes.get(request.url) || 0,
+    }))
+    .sort((a, b) => a.lastAccess - b.lastAccess || a.insertionIndex - b.insertionIndex);
+
+  await Promise.all(ranked.slice(0, count).map(async ({ request }) => {
+    cacheAccessTimes.delete(request.url);
+    await cache.delete(request);
+  }));
 }
 
 function isDocumentRequest(request) {
@@ -194,7 +314,7 @@ async function notifyClientsAboutUpdate() {
 async function clearOldCaches() {
   const keys = await caches.keys();
   const deletions = keys
-    .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE)
+    .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE && key !== CONFIG_CACHE)
     .map((key) => caches.delete(key));
   await Promise.all(deletions);
 }
@@ -228,6 +348,16 @@ async function handlePushEvent() {
       },
     });
   }));
+
+  // Polling is a two-phase handoff: only acknowledge rows after every browser
+  // notification has been displayed successfully. If this request fails, the
+  // Worker retains the rows and a later push can safely retry them.
+  const acknowledgeIds = reminders
+    .map((item) => Number(item && item.notificationId))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+  if (acknowledgeIds.length > 0) {
+    await acknowledgePendingReminders(acknowledgeIds);
+  }
 }
 
 async function fetchPendingRemindersWithRetry(maxAttempts = 3, baseDelayMs = 500) {
@@ -259,6 +389,34 @@ async function fetchPendingRemindersWithRetry(maxAttempts = 3, baseDelayMs = 500
     }
   }
   return [];
+}
+
+async function acknowledgePendingReminders(acknowledgeIds) {
+  try {
+    const apiBase = await getWorkerBaseUrl();
+    const registration = await self.registration;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return;
+    // The Worker deliberately caps each acknowledgement request. Chunking
+    // prevents a large group of simultaneously-due reminders from being
+    // displayed successfully but retained forever because the ACK was too big.
+    for (let offset = 0; offset < acknowledgeIds.length; offset += 256) {
+      await fetch(`${apiBase}/api/reminders/poll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          endpoint: subscription.endpoint,
+          acknowledgeIds: acknowledgeIds.slice(offset, offset + 256),
+          ackOnly: true,
+        }),
+        cache: 'no-store',
+      });
+    }
+  } catch (err) {
+    // Delivery already succeeded. Leaving the rows unacknowledged is safer
+    // than turning a transient acknowledgement failure into data loss.
+    console.warn('Failed to acknowledge reminder payloads', err);
+  }
 }
 
 function wait(ms) {

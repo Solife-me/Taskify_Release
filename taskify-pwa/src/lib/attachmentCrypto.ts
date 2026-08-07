@@ -2,7 +2,10 @@ import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 import { toBufferSource } from "./binary";
 
+const ATTACHMENT_KEY_LABEL = new TextEncoder().encode("taskify-board-attachment-v2");
+const ATTACHMENT_V2_MAGIC = new Uint8Array([0x54, 0x46, 0x41, 0x32]); // TFA2
 const aesKeyCache = new Map<string, Promise<CryptoKey>>();
+const legacyAesKeyCache = new Map<string, Promise<CryptoKey>>();
 const decryptDataUrlCache = new Map<string, Promise<string>>();
 
 function attachmentDebug(event: string, detail?: Record<string, unknown>) {
@@ -22,11 +25,31 @@ async function deriveBoardAesKey(boardId: string): Promise<CryptoKey> {
   const cached = aesKeyCache.get(boardId);
   if (cached) return cached;
   const promise = (async () => {
-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(boardId));
+    const boardBytes = new TextEncoder().encode(boardId);
+    const material = new Uint8Array(ATTACHMENT_KEY_LABEL.length + boardBytes.length);
+    material.set(ATTACHMENT_KEY_LABEL, 0);
+    material.set(boardBytes, ATTACHMENT_KEY_LABEL.length);
+    const hash = await crypto.subtle.digest("SHA-256", toBufferSource(material));
     return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
   })();
   aesKeyCache.set(boardId, promise);
   return promise;
+}
+
+async function deriveLegacyBoardAesKey(boardId: string): Promise<CryptoKey> {
+  const cached = legacyAesKeyCache.get(boardId);
+  if (cached) return cached;
+  const promise = (async () => {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(boardId));
+    return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, ["decrypt"]);
+  })();
+  legacyAesKeyCache.set(boardId, promise);
+  return promise;
+}
+
+function hasV2Magic(bytes: Uint8Array): boolean {
+  return bytes.length >= ATTACHMENT_V2_MAGIC.length
+    && ATTACHMENT_V2_MAGIC.every((value, index) => bytes[index] === value);
 }
 
 export function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
@@ -76,9 +99,10 @@ export async function encryptAndUploadAttachment(opts: {
     key,
     toBufferSource(opts.data),
   );
-  const combined = new Uint8Array(iv.length + ctBuf.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(ctBuf), iv.length);
+  const combined = new Uint8Array(ATTACHMENT_V2_MAGIC.length + iv.length + ctBuf.byteLength);
+  combined.set(ATTACHMENT_V2_MAGIC, 0);
+  combined.set(iv, ATTACHMENT_V2_MAGIC.length);
+  combined.set(new Uint8Array(ctBuf), ATTACHMENT_V2_MAGIC.length + iv.length);
   const ciphertextSha256 = await sha256Hex(combined);
   attachmentDebug("encrypt:complete", {
     filename: opts.filename,
@@ -149,10 +173,16 @@ export async function decryptAttachment(opts: {
       ciphertextSha256: await sha256Hex(bytes),
       ciphertextSampleHex: sampleHex(bytes),
     });
-    if (bytes.length < 13) throw new Error("Encrypted attachment too small");
-    const iv = bytes.slice(0, 12);
-    const ct = bytes.slice(12);
-    const key = await deriveBoardAesKey(opts.boardId);
+    const isV2 = hasV2Magic(bytes);
+    const offset = isV2 ? ATTACHMENT_V2_MAGIC.length : 0;
+    if (bytes.length < offset + 13) throw new Error("Encrypted attachment too small");
+    const iv = bytes.slice(offset, offset + 12);
+    const ct = bytes.slice(offset + 12);
+    // Unversioned attachments predate the domain-separated key. They remain
+    // readable so existing user files are not destroyed; every new upload is v2.
+    const key = isV2
+      ? await deriveBoardAesKey(opts.boardId)
+      : await deriveLegacyBoardAesKey(opts.boardId);
     const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBufferSource(iv) }, key, toBufferSource(ct));
     attachmentDebug("decrypt:success", { url: opts.url, plaintextBytes: ptBuf.byteLength, mimeType: opts.mimeType });
     return bytesToDataUrl(new Uint8Array(ptBuf), opts.mimeType || "application/octet-stream");

@@ -147,13 +147,7 @@ App.tsx (mount)
         → Parses backup JSON
         → Restores SK, boards, tasks, settings to localStorage + IDB
 
-   D. Restore from cloud (Worker R2)
-      Handler: handleOnboardingRestoreFromCloud (App.tsx)
-        → Accepts nsec, fetches backup from GET /api/backups?npub={npub}
-        → Decrypts with user key
-        → Restores same as backup file path
-
-   E. Enable push notifications
+   D. Enable push notifications
       Handler: handleOnboardingEnableNotifications (App.tsx)
         → navigator.serviceWorker.ready
         → pushManager.subscribe({userVisibleOnly: true, applicationServerKey})
@@ -717,16 +711,14 @@ Error codes: `PARSE_JSON` | `VALIDATION` | `NOT_FOUND` | `CONFLICT` | `FORBIDDEN
 ```
 Worker cron trigger (*/1 * * * *)
   Path: worker/src/index.ts → scheduled() handler
-  Runs two tasks each invocation:
-    a. processDueReminders(env)  — deliver due reminder push notifications
-    b. cleanupExpiredBackups(env) — prune stale R2 backup objects
+  Runs reminder delivery plus Google Calendar watch-renewal/retry maintenance.
 
   processDueReminders steps:
   1. Query due rows from D1 `reminders` table (batched):
        SELECT ... FROM reminders WHERE send_at <= now ORDER BY send_at LIMIT 256
 
-  2. Delete fetched reminder rows, group by device_id, and enqueue entries into
-     D1 `pending_notifications` for client polling (appendPending).
+  2. In one D1 transaction, insert durable `pending_notifications` rows and
+     delete their source reminder rows.
 
   3. For each device: resolve push subscription (D1 first, KV migration fallback),
      then send a lightweight Web Push ping (sendPushPing) to wake the service worker.

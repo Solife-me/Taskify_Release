@@ -4,6 +4,7 @@ import worker from "./index.ts";
 import { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth } from "./index.ts";
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { watchNostrBridgeTestHooks } from "./nostr-bridge.ts";
 
 type DeviceRow = {
   device_id: string;
@@ -261,6 +262,29 @@ test("static assets are served with security headers", async () => {
   );
 });
 
+test("static assets and config do not initialize the D1 schema", async () => {
+  const env = await makeEnv(new MockD1());
+  env.TASKIFY_DB = {
+    prepare() {
+      throw new Error("D1 should not be touched for this route");
+    },
+  };
+
+  const config = await worker.fetch(new Request("https://taskify-v2.solife.me/api/config"), env);
+  assert.equal(config.status, 200);
+  const asset = await worker.fetch(new Request("https://taskify-v2.solife.me/app.js"), env);
+  assert.equal(asset.status, 200);
+});
+
+test("removed cloud-backup API returns 404 instead of the PWA shell", async () => {
+  const env = await makeEnv(new MockD1());
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/backups?npub=npub1obsolete"),
+    env,
+  );
+  assert.equal(res.status, 404);
+});
+
 test("sw.js is served with no-cache and worker-allowed scope", async () => {
   const db = new MockD1();
   const env = await makeEnv(db);
@@ -289,9 +313,20 @@ test("PUT /api/reminders returns 404 for unknown device", async () => {
   assert.equal(res.status, 404);
 });
 
-test("POST /api/reminders/poll returns pending notifications and drains them", async () => {
+test("POST /api/reminders/poll retains notifications until the client acknowledges them", async () => {
   const db = new MockD1();
   const env = await makeEnv(db);
+
+  const endpoint = "https://push.example/dev-1";
+  db.devices.set("dev-1", {
+    device_id: "dev-1",
+    platform: "ios",
+    endpoint,
+    endpoint_hash: await sha256Hex(endpoint),
+    subscription_auth: "auth",
+    subscription_p256dh: "p256dh",
+    updated_at: Date.now(),
+  });
 
   db.pending.push({
     id: 1,
@@ -307,14 +342,146 @@ test("POST /api/reminders/poll returns pending notifications and drains them", a
   const req = new Request("https://taskify-v2.solife.me/api/reminders/poll", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ deviceId: "dev-1" }),
+    body: JSON.stringify({ endpoint }),
   });
 
   const res = await worker.fetch(req, env);
   assert.equal(res.status, 200);
   const body = await res.json() as any[];
   assert.equal(body.length, 1);
+  assert.equal(body[0].notificationId, 1);
+  assert.equal(db.pending.length, 1, "poll response alone must not destroy an undelivered notification");
+
+  const ack = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/reminders/poll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint, acknowledgeIds: [body[0].notificationId], ackOnly: true }),
+    }),
+    env,
+  );
+  assert.equal(ack.status, 204);
   assert.equal(db.pending.length, 0);
+});
+
+test("reminder mutations require the registered subscription capability", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://push.example/capability";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("dev-cap", {
+    device_id: "dev-cap",
+    platform: "ios",
+    endpoint,
+    endpoint_hash: subscriptionId,
+    subscription_auth: "auth",
+    subscription_p256dh: "p256dh",
+    updated_at: Date.now(),
+  });
+  db.pending.push({
+    id: 99,
+    device_id: "dev-cap",
+    task_id: "already-due",
+    board_id: null,
+    title: "Already due",
+    due_iso: new Date().toISOString(),
+    minutes: 5,
+    created_at: Date.now(),
+  });
+
+  const withoutCapability = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/reminders", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deviceId: "dev-cap", reminders: [] }),
+    }),
+    env,
+  );
+  assert.equal(withoutCapability.status, 404);
+
+  const withCapability = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/reminders", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        deviceId: "dev-cap",
+        subscriptionId,
+        reminders: [{
+          taskId: "task-cap",
+          title: "Capability reminder",
+          dueISO: new Date(Date.now() + 10 * 60_000).toISOString(),
+          minutesBefore: [5],
+        }],
+      }),
+    }),
+    env,
+  );
+  assert.equal(withCapability.status, 204);
+  assert.equal(db.reminders.length, 1);
+  assert.equal(db.pending.length, 1, "schedule sync must not clear already-fired notifications");
+
+  const badDelete = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/devices/dev-cap", { method: "DELETE" }),
+    env,
+  );
+  assert.equal(badDelete.status, 404);
+  assert.equal(db.devices.has("dev-cap"), true);
+
+  const goodDelete = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/devices/dev-cap", {
+      method: "DELETE",
+      headers: { "X-Taskify-Subscription": subscriptionId },
+    }),
+    env,
+  );
+  assert.equal(goodDelete.status, 204);
+  assert.equal(db.devices.has("dev-cap"), false);
+});
+
+test("device registration cannot rebind an existing device without its prior capability", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+  const oldEndpoint = "https://push.example/original";
+  const oldSubscriptionId = await sha256Hex(oldEndpoint);
+  db.devices.set("dev-rebind", {
+    device_id: "dev-rebind",
+    platform: "ios",
+    endpoint: oldEndpoint,
+    endpoint_hash: oldSubscriptionId,
+    subscription_auth: "old-auth",
+    subscription_p256dh: "old-p256dh",
+    updated_at: Date.now(),
+  });
+
+  const registrationBody = {
+    deviceId: "dev-rebind",
+    platform: "ios",
+    subscription: {
+      endpoint: "https://push.example/replacement",
+      keys: { auth: "new-auth", p256dh: "new-p256dh" },
+    },
+  };
+  const denied = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/devices", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(registrationBody),
+    }),
+    env,
+  );
+  assert.equal(denied.status, 404);
+  assert.equal(db.devices.get("dev-rebind")?.endpoint, oldEndpoint);
+
+  const allowed = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/devices", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...registrationBody, subscriptionId: oldSubscriptionId }),
+    }),
+    env,
+  );
+  assert.equal(allowed.status, 200);
+  assert.equal(db.devices.get("dev-rebind")?.endpoint, registrationBody.subscription.endpoint);
 });
 
 test("scheduled due reminders send push ping with VAPID headers and enqueue pending", async () => {
@@ -487,6 +654,47 @@ test("scheduled batches multiple devices and sends one push per device", async (
   assert.equal(pendingA.length, 2, "all dev-a due reminders should be pending");
   assert.equal(pendingB.length, 1, "all dev-b due reminders should be pending");
   assert.equal(db.reminders.length, 0, "all processed due reminders should be removed");
+});
+
+test("scheduled processing does not delete a reminder when pending insertion fails", async () => {
+  class FailingPendingD1 extends MockD1 {
+    override async batch(statements: any[]) {
+      if (statements.some((statement) => /^INSERT INTO pending_notifications /i.test(statement._sql ?? ""))) {
+        throw new Error("simulated pending insert failure");
+      }
+      return super.batch(statements);
+    }
+  }
+
+  const db = new FailingPendingD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://push.example/durable";
+  db.devices.set("dev-durable", {
+    device_id: "dev-durable",
+    platform: "ios",
+    endpoint,
+    endpoint_hash: await sha256Hex(endpoint),
+    subscription_auth: "auth",
+    subscription_p256dh: "p256dh",
+    updated_at: Date.now(),
+  });
+  db.reminders.push({
+    device_id: "dev-durable",
+    reminder_key: "task-durable:5",
+    task_id: "task-durable",
+    board_id: "board-durable",
+    title: "Durable reminder",
+    due_iso: new Date(Date.now() + 60_000).toISOString(),
+    minutes: 5,
+    send_at: Date.now() - 1_000,
+  });
+
+  await assert.rejects(
+    () => worker.scheduled({ scheduledTime: Date.now(), cron: "* * * * *" } as any, env, undefined as any),
+    /simulated pending insert failure/,
+  );
+  assert.equal(db.pending.length, 0);
+  assert.equal(db.reminders.length, 1, "source reminder must remain retryable");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1282,10 +1490,15 @@ type GcalCalRow = {
 
 class MockD1WithGcal extends MockD1 {
   gcalCalendars = new Map<string, GcalCalRow>();
+  lastEventsQuery: string | null = null;
 
   override prepare(query: string) {
     const sql = query.replace(/\s+/g, " ").trim();
     const db = this;
+
+    if (/FROM gcal_events e/i.test(sql)) {
+      db.lastEventsQuery = sql;
+    }
 
     if (!sql.toLowerCase().includes("gcal_calendars")) {
       return super.prepare(query);
@@ -1324,6 +1537,79 @@ class MockD1WithGcal extends MockD1 {
   }
 }
 
+type GcalOauthStateRow = {
+  state_hash: string;
+  npub: string;
+  browser_nonce_hash: string;
+  redirect_uri: string;
+  expires_at: number;
+  created_at: number;
+};
+
+class MockD1WithGcalOauth extends MockD1 {
+  oauthStates = new Map<string, GcalOauthStateRow>();
+
+  override prepare(query: string) {
+    const sql = query.replace(/\s+/g, " ").trim();
+    const db = this;
+    if (!sql.toLowerCase().includes("gcal_oauth_states")) {
+      return super.prepare(query);
+    }
+
+    let params: unknown[] = [];
+    return {
+      _sql: sql,
+      bind(...values: unknown[]) {
+        params = values;
+        return this;
+      },
+      async run() {
+        if (/^CREATE TABLE/i.test(sql) || /^CREATE INDEX/i.test(sql)) return { success: true };
+        if (/^DELETE FROM gcal_oauth_states WHERE expires_at/i.test(sql)) {
+          const [nowSec] = params as [number];
+          for (const [key, row] of db.oauthStates) {
+            if (row.expires_at < nowSec) db.oauthStates.delete(key);
+          }
+          return { success: true };
+        }
+        if (/^INSERT INTO gcal_oauth_states/i.test(sql)) {
+          const [state_hash, npub, browser_nonce_hash, redirect_uri, expires_at, created_at] = params as [
+            string,
+            string,
+            string,
+            string,
+            number,
+            number,
+          ];
+          db.oauthStates.set(state_hash, {
+            state_hash,
+            npub,
+            browser_nonce_hash,
+            redirect_uri,
+            expires_at,
+            created_at,
+          });
+          return { success: true };
+        }
+        return { success: true };
+      },
+      async first() {
+        if (/^DELETE FROM gcal_oauth_states/i.test(sql) && /RETURNING npub, redirect_uri/i.test(sql)) {
+          const [stateHash, browserNonceHash, nowSec] = params as [string, string, number];
+          const row = db.oauthStates.get(stateHash);
+          if (!row || row.browser_nonce_hash !== browserNonceHash || row.expires_at < nowSec) return null;
+          db.oauthStates.delete(stateHash);
+          return { npub: row.npub, redirect_uri: row.redirect_uri };
+        }
+        return null;
+      },
+      async all() {
+        return { success: true, results: [] };
+      },
+    };
+  }
+}
+
 const TEST_GCAL_ENC_KEY = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
 const TEST_WEBHOOK_SECRET = "gcal-webhook-test-secret";
 
@@ -1339,6 +1625,10 @@ async function makeGcalEnv(db: MockD1 = new MockD1()) {
 }
 
 const mockCtx = { waitUntil: (_p: Promise<unknown>) => void _p } as any;
+
+function cookiePair(setCookie: string): string {
+  return setCookie.split(";", 1)[0];
+}
 
 // ── A. AES-256-GCM encryption round-trip ─────────────────────────────────────
 
@@ -1362,6 +1652,67 @@ test("gcal crypto: wrong key fails to decrypt", async () => {
     () => gcalDecryptToken(enc, iv, tag, wrongKey),
     "decryption with wrong key must throw",
   );
+});
+
+test("gcal OAuth state is opaque, signed-user-bound, and browser-cookie-bound", async () => {
+  const db = new MockD1WithGcalOauth();
+  const env = await makeGcalEnv(db);
+  const privateKey = schnorr.utils.randomSecretKey();
+  const pubkey = gcalBytesToHex(schnorr.getPublicKey(privateKey));
+  const authResponse = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/auth/url", {
+      headers: makeGcalAuthHeaders(privateKey, pubkey),
+    }),
+    env,
+  );
+
+  assert.equal(authResponse.status, 200);
+  const setCookie = authResponse.headers.get("Set-Cookie") ?? "";
+  assert.match(setCookie, /^__Host-taskify_gcal_oauth=/);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /Secure/);
+  assert.match(setCookie, /SameSite=Lax/);
+  const { url: authorizationUrl } = await authResponse.json() as { url: string };
+  const oauthUrl = new URL(authorizationUrl);
+  const state = oauthUrl.searchParams.get("state") ?? "";
+  assert.ok(state.length >= 40);
+  assert.equal(state.includes(pubkey), false, "state must not expose the user's public key");
+  assert.equal(oauthUrl.searchParams.get("redirect_uri"), "https://taskify-v2.solife.me/api/gcal/auth/callback");
+  assert.equal(db.oauthStates.size, 1);
+  assert.equal([...db.oauthStates.values()][0].npub, pubkey);
+
+  const wrongBrowser = await worker.fetch(
+    new Request(`https://taskify-v2.solife.me/api/gcal/auth/callback?code=test-code&state=${encodeURIComponent(state)}`, {
+      headers: { Cookie: "__Host-taskify_gcal_oauth=wrong-browser" },
+    }),
+    env,
+  );
+  assert.equal(wrongBrowser.status, 400);
+  assert.equal(db.oauthStates.size, 1, "a wrong browser must not consume another browser's state");
+
+  const originalFetch = globalThis.fetch;
+  let tokenCalls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://oauth2.googleapis.com/token") {
+      tokenCalls += 1;
+      // Deliberately incomplete: state consumption happens before exchange.
+      return Response.json({ access_token: "access-only" });
+    }
+    throw new Error(`Unexpected OAuth fetch: ${String(input)}`);
+  }) as any;
+  try {
+    const callbackUrl = `https://taskify-v2.solife.me/api/gcal/auth/callback?code=test-code&state=${encodeURIComponent(state)}`;
+    const callbackHeaders = { Cookie: cookiePair(setCookie) };
+    const firstCallback = await worker.fetch(new Request(callbackUrl, { headers: callbackHeaders }), env);
+    assert.equal(firstCallback.status, 502);
+    assert.equal(db.oauthStates.size, 0, "valid state must be consumed atomically");
+
+    const replay = await worker.fetch(new Request(callbackUrl, { headers: callbackHeaders }), env);
+    assert.equal(replay.status, 400);
+    assert.equal(tokenCalls, 1, "a replay must be rejected before token exchange");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // ── B. verifyGcalAuth ─────────────────────────────────────────────────────────
@@ -1509,6 +1860,63 @@ test("verifyGcalAuth: tampered body returns null", async () => {
   assert.equal(await verifyGcalAuth(req), null);
 });
 
+test("Watch Nostr bridge only accepts bounded public wss relay URLs", () => {
+  const relays = watchNostrBridgeTestHooks.normalizedRelayURLs([
+    "wss://relay.example/",
+    "wss://relay.example",
+    "ws://insecure.example",
+    "wss://localhost",
+    "wss://127.0.0.1",
+    ...Array.from({ length: 12 }, (_, index) => `wss://relay-${index}.example`),
+  ]);
+
+  assert.equal(relays[0], "wss://relay.example");
+  assert.equal(relays.length, 8);
+  assert.ok(relays.every((relay) => relay.startsWith("wss://")));
+});
+
+test("Watch Nostr bridge narrows query filters to Taskify task authors", () => {
+  const author = "ab".repeat(32);
+  assert.deepEqual(
+    watchNostrBridgeTestHooks.normalizedFilter({
+      kinds: [1, 30_301],
+      authors: [author, author, "invalid"],
+      limit: 50_000,
+      since: 0,
+    }),
+    { kinds: [30_301], authors: [author], limit: 1_000 },
+  );
+});
+
+test("POST /api/watch/nostr/query requires signed Taskify authentication", async () => {
+  const env = await makeGcalEnv();
+  const response = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/watch/nostr/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relays: ["wss://relay.example"], filter: {} }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 401);
+});
+
+test("POST /api/watch/nostr/query rejects broad filters before opening relays", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = gcalBytesToHex(schnorr.getPublicKey(privateKey));
+  const body = JSON.stringify({ relays: ["wss://relay.example"], filter: { kinds: [1] } });
+  const env = await makeGcalEnv();
+  const response = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/watch/nostr/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...makeGcalAuthHeaders(privateKey, publicKey, body) },
+      body,
+    }),
+    env,
+  );
+  assert.equal(response.status, 400);
+});
+
 // ── C. Endpoint isolation: 401 without valid auth ────────────────────────────
 
 test("GET /api/gcal/status with no auth headers returns 401", async () => {
@@ -1571,6 +1979,22 @@ test("DELETE /api/gcal/connection with no auth headers returns 401", async () =>
     env,
   );
   assert.equal(res.status, 401);
+});
+
+test("GET /api/gcal/events filters out calendars the user deselected", async () => {
+  const db = new MockD1WithGcal();
+  const env = await makeGcalEnv(db);
+  const privateKey = schnorr.utils.randomSecretKey();
+  const pubkey = gcalBytesToHex(schnorr.getPublicKey(privateKey));
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/events", {
+      headers: makeGcalAuthHeaders(privateKey, pubkey),
+    }),
+    env,
+  );
+
+  assert.equal(res.status, 200);
+  assert.match(db.lastEventsQuery ?? "", /AND c\.selected = 1/i);
 });
 
 // ── D. Webhook security ───────────────────────────────────────────────────────

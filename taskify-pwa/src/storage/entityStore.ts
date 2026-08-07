@@ -40,7 +40,10 @@ type WithId = { id: string };
 
 export class EntityStore<T extends WithId> {
   readonly storeName: string;
+  /** Latest state requested by the UI. */
   private cache = new Map<string, T>();
+  /** Last snapshot known to have committed to IndexedDB. */
+  private persistedCache = new Map<string, T>();
   private writeChain: Promise<void> = Promise.resolve();
   private loaded = false;
 
@@ -60,8 +63,10 @@ export class EntityStore<T extends WithId> {
           this.cache.set(entity.id, entity);
         }
       }
+      this.persistedCache = new Map(this.cache);
     } catch (err) {
       console.warn(`[entityStore:${this.storeName}] load failed`, err);
+      throw err;
     }
     this.loaded = true;
   }
@@ -85,46 +90,64 @@ export class EntityStore<T extends WithId> {
     return this.cache.get(id);
   }
 
+  private queueSnapshot(nextMap: Map<string, T>, replaceAll = false): void {
+    // A failed operation must not poison later writes. Each queued snapshot
+    // diffs against the last *committed* state, never the optimistic UI cache.
+    const operation = this.writeChain
+      .catch(() => undefined)
+      .then(async () => {
+        const upserts: T[] = [];
+        const deletions: string[] = [];
+        if (!replaceAll) {
+          for (const [id, entity] of nextMap) {
+            if (this.persistedCache.get(id) !== entity) upserts.push(entity);
+          }
+          for (const id of this.persistedCache.keys()) {
+            if (!nextMap.has(id)) deletions.push(id);
+          }
+          if (upserts.length === 0 && deletions.length === 0) return;
+        }
+
+        const persist = async () => {
+          const db = await getTaskifyDb();
+          await idbStorage.transaction(db, this.storeName, "readwrite", (tx) => {
+            const store = tx.objectStore(this.storeName);
+            if (replaceAll) store.clear();
+            for (const entity of replaceAll ? nextMap.values() : upserts) store.put(entity);
+            for (const id of deletions) store.delete(id);
+          });
+        };
+
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            await persist();
+            this.persistedCache = new Map(nextMap);
+            return;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        throw lastError;
+      });
+    this.writeChain = operation;
+    void operation.catch((err) => {
+      console.warn(`[entityStore:${this.storeName}] write failed after retries`, err);
+    });
+  }
+
   /**
-   * Reconcile the on-disk store with `next`. Writes entities whose reference
-   * differs from the cached one and deletes ids that are no longer present.
-   * Updates the in-memory cache synchronously; the IDB write happens async on
-   * a serialized chain so concurrent calls don't interleave.
+   * Reconcile the on-disk store with `next`. The UI cache updates immediately,
+   * while the durable diff is computed against the last committed snapshot.
    */
   syncWith(next: readonly T[]): void {
     const nextMap = new Map<string, T>();
-    const upserts: T[] = [];
     for (const entity of next) {
       if (!entity || typeof entity.id !== "string") continue;
       nextMap.set(entity.id, entity);
-      const prev = this.cache.get(entity.id);
-      if (prev !== entity) upserts.push(entity);
     }
-    const deletions: string[] = [];
-    for (const id of this.cache.keys()) {
-      if (!nextMap.has(id)) deletions.push(id);
-    }
-
     this.cache = nextMap;
-
-    if (upserts.length === 0 && deletions.length === 0) return;
-
-    this.writeChain = this.writeChain
-      .then(async () => {
-        const db = await getTaskifyDb();
-        await idbStorage.transaction(db, this.storeName, "readwrite", (tx) => {
-          const store = tx.objectStore(this.storeName);
-          for (const entity of upserts) {
-            store.put(entity);
-          }
-          for (const id of deletions) {
-            store.delete(id);
-          }
-        });
-      })
-      .catch((err) => {
-        console.warn(`[entityStore:${this.storeName}] write failed`, err);
-      });
+    this.queueSnapshot(nextMap);
   }
 
   /** Wait for the most-recently-queued write to settle. Useful for backup
@@ -144,21 +167,7 @@ export class EntityStore<T extends WithId> {
       if (entity && typeof entity.id === "string") nextMap.set(entity.id, entity);
     }
     this.cache = nextMap;
-
-    this.writeChain = this.writeChain
-      .then(async () => {
-        const db = await getTaskifyDb();
-        await idbStorage.transaction(db, this.storeName, "readwrite", (tx) => {
-          const store = tx.objectStore(this.storeName);
-          store.clear();
-          for (const entity of nextMap.values()) {
-            store.put(entity);
-          }
-        });
-      })
-      .catch((err) => {
-        console.warn(`[entityStore:${this.storeName}] replaceAll failed`, err);
-      });
+    this.queueSnapshot(nextMap, true);
   }
 
   /** One-time migration from a legacy JSON-array blob. Idempotent: only runs
@@ -188,16 +197,18 @@ export class EntityStore<T extends WithId> {
         for (const entity of valid) store.put(entity);
       });
       for (const entity of valid) this.cache.set(entity.id, entity);
+      this.persistedCache = new Map(this.cache);
       return valid.length;
     } catch (err) {
       console.warn(`[entityStore:${this.storeName}] migration failed`, err);
-      return 0;
+      throw err;
     }
   }
 
   /** Test-only: clear in-memory cache + reset loaded flag. Does not touch IDB. */
   __resetForTests(): void {
     this.cache.clear();
+    this.persistedCache.clear();
     this.loaded = false;
     this.writeChain = Promise.resolve();
   }

@@ -169,7 +169,7 @@ Minimum required scenarios:
 
 ## 8) Open Technical Decisions (Need resolution early)
 
-1. **Local storage engine** for native app (SwiftData/CoreData/GRDB/SQLite).
+1. **Long-term sync storage engine** for native app. Atomic JSON is used only for the first offline vertical slice; choose SwiftData/GRDB/SQLite before high-volume Nostr history lands.
 2. **Nostr Swift stack** choice and how closely it can match runtime semantics.
 3. **Background sync policy** under iOS constraints.
 4. **Attachment pipeline** parity with PWA (upload endpoints, caching, preview behavior).
@@ -179,14 +179,11 @@ Minimum required scenarios:
 
 ## 9) Immediate Next Actions
 
-1. Create `taskify-ios` architecture skeleton (modules/folders + dependency boundaries).
-2. Draft API/Nostr contract conformance doc from current PWA behavior.
-3. Build Milestone A vertical slice:
-   - sign-in via nsec
-   - keychain storage
-   - app shell navigation
-4. Define and commit parity checklist template in `docs/`.
-5. Add automated interop test cases for core task sync scenarios.
+1. Run the first physical-device two-way PWA/native create, complete, and delete convergence matrix.
+2. Add native task detail editing for title, note, priority, due date/time, and timezone while preserving event compatibility.
+3. Add list-board columns and task movement, then extend shared-board metadata ingestion beyond weekly boards.
+4. Port recurrence and reminder semantics with PWA fixtures; keep reminders device-local.
+5. Add attachment upload/decryption and remote preview behavior using the PWA file contract.
 
 ---
 

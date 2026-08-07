@@ -2,36 +2,13 @@
 // Shared worker types, helpers, and constants — extracted from index.ts
 // (Item #12 worker module split, pass 5).
 //
-// Handler modules (gcal, preview, reminders, voice, backups, nip05) import
+// Handler modules (gcal, preview, reminders, voice, nip05) import
 // from here instead of "./index.ts", which removes the circular-import
 // pattern that grew during passes 1-4.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cloudflare binding shapes
 // ─────────────────────────────────────────────────────────────────────────────
-
-export interface R2ObjectBody {
-  body: ReadableStream<Uint8Array> | null;
-  text(): Promise<string>;
-  writeHttpMetadata(headers: Headers): void;
-}
-
-export interface R2ListResult {
-  objects: { key: string }[];
-  truncated?: boolean;
-  cursor?: string | null;
-}
-
-export interface R2Bucket {
-  put(
-    key: string,
-    value: string | ArrayBuffer | ArrayBufferView | ReadableStream,
-    options?: { httpMetadata?: { contentType?: string; cacheControl?: string } },
-  ): Promise<void>;
-  get(key: string): Promise<R2ObjectBody | null>;
-  delete(key: string): Promise<void>;
-  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<R2ListResult>;
-}
 
 export interface AssetFetcher {
   fetch(request: Request): Promise<Response>;
@@ -70,7 +47,6 @@ export interface Env {
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_KEY: string | KVNamespace;
   VAPID_SUBJECT: string;
-  TASKIFY_BACKUPS?: R2Bucket;
   GEMINI_API_KEY?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;

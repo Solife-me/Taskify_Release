@@ -43,7 +43,6 @@ type AppModalStackProps = {
   handleOnboardingEnableNotifications: () => Promise<void>;
   handleOnboardingGenerateNewKey: () => { nsec: string } | null;
   handleOnboardingRestoreFromBackupFile: (file: File) => Promise<void>;
-  handleOnboardingRestoreFromCloud: (value: string) => Promise<void>;
   handleOnboardingUseExistingKey: (value: string) => boolean;
   handlePrintBibleWindow: () => void;
   handlePrintBoardWindow: () => void;
@@ -65,7 +64,6 @@ type AppModalStackProps = {
   showFirstRunOnboarding: boolean;
   undoDelete: () => void;
   undoTask: Task | null;
-  workerBaseUrl: string;
 };
 
 export function AppModalStack({
@@ -97,7 +95,6 @@ export function AppModalStack({
   handleOnboardingEnableNotifications,
   handleOnboardingGenerateNewKey,
   handleOnboardingRestoreFromBackupFile,
-  handleOnboardingRestoreFromCloud,
   handleOnboardingUseExistingKey,
   handlePrintBibleWindow,
   handlePrintBoardWindow,
@@ -119,7 +116,6 @@ export function AppModalStack({
   showFirstRunOnboarding,
   undoDelete,
   undoTask,
-  workerBaseUrl,
 }: AppModalStackProps) {
   return (
     <>
@@ -275,11 +271,9 @@ export function AppModalStack({
           <FirstRunOnboarding
             pushSupported={onboardingPushSupported}
             pushConfigured={onboardingPushConfigured}
-            cloudRestoreAvailable={!!workerBaseUrl}
             onUseExistingKey={handleOnboardingUseExistingKey}
             onGenerateNewKey={handleOnboardingGenerateNewKey}
             onRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
-            onRestoreFromCloud={handleOnboardingRestoreFromCloud}
             onEnableNotifications={handleOnboardingEnableNotifications}
             onComplete={completeFirstRunOnboarding}
           />

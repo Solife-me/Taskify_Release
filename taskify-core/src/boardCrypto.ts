@@ -15,7 +15,6 @@ const AES_KEY_LABEL = new TextEncoder().encode("taskify-board-aes-v1");
 // Without this, every decryptFromBoard call ran SHA-256 + importKey — 2 async WebCrypto
 // ops per event × 500 events = 1000 serial operations that blocked the queue for minutes.
 const aesKeyCache = new Map<string, Promise<CryptoKey>>();
-const legacyAesKeyCache = new Map<string, Promise<CryptoKey>>();
 
 async function deriveBoardAesKey(boardId: string): Promise<CryptoKey> {
   const cached = aesKeyCache.get(boardId);
@@ -29,18 +28,6 @@ async function deriveBoardAesKey(boardId: string): Promise<CryptoKey> {
     return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
   })();
   aesKeyCache.set(boardId, promise);
-  return promise;
-}
-
-/** Legacy key — SHA-256(boardId) with no label. Used only for decrypting old events. */
-async function deriveLegacyBoardAesKey(boardId: string): Promise<CryptoKey> {
-  const cached = legacyAesKeyCache.get(boardId);
-  if (cached) return cached;
-  const promise = (async () => {
-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(boardId));
-    return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, ["decrypt"]);
-  })();
-  legacyAesKeyCache.set(boardId, promise);
   return promise;
 }
 
@@ -62,16 +49,7 @@ export async function decryptFromBoard(
   const bytes = b64decode(data);
   const iv = bytes.slice(0, 12);
   const ct = bytes.slice(12);
-  // Try the secure labeled key first.
-  try {
-    const key = await deriveBoardAesKey(boardId);
-    const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-    return { plaintext: new TextDecoder().decode(ptBuf), usedLegacyKey: false };
-  } catch {
-    // Fall back to the legacy key (SHA-256(boardId) = the public tag).
-    // This handles events written before the key domain-separation fix.
-    const legacyKey = await deriveLegacyBoardAesKey(boardId);
-    const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, legacyKey, ct);
-    return { plaintext: new TextDecoder().decode(ptBuf), usedLegacyKey: true };
-  }
+  const key = await deriveBoardAesKey(boardId);
+  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return { plaintext: new TextDecoder().decode(ptBuf), usedLegacyKey: false };
 }

@@ -1,51 +1,53 @@
 // swift-tools-version: 5.9
-// The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
-    name: "TaskifyiOS",
+    name: "TaskifyNative",
     platforms: [
         .iOS(.v17),
+        .macOS(.v14),
+        .watchOS(.v10),
     ],
     products: [
-        .library(
-            name: "TaskifyCore",
-            targets: ["TaskifyCore"]),
-        .executable(
-            name: "TaskifyApp",
-            targets: ["TaskifyApp"]),
+        .library(name: "TaskifyCore", targets: ["TaskifyCore"]),
+        .library(name: "TaskifyWatchShared", targets: ["TaskifyWatchShared"]),
     ],
     dependencies: [
         .package(
-            url: "https://github.com/nostr-sdk/nostr-sdk-ios",
-            from: "0.8.0"
+            url: "https://github.com/21-DOT-DEV/swift-secp256k1.git",
+            exact: "0.23.2"
         ),
         .package(
-            url: "https://github.com/zeugmaster/CashuSwift",
-            from: "0.1.0"
+            url: "https://github.com/cashubtc/cdk-swift.git",
+            exact: "0.17.3"
+        ),
+        .package(
+            url: "https://github.com/BlockchainCommons/URKit.git",
+            revision: "ebba59b2e1538cb368d98147dd58c452e6d1dc47"
         ),
     ],
     targets: [
         .target(
             name: "TaskifyCore",
             dependencies: [
-                "NostrSDK",
-                "CashuSwift",
+                "TaskifyWatchShared",
+                .product(name: "P256K", package: "swift-secp256k1"),
+                .product(name: "Cdk", package: "cdk-swift"),
+                .product(name: "URKit", package: "URKit"),
             ],
-            path: "Sources/TaskifyCore",
-            resources: [
-                .process("Resources"),
-            ]
+            path: "Sources/TaskifyCore"
         ),
-        .executableTarget(
-            name: "TaskifyApp",
-            dependencies: ["TaskifyCore"],
-            path: "Sources/TaskifyApp"
+        .target(
+            name: "TaskifyWatchShared",
+            dependencies: [
+                .product(name: "P256K", package: "swift-secp256k1"),
+            ],
+            path: "Sources/TaskifyWatchShared"
         ),
         .testTarget(
             name: "TaskifyCoreTests",
-            dependencies: ["TaskifyCore"],
+            dependencies: ["TaskifyCore", "TaskifyWatchShared"],
             path: "Tests/TaskifyCoreTests"
         ),
     ]

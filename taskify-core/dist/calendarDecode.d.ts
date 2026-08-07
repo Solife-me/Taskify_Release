@@ -1,3 +1,4 @@
+import type { Recurrence } from "./taskContracts.js";
 export type CalendarRsvpStatus = "accepted" | "declined" | "tentative";
 export type CalendarRsvpFb = "free" | "busy";
 export type CalendarParticipant = {
@@ -29,6 +30,8 @@ export type CalendarCanonicalPayload = {
     startTzid?: string;
     endTzid?: string;
     inviteTokens?: Record<string, string>;
+    recurrence?: Recurrence;
+    seriesId?: string;
     deleted?: boolean;
 };
 export type CalendarViewPayload = {
@@ -52,6 +55,8 @@ export type CalendarViewPayload = {
     endISO?: string;
     startTzid?: string;
     endTzid?: string;
+    recurrence?: Recurrence;
+    seriesId?: string;
     deleted?: boolean;
 };
 export type CalendarRsvpPayload = {

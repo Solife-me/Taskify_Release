@@ -32,13 +32,18 @@ test("publishCalendarEvent emits kind 30310 (TASKIFY_CALENDAR_EVENT_KIND)", () =
   assert.match(RUNTIME, /event\.kind = TASKIFY_CALENDAR_EVENT_KIND/);
 });
 
-test("fetchBoardCalendarEvents subscribes to kinds 30310 and 30311", () => {
+test("fetchBoardCalendarEvents subscribes only to canonical board events", () => {
   assert.match(RUNTIME, /async function fetchBoardCalendarEvents/);
-  assert.match(RUNTIME, /TASKIFY_CALENDAR_EVENT_KIND.*TASKIFY_CALENDAR_VIEW_KIND|kinds.*30310.*30311/);
+  const helper = RUNTIME.match(/async function fetchBoardCalendarEvents[\s\S]*?\n  \}/)?.[0] ?? "";
+  assert.match(helper, /kinds: \[TASKIFY_CALENDAR_EVENT_KIND\]/);
+  assert.match(helper, /authors: \[boardPubkey\]/);
+  assert.doesNotMatch(helper, /kinds: \[[^\]]*TASKIFY_CALENDAR_VIEW_KIND/);
 });
 
-test("parseDecryptedCalendarEvent falls back to AES-GCM if NIP-44 fails", () => {
-  assert.match(RUNTIME, /decryptCalendarPayloadForBoard[\s\S]*?catch[\s\S]*?decryptContent/);
+test("calendar parsing requires the canonical NIP-44 envelope", () => {
+  assert.match(RUNTIME, /parseCalendarCanonicalPayload\(raw\)/);
+  const decryptHelper = RUNTIME.match(/async function decryptCalendarEventPayload[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.doesNotMatch(decryptHelper, /decryptTaskEventPayload|decryptContent/);
 });
 
 test("createEvent uses publishCalendarEvent not publishTaskEvent", () => {
@@ -66,7 +71,9 @@ test("publishCalendarEvent adds entity event tag", () => {
   assert.match(RUNTIME, /publishCalendarEvent[\s\S]*?\["entity", "event"\]/);
 });
 
-test("validateCalendarEventCompat accepts kind 30310 and 30311", () => {
+test("validateCalendarEventCompat accepts only canonical kind 30310", () => {
   assert.match(RUNTIME, /function validateCalendarEventCompat/);
-  assert.match(RUNTIME, /validateCalendarEventCompat[\s\S]*?TASKIFY_CALENDAR_EVENT_KIND[\s\S]*?TASKIFY_CALENDAR_VIEW_KIND/);
+  const helper = RUNTIME.match(/function validateCalendarEventCompat[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.match(helper, /event\.kind !== TASKIFY_CALENDAR_EVENT_KIND/);
+  assert.doesNotMatch(helper, /TASKIFY_CALENDAR_VIEW_KIND|30301/);
 });

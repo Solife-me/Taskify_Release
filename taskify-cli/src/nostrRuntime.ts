@@ -6,13 +6,18 @@ import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from 
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
 import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
-import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
+import { incrementalSyncSince, readCache, writeCache, type CachedTask } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
-import { pickLatestParsedEvent } from "./shared/latestEvent.js";
+import {
+  compareReplaceableEvents,
+  pickLatestParsedEvent,
+  pickLatestParsedEventsByKey,
+} from "./shared/latestEvent.js";
 import {
   normalizeCalendarDeleteMutationPayload,
-  normalizeCalendarEventPayload,
   normalizeCalendarMutationPayload,
+  parseCalendarCanonicalPayload,
+  calendarAddress,
   encryptToBoard,
   decryptFromBoard,
   resolveBoardReference,
@@ -25,9 +30,13 @@ import {
 import {
   encryptCalendarPayloadForBoard,
   decryptCalendarPayloadForBoard,
-  decryptCalendarPayloadWithEventKey,
+  encryptCalendarPayloadWithEventKey,
   generateEventKey,
 } from "./calendarCrypto.js";
+import {
+  buildCalendarCanonicalEnvelope,
+  buildCalendarViewEnvelope,
+} from "./shared/calendarEnvelope.js";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -67,7 +76,7 @@ function validateEventCompat(event: NDKEvent): boolean {
 }
 
 function validateCalendarEventCompat(event: NDKEvent): boolean {
-  if (event.kind !== TASKIFY_CALENDAR_EVENT_KIND && event.kind !== TASKIFY_CALENDAR_VIEW_KIND && event.kind !== 30301) return false;
+  if (event.kind !== TASKIFY_CALENDAR_EVENT_KIND) return false;
   const hasD = event.tags.some((t) => t[0] === "d");
   const hasB = event.tags.some((t) => t[0] === "b");
   if (!hasD || !hasB) return false;
@@ -93,20 +102,28 @@ function recordToCache(r: FullTaskRecord): CachedTask {
     dueISO: r.dueISO,
     dueDateEnabled: r.dueDateEnabled,
     dueTimeEnabled: r.dueTimeEnabled,
+    dueTimeZone: r.dueTimeZone,
     priority: r.priority,
     completed: r.completed,
     completedAt: r.completedAt,
+    completedBy: r.completedBy,
     createdAt: r.createdAt,
     createdBy: r.createdBy,
     lastEditedBy: r.lastEditedBy,
     column: r.column,
-    subtasks: r.subtasks as Array<{ id: string; title: string; completed: boolean }> | undefined,
+    subtasks: r.subtasks,
     recurrence: r.recurrence,
     bounty: r.bounty,
-    reminders: r.reminders as string[] | undefined,
+    reminders: r.reminders,
     inboxItem: r.inboxItem,
     assignees: r.assignees,
     documents: r.documents,
+    hiddenUntilISO: r.hiddenUntilISO,
+    streak: r.streak,
+    longestStreak: r.longestStreak,
+    seriesId: r.seriesId,
+    images: r.images,
+    nostrEventId: r.nostrEventId,
     deleted: r.deleted,
   };
 }
@@ -121,9 +138,11 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     dueISO: t.dueISO ?? "",
     dueDateEnabled: t.dueDateEnabled,
     dueTimeEnabled: t.dueTimeEnabled,
+    dueTimeZone: t.dueTimeZone,
     priority: t.priority,
     completed: t.status === "done",
     completedAt: t.completedAt,
+    completedBy: t.completedBy,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt
       ? new Date(t.updatedAt * 1000).toISOString()
@@ -134,10 +153,16 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     subtasks: t.subtasks,
     recurrence: t.recurrence as Recurrence | undefined,
     bounty: t.bounty,
-    reminders: t.reminders as ReminderPreset[] | undefined,
+    reminders: t.reminders,
     inboxItem: t.inboxItem,
     assignees: t.assignees as TaskAssignee[] | undefined,
     documents: t.documents as Record<string, unknown>[] | undefined,
+    hiddenUntilISO: t.hiddenUntilISO,
+    streak: t.streak,
+    longestStreak: t.longestStreak,
+    seriesId: t.seriesId,
+    images: t.images,
+    nostrEventId: t.nostrEventId,
     deleted: t.status === "deleted",
   };
 }
@@ -177,6 +202,8 @@ export type FullTaskRecord = {
   seriesId?: string;
   images?: string[];
   deleted?: boolean;
+  /** Signed relay event id for deterministic equal-timestamp replacement. */
+  nostrEventId?: string;
 };
 
 export type ExtendedCreateInput = AgentTaskCreateInput & {
@@ -191,7 +218,17 @@ export type FullEventRecord = {
   id: string;
   boardId: string;
   boardName?: string;
+  eventKey: string;
+  createdBy?: string;
+  lastEditedBy?: string;
+  inviteTokens?: Record<string, string>;
   title: string;
+  summary?: string;
+  image?: string;
+  locations?: string[];
+  geohash?: string;
+  hashtags?: string[];
+  references?: string[];
   kind: "date" | "time";
   startDate?: string;
   endDate?: string;
@@ -273,21 +310,9 @@ async function decryptTaskEventPayload(event: NDKEvent, boardId: string): Promis
 }
 
 async function decryptCalendarEventPayload(event: NDKEvent, boardId: string): Promise<DecryptedPayload | null> {
-  if (event.kind === TASKIFY_CALENDAR_EVENT_KIND || event.kind === TASKIFY_CALENDAR_VIEW_KIND) {
-    try {
-      const boardKeys = deriveBoardKeyPair(boardId);
-      return await decryptCalendarPayloadForBoard(event.content, boardKeys.skHex, boardKeys.pk) as DecryptedPayload;
-    } catch {
-      try {
-        return await decryptTaskEventPayload(event, boardId);
-      } catch {
-        return null;
-      }
-    }
-  }
-
   try {
-    return await decryptTaskEventPayload(event, boardId);
+    const boardKeys = deriveBoardKeyPair(boardId);
+    return await decryptCalendarPayloadForBoard(event.content, boardKeys.skHex, boardKeys.pk) as DecryptedPayload;
   } catch {
     return null;
   }
@@ -299,6 +324,7 @@ async function parseDecryptedEvent(
   boardName?: string,
 ): Promise<FullTaskRecord | null> {
   if (!validateEventCompat(event)) return null;
+  if (event.pubkey !== deriveBoardKeyPair(boardId).pk) return null;
   try {
     const payload = await decryptTaskEventPayload(event, boardId);
     const taskId = readTagValue(event.tags, "d") ?? "";
@@ -363,6 +389,7 @@ async function parseDecryptedEvent(
       completedBy: payload.completedBy ?? undefined,
       images: Array.isArray(payload.images) ? payload.images as string[] : undefined,
       deleted,
+      nostrEventId: event.id,
     };
   } catch {
     return null;
@@ -375,6 +402,7 @@ async function parseDecryptedCalendarEvent(
   boardName?: string,
 ): Promise<FullEventRecord | null> {
   if (!validateCalendarEventCompat(event)) return null;
+  if (event.pubkey !== deriveBoardKeyPair(boardId).pk) return null;
   const statusVal = readStatusTag(event.tags, "open");
   const entityTag = readTagValue(event.tags, "entity");
   try {
@@ -394,15 +422,25 @@ async function parseDecryptedCalendarEvent(
       typeof raw.startISO === "string";
     if (!inferredEvent) return null;
 
-    const payload = normalizeCalendarEventPayload(raw);
-    if (!payload) return null;
+    const payload = parseCalendarCanonicalPayload(raw);
+    if (!payload || payload.eventId !== id) return null;
     const kind = payload.kind === "time" ? "time" : "date";
 
     return {
       id,
       boardId,
       boardName,
+      eventKey: payload.eventKey,
+      createdBy: payload.createdBy,
+      lastEditedBy: payload.lastEditedBy,
+      inviteTokens: payload.inviteTokens,
       title: payload.title ?? "",
+      summary: payload.summary,
+      image: payload.image,
+      locations: payload.locations,
+      geohash: payload.geohash,
+      hashtags: payload.hashtags,
+      references: payload.references,
       kind,
       startDate: payload.startDate,
       endDate: payload.endDate,
@@ -478,12 +516,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
   async function fetchBoardEvents(boardId: string, taskId?: string, since?: number): Promise<Set<NDKEvent>> {
     const bTag = boardTagHash(boardId);
+    const boardPubkey = deriveBoardKeyPair(boardId).pk;
     const filter: Record<string, unknown> = {
       kinds: [30301],
+      authors: [boardPubkey],
       "#b": [bTag],
-      // With a since cursor, skip the limit — we only want events newer than the cursor.
-      // Without a cursor, cap at 500 as a safety net for first-run cold fetches.
-      ...(since !== undefined ? { since } : { limit: 500 }),
+      // An unbounded cold query is required to build a complete local baseline.
+      // Relays already paginate/cap responses according to their own policies; an
+      // additional client-side limit silently omitted older active tasks.
+      ...(since !== undefined ? { since } : {}),
     };
     if (taskId) filter["#d"] = [taskId];
 
@@ -564,10 +605,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
   async function fetchBoardCalendarEvents(boardId: string, eventId?: string): Promise<Set<NDKEvent>> {
     const bTag = boardTagHash(boardId);
+    const boardPubkey = deriveBoardKeyPair(boardId).pk;
     const filter: Record<string, unknown> = {
-      kinds: [TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND],
+      kinds: [TASKIFY_CALENDAR_EVENT_KIND],
+      authors: [boardPubkey],
       "#b": [bTag],
-      limit: eventId ? undefined : 500,
     };
     if (eventId) filter["#d"] = [eventId];
 
@@ -630,11 +672,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     });
   }
 
-  // Resolves a full UUID from a short prefix — fetches all board events and scans "d" tags.
+  // Resolve from the local full-state cache first, then fall back to relay tags.
   async function resolveTaskId(boardId: string, taskIdOrPrefix: string): Promise<string | null> {
     const exact = taskIdOrPrefix.trim();
     // Standard UUID (36 chars) — return directly without a relay lookup
     if (exact.length === 36) return exact;
+
+    const cachedTasks = readCache().boards[boardId]?.tasks ?? [];
+    const cached = resolveIdentifierReference(cachedTasks, exact);
+    if (cached) return cached.id;
 
     const allEvents = await fetchBoardEvents(boardId);
     const entries = Array.from(allEvents)
@@ -665,11 +711,16 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     payload: Record<string, unknown>,
     status: "open" | "done" | "deleted",
     colId: string = "",
+    afterCreatedAt?: number,
   ): Promise<NDKEvent> {
     const { signer } = deriveBoardKeyPair(boardId);
     const bTag = boardTagHash(boardId);
     const encrypted = await encryptContent(boardId, JSON.stringify(payload));
     const event = new NDKEvent(ndk);
+    event.created_at = Math.max(
+      Math.floor(Date.now() / 1000),
+      typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
+    );
     event.kind = 30301;
     event.content = encrypted;
     event.tags = [
@@ -692,14 +743,22 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
   async function publishCalendarEvent(
     boardId: string,
     calEventId: string,
+    eventKey: string,
     payload: Record<string, unknown>,
     status: "open" | "deleted",
     colId: string = "",
+    afterCreatedAt?: number,
   ): Promise<NDKEvent> {
     const boardKeys = deriveBoardKeyPair(boardId);
     const bTag = boardTagHash(boardId);
-    const encrypted = await encryptCalendarPayloadForBoard(payload, boardKeys.skHex, boardKeys.pk);
+    const canonicalPayload = buildCalendarCanonicalEnvelope(calEventId, eventKey, payload);
+    const viewPayload = buildCalendarViewEnvelope(canonicalPayload);
+    const encrypted = await encryptCalendarPayloadForBoard(canonicalPayload, boardKeys.skHex, boardKeys.pk);
     const event = new NDKEvent(ndk);
+    event.created_at = Math.max(
+      Math.floor(Date.now() / 1000),
+      typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
+    );
     event.kind = TASKIFY_CALENDAR_EVENT_KIND;
     event.content = encrypted;
     event.tags = [
@@ -712,6 +771,16 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     await event.sign(boardKeys.signer);
     try {
       await event.publish();
+      const viewEvent = new NDKEvent(ndk);
+      viewEvent.kind = TASKIFY_CALENDAR_VIEW_KIND;
+      viewEvent.created_at = event.created_at;
+      viewEvent.content = await encryptCalendarPayloadWithEventKey(viewPayload, eventKey);
+      viewEvent.tags = [
+        ["d", calEventId],
+        ["a", calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, calEventId)],
+      ];
+      await viewEvent.sign(boardKeys.signer);
+      await viewEvent.publish();
     } catch (err) {
       throw new Error(
         `Publish failed — check relay connectivity (taskify relay status): ${String(err)}`,
@@ -792,12 +861,18 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           await ensureConnected();
           const childIds = board.children ?? [];
           const seen = new Set<string>();
-          for (const childId of childIds) {
+          const childResults = await Promise.all(childIds.map(async (childId) => {
             const childEntry = resolveBoardEntry(config, childId) ?? { id: childId, name: childId };
             const childEvents = await fetchBoardEvents(childId);
-            for (const event of childEvents) {
-              const record = await parseDecryptedEvent(event, childId, (childEntry as BoardEntry).name ?? childId);
-              if (!record) continue;
+            const latest = await pickLatestParsedEventsByKey(
+              childEvents,
+              (event) => readTagValue(event.tags, "d"),
+              (event) => parseDecryptedEvent(event, childId, (childEntry as BoardEntry).name ?? childId),
+            );
+            return { childId, latest };
+          }));
+          for (const { childId, latest } of childResults) {
+            for (const { parsed: record } of latest.values()) {
               if (seen.has(record.id)) continue;
               seen.add(record.id);
               record.sourceBoardId = childId;
@@ -813,47 +888,23 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
         const boardCache = cache.boards[board.id];
 
-        // With cursor-based incremental sync, fetching from the relay is cheap
-        // (only pulls events since the last cursor). We no longer skip the relay
-        // based on cache freshness — agents and repeated calls always get the
-        // latest events. The cache is used purely as the merge base, not as a
-        // shortcut to avoid the network call.
-        // Exception: --no-cache flag bypasses the merge base (forces cold fetch).
-        if (!refresh && noCache !== true && boardCache && !boardCache.lastSyncAt) {
-          // Legacy cache entry with no cursor yet — fall back to TTL behaviour
-          // until the next full fetch populates lastSyncAt.
-          if (isCacheFresh(boardCache)) {
-            for (const t of boardCache.tasks) {
-              const rec = cacheToRecord(t, board.name);
-              if (rec.deleted) continue;
-              if (status === "open" && rec.completed) continue;
-              if (status === "done" && !rec.completed) continue;
-              if (columnId !== undefined && rec.column !== columnId) continue;
-              records.push(rec);
-            }
-            continue;
-          }
-        }
-
         // Cursor-based incremental fetch:
         // - If we have a prior sync cursor, fetch only events since then (- 5 min buffer for clock skew).
-        // - First run (no cursor): fetch last 30 days, no limit.
+        // - First run or --no-cache: fetch the complete relay history without a date cutoff.
         // - If cursor is set but cache is empty (e.g. cleared), fall back to cold fetch.
         await ensureConnected();
-        const CURSOR_LOOKBACK_SECS = 300; // 5 min buffer
-        const FALLBACK_DAYS = 30;
-        const hasCursor = boardCache?.lastSyncAt && boardCache.tasks.length > 0;
-        const since = hasCursor
-          ? Math.max(0, boardCache!.lastSyncAt! - CURSOR_LOOKBACK_SECS)
-          : Math.floor(Date.now() / 1000) - FALLBACK_DAYS * 24 * 3600;
+        const since = incrementalSyncSince(boardCache, { refresh, noCache });
+        const hasCursor = since !== undefined;
 
         const events = await fetchBoardEvents(board.id, undefined, since);
-        const incomingRecords: FullTaskRecord[] = [];
-        let maxCreatedAt = boardCache?.lastSyncAt ?? 0;
-        for (const event of events) {
-          const record = await parseDecryptedEvent(event, board.id, board.name);
-          if (!record) continue;
-          incomingRecords.push(record);
+        const latestIncoming = await pickLatestParsedEventsByKey(
+          events,
+          (event) => readTagValue(event.tags, "d"),
+          (event) => parseDecryptedEvent(event, board.id, board.name),
+        );
+        const incomingRecords = Array.from(latestIncoming.values(), ({ parsed }) => parsed);
+        let maxCreatedAt = hasCursor ? (boardCache?.lastSyncAt ?? 0) : 0;
+        for (const { event } of latestIncoming.values()) {
           if (event.created_at && event.created_at > maxCreatedAt) {
             maxCreatedAt = event.created_at;
           }
@@ -870,13 +921,16 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           // suppresses older cached open/done versions. Filtering happens later.
           for (const r of incomingRecords) {
             const existing = byId.get(r.id);
-            if (!existing || (r.createdAt ?? 0) >= (existing.createdAt ?? 0)) {
+            if (!existing || compareReplaceableEvents(
+              { created_at: r.createdAt, id: r.nostrEventId },
+              { created_at: existing.createdAt, id: existing.nostrEventId },
+            ) > 0) {
               byId.set(r.id, r);
             }
           }
           mergedRecords = Array.from(byId.values());
         } else {
-          // Cold fetch: incoming IS the full state
+          // Cold fetch: the per-id latest incoming revisions are the full state.
           mergedRecords = incomingRecords;
         }
 
@@ -914,7 +968,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         cache.boards[board.id] = {
           tasks: mergedRecords.map(recordToCache),
           fetchedAt: Date.now(),
-          lastSyncAt: maxCreatedAt > 0 ? maxCreatedAt : Math.floor(Date.now() / 1000),
+          ...(maxCreatedAt > 0 ? { lastSyncAt: maxCreatedAt } : {}),
         };
 
         // Filter for the caller
@@ -945,16 +999,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const out: FullEventRecord[] = [];
       for (const board of boards) {
         const events = await fetchBoardCalendarEvents(board.id);
-        const latestById = new Map<string, FullEventRecord>();
-        for (const evt of events) {
-          const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
-          if (!parsed) continue;
-          const existing = latestById.get(parsed.id);
-          if (!existing || (parsed.createdAt ?? 0) >= (existing.createdAt ?? 0)) {
-            latestById.set(parsed.id, parsed);
-          }
-        }
-        for (const parsed of latestById.values()) {
+        const latestById = await pickLatestParsedEventsByKey(
+          events,
+          (event) => readTagValue(event.tags, "d"),
+          (event) => parseDecryptedCalendarEvent(event, board.id, board.name),
+        );
+        for (const { parsed } of latestById.values()) {
           if (parsed.deleted) continue;
           out.push(parsed);
         }
@@ -1011,9 +1061,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (!normalized) {
         throw new Error("Invalid event payload");
       }
+      const eventKey = generateEventKey();
+      const userPubkey = getUserPubkeyHex(config);
       // Merge extra fields not handled by normalizeCalendarMutationPayload
       const payload: Record<string, unknown> = {
         ...normalized,
+        ...(userPubkey ? { createdBy: userPubkey, lastEditedBy: userPubkey } : {}),
         recurrence: input.recurrence ?? null,
         reminders: input.reminders ?? null,
         participants: input.participants ?? null,
@@ -1022,10 +1075,13 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const boardEntry = resolveBoardEntry(config, input.boardId);
       const colId = input.columnId
         ?? (boardEntry?.kind === "lists" && Array.isArray(boardEntry.columns) && boardEntry.columns.length > 0 ? boardEntry.columns[0].id : "");
-      await publishCalendarEvent(input.boardId, id, payload, "open", colId);
+      await publishCalendarEvent(input.boardId, id, eventKey, payload, "open", colId);
       return {
         id,
         boardId: input.boardId,
+        eventKey,
+        createdBy: userPubkey,
+        lastEditedBy: userPubkey,
         title: normalized.title ?? "",
         kind: normalized.kind === "time" ? "time" : "date",
         startDate: normalized.startDate,
@@ -1092,18 +1148,47 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (!normalized) return null;
       const mergedPayload: Record<string, unknown> = {
         ...normalized,
+        ...(existing.createdBy ? { createdBy: existing.createdBy } : {}),
+        ...(getUserPubkeyHex(config) || existing.lastEditedBy
+          ? { lastEditedBy: getUserPubkeyHex(config) || existing.lastEditedBy }
+          : {}),
+        ...(existing.inviteTokens ? { inviteTokens: existing.inviteTokens } : {}),
+        ...(existing.summary ? { summary: existing.summary } : {}),
+        ...(existing.image ? { image: existing.image } : {}),
+        ...(existing.locations?.length ? { locations: existing.locations } : {}),
+        ...(existing.geohash ? { geohash: existing.geohash } : {}),
+        ...(existing.hashtags?.length ? { hashtags: existing.hashtags } : {}),
+        ...(existing.references?.length ? { references: existing.references } : {}),
         recurrence: mergedRecurrence ?? null,
         reminders: mergedReminders ?? null,
         participants: mergedParticipants ?? null,
         documents: mergedDocuments ?? null,
       };
       const colId = patch.columnId !== undefined ? (patch.columnId ?? "") : (existing.columnId ?? "");
-      await publishCalendarEvent(entry.id, resolvedId, mergedPayload, "open", colId);
+      const published = await publishCalendarEvent(
+        entry.id,
+        resolvedId,
+        existing.eventKey,
+        mergedPayload,
+        "open",
+        colId,
+        existing.createdAt,
+      );
       return {
         id: resolvedId,
         boardId: entry.id,
         boardName: entry.name,
+        eventKey: existing.eventKey,
+        createdBy: existing.createdBy,
+        lastEditedBy: getUserPubkeyHex(config) || existing.lastEditedBy,
+        inviteTokens: existing.inviteTokens,
         title: normalized.title ?? "",
+        summary: existing.summary,
+        image: existing.image,
+        locations: existing.locations,
+        geohash: existing.geohash,
+        hashtags: existing.hashtags,
+        references: existing.references,
         kind: normalized.kind === "time" ? "time" : "date",
         startDate: normalized.startDate,
         endDate: normalized.endDate,
@@ -1117,8 +1202,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         participants: mergedParticipants,
         documents: mergedDocuments as Record<string, unknown>[] | undefined,
         columnId: colId || undefined,
-        createdAt: existing.createdAt,
-        updatedAt: nowISO(),
+        createdAt: published.created_at ?? existing.createdAt,
+        updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : nowISO(),
       };
     },
 
@@ -1163,15 +1248,30 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         existing.createdAt ? existing.createdAt * 1000 : Date.now(),
       );
       if (!payload) return null;
-      await publishCalendarEvent(entry.id, resolvedId, payload as unknown as Record<string, unknown>, "deleted", "");
+      await publishCalendarEvent(
+        entry.id,
+        resolvedId,
+        existing.eventKey,
+        {
+          ...(payload as unknown as Record<string, unknown>),
+          ...(existing.createdBy ? { createdBy: existing.createdBy } : {}),
+          ...(getUserPubkeyHex(config) || existing.lastEditedBy
+            ? { lastEditedBy: getUserPubkeyHex(config) || existing.lastEditedBy }
+            : {}),
+        },
+        "deleted",
+        "",
+        existing.createdAt,
+      );
       return { ...existing, deleted: true };
     },
 
     async syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }> {
       await ensureConnected();
       const bTag = boardTagHash(boardId);
+      const boardPubkey = deriveBoardKeyPair(boardId).pk;
       const fetchPromise = ndk.fetchEvents(
-        { kinds: [30300], "#b": [bTag], limit: 25 } as unknown as Parameters<typeof ndk.fetchEvents>[0],
+        { kinds: [30300], authors: [boardPubkey], "#b": [bTag], limit: 25 } as unknown as Parameters<typeof ndk.fetchEvents>[0],
         { closeOnEose: true },
       );
       const timeoutPromise = new Promise<Set<NDKEvent>>((resolve) =>
@@ -1292,7 +1392,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       } else if (entry.kind === "week") {
         colId = "day";
       }
-      await publishTaskEvent(boardId, taskId, payload, "open", colId);
+      const published = await publishTaskEvent(boardId, taskId, payload, "open", colId);
       const result: FullTaskRecord = {
         id: taskId,
         boardId,
@@ -1306,7 +1406,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         hiddenUntilISO: input.hiddenUntilISO ?? undefined,
         priority: input.priority,
         completed: false,
-        createdAt: Math.floor(now / 1000),
+        createdAt: published.created_at ?? Math.floor(now / 1000),
+        updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : undefined,
+        nostrEventId: published.id,
         createdBy: userPubkey,
         lastEditedBy: userPubkey,
         subtasks: input.subtasks,
@@ -1365,7 +1467,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const colTag = event.tags.find((t) => t[0] === "col");
       const existingColId = colTag?.[1] ?? "";
       const colId = patch.columnId !== undefined ? (patch.columnId ?? "") : existingColId;
-      await publishTaskEvent(entry.id, taskId, merged, status, colId);
+      const published = await publishTaskEvent(entry.id, taskId, merged, status, colId, event.created_at);
       // Build updated FullTaskRecord — keep assignees as string[] (extract pubkeys)
       const updatedAssignees: TaskAssignee[] | undefined = patch.assignees !== undefined
         ? patch.assignees
@@ -1384,6 +1486,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         dueTimeZone: (merged.dueTimeZone as string | null | undefined) ?? existing.dueTimeZone,
         hiddenUntilISO: (merged.hiddenUntilISO as string | null | undefined) ?? existing.hiddenUntilISO,
         lastEditedBy: merged.lastEditedBy,
+        createdAt: published.created_at ?? existing.createdAt,
+        updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : existing.updatedAt,
+        nostrEventId: published.id,
       };
       if (patch.columnId !== undefined) updated.column = colId || undefined;
       // Invalidate cache entry
@@ -1423,8 +1528,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const nostrStatus: "open" | "done" | "deleted" = completed ? "done" : "open";
       const colTag = event.tags.find((t) => t[0] === "col");
       const colId = colTag?.[1] ?? "";
-      await publishTaskEvent(entry.id, taskId, merged, nostrStatus, colId);
-      const updated = { ...existing, completed, completedAt: merged.completedAt ?? undefined };
+      const published = await publishTaskEvent(entry.id, taskId, merged, nostrStatus, colId, event.created_at);
+      const updated = {
+        ...existing,
+        completed,
+        completedAt: merged.completedAt ?? undefined,
+        createdAt: published.created_at ?? existing.createdAt,
+        updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : existing.updatedAt,
+        nostrEventId: published.id,
+      };
       // Update cache
       const cache = readCache();
       const bc = cache.boards[entry.id];
@@ -1452,7 +1564,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const colId = colTag?.[1] ?? "";
 
       // Step 1: publish kind 30301 status=deleted (app-level soft delete)
-      await publishTaskEvent(entry.id, taskId, rawPayload, "deleted", colId);
+      await publishTaskEvent(entry.id, taskId, rawPayload, "deleted", colId, event.created_at);
 
       // Step 2: publish NIP-09 kind 5 deletion request (matches PWA's publishTaskDeletionRequest)
       const boardKeys = deriveBoardKeyPair(entry.id);
@@ -1517,8 +1629,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const status = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
       const colTag = event.tags.find((t) => t[0] === "col");
       const colId = colTag?.[1] ?? "";
-      await publishTaskEvent(entry.id, taskId, rawPayload, status, colId);
-      return { ...existing, subtasks };
+      const published = await publishTaskEvent(entry.id, taskId, rawPayload, status, colId, event.created_at);
+      return {
+        ...existing,
+        subtasks,
+        createdAt: published.created_at ?? existing.createdAt,
+        updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : existing.updatedAt,
+        nostrEventId: published.id,
+      };
     },
 
     async getTask(taskId: string, boardId?: string): Promise<FullTaskRecord | null> {
@@ -1531,25 +1649,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         boards.push(...config.boards);
       }
       for (const board of boards) {
-        // Try exact UUID match via #d filter
-        const events = await fetchBoardEvents(board.id, taskId);
-        const latestExact = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, board.id, board.name));
-        if (latestExact) return latestExact.parsed;
-        // UUID prefix match: fetch all and scan
-        if (taskId.length < 36) {
-          const allEvents = await fetchBoardEvents(board.id);
-          const prefix = taskId.toLowerCase().slice(0, 8);
-          const matchingEvents: NDKEvent[] = [];
-          for (const event of allEvents) {
-            const dTag = event.tags.find((t) => t[0] === "d");
-            const dVal = (dTag?.[1] ?? "").toLowerCase();
-            if (dVal.startsWith(prefix)) {
-              matchingEvents.push(event);
-            }
-          }
-          const latestPrefix = await pickLatestParsedEvent(matchingEvents, (event) => parseDecryptedEvent(event, board.id, board.name));
-          if (latestPrefix) return latestPrefix.parsed;
-        }
+        const resolvedId = await resolveTaskId(board.id, taskId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(board.id, resolvedId);
+        const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedEvent(event, board.id, board.name));
+        if (latest) return latest.parsed;
       }
       return null;
     },
@@ -1577,8 +1681,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         const statusTag = event.tags.find((t) => t[0] === "status");
         const nostrStatus = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
         const colId = readTagValue(event.tags, "col") ?? "";
-        await publishTaskEvent(entry.id, resolvedId, rawPayload, nostrStatus, colId);
-        return { ...existing, assignees: assignees as TaskAssignee[] };
+        const published = await publishTaskEvent(entry.id, resolvedId, rawPayload, nostrStatus, colId, event.created_at);
+        return {
+          ...existing,
+          assignees: assignees as TaskAssignee[],
+          createdAt: published.created_at ?? existing.createdAt,
+          updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : existing.updatedAt,
+          nostrEventId: published.id,
+        };
       }
       return null;
     },
@@ -1598,7 +1708,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         rawPayload.rsvpCreatedAt = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
         rawPayload.lastEditedBy = senderPubkey;
         const colId = readTagValue(event.tags, "col") ?? existing.columnId ?? "";
-        await publishCalendarEvent(entry.id, resolvedId, rawPayload, "open", colId);
+        await publishCalendarEvent(entry.id, resolvedId, existing.eventKey, rawPayload, "open", colId, event.created_at);
         return { ...existing, rsvpStatus: status, rsvpCreatedAt: rawPayload.rsvpCreatedAt };
       }
       return null;
@@ -1711,15 +1821,19 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         throw new Error("Clear completed is disabled on this board.");
       }
       const events = await fetchBoardEvents(entry.id);
+      const latestByTask = await pickLatestParsedEventsByKey(
+        events,
+        (event) => readTagValue(event.tags, "d"),
+        (event) => parseDecryptedEvent(event, entry.id, entry.name),
+      );
       let removed = 0;
-      for (const event of events) {
-        const task = await parseDecryptedEvent(event, entry.id, entry.name);
-        if (!task || !task.completed) continue;
+      for (const { event, parsed: task } of latestByTask.values()) {
+        if (!task.completed || task.deleted) continue;
         const plaintext = await decryptContent(entry.id, event.content);
         const rawPayload = JSON.parse(plaintext);
         const colTag = event.tags.find((t) => t[0] === "col");
         const colId = colTag?.[1] ?? "";
-        await publishTaskEvent(entry.id, task.id, rawPayload, "deleted", colId);
+        await publishTaskEvent(entry.id, task.id, rawPayload, "deleted", colId, event.created_at);
         removed += 1;
       }
       return removed;

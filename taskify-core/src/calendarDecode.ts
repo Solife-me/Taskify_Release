@@ -1,4 +1,6 @@
 import { normalizeCalendarEventPayload } from "./calendarPayload.js";
+import { normalizeTaskRecurrence } from "./shareContracts.js";
+import type { Recurrence } from "./taskContracts.js";
 
 export type CalendarRsvpStatus = "accepted" | "declined" | "tentative";
 export type CalendarRsvpFb = "free" | "busy";
@@ -33,6 +35,8 @@ export type CalendarCanonicalPayload = {
   startTzid?: string;
   endTzid?: string;
   inviteTokens?: Record<string, string>;
+  recurrence?: Recurrence;
+  seriesId?: string;
   deleted?: boolean;
 };
 
@@ -57,6 +61,8 @@ export type CalendarViewPayload = {
   endISO?: string;
   startTzid?: string;
   endTzid?: string;
+  recurrence?: Recurrence;
+  seriesId?: string;
   deleted?: boolean;
 };
 
@@ -159,6 +165,10 @@ export function parseCalendarCanonicalPayload(raw: unknown): CalendarCanonicalPa
   if (participants) payload.participants = participants;
   const inviteTokens = normalizeInviteTokens((raw as any).inviteTokens);
   if (inviteTokens) payload.inviteTokens = inviteTokens;
+  const recurrence = normalizeTaskRecurrence((raw as any).recurrence) as Recurrence | undefined;
+  if (recurrence?.type !== "none") payload.recurrence = recurrence;
+  const seriesId = normalizeString((raw as any).seriesId);
+  if (seriesId && recurrence?.type !== "none") payload.seriesId = seriesId;
 
   const core = normalizeCalendarEventPayload(raw);
   if (!core) return null;
@@ -209,6 +219,10 @@ export function parseCalendarViewPayload(raw: unknown): CalendarViewPayload | nu
   if (hashtags) payload.hashtags = hashtags;
   const references = normalizeStringArray((raw as any).references);
   if (references) payload.references = references;
+  const recurrence = normalizeTaskRecurrence((raw as any).recurrence) as Recurrence | undefined;
+  if (recurrence?.type !== "none") payload.recurrence = recurrence;
+  const seriesId = normalizeString((raw as any).seriesId);
+  if (seriesId && recurrence?.type !== "none") payload.seriesId = seriesId;
 
   const core = normalizeCalendarEventPayload(raw);
   if (!core) return null;

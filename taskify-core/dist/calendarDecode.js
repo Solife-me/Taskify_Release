@@ -1,4 +1,5 @@
 import { normalizeCalendarEventPayload } from "./calendarPayload.js";
+import { normalizeTaskRecurrence } from "./shareContracts.js";
 function normalizeString(value) {
     if (typeof value !== "string")
         return null;
@@ -110,6 +111,12 @@ export function parseCalendarCanonicalPayload(raw) {
     const inviteTokens = normalizeInviteTokens(raw.inviteTokens);
     if (inviteTokens)
         payload.inviteTokens = inviteTokens;
+    const recurrence = normalizeTaskRecurrence(raw.recurrence);
+    if (recurrence?.type !== "none")
+        payload.recurrence = recurrence;
+    const seriesId = normalizeString(raw.seriesId);
+    if (seriesId && recurrence?.type !== "none")
+        payload.seriesId = seriesId;
     const core = normalizeCalendarEventPayload(raw);
     if (!core)
         return null;
@@ -179,6 +186,12 @@ export function parseCalendarViewPayload(raw) {
     const references = normalizeStringArray(raw.references);
     if (references)
         payload.references = references;
+    const recurrence = normalizeTaskRecurrence(raw.recurrence);
+    if (recurrence?.type !== "none")
+        payload.recurrence = recurrence;
+    const seriesId = normalizeString(raw.seriesId);
+    if (seriesId && recurrence?.type !== "none")
+        payload.seriesId = seriesId;
     const core = normalizeCalendarEventPayload(raw);
     if (!core)
         return null;

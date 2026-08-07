@@ -89,7 +89,7 @@ describe("parseFileServers / serializeFileServers", () => {
     const input: FileServerEntry[] = [
       { url: "https://nostr.build", type: "nip96", label: "nostr.build" },
       { url: "https://blossom.band", type: "blossom", label: "blossom.band" },
-      { url: "https://originless.besoeasy.com", type: "originless" },
+      { url: "https://originless.solife.me", type: "originless" },
     ];
     const serialized = serializeFileServers(input);
     const parsed = parseFileServers(serialized);
@@ -232,7 +232,7 @@ describe("uploadAvatar dispatcher", () => {
 
   test("routes originless type to POST /upload with no auth", async () => {
     const { uploadAvatar } = await import("./Nip96Client");
-    const entry: FileServerEntry = { url: "https://originless.besoeasy.com", type: "originless" };
+    const entry: FileServerEntry = { url: "https://originless.solife.me", type: "originless" };
     const file = new Blob(["test"], { type: "image/jpeg" });
 
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -246,7 +246,7 @@ describe("uploadAvatar dispatcher", () => {
     expect(result.url).toBe("https://ipfs.io/ipfs/Qmabc123");
     expect(result.nip94).toBeNull();
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://originless.besoeasy.com/upload",
+      "https://originless.solife.me/upload",
       expect.objectContaining({ method: "POST" }),
     );
     // No Authorization header for originless
@@ -329,7 +329,7 @@ describe("uploadAvatarToOriginless", () => {
       ),
     );
 
-    const result = await uploadAvatarToOriginless({ serverUrl: "https://originless.besoeasy.com", file });
+    const result = await uploadAvatarToOriginless({ serverUrl: "https://originless.solife.me", file });
     expect(result.url).toBe("https://ipfs.io/ipfs/QmTest");
 
     const callArgs = fetchSpy.mock.calls[0][1] as RequestInit;
@@ -347,26 +347,43 @@ describe("uploadAvatarToOriginless", () => {
     );
 
     await expect(
-      uploadAvatarToOriginless({ serverUrl: "https://originless.besoeasy.com", file }),
+      uploadAvatarToOriginless({ serverUrl: "https://originless.solife.me", file }),
     ).rejects.toThrow("Service unavailable");
   });
 
-  test("falls back to {server}/ipfs/{cid} when response only has a cid", async () => {
-    // Some originless servers omit a top-level url and only return the cid.
-    // The client constructs a gateway URL from {serverUrl}/ipfs/{cid}.
+  test("builds a public gateway URL when the response only has a cid", async () => {
+    // Originless only ever returns a cid -- it does not serve the blob itself, so the client must
+    // build a public gateway URL rather than one relative to the upload server. Verified against a
+    // real upload: {server}/ipfs/{cid} 404s, dweb.link serves the bytes.
+    const { uploadAvatarToOriginless } = await import("./Nip96Client");
+    const file = new Blob(["data"], { type: "image/png" });
+    const cid = "QmS5cF4AsRFFvHZW8pRRVk7XxN516jqcTeXMYwFJwRgWc1";
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ cid }), { status: 200 }),
+    );
+
+    const result = await uploadAvatarToOriginless({
+      serverUrl: "https://originless.solife.me",
+      file,
+    });
+    expect(result.url).toBe(`https://dweb.link/ipfs/${cid}`);
+    expect(result.nip94).toBeNull();
+  });
+
+  test("ignores a cid-shaped field that isn't actually a cid", async () => {
+    // Better to fail loudly than hand back a gateway URL built from a path or an error string,
+    // which would 404 later and look like a broken attachment.
     const { uploadAvatarToOriginless } = await import("./Nip96Client");
     const file = new Blob(["data"], { type: "image/png" });
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ cid: "QmTest" }), { status: 200 }),
+      new Response(JSON.stringify({ cid: "not a cid" }), { status: 200 }),
     );
 
-    const result = await uploadAvatarToOriginless({
-      serverUrl: "https://originless.besoeasy.com",
-      file,
-    });
-    expect(result.url).toBe("https://originless.besoeasy.com/ipfs/QmTest");
-    expect(result.nip94).toBeNull();
+    await expect(
+      uploadAvatarToOriginless({ serverUrl: "https://originless.solife.me", file }),
+    ).rejects.toThrow("url");
   });
 
   test("throws if response has no url, cid, path, or other resolvable field", async () => {
@@ -378,7 +395,7 @@ describe("uploadAvatarToOriginless", () => {
     );
 
     await expect(
-      uploadAvatarToOriginless({ serverUrl: "https://originless.besoeasy.com", file }),
+      uploadAvatarToOriginless({ serverUrl: "https://originless.solife.me", file }),
     ).rejects.toThrow("url");
   });
 });

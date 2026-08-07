@@ -27,18 +27,6 @@ function getStoreState(storeName: string): StoreState {
   return created;
 }
 
-async function loadKeyFromIdb(storeName: string, key: string): Promise<string | null> {
-  try {
-    const db = await getTaskifyDb();
-    const value = await idbStorage.get<string>(db, storeName, key);
-    if (typeof value === "string") return value;
-    if (value !== undefined) return null;
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 function queueWrite(storeName: string, fn: () => Promise<void>): void {
   const state = getStoreState(storeName);
   state.writeChain = state.writeChain
@@ -71,18 +59,26 @@ export const idbKeyValue = {
       ),
     );
 
-    await Promise.all(
-      uniqueKeys.map(async (key) => {
-        if (state.loaded.has(key)) return;
-        const raw = await loadKeyFromIdb(storeName, key);
-        if (raw === null) {
-          state.values.delete(key);
-        } else {
-          state.values.set(key, raw);
-        }
-        state.loaded.add(key);
-      }),
-    );
+    const keysToLoad = uniqueKeys.filter((key) => !state.loaded.has(key));
+    if (keysToLoad.length === 0) return;
+
+    let values: Array<string | undefined>;
+    try {
+      const db = await getTaskifyDb();
+      values = await idbStorage.getMany<string>(db, storeName, keysToLoad);
+    } catch {
+      values = keysToLoad.map(() => undefined);
+    }
+
+    keysToLoad.forEach((key, index) => {
+      const raw = values[index];
+      if (typeof raw === "string") {
+        state.values.set(key, raw);
+      } else {
+        state.values.delete(key);
+      }
+      state.loaded.add(key);
+    });
   },
 
   getItem(storeName: string, key: string): string | null {

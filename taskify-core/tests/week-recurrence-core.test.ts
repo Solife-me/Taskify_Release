@@ -124,3 +124,35 @@ test("ensureWeekRecurrencesForCurrentWeek creates clone for current week", () =>
   assert.equal(out[1].seriesId, "t1");
   assert.equal(out[1].createdAt, 123);
 });
+
+test("ensureWeekRecurrencesForCurrentWeek stops when recurrence does not advance", () => {
+  const task = {
+    id: "t1",
+    boardId: "b1",
+    title: "Broken recurrence",
+    dueISO: "2026-03-05T00:00:00.000Z",
+    recurrence: { type: "every", n: 0, unit: "day" },
+  } as SeriesTaskLike;
+  let calls = 0;
+
+  const out = ensureWeekRecurrencesForCurrentWeek({
+    tasks: [task],
+    weekStart: 0,
+    newTaskPosition: "bottom",
+    dedupeRecurringInstances: (tasks) => tasks,
+    isFrequentRecurrence: () => true,
+    nextOccurrence: (dueISO) => {
+      calls += 1;
+      return dueISO;
+    },
+    startOfWeek: () => new Date("2026-03-08T00:00:00.000Z"),
+    recurringInstanceId: (seriesId, dueISO) => `${seriesId}:${dueISO}`,
+    isoDatePart: (iso) => iso.slice(0, 10),
+    taskDateKey: (t) => t.dueISO.slice(0, 10),
+    nextOrderForBoard: () => 10,
+    maybePublishTask: () => {},
+  });
+
+  assert.equal(out.length, 1);
+  assert.equal(calls, 1);
+});

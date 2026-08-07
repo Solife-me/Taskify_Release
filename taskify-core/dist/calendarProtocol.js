@@ -24,3 +24,19 @@ export function parseCalendarAddress(coord) {
         return null;
     return { kind, pubkey, d };
 }
+/**
+ * Recurrence identity and its cutoff are part of the synced event version, including a
+ * deleted version. That lets another client terminate the series without depending on a
+ * relay honoring an optional NIP-09 deletion request.
+ */
+export function calendarRecurrenceSyncFields(event) {
+    if (!event.recurrence || typeof event.recurrence !== "object")
+        return {};
+    const explicitSeriesId = typeof event.seriesId === "string" ? event.seriesId.trim() : "";
+    const fallbackSeriesId = typeof event.id === "string" ? event.id.trim() : "";
+    const seriesId = explicitSeriesId || fallbackSeriesId;
+    return {
+        recurrence: event.recurrence,
+        ...(seriesId ? { seriesId } : {}),
+    };
+}

@@ -35,7 +35,7 @@ export type NostrPool = {
     opts?: { onevent?: (ev: NostrEvent) => void; oneose?: (relay?: string) => void; closeOnEose?: boolean },
   ) => { close: (...args: any[]) => void };
   publish: (relays: string[], event: NostrUnsignedEvent) => Promise<void>;
-  publishEvent: (relays: string[], event: NostrEvent) => void;
+  publishEvent: (relays: string[], event: NostrEvent) => Promise<unknown>;
   list?: (relays: string[], filters: any[]) => Promise<NostrEvent[]>;
   get?: (relays: string[], filter: any) => Promise<NostrEvent | null>;
 };
@@ -115,7 +115,7 @@ export function createNostrPool(): NostrPool {
       await pool.publish(relayUrls, event as unknown as NostrEvent);
     },
     publishEvent(relayUrls, event) {
-      void pool.publishEvent(relayUrls, event as unknown as NostrEvent);
+      return pool.publishEvent(relayUrls, event as unknown as NostrEvent);
     },
     list: pool.list.bind(pool),
     get: pool.get.bind(pool),

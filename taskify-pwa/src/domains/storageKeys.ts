@@ -17,7 +17,5 @@ export const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
 export const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
 export const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 export const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
-export const LS_LAST_CLOUD_BACKUP = "taskify_cloud_backup_last_v1";
-export const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1";
 export const LS_SCRIPTURE_MEMORY = "taskify_scripture_memory_v1";
 export const LS_BACKGROUND_IMAGE = "taskify_background_image_v1";

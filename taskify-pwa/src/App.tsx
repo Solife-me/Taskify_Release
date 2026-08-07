@@ -12,6 +12,8 @@ import {
   MS_PER_DAY,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
+  normalizeTaskRecurrence,
+  calendarRecurrenceSyncFields,
   compressedToRawHex,
   isExternalCalendarEvent,
   isListLikeBoard,
@@ -139,6 +141,14 @@ import {
   updateRecurringSeriesCutoff,
 } from "./domains/tasks/recurrenceCutoffs";
 import { useCalendarEvents } from "./domains/calendar/calendarHook";
+import {
+  CALENDAR_SERIES_CUTOFFS_KEY,
+  applyCalendarSeriesCutoff,
+  applyCalendarSeriesCutoffs,
+  parseCalendarSeriesCutoffs,
+  serializeCalendarSeriesCutoffs,
+  updateCalendarSeriesCutoff,
+} from "./domains/calendar/recurrenceCutoffs";
 import {
   useCalendarInvites,
   type CalendarInvite,
@@ -1137,7 +1147,35 @@ export default function App() {
   const sanitizeRecurringTasks = useCallback(<TTask extends Task,>(items: TTask[]): TTask[] => (
     applyRecurringSeriesCutoffs(items, recurringSeriesCutoffsRef.current)
   ), []);
+  const calendarSeriesCutoffsRef = useRef(
+    parseCalendarSeriesCutoffs(
+      idbKeyValue.getItem(TASKIFY_STORE_TASKS, CALENDAR_SERIES_CUTOFFS_KEY),
+    ),
+  );
+  const recordCalendarSeriesCutoff = useCallback((
+    boardId: string,
+    seriesId: string,
+    cutoffISO: string,
+  ) => {
+    const current = calendarSeriesCutoffsRef.current;
+    const next = updateCalendarSeriesCutoff(current, boardId, seriesId, cutoffISO);
+    if (next === current) return;
+    calendarSeriesCutoffsRef.current = next;
+    idbKeyValue.setItem(
+      TASKIFY_STORE_TASKS,
+      CALENDAR_SERIES_CUTOFFS_KEY,
+      serializeCalendarSeriesCutoffs(next),
+    );
+  }, []);
+  const sanitizeCalendarEvents = useCallback(<TEvent extends CalendarEvent,>(
+    events: TEvent[],
+  ): TEvent[] => (
+    applyCalendarSeriesCutoffs(events, calendarSeriesCutoffsRef.current)
+  ), []);
   const [calendarEvents, setCalendarEvents] = useCalendarEvents();
+  useEffect(() => {
+    setCalendarEvents((events) => sanitizeCalendarEvents(events));
+  }, [sanitizeCalendarEvents, setCalendarEvents]);
   const {
     clearSelection,
     exitSelectionMode,
@@ -1809,11 +1847,6 @@ export default function App() {
     taskClock: Map<string, Map<string, number>>; // nostrBoardId -> (taskId -> created_at)
     calendarClock: Map<string, Map<string, number>>; // nostrBoardId -> (calendarEventId -> created_at)
   };
-  type BoardMigrationState = {
-    dedicatedSeen: boolean;
-    legacySeen: boolean;
-    migrationAttempted: boolean;
-  };
   const nostrIdxRef = useRef<NostrIndex>(((): NostrIndex => {
     const idx: NostrIndex = { boardMeta: new Map(), taskClock: new Map(), calendarClock: new Map() };
     // Seed taskClock from persisted deletion tombstones. This ensures a stale
@@ -1906,7 +1939,12 @@ export default function App() {
       });
     }
   }, [flushTombstonesPersist]);
-  const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
+  const clearTaskTombstone = useCallback((bTag: string, taskId: string) => {
+    const entries = tombstonesRef.current.get(bTag);
+    if (!entries?.delete(taskId)) return;
+    if (entries.size === 0) tombstonesRef.current.delete(bTag);
+    flushTombstonesPersist();
+  }, [flushTombstonesPersist]);
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const taskPublishVersionsRef = useRef(new TaskPublishVersionTracker());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
@@ -1969,35 +2007,6 @@ export default function App() {
   useEffect(() => { boardsRef.current = boards; }, [boards]);
   const tasksRef = useRef<Task[]>(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
-
-  // AES key migration: track items encrypted with the legacy key (SHA-256(boardId) == public tag).
-  // When detected, we re-encrypt and re-publish with the secure labeled key.
-  const aesMigrationPendingTasksRef = useRef<Set<string>>(new Set());
-  const aesMigrationPendingBoardIdsRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    const pendingBoardIds = aesMigrationPendingBoardIdsRef.current;
-    if (pendingBoardIds.size === 0) return;
-    aesMigrationPendingBoardIdsRef.current = new Set();
-    for (const boardId of pendingBoardIds) {
-      const board = boardsRef.current.find((b) => b.nostr?.boardId === boardId);
-      if (!board) continue;
-      publishBoardMetadataRef.current?.(board)?.catch(() => {});
-    }
-  }, [boards]);
-
-  useEffect(() => {
-    const pendingTaskIds = aesMigrationPendingTasksRef.current;
-    if (pendingTaskIds.size === 0) return;
-    aesMigrationPendingTasksRef.current = new Set();
-    for (const taskId of pendingTaskIds) {
-      const task = tasksRef.current.find((t) => t.id === taskId);
-      if (!task) continue;
-      const board = boardsRef.current.find((b) => b.id === task.boardId);
-      if (!board) continue;
-      maybePublishTaskRef.current?.(task, board, { skipBoardMetadata: true })?.catch(() => {});
-    }
-  }, [tasks]);
 
   const calendarEventsRef = useRef<CalendarEvent[]>(calendarEvents);
   useEffect(() => { calendarEventsRef.current = calendarEvents; }, [calendarEvents]);
@@ -2603,7 +2612,6 @@ export default function App() {
     handleOnboardingEnableNotifications,
     handleOnboardingGenerateNewKey,
     handleOnboardingRestoreFromBackupFile,
-    handleOnboardingRestoreFromCloud,
     handleOnboardingUseExistingKey,
     isOnboardingActiveRef,
     onboardingPushConfigured,
@@ -6095,14 +6103,6 @@ export default function App() {
       .filter(Boolean);
     return candidate.length ? candidate : fallback;
   }, [defaultRelays]);
-  const ensureMigrationState = useCallback((bTag: string): BoardMigrationState => {
-    let state = boardMigrationRef.current.get(bTag);
-    if (!state) {
-      state = { dedicatedSeen: false, legacySeen: false, migrationAttempted: false };
-      boardMigrationRef.current.set(bTag, state);
-    }
-    return state;
-  }, []);
   function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
     if (!taskId || !board?.nostr?.boardId) return null;
     const bTag = boardTag(board.nostr.boardId);
@@ -6190,7 +6190,7 @@ export default function App() {
     try {
       await nostrPublish(relays, {
         kind: 5,
-        tags: [["a", aTag]],
+        tags: [["a", aTag], ["k", "30301"]],
         content: "Task deleted",
         created_at: Math.floor(Date.now() / 1000),
       }, { sk: boardKeys.sk });
@@ -6548,6 +6548,7 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    Object.assign(base, calendarRecurrenceSyncFields(event));
     const normalized = deleted
       ? normalizeCalendarDeleteMutationPayload(
           {
@@ -6631,6 +6632,7 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    Object.assign(base, calendarRecurrenceSyncFields(event));
     const normalized = deleted
       ? normalizeCalendarDeleteMutationPayload(
           {
@@ -7075,18 +7077,19 @@ export default function App() {
     const board = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === d);
     if (!board || !board.nostr) return;
     const boardId = board.nostr.boardId;
-    const migrationState = ensureMigrationState(d);
-    let isDedicated = true;
+    let boardKeys;
     try {
-      const boardKeys = await deriveBoardNostrKeys(boardId);
-      isDedicated = ev.pubkey === boardKeys.pk;
+      boardKeys = await deriveBoardNostrKeys(boardId);
     } catch {
-      isDedicated = true; // fall back to accepting events if derivation fails
+      return;
     }
-    if (isDedicated) migrationState.dedicatedSeen = true;
-    else {
-      migrationState.legacySeen = true;
-      if (migrationState.dedicatedSeen) return;
+    if (ev.pubkey !== boardKeys.pk) return;
+    let payload: any;
+    try {
+      const { plaintext } = await decryptFromBoard(boardId, ev.content);
+      payload = plaintext ? JSON.parse(plaintext) : {};
+    } catch {
+      return;
     }
     const last = nostrIdxRef.current.boardMeta.get(d) || 0;
     if (ev.created_at < last) return;
@@ -7094,18 +7097,6 @@ export default function App() {
     nostrIdxRef.current.boardMeta.set(d, ev.created_at);
     const kindTag = tagValue(ev, "k");
     const name = tagValue(ev, "name");
-    let payload: any = {};
-    let boardDecryptedWithLegacyKey = false;
-    try {
-      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
-      boardDecryptedWithLegacyKey = usedLegacyKey;
-      payload = plaintext ? JSON.parse(plaintext) : {};
-    } catch {
-      try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
-    }
-    if (boardDecryptedWithLegacyKey) {
-      aesMigrationPendingBoardIdsRef.current.add(boardId);
-    }
     setBoards((prev) => {
       const boardIndex = prev.findIndex((item) => item.id === board.id);
       if (boardIndex === -1) return prev;
@@ -7252,7 +7243,7 @@ export default function App() {
       working[targetIndex] = updatedBoard;
       return withBoardOrder(working);
     });
-  }, [setBoards, tagValue, defaultRelays, ensureMigrationState]);
+  }, [setBoards, tagValue, defaultRelays]);
   const applyTaskEvent = useCallback(async (ev: NostrEvent) => {
     const bTag = tagValue(ev, "b");
     const taskId = tagValue(ev, "d");
@@ -7260,18 +7251,19 @@ export default function App() {
     const lb = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag);
     if (!lb || !lb.nostr) return;
     const boardId = lb.nostr.boardId;
-    const migrationState = ensureMigrationState(bTag);
-    let isDedicated = true;
+    let boardKeys;
     try {
-      const boardKeys = await deriveBoardNostrKeys(boardId);
-      isDedicated = ev.pubkey === boardKeys.pk;
+      boardKeys = await deriveBoardNostrKeys(boardId);
     } catch {
-      isDedicated = true;
+      return;
     }
-    if (isDedicated) migrationState.dedicatedSeen = true;
-    else {
-      migrationState.legacySeen = true;
-      if (migrationState.dedicatedSeen) return;
+    if (ev.pubkey !== boardKeys.pk) return;
+    let payload: any;
+    try {
+      const { plaintext } = await decryptFromBoard(boardId, ev.content);
+      payload = plaintext ? JSON.parse(plaintext) : {};
+    } catch {
+      return;
     }
     if (!nostrIdxRef.current.taskClock.has(bTag)) nostrIdxRef.current.taskClock.set(bTag, new Map());
     const m = nostrIdxRef.current.taskClock.get(bTag)!;
@@ -7300,18 +7292,6 @@ export default function App() {
       }
     }
 
-    let payload: any = {};
-    let taskDecryptedWithLegacyKey = false;
-    try {
-      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
-      taskDecryptedWithLegacyKey = usedLegacyKey;
-      payload = plaintext ? JSON.parse(plaintext) : {};
-    } catch {
-      try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
-    }
-    if (taskDecryptedWithLegacyKey) {
-      aesMigrationPendingTasksRef.current.add(taskId);
-    }
     const status = tagValue(ev, "status");
     const col = tagValue(ev, "col");
     const eventCreatedAt = typeof ev.created_at === "number" ? ev.created_at * 1000 : undefined;
@@ -7351,7 +7331,7 @@ export default function App() {
       completed: status === "done",
       completedAt: payload.completedAt,
       completedBy: payload.completedBy,
-      recurrence: payload.recurrence,
+      recurrence: normalizeTaskRecurrence(payload.recurrence) as Recurrence | undefined,
       hiddenUntilISO: payload.hiddenUntilISO,
       streak: typeof payload.streak === 'number' ? payload.streak : undefined,
       longestStreak: typeof payload.longestStreak === 'number' ? payload.longestStreak : undefined,
@@ -7612,28 +7592,7 @@ export default function App() {
         return sanitizeRecurringTasks(result);
       });
     }, LIVE_BATCH_MS);
-  }, [ensureMigrationState, recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
-
-  const maybeMigrateBoardToDedicatedKey = useCallback(async (bTag: string) => {
-    const state = ensureMigrationState(bTag);
-    if (state.dedicatedSeen || state.migrationAttempted || !state.legacySeen) return;
-    const board = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag);
-    if (!board || !board.nostr) return;
-    state.migrationAttempted = true;
-    try {
-      await publishBoardMetadataRef.current?.(board);
-      const boardTasks = tasksRef.current.filter((t) => t.boardId === board.id);
-      for (const task of boardTasks) {
-        await maybePublishTaskRef.current?.(task, board, { skipBoardMetadata: true });
-      }
-      state.dedicatedSeen = true;
-    } catch (err) {
-      state.migrationAttempted = false;
-      console.warn("Failed to migrate board to dedicated nostr key", err);
-    }
-  }, [ensureMigrationState]);
-  const migrateBoardRef = useRef(maybeMigrateBoardToDedicatedKey);
-  useEffect(() => { migrateBoardRef.current = maybeMigrateBoardToDedicatedKey; }, [maybeMigrateBoardToDedicatedKey]);
+  }, [recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
 
   function normalizePushError(err: unknown): string {
     if (!(err instanceof Error)) return 'Failed to enable push notifications.';
@@ -7791,6 +7750,7 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             deviceId,
+            subscriptionId: settings.pushNotifications.subscriptionId,
             platform: normalizedPlatform,
             subscription: subscriptionJson,
           }),
@@ -7872,6 +7832,9 @@ export default function App() {
           await withTimeout(
             fetch(`${workerBaseUrl}/api/devices/${settings.pushNotifications.deviceId}`, {
               method: 'DELETE',
+              headers: settings.pushNotifications.subscriptionId
+                ? { 'X-Taskify-Subscription': settings.pushNotifications.subscriptionId }
+                : undefined,
             }),
             PUSH_OPERATION_TIMEOUT_MS,
             'Timed out while unregistering this device from notifications.',
@@ -8358,21 +8321,8 @@ export default function App() {
   }
 
   function normalizeImportedRecurrence(value: unknown): Recurrence | undefined {
-    if (!value || typeof value !== "object") return undefined;
-    const type = typeof (value as any).type === "string" ? (value as any).type.trim() : "";
-    if (type !== "none" && type !== "daily" && type !== "weekly") return undefined;
-    if (type === "none") return undefined;
-    if (type === "weekly") {
-      const rawDays = Array.isArray((value as any).days) ? (value as any).days : [];
-      const days = rawDays
-        .map((entry: unknown) => (typeof entry === "number" && Number.isInteger(entry) ? entry : Number.NaN))
-        .filter((entry: number) => Number.isInteger(entry) && entry >= 0 && entry <= 6) as Weekday[];
-      if (!days.length) return undefined;
-      const untilISO = normalizeIsoTimestamp((value as any).untilISO);
-      return { type: "weekly", days: Array.from(new Set(days)), ...(untilISO ? { untilISO } : {}) };
-    }
-    const untilISO = normalizeIsoTimestamp((value as any).untilISO);
-    return { type: "daily", ...(untilISO ? { untilISO } : {}) };
+    const normalized = normalizeTaskRecurrence(value) as Recurrence | undefined;
+    return normalized?.type === "none" ? undefined : normalized;
   }
 
   function normalizeImportedDateKey(value: unknown): string | undefined {
@@ -9119,10 +9069,7 @@ export default function App() {
             })
             .filter((subtask): subtask is NonNullable<typeof subtask> => !!subtask)
         : undefined;
-      const recurrence =
-        payload.recurrence && typeof payload.recurrence === "object" && typeof payload.recurrence.type === "string"
-          ? (payload.recurrence as Recurrence)
-          : undefined;
+      const recurrence = normalizeImportedRecurrence(payload.recurrence);
       const priority = normalizeTaskPriority(payload.priority);
       const incomingAssignees = normalizeTaskAssignees(payload.assignees);
       const isAssignment = isAssignedSharedTask(payload);
@@ -9722,7 +9669,19 @@ export default function App() {
     setTimeout(() => setUndoTask(null), 5000); // undo duration
   }
   function undoDelete() {
-    if (undoTask) { setTasks(prev => [...prev, undoTask]); setUndoTask(null); }
+    if (!undoTask) return;
+    const restored = undoTask;
+    setTasks(prev => [...prev, restored]);
+    setUndoTask(null);
+    const board = boards.find((candidate) => candidate.id === restored.boardId);
+    void maybePublishTask(restored, board).then(() => {
+      if (board?.nostr?.boardId) {
+        clearTaskTombstone(boardTag(board.nostr.boardId), restored.id);
+      }
+    }).catch((error) => {
+      console.warn("Failed to publish restored task", error);
+      showToast("Task restored locally; sync is still pending.", 3000);
+    });
   }
 
 
@@ -10139,6 +10098,7 @@ export default function App() {
       if (Number.isNaN(cutoffDate.getTime())) return;
       const cutoffTime = cutoffDate.getTime();
       const nextUntil = new Date(cutoffTime - MS_PER_DAY).toISOString();
+      recordCalendarSeriesCutoff(existing.boardId, seriesId, nextUntil);
       const toPublish: CalendarEvent[] = [];
       const toDelete: CalendarEvent[] = [];
 
@@ -10157,7 +10117,11 @@ export default function App() {
             continue;
           }
           if (startKey >= cutoffKey) {
-            toDelete.push(event);
+            toDelete.push({
+              ...event,
+              seriesId,
+              recurrence: { ...event.recurrence, untilISO: nextUntil },
+            });
             changed = true;
             continue;
           }
@@ -11194,7 +11158,12 @@ export default function App() {
     }
     if (!payload || payload.eventId !== eventId) return;
     if (payload.deleted) {
-      setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
+      if (payload.recurrence?.untilISO && payload.seriesId) {
+        recordCalendarSeriesCutoff(lb.id, payload.seriesId, payload.recurrence.untilISO);
+        setCalendarEvents((prev) => sanitizeCalendarEvents(prev));
+      } else {
+        setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
+      }
       return;
     }
 
@@ -11236,6 +11205,8 @@ export default function App() {
       references: payload.references?.length ? payload.references : undefined,
       eventKey: payload.eventKey,
       inviteTokens: payload.inviteTokens,
+      recurrence: payload.recurrence,
+      seriesId: payload.seriesId,
       canonicalAddress: canonicalAddr,
       viewAddress: viewAddr,
     });
@@ -11274,18 +11245,26 @@ export default function App() {
     if (!nextEvent) return;
 
     setCalendarEvents((prev) => {
-      const idx = prev.findIndex((existing) => existing.id === nextEvent.id);
+      const boundedEvent = applyCalendarSeriesCutoff(
+        nextEvent,
+        calendarSeriesCutoffsRef.current,
+      );
+      if (!boundedEvent) {
+        const filtered = prev.filter((existing) => existing.id !== nextEvent.id);
+        return filtered.length === prev.length ? prev : filtered;
+      }
+      const idx = prev.findIndex((existing) => existing.id === boundedEvent.id);
       const existing = idx >= 0 ? prev[idx] : null;
       let merged: CalendarEvent = {
-        ...nextEvent,
-        ...(existing?.createdBy && !nextEvent.createdBy ? { createdBy: existing.createdBy } : {}),
-        ...(existing?.lastEditedBy && !nextEvent.lastEditedBy ? { lastEditedBy: existing.lastEditedBy } : {}),
+        ...boundedEvent,
+        ...(existing?.createdBy && !boundedEvent.createdBy ? { createdBy: existing.createdBy } : {}),
+        ...(existing?.lastEditedBy && !boundedEvent.lastEditedBy ? { lastEditedBy: existing.lastEditedBy } : {}),
         ...(Array.isArray(existing?.reminders) && existing.reminders.length ? { reminders: existing.reminders } : {}),
         ...(existing?.reminderTime ? { reminderTime: existing.reminderTime } : {}),
-        ...(existing?.recurrence ? { recurrence: existing.recurrence } : {}),
-        ...(existing?.seriesId ? { seriesId: existing.seriesId } : {}),
+        ...(!boundedEvent.recurrence && existing?.recurrence ? { recurrence: existing.recurrence } : {}),
+        ...(!boundedEvent.seriesId && existing?.seriesId ? { seriesId: existing.seriesId } : {}),
         ...(existing?.hiddenUntilISO ? { hiddenUntilISO: existing.hiddenUntilISO } : {}),
-        ...(typeof existing?.order === "number" && typeof nextEvent.order !== "number" ? { order: existing.order } : {}),
+        ...(typeof existing?.order === "number" && typeof boundedEvent.order !== "number" ? { order: existing.order } : {}),
       } as CalendarEvent;
       if (!existing) {
         merged = applyHiddenForCalendarEvent(merged, settings.weekStart, lb.kind);
@@ -11297,7 +11276,13 @@ export default function App() {
       }
       return [...prev, merged];
     });
-  }, [setCalendarEvents, settings.weekStart, tagValue]);
+  }, [
+    recordCalendarSeriesCutoff,
+    sanitizeCalendarEvents,
+    setCalendarEvents,
+    settings.weekStart,
+    tagValue,
+  ]);
 
   /* ---------- Drag & Drop: move or reorder ---------- */
   function moveTask(
@@ -11580,7 +11565,8 @@ export default function App() {
     if (selectedEvents.length) {
       setCalendarEvents((prev) => prev.map((ev) => {
         if (!selectedItemIdSet.has(ev.id)) return ev;
-        const updated: CalendarEvent = { ...ev, boardId, columnId: undefined };
+        if (ev.boardId !== boardId) publishCalendarEventDeleted(ev).catch(() => {});
+        const updated: CalendarEvent = { ...ev, boardId, originBoardId: undefined, columnId: undefined };
         maybePublishCalendarEvent(updated).catch(() => {});
         return updated;
       }));
@@ -11626,7 +11612,8 @@ export default function App() {
     if (selectedEvents.length) {
       setCalendarEvents((prev) => prev.map((ev) => {
         if (!selectedItemIdSet.has(ev.id)) return ev;
-        const updated: CalendarEvent = { ...ev, boardId, columnId };
+        if (ev.boardId !== boardId) publishCalendarEventDeleted(ev).catch(() => {});
+        const updated: CalendarEvent = { ...ev, boardId, originBoardId: undefined, columnId };
         maybePublishCalendarEvent(updated).catch(() => {});
         return updated;
       }));
@@ -11688,7 +11675,6 @@ export default function App() {
 
   useBoardSync({
     boards,
-    currentBoard,
     boardsRef,
     tasksRef,
     setTasks,
@@ -11704,8 +11690,6 @@ export default function App() {
     completedNostrInitialSyncRef,
     setPendingNostrInitialSyncByBoardTag,
     markNostrBoardInitialSyncComplete,
-    ensureMigrationState,
-    migrateBoardRef,
     tagValue,
     applyBoardEvent,
     applyTaskEvent,
@@ -13161,7 +13145,6 @@ export default function App() {
             handleOnboardingEnableNotifications={handleOnboardingEnableNotifications}
             handleOnboardingGenerateNewKey={handleOnboardingGenerateNewKey}
             handleOnboardingRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
-            handleOnboardingRestoreFromCloud={handleOnboardingRestoreFromCloud}
             handleOnboardingUseExistingKey={handleOnboardingUseExistingKey}
             handlePrintBibleWindow={handlePrintBibleWindow}
             handlePrintBoardWindow={handlePrintBoardWindow}
@@ -13183,7 +13166,6 @@ export default function App() {
             showFirstRunOnboarding={showFirstRunOnboarding}
             undoDelete={undoDelete}
             undoTask={undoTask}
-            workerBaseUrl={workerBaseUrl}
           />
         </Suspense>
       )}
