@@ -165,7 +165,6 @@ private struct TaskifyWatchQuickAddSheet: View {
     let destinationBoardID: String?
 
     @State private var mode: Mode = .choices
-    @State private var isRequestingSystemInput = false
     @State private var selectedBoardID: String?
     @State private var dictatedTranscript = ""
     @State private var voicePreview: TaskifyWatchVoicePreview?
@@ -200,23 +199,27 @@ private struct TaskifyWatchQuickAddSheet: View {
                 switch mode {
                 case .choices:
                     Section {
-                        Button {
-                            requestSystemInput(for: .type)
-                        } label: {
-                            QuickAddChoiceLabel(
-                                title: "Type",
-                                systemImage: "keyboard"
-                            )
-                        }
+                        TextFieldLink(
+                            prompt: Text("Task name"),
+                            label: {
+                                QuickAddChoiceLabel(
+                                    title: "Type",
+                                    systemImage: "keyboard"
+                                )
+                            },
+                            onSubmit: addTypedTask
+                        )
 
-                        Button {
-                            requestSystemInput(for: .dictation)
-                        } label: {
-                            QuickAddChoiceLabel(
-                                title: "Dictation",
-                                systemImage: "waveform.and.sparkles"
-                            )
-                        }
+                        TextFieldLink(
+                            prompt: Text("Describe tasks naturally"),
+                            label: {
+                                QuickAddChoiceLabel(
+                                    title: "Dictation",
+                                    systemImage: "waveform.and.sparkles"
+                                )
+                            },
+                            onSubmit: beginDictationReview
+                        )
                     }
 
                 case .dictationReview:
@@ -265,10 +268,14 @@ private struct TaskifyWatchQuickAddSheet: View {
                         }
                     }
 
-                    Button("Dictate Again") {
-                        resetDictation()
-                        requestSystemInput(for: .dictation)
-                    }
+                    TextFieldLink(
+                        prompt: Text("Describe tasks naturally"),
+                        label: { Text("Dictate Again") },
+                        onSubmit: { value in
+                            resetDictation()
+                            beginDictationReview(value)
+                        }
+                    )
                 }
             }
             .navigationTitle(mode == .choices ? "New Task" : "Review")
@@ -283,35 +290,8 @@ private struct TaskifyWatchQuickAddSheet: View {
         }
     }
 
-    private enum InputKind {
-        case type
-        case dictation
-    }
-
-    private func requestSystemInput(for kind: InputKind) {
-        guard !isRequestingSystemInput,
-              effectiveBoardID != nil,
-              let controller = WKApplication.shared().visibleInterfaceController else { return }
-        isRequestingSystemInput = true
-        controller.presentTextInputController(
-            withSuggestions: nil,
-            allowedInputMode: .plain
-        ) { results in
-            isRequestingSystemInput = false
-            guard let text = results?.first as? String else { return }
-            switch kind {
-            case .type:
-                addTypedTask(text)
-            case .dictation:
-                dictatedTranscript = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !dictatedTranscript.isEmpty else { return }
-                mode = .dictationReview
-                interpretDictation()
-            }
-        }
-    }
-
     private func addTypedTask(_ value: String) {
+        guard effectiveBoardID != nil else { return }
         guard model.addTask(
             value,
             boardID: effectiveBoardID,
@@ -319,6 +299,14 @@ private struct TaskifyWatchQuickAddSheet: View {
         ) else { return }
         WKInterfaceDevice.current().play(.success)
         dismiss()
+    }
+
+    private func beginDictationReview(_ value: String) {
+        guard effectiveBoardID != nil else { return }
+        dictatedTranscript = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !dictatedTranscript.isEmpty else { return }
+        mode = .dictationReview
+        interpretDictation()
     }
 
     private func interpretDictation() {
