@@ -46,7 +46,13 @@ struct TaskifyNativeApp: App {
                 .environment(model)
                 .environmentObject(wallet)
                 .preferredColorScheme(.dark)
-                .task {
+                .task(id: model.isLoading) {
+                    guard !model.isLoading else { return }
+                    // Cashu recovery is important but unrelated to drawing the Boards tab.
+                    // Let the populated board accept its first gestures before starting the
+                    // wallet's database/recovery work on launch.
+                    try? await Task.sleep(for: .milliseconds(900))
+                    guard !Task.isCancelled else { return }
                     await wallet.start(
                         recoverLightningReceives: scenePhase == .active
                     )
@@ -70,7 +76,7 @@ struct TaskifyNativeApp: App {
                     }
                 }
                 .onChange(of: model.snapshotRevision) { _, _ in
-                    TaskifyWatchBridge.shared.sendSnapshot(model.watchSnapshot())
+                    TaskifyWatchBridge.shared.scheduleSnapshot(from: model)
                 }
         }
     }

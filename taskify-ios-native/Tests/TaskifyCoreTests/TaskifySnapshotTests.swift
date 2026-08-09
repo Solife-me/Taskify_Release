@@ -1931,4 +1931,236 @@ final class TaskifySnapshotTests: XCTestCase {
             "Batched merge should be dramatically faster than repeated linear scans"
         )
     }
+
+    func testWeekBoardHidesTasksFromFutureWeeksEvenWhenHiddenUntilIsMissing() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 3,
+            hour: 12
+        )))
+        let futureDueDate = try XCTUnwrap(calendar.date(byAdding: .day, value: 14, to: now))
+
+        var snapshot = TaskifySnapshot.empty
+        let task = TaskItem(
+            id: "future-week-task",
+            boardID: snapshot.selectedBoardID,
+            title: "Future reading",
+            dueDate: futureDueDate,
+            dueDateEnabled: true,
+            hiddenUntilDate: nil,
+            columnID: WeekdayColumn.monday.rawValue
+        )
+        snapshot.tasks = [task]
+
+        XCTAssertTrue(
+            snapshot.tasks(
+                boardID: snapshot.selectedBoardID,
+                columnID: WeekdayColumn.monday.rawValue,
+                includeCompleted: false,
+                now: now
+            ).isEmpty,
+            "A week board is a current-week surface even when an older sync payload omitted hiddenUntilISO"
+        )
+        XCTAssertEqual(
+            snapshot.upcomingTasks(from: now, calendar: calendar).map(\.id),
+            [task.id],
+            "Hidden board tasks must remain discoverable in Upcoming"
+        )
+    }
+
+    func testAddingFutureWeekTaskStoresTheConfiguredWeekRevealBoundary() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 3,
+            hour: 12
+        )))
+        let futureDueDate = try XCTUnwrap(calendar.date(byAdding: .day, value: 10, to: now))
+        var snapshot = TaskifySnapshot.empty
+
+        let task = try XCTUnwrap(snapshot.addTask(
+            title: "Scheduled reading",
+            boardID: snapshot.selectedBoardID,
+            columnID: WeekdayColumn.thursday.rawValue,
+            dueDate: futureDueDate,
+            now: now,
+            weekStartsOn: .monday,
+            calendar: calendar
+        ))
+
+        XCTAssertEqual(
+            task.hiddenUntilDate,
+            WeekDateResolver.startOfWeek(
+                containing: futureDueDate,
+                startingOn: .monday,
+                calendar: calendar
+            )
+        )
+    }
+
+    func testBoardTaskOrganizerIndexesColumnsAndPreservesBoardOrdering() {
+        let board = Board.week(id: "indexed-week")
+        let tasks = (0..<700).map { index in
+            TaskItem(
+                id: "indexed-\(index)",
+                boardID: board.id,
+                title: "Task \(index)",
+                order: 699 - index,
+                columnID: WeekdayColumn.allCases[index % WeekdayColumn.allCases.count].rawValue
+            )
+        }
+
+        let grouped = BoardTaskOrganizer.groupedTasks(
+            tasks,
+            boards: [board],
+            includeCompleted: false,
+            weekStartsOn: .sunday
+        )
+
+        XCTAssertEqual(grouped.values.reduce(0) { $0 + $1.count }, tasks.count)
+        XCTAssertEqual(grouped.count, WeekdayColumn.allCases.count)
+        for bucket in grouped.values {
+            XCTAssertEqual(bucket.map(\.order), bucket.map(\.order).sorted())
+        }
+    }
+
+    func testBoardTaskOrganizerCanLimitStartupIndexToTheVisibleBoard() {
+        let visible = Board.week(id: "visible", name: "Visible")
+        let background = Board.week(id: "background", name: "Background")
+        let tasks = [
+            TaskItem(
+                id: "visible-task",
+                boardID: visible.id,
+                title: "Visible task",
+                order: 0,
+                columnID: WeekdayColumn.monday.rawValue
+            ),
+            TaskItem(
+                id: "background-task",
+                boardID: background.id,
+                title: "Background task",
+                order: 0,
+                columnID: WeekdayColumn.monday.rawValue
+            ),
+        ]
+
+        let grouped = BoardTaskOrganizer.groupedTasks(
+            tasks,
+            boards: [visible, background],
+            includedBoardIDs: [visible.id],
+            includeCompleted: false,
+            weekStartsOn: .sunday
+        )
+
+        XCTAssertEqual(
+            grouped[BoardTaskColumnKey(
+                boardID: visible.id,
+                columnID: WeekdayColumn.monday.rawValue
+            )]?.map(\.id),
+            ["visible-task"]
+        )
+        XCTAssertNil(grouped[BoardTaskColumnKey(
+            boardID: background.id,
+            columnID: WeekdayColumn.monday.rawValue
+        )])
+    }
+
+    func testCompletedRecurringOccurrenceWinsOverLaterIncompleteDuplicate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dueDate = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 7,
+            hour: 9
+        )))
+        let seriesID = "bible-reading-series"
+        var completed = TaskItem(
+            id: seriesID,
+            boardID: TaskifySnapshot.empty.selectedBoardID,
+            title: "Bible reading",
+            dueDate: dueDate,
+            dueDateEnabled: true,
+            dueTimeEnabled: true,
+            dueTimeZone: "UTC",
+            recurrence: .daily(),
+            seriesID: seriesID,
+            columnID: WeekdayColumn.friday.rawValue,
+            completed: true,
+            completedAt: dueDate,
+            nostrUpdatedAt: 200
+        )
+        completed.streak = 1
+        let duplicate = TaskItem(
+            id: "recurrence:\(seriesID):2026-08-07",
+            boardID: completed.boardID,
+            title: completed.title,
+            dueDate: dueDate,
+            dueDateEnabled: true,
+            dueTimeEnabled: true,
+            dueTimeZone: "UTC",
+            recurrence: .daily(),
+            seriesID: seriesID,
+            columnID: WeekdayColumn.friday.rawValue
+        )
+        var snapshot = TaskifySnapshot(
+            boards: [Board.week(id: completed.boardID)],
+            tasks: [completed],
+            selectedBoardID: completed.boardID
+        )
+
+        XCTAssertFalse(
+            snapshot.mergeRemoteTask(duplicate, eventCreatedAt: 300),
+            "An incomplete duplicate must not undo a completed occurrence or trigger a UI invalidation"
+        )
+        XCTAssertEqual(snapshot.tasks.count, 1)
+        XCTAssertEqual(snapshot.tasks.first?.id, completed.id)
+        XCTAssertTrue(try XCTUnwrap(snapshot.tasks.first).completed)
+    }
+
+    func testRecurringOccurrenceRepairUsesPWASignatureWhenLegacyTasksLackSeriesID() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dueDate = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 7
+        )))
+        let board = Board.week(id: "legacy-week")
+        let completed = TaskItem(
+            id: "legacy-seed-a",
+            boardID: board.id,
+            title: "Bible reading",
+            note: "Read one chapter",
+            dueDate: dueDate,
+            dueDateEnabled: true,
+            recurrence: .daily(),
+            columnID: WeekdayColumn.friday.rawValue,
+            completed: true,
+            completedAt: dueDate
+        )
+        let incompleteDuplicate = TaskItem(
+            id: "legacy-seed-b",
+            boardID: board.id,
+            title: completed.title,
+            note: completed.note,
+            dueDate: dueDate,
+            dueDateEnabled: true,
+            recurrence: .daily(),
+            columnID: WeekdayColumn.friday.rawValue
+        )
+        var snapshot = TaskifySnapshot(
+            boards: [board],
+            tasks: [completed],
+            selectedBoardID: board.id
+        )
+
+        XCTAssertFalse(snapshot.mergeRemoteTask(incompleteDuplicate, eventCreatedAt: 400))
+        XCTAssertEqual(snapshot.tasks.map(\.id), [completed.id])
+    }
 }

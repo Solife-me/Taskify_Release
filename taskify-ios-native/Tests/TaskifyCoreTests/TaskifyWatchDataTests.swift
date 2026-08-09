@@ -133,6 +133,40 @@ final class TaskifyWatchDataTests: XCTestCase {
         )
     }
 
+    func testWatchBoardCountsIncludeEligibleTasksBeyondTheTransferLimit() {
+        let first = Board(
+            id: "first",
+            name: "First",
+            kind: .list,
+            columns: [BoardColumn(id: "inbox", name: "Inbox", order: 0)]
+        )
+        let second = Board(
+            id: "second",
+            name: "Second",
+            kind: .list,
+            columns: [BoardColumn(id: "inbox", name: "Inbox", order: 0)]
+        )
+        let tasks = (0..<30).map { index in
+            TaskItem(
+                id: "task-\(index)",
+                boardID: index < 20 ? first.id : second.id,
+                title: "Task \(index)",
+                order: index,
+                columnID: "inbox"
+            )
+        }
+        let snapshot = TaskifySnapshot(
+            boards: [first, second],
+            tasks: tasks,
+            selectedBoardID: first.id
+        )
+
+        let watch = snapshot.watchData(now: now, calendar: calendar, taskLimit: 5)
+
+        XCTAssertEqual(watch.tasks.count, 5)
+        XCTAssertEqual(watch.boards.map(\.openTaskCount), [20, 10])
+    }
+
     func testWatchSnapshotPreservesTheIPhoneBoardOrder() {
         var first = Board.week(id: "first", name: "First on iPhone")
         first.createdAt = now

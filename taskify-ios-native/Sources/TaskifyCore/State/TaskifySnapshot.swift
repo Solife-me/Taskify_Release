@@ -881,7 +881,9 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         priority: TaskPriority? = nil,
         authorPublicKey: String? = nil,
         newTaskPosition: NewTaskPosition = .top,
-        now: Date = Date()
+        now: Date = Date(),
+        weekStartsOn: WeekdayColumn = .sunday,
+        calendar: Calendar = .current
     ) -> TaskItem? {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return nil }
@@ -908,6 +910,15 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             dueDateEnabled: dueDate != nil,
             dueTimeEnabled: false,
             priority: priority,
+            hiddenUntilDate: dueDate.flatMap {
+                Self.hiddenUntilForBoard(
+                    dueDate: $0,
+                    boardKind: board.kind,
+                    weekStartsOn: weekStartsOn,
+                    now: now,
+                    calendar: calendar
+                )
+            },
             createdAt: now,
             order: nextOrder,
             columnID: columnID,
@@ -934,7 +945,9 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         reminders: [TaskReminder] = [],
         reminderTime: String? = nil,
         editorPublicKey: String? = nil,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        weekStartsOn: WeekdayColumn = .sunday,
+        now: Date = Date()
     ) -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
@@ -1004,6 +1017,23 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         tasks[taskIndex].reminderTime = dueDateEnabled && !dueTimeEnabled
             ? Self.normalizeReminderTime(reminderTime)
             : nil
+        if dueDateEnabled, let dueDate {
+            var dueCalendar = calendar
+            if dueTimeEnabled,
+               let dueTimeZone,
+               let timeZone = TimeZone(identifier: dueTimeZone) {
+                dueCalendar.timeZone = timeZone
+            }
+            tasks[taskIndex].hiddenUntilDate = Self.hiddenUntilForBoard(
+                dueDate: dueDate,
+                boardKind: board.kind,
+                weekStartsOn: weekStartsOn,
+                now: now,
+                calendar: dueCalendar
+            )
+        } else {
+            tasks[taskIndex].hiddenUntilDate = nil
+        }
         tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
         return true
     }
@@ -1317,6 +1347,35 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             ?? calendar.startOfDay(for: dueDate)
     }
 
+    private static func hiddenUntilForBoard(
+        dueDate: Date,
+        boardKind: BoardKind,
+        weekStartsOn: WeekdayColumn,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        let dueDay = calendar.startOfDay(for: dueDate)
+        let today = calendar.startOfDay(for: now)
+        switch boardKind {
+        case .week:
+            let currentWeekStart = WeekDateResolver.startOfWeek(
+                containing: now,
+                startingOn: weekStartsOn,
+                calendar: calendar
+            )
+            let dueWeekStart = WeekDateResolver.startOfWeek(
+                containing: dueDate,
+                startingOn: weekStartsOn,
+                calendar: calendar
+            )
+            return dueWeekStart > currentWeekStart ? dueWeekStart : nil
+        case .list, .compound:
+            return dueDay > today ? dueDay : nil
+        case .bible:
+            return nil
+        }
+    }
+
     private static func normalizeReminders(
         _ reminders: [TaskReminder],
         dueTimeEnabled: Bool
@@ -1417,6 +1476,11 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     ) -> Bool {
         guard !records.isEmpty else { return false }
 
+        let needsOccurrenceRepair = records.contains {
+            $0.task.recurrence?.revealsOnDueDate == true
+        }
+        let originalTasks = needsOccurrenceRepair ? tasks : []
+        let originalCutoffs = needsOccurrenceRepair ? recurringTaskSeriesCutoffs : nil
         var changed = false
         for record in records {
             if record.task.isDeleted,
@@ -1432,14 +1496,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                     seriesID: seriesID,
                     proposedCutoff: cutoff
                 )
-                if previous != recorded {
-                    changed = true
-                }
+                if previous != recorded { changed = true }
             }
         }
-        if applyRecurringTaskSeriesCutoffs() {
-            changed = true
-        }
+        if applyRecurringTaskSeriesCutoffs() { changed = true }
 
         var indexByID = [String: Int](minimumCapacity: tasks.count)
         for (index, task) in tasks.enumerated() {
@@ -1468,7 +1528,9 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 changed = true
             }
         }
-        return changed
+        guard needsOccurrenceRepair else { return changed }
+        _ = deduplicateRecurringTaskOccurrences()
+        return tasks != originalTasks || recurringTaskSeriesCutoffs != originalCutoffs
     }
 
     @discardableResult
@@ -1480,14 +1542,20 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         func recoverRoot(_ rawValue: String) -> String {
             var current = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             var seen = Set<String>()
-            let pattern = #"^recurrence:(.+):(\d{4}-\d{2}-\d{2}(?:T.*)?)$"#
-            let expression = try? NSRegularExpression(pattern: pattern)
             while !current.isEmpty, seen.insert(current).inserted {
-                let range = NSRange(current.startIndex..., in: current)
-                guard let match = expression?.firstMatch(in: current, range: range),
-                      match.numberOfRanges > 1,
-                      let parentRange = Range(match.range(at: 1), in: current) else { break }
-                let parent = String(current[parentRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard current.hasPrefix("recurrence:"),
+                      let separator = current.lastIndex(of: ":") else { break }
+                let suffix = current[current.index(after: separator)...]
+                let date = suffix.prefix(10)
+                guard date.count == 10,
+                      date[date.index(date.startIndex, offsetBy: 4)] == "-",
+                      date[date.index(date.startIndex, offsetBy: 7)] == "-",
+                      date.enumerated().allSatisfy({ offset, character in
+                          offset == 4 || offset == 7 || character.isNumber
+                      }) else { break }
+                let parentStart = current.index(current.startIndex, offsetBy: "recurrence:".count)
+                let parent = String(current[parentStart..<separator])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !parent.isEmpty else { break }
                 current = parent
             }
@@ -1668,21 +1736,20 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         boardID: String,
         columnID: String,
         includeCompleted: Bool,
-        now: Date = Date()
+        now: Date = Date(),
+        weekStartsOn: WeekdayColumn = .sunday,
+        calendar: Calendar = .current
     ) -> [TaskItem] {
-        tasks
-            .filter {
-                $0.boardID == boardID &&
-                $0.columnID == columnID &&
-                !$0.isDeleted &&
-                ($0.hiddenUntilDate == nil || $0.hiddenUntilDate! <= now) &&
-                (includeCompleted || !$0.completed)
-            }
-            .sorted {
-                if $0.completed != $1.completed { return !$0.completed }
-                if $0.order != $1.order { return $0.order < $1.order }
-                return $0.createdAt < $1.createdAt
-            }
+        BoardTaskOrganizer.tasks(
+            tasks,
+            boardID: boardID,
+            columnID: columnID,
+            boardKind: boards.first(where: { $0.id == boardID })?.kind,
+            includeCompleted: includeCompleted,
+            weekStartsOn: weekStartsOn,
+            now: now,
+            calendar: calendar
+        )
     }
 
     public func upcomingTasks(from startDate: Date, calendar: Calendar = .current) -> [TaskItem] {
@@ -1732,6 +1799,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             )
         }
         _ = applyRecurringTaskSeriesCutoffs()
+        _ = deduplicateRecurringTaskOccurrences()
         for index in boards.indices {
             if boards[index].nostrBoardID?.isEmpty != false {
                 boards[index].nostrBoardID = UUID().uuidString
@@ -1800,6 +1868,94 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             return candidate.isDeleted
         }
         return false
+    }
+
+    /// Collapses PWA/native representations of the same frequent recurring occurrence. Older
+    /// clients used more than one id shape, so exact-id conflict resolution alone can leave an
+    /// incomplete copy beside a completed one. This mirrors the PWA's occurrence-level repair.
+    @discardableResult
+    private mutating func deduplicateRecurringTaskOccurrences() -> Bool {
+        var repaired: [TaskItem] = []
+        repaired.reserveCapacity(tasks.count)
+        var indexByOccurrence: [String: Int] = [:]
+        var changed = false
+
+        for task in tasks {
+            guard let key = Self.recurringOccurrenceKey(for: task) else {
+                repaired.append(task)
+                continue
+            }
+            guard let existingIndex = indexByOccurrence[key] else {
+                indexByOccurrence[key] = repaired.count
+                repaired.append(task)
+                continue
+            }
+
+            let existing = repaired[existingIndex]
+            if Self.prefersRecurringTask(task, over: existing) {
+                repaired[existingIndex] = task
+            }
+            changed = true
+        }
+
+        guard changed else { return false }
+        tasks = repaired
+        return true
+    }
+
+    private static func recurringOccurrenceKey(for task: TaskItem) -> String? {
+        guard !task.isDeleted,
+              task.recurrence?.revealsOnDueDate == true,
+              let dueDate = task.dueDate else { return nil }
+        guard let seriesKey = recurringOccurrenceSeriesKey(for: task) else { return nil }
+        let calendar = recurrenceCalendar(for: task)
+        let components = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        let day = String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+        return "\(task.boardID)::\(seriesKey)::\(day)"
+    }
+
+    private static func recurringOccurrenceSeriesKey(for task: TaskItem) -> String? {
+        if task.seriesID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return "series:\(stableRecurringSeriesID(for: task))"
+        }
+        let recoveredID = stableRecurringSeriesID(for: task)
+        if recoveredID != task.id { return "series:\(recoveredID)" }
+        guard let recurrence = task.recurrence else { return nil }
+
+        let recurrenceKey: String
+        switch recurrence.withUntilDate(nil) {
+        case .daily:
+            recurrenceKey = "daily"
+        case .weekly(let days, _):
+            recurrenceKey = "weekly:\(days.sorted().map(String.init).joined(separator: ","))"
+        case .every(let count, let unit, _):
+            recurrenceKey = "every:\(max(1, count)):\(unit.rawValue)"
+        case .none, .monthlyDay:
+            return nil
+        }
+        return "signature:\(task.title.utf8.count):\(task.title):\(task.note.utf8.count):\(task.note):\(recurrenceKey)"
+    }
+
+    private static func prefersRecurringTask(_ candidate: TaskItem, over existing: TaskItem) -> Bool {
+        if candidate.id == existing.id {
+            return (candidate.nostrUpdatedAt ?? 0) > (existing.nostrUpdatedAt ?? 0)
+        }
+        if candidate.completed != existing.completed { return candidate.completed }
+        let candidateCompletedAt = candidate.completedAt ?? .distantPast
+        let existingCompletedAt = existing.completedAt ?? .distantPast
+        if candidateCompletedAt != existingCompletedAt {
+            return candidateCompletedAt > existingCompletedAt
+        }
+        let candidateIsSeed = candidate.seriesID == candidate.id
+        let existingIsSeed = existing.seriesID == existing.id
+        if candidateIsSeed != existingIsSeed { return candidateIsSeed }
+        if candidate.order != existing.order { return candidate.order < existing.order }
+        return candidate.id < existing.id
     }
 
     private func normalizedCompoundChildReferences(_ references: [String]) -> [String] {

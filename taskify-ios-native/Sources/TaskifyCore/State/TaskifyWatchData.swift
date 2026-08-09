@@ -16,12 +16,16 @@ public extension TaskifySnapshot {
             .filter { $0.isVisible && $0.kind != .bible }
         let boardByID = Dictionary(uniqueKeysWithValues: visibleBoards.map { ($0.id, $0) })
 
-        let eligibleTasks = tasks.filter { task in
+        var eligibleTasks: [TaskItem] = []
+        eligibleTasks.reserveCapacity(min(tasks.count, taskLimit * 2))
+        var openTaskCountsByBoardID: [String: Int] = [:]
+        for task in tasks {
             guard boardByID[task.boardID] != nil,
                   !task.completed,
-                  !task.isDeleted else { return false }
-            if let hiddenUntilDate = task.hiddenUntilDate, hiddenUntilDate > now { return false }
-            return true
+                  !task.isDeleted else { continue }
+            if let hiddenUntilDate = task.hiddenUntilDate, hiddenUntilDate > now { continue }
+            eligibleTasks.append(task)
+            openTaskCountsByBoardID[task.boardID, default: 0] += 1
         }
         let sortedTasks = eligibleTasks.sorted { lhs, rhs in
             switch (lhs.dueDateEnabled ? lhs.dueDate : nil, rhs.dueDateEnabled ? rhs.dueDate : nil) {
@@ -62,7 +66,7 @@ public extension TaskifySnapshot {
             TaskifyWatchBoard(
                 id: board.id,
                 name: board.name,
-                openTaskCount: eligibleTasks.lazy.filter { $0.boardID == board.id }.count,
+                openTaskCount: openTaskCountsByBoardID[board.id] ?? 0,
                 kind: board.kind.rawValue,
                 nostrBoardID: board.effectiveNostrBoardID,
                 relayURLs: board.effectiveRelayURLs,

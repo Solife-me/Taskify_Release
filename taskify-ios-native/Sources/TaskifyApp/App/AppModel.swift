@@ -134,17 +134,24 @@ enum AppRelaySettings {
 }
 
 private final class AppSnapshotLookupCache {
-    private struct TaskColumnKey: Hashable {
+    private struct TaskGroupingKey: Hashable {
         let boardID: String
-        let columnID: String
         let includeCompleted: Bool
         let minute: Int
+        let weekStartsOn: WeekdayColumn
+    }
+
+    private struct TaskIndex {
+        var tasksByID: [String: TaskItem] = [:]
+        var activeTaskIDs: Set<String> = []
+        var tasksByBoardID: [String: [TaskItem]] = [:]
+        var completedTaskCountsByBoardID: [String: Int] = [:]
+        var taskCountsByBoardID: [String: Int] = [:]
     }
 
     private var boardsByID: [String: Board]?
-    private var tasksByID: [String: TaskItem]?
-    private var taskIDs: Set<String>?
-    private var tasksByColumn: [TaskColumnKey: [TaskItem]] = [:]
+    private var taskIndex: TaskIndex?
+    private var groupedTasks: [TaskGroupingKey: [BoardTaskColumnKey: [TaskItem]]] = [:]
     private var taskColumnMinute: Int?
     private var contactsByPublicKey: [String: NostrContact]?
     private var groupsByID: [String: NostrGroupConversation]?
@@ -152,9 +159,8 @@ private final class AppSnapshotLookupCache {
 
     func invalidate() {
         boardsByID = nil
-        tasksByID = nil
-        taskIDs = nil
-        tasksByColumn.removeAll(keepingCapacity: true)
+        taskIndex = nil
+        groupedTasks.removeAll(keepingCapacity: true)
         taskColumnMinute = nil
         contactsByPublicKey = nil
         groupsByID = nil
@@ -172,22 +178,13 @@ private final class AppSnapshotLookupCache {
     }
 
     func task(id: String, snapshot: TaskifySnapshot) -> TaskItem? {
-        if tasksByID == nil {
-            tasksByID = Dictionary(
-                snapshot.tasks
-                    .filter { !$0.isDeleted }
-                    .map { ($0.id, $0) },
-                uniquingKeysWith: { _, newest in newest }
-            )
-        }
-        return tasksByID?[id]
+        ensureTaskIndex(snapshot: snapshot)
+        return taskIndex?.tasksByID[id]
     }
 
     func activeTaskIDs(snapshot: TaskifySnapshot) -> Set<String> {
-        if let taskIDs { return taskIDs }
-        let values = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
-        taskIDs = values
-        return values
+        ensureTaskIndex(snapshot: snapshot)
+        return taskIndex?.activeTaskIDs ?? []
     }
 
     func tasks(
@@ -195,28 +192,91 @@ private final class AppSnapshotLookupCache {
         columnID: String,
         includeCompleted: Bool,
         snapshot: TaskifySnapshot,
-        now: Date = Date()
+        weekStartsOn: WeekdayColumn,
+        now: Date = Date(),
+        calendar: Calendar = .current
     ) -> [TaskItem] {
         let minute = Int(now.timeIntervalSince1970 / 60)
         if taskColumnMinute != minute {
-            tasksByColumn.removeAll(keepingCapacity: true)
+            groupedTasks.removeAll(keepingCapacity: true)
             taskColumnMinute = minute
         }
-        let key = TaskColumnKey(
+        let groupingKey = TaskGroupingKey(
             boardID: boardID,
-            columnID: columnID,
             includeCompleted: includeCompleted,
-            minute: minute
+            minute: minute,
+            weekStartsOn: weekStartsOn
         )
-        if let cached = tasksByColumn[key] { return cached }
-        let values = snapshot.tasks(
-            boardID: boardID,
-            columnID: columnID,
-            includeCompleted: includeCompleted,
-            now: now
-        )
-        tasksByColumn[key] = values
-        return values
+        if groupedTasks[groupingKey] == nil {
+            ensureTaskIndex(snapshot: snapshot)
+            groupedTasks[groupingKey] = BoardTaskOrganizer.groupedTasks(
+                taskIndex?.tasksByBoardID[boardID] ?? [],
+                boards: snapshot.boards,
+                includedBoardIDs: [boardID],
+                includeCompleted: includeCompleted,
+                weekStartsOn: weekStartsOn,
+                now: now,
+                calendar: calendar
+            )
+        }
+        return groupedTasks[groupingKey]?[
+            BoardTaskColumnKey(boardID: boardID, columnID: columnID)
+        ] ?? []
+    }
+
+    func completedTaskCount(boardIDs: Set<String>, snapshot: TaskifySnapshot) -> Int {
+        ensureTaskIndex(snapshot: snapshot)
+        return boardIDs.reduce(0) {
+            $0 + (taskIndex?.completedTaskCountsByBoardID[$1] ?? 0)
+        }
+    }
+
+    func taskCount(boardID: String, snapshot: TaskifySnapshot) -> Int {
+        ensureTaskIndex(snapshot: snapshot)
+        return taskIndex?.taskCountsByBoardID[boardID] ?? 0
+    }
+
+    func prewarmBoardTasks(
+        boardIDs: [String],
+        includeCompleted: Bool,
+        snapshot: TaskifySnapshot,
+        weekStartsOn: WeekdayColumn,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        ensureTaskIndex(snapshot: snapshot)
+        for boardID in boardIDs {
+            guard let board = board(id: boardID, snapshot: snapshot) else { continue }
+            let columnID = board.columns.first?.id
+                ?? (board.kind == .week ? WeekdayColumn.containing(now, calendar: calendar).rawValue : "")
+            _ = tasks(
+                boardID: boardID,
+                columnID: columnID,
+                includeCompleted: includeCompleted,
+                snapshot: snapshot,
+                weekStartsOn: weekStartsOn,
+                now: now,
+                calendar: calendar
+            )
+        }
+    }
+
+    private func ensureTaskIndex(snapshot: TaskifySnapshot) {
+        guard taskIndex == nil else { return }
+        var index = TaskIndex()
+        index.tasksByID.reserveCapacity(snapshot.tasks.count)
+        index.activeTaskIDs.reserveCapacity(snapshot.tasks.count)
+
+        for task in snapshot.tasks where !task.isDeleted {
+            index.tasksByID[task.id] = task
+            index.activeTaskIDs.insert(task.id)
+            index.tasksByBoardID[task.boardID, default: []].append(task)
+            index.taskCountsByBoardID[task.boardID, default: 0] += 1
+            if task.completed {
+                index.completedTaskCountsByBoardID[task.boardID, default: 0] += 1
+            }
+        }
+        taskIndex = index
     }
 
     func contact(publicKey: String, snapshot: TaskifySnapshot) -> NostrContact? {
@@ -340,6 +400,8 @@ final class AppModel {
     @ObservationIgnored private var accountBackupPublishTask: Task<Void, Never>?
     @ObservationIgnored private var contactRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var sharedInboxProcessingTask: Task<Void, Never>?
+    @ObservationIgnored private var deferredStartupTask: Task<Void, Never>?
+    @ObservationIgnored private var didStartDeferredServices = false
     @ObservationIgnored private var pendingSharedInboxEvents: [NostrEvent] = []
     @ObservationIgnored private var accountBackupBaseline: NostrAppBackupPayload?
     @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
@@ -374,6 +436,7 @@ final class AppModel {
         accountBackupPublishTask?.cancel()
         contactRefreshTask?.cancel()
         sharedInboxProcessingTask?.cancel()
+        deferredStartupTask?.cancel()
     }
 
     var visibleBoards: [Board] {
@@ -695,7 +758,7 @@ final class AppModel {
     }
 
     func taskCount(forBoardID boardID: String) -> Int {
-        snapshot.tasks.filter { $0.boardID == boardID && !$0.isDeleted }.count
+        snapshotLookupCache.taskCount(boardID: boardID, snapshot: snapshot)
     }
 
     func completedTaskCount(forBoardID boardID: String) -> Int {
@@ -705,9 +768,7 @@ final class AppModel {
         } else {
             scopeIDs = [boardID]
         }
-        return snapshot.tasks.lazy.filter {
-            !$0.isDeleted && $0.completed && scopeIDs.contains($0.boardID)
-        }.count
+        return snapshotLookupCache.completedTaskCount(boardIDs: scopeIDs, snapshot: snapshot)
     }
 
     func boardUpcomingGroups(for board: Board, now: Date = Date()) -> [BoardUpcomingGroup] {
@@ -740,7 +801,9 @@ final class AppModel {
             boardID: boardID,
             columnID: weekday.rawValue,
             includeCompleted: includeCompleted,
-            snapshot: snapshot
+            snapshot: snapshot,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
         )
     }
 
@@ -750,7 +813,9 @@ final class AppModel {
             boardID: boardID,
             columnID: columnID,
             includeCompleted: includeCompleted,
-            snapshot: snapshot
+            snapshot: snapshot,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
         )
     }
 
@@ -759,7 +824,9 @@ final class AppModel {
             boardID: boardID,
             columnID: columnID,
             includeCompleted: includeCompleted,
-            snapshot: snapshot
+            snapshot: snapshot,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
         )
     }
 
@@ -795,7 +862,9 @@ final class AppModel {
             columnID: weekday.rawValue,
             dueDate: dueDate,
             authorPublicKey: identityPublicKey.nilIfEmpty,
-            newTaskPosition: newTaskPosition
+            newTaskPosition: newTaskPosition,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -808,7 +877,9 @@ final class AppModel {
             columnID: columnID,
             dueDate: nil,
             authorPublicKey: identityPublicKey.nilIfEmpty,
-            newTaskPosition: newTaskPosition
+            newTaskPosition: newTaskPosition,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -822,7 +893,9 @@ final class AppModel {
             columnID: columnID,
             dueDate: nil,
             authorPublicKey: identityPublicKey.nilIfEmpty,
-            newTaskPosition: newTaskPosition
+            newTaskPosition: newTaskPosition,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -885,7 +958,9 @@ final class AppModel {
             columnID: columnID,
             dueDate: dueDate,
             authorPublicKey: identityPublicKey.nilIfEmpty,
-            newTaskPosition: newTaskPosition
+            newTaskPosition: newTaskPosition,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
         ) else { return }
         synchronizeTask(task.id)
     }
@@ -963,7 +1038,9 @@ final class AppModel {
                 note: voiceTask.notes ?? "",
                 priority: voiceTask.priority.flatMap(TaskPriority.init(rawValue:)),
                 authorPublicKey: identityPublicKey.nilIfEmpty,
-                newTaskPosition: newTaskPosition
+                newTaskPosition: newTaskPosition,
+                weekStartsOn: weekStart,
+                calendar: weekCalendar
             ) else { continue }
 
             let subtasks = (voiceTask.subtasks ?? [])
@@ -981,7 +1058,9 @@ final class AppModel {
                     priority: task.priority,
                     columnID: task.columnID,
                     subtasks: subtasks.map { TaskSubtask(title: $0) },
-                    editorPublicKey: identityPublicKey.nilIfEmpty
+                    editorPublicKey: identityPublicKey.nilIfEmpty,
+                    calendar: weekCalendar,
+                    weekStartsOn: weekStart
                 )
             }
 
@@ -1311,7 +1390,9 @@ final class AppModel {
             recurrence: recurrence,
             reminders: reminders,
             reminderTime: reminderTime,
-            editorPublicKey: identityPublicKey.nilIfEmpty
+            editorPublicKey: identityPublicKey.nilIfEmpty,
+            calendar: weekCalendar,
+            weekStartsOn: weekStart
         ) else { return false }
         guard snapshot.replaceTaskAttachments(
             taskID: taskID,
@@ -3275,6 +3356,8 @@ final class AppModel {
         snapshot.watchData(now: now, calendar: weekCalendar)
     }
 
+    var watchDataCalendar: Calendar { weekCalendar }
+
     /// Called only after the user confirms Watch provisioning in Settings. The raw key remains
     /// binary (never converted to an nsec string) and is immediately handed to the encrypted,
     /// reachable-only WatchConnectivity message path.
@@ -3469,13 +3552,11 @@ final class AppModel {
         // existing store into the shared container so enabling it doesn't look like data loss.
         // No-ops once migrated, and when the capability isn't in effect.
         TaskifySharedContainer.migrateIfNeeded()
-        var loadedIdentity: NostrIdentity?
         do {
             let hadExistingIdentity = (try? identityStore.load()) != nil
             OnboardingSettings.determineEligibilityIfNeeded(hadExistingIdentity: hadExistingIdentity)
             showsFirstRunOnboarding = !OnboardingSettings.completed
             let identity = try identityStore.loadOrCreate()
-            loadedIdentity = identity
             applyIdentity(identity)
         } catch {
             errorMessage = error.localizedDescription
@@ -3508,15 +3589,63 @@ final class AppModel {
         refreshNotifications(requestPermission: false)
         reconcileFastingReminders()
         reconcileScriptureMemory()
-        startSync()
         maintainTaskifyEventRecurrenceWindow()
-        refreshContacts()
-        if let loadedIdentity {
-            findPWAAccountBackup(
-                identity: loadedIdentity,
-                automaticallyActivateWhenAlreadyConnected: true
-            )
+        prepareInitialBoardViewCache()
+        // Relay replay, contact discovery, and account-backup lookup are deliberately started
+        // after SwiftUI commits the first populated board frame. Starting them here let their
+        // callbacks compete with the user's first scroll even though the loading indicator had
+        // already disappeared.
+    }
+
+    /// Called by the root view only after the populated interface has committed its first frame.
+    /// A short grace period gives the user's first gesture priority; all work remains automatic.
+    func initialContentDidAppear() {
+        guard !isLoading, !didStartDeferredServices else { return }
+        didStartDeferredServices = true
+        deferredStartupTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let self else { return }
+            self.startSync()
+
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            self.refreshContacts()
+            if let identity = self.cachedIdentity {
+                self.findPWAAccountBackup(
+                    identity: identity,
+                    automaticallyActivateWhenAlreadyConnected: true
+                )
+            }
         }
+    }
+
+    private func prepareInitialBoardViewCache(now: Date = Date()) {
+        guard startupTab == .boards, let board = selectedBoard else { return }
+        let boardIDs: [String]
+        switch board.kind {
+        case .compound:
+            boardIDs = snapshot.compoundChildBoards(for: board.id).map(\.id)
+        case .week, .list:
+            boardIDs = [board.id]
+        case .bible:
+            return
+        }
+        let completedTabEnabled = (UserDefaults.standard.object(
+            forKey: TaskPresentationSettings.completedTabKey
+        ) as? Bool) ?? TaskPresentationSettings.completedTabDefault
+        snapshotLookupCache.prewarmBoardTasks(
+            boardIDs: boardIDs,
+            includeCompleted: !completedTabEnabled,
+            snapshot: snapshot,
+            weekStartsOn: weekStart,
+            now: now,
+            calendar: weekCalendar
+        )
+        _ = snapshotLookupCache.activeTaskIDs(snapshot: snapshot)
+        _ = snapshotLookupCache.completedTaskCount(
+            boardIDs: Set(boardIDs),
+            snapshot: snapshot
+        )
     }
 
     private func applyStartupBoardPreference(
@@ -3656,7 +3785,7 @@ final class AppModel {
         syncListenerTask = Task { [weak self] in
             for await update in updates {
                 guard !Task.isCancelled else { return }
-                self?.handleSyncUpdate(update)
+                await self?.handleSyncUpdate(update)
             }
         }
         reconfigureSync()
@@ -3675,7 +3804,7 @@ final class AppModel {
         }
     }
 
-    private func handleSyncUpdate(_ update: TaskSyncUpdate) {
+    private func handleSyncUpdate(_ update: TaskSyncUpdate) async {
         switch update {
         // Each of these merges runs against a copy and assigns back only when it reports a real
         // change. Merging straight into `snapshot` fired its `didSet` for every event — and a
@@ -3718,7 +3847,7 @@ final class AppModel {
                 refreshNotifications(requestPermission: false)
             }
         case .batch(let taskRecords, let calendarRecords):
-            applySyncBatch(tasks: taskRecords, calendarEvents: calendarRecords)
+            await applySyncBatch(tasks: taskRecords, calendarEvents: calendarRecords)
         case .sharedInbox(let event):
             enqueueSharedInboxEvents([event])
         case .sharedInboxBatch(let events):
@@ -3731,10 +3860,16 @@ final class AppModel {
     /// Merges a relay's stored-event backlog in one pass. Mutating a local copy and assigning
     /// `snapshot` once means the whole backlog costs a single observation invalidation (and one
     /// save/notification refresh) instead of one per event.
+    private struct SyncBatchMergeResult: Sendable {
+        let snapshot: TaskifySnapshot
+        let tasksChanged: Bool
+        let calendarChanged: Bool
+    }
+
     private func applySyncBatch(
         tasks taskRecords: [TaskRelayRecord],
         calendarEvents calendarRecords: [TaskifyCalendarRelayRecord]
-    ) {
+    ) async {
         for record in taskRecords {
             lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
         }
@@ -3742,24 +3877,49 @@ final class AppModel {
             lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
         }
 
-        var updated = snapshot
-        let tasksChanged = updated.mergeRemoteTasks(
-            taskRecords.map { (task: $0.task, eventCreatedAt: $0.eventCreatedAt) }
-        )
-        var calendarChanged = false
-        for record in calendarRecords {
-            if updated.mergeRemoteTaskifyEvent(record.event, eventCreatedAt: record.eventCreatedAt) {
-                calendarChanged = true
+        var baseRevision = snapshotRevision
+        var baseSnapshot = snapshot
+        let taskInputs = taskRecords.map { (task: $0.task, eventCreatedAt: $0.eventCreatedAt) }
+
+        while !Task.isCancelled {
+            // Initial relay history can contain hundreds of encrypted records. Merge and
+            // recurrence deduplication are pure value work, so keep them off MainActor. If the
+            // user edits while that work is running, retry against the new snapshot instead of
+            // overwriting the local change.
+            let mergeBase = baseSnapshot
+            let result = await Task.detached(priority: .utility) {
+                var updated = mergeBase
+                let tasksChanged = updated.mergeRemoteTasks(taskInputs)
+                var calendarChanged = false
+                for record in calendarRecords {
+                    if updated.mergeRemoteTaskifyEvent(
+                        record.event,
+                        eventCreatedAt: record.eventCreatedAt
+                    ) {
+                        calendarChanged = true
+                    }
+                }
+                return SyncBatchMergeResult(
+                    snapshot: updated,
+                    tasksChanged: tasksChanged,
+                    calendarChanged: calendarChanged
+                )
+            }.value
+
+            guard snapshotRevision == baseRevision else {
+                baseRevision = snapshotRevision
+                baseSnapshot = snapshot
+                continue
             }
-        }
-        guard tasksChanged || calendarChanged else { return }
-        snapshot = updated
-        scheduleSave()
-        if calendarChanged {
-            maintainTaskifyEventRecurrenceWindow()
-        }
-        if tasksChanged || calendarChanged {
+
+            guard result.tasksChanged || result.calendarChanged else { return }
+            snapshot = result.snapshot
+            scheduleSave()
+            if result.calendarChanged {
+                maintainTaskifyEventRecurrenceWindow()
+            }
             refreshNotifications(requestPermission: false)
+            return
         }
     }
 

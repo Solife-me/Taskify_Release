@@ -17,8 +17,8 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - PWA-style completed-task presentation preferences, including a board-scoped newest-first Completed timeline with explicit restore/delete actions, optional in-list completed tasks, optional hiding of finished subtasks, and synced per-board Clear completed controls
 - PWA-style per-weekday startup-board routing with a safe first-visible fallback and automatic cleanup when a destination is archived or deleted
 - PWA-style board-scoped Upcoming timelines for week, list, and compound boards, with future tasks and Taskify events grouped by day and multi-day all-day events repeated across each future date
-- PWA-compatible Saturday, Sunday, or Monday week starts across board ordering, quick-add dates, task moves, and recurring-task visibility
-- PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, and next-instance generation on completion
+- PWA-compatible Saturday, Sunday, or Monday week starts across board ordering, quick-add dates, task moves, and current-week visibility, with later tasks kept in Upcoming until their week is active even when legacy payloads lack `hiddenUntilISO`
+- PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, next-instance generation on completion, and series/date deduplication that prevents an incomplete legacy copy from reviving a completed occurrence
 - Multiple relative reminders, exact custom reminder times, and local iOS notification scheduling
 - PWA-familiar Upcoming list/calendar views with one-tap switching, native monthly task-day dots, search, add flow, persisted sorting, board grouping, and board filters
 - Opt-in Apple Calendar integration in both Upcoming views with native full-access permission handling, event-day dots, dated list sections, calendar colors, search, and live EventKit refreshes
@@ -56,7 +56,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - PWA-compatible task image/document metadata sync that survives native edits and recurrence
 - Native decryption and display of current and legacy PWA encrypted attachments, with image zoom and Quick Look document viewing
 - PWA-familiar stacked image and document previews with media overflow labels, retry states, and readable file metadata
-- Behavior-preserving performance hardening for startup, populated boards, Upcoming filters, long Chat histories, wallet history, and attachment previews, with an interactive first-frame handoff, off-main wallet/media and NIP-17 replay decryption, deduplicated inbox batching, cached model projections, bounded media caches, and deterministic populated-screen UI regressions
+- Behavior-preserving performance hardening for startup, populated boards, Upcoming filters, long Chat histories, wallet history, and attachment previews, with an interactive first-frame handoff, visible-board-only task grouping, single-pass task/count indexing, off-main relay merges and Watch projections, staggered relay/contact/wallet recovery, off-main wallet/media and NIP-17 replay decryption, deduplicated inbox batching, cached model projections, bounded media caches, and deterministic populated-screen UI regressions
 - Native Photos and Files attachment controls with PWA-compatible AES-GCM encryption, remote-first Originless uploads, and task-level removal
 - Cached native rich link cards generated from URLs in task titles and notes, with duplicate inline URLs suppressed in task-card presentation
 - Native live-board and independent template sharing with PWA-compatible QR payloads, board-ID copy, the iOS share sheet, camera scanning, review-before-join, automatic board-name/relay import, and complete task plus Taskify-event template snapshots

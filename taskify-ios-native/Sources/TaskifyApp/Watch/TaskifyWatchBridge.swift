@@ -38,6 +38,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     private weak var model: AppModel?
     private var processingCommandIDs: Set<String> = []
     private var hasProvisionedCurrentWatch = false
+    private var snapshotDeliveryTask: Task<Void, Never>?
 
     private override init() {
         pendingSetupNavigationRequestID = UserDefaults.standard
@@ -117,6 +118,32 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             ])
         } catch {
             // A later model revision will retry. Avoid logging payloads or key-adjacent state.
+        }
+    }
+
+    /// Coalesces rapid model revisions and builds the constrained Watch projection away from
+    /// MainActor. Initial relay replay can update the local snapshot several times; generating
+    /// and JSON-encoding up to 500 Watch tasks for every revision used to steal frames from the
+    /// Boards scroller even when WatchConnectivity only needed the final application context.
+    @MainActor
+    func scheduleSnapshot(from model: AppModel) {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated,
+              session.isPaired,
+              session.isWatchAppInstalled else { return }
+
+        let source = model.snapshot
+        let calendar = model.watchDataCalendar
+        snapshotDeliveryTask?.cancel()
+        snapshotDeliveryTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let watchSnapshot = await Task.detached(priority: .utility) {
+                source.watchData(calendar: calendar)
+            }.value
+            guard !Task.isCancelled else { return }
+            self?.sendSnapshot(watchSnapshot)
         }
     }
 
@@ -325,6 +352,9 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                 self?.state = .provisioned
             } else {
                 self?.state = .ready
+            }
+            if error == nil, let self, let model = self.model {
+                self.scheduleSnapshot(from: model)
             }
         }
     }

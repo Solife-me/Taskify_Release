@@ -146,6 +146,7 @@ struct RootTabView: View {
             try? await Task.sleep(for: .milliseconds(48))
             guard !Task.isCancelled, !model.isLoading else { return }
             hasPresentedInitialContent = true
+            model.initialContentDidAppear()
         }
         .alert(
             "Taskify",
