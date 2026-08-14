@@ -332,20 +332,30 @@ struct TaskifyAppBackground: View {
     @AppStorage(TaskifyAppearanceSettings.revisionKey) private var revision = ""
 
     var body: some View {
-        ZStack {
-            if let image = TaskifyAppearanceSettings.backgroundImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: TaskifyAppearanceSettings.backgroundIsBlurred ? 18 : 0)
-                    .scaleEffect(TaskifyAppearanceSettings.backgroundIsBlurred ? 1.08 : 1.02)
-                    .clipped()
+        GeometryReader { proxy in
+            ZStack {
+                Color.black
 
-                Color.black.opacity(TaskifyAppearanceSettings.backgroundIsBlurred ? 0.18 : 0.10)
+                if let image = TaskifyAppearanceSettings.backgroundImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .blur(radius: TaskifyAppearanceSettings.backgroundIsBlurred ? 18 : 0)
+                        .scaleEffect(TaskifyAppearanceSettings.backgroundIsBlurred ? 1.08 : 1.02)
+
+                    Color.black.opacity(TaskifyAppearanceSettings.backgroundIsBlurred ? 0.18 : 0.10)
+                }
+
+                TaskifyTheme.background
             }
-            TaskifyTheme.background
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
         }
         .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
         .id(revision)
     }
 }

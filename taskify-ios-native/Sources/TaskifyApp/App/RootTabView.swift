@@ -109,8 +109,6 @@ struct RootTabView: View {
 
     private var content: some View {
         ZStack {
-            TaskifyAppBackground()
-
             // Building the tab content before the store has loaded renders the entire board
             // against `TaskifySnapshot.empty` — seven day columns with their glass materials
             // and scroll views — and then throws all of it away when the real snapshot lands a
@@ -141,6 +139,11 @@ struct RootTabView: View {
                 .accessibilityLabel("Preparing Taskify")
                 .accessibilityIdentifier("taskify-startup-loading")
             }
+        }
+        .background {
+            // A user-selected photo must never participate in the root ZStack's size proposal.
+            // Keeping it in the true background layer makes even panoramic images layout-neutral.
+            TaskifyAppBackground()
         }
         .task(id: model.isLoading) {
             guard !model.isLoading, !hasPresentedInitialContent else { return }
@@ -204,30 +207,35 @@ struct RootTabView: View {
                 focusQuickAdd: $pendingQuickAdd,
                 quickAddColumnID: $pendingQuickAddColumnID
             )
+                .taskifyTabBackdrop(isActive: selectedTab == .boards)
                 .tag(AppTab.boards)
                 .tabItem {
                     Label(AppTab.boards.title, systemImage: AppTab.boards.icon)
                 }
 
             UpcomingView()
+                .taskifyTabBackdrop(isActive: selectedTab == .upcoming)
                 .tag(AppTab.upcoming)
                 .tabItem {
                     Label(AppTab.upcoming.title, systemImage: AppTab.upcoming.icon)
                 }
 
             walletView
+                .taskifyTabBackdrop(isActive: selectedTab == .wallet)
                 .tag(AppTab.wallet)
                 .tabItem {
                     Label(AppTab.wallet.title, systemImage: AppTab.wallet.icon)
                 }
 
             ContactsView()
+                .taskifyTabBackdrop(isActive: selectedTab == .chat)
                 .tag(AppTab.chat)
                 .tabItem {
                     Label(AppTab.chat.title, systemImage: AppTab.chat.icon)
                 }
 
             SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
+                .taskifyTabBackdrop(isActive: selectedTab == .settings)
                 .tag(AppTab.settings)
                 .tabItem {
                     Label(AppTab.settings.title, systemImage: AppTab.settings.icon)
@@ -239,6 +247,18 @@ struct RootTabView: View {
         WalletView()
     }
 
+}
+
+private extension View {
+    /// iOS's native TabView supplies an opaque content surface. Put one backdrop inside only the
+    /// active tab so the custom photo remains visible without decoding five full-screen copies.
+    func taskifyTabBackdrop(isActive: Bool) -> some View {
+        background {
+            if isActive {
+                TaskifyAppBackground()
+            }
+        }
+    }
 }
 
 /// The wallet's transient status banner. Isolated into its own view so a wallet publish

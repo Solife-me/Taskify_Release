@@ -1953,15 +1953,17 @@ struct SettingsView: View {
             Divider()
 
             if let image = TaskifyAppearanceSettings.backgroundImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(height: 118)
-                    .frame(maxWidth: .infinity)
-                    .blur(radius: backgroundIsBlurred ? 7 : 0)
-                    .scaleEffect(backgroundIsBlurred ? 1.08 : 1.02)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                GeometryReader { proxy in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .blur(radius: backgroundIsBlurred ? 7 : 0)
+                        .scaleEffect(backgroundIsBlurred ? 1.08 : 1.02)
+                }
+                .frame(height: 118)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 Picker("Background clarity", selection: $backgroundIsBlurred) {
                     Text("Sharp").tag(false)
