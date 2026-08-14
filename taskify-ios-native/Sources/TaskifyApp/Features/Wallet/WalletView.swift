@@ -1498,7 +1498,7 @@ struct WalletView: View {
 
     var body: some View {
         ZStack {
-            TaskifyTheme.background.ignoresSafeArea()
+            TaskifyContentBackground().ignoresSafeArea()
 
             GeometryReader { geometry in
                 ScrollView {

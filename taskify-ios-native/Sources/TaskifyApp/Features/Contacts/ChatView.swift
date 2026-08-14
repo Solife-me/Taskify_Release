@@ -281,7 +281,9 @@ struct ContactsView: View {
                     .contentMargins(.bottom, 90, for: .scrollContent)
                 }
             }
-            .background(TaskifyTheme.background.ignoresSafeArea())
+            // NavigationStack supplies an opaque dark surface of its own, so the root tab's
+            // backdrop cannot show through it. Render the shared backdrop inside the stack.
+            .background(TaskifyAppBackground())
             .navigationDestination(for: ChatConversationRoute.self) { route in
                 DirectMessageConversationView(
                     peerPublicKey: route.peerPublicKey,
@@ -1991,7 +1993,7 @@ private struct DirectMessageConversationView: View {
                 scheduleNewestSearchResult(proxy: proxy)
             }
         }
-        .background(TaskifyTheme.background.ignoresSafeArea())
+        .background(TaskifyAppBackground())
         .safeAreaInset(edge: .top, spacing: 0) {
             conversationHeader
         }

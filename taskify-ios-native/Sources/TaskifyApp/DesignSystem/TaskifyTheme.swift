@@ -345,10 +345,14 @@ struct TaskifyAppBackground: View {
                         .blur(radius: TaskifyAppearanceSettings.backgroundIsBlurred ? 18 : 0)
                         .scaleEffect(TaskifyAppearanceSettings.backgroundIsBlurred ? 1.08 : 1.02)
 
-                    Color.black.opacity(TaskifyAppearanceSettings.backgroundIsBlurred ? 0.18 : 0.10)
+                    // Preserve the photo's brightness. The old image scrim was followed by the
+                    // normal 54–65% app gradient, so a sharp photo could retain less than half of
+                    // its original luminance. Glass controls provide their own contrast surface;
+                    // this light scrim is only enough to steady uncontained labels and status text.
+                    Color.black.opacity(TaskifyAppearanceSettings.backgroundIsBlurred ? 0.10 : 0.04)
+                } else {
+                    TaskifyTheme.background
                 }
-
-                TaskifyTheme.background
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
@@ -356,6 +360,25 @@ struct TaskifyAppBackground: View {
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        .id(revision)
+    }
+}
+
+/// A fallback surface for tab content. The containing tab already supplies
+/// `TaskifyAppBackground`; drawing the normal app gradient again inside Wallet or a nested board
+/// both hid the photo and multiplied its darkening. Screens remain transparent over a photo while
+/// retaining the original gradient when no custom background is selected.
+struct TaskifyContentBackground: View {
+    @AppStorage(TaskifyAppearanceSettings.revisionKey) private var revision = ""
+
+    var body: some View {
+        Group {
+            if TaskifyAppearanceSettings.hasBackgroundImage {
+                Color.clear
+            } else {
+                TaskifyTheme.background
+            }
+        }
         .id(revision)
     }
 }

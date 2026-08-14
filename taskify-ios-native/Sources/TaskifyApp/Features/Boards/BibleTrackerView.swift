@@ -58,7 +58,7 @@ struct BibleTrackerView: View {
             .padding(18)
         }
         .scrollIndicators(.hidden)
-        .background(TaskifyTheme.background.ignoresSafeArea())
+        .background(TaskifyContentBackground().ignoresSafeArea())
         .sheet(item: $verseEditorTarget) { target in
             VerseEditorSheet(store: store, bookID: target.bookID, chapter: target.chapter)
                 .presentationDetents([.medium, .large])

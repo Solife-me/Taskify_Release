@@ -1954,13 +1954,17 @@ struct SettingsView: View {
 
             if let image = TaskifyAppearanceSettings.backgroundImage {
                 GeometryReader { proxy in
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .clipped()
-                        .blur(radius: backgroundIsBlurred ? 7 : 0)
-                        .scaleEffect(backgroundIsBlurred ? 1.08 : 1.02)
+                    ZStack {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                            .blur(radius: backgroundIsBlurred ? 7 : 0)
+                            .scaleEffect(backgroundIsBlurred ? 1.08 : 1.02)
+
+                        Color.black.opacity(backgroundIsBlurred ? 0.10 : 0.04)
+                    }
                 }
                 .frame(height: 118)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
