@@ -591,6 +591,8 @@ final class CryptoSyncTests: XCTestCase {
             ],
             "scriptureMemoryId": "scripture-entry-1",
             "scriptureMemoryStage": 4,
+            "scriptureMemoryPrevReviewISO": "2026-07-20T14:00:00.000Z",
+            "scriptureMemoryScheduledAt": "2026-07-21T08:00:00.000Z",
             "bountyDeletedAt": NSNull(),
             "futureTaskifyFeature": [
                 "enabled": true,
@@ -620,7 +622,11 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertNil(decoded.task.preservedSyncFields?["title"])
         XCTAssertEqual(decoded.task.preservedSyncFields?["streak"], .integer(7))
         XCTAssertEqual(decoded.task.preservedSyncFields?["longestStreak"], .integer(19))
-        XCTAssertEqual(decoded.task.preservedSyncFields?["scriptureMemoryStage"], .integer(4))
+        XCTAssertNil(decoded.task.preservedSyncFields?["scriptureMemoryStage"])
+        XCTAssertEqual(decoded.task.scriptureMemoryID, "scripture-entry-1")
+        XCTAssertEqual(decoded.task.scriptureMemoryStage, 4)
+        XCTAssertEqual(decoded.task.scriptureMemoryPreviousReviewISO, "2026-07-20T14:00:00.000Z")
+        XCTAssertEqual(decoded.task.scriptureMemoryScheduledAtISO, "2026-07-21T08:00:00.000Z")
         XCTAssertEqual(decoded.task.preservedSyncFields?["bountyDeletedAt"], .null)
 
         let localData = try JSONEncoder().encode(decoded.task)
@@ -648,6 +654,8 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(outgoing["longestStreak"] as? Int, 19)
         XCTAssertEqual(outgoing["scriptureMemoryId"] as? String, "scripture-entry-1")
         XCTAssertEqual(outgoing["scriptureMemoryStage"] as? Int, 4)
+        XCTAssertEqual(outgoing["scriptureMemoryPrevReviewISO"] as? String, "2026-07-20T14:00:00.000Z")
+        XCTAssertEqual(outgoing["scriptureMemoryScheduledAt"] as? String, "2026-07-21T08:00:00.000Z")
         XCTAssertTrue(outgoing["bountyDeletedAt"] is NSNull)
 
         let assignee = try XCTUnwrap((outgoing["assignees"] as? [[String: Any]])?.first)
@@ -1317,6 +1325,41 @@ final class CryptoSyncTests: XCTestCase {
 
         XCTAssertEqual(restored, identity)
         XCTAssertTrue(identity.npub.hasPrefix("npub1"))
+    }
+
+    func testStaleBoardCleanupKeepsLatestReplaceableEventPerTask() throws {
+        let board = Board(name: "Cleanup", nostrBoardID: UUID().uuidString)
+        let privateKey = BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID)
+        let author = try BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID).hexString
+        func event(taskID: String, createdAt: Int) throws -> NostrEvent {
+            try NostrEvent.signed(
+                privateKey: privateKey,
+                createdAt: createdAt,
+                kind: TaskEventCodec.taskEventKind,
+                tags: [["d", taskID], ["b", BoardCrypto.boardTag(for: board.effectiveNostrBoardID)]],
+                content: "encrypted"
+            )
+        }
+        let oldA = try event(taskID: "a", createdAt: 10)
+        let latestA = try event(taskID: "a", createdAt: 20)
+        let onlyB = try event(taskID: "b", createdAt: 15)
+
+        XCTAssertEqual(
+            TaskEventCodec.staleReplaceableEventIDs(
+                [latestA, oldA, onlyB],
+                expectedAuthor: author
+            ),
+            [oldA.id]
+        )
+
+        let deletion = try TaskEventCodec.eventDeletionRequest(
+            eventIDs: [oldA.id],
+            board: board,
+            createdAt: 30
+        )
+        XCTAssertEqual(deletion.kind, 5)
+        XCTAssertTrue(deletion.tags.contains(["e", oldA.id]))
+        XCTAssertTrue(deletion.verify())
     }
 
     private func referenceEvent(content: String, createdAt: Int) throws -> NostrEvent {

@@ -48,6 +48,7 @@
 		B0000000000000000000S02 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */; };
 		B0000000000000000000S03 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */; };
 		B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */; };
+		B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */; };
 		B00000000000000000000125 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */; };
 		B00000000000000000000126 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */; };
 		A20000000000000000000201 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000101 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift */; };
@@ -66,6 +67,7 @@
 		BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */; };
 		CA3D6C947B9B4D7AB9E6165C /* BibleTrackerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18EC57FC792E425B9E02B191 /* BibleTrackerUITests.swift */; };
 		D8975E95F45CC36870A25CAB /* Sources/TaskifyApp/App/TaskOrderingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C3FC3D0DAC095EE87D44D86 /* Sources/TaskifyApp/App/TaskOrderingSettings.swift */; };
+		D13000000000000000000002 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13000000000000000000001 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift */; };
 		E5E7AD72EBBDFE980998BBE4 /* Sources/TaskifyApp/App/OnboardingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF90D06B99BC2A3790D9DC41 /* Sources/TaskifyApp/App/OnboardingSettings.swift */; };
 		F4C17FA9D5F24554A5CFF5AC /* Sources/TaskifyApp/App/ScriptureMemorySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B511EBD86443B28B6EF5F8 /* Sources/TaskifyApp/App/ScriptureMemorySettings.swift */; };
 		FF5C3B1D78B447EAB70D819E /* Sources/TaskifyApp/App/TaskStreakSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A62BC5630844B0DB46DFD5B /* Sources/TaskifyApp/App/TaskStreakSettings.swift */; };
@@ -149,11 +151,13 @@
 		B00000000000000000000224 /* Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift; sourceTree = SOURCE_ROOT; };
 		B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Shared/TaskifyQuickAddIntent.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift; sourceTree = SOURCE_ROOT; };
 		B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TaskSelectionUITests.swift; sourceTree = "<group>"; };
 		CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift; sourceTree = SOURCE_ROOT; };
 		D5B511EBD86443B28B6EF5F8 /* Sources/TaskifyApp/App/ScriptureMemorySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/ScriptureMemorySettings.swift; sourceTree = SOURCE_ROOT; };
+		D13000000000000000000001 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift; sourceTree = SOURCE_ROOT; };
 		DF2D5621648AA754EA642832 /* FirstRunOnboardingUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FirstRunOnboardingUITests.swift; sourceTree = "<group>"; };
 		FF90D06B99BC2A3790D9DC41 /* Sources/TaskifyApp/App/OnboardingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/OnboardingSettings.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000101 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift; sourceTree = SOURCE_ROOT; };
@@ -278,6 +282,7 @@
 				B00000000000000000000201 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift */,
 				B00000000000000000000202 /* Sources/TaskifyApp/App/AppModel.swift */,
 				B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */,
+				B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */,
 				B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */,
 				B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */,
 				B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */,
@@ -300,6 +305,7 @@
 				B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */,
 				B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */,
 				B00000000000000000000210 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift */,
+				D13000000000000000000001 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift */,
 				8BE60E2576148EFF86B5FB8E /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift */,
 				B00000000000000000000211 /* Sources/TaskifyApp/Notifications/TaskNotificationCoordinator.swift */,
 				B00000000000000000000212 /* Sources/TaskifyApp/Resources/Assets.xcassets */,
@@ -606,6 +612,7 @@
 				B00000000000000000000101 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift in Sources */,
 				B00000000000000000000102 /* Sources/TaskifyApp/App/AppModel.swift in Sources */,
 				B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */,
+				B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */,
 				B0000000000000000000S02 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */,
 				B00000000000000000000125 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift in Sources */,
 				B00000000000000000000126 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift in Sources */,
@@ -628,6 +635,7 @@
 				B00000000000000000000108 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift in Sources */,
 				B00000000000000000000109 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift in Sources */,
 				B00000000000000000000110 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift in Sources */,
+				D13000000000000000000002 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift in Sources */,
 				0F0D02A663DD9FC10DEA44B1 /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift in Sources */,
 				B00000000000000000000111 /* Sources/TaskifyApp/Notifications/TaskNotificationCoordinator.swift in Sources */,
 				B00000000000000000000113 /* Sources/TaskifyApp/Features/Tasks/TaskMediaView.swift in Sources */,
@@ -705,7 +713,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -736,7 +744,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -798,7 +806,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -825,7 +833,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -885,7 +893,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -915,7 +923,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -943,7 +951,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -975,7 +983,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;

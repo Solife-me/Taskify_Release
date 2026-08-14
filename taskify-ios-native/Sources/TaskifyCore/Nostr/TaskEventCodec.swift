@@ -106,6 +106,10 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
     public var lastEditedBy: String?
     public var createdAt: Int64?
     public var seriesId: String?
+    public var scriptureMemoryId: String?
+    public var scriptureMemoryStage: Int?
+    public var scriptureMemoryPrevReviewISO: String?
+    public var scriptureMemoryScheduledAt: String?
     public var subtasks: [TaskSubtask]?
     public var recurrence: TaskRecurrence?
     public var reminders: [TaskReminder]?
@@ -129,6 +133,10 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
         "lastEditedBy",
         "createdAt",
         "seriesId",
+        "scriptureMemoryId",
+        "scriptureMemoryStage",
+        "scriptureMemoryPrevReviewISO",
+        "scriptureMemoryScheduledAt",
         "subtasks",
         "recurrence",
         "reminders",
@@ -152,6 +160,14 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
         lastEditedBy = task.lastEditedBy
         createdAt = Int64(task.createdAt.timeIntervalSince1970 * 1_000)
         seriesId = task.seriesID
+        scriptureMemoryId = task.scriptureMemoryID
+            ?? Self.preservedString(task.preservedSyncFields, key: "scriptureMemoryId")
+        scriptureMemoryStage = task.scriptureMemoryStage
+            ?? Self.preservedInteger(task.preservedSyncFields, key: "scriptureMemoryStage")
+        scriptureMemoryPrevReviewISO = task.scriptureMemoryPreviousReviewISO
+            ?? Self.preservedString(task.preservedSyncFields, key: "scriptureMemoryPrevReviewISO")
+        scriptureMemoryScheduledAt = task.scriptureMemoryScheduledAtISO
+            ?? Self.preservedString(task.preservedSyncFields, key: "scriptureMemoryScheduledAt")
         subtasks = task.subtasks
         recurrence = task.recurrence
         reminders = task.reminders
@@ -177,6 +193,10 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
         lastEditedBy = try container.decodeIfPresent(String.self, forKey: TaskPayloadCodingKey("lastEditedBy"))
         createdAt = try container.decodeIfPresent(Int64.self, forKey: TaskPayloadCodingKey("createdAt"))
         seriesId = try container.decodeIfPresent(String.self, forKey: TaskPayloadCodingKey("seriesId"))
+        scriptureMemoryId = try container.decodeIfPresent(String.self, forKey: TaskPayloadCodingKey("scriptureMemoryId"))
+        scriptureMemoryStage = try container.decodeIfPresent(Int.self, forKey: TaskPayloadCodingKey("scriptureMemoryStage"))
+        scriptureMemoryPrevReviewISO = try container.decodeIfPresent(String.self, forKey: TaskPayloadCodingKey("scriptureMemoryPrevReviewISO"))
+        scriptureMemoryScheduledAt = try container.decodeIfPresent(String.self, forKey: TaskPayloadCodingKey("scriptureMemoryScheduledAt"))
         subtasks = try container.decodeIfPresent([TaskSubtask].self, forKey: TaskPayloadCodingKey("subtasks"))
         recurrence = try container.decodeIfPresent(TaskRecurrence.self, forKey: TaskPayloadCodingKey("recurrence"))
         reminders = try container.decodeIfPresent([TaskReminder].self, forKey: TaskPayloadCodingKey("reminders"))
@@ -210,6 +230,10 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
         try container.encodeIfPresent(lastEditedBy, forKey: TaskPayloadCodingKey("lastEditedBy"))
         try container.encodeIfPresent(createdAt, forKey: TaskPayloadCodingKey("createdAt"))
         try container.encodeIfPresent(seriesId, forKey: TaskPayloadCodingKey("seriesId"))
+        try container.encodeIfPresent(scriptureMemoryId, forKey: TaskPayloadCodingKey("scriptureMemoryId"))
+        try container.encodeIfPresent(scriptureMemoryStage, forKey: TaskPayloadCodingKey("scriptureMemoryStage"))
+        try container.encodeIfPresent(scriptureMemoryPrevReviewISO, forKey: TaskPayloadCodingKey("scriptureMemoryPrevReviewISO"))
+        try container.encodeIfPresent(scriptureMemoryScheduledAt, forKey: TaskPayloadCodingKey("scriptureMemoryScheduledAt"))
         try container.encodeIfPresent(subtasks, forKey: TaskPayloadCodingKey("subtasks"))
         try container.encodeIfPresent(recurrence, forKey: TaskPayloadCodingKey("recurrence"))
         try container.encodeIfPresent(reminders, forKey: TaskPayloadCodingKey("reminders"))
@@ -217,6 +241,28 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
         try container.encodeIfPresent(dueDateEnabled, forKey: TaskPayloadCodingKey("dueDateEnabled"))
         try container.encodeIfPresent(dueTimeEnabled, forKey: TaskPayloadCodingKey("dueTimeEnabled"))
         try container.encodeIfPresent(dueTimeZone, forKey: TaskPayloadCodingKey("dueTimeZone"))
+    }
+
+    private static func preservedString(
+        _ fields: [String: TaskPayloadValue]?,
+        key: String
+    ) -> String? {
+        guard case .string(let value)? = fields?[key] else { return nil }
+        return value
+    }
+
+    private static func preservedInteger(
+        _ fields: [String: TaskPayloadValue]?,
+        key: String
+    ) -> Int? {
+        switch fields?[key] {
+        case .integer(let value):
+            return Int(exactly: value)
+        case .number(let value) where value.isFinite && value.rounded() == value:
+            return Int(exactly: value)
+        default:
+            return nil
+        }
     }
 
     static func format(_ date: Date) -> String {
@@ -346,6 +392,42 @@ public enum TaskEventCodec {
         )
     }
 
+    public static func staleReplaceableEventIDs(
+        _ events: [NostrEvent],
+        expectedAuthor: String,
+        kind: Int = taskEventKind
+    ) -> [String] {
+        let valid = events.filter {
+            $0.kind == kind
+                && $0.publicKey.caseInsensitiveCompare(expectedAuthor) == .orderedSame
+                && $0.verify()
+                && $0.firstTagValue(named: "d") != nil
+        }
+        let latestByAddress = Dictionary(grouping: valid) {
+            "\($0.kind):\($0.publicKey.lowercased()):\($0.firstTagValue(named: "d")!)"
+        }.mapValues { events in events.map(\.createdAt).max() ?? 0 }
+        return valid.compactMap { event in
+            let address = "\(event.kind):\(event.publicKey.lowercased()):\(event.firstTagValue(named: "d")!)"
+            return event.createdAt < (latestByAddress[address] ?? event.createdAt) ? event.id : nil
+        }.sorted()
+    }
+
+    public static func eventDeletionRequest(
+        eventIDs: [String],
+        board: Board,
+        createdAt: Int
+    ) throws -> NostrEvent {
+        let validIDs = Array(Set(eventIDs.filter { (try? Data(hex: $0))?.count == 32 })).sorted()
+        guard !validIDs.isEmpty else { throw TaskEventCodecError.invalidPayload }
+        return try NostrEvent.signed(
+            privateKey: BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID),
+            createdAt: createdAt,
+            kind: 5,
+            tags: validIDs.map { ["e", $0] } + [["k", String(taskEventKind)]],
+            content: "Clean up stale Taskify board events"
+        )
+    }
+
     public static func decodeBoardEvent(
         _ event: NostrEvent,
         board: Board
@@ -466,6 +548,10 @@ public enum TaskEventCodec {
             subtasks: payload.subtasks,
             recurrence: payload.recurrence?.isActive == true ? payload.recurrence : nil,
             seriesID: payload.seriesId,
+            scriptureMemoryID: payload.scriptureMemoryId,
+            scriptureMemoryStage: payload.scriptureMemoryStage,
+            scriptureMemoryPreviousReviewISO: payload.scriptureMemoryPrevReviewISO,
+            scriptureMemoryScheduledAtISO: payload.scriptureMemoryScheduledAt,
             reminders: payload.reminders?.filter { $0.minutesBefore != nil && !$0.rawValue.isEmpty },
             reminderTime: payload.reminderTime,
             hiddenUntilDate: hiddenUntilDate,

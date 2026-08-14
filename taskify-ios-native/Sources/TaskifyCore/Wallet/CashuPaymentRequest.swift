@@ -16,6 +16,7 @@ public struct CashuCreatedPaymentRequest: Identifiable, Codable, Equatable, Send
     public let mintURLs: [String]
     public let relayURLs: [String]
     public let singleUse: Bool
+    public let lockPublicKey: String?
     public let createdAt: Date
     public var state: CashuCreatedPaymentRequestState
     public var receivedAmount: UInt64
@@ -32,6 +33,7 @@ public struct CashuCreatedPaymentRequest: Identifiable, Codable, Equatable, Send
         mintURLs: [String],
         relayURLs: [String],
         singleUse: Bool,
+        lockPublicKey: String? = nil,
         createdAt: Date = Date(),
         state: CashuCreatedPaymentRequestState = .active,
         receivedAmount: UInt64 = 0,
@@ -47,6 +49,7 @@ public struct CashuCreatedPaymentRequest: Identifiable, Codable, Equatable, Send
         self.mintURLs = mintURLs
         self.relayURLs = relayURLs
         self.singleUse = singleUse
+        self.lockPublicKey = CashuP2PKKey.normalizePublicKey(lockPublicKey)
         self.createdAt = createdAt
         self.state = state
         self.receivedAmount = receivedAmount
@@ -121,6 +124,7 @@ public enum CashuPaymentRequestContract {
         recipientPublicKey: String,
         relayURLs: [String],
         singleUse: Bool,
+        lockPublicKey: String? = nil,
         requestID: String = Self.randomRequestID(),
         createdAt: Date = Date()
     ) throws -> CashuCreatedPaymentRequest {
@@ -149,6 +153,15 @@ public enum CashuPaymentRequestContract {
             .prefix(280)
         let normalizedDescription = memo.flatMap { $0.isEmpty ? nil : String($0) }
         let nprofile = try nprofile(publicKey: publicKey, relayURLs: normalizedRelays)
+        let normalizedLockKey: String?
+        if let lockPublicKey {
+            guard let key = CashuP2PKKey.normalizePublicKey(lockPublicKey) else {
+                throw CashuP2PKError.invalidKey
+            }
+            normalizedLockKey = key
+        } else {
+            normalizedLockKey = nil
+        }
 
         var fields: [(String, CBORValue)] = [
             ("i", .text(normalizedID)),
@@ -165,6 +178,15 @@ public enum CashuPaymentRequestContract {
         ]
         if let amount { fields.append(("a", .unsigned(amount))) }
         if let normalizedDescription { fields.append(("d", .text(normalizedDescription))) }
+        if let normalizedLockKey {
+            fields.append(("nut10", .map([
+                ("k", .text("P2PK")),
+                ("d", .text(normalizedLockKey)),
+                ("t", .array([
+                    .array([.text("sigflag"), .text("SIG_INPUTS")])
+                ])),
+            ])))
+        }
 
         let encodedA = "creqA" + CBORWriter.encode(.map(fields)).base64URLEncodedString()
         let request = try PaymentRequest.fromString(encoded: encodedA)
@@ -178,6 +200,7 @@ public enum CashuPaymentRequestContract {
             mintURLs: normalizedMints,
             relayURLs: normalizedRelays,
             singleUse: singleUse,
+            lockPublicKey: normalizedLockKey,
             createdAt: createdAt
         )
     }

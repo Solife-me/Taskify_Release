@@ -1,5 +1,7 @@
 import SwiftUI
 import TaskifyCore
+import UIKit
+import VisionKit
 
 private enum BibleTrackerDateFormatting {
     static let iso8601 = ISO8601DateFormatter()
@@ -7,8 +9,7 @@ private enum BibleTrackerDateFormatting {
 
 /// Bible reading tracker board content, ported from the PWA's `BibleTracker.tsx`.
 /// Chapter-level progress with optional per-chapter verse selection, book completion,
-/// and reset-to-archive — everything except printing/scanning, which is a separate
-/// physical-checklist round-trip system not ported to iOS.
+/// and reset-to-archive, including the PWA-compatible physical print/scan round trip.
 struct BibleTrackerView: View {
     @Environment(AppModel.self) private var model
     @StateObject private var store = BibleTrackerStore()
@@ -22,6 +23,7 @@ struct BibleTrackerView: View {
     @State private var archivePendingDeletion: BibleTrackerArchiveEntry?
     @State private var showingScripturePicker = false
     @State private var scriptureEntryPendingDeletion: ScriptureMemoryEntry?
+    @State private var showingPhysicalChecklist = false
 
     private struct VerseEditorTarget: Identifiable {
         let bookID: String
@@ -95,6 +97,13 @@ struct BibleTrackerView: View {
                 model.addScriptureMemoryEntry(bookID: bookID, chapter: chapter, startVerse: startVerse, endVerse: endVerse)
             }
         }
+        .sheet(isPresented: $showingPhysicalChecklist) {
+            PhysicalChecklistSheet(job: biblePrintJob) { scannedIDs in
+                withAnimation(.snappy) {
+                    store.applyScannedChapters(Set(scannedIDs))
+                }
+            }
+        }
         .confirmationDialog(
             "Remove this passage?",
             isPresented: Binding(
@@ -133,16 +142,44 @@ struct BibleTrackerView: View {
             ProgressView(value: percentComplete)
                 .tint(TaskifyTheme.accent)
 
-            Button {
-                showingResetConfirmation = true
-            } label: {
-                Label("Reset Progress", systemImage: "arrow.counterclockwise")
-                    .font(.caption.weight(.semibold))
+            HStack {
+                Button {
+                    showingPhysicalChecklist = true
+                } label: {
+                    Label("Print & Scan", systemImage: "printer")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    showingResetConfirmation = true
+                } label: {
+                    Label("Reset Progress", systemImage: "arrow.counterclockwise")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
         }
         .padding(16)
         .taskifyGlass(cornerRadius: 22)
+    }
+
+    private var biblePrintJob: PhysicalChecklistJob {
+        PhysicalChecklistJob(
+            ownerID: "bible-tracker",
+            title: "Bible Reading Tracker",
+            format: .bibleChapters,
+            items: BibleCatalog.books.flatMap { book in
+                (1...book.chapterCount).map { chapter in
+                    PhysicalChecklistItem(
+                        id: "\(book.id):\(chapter)",
+                        title: "Chapter \(chapter)",
+                        section: book.name,
+                        filled: store.chaptersRead(bookID: book.id).contains(chapter)
+                    )
+                }
+            }
+        )
     }
 
     private var subtitleText: String {
@@ -901,5 +938,500 @@ private struct ScripturePickerSheet: View {
         guard let start = startVerse else { return "\(name) \(chapter)" }
         guard let end = endVerse, end != start else { return "\(name) \(chapter):\(start)" }
         return "\(name) \(chapter):\(start)-\(end)"
+    }
+}
+
+// MARK: - Physical checklist printing and scanning
+
+/// Native counterpart to the PWA's fiducial-marker print/scan flow. The latest print job is kept
+/// locally so a scan can resolve marks to stable task/chapter IDs even after the live data changes.
+struct PhysicalChecklistSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var job: PhysicalChecklistJob
+    @State private var showingScanner = false
+    @State private var sharePayload: PhysicalChecklistSharePayload?
+    @State private var detectedIDs: [String] = []
+    @State private var scanMessage: String?
+    @State private var scanJob: PhysicalChecklistJob?
+
+    let onApply: ([String]) -> Void
+
+    init(job: PhysicalChecklistJob, onApply: @escaping ([String]) -> Void) {
+        _job = State(initialValue: job)
+        self.onApply = onApply
+    }
+
+    private var lastPrintedJob: PhysicalChecklistJob? {
+        PhysicalChecklistJobStore.load(ownerID: job.ownerID)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Physical checklist", systemImage: "checklist")
+                            .font(.headline)
+                        Text("Print the checklist, fill its circles with a dark pen, then scan it here. Scans stay on this device.")
+                            .font(.subheadline)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    .padding(16)
+                    .taskifyGlass(cornerRadius: 20)
+
+                    Picker("Paper", selection: $job.paper) {
+                        ForEach(PhysicalChecklistPaper.allCases, id: \.self) { paper in
+                            Text(paper.displayName).tag(paper)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    VStack(spacing: 10) {
+                        Button {
+                            printChecklist()
+                        } label: {
+                            Label("Print checklist", systemImage: "printer.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(TaskifyTheme.accent)
+
+                        Button {
+                            shareChecklist()
+                        } label: {
+                            Label("Share PDF", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button {
+                            scanJob = lastPrintedJob ?? job
+                            showingScanner = true
+                        } label: {
+                            Label("Scan completed checklist", systemImage: "doc.viewfinder")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!VNDocumentCameraViewController.isSupported)
+                    }
+
+                    if let scanMessage {
+                        Label(scanMessage, systemImage: detectedIDs.isEmpty ? "info.circle" : "checkmark.circle.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(detectedIDs.isEmpty ? TaskifyTheme.secondaryText : TaskifyTheme.accent)
+                    }
+
+                    if !detectedIDs.isEmpty, let scanJob {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Detected marks")
+                                .font(.headline)
+                            ForEach(scanJob.items.filter { detectedIDs.contains($0.id) }) { item in
+                                HStack(spacing: 10) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(TaskifyTheme.accent)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(item.title)
+                                            .font(.subheadline.weight(.semibold))
+                                        if let section = item.section {
+                                            Text(section)
+                                                .font(.caption)
+                                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                            }
+
+                            Button {
+                                onApply(detectedIDs)
+                                dismiss()
+                            } label: {
+                                Text("Apply \(detectedIDs.count) completed mark\(detectedIDs.count == 1 ? "" : "s")")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(TaskifyTheme.accent)
+                        }
+                        .padding(16)
+                        .taskifyGlass(cornerRadius: 20)
+                    }
+                }
+                .padding(18)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle(job.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+        .sheet(item: $sharePayload) { payload in
+            PhysicalChecklistActivityView(items: [payload.url])
+        }
+        .fullScreenCover(isPresented: $showingScanner) {
+            PhysicalChecklistDocumentScanner { images in
+                showingScanner = false
+                guard let scanJob else { return }
+                let result = PhysicalChecklistScanAnalyzer.scan(images: images, job: scanJob)
+                detectedIDs = result.detectedIDs
+                if result.recognizedPages == 0 {
+                    scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
+                } else if result.detectedIDs.isEmpty {
+                    scanMessage = "The page was recognized, but no newly filled circles were found."
+                } else {
+                    scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
+                }
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    private func pdfURL() throws -> URL {
+        let data = PhysicalChecklistPDFRenderer.render(job: job)
+        let safeTitle = job.title.replacingOccurrences(of: "/", with: "-")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(safeTitle)-checklist-\(job.id.prefix(8)).pdf")
+        try data.write(to: url, options: .atomic)
+        PhysicalChecklistJobStore.save(job)
+        return url
+    }
+
+    private func printChecklist() {
+        guard let url = try? pdfURL() else {
+            scanMessage = "Taskify couldn't create the checklist PDF."
+            return
+        }
+        let controller = UIPrintInteractionController.shared
+        controller.printInfo = {
+            let info = UIPrintInfo(dictionary: nil)
+            info.jobName = job.title
+            info.outputType = .general
+            return info
+        }()
+        controller.printingItem = url
+        controller.present(animated: true)
+    }
+
+    private func shareChecklist() {
+        guard let url = try? pdfURL() else {
+            scanMessage = "Taskify couldn't create the checklist PDF."
+            return
+        }
+        sharePayload = PhysicalChecklistSharePayload(url: url)
+    }
+}
+
+private struct PhysicalChecklistSharePayload: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private enum PhysicalChecklistJobStore {
+    private static let key = "taskify.physical-checklist.latest-jobs.v1"
+
+    static func save(_ job: PhysicalChecklistJob) {
+        var jobs = loadAll()
+        jobs[job.ownerID] = job
+        if let data = try? JSONEncoder().encode(jobs) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    static func load(ownerID: String) -> PhysicalChecklistJob? {
+        loadAll()[ownerID]
+    }
+
+    private static func loadAll() -> [String: PhysicalChecklistJob] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
+            return [:]
+        }
+        return jobs
+    }
+}
+
+private enum PhysicalChecklistPDFRenderer {
+    private static let pointsPerMM = 72.0 / 25.4
+
+    static func render(job: PhysicalChecklistJob) -> Data {
+        let layout = PhysicalChecklistLayout.build(job: job)
+        let sizeMM = job.paper.sizeMM
+        let bounds = CGRect(x: 0, y: 0, width: sizeMM.width * pointsPerMM, height: sizeMM.height * pointsPerMM)
+        let format = UIGraphicsPDFRendererFormat()
+        format.documentInfo = [
+            kCGPDFContextTitle as String: job.title,
+            kCGPDFContextCreator as String: "Taskify",
+        ]
+
+        return UIGraphicsPDFRenderer(bounds: bounds, format: format).pdfData { renderer in
+            for page in layout.pages {
+                renderer.beginPage()
+                UIColor.white.setFill()
+                UIRectFill(bounds)
+                drawMarkers(layout: layout)
+                drawHeader(job: job, layout: layout, page: page)
+                drawRows(page.rows, layout: layout)
+            }
+        }
+    }
+
+    private static func rectMM(_ x: Double, _ y: Double, _ width: Double, _ height: Double) -> CGRect {
+        CGRect(x: x * pointsPerMM, y: y * pointsPerMM, width: width * pointsPerMM, height: height * pointsPerMM)
+    }
+
+    private static func drawMarkers(layout: PhysicalChecklistLayout) {
+        for (index, marker) in layout.markerRectsMM().enumerated() {
+            let rect = rectMM(marker.x, marker.y, marker.width, marker.height)
+            if index < 2 {
+                UIColor.black.setStroke()
+                let outer = UIBezierPath(rect: rect)
+                outer.lineWidth = 1.2
+                outer.stroke()
+                UIColor.black.setFill()
+                UIBezierPath(rect: rect.insetBy(dx: rect.width * 0.32, dy: rect.height * 0.32)).fill()
+            } else {
+                UIColor.black.setFill()
+                UIBezierPath(rect: rect).fill()
+            }
+        }
+    }
+
+    private static func drawHeader(job: PhysicalChecklistJob, layout: PhysicalChecklistLayout, page: PhysicalChecklistPage) {
+        let size = job.paper.sizeMM
+        let titleRect = rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM, size.width * 0.62, 7)
+        (job.title as NSString).draw(
+            in: titleRect,
+            withAttributes: [
+                .font: UIFont.systemFont(ofSize: job.format == .bibleChapters ? 13 : 15, weight: .bold),
+                .foregroundColor: UIColor.black,
+            ]
+        )
+        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count)"
+        (subtitle as NSString).draw(
+            in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5),
+            withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.darkGray]
+        )
+
+        let bits = page.index + 1
+        for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
+            let side = PhysicalChecklistLayout.pageIDSizeMM
+            let rect = rectMM(center.x - side / 2, center.y - side / 2, side, side)
+            let path = UIBezierPath(rect: rect)
+            if bits & (1 << bit) != 0 {
+                UIColor.black.setFill()
+                path.fill()
+            } else {
+                UIColor.black.setStroke()
+                path.lineWidth = 0.7
+                path.stroke()
+            }
+        }
+    }
+
+    private static func drawRows(_ rows: [PhysicalChecklistRow], layout: PhysicalChecklistLayout) {
+        for row in rows {
+            switch row.kind {
+            case let .section(section):
+                (section.uppercased() as NSString).draw(
+                    in: rectMM(row.xMM, row.yMM + 1.0, row.widthMM, 4.5),
+                    withAttributes: [
+                        .font: UIFont.systemFont(ofSize: 7.2, weight: .bold),
+                        .foregroundColor: UIColor.darkGray,
+                    ]
+                )
+            case let .item(item):
+                guard let center = row.circleCenterMM else { continue }
+                let side = layout.circleSizeMM
+                let circle = UIBezierPath(ovalIn: rectMM(center.x - side / 2, center.y - side / 2, side, side))
+                UIColor.black.setStroke()
+                circle.lineWidth = 0.85
+                circle.stroke()
+                if item.filled {
+                    UIColor.black.setFill()
+                    circle.fill()
+                }
+                let textX = center.x + side / 2 + (jobTextGap(for: layout))
+                let textY = row.yMM + (jobTextTop(for: layout))
+                (item.title as NSString).draw(
+                    in: rectMM(textX, textY, max(1, row.xMM + row.widthMM - textX), 4.6),
+                    withAttributes: [
+                        .font: UIFont.systemFont(ofSize: layout.circleSizeMM < 4 ? 6.4 : 8.2),
+                        .foregroundColor: UIColor.black,
+                    ]
+                )
+            }
+        }
+    }
+
+    private static func jobTextGap(for layout: PhysicalChecklistLayout) -> Double {
+        layout.circleSizeMM < 4 ? 1.2 : 2.4
+    }
+
+    private static func jobTextTop(for layout: PhysicalChecklistLayout) -> Double {
+        layout.circleSizeMM < 4 ? 0.9 : 1.35
+    }
+}
+
+private struct PhysicalChecklistActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+private struct PhysicalChecklistDocumentScanner: UIViewControllerRepresentable {
+    let onFinish: ([UIImage]) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
+        let controller = VNDocumentCameraViewController()
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
+
+    final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+        let parent: PhysicalChecklistDocumentScanner
+
+        init(parent: PhysicalChecklistDocumentScanner) {
+            self.parent = parent
+        }
+
+        func documentCameraViewController(
+            _ controller: VNDocumentCameraViewController,
+            didFinishWith scan: VNDocumentCameraScan
+        ) {
+            let images = (0..<scan.pageCount).map(scan.imageOfPage(at:))
+            parent.onFinish(images)
+        }
+
+        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
+            parent.onFinish([])
+        }
+
+        func documentCameraViewController(
+            _ controller: VNDocumentCameraViewController,
+            didFailWithError error: Error
+        ) {
+            parent.onFinish([])
+        }
+    }
+}
+
+private enum PhysicalChecklistScanAnalyzer {
+    struct Result {
+        var detectedIDs: [String]
+        var recognizedPages: Int
+    }
+
+    private struct GrayImage {
+        let pixels: [UInt8]
+        let width: Int
+        let height: Int
+
+        func mean(x: Double, y: Double, radius: Double) -> Double {
+            let cx = min(max(Int(x * Double(width)), 0), width - 1)
+            let cy = min(max(Int(y * Double(height)), 0), height - 1)
+            let r = max(1, Int(radius * Double(min(width, height))))
+            var sum = 0
+            var count = 0
+            for py in max(0, cy - r)...min(height - 1, cy + r) {
+                for px in max(0, cx - r)...min(width - 1, cx + r) {
+                    let dx = px - cx
+                    let dy = py - cy
+                    guard dx * dx + dy * dy <= r * r else { continue }
+                    sum += Int(pixels[py * width + px])
+                    count += 1
+                }
+            }
+            return count == 0 ? 255 : Double(sum) / Double(count)
+        }
+    }
+
+    static func scan(images: [UIImage], job: PhysicalChecklistJob) -> Result {
+        let layout = PhysicalChecklistLayout.build(job: job)
+        let paperSize = job.paper.sizeMM
+        var detected = Set<String>()
+        var recognized = Set<Int>()
+
+        for (inputIndex, image) in images.enumerated() {
+            autoreleasepool {
+                guard let gray = makeGrayImage(image) else { return }
+                let markerCenters = layout.markerRectsMM().map {
+                    (($0.x + $0.width / 2) / paperSize.width, ($0.y + $0.height / 2) / paperSize.height)
+                }
+                let darkMarkerCount = markerCenters.filter {
+                    gray.mean(x: $0.0, y: $0.1, radius: 0.004) < 185
+                }.count
+                guard darkMarkerCount >= 3 else { return }
+
+                var encodedPage = 0
+                for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
+                    let value = gray.mean(
+                        x: center.x / paperSize.width,
+                        y: center.y / paperSize.height,
+                        radius: 0.0025
+                    )
+                    if value < 170 { encodedPage |= 1 << bit }
+                }
+                let decodedIndex = encodedPage - 1
+                let pageIndex = layout.pages.indices.contains(decodedIndex)
+                    ? decodedIndex
+                    : min(inputIndex, layout.pages.count - 1)
+                recognized.insert(pageIndex)
+
+                for row in layout.pages[pageIndex].rows {
+                    guard case let .item(item) = row.kind, let center = row.circleCenterMM else { continue }
+                    let darkness = gray.mean(
+                        x: center.x / paperSize.width,
+                        y: center.y / paperSize.height,
+                        radius: max(0.0015, layout.circleSizeMM / paperSize.width * 0.12)
+                    )
+                    if darkness < 168 {
+                        detected.insert(item.id)
+                    }
+                }
+            }
+        }
+
+        return Result(detectedIDs: detected.sorted(), recognizedPages: recognized.count)
+    }
+
+    private static func makeGrayImage(_ source: UIImage) -> GrayImage? {
+        let targetWidth = 900
+        let aspect = max(source.size.height / max(source.size.width, 1), 0.2)
+        let targetHeight = max(1, Int(Double(targetWidth) * aspect))
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: targetWidth, height: targetHeight))
+        let normalized = renderer.image { _ in
+            source.draw(in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        }
+        guard let cgImage = normalized.cgImage else { return nil }
+        var pixels = [UInt8](repeating: 255, count: targetWidth * targetHeight)
+        let rendered = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: targetWidth,
+                height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: targetWidth,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            context.interpolationQuality = .high
+            // Bitmap contexts use a bottom-left origin while the checklist layout and UIKit use
+            // top-left coordinates. Normalize once here so every marker/row sample maps directly.
+            context.translateBy(x: 0, y: CGFloat(targetHeight))
+            context.scaleBy(x: 1, y: -1)
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+            return true
+        }
+        return rendered ? GrayImage(pixels: pixels, width: targetWidth, height: targetHeight) : nil
     }
 }

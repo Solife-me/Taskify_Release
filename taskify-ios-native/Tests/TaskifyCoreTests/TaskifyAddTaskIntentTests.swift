@@ -97,6 +97,41 @@ final class TaskifyAddTaskIntentTests: XCTestCase {
         XCTAssertEqual(destination.columnID, "col")
     }
 
+    func testHiddenCompoundChildCanBeNamedAsADestination() throws {
+        let workTasks = Board(
+            id: "work-tasks",
+            name: "Work Tasks",
+            kind: .list,
+            columns: [BoardColumn(id: "todo", name: "To Do", order: 0)],
+            hidden: true
+        )
+        let work = Board(
+            id: "work",
+            name: "Work",
+            kind: .compound,
+            children: [workTasks.id]
+        )
+        let personal = Board.week(id: "personal", name: "Personal Schedule")
+        let snapshot = TaskifySnapshot(
+            boards: [personal, work, workTasks],
+            tasks: [],
+            selectedBoardID: personal.id
+        )
+
+        XCTAssertEqual(
+            TaskifyAddTaskDestination.namedBoards(in: snapshot).map(\.name),
+            ["Personal Schedule", "Work", "Work Tasks"]
+        )
+
+        let destination = try XCTUnwrap(TaskifyAddTaskDestination.resolve(
+            in: snapshot,
+            requestedBoardName: "Work Tasks",
+            now: fixedNow
+        ))
+        XCTAssertEqual(destination.boardID, workTasks.id)
+        XCTAssertEqual(destination.columnID, "todo")
+    }
+
     func testFallsBackToAnyAddableBoardWhenTheSelectedBoardIsBible() throws {
         let bible = Board(id: "bible-1", name: "Bible", kind: .bible)
         let week = Board.week(id: "week-1", name: "Week")
@@ -140,5 +175,85 @@ final class TaskifyAddTaskIntentTests: XCTestCase {
         XCTAssertEqual(task?.boardID, list.id)
         XCTAssertEqual(task?.columnID, "col")
         XCTAssertEqual(snapshot.tasks.count, 1)
+    }
+
+    func testSpokenFollowUpSeparatesQuotedTitleAndExistingBoard() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Add “test” to my work tasks board",
+            visibleBoardNames: ["Personal Schedule", "Work Tasks"]
+        )
+
+        XCTAssertEqual(request.title, "test")
+        XCTAssertEqual(request.requestedBoardName, "Work Tasks")
+    }
+
+    func testSpokenDirectPhraseSeparatesTitleAndBoardWithoutBoardSuffix() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Add test to my work tasks in Taskify",
+            visibleBoardNames: ["Personal Schedule", "Work Tasks"]
+        )
+
+        XCTAssertEqual(request.title, "test")
+        XCTAssertEqual(request.requestedBoardName, "Work Tasks")
+    }
+
+    func testSpokenDirectPhraseTreatsTasksAsASuffixForShortBoardName() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Add test to my work tasks in Taskify",
+            visibleBoardNames: ["Personal Schedule", "Work"]
+        )
+
+        XCTAssertEqual(request.title, "test")
+        XCTAssertEqual(request.requestedBoardName, "Work")
+    }
+
+    func testSpokenFollowUpSeparatesUnquotedTitleAndExistingBoard() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Add buy printer paper to the Work Tasks board",
+            visibleBoardNames: ["Personal Schedule", "Work Tasks"]
+        )
+
+        XCTAssertEqual(request.title, "buy printer paper")
+        XCTAssertEqual(request.requestedBoardName, "Work Tasks")
+    }
+
+    func testSpokenOneShotOrderSeparatesBoardAndTitle() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Add a task in Taskify to my Work Tasks board titled “test”",
+            visibleBoardNames: ["Personal Schedule", "Work Tasks"]
+        )
+
+        XCTAssertEqual(request.title, "test")
+        XCTAssertEqual(request.requestedBoardName, "Work Tasks")
+    }
+
+    func testSpokenParserPrefersLongestMatchingBoardName() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Add review proposal to Work Tasks board",
+            visibleBoardNames: ["Work", "Work Tasks"]
+        )
+
+        XCTAssertEqual(request.title, "review proposal")
+        XCTAssertEqual(request.requestedBoardName, "Work Tasks")
+    }
+
+    func testSpokenParserDoesNotGuessUnknownBoardNames() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Research the school board",
+            visibleBoardNames: ["Personal Schedule", "Work Tasks"]
+        )
+
+        XCTAssertEqual(request.title, "Research the school board")
+        XCTAssertNil(request.requestedBoardName)
+    }
+
+    func testSpokenParserHandlesTerseAddFollowUp() {
+        let request = TaskifySpokenTaskRequestParser.parse(
+            "Add buy milk",
+            visibleBoardNames: ["Personal Schedule"]
+        )
+
+        XCTAssertEqual(request.title, "buy milk")
+        XCTAssertNil(request.requestedBoardName)
     }
 }

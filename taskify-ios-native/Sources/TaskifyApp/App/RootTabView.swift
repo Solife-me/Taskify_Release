@@ -33,6 +33,7 @@ struct RootTabView: View {
     @State private var hasPresentedInitialContent = false
     /// Set by a quick-add deep link; BoardsView clears it once it has focused its field.
     @State private var pendingQuickAdd = false
+    @State private var pendingQuickAddColumnID: String?
     @State private var pendingWatchSetupRequestID: UUID?
 
     init() {
@@ -71,7 +72,7 @@ struct RootTabView: View {
 
     private func consumeQuickAddRequest() {
         guard TaskifyQuickAddRequest.consume() else { return }
-        handle(.quickAdd(boardID: nil))
+        handle(.quickAdd(boardID: nil, columnID: nil))
     }
 
     private func routePendingWatchSetup() {
@@ -93,16 +94,22 @@ struct RootTabView: View {
             // rather than whichever one happened to be open.
             if !boardID.isEmpty { model.selectBoard(boardID) }
             selectedTab = .boards
-        case .quickAdd(let boardID):
+        case .event(_, let boardID):
+            // Events are board content too. Opening their board preserves the widget's context;
+            // the native event card remains available there for viewing or editing.
+            if !boardID.isEmpty { model.selectBoard(boardID) }
+            selectedTab = .boards
+        case .quickAdd(let boardID, let columnID):
             if let boardID { model.selectBoard(boardID) }
             selectedTab = .boards
+            pendingQuickAddColumnID = columnID
             pendingQuickAdd = true
         }
     }
 
     private var content: some View {
         ZStack {
-            TaskifyTheme.background.ignoresSafeArea()
+            TaskifyAppBackground()
 
             // Building the tab content before the store has loaded renders the entire board
             // against `TaskifySnapshot.empty` — seven day columns with their glass materials
@@ -175,7 +182,10 @@ struct RootTabView: View {
     private var legacyContent: some View {
         switch selectedTab {
         case .boards:
-            BoardsView(focusQuickAdd: $pendingQuickAdd)
+            BoardsView(
+                focusQuickAdd: $pendingQuickAdd,
+                quickAddColumnID: $pendingQuickAddColumnID
+            )
         case .upcoming:
             UpcomingView()
         case .wallet:
@@ -190,7 +200,10 @@ struct RootTabView: View {
     @available(iOS 26.0, *)
     private var nativeTabView: some View {
         TabView(selection: $selectedTab) {
-            BoardsView(focusQuickAdd: $pendingQuickAdd)
+            BoardsView(
+                focusQuickAdd: $pendingQuickAdd,
+                quickAddColumnID: $pendingQuickAddColumnID
+            )
                 .tag(AppTab.boards)
                 .tabItem {
                     Label(AppTab.boards.title, systemImage: AppTab.boards.icon)

@@ -119,3 +119,50 @@ struct KeychainWalletSeedStore {
         return String(data: data, encoding: .utf8)
     }
 }
+
+struct KeychainP2PKKeyStore {
+    private let service = "solife.me.Taskify.Native"
+    private let account = "cashu-p2pk-recipient-keys-v1"
+
+    func load() throws -> CashuP2PKKeyRing {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return CashuP2PKKeyRing() }
+        guard status == errSecSuccess,
+              let data = result as? Data else {
+            throw KeychainIdentityError.keychain(status)
+        }
+        return try JSONDecoder().decode(CashuP2PKKeyRing.self, from: data)
+    }
+
+    func save(_ keyRing: CashuP2PKKeyRing) throws {
+        let data = try JSONEncoder().encode(keyRing)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            // Background payment-request redemption runs after the first unlock, so these keys
+            // use the same device-only accessibility class as the wallet seed.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainIdentityError.keychain(updateStatus)
+        }
+        var item = query
+        attributes.forEach { item[$0.key] = $0.value }
+        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        guard addStatus == errSecSuccess else { throw KeychainIdentityError.keychain(addStatus) }
+    }
+}

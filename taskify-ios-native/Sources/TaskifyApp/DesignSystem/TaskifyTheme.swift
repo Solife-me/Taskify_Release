@@ -1,20 +1,287 @@
 import SwiftUI
+import TaskifyCore
 import TaskifyWatchShared
+import UIKit
+
+enum TaskifyAccentChoice: String, CaseIterable {
+    case blue
+    case green
+    case background
+
+    static let presetChoices: [TaskifyAccentChoice] = [.blue, .green]
+
+    var label: String {
+        switch self {
+        case .blue: "Blue"
+        case .green: "Green"
+        case .background: "Photo"
+        }
+    }
+}
+
+enum TaskifyInterfaceScale: String, CaseIterable {
+    case system
+    case small
+    case large
+    case extraLarge
+
+    var label: String {
+        switch self {
+        case .system: "System"
+        case .small: "Small"
+        case .large: "Large"
+        case .extraLarge: "X-Large"
+        }
+    }
+
+    var dynamicTypeSize: DynamicTypeSize {
+        switch self {
+        case .system: .large
+        case .small: .medium
+        case .large: .xLarge
+        case .extraLarge: .xxxLarge
+        }
+    }
+}
+
+enum TaskifyAppearanceSettings {
+    static let accentKey = "taskify.appearance.accent"
+    static let scaleKey = "taskify.appearance.scale"
+    static let backgroundEnabledKey = "taskify.appearance.backgroundEnabled"
+    static let backgroundBlurKey = "taskify.appearance.backgroundBlur"
+    static let backgroundAccentsKey = "taskify.appearance.backgroundAccents"
+    static let backgroundAccentIndexKey = "taskify.appearance.backgroundAccentIndex"
+    static let revisionKey = "taskify.appearance.revision"
+
+    static var accentChoice: TaskifyAccentChoice {
+        UserDefaults.standard.string(forKey: accentKey).flatMap(TaskifyAccentChoice.init(rawValue:)) ?? .blue
+    }
+
+    static var interfaceScale: TaskifyInterfaceScale {
+        UserDefaults.standard.string(forKey: scaleKey).flatMap(TaskifyInterfaceScale.init(rawValue:)) ?? .system
+    }
+
+    static var hasBackgroundImage: Bool {
+        UserDefaults.standard.bool(forKey: backgroundEnabledKey)
+    }
+
+    static var backgroundIsBlurred: Bool {
+        (UserDefaults.standard.object(forKey: backgroundBlurKey) as? Bool) ?? false
+    }
+
+    static var backgroundAccents: [TaskifyRGBColor] {
+        guard hasBackgroundImage,
+              let data = UserDefaults.standard.data(forKey: backgroundAccentsKey),
+              let decoded = try? JSONDecoder().decode([TaskifyRGBColor].self, from: data)
+        else { return [] }
+        return Array(decoded.prefix(3))
+    }
+
+    static var selectedBackgroundAccentIndex: Int? {
+        let accents = backgroundAccents
+        guard !accents.isEmpty else { return nil }
+        let stored = UserDefaults.standard.integer(forKey: backgroundAccentIndexKey)
+        return accents.indices.contains(stored) ? stored : 0
+    }
+
+    static var selectedBackgroundAccent: TaskifyRGBColor? {
+        guard let index = selectedBackgroundAccentIndex else { return nil }
+        return backgroundAccents[index]
+    }
+
+    static var backgroundImageURL: URL {
+        let base = (try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("taskify-background.jpg")
+    }
+
+    static var backgroundImage: UIImage? {
+        guard hasBackgroundImage else { return nil }
+        return UIImage(contentsOfFile: backgroundImageURL.path)
+    }
+
+    static func saveBackgroundImage(data: Data) throws {
+        guard let source = UIImage(data: data) else { throw AppearanceError.invalidImage }
+        let sourceWidth = CGFloat(source.cgImage?.width ?? Int(source.size.width * source.scale))
+        let sourceHeight = CGFloat(source.cgImage?.height ?? Int(source.size.height * source.scale))
+        guard sourceWidth > 0, sourceHeight > 0 else { throw AppearanceError.invalidImage }
+
+        let maxDimension: CGFloat = 2_048
+        let scale = min(1, maxDimension / max(sourceWidth, sourceHeight))
+        let targetSize = CGSize(width: sourceWidth * scale, height: sourceHeight * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        let normalized = renderer.image { _ in
+            source.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        guard let encoded = normalized.jpegData(compressionQuality: 0.86) else {
+            throw AppearanceError.invalidImage
+        }
+
+        let accents = TaskifyBackgroundImageSampler.suggestedAccents(from: normalized)
+        try encoded.write(to: backgroundImageURL, options: [.atomic, .completeFileProtection])
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: backgroundEnabledKey)
+        persistBackgroundAccents(accents)
+        defaults.set(0, forKey: backgroundAccentIndexKey)
+        defaults.set(TaskifyAccentChoice.background.rawValue, forKey: accentKey)
+        if defaults.object(forKey: backgroundBlurKey) == nil {
+            defaults.set(false, forKey: backgroundBlurKey)
+        }
+        bumpRevision()
+    }
+
+    /// Upgrades backgrounds saved by the early native implementation without adding work to
+    /// app launch. Settings calls this only when the Appearance card is presented.
+    @discardableResult
+    static func ensureBackgroundAccents() -> Bool {
+        guard hasBackgroundImage, backgroundAccents.isEmpty, let image = backgroundImage else {
+            return false
+        }
+        persistBackgroundAccents(TaskifyBackgroundImageSampler.suggestedAccents(from: image))
+        UserDefaults.standard.set(0, forKey: backgroundAccentIndexKey)
+        bumpRevision()
+        return true
+    }
+
+    static func selectBackgroundAccent(at index: Int) {
+        guard backgroundAccents.indices.contains(index) else { return }
+        let defaults = UserDefaults.standard
+        defaults.set(index, forKey: backgroundAccentIndexKey)
+        defaults.set(TaskifyAccentChoice.background.rawValue, forKey: accentKey)
+        bumpRevision()
+    }
+
+    static func selectAccent(_ choice: TaskifyAccentChoice) {
+        guard choice != .background || selectedBackgroundAccent != nil else { return }
+        UserDefaults.standard.set(choice.rawValue, forKey: accentKey)
+        bumpRevision()
+    }
+
+    static func removeBackgroundImage() {
+        try? FileManager.default.removeItem(at: backgroundImageURL)
+        let defaults = UserDefaults.standard
+        defaults.set(false, forKey: backgroundEnabledKey)
+        defaults.removeObject(forKey: backgroundAccentsKey)
+        defaults.removeObject(forKey: backgroundAccentIndexKey)
+        if accentChoice == .background {
+            defaults.set(TaskifyAccentChoice.blue.rawValue, forKey: accentKey)
+        }
+        bumpRevision()
+    }
+
+    private static func persistBackgroundAccents(_ accents: [TaskifyRGBColor]) {
+        let normalized = Array(accents.prefix(3))
+        guard !normalized.isEmpty, let data = try? JSONEncoder().encode(normalized) else {
+            UserDefaults.standard.removeObject(forKey: backgroundAccentsKey)
+            return
+        }
+        UserDefaults.standard.set(data, forKey: backgroundAccentsKey)
+    }
+
+    static func bumpRevision() {
+        UserDefaults.standard.set(UUID().uuidString, forKey: revisionKey)
+    }
+
+    enum AppearanceError: LocalizedError {
+        case invalidImage
+        var errorDescription: String? { "That photo couldn't be used as a background." }
+    }
+}
+
+extension TaskifyRGBColor {
+    var taskifyColor: Color {
+        Color(
+            red: Double(red) / 255,
+            green: Double(green) / 255,
+            blue: Double(blue) / 255
+        )
+    }
+}
+
+private enum TaskifyBackgroundImageSampler {
+    static func suggestedAccents(from image: UIImage) -> [TaskifyRGBColor] {
+        let pixels = samplePixels(from: image)
+        return TaskifyBackgroundPaletteExtractor.suggestedAccents(from: pixels)
+    }
+
+    private static func samplePixels(from image: UIImage) -> [TaskifyRGBColor] {
+        guard let source = image.cgImage else { return [] }
+        let sourceArea = max(1, source.width * source.height)
+        let scale = min(1, sqrt(2_200 / Double(sourceArea)))
+        let width = max(16, Int((Double(source.width) * scale).rounded()))
+        let height = max(16, Int((Double(source.height) * scale).rounded()))
+        let bytesPerRow = width * 4
+        var rgba = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+        let rendered = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    | CGBitmapInfo.byteOrder32Big.rawValue
+            ) else { return false }
+            context.interpolationQuality = .high
+            context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard rendered else { return [] }
+
+        var pixels: [TaskifyRGBColor] = []
+        pixels.reserveCapacity(width * height)
+        for offset in stride(from: 0, to: rgba.count, by: 4) where rgba[offset + 3] >= 180 {
+            pixels.append(TaskifyRGBColor(
+                red: rgba[offset],
+                green: rgba[offset + 1],
+                blue: rgba[offset + 2]
+            ))
+        }
+        return pixels
+    }
+}
 
 enum TaskifyTheme {
-    static let accent = Color(
-        red: TaskifyBrand.accentRed,
-        green: TaskifyBrand.accentGreen,
-        blue: TaskifyBrand.accentBlue
-    )
+    static var accent: Color {
+        color(for: TaskifyAppearanceSettings.accentChoice)
+    }
+
+    static func color(for choice: TaskifyAccentChoice) -> Color {
+        switch choice {
+        case .blue:
+            Color(red: TaskifyBrand.accentRed, green: TaskifyBrand.accentGreen, blue: TaskifyBrand.accentBlue)
+        case .green:
+            Color(red: 52.0 / 255, green: 199.0 / 255, blue: 89.0 / 255)
+        case .background:
+            TaskifyAppearanceSettings.selectedBackgroundAccent?.taskifyColor
+                ?? Color(red: TaskifyBrand.accentRed, green: TaskifyBrand.accentGreen, blue: TaskifyBrand.accentBlue)
+        }
+    }
     /// Foreground used on top of a filled `accent` surface — the PWA's `--accent-on` (#061428).
-    static let accentOn = Color(
-        red: TaskifyBrand.accentOnRed,
-        green: TaskifyBrand.accentOnGreen,
-        blue: TaskifyBrand.accentOnBlue
-    )
+    static var accentOn: Color {
+        if TaskifyAppearanceSettings.accentChoice == .background,
+           let accent = TaskifyAppearanceSettings.selectedBackgroundAccent,
+           !accent.prefersDarkForeground {
+            return Color(red: 0.96, green: 0.98, blue: 1)
+        }
+        return Color(
+            red: TaskifyBrand.accentOnRed,
+            green: TaskifyBrand.accentOnGreen,
+            blue: TaskifyBrand.accentOnBlue
+        )
+    }
     /// Translucent accent wash for rings and halos — the PWA's `--accent-soft`.
-    static let accentSoft = Color(red: 0.251, green: 0.612, blue: 1.0).opacity(0.2)
+    static var accentSoft: Color { accent.opacity(0.2) }
     static let backgroundTop = Color(red: 0.10, green: 0.20, blue: 0.33)
     static let backgroundMid = Color(red: 0.035, green: 0.075, blue: 0.12)
     static let backgroundBottom = Color.black
@@ -37,11 +304,49 @@ enum TaskifyTheme {
     )
 
     static var background: LinearGradient {
-        LinearGradient(
-            colors: [backgroundTop, backgroundMid, backgroundBottom],
+        let hasImage = TaskifyAppearanceSettings.hasBackgroundImage
+        if TaskifyAppearanceSettings.accentChoice == .background,
+           TaskifyAppearanceSettings.selectedBackgroundAccent != nil {
+            let baseOpacity = hasImage ? 0.65 : 0.95
+            return LinearGradient(
+                colors: [
+                    accent.opacity(hasImage ? 0.24 : 0.34),
+                    backgroundMid.opacity(baseOpacity),
+                    backgroundBottom.opacity(baseOpacity),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottom
+            )
+        }
+
+        let opacity = hasImage ? 0.54 : 1
+        return LinearGradient(
+            colors: [backgroundTop.opacity(opacity), backgroundMid.opacity(opacity), backgroundBottom.opacity(opacity)],
             startPoint: .topLeading,
             endPoint: .bottom
         )
+    }
+}
+
+struct TaskifyAppBackground: View {
+    @AppStorage(TaskifyAppearanceSettings.revisionKey) private var revision = ""
+
+    var body: some View {
+        ZStack {
+            if let image = TaskifyAppearanceSettings.backgroundImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: TaskifyAppearanceSettings.backgroundIsBlurred ? 18 : 0)
+                    .scaleEffect(TaskifyAppearanceSettings.backgroundIsBlurred ? 1.08 : 1.02)
+                    .clipped()
+
+                Color.black.opacity(TaskifyAppearanceSettings.backgroundIsBlurred ? 0.18 : 0.10)
+            }
+            TaskifyTheme.background
+        }
+        .ignoresSafeArea()
+        .id(revision)
     }
 }
 

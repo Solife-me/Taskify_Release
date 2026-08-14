@@ -89,6 +89,7 @@ final class WalletViewModel: ObservableObject {
     @Published private(set) var npubCashClaimStatus: NpubCashClaimStatus = .idle
     @Published private(set) var npubCashClaimMessage: String?
     @Published private(set) var btcUSDPrice: Double? = WalletPriceCache.cachedPrice
+    @Published private(set) var p2pkKeyRing: CashuP2PKKeyRing
 
     private var service: CashuWalletService?
     private var hasStarted = false
@@ -106,6 +107,20 @@ final class WalletViewModel: ObservableObject {
 
     init() {
         activeMintURL = UserDefaults.standard.string(forKey: activeMintKey) ?? ""
+        p2pkKeyRing = (try? KeychainP2PKKeyStore().load()) ?? CashuP2PKKeyRing()
+    }
+
+    var p2pkKeys: [CashuP2PKKey] { p2pkKeyRing.keys }
+    var primaryP2PKKey: CashuP2PKKey? { p2pkKeyRing.primaryKey }
+
+    private var p2pkSigningPrivateKeys: [String] {
+        var keys = p2pkKeyRing.keys.map(\.privateKey)
+        // The PWA can lock a contact payment to the recipient's Nostr public key. Including the
+        // local Nostr key lets this client redeem those interoperable contact-locked tokens too.
+        if let identity = try? KeychainIdentityStore().load() {
+            keys.append(identity.privateKeyHex)
+        }
+        return Array(Set(keys))
     }
 
     var activeMint: CashuMintSummary? {
@@ -152,6 +167,9 @@ final class WalletViewModel: ObservableObject {
                 )
             }.value
             self.service = service
+            await service.configureP2PKSigningKeys(
+                privateKeys: p2pkSigningPrivateKeys
+            )
             await service.recoverInterruptedOperations()
             await refresh()
             announcedLightningQuoteIDs = Set(
@@ -429,7 +447,8 @@ final class WalletViewModel: ObservableObject {
         mintURLs: [String],
         recipientPublicKey: String,
         relayURLs: [String],
-        singleUse: Bool
+        singleUse: Bool,
+        lockPublicKey: String? = nil
     ) async throws -> CashuCreatedPaymentRequest {
         guard let service else { throw CashuWalletError.paymentRequestNotFound }
         isWorking = true
@@ -440,7 +459,8 @@ final class WalletViewModel: ObservableObject {
             mintURLs: mintURLs,
             recipientPublicKey: recipientPublicKey,
             relayURLs: relayURLs,
-            singleUse: singleUse
+            singleUse: singleUse,
+            lockPublicKey: lockPublicKey
         )
         await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
         createdPaymentRequests = await service.savedCreatedPaymentRequests()
@@ -466,6 +486,54 @@ final class WalletViewModel: ObservableObject {
     func selectMint(_ mintURL: String) {
         activeMintURL = mintURL
         UserDefaults.standard.set(mintURL, forKey: activeMintKey)
+    }
+
+    @discardableResult
+    func generateP2PKKey(label: String? = nil) async throws -> CashuP2PKKey {
+        let key = try CashuP2PKKey.generate(label: label)
+        var next = p2pkKeyRing
+        next.keys.append(key)
+        if next.primaryKeyID == nil { next.primaryKeyID = key.id }
+        try await applyP2PKKeyRing(next)
+        return key
+    }
+
+    @discardableResult
+    func importP2PKKey(secret: String, label: String? = nil) async throws -> CashuP2PKKey {
+        let key = try CashuP2PKKey.importSecret(secret, label: label)
+        guard !p2pkKeyRing.keys.contains(where: { $0.publicKey == key.publicKey }) else {
+            throw CashuP2PKError.duplicateKey
+        }
+        var next = p2pkKeyRing
+        next.keys.append(key)
+        if next.primaryKeyID == nil { next.primaryKeyID = key.id }
+        try await applyP2PKKeyRing(next)
+        return key
+    }
+
+    func setPrimaryP2PKKey(id: UUID) async throws {
+        guard p2pkKeyRing.keys.contains(where: { $0.id == id }) else {
+            throw CashuP2PKError.keyNotFound
+        }
+        var next = p2pkKeyRing
+        next.primaryKeyID = id
+        try await applyP2PKKeyRing(next)
+    }
+
+    func removeP2PKKey(id: UUID) async throws {
+        guard p2pkKeyRing.keys.contains(where: { $0.id == id }) else {
+            throw CashuP2PKError.keyNotFound
+        }
+        var next = p2pkKeyRing
+        next.keys.removeAll { $0.id == id }
+        if next.primaryKeyID == id { next.primaryKeyID = next.keys.last?.id }
+        try await applyP2PKKeyRing(next)
+    }
+
+    private func applyP2PKKeyRing(_ keyRing: CashuP2PKKeyRing) async throws {
+        try KeychainP2PKKeyStore().save(keyRing)
+        p2pkKeyRing = keyRing
+        await service?.configureP2PKSigningKeys(privateKeys: p2pkSigningPrivateKeys)
     }
 
     func addMint(_ mintURL: String) async throws {
@@ -1005,11 +1073,19 @@ final class WalletViewModel: ObservableObject {
         return newlyIssued
     }
 
-    func prepareSend(mintURL: String, amount: UInt64) async throws -> CashuPreparedSendQuote {
+    func prepareSend(
+        mintURL: String,
+        amount: UInt64,
+        lockPublicKey: String? = nil
+    ) async throws -> CashuPreparedSendQuote {
         guard let service else { throw CashuWalletError.preparedSendMissing }
         isWorking = true
         defer { isWorking = false }
-        return try await service.prepareSend(mintURL: mintURL, amount: amount)
+        return try await service.prepareSend(
+            mintURL: mintURL,
+            amount: amount,
+            lockPublicKey: lockPublicKey
+        )
     }
 
     func confirmSend(_ quote: CashuPreparedSendQuote, memo: String?) async throws -> CashuOutgoingToken {
@@ -1273,6 +1349,9 @@ final class WalletViewModel: ObservableObject {
             // The Keychain switch is the commit point. Until every selected mint
             // restores successfully, the currently active wallet stays untouched.
             try KeychainWalletSeedStore().save(material.mnemonic)
+            await candidate.configureP2PKSigningKeys(
+                privateKeys: p2pkSigningPrivateKeys
+            )
             service = candidate
             UserDefaults.standard.removeObject(forKey: activeMintKey)
             activeMintURL = ""
@@ -3240,6 +3319,7 @@ private struct ReceiveCashuRequestSheet: View {
     @State private var amountText = ""
     @State private var memo = ""
     @State private var singleUse = true
+    @State private var lockToWallet = false
     @State private var request: CashuCreatedPaymentRequest?
     @State private var localError: String?
     @State private var copied = false
@@ -3333,6 +3413,33 @@ private struct ReceiveCashuRequestSheet: View {
                 Text("Multi-use").tag(false)
             }
             .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Lock payments to this wallet", isOn: $lockToWallet)
+                    .disabled(wallet.primaryP2PKKey == nil)
+                if let key = wallet.primaryP2PKKey {
+                    Text("Only Taskify clients holding your device-only recipient key can redeem payments to this request. Key …\(key.publicKey.suffix(10)).")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                } else {
+                    Button("Generate recipient key") {
+                        Task {
+                            do {
+                                _ = try await wallet.generateP2PKKey(label: "Taskify iPhone")
+                                lockToWallet = true
+                            } catch {
+                                localError = WalletViewModel.message(for: error)
+                            }
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    Text("A separate recipient key is stored in the device Keychain; your Nostr identity and wallet seed are not exposed.")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+            }
+            .padding(15)
+            .taskifyGlass(cornerRadius: 18)
 
             WalletAmountKeypad(amountText: $amountText, allowsDecimal: entryCurrency == .usd)
 
@@ -3452,6 +3559,9 @@ private struct ReceiveCashuRequestSheet: View {
                     request.singleUse ? "Single payment" : "Reusable request",
                     systemImage: request.singleUse ? "1.circle" : "arrow.trianglehead.2.clockwise"
                 )
+                if request.lockPublicKey != nil {
+                    Label("Locked to this wallet", systemImage: "lock.shield.fill")
+                }
                 Label(
                     URL(string: request.mintURLs.first ?? "")?.host() ?? request.mintURLs.first ?? "Cashu mint",
                     systemImage: "building.columns"
@@ -3500,7 +3610,8 @@ private struct ReceiveCashuRequestSheet: View {
                     mintURLs: [selectedMintURL],
                     recipientPublicKey: model.identityPublicKey,
                     relayURLs: model.walletPaymentRequestRelayURLs,
-                    singleUse: singleUse
+                    singleUse: singleUse,
+                    lockPublicKey: lockToWallet ? wallet.primaryP2PKKey?.publicKey : nil
                 )
             } catch {
                 localError = WalletViewModel.message(for: error)
@@ -6308,10 +6419,20 @@ private struct SendCashuSheet: View {
     @State private var recipient: NostrContact?
     @State private var isSendingToContact = false
     @State private var sentToContact: NostrContact?
+    @State private var lockToken = false
+    @State private var manualLockKey = ""
 
     private var amount: UInt64? {
         // Always sats, whatever currency the keypad is in -- dollar entry converts here.
         wallet.sats(fromEntry: amountText, currency: entryCurrency)
+    }
+
+    private var normalizedLockKey: String? {
+        guard lockToken else { return nil }
+        if let recipient {
+            return CashuP2PKKey.normalizePublicKey(recipient.npub)
+        }
+        return CashuP2PKKey.normalizePublicKey(manualLockKey)
     }
 
     private func directMessageBody(token: String, sats: UInt64) -> String {
@@ -6460,6 +6581,7 @@ private struct SendCashuSheet: View {
                         Spacer(minLength: 8)
                         Button {
                             self.recipient = nil
+                            lockToken = false
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.caption.weight(.bold))
@@ -6484,6 +6606,39 @@ private struct SendCashuSheet: View {
                         .font(.caption)
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                 }
+
+                Toggle(
+                    recipient == nil ? "Lock token to a recipient key" : "Lock token to this contact",
+                    isOn: $lockToken
+                )
+                .font(.subheadline.weight(.semibold))
+                .padding(.top, 6)
+
+                if lockToken, recipient == nil {
+                    HStack(spacing: 8) {
+                        TextField("P2PK key or npub", text: $manualLockKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.system(.caption, design: .monospaced))
+                        Button("Paste") {
+                            manualLockKey = UIPasteboard.general.string ?? ""
+                        }
+                        .font(.caption.weight(.semibold))
+                    }
+                    .padding(.horizontal, 15)
+                    .frame(minHeight: 50)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TaskifyTheme.border))
+                    if !manualLockKey.isEmpty, normalizedLockKey == nil {
+                        Label("Enter a valid compressed P2PK key, npub, or 64-character public key.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                } else if lockToken, recipient != nil {
+                    Label("Only this contact's Nostr key can unlock the ecash.", systemImage: "lock.shield.fill")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -6503,11 +6658,23 @@ private struct SendCashuSheet: View {
             ) {
                 guard let amount, amount > 0 else { return }
                 Task {
-                    do { quote = try await wallet.prepareSend(mintURL: selectedMintURL, amount: amount) }
+                    do {
+                        quote = try await wallet.prepareSend(
+                            mintURL: selectedMintURL,
+                            amount: amount,
+                            lockPublicKey: normalizedLockKey
+                        )
+                    }
                     catch { localError = WalletViewModel.message(for: error) }
                 }
             }
-            .disabled(wallet.isWorking || amount == nil || amount == 0 || selectedMintURL.isEmpty)
+            .disabled(
+                wallet.isWorking
+                    || amount == nil
+                    || amount == 0
+                    || selectedMintURL.isEmpty
+                    || (lockToken && normalizedLockKey == nil)
+            )
             .opacity((amount ?? 0) > 0 && !selectedMintURL.isEmpty ? 1 : 0.45)
 
             Text("The token remains reserved until its recipient redeems it or you reclaim it.")
@@ -7713,6 +7880,22 @@ private struct OutgoingTokenContent: View {
     }
 }
 
+private enum CashuQRCodeRenderer {
+    /// Shared renderer is deliberately outside the SwiftUI view type so frame rasterization can
+    /// remain off the main actor without inheriting `View`'s actor isolation.
+    static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    static func image(for value: String) -> UIImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(value.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        let transformed = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        guard let cgImage = ciContext.createCGImage(transformed, from: transformed.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+}
+
 private struct CashuQRCodeView: View {
     let value: String
     let accessibilityLabel: String
@@ -7730,21 +7913,6 @@ private struct CashuQRCodeView: View {
     private var displayedImage: UIImage? {
         guard !renderedFrames.isEmpty else { return singleImage }
         return renderedFrames[min(frameIndex, renderedFrames.count - 1)]
-    }
-
-    /// One context for the whole app. Building a `CIContext` is expensive and the old code built a
-    /// fresh one for every frame, from inside `body` -- which is what made animated tokens crawl
-    /// regardless of the frame interval.
-    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-
-    private static func image(for value: String) -> UIImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(value.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        let transformed = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
-        guard let cgImage = ciContext.createCGImage(transformed, from: transformed.extent) else { return nil }
-        return UIImage(cgImage: cgImage)
     }
 
     var body: some View {
@@ -7780,7 +7948,7 @@ private struct CashuQRCodeView: View {
             renderedFrames = []
 
             guard frames.count > 1 else {
-                singleImage = Self.image(for: value)
+                singleImage = CashuQRCodeRenderer.image(for: value)
                 return
             }
 
@@ -7788,7 +7956,7 @@ private struct CashuQRCodeView: View {
             // mid-animation made the cadence depend on how long each QR took to draw.
             let source = frames
             let rendered = await Task.detached(priority: .userInitiated) {
-                source.compactMap { CashuQRCodeView.image(for: $0) }
+                source.compactMap { CashuQRCodeRenderer.image(for: $0) }
             }.value
             guard !Task.isCancelled, rendered.count == source.count else { return }
             renderedFrames = rendered

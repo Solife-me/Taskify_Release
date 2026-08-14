@@ -10,12 +10,31 @@ struct TaskifyShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: TaskifyAddTaskIntent(),
             phrases: [
+                "Add a \(.applicationName) task",
+                "Create a \(.applicationName) task",
+                "Add something to \(.applicationName)",
+                "Put a task in \(.applicationName)",
+                "New task in \(.applicationName)",
                 "Add a task to \(.applicationName)",
-                "Add a new task in \(.applicationName)",
+                "Add a task in \(.applicationName)",
                 "Create a task in \(.applicationName)",
+                "Make a new task in \(.applicationName)",
+                "Use \(.applicationName) to add a task",
             ],
             shortTitle: "Add Task",
             systemImageName: "checklist"
+        )
+        AppShortcut(
+            intent: TaskifyNaturalAddTaskIntent(),
+            phrases: [
+                "Add \(\.$task) in \(.applicationName)",
+                "Create \(\.$task) in \(.applicationName)",
+                "Add \(\.$task) to \(.applicationName)",
+                "\(.applicationName) add \(\.$task)",
+                "In \(.applicationName) add \(\.$task)",
+            ],
+            shortTitle: "Quick Add Task",
+            systemImageName: "plus.circle"
         )
     }
 }
@@ -26,11 +45,19 @@ struct TaskifyNativeApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: AppModel
     @StateObject private var wallet: WalletViewModel
+    @AppStorage(TaskifyAppearanceSettings.scaleKey) private var interfaceScaleRaw = TaskifyInterfaceScale.system.rawValue
+    @AppStorage(TaskifyAppearanceSettings.revisionKey) private var appearanceRevision = ""
+
+    private var appAccent: Color {
+        _ = appearanceRevision
+        return TaskifyTheme.accent
+    }
 
     init() {
         let model = AppModel()
         let wallet = WalletViewModel()
         model.registerWalletPaymentReceiver(wallet)
+        TaskNotificationActionRouter.shared.register(model: model)
         _model = State(initialValue: model)
         _wallet = StateObject(wrappedValue: wallet)
         TaskifyBackgroundSyncCoordinator.shared.register(model: model, wallet: wallet)
@@ -45,7 +72,12 @@ struct TaskifyNativeApp: App {
             RootTabView()
                 .environment(model)
                 .environmentObject(wallet)
+                .tint(appAccent)
                 .preferredColorScheme(.dark)
+                .dynamicTypeSize(
+                    TaskifyInterfaceScale(rawValue: interfaceScaleRaw)?.dynamicTypeSize
+                        ?? TaskifyInterfaceScale.system.dynamicTypeSize
+                )
                 .task(id: model.isLoading) {
                     guard !model.isLoading else { return }
                     // Cashu recovery is important but unrelated to drawing the Boards tab.
@@ -64,6 +96,7 @@ struct TaskifyNativeApp: App {
                         model.reloadIfChangedExternally()
                         model.refreshNotificationStatus()
                         model.refreshSyncIfNeeded()
+                        model.refreshFullWeekRecurrencesIfNeeded()
                         model.refreshContactsIfNeeded()
                         wallet.appDidBecomeActive()
                     case .background:

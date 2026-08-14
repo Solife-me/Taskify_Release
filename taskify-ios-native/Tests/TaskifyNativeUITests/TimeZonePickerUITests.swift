@@ -23,21 +23,20 @@ final class TimeZonePickerUITests: XCTestCase {
         quickAddField.typeText("Time zone test task")
         quickAddField.typeText("\n")
 
-        let taskTitle = app.buttons["Edit Time zone test task"]
+        // The simulator may retain a task from a previous interrupted test run.
+        let taskTitle = app.buttons["Edit Time zone test task"].firstMatch
         XCTAssertTrue(taskTitle.waitForExistence(timeout: 5))
         taskTitle.tap()
 
-        let dueDateToggle = app.switches["Due date"]
+        let dueDateToggle = app.switches["task-editor-date-toggle"]
         XCTAssertTrue(dueDateToggle.waitForExistence(timeout: 5))
         setSwitch(dueDateToggle, on: true)
 
-        let includeTimeToggle = app.switches["Include time"]
+        let includeTimeToggle = app.switches["task-editor-time-toggle"]
         XCTAssertTrue(includeTimeToggle.waitForExistence(timeout: 5))
         setSwitch(includeTimeToggle, on: true)
 
-        let timeZoneRow = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Time zone,")
-        ).firstMatch
+        let timeZoneRow = app.buttons["task-editor-time-zone-row"]
         XCTAssertTrue(timeZoneRow.waitForExistence(timeout: 5))
         timeZoneRow.tap()
 
@@ -54,20 +53,27 @@ final class TimeZonePickerUITests: XCTestCase {
         XCTAssertTrue(tokyoResult.waitForExistence(timeout: 5))
         tokyoResult.tap()
 
-        let updatedTimeZoneRow = app.buttons.matching(
-            NSPredicate(format: "label CONTAINS[c] %@", "Japan")
-        ).firstMatch
-        XCTAssertTrue(updatedTimeZoneRow.waitForExistence(timeout: 5), "Editor should reflect the newly selected time zone")
+        let updatedTimeZoneRow = app.buttons["task-editor-time-zone-row"]
+        XCTAssertTrue(updatedTimeZoneRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            updatedTimeZoneRow.label.localizedCaseInsensitiveContains("Tokyo"),
+            "Editor should reflect the newly selected time-zone city"
+        )
 
         app.buttons["Save"].tap()
 
         // Reopen the task and confirm the selection survived the save/reload round trip.
         XCTAssertTrue(taskTitle.waitForExistence(timeout: 5))
         taskTitle.tap()
-        let persistedTimeZoneRow = app.buttons.matching(
-            NSPredicate(format: "label CONTAINS[c] %@", "Japan")
-        ).firstMatch
-        XCTAssertTrue(persistedTimeZoneRow.waitForExistence(timeout: 5), "Japan time zone should persist after save + reopen")
+        let collapsedTimeRow = app.buttons["task-editor-time-row"]
+        XCTAssertTrue(collapsedTimeRow.waitForExistence(timeout: 5))
+        collapsedTimeRow.tap()
+        let persistedTimeZoneRow = app.buttons["task-editor-time-zone-row"]
+        XCTAssertTrue(persistedTimeZoneRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            persistedTimeZoneRow.label.localizedCaseInsensitiveContains("Tokyo"),
+            "Tokyo time zone should persist after save + reopen"
+        )
         attach(app, name: "timezone-01-persisted-after-reopen")
     }
 
@@ -122,8 +128,7 @@ final class TimeZonePickerUITests: XCTestCase {
     /// Taps a Toggle until its value actually reflects the desired state. A dead-center `.tap()`
     /// on the accessibility element (which spans the whole Form row) is unreliable for these
     /// Form-row toggles — tap near the visible switch control on the row's trailing edge instead,
-    /// and retry since a Form section's row-insertion animation (e.g. "Include time" appearing
-    /// right after "Due date" turns on) can still cost the first attempt.
+    /// and retry since a Form section's inline-picker animation can still cost the first attempt.
     private func setSwitch(_ element: XCUIElement, on: Bool) {
         let target = on ? "1" : "0"
         for _ in 0..<3 {

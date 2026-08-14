@@ -93,6 +93,45 @@ final class ScrollPerformanceUITests: XCTestCase {
         }
     }
 
+    func testPopulatedBoardHorizontalPagingPerformance() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
+        app.launch()
+
+        let boardsTab = app.buttons["Boards"]
+        XCTAssertTrue(boardsTab.waitForExistence(timeout: 30))
+        boardsTab.tap()
+
+        // Gate on the board being ready rather than on one seeded row: which weekday column the
+        // pager opens on varies with the day the test runs, so any particular task may be a page
+        // away. The header button and the startup indicator are the reliable readiness signals.
+        let loadingIndicator = app.descendants(matching: .any)["taskify-startup-loading"]
+        if loadingIndicator.exists {
+            XCTAssertTrue(loadingIndicator.waitForNonExistence(timeout: 30))
+        }
+        XCTAssertTrue(app.buttons["Show completed tasks"].waitForExistence(timeout: 30))
+
+        // Drag along the column-header row so the gesture lands on the horizontal pager
+        // rather than a column's vertical scroll view.
+        let headerRight = CGVector(dx: 0.80, dy: 0.16)
+        let headerLeft = CGVector(dx: 0.20, dy: 0.16)
+
+        let options = XCTMeasureOptions()
+        options.iterationCount = 5
+        var pagesForward = true
+        measure(
+            metrics: [XCTCPUMetric(application: app), XCTOSSignpostMetric.scrollDecelerationMetric],
+            options: options
+        ) {
+            let from = pagesForward ? headerRight : headerLeft
+            let to = pagesForward ? headerLeft : headerRight
+            app.coordinate(withNormalizedOffset: from)
+                .press(forDuration: 0.02, thenDragTo: app.coordinate(withNormalizedOffset: to))
+            pagesForward.toggle()
+        }
+    }
+
     func testPopulatedBoardIsInteractiveWhenStartupIndicatorDismisses() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
@@ -145,6 +184,158 @@ final class ScrollPerformanceUITests: XCTestCase {
 
         XCTAssertTrue(app.buttons["Edit Plus closes keyboard"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.keyboards.element.waitForExistence(timeout: 1))
+    }
+
+    func testEmptyQuickAddPlusOpensTheFullNewTaskEditor() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+
+        let addDetailsButton = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
+        ).firstMatch
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
+        XCTAssertTrue(addDetailsButton.isEnabled, "The plus button should work with an empty title")
+        addDetailsButton.tap()
+
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+        let titleField = app.textFields["Title"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 2))
+        if !app.keyboards.element.exists { titleField.tap() }
+        titleField.typeText("Cancelled task details")
+        app.buttons["Cancel"].tap()
+        XCTAssertFalse(
+            app.buttons["Edit Cancelled task details"].waitForExistence(timeout: 1),
+            "Cancelling the unsaved full editor must not leave a placeholder task"
+        )
+
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 3))
+        addDetailsButton.tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+        XCTAssertTrue(titleField.waitForExistence(timeout: 2))
+        if !app.keyboards.element.exists { titleField.tap() }
+        titleField.typeText("Created from task details")
+        app.buttons["Save"].tap()
+
+        XCTAssertTrue(app.buttons["Edit Created from task details"].waitForExistence(timeout: 5))
+    }
+
+    func testTaskEditorGroupsDetailsAndOffersOneAttachmentMenu() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+        let addDetailsButton = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
+        ).firstMatch
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
+        addDetailsButton.tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+
+        let notes = app.textFields["Notes"]
+        let attachmentMenu = app.buttons["task-editor-attachment-menu"]
+        let subtasks = app.descendants(matching: .any)["task-editor-subtasks"]
+        let priority = app.descendants(matching: .any)["task-editor-priority"]
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        XCTAssertTrue(attachmentMenu.waitForExistence(timeout: 5))
+        XCTAssertTrue(subtasks.waitForExistence(timeout: 5))
+        XCTAssertTrue(priority.waitForExistence(timeout: 5))
+        XCTAssertLessThan(notes.frame.minY, subtasks.frame.minY)
+        XCTAssertLessThan(subtasks.frame.minY, priority.frame.minY)
+
+        attachmentMenu.tap()
+        for option in [
+            "Capture a Photo",
+            "Scan a Document",
+            "Choose from Photo Library",
+            "Choose a File",
+        ] {
+            XCTAssertTrue(
+                app.buttons[option].waitForExistence(timeout: 3),
+                "Expected the attachment menu to include \(option)"
+            )
+        }
+        attach(app, name: "task-editor-attachment-menu")
+    }
+
+    func testTaskEditorUsesCompactSchedulingMenusWithoutHourlyRepeat() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+        let addDetailsButton = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
+        ).firstMatch
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
+        addDetailsButton.tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+
+        // The full editor intentionally focuses the title. Dismiss its keyboard so the compact
+        // scheduling rows can be reached without the keyboard consuming the lower half of Form.
+        if app.keyboards.element.exists {
+            app.navigationBars["New Task"].tap()
+        }
+
+        let repeatMenu = app.buttons["task-editor-repeat-menu"]
+        for _ in 0..<4 where !repeatMenu.exists {
+            app.swipeUp()
+        }
+        XCTAssertTrue(repeatMenu.waitForExistence(timeout: 5))
+        repeatMenu.tap()
+        XCTAssertTrue(app.buttons["Daily"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Weekdays"].exists)
+        XCTAssertTrue(app.buttons["Custom"].exists)
+        XCTAssertFalse(app.buttons["Hourly"].exists, "Hourly must not be offered as a Taskify repeat option")
+        app.buttons["Daily"].tap()
+
+        let endRepeatMenu = app.buttons["task-editor-end-repeat-menu"]
+        XCTAssertTrue(endRepeatMenu.waitForExistence(timeout: 3))
+        endRepeatMenu.tap()
+        XCTAssertTrue(app.buttons["On Date"].waitForExistence(timeout: 3))
+        app.buttons["On Date"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["task-editor-repeat-end-date"].waitForExistence(timeout: 3))
+
+        let reminderMenu = app.buttons["task-editor-early-reminder-menu"]
+        for _ in 0..<3 where !reminderMenu.exists {
+            app.swipeUp()
+        }
+        XCTAssertTrue(reminderMenu.waitForExistence(timeout: 3))
+        reminderMenu.tap()
+        XCTAssertTrue(app.buttons["5 minutes before"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["1 month before"].exists)
+        app.buttons["15 minutes before"].tap()
+
+        let secondReminderMenu = app.buttons["task-editor-alert-menu-1"]
+        for _ in 0..<3 where !secondReminderMenu.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(
+            secondReminderMenu.waitForExistence(timeout: 3),
+            "Selecting a reminder should append another empty reminder row"
+        )
+        XCTAssertTrue(secondReminderMenu.label.localizedCaseInsensitiveContains("2nd Reminder"))
+        secondReminderMenu.tap()
+        XCTAssertTrue(app.buttons["30 minutes before"].waitForExistence(timeout: 3))
+        app.buttons["30 minutes before"].tap()
+
+        let thirdReminderMenu = app.buttons["task-editor-alert-menu-2"]
+        for _ in 0..<3 where !thirdReminderMenu.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(
+            thirdReminderMenu.waitForExistence(timeout: 3),
+            "A trailing empty reminder row should remain after adding a second reminder"
+        )
+        XCTAssertTrue(thirdReminderMenu.label.localizedCaseInsensitiveContains("3rd Reminder"))
+
+        attach(app, name: "task-editor-multiple-reminders")
     }
 
     /// Regression test: a long, still-being-typed title used to push the quick-add capsule wider

@@ -43,6 +43,13 @@ enum TaskifyMediaServerSettings {
         return currentServers.first?.url ?? defaultServer
     }
 
+    static var configuredEntry: TaskifyFileServerEntry {
+        let currentServers = servers
+        return TaskifyFileServerList.find(currentServers, url: configuredServer)
+            ?? currentServers.first
+            ?? TaskifyFileServerEntry(url: defaultServer, type: .originless)
+    }
+
     @discardableResult
     static func selectServer(_ url: String) -> String? {
         guard let normalized = TaskifyFileServerList.normalizedURL(url),
@@ -122,7 +129,7 @@ enum TaskAttachmentUploadError: LocalizedError {
         case .invalidResponse:
             "The encrypted file server returned an invalid response."
         case .missingIdentity:
-            "Set up your Taskify identity before uploading to a Blossom server."
+            "Set up your Taskify identity before uploading to an authenticated file server."
         case .server(let status, let message):
             if let message, !message.isEmpty {
                 "The encrypted file server rejected the upload (\(status)): \(message)"
@@ -239,15 +246,22 @@ actor TaskAttachmentUploadService {
     }
 
     private func upload(_ data: Data, filename: String) async throws -> String {
-        let serverURL = serverURLOverride ?? URL(string: TaskifyMediaServerSettings.configuredServer)
+        let configuredEntry = TaskifyMediaServerSettings.configuredEntry
+        let serverURL = serverURLOverride ?? URL(string: configuredEntry.url)
         guard let serverURL,
               let scheme = serverURL.scheme?.lowercased(),
               scheme == "https" else {
             throw TaskAttachmentUploadError.invalidServer
         }
 
-        if TaskifyFileServerType.inferred(for: serverURL.absoluteString) == .blossom {
+        let serverType = serverURLOverride == nil
+            ? configuredEntry.type
+            : TaskifyFileServerType.inferred(for: serverURL.absoluteString)
+        if serverType == .blossom {
             return try await uploadViaBlossom(data, server: serverURL)
+        }
+        if serverType == .nip96 {
+            return try await uploadViaNip96(data, filename: filename, server: serverURL)
         }
 
         let uploadURL = serverURL.appendingPathComponent("upload", isDirectory: false)
@@ -294,6 +308,39 @@ actor TaskAttachmentUploadService {
             switch error {
             case .invalidServer: throw TaskAttachmentUploadError.invalidServer
             case .invalidResponse: throw TaskAttachmentUploadError.invalidResponse
+            case .requestFailed(let status, let message):
+                throw TaskAttachmentUploadError.server(status: status, message: message)
+            }
+        }
+    }
+
+    /// Standards-compliant NIP-96 path: discovers the server's advertised API endpoint, follows
+    /// delegated discovery, signs the encrypted payload using NIP-98, and handles asynchronous
+    /// processing responses. Multipart bytes are written to a temporary upload file so the
+    /// encrypted attachment is not duplicated again in one large in-memory request body.
+    private func uploadViaNip96(
+        _ data: Data,
+        filename: String,
+        server: URL
+    ) async throws -> String {
+        guard let identity = try? KeychainIdentityStore().load() else {
+            throw TaskAttachmentUploadError.missingIdentity
+        }
+        do {
+            return try await Nip96Client.upload(
+                data,
+                filename: filename,
+                privateKey: identity.privateKey,
+                server: server,
+                session: session
+            )
+        } catch let error as Nip96Error {
+            switch error {
+            case .invalidServer:
+                throw TaskAttachmentUploadError.invalidServer
+            case .invalidDiscoveryResponse, .missingAPIURL, .tooManyDelegations,
+                 .invalidUploadResponse, .processingTimedOut:
+                throw TaskAttachmentUploadError.server(status: 0, message: error.localizedDescription)
             case .requestFailed(let status, let message):
                 throw TaskAttachmentUploadError.server(status: status, message: message)
             }

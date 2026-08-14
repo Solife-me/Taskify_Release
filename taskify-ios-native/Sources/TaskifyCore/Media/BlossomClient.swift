@@ -101,13 +101,9 @@ public enum BlossomClient {
     }
 }
 
-/// The Blossom-vs-everything-else server types Taskify needs to distinguish at upload time. Only
-/// two upload transports are actually implemented: a plain unauthenticated POST (used for both
-/// "originless" IPFS-gateway-style servers and any server labeled `nip96`, since real NIP-96/NIP-98
-/// authenticated upload isn't implemented natively) and Blossom's authenticated `PUT`. `nip96` is
-/// still a selectable/displayable type -- for labeling servers the user adds that don't match the
-/// blossom/originless heuristics, and for parity with the PWA's `FileServerType` -- it just doesn't
-/// get its own upload path yet.
+/// The three encrypted file-server transports supported by both Taskify clients. Originless uses
+/// its unauthenticated IPFS upload endpoint, Blossom uses a BUD-01 authenticated `PUT`, and NIP-96
+/// uses discovery plus a NIP-98 authenticated multipart upload through `Nip96Client`.
 public enum TaskifyFileServerType: String, Codable, CaseIterable, Equatable, Sendable {
     case nip96
     case blossom

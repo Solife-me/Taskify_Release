@@ -92,6 +92,9 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     public var recurrence: TaskRecurrence?
     public var seriesID: String?
     public var scriptureMemoryID: String?
+    public var scriptureMemoryStage: Int?
+    public var scriptureMemoryPreviousReviewISO: String?
+    public var scriptureMemoryScheduledAtISO: String?
     public var reminders: [TaskReminder]?
     public var reminderTime: String?
     public var hiddenUntilDate: Date?
@@ -124,6 +127,9 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         recurrence: TaskRecurrence? = nil,
         seriesID: String? = nil,
         scriptureMemoryID: String? = nil,
+        scriptureMemoryStage: Int? = nil,
+        scriptureMemoryPreviousReviewISO: String? = nil,
+        scriptureMemoryScheduledAtISO: String? = nil,
         reminders: [TaskReminder]? = nil,
         reminderTime: String? = nil,
         hiddenUntilDate: Date? = nil,
@@ -155,6 +161,9 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         self.recurrence = recurrence
         self.seriesID = seriesID
         self.scriptureMemoryID = scriptureMemoryID
+        self.scriptureMemoryStage = scriptureMemoryStage
+        self.scriptureMemoryPreviousReviewISO = scriptureMemoryPreviousReviewISO
+        self.scriptureMemoryScheduledAtISO = scriptureMemoryScheduledAtISO
         self.reminders = reminders
         self.reminderTime = reminderTime
         self.hiddenUntilDate = hiddenUntilDate

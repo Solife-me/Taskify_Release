@@ -42,9 +42,11 @@ enum WeekLayoutSettings {
 enum TaskPresentationSettings {
     static let completedTabKey = "taskify.view.completedTab"
     static let hideCompletedSubtasksKey = "taskify.view.hideCompletedSubtasks"
+    static let showFullWeekRecurringKey = "taskify.view.showFullWeekRecurring"
 
     static let completedTabDefault = true
     static let hideCompletedSubtasksDefault = false
+    static let showFullWeekRecurringDefault = false
 }
 
 /// Device-local Chat retention, using the same identifiers and default as the PWA. The selected

@@ -385,6 +385,41 @@ final class CashuWalletTests: XCTestCase {
         XCTAssertEqual(preview.transports, [.nostr])
     }
 
+    func testP2PKKeyNormalizesPWACompatibleRecipientKeys() throws {
+        let identity = try NostrIdentity(
+            privateKey: Data(repeating: 0, count: 31) + Data([1])
+        )
+
+        XCTAssertEqual(
+            CashuP2PKKey.normalizePublicKey(identity.npub),
+            "02\(identity.publicKeyHex)"
+        )
+        XCTAssertEqual(
+            CashuP2PKKey.normalizePublicKey("p2pk:03\(identity.publicKeyHex)"),
+            "03\(identity.publicKeyHex)"
+        )
+        XCTAssertNil(CashuP2PKKey.normalizePublicKey("not-a-key"))
+    }
+
+    func testCreateNostrPaymentRequestAcceptsP2PKLock() throws {
+        let identity = try NostrIdentity(
+            privateKey: Data(repeating: 0, count: 31) + Data([1])
+        )
+        let lockKey = "02\(identity.publicKeyHex)"
+        let request = try CashuPaymentRequestContract.createNostrRequest(
+            amount: 21,
+            description: "Locked request",
+            mintURLs: ["https://mint.example"],
+            recipientPublicKey: identity.publicKeyHex,
+            relayURLs: ["wss://relay.example"],
+            singleUse: true,
+            lockPublicKey: lockKey
+        )
+
+        XCTAssertEqual(request.lockPublicKey, lockKey)
+        XCTAssertNoThrow(try PaymentRequest.fromString(encoded: request.encoded))
+    }
+
     func testNostrPaymentPayloadDetectionRejectsOrdinaryChat() {
         let payload = """
         {

@@ -257,6 +257,7 @@ private struct NostrContactRow: View {
 private struct NostrContactDetailView: View {
     @Environment(AppModel.self) private var model
     let contactPublicKey: String
+    @State private var nip05Status: Nip05VerificationStatus = .unverified
 
     private var contact: NostrContact? {
         model.nostrContacts.first { $0.publicKey == contactPublicKey }
@@ -277,7 +278,7 @@ private struct NostrContactDetailView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         contactField("Nostr public key", value: contact.npub, icon: "key")
                         if let nip05 = contact.profile?.nip05 {
-                            contactField("NIP-05", value: nip05, icon: "checkmark.seal")
+                            nip05Field(nip05)
                         }
                         if let lud16 = contact.profile?.lud16 {
                             contactField("Lightning", value: lud16, icon: "bolt")
@@ -311,6 +312,56 @@ private struct NostrContactDetailView: View {
         .background(TaskifyTheme.background.ignoresSafeArea())
         .navigationTitle("Contact")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: contact?.profile?.nip05) {
+            guard let contact, let nip05 = contact.profile?.nip05 else {
+                nip05Status = .unverified
+                return
+            }
+            nip05Status = .checking
+            do {
+                _ = try await Nip05Client.verify(nip05, publicKeyHex: contact.publicKey)
+                nip05Status = .verified
+            } catch {
+                nip05Status = .invalid
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func nip05Field(_ value: String) -> some View {
+        let presentation: (icon: String, color: Color, label: String) = switch nip05Status {
+        case .unverified: ("seal", TaskifyTheme.secondaryText, "NIP-05")
+        case .checking: ("arrow.trianglehead.2.clockwise", TaskifyTheme.secondaryText, "Checking NIP-05")
+        case .verified: ("checkmark.seal.fill", .green, "Verified NIP-05")
+        case .invalid: ("exclamationmark.shield.fill", .orange, "Unverified NIP-05")
+        }
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if nip05Status == .checking {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: presentation.icon)
+                        .foregroundStyle(presentation.color)
+                }
+            }
+            .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(presentation.label)
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .textSelection(.enabled)
+                if nip05Status == .invalid {
+                    Text("This address does not currently resolve to the contact's signed public key.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Spacer()
+        }
     }
 
     private func contactField(_ label: String, value: String, icon: String) -> some View {
@@ -330,6 +381,13 @@ private struct NostrContactDetailView: View {
             Spacer()
         }
     }
+}
+
+private enum Nip05VerificationStatus: Equatable {
+    case unverified
+    case checking
+    case verified
+    case invalid
 }
 
 private struct NostrContactEditorSheet: View {
@@ -354,11 +412,19 @@ private struct NostrContactEditorSheet: View {
         NostrPublicKey.parse(publicKeyValue) != nil
     }
 
+    private var nip05IsValid: Bool {
+        (try? Nip05Client.request(for: publicKeyValue)) != nil
+    }
+
+    private var canSave: Bool {
+        keyIsValid || (existingContact == nil && nip05IsValid)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section("Nostr contact") {
-                    TextField("npub or public key", text: $publicKeyValue, axis: .vertical)
+                    TextField("npub, public key, or NIP-05", text: $publicKeyValue, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.callout, design: .monospaced))
@@ -373,10 +439,12 @@ private struct NostrContactEditorSheet: View {
 
                 Section {
                     Label(
-                        keyIsValid ? "Valid Nostr public key" : "Enter a valid npub or public key",
-                        systemImage: keyIsValid ? "checkmark.circle.fill" : "exclamationmark.circle"
+                        keyIsValid
+                            ? "Valid Nostr public key"
+                            : (nip05IsValid ? "NIP-05 address will be verified before saving" : "Enter a valid npub, public key, or NIP-05 address"),
+                        systemImage: canSave ? "checkmark.circle.fill" : "exclamationmark.circle"
                     )
-                    .foregroundStyle(keyIsValid ? Color.green : Color.orange)
+                    .foregroundStyle(canSave ? Color.green : Color.orange)
 
                     Text("Taskify discovers the contact's preferred NIP-17 inbox relays automatically and encrypts the saved list to your identity.")
                         .font(.caption)
@@ -403,7 +471,7 @@ private struct NostrContactEditorSheet: View {
                     } label: {
                         if isSaving { ProgressView() } else { Text("Save") }
                     }
-                    .disabled(!keyIsValid || isSaving)
+                    .disabled(!canSave || isSaving)
                 }
             }
         }
@@ -413,15 +481,26 @@ private struct NostrContactEditorSheet: View {
     }
 
     private func save() {
-        guard keyIsValid, !isSaving else { return }
+        guard canSave, !isSaving else { return }
         isSaving = true
         errorMessage = nil
         Task {
             do {
+                let resolved: Nip05Resolution?
+                if keyIsValid {
+                    resolved = nil
+                } else {
+                    resolved = try await Nip05Client.resolve(publicKeyValue)
+                    publicKeyValue = NostrPublicKey.npub(
+                        from: try Data(hex: resolved!.publicKeyHex)
+                    ) ?? resolved!.publicKeyHex
+                }
                 _ = try await model.saveNostrContact(
                     publicKeyValue: publicKeyValue,
                     petname: nickname,
-                    relayURL: relayURL
+                    relayURL: relayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? resolved?.relayURLs.first
+                        : relayURL
                 )
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 dismiss()

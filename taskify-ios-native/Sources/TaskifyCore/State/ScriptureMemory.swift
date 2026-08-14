@@ -97,6 +97,10 @@ public enum ScriptureMemorySort: String, Codable, CaseIterable, Sendable {
 /// between reviews grows exponentially with `stage` (capped at 180 days) and shrinks as more
 /// entries compete for review slots.
 public enum ScriptureMemoryAlgorithm {
+    /// Shared with the PWA's `SCRIPTURE_MEMORY_SERIES_ID`. Older native builds used
+    /// `scripture-memory-series`; callers should recognize that value while migrating tasks.
+    public static let seriesID = "scripture-memory"
+    public static let legacySeriesID = "scripture-memory-series"
     public static let maxStage = 8
     public static let stageGrowth = 1.8
     public static let intervalCapDays: Double = 180
@@ -107,6 +111,16 @@ public enum ScriptureMemoryAlgorithm {
         public let score: Double
         public let dueInDays: Double
         public let dueNow: Bool
+    }
+
+    public static func recurrence(for frequency: ScriptureMemoryFrequency) -> TaskRecurrence {
+        frequency.days == 1
+            ? .daily()
+            : .every(frequency.days, .day)
+    }
+
+    public static func isSeriesID(_ value: String?) -> Bool {
+        value == seriesID || value == legacySeriesID
     }
 
     public static func intervalDays(stage: Int, baseDays: Double, totalEntries: Int) -> Double {

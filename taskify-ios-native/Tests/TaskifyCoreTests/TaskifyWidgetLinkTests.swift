@@ -10,8 +10,10 @@ final class TaskifyWidgetLinkTests: XCTestCase {
             .upcoming,
             .boards,
             .task(id: "task-1", boardID: "board-1"),
-            .quickAdd(boardID: "board-1"),
-            .quickAdd(boardID: nil),
+            .event(id: "event-1", boardID: "board-1"),
+            .quickAdd(boardID: "board-1", columnID: "column-1"),
+            .quickAdd(boardID: "board-1", columnID: nil),
+            .quickAdd(boardID: nil, columnID: nil),
         ]
         for link in links {
             XCTAssertEqual(TaskifyWidgetLink(url: link.url), link, "\(link.url)")
@@ -20,7 +22,7 @@ final class TaskifyWidgetLinkTests: XCTestCase {
 
     func testUsesTheRegisteredScheme() {
         XCTAssertEqual(TaskifyWidgetLink.scheme, "taskify")
-        for link in [TaskifyWidgetLink.upcoming, .boards, .quickAdd(boardID: nil)] {
+        for link in [TaskifyWidgetLink.upcoming, .boards, .quickAdd(boardID: nil, columnID: nil)] {
             XCTAssertEqual(link.url.scheme, "taskify")
         }
     }
@@ -30,9 +32,20 @@ final class TaskifyWidgetLinkTests: XCTestCase {
         XCTAssertEqual(url.absoluteString, "taskify://task?id=t1&board=b1")
     }
 
+    func testEventLinkCarriesBothIdentifiers() {
+        let url = TaskifyWidgetLink.event(id: "e1", boardID: "b1").url
+        XCTAssertEqual(url.absoluteString, "taskify://event?id=e1&board=b1")
+    }
+
     func testQuickAddOmitsAnEmptyBoard() {
-        XCTAssertEqual(TaskifyWidgetLink.quickAdd(boardID: nil).url.absoluteString, "taskify://quick-add")
-        XCTAssertEqual(TaskifyWidgetLink.quickAdd(boardID: "").url.absoluteString, "taskify://quick-add")
+        XCTAssertEqual(TaskifyWidgetLink.quickAdd(boardID: nil, columnID: nil).url.absoluteString, "taskify://quick-add")
+        XCTAssertEqual(TaskifyWidgetLink.quickAdd(boardID: "", columnID: "").url.absoluteString, "taskify://quick-add")
+    }
+
+    func testQuickAddCarriesBoardAndColumn() {
+        let link = TaskifyWidgetLink.quickAdd(boardID: "b1", columnID: "c1")
+        XCTAssertEqual(link.url.absoluteString, "taskify://quick-add?board=b1&column=c1")
+        XCTAssertEqual(TaskifyWidgetLink(url: link.url), link)
     }
 
     func testRejectsForeignAndUnknownURLs() {
@@ -41,6 +54,7 @@ final class TaskifyWidgetLinkTests: XCTestCase {
             "taskify://nonsense",
             "taskify://task",           // no id
             "taskify://task?board=b1",  // still no id
+            "taskify://event",          // no id
         ] {
             XCTAssertNil(TaskifyWidgetLink(url: URL(string: raw)!), raw)
         }

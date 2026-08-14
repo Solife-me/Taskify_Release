@@ -1828,6 +1828,121 @@ final class TaskifySnapshotTests: XCTestCase {
         )
     }
 
+    func testScriptureMemoryNeedsReviewUsesPWAScoringAndNeverReviewedPriority() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let formatter = ISO8601DateFormatter()
+        let recentlyReviewedLowStage = ScriptureMemoryEntry(
+            id: "recent-low-stage",
+            bookID: "gen",
+            chapter: 1,
+            startVerse: 1,
+            endVerse: 1,
+            addedAtISO: formatter.string(from: now.addingTimeInterval(-86_400 * 40)),
+            lastReviewISO: formatter.string(from: now.addingTimeInterval(-86_400 * 2)),
+            stage: 0
+        )
+        let olderHighStage = ScriptureMemoryEntry(
+            id: "older-high-stage",
+            bookID: "psa",
+            chapter: 23,
+            startVerse: 1,
+            endVerse: 1,
+            addedAtISO: formatter.string(from: now.addingTimeInterval(-86_400 * 60)),
+            lastReviewISO: formatter.string(from: now.addingTimeInterval(-86_400 * 7)),
+            stage: 4
+        )
+        let neverReviewed = ScriptureMemoryEntry(
+            id: "never-reviewed",
+            bookID: "jhn",
+            chapter: 3,
+            startVerse: 16,
+            endVerse: 16,
+            addedAtISO: formatter.string(from: now.addingTimeInterval(-3_600)),
+            lastReviewISO: nil,
+            stage: 0
+        )
+
+        let reviewedOnly = [olderHighStage, recentlyReviewedLowStage]
+        let reviewedSelection = try XCTUnwrap(ScriptureMemoryAlgorithm.chooseNext(
+            entries: reviewedOnly,
+            baseDays: 1,
+            now: now
+        ))
+        XCTAssertEqual(
+            reviewedSelection.entry.id,
+            "recent-low-stage",
+            "Needs Review compares elapsed/interval score, not review date alone"
+        )
+
+        let allEntries = [olderHighStage, recentlyReviewedLowStage, neverReviewed]
+        XCTAssertEqual(
+            ScriptureMemoryAlgorithm.chooseNext(entries: allEntries, baseDays: 1, now: now)?.entry.id,
+            "never-reviewed",
+            "Like the PWA, the first never-reviewed passage takes priority"
+        )
+        XCTAssertEqual(
+            ScriptureMemoryAlgorithm.sortedEntries(allEntries, sort: .needsReview, baseDays: 1, now: now)
+                .first?.entry.id,
+            "never-reviewed"
+        )
+    }
+
+    func testScriptureMemoryFrequencyCreatesMatchingPWARecurrence() {
+        XCTAssertEqual(ScriptureMemoryAlgorithm.recurrence(for: .daily), .daily())
+        XCTAssertEqual(ScriptureMemoryAlgorithm.recurrence(for: .every2d), .every(2, .day))
+        XCTAssertEqual(ScriptureMemoryAlgorithm.recurrence(for: .twiceWeek), .every(3, .day))
+        XCTAssertEqual(ScriptureMemoryAlgorithm.recurrence(for: .weekly), .every(7, .day))
+    }
+
+    func testRecurringScriptureTaskPreservesReviewMetadataForNextOccurrence() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let dueDate = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 14
+        )))
+        let task = TaskItem(
+            id: "scripture-review",
+            boardID: "week-default",
+            title: "Review John 3:16",
+            dueDate: dueDate,
+            dueDateEnabled: true,
+            dueTimeZone: "UTC",
+            recurrence: .daily(),
+            seriesID: ScriptureMemoryAlgorithm.seriesID,
+            scriptureMemoryID: "entry-john-3-16",
+            scriptureMemoryStage: 3,
+            scriptureMemoryPreviousReviewISO: "2026-08-10T12:00:00Z",
+            scriptureMemoryScheduledAtISO: "2026-08-14T12:00:00Z",
+            createdAt: dueDate,
+            order: 0,
+            columnID: WeekdayColumn.friday.rawValue
+        )
+        var snapshot = TaskifySnapshot.empty
+        snapshot.tasks.append(task)
+
+        XCTAssertTrue(snapshot.toggleCompletion(
+            taskID: task.id,
+            editorPublicKey: nil,
+            streaksEnabled: true,
+            weekStartsOn: .sunday,
+            now: dueDate.addingTimeInterval(60)
+        ))
+
+        let next = try XCTUnwrap(snapshot.tasks.first(where: { $0.id != task.id && !$0.completed }))
+        XCTAssertEqual(next.seriesID, ScriptureMemoryAlgorithm.seriesID)
+        XCTAssertEqual(next.recurrence, .daily())
+        XCTAssertEqual(next.scriptureMemoryID, task.scriptureMemoryID)
+        XCTAssertEqual(next.scriptureMemoryStage, task.scriptureMemoryStage)
+        XCTAssertEqual(next.scriptureMemoryPreviousReviewISO, task.scriptureMemoryPreviousReviewISO)
+        XCTAssertEqual(next.scriptureMemoryScheduledAtISO, task.scriptureMemoryScheduledAtISO)
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: try XCTUnwrap(next.dueDate)),
+            DateComponents(year: 2026, month: 8, day: 15)
+        )
+    }
+
     // MARK: - Batched remote task merge
 
     private func makeSyncTask(id: String, title: String, boardID: String = "home") -> TaskItem {
@@ -2162,5 +2277,53 @@ final class TaskifySnapshotTests: XCTestCase {
 
         XCTAssertFalse(snapshot.mergeRemoteTask(incompleteDuplicate, eventCreatedAt: 400))
         XCTAssertEqual(snapshot.tasks.map(\.id), [completed.id])
+    }
+
+    func testFullWeekRecurringMaterializationIsIdempotentAndHonorsDeletedOccurrence() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let sunday = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 19)))
+        let tuesday = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 21, hour: 12)))
+        let board = Board.week(id: "full-week")
+        let seed = TaskItem(
+            id: "daily-seed",
+            boardID: board.id,
+            title: "Read",
+            dueDate: sunday,
+            dueDateEnabled: true,
+            recurrence: .daily(),
+            columnID: WeekdayColumn.sunday.rawValue
+        )
+        var snapshot = TaskifySnapshot(boards: [board], tasks: [seed], selectedBoardID: board.id)
+
+        let first = snapshot.ensureCurrentWeekTaskRecurrences(
+            weekStartsOn: .sunday,
+            newTaskPosition: .bottom,
+            now: tuesday,
+            calendar: calendar
+        )
+        XCTAssertEqual(first.created.count, 6)
+        XCTAssertEqual(snapshot.tasks.filter { !$0.isDeleted }.count, 7)
+        XCTAssertTrue(snapshot.tasks.allSatisfy { $0.hiddenUntilDate == nil })
+
+        let second = snapshot.ensureCurrentWeekTaskRecurrences(
+            weekStartsOn: .sunday,
+            newTaskPosition: .bottom,
+            now: tuesday,
+            calendar: calendar
+        )
+        XCTAssertTrue(second.created.isEmpty)
+
+        let deletedID = "recurrence:daily-seed:2026-07-22"
+        let deletedIndex = try XCTUnwrap(snapshot.tasks.firstIndex(where: { $0.id == deletedID }))
+        snapshot.tasks[deletedIndex].deleted = true
+        let third = snapshot.ensureCurrentWeekTaskRecurrences(
+            weekStartsOn: .sunday,
+            newTaskPosition: .bottom,
+            now: tuesday,
+            calendar: calendar
+        )
+        XCTAssertTrue(third.created.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(snapshot.tasks.first(where: { $0.id == deletedID })).isDeleted)
     }
 }

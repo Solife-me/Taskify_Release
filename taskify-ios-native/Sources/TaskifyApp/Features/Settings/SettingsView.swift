@@ -3,11 +3,13 @@ import TaskifyCore
 import UIKit
 import UniformTypeIdentifiers
 import VisionKit
+import PhotosUI
 
 struct SettingsView: View {
     private static let watchCardID = "taskify-settings-watch-authorization"
 
     @Environment(AppModel.self) private var model
+    @EnvironmentObject private var wallet: WalletViewModel
     @Environment(\.openURL) private var openURL
     @StateObject private var watchBridge = TaskifyWatchBridge.shared
     @Binding private var watchSetupRequestID: UUID?
@@ -34,6 +36,14 @@ struct SettingsView: View {
     @State private var confirmingLocalBackupRestore = false
     @State private var localBackupMessage: String?
     @State private var confirmingWatchProvisioning = false
+    @State private var showingP2PKImport = false
+    @State private var p2pkImportSecret = ""
+    @State private var p2pkImportLabel = ""
+    @State private var p2pkMessage: String?
+    @State private var p2pkKeyToRemove: CashuP2PKKey?
+    @State private var backgroundPhotoItem: PhotosPickerItem?
+    @State private var backgroundPhotoIsLoading = false
+    @State private var appearanceMessage: String?
     /// Empty by default -- every settings group starts collapsed, matching the PWA's
     /// collapsed-by-default accordions, so opening Settings shows a scannable list of category
     /// headers instead of every card's full contents at once.
@@ -42,6 +52,14 @@ struct SettingsView: View {
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
     private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
+    @AppStorage(TaskifyAppearanceSettings.accentKey)
+    private var accentChoiceRaw = TaskifyAccentChoice.blue.rawValue
+    @AppStorage(TaskifyAppearanceSettings.scaleKey)
+    private var interfaceScaleRaw = TaskifyInterfaceScale.system.rawValue
+    @AppStorage(TaskifyAppearanceSettings.backgroundBlurKey)
+    private var backgroundIsBlurred = false
+    @AppStorage(TaskifyAppearanceSettings.revisionKey)
+    private var appearanceRevision = ""
 
     init(watchSetupRequestID: Binding<UUID?> = .constant(nil)) {
         _watchSetupRequestID = watchSetupRequestID
@@ -78,6 +96,7 @@ struct SettingsView: View {
 
                         settingsGroup("Wallet", systemImage: "bitcoinsign.circle.fill") {
                             walletCurrencyCard
+                            p2pkRecipientKeysCard
                         }
 
                         settingsGroup("Chat", systemImage: "bubble.left.and.text.bubble.right.fill") {
@@ -127,6 +146,10 @@ struct SettingsView: View {
                     watchSetupRequestID = nil
                 }
             }
+        }
+        .onChange(of: backgroundPhotoItem) { _, item in
+            guard let item else { return }
+            Task { await loadBackgroundPhoto(item) }
         }
         .sheet(isPresented: $showingBoardScanner) {
             BoardQRJoinFlow()
@@ -206,6 +229,26 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Your Nostr private key will be sent through the encrypted paired-device connection and stored only in the Watch's passcode-protected, device-only Keychain. Wallet keys and ecash are never sent.")
+        }
+        .confirmationDialog(
+            "Remove recipient key?",
+            isPresented: Binding(
+                get: { p2pkKeyToRemove != nil },
+                set: { if !$0 { p2pkKeyToRemove = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove key", role: .destructive) {
+                guard let key = p2pkKeyToRemove else { return }
+                Task {
+                    do { try await wallet.removeP2PKKey(id: key.id) }
+                    catch { p2pkMessage = WalletViewModel.message(for: error) }
+                }
+                p2pkKeyToRemove = nil
+            }
+            Button("Cancel", role: .cancel) { p2pkKeyToRemove = nil }
+        } message: {
+            Text("Ecash locked to this key can no longer be redeemed on this device. Only remove it after you are certain no locked tokens remain.")
         }
         .task {
 #if DEBUG
@@ -630,7 +673,7 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
             }
 
-            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works, but many public Blossom servers reject opaque encrypted uploads. NIP-96 servers currently upload the same way as Originless (real NIP-96 authentication isn't implemented yet). Attachments remain limited to 50 MB because this version encrypts and validates each complete file in memory before upload.")
+            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works, but many public Blossom servers reject opaque encrypted uploads. NIP-96 servers use discovery and authenticated NIP-98 uploads. Attachments remain limited to 50 MB because Taskify's PWA-compatible AES-GCM attachment format must encrypt and validate each complete file before upload.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
@@ -857,6 +900,137 @@ struct SettingsView: View {
             Text("Choose how sat amounts are labeled in the wallet.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var p2pkRecipientKeysCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "lock.keyhole.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Recipient keys")
+                        .font(.headline)
+                    Text("P2PK-locked ecash")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                Spacer()
+                Button {
+                    Task {
+                        do {
+                            _ = try await wallet.generateP2PKKey(label: "Taskify iPhone")
+                            p2pkMessage = "New recipient key created."
+                        } catch {
+                            p2pkMessage = WalletViewModel.message(for: error)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Generate recipient key")
+            }
+
+            Text("Recipient private keys stay in this device's Keychain. Share only the public key when someone should lock ecash specifically to you.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            if wallet.p2pkKeys.isEmpty {
+                Button("Generate recipient key") {
+                    Task {
+                        do {
+                            _ = try await wallet.generateP2PKKey(label: "Taskify iPhone")
+                            p2pkMessage = "Recipient key created."
+                        } catch {
+                            p2pkMessage = WalletViewModel.message(for: error)
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                ForEach(wallet.p2pkKeys) { key in
+                    HStack(spacing: 10) {
+                        Image(systemName: wallet.primaryP2PKKey?.id == key.id ? "key.fill" : "key")
+                            .foregroundStyle(wallet.primaryP2PKKey?.id == key.id ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(key.label ?? "Recipient key")
+                                .font(.subheadline.weight(.semibold))
+                            Text("\(key.publicKey.prefix(12))…\(key.publicKey.suffix(8))")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        Spacer()
+                        Menu {
+                            Button {
+                                UIPasteboard.general.string = key.publicKey
+                                p2pkMessage = "Public recipient key copied."
+                            } label: {
+                                Label("Copy public key", systemImage: "doc.on.doc")
+                            }
+                            if wallet.primaryP2PKKey?.id != key.id {
+                                Button {
+                                    Task {
+                                        do { try await wallet.setPrimaryP2PKKey(id: key.id) }
+                                        catch { p2pkMessage = WalletViewModel.message(for: error) }
+                                    }
+                                } label: {
+                                    Label("Make primary", systemImage: "checkmark.circle")
+                                }
+                            }
+                            Button(role: .destructive) { p2pkKeyToRemove = key } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                    }
+                    .padding(12)
+                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+
+            Button(showingP2PKImport ? "Hide import" : "Import nsec or secret key") {
+                withAnimation(.easeInOut(duration: 0.2)) { showingP2PKImport.toggle() }
+            }
+            .font(.subheadline.weight(.semibold))
+
+            if showingP2PKImport {
+                TextField("Label (optional)", text: $p2pkImportLabel)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("nsec or 64-character secret", text: $p2pkImportSecret)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+                Button("Import key") {
+                    Task {
+                        do {
+                            _ = try await wallet.importP2PKKey(
+                                secret: p2pkImportSecret,
+                                label: p2pkImportLabel
+                            )
+                            p2pkImportSecret = ""
+                            p2pkImportLabel = ""
+                            showingP2PKImport = false
+                            p2pkMessage = "Recipient key imported."
+                        } catch {
+                            p2pkMessage = WalletViewModel.message(for: error)
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(p2pkImportSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if let p2pkMessage {
+                Text(p2pkMessage)
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
@@ -1351,7 +1525,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.menu)
 
-                Text("Add passages from the Bible board. Taskify schedules one review task at a time, spacing it out further each time you review it.")
+                Text("Add passages from the Bible board. Taskify creates one review task at the selected frequency and prioritizes passages that most need review.")
                     .font(.caption2)
                     .foregroundStyle(TaskifyTheme.tertiaryText)
             }
@@ -1460,6 +1634,20 @@ struct SettingsView: View {
             .labelsHidden()
 
             Text("Orders week boards and controls when weekly recurring tasks reappear.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+
+            Divider()
+
+            Toggle(
+                "Show full week for recurring tasks",
+                isOn: Binding(
+                    get: { model.showFullWeekRecurring },
+                    set: { model.setShowFullWeekRecurring($0) }
+                )
+            )
+
+            Text("Displays every occurrence in the current week at once. When off, frequent recurring tasks reveal on their due day.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
@@ -1631,7 +1819,7 @@ struct SettingsView: View {
             StatusRow(title: "Weekly boards", status: "Active", complete: true)
             StatusRow(title: "List boards & rich task editing", status: "Active", complete: true)
             StatusRow(title: "Compound boards", status: "Active", complete: true)
-            StatusRow(title: "Bible reading tracker", status: "Active (no print/scan)", complete: true)
+            StatusRow(title: "Bible reading tracker", status: "Active with print & scan", complete: true)
             StatusRow(title: "Fasting reminders", status: "Active", complete: true)
             StatusRow(title: "Scripture memory", status: "Active", complete: true)
             StatusRow(title: "Task streaks", status: "Active", complete: true)
@@ -1686,21 +1874,203 @@ struct SettingsView: View {
     }
 
     private var appearanceCard: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "moon.stars.fill")
-                .font(.title2)
-                .foregroundStyle(TaskifyTheme.accent)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("PWA-inspired dark appearance")
-                    .font(.headline)
-                Text("Native materials, Dynamic Type, and VoiceOver are enabled.")
-                    .font(.subheadline)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+        let photoAccents = TaskifyAppearanceSettings.backgroundAccents
+        let selectedPhotoAccentIndex = TaskifyAppearanceSettings.selectedBackgroundAccentIndex
+        let _ = appearanceRevision
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "paintpalette.fill")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Appearance")
+                        .font(.headline)
+                    Text("Personalize Taskify while keeping native materials and accessibility.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+
+            Divider()
+
+            Text("Accent color")
+                .font(.subheadline.weight(.semibold))
+
+            HStack(spacing: 10) {
+                ForEach(TaskifyAccentChoice.presetChoices, id: \.self) { choice in
+                    AppearanceAccentSwatch(
+                        label: "\(choice.label) accent",
+                        color: appearanceAccentColor(for: choice),
+                        foregroundColor: TaskifyTheme.accentOn,
+                        isSelected: accentChoiceRaw == choice.rawValue
+                    ) {
+                        accentChoiceRaw = choice.rawValue
+                        TaskifyAppearanceSettings.selectAccent(choice)
+                    }
+                }
+
+                if !photoAccents.isEmpty {
+                    Divider()
+                        .frame(height: 34)
+                        .padding(.horizontal, 1)
+
+                    ForEach(Array(photoAccents.enumerated()), id: \.offset) { index, accent in
+                        AppearanceAccentSwatch(
+                            label: "Photo accent \(index + 1), \(accent.hex)",
+                            color: accent.taskifyColor,
+                            foregroundColor: accent.prefersDarkForeground
+                                ? TaskifyTheme.accentOn
+                                : Color.white,
+                            isSelected: accentChoiceRaw == TaskifyAccentChoice.background.rawValue
+                                && selectedPhotoAccentIndex == index
+                        ) {
+                            accentChoiceRaw = TaskifyAccentChoice.background.rawValue
+                            TaskifyAppearanceSettings.selectBackgroundAccent(at: index)
+                        }
+                    }
+                }
+            }
+
+            if !photoAccents.isEmpty {
+                Text("The last \(photoAccents.count == 1 ? "swatch is" : "\(photoAccents.count) swatches are") sampled from your background.")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
+
+            Text("Interface size")
+                .font(.subheadline.weight(.semibold))
+            Picker("Interface size", selection: Binding(
+                get: { TaskifyInterfaceScale(rawValue: interfaceScaleRaw) ?? .system },
+                set: { interfaceScaleRaw = $0.rawValue }
+            )) {
+                ForEach(TaskifyInterfaceScale.allCases, id: \.self) { scale in
+                    Text(scale.label).tag(scale)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Divider()
+
+            if let image = TaskifyAppearanceSettings.backgroundImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(height: 118)
+                    .frame(maxWidth: .infinity)
+                    .blur(radius: backgroundIsBlurred ? 7 : 0)
+                    .scaleEffect(backgroundIsBlurred ? 1.08 : 1.02)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                Picker("Background clarity", selection: $backgroundIsBlurred) {
+                    Text("Sharp").tag(false)
+                    Text("Blurred").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: backgroundIsBlurred) { _, _ in
+                    TaskifyAppearanceSettings.bumpRevision()
+                }
+            }
+
+            HStack {
+                PhotosPicker(selection: $backgroundPhotoItem, matching: .images) {
+                    Label(
+                        TaskifyAppearanceSettings.hasBackgroundImage ? "Change photo" : "Choose background",
+                        systemImage: "photo"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .disabled(backgroundPhotoIsLoading)
+
+                if TaskifyAppearanceSettings.hasBackgroundImage {
+                    Button("Remove", role: .destructive) {
+                        TaskifyAppearanceSettings.removeBackgroundImage()
+                        accentChoiceRaw = TaskifyAccentChoice.blue.rawValue
+                        appearanceMessage = nil
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(backgroundPhotoIsLoading)
+                }
+
+                if backgroundPhotoIsLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            if let appearanceMessage {
+                Text(appearanceMessage)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
+        .task {
+            _ = TaskifyAppearanceSettings.ensureBackgroundAccents()
+        }
+    }
+
+    private func loadBackgroundPhoto(_ item: PhotosPickerItem) async {
+        backgroundPhotoIsLoading = true
+        defer {
+            backgroundPhotoItem = nil
+            backgroundPhotoIsLoading = false
+        }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                appearanceMessage = "That photo couldn't be loaded."
+                return
+            }
+            try TaskifyAppearanceSettings.saveBackgroundImage(data: data)
+            accentChoiceRaw = TaskifyAccentChoice.background.rawValue
+            appearanceMessage = nil
+        } catch {
+            appearanceMessage = error.localizedDescription
+        }
+    }
+
+    private func appearanceAccentColor(for choice: TaskifyAccentChoice) -> Color {
+        TaskifyTheme.color(for: choice)
+    }
+}
+
+private struct AppearanceAccentSwatch: View {
+    let label: String
+    let color: Color
+    let foregroundColor: Color
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Circle()
+                .fill(color)
+                .frame(width: 34, height: 34)
+                .overlay {
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(foregroundColor)
+                    }
+                }
+                .padding(4)
+                .background(color.opacity(isSelected ? 0.22 : 0), in: Circle())
+                .overlay {
+                    Circle()
+                        .stroke(
+                            isSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.22),
+                            lineWidth: isSelected ? 2 : 1
+                        )
+                }
+                .shadow(color: isSelected ? color.opacity(0.55) : .clear, radius: 6)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }
 
@@ -1844,6 +2214,9 @@ private struct BoardManagerSheet: View {
     @State private var relayMessage: String?
     @State private var showingDeleteConfirmation = false
     @State private var showingArchiveBlocked = false
+    @State private var showingRegenerateBoardIDConfirmation = false
+    @State private var recoveryBusy = false
+    @State private var recoveryMessage: String?
 
     private var board: Board? {
         model.board(withID: boardID)
@@ -1870,6 +2243,7 @@ private struct BoardManagerSheet: View {
                                 indexCardToggleCard(board)
                             }
                             relaysCard(board)
+                            syncRecoveryCard(board)
                             archiveCard(board)
                             deleteCard
                         }
@@ -1909,6 +2283,21 @@ private struct BoardManagerSheet: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the local copy. It does not delete copies already held by collaborators.")
+        }
+        .confirmationDialog(
+            "Generate a new board ID?",
+            isPresented: $showingRegenerateBoardIDConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Generate ID and republish", role: .destructive) {
+                runRecoveryAction {
+                    let newID = try await model.regenerateBoardNostrID(boardID: boardID)
+                    return "New board ID created and snapshot queued (…\(newID.suffix(8))). Existing shares will not follow future changes."
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This moves future sync to a new board identity. People using the old board share must receive the new share to keep syncing.")
         }
     }
 
@@ -2134,6 +2523,90 @@ private struct BoardManagerSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func syncRecoveryCard(_ board: Board) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Sync recovery")
+                    .font(.headline)
+                Spacer()
+                if recoveryBusy { ProgressView().controlSize(.small) }
+            }
+
+            Button {
+                runRecoveryAction {
+                    try await model.resyncBoardHistory(boardID: boardID)
+                    return "Relay history re-sync started."
+                }
+            } label: {
+                Label("Re-sync relay history", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(recoveryBusy)
+
+            Button {
+                runRecoveryAction {
+                    let result = try await model.republishBoardSnapshot(boardID: boardID)
+                    return "Queued \(result.publishedRecordCount) current board record\(result.publishedRecordCount == 1 ? "" : "s") for republishing."
+                }
+            } label: {
+                Label("Republish current snapshot", systemImage: "icloud.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(recoveryBusy)
+
+            Button {
+                runRecoveryAction {
+                    let result = try await model.cleanStaleBoardEvents(boardID: boardID)
+                    if result.staleEventCount == 0 {
+                        return "No stale task versions found across \(result.respondingRelayCount) responding relay\(result.respondingRelayCount == 1 ? "" : "s")."
+                    }
+                    return "Queued deletion requests for \(result.staleEventCount) stale task version\(result.staleEventCount == 1 ? "" : "s")."
+                }
+            } label: {
+                Label("Clean up stale task versions", systemImage: "eraser")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(recoveryBusy)
+
+            Button(role: .destructive) {
+                showingRegenerateBoardIDConfirmation = true
+            } label: {
+                Label("Generate new board ID", systemImage: "key.horizontal")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(recoveryBusy)
+
+            if let recoveryMessage {
+                Text(recoveryMessage)
+                    .font(.caption)
+                    .foregroundStyle(recoveryMessage.hasPrefix("Could not") ? Color.orange : TaskifyTheme.secondaryText)
+            }
+            Text("Use re-sync when relay content seems incomplete. Republish repairs missing current records. A new ID is a last resort that intentionally creates a new sync namespace.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private func runRecoveryAction(
+        _ operation: @escaping @MainActor () async throws -> String
+    ) {
+        guard !recoveryBusy else { return }
+        recoveryBusy = true
+        recoveryMessage = nil
+        Task {
+            defer { recoveryBusy = false }
+            do { recoveryMessage = try await operation() }
+            catch { recoveryMessage = "Could not complete recovery: \(error.localizedDescription)" }
+        }
     }
 
     private func archiveCard(_ board: Board) -> some View {

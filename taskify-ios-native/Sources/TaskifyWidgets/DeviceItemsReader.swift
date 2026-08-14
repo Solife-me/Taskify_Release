@@ -34,6 +34,8 @@ enum DeviceItemsReader {
                 boardID: "",
                 boardName: event.calendar?.title ?? "",
                 dueDate: event.startDate,
+                endDate: event.endDate,
+                isAllDay: event.isAllDay,
                 kind: .calendar
             )
         }
@@ -57,6 +59,7 @@ enum DeviceItemsReader {
                 boardID: "",
                 boardName: reminder.calendar?.title ?? "",
                 dueDate: due,
+                isAllDay: reminder.dueDateComponents?.hour == nil,
                 kind: .reminder
             )
         }

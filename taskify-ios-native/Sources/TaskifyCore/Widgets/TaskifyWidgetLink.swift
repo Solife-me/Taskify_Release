@@ -9,7 +9,8 @@ public enum TaskifyWidgetLink: Equatable, Sendable {
     case upcoming
     case boards
     case task(id: String, boardID: String)
-    case quickAdd(boardID: String?)
+    case event(id: String, boardID: String)
+    case quickAdd(boardID: String?, columnID: String?)
 
     public static let scheme = "taskify"
 
@@ -27,11 +28,22 @@ public enum TaskifyWidgetLink: Equatable, Sendable {
                 URLQueryItem(name: "id", value: id),
                 URLQueryItem(name: "board", value: boardID),
             ]
-        case .quickAdd(let boardID):
+        case .event(let id, let boardID):
+            components.host = "event"
+            components.queryItems = [
+                URLQueryItem(name: "id", value: id),
+                URLQueryItem(name: "board", value: boardID),
+            ]
+        case .quickAdd(let boardID, let columnID):
             components.host = "quick-add"
+            var queryItems: [URLQueryItem] = []
             if let boardID, !boardID.isEmpty {
-                components.queryItems = [URLQueryItem(name: "board", value: boardID)]
+                queryItems.append(URLQueryItem(name: "board", value: boardID))
             }
+            if let columnID, !columnID.isEmpty {
+                queryItems.append(URLQueryItem(name: "column", value: columnID))
+            }
+            components.queryItems = queryItems.isEmpty ? nil : queryItems
         }
         // Every case above produces a valid URL; the fallback keeps this non-optional for callers.
         return components.url ?? URL(string: "\(Self.scheme)://upcoming")!
@@ -52,8 +64,14 @@ public enum TaskifyWidgetLink: Equatable, Sendable {
         case "task":
             guard let id = value("id"), !id.isEmpty else { return nil }
             self = .task(id: id, boardID: value("board") ?? "")
+        case "event":
+            guard let id = value("id"), !id.isEmpty else { return nil }
+            self = .event(id: id, boardID: value("board") ?? "")
         case "quick-add":
-            self = .quickAdd(boardID: value("board").flatMap { $0.isEmpty ? nil : $0 })
+            self = .quickAdd(
+                boardID: value("board").flatMap { $0.isEmpty ? nil : $0 },
+                columnID: value("column").flatMap { $0.isEmpty ? nil : $0 }
+            )
         default:
             return nil
         }

@@ -740,6 +740,7 @@ public actor CashuWalletService {
     private var pendingReceiveIDsInFlight: Set<String> = []
     private var preparedSends: [UUID: PreparedSendEntry] = [:]
     private var preparedLightningPayments: [UUID: PreparedLightningPaymentEntry] = [:]
+    private var p2pkSigningKeys: [SecretKey] = []
 
     public init(databaseURL: URL, outgoingTokensURL: URL, mnemonic: String) throws {
         let normalizedMnemonic = Self.normalizedMnemonic(mnemonic)
@@ -775,6 +776,14 @@ public actor CashuWalletService {
 
     public static func generateMnemonic() throws -> String {
         try Cdk.generateMnemonic()
+    }
+
+    public func configureP2PKSigningKeys(privateKeys: [String]) {
+        p2pkSigningKeys = privateKeys.compactMap { value in
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard (try? Data(hex: normalized))?.count == 32 else { return nil }
+            return SecretKey(hex: normalized)
+        }
     }
 
     public static func normalizedMnemonic(_ value: String) -> String {
@@ -1823,7 +1832,7 @@ public actor CashuWalletService {
                 useP2bk: false,
                 maxProofs: nil,
                 metadata: ["source": "taskify-seed-transfer"],
-                p2pkSigningKeys: [],
+                p2pkSigningKeys: p2pkSigningKeys,
                 p2pkLockedProofSendMode: .swap
             )
         )
@@ -1871,7 +1880,8 @@ public actor CashuWalletService {
         mintURLs: [String],
         recipientPublicKey: String,
         relayURLs: [String],
-        singleUse: Bool
+        singleUse: Bool,
+        lockPublicKey: String? = nil
     ) throws -> CashuCreatedPaymentRequest {
         let request = try CashuPaymentRequestContract.createNostrRequest(
             amount: amount,
@@ -1879,7 +1889,8 @@ public actor CashuWalletService {
             mintURLs: mintURLs,
             recipientPublicKey: recipientPublicKey,
             relayURLs: relayURLs,
-            singleUse: singleUse
+            singleUse: singleUse,
+            lockPublicKey: lockPublicKey
         )
         createdPaymentRequests.removeAll { $0.requestID == request.requestID }
         createdPaymentRequests.append(request)
@@ -1965,7 +1976,7 @@ public actor CashuWalletService {
         let memo = payloadMemo?.isEmpty == false ? payloadMemo : request.description
         let options = ReceiveOptions(
             amountSplitTarget: .none,
-            p2pkSigningKeys: [],
+            p2pkSigningKeys: p2pkSigningKeys,
             preimages: [],
             metadata: [
                 "source": "taskify-native-payment-request",
@@ -2455,7 +2466,7 @@ public actor CashuWalletService {
         }
         let options = ReceiveOptions(
             amountSplitTarget: .none,
-            p2pkSigningKeys: [],
+            p2pkSigningKeys: p2pkSigningKeys,
             preimages: [],
             metadata: ["source": "taskify-native"]
         )
@@ -2513,22 +2524,32 @@ public actor CashuWalletService {
 
     public func prepareSend(
         mintURL rawMintURL: String,
-        amount: UInt64
+        amount: UInt64,
+        lockPublicKey: String? = nil
     ) async throws -> CashuPreparedSendQuote {
         let normalized = try Self.normalizedMintURL(rawMintURL)
+        let conditions: SpendingConditions?
+        if let lockPublicKey {
+            guard let normalizedKey = CashuP2PKKey.normalizePublicKey(lockPublicKey) else {
+                throw CashuP2PKError.invalidKey
+            }
+            conditions = .p2pk(pubkey: normalizedKey, conditions: nil)
+        } else {
+            conditions = nil
+        }
         let wallet = try await repository.getWallet(mintUrl: MintUrl(url: normalized), unit: .sat)
         let prepared = try await wallet.prepareSend(
             amount: Amount(value: amount),
             options: SendOptions(
                 memo: nil,
-                conditions: nil,
+                conditions: conditions,
                 amountSplitTarget: .none,
                 sendKind: .onlineExact,
                 includeFee: false,
                 useP2bk: false,
                 maxProofs: 32,
                 metadata: ["source": "taskify-native"],
-                p2pkSigningKeys: [],
+                p2pkSigningKeys: p2pkSigningKeys,
                 p2pkLockedProofSendMode: .swap
             )
         )

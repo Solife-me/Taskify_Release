@@ -8,12 +8,16 @@ import WidgetKit
 /// `CompleteTaskIntent`, which goes through the same `JSONTaskStore` the app uses so the two can't
 /// disagree about the file's shape.
 enum TaskifyWidgetStore {
+    static func loadSnapshot() async -> TaskifySnapshot? {
+        guard TaskifySharedContainer.isAvailable() else { return nil }
+        return try? await JSONTaskStore().load()
+    }
+
     /// Returns empty data rather than failing when the App Group isn't reachable or the store
     /// can't be read: a widget has nowhere to report an error, so the honest thing it can show is
     /// nothing.
     static func load(now: Date = Date()) async -> TaskifyWidgetData {
-        guard TaskifySharedContainer.isAvailable() else { return TaskifyWidgetData(generatedAt: now) }
-        guard let snapshot = try? await JSONTaskStore().load() else {
+        guard let snapshot = await loadSnapshot() else {
             return TaskifyWidgetData(generatedAt: now)
         }
         return snapshot.widgetData(now: now)

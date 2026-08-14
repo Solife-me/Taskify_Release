@@ -32,7 +32,9 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Taskify</string>
+	<key>CFBundleSpokenName</key>
+	<string>Taskify</string>
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
@@ -41,10 +43,25 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Taskify by Solife</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>Taskify by So Life</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Taskify Native</string>
+		</dict>
+	</array>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Taskify schedules prominent alarms for tasks you explicitly mark Urgent.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Show your Apple Calendar events alongside Taskify tasks in Upcoming.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan Taskify board shares and Cashu ecash tokens from QR codes.</string>
+	<string>Capture task attachments, scan documents, and scan Taskify or Cashu QR codes.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Protect access to your Cashu wallet recovery words.</string>
 	<key>NSMicrophoneUsageDescription</key>

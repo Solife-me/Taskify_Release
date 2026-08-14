@@ -123,6 +123,25 @@ public actor NostrRelayConnection {
         ])
     }
 
+    public func subscribeToAuthoredBoardEvents(
+        id: String,
+        kinds: [Int],
+        authorPublicKey: String,
+        boardTag: String,
+        limit: Int = 2_000
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": kinds,
+                "authors": [authorPublicKey.lowercased()],
+                "#b": [boardTag],
+                "limit": min(max(1, limit), 5_000),
+            ] as [String: Any],
+        ])
+    }
+
     public func subscribeToAccountBackup(
         id: String,
         authorPublicKey: String,
@@ -282,5 +301,57 @@ public actor NostrRelayConnection {
                 return
             }
         }
+    }
+}
+
+public enum NostrRelayHistoryFetcher {
+    public static func authoredBoardEvents(
+        relayURL: String,
+        kinds: [Int],
+        authorPublicKey: String,
+        boardTag: String,
+        timeout: Duration = .seconds(5)
+    ) async throws -> [NostrEvent] {
+        let connection = NostrRelayConnection(relayURL: relayURL)
+        try await connection.connect()
+        let subscriptionID = "cleanup-\(UUID().uuidString.prefix(12))"
+        let result = try await withThrowingTaskGroup(of: [NostrEvent].self) { group in
+            group.addTask {
+                var events: [NostrEvent] = []
+                for await message in connection.messages() {
+                    guard !Task.isCancelled else { return events }
+                    switch message {
+                    case .event(let id, let event) where id == subscriptionID:
+                        events.append(event)
+                    case .endOfStoredEvents(let id) where id == subscriptionID:
+                        return events
+                    case .closed(let id, _) where id == subscriptionID:
+                        return events
+                    case .disconnected(let message):
+                        throw URLError(.networkConnectionLost, userInfo: [
+                            NSLocalizedDescriptionKey: message,
+                        ])
+                    default:
+                        continue
+                    }
+                }
+                return events
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                return []
+            }
+            try await connection.subscribeToAuthoredBoardEvents(
+                id: subscriptionID,
+                kinds: kinds,
+                authorPublicKey: authorPublicKey,
+                boardTag: boardTag
+            )
+            let events = try await group.next() ?? []
+            group.cancelAll()
+            return events
+        }
+        await connection.disconnect()
+        return result
     }
 }

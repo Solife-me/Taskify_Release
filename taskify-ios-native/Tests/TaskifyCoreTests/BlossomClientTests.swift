@@ -51,6 +51,67 @@ final class BlossomClientTests: XCTestCase {
         XCTAssertEqual(TaskifyFileServerType.inferred(for: "https://originless-blossom.example.com"), .originless)
     }
 
+    func testNip98AuthHeaderSignsUploadURLMethodAndPayload() throws {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let uploadURL = try XCTUnwrap(URL(string: "https://files.example/api/v1/nip96"))
+        let header = try Nip96Client.authHeader(
+            privateKey: testPrivateKey,
+            url: uploadURL,
+            method: "POST",
+            sha256Hex: "abc123",
+            now: fixedNow
+        )
+
+        XCTAssertTrue(header.hasPrefix("Nostr "))
+        let token = String(header.dropFirst("Nostr ".count))
+        let data = try XCTUnwrap(Data(base64Encoded: token))
+        let event = try JSONDecoder().decode(NostrEvent.self, from: data)
+
+        XCTAssertEqual(event.kind, 27_235)
+        XCTAssertEqual(event.content, "")
+        XCTAssertEqual(event.createdAt, 1_700_000_000)
+        XCTAssertTrue(event.tags.contains(["u", uploadURL.absoluteString]))
+        XCTAssertTrue(event.tags.contains(["method", "POST"]))
+        XCTAssertTrue(event.tags.contains(["payload", "abc123"]))
+        XCTAssertTrue(event.verify())
+    }
+
+    func testNip96DiscoveryResolvesRelativeAPIURL() throws {
+        let baseURL = try XCTUnwrap(URL(string: "https://files.example"))
+        let data = try JSONSerialization.data(withJSONObject: ["api_url": "/api/v1/nip96"])
+
+        let result = try Nip96Client.parseDiscoveryResponse(data, baseURL: baseURL)
+
+        XCTAssertEqual(result.apiURL?.absoluteString, "https://files.example/api/v1/nip96")
+        XCTAssertNil(result.delegatedServerURL)
+    }
+
+    func testNip96DiscoveryRecognizesDelegatedServer() throws {
+        let baseURL = try XCTUnwrap(URL(string: "https://files.example"))
+        let data = try JSONSerialization.data(withJSONObject: [
+            "delegated_to_url": "https://uploads.example",
+        ])
+
+        let result = try Nip96Client.parseDiscoveryResponse(data, baseURL: baseURL)
+
+        XCTAssertNil(result.apiURL)
+        XCTAssertEqual(result.delegatedServerURL?.absoluteString, "https://uploads.example")
+    }
+
+    func testNip96UploadResponsePrefersNip94URLTag() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "url": "https://fallback.example/blob",
+            "nip94_event": [
+                "tags": [["url", "https://cdn.example/blob"]],
+            ],
+        ])
+
+        XCTAssertEqual(
+            try Nip96Client.remoteURL(from: data)?.absoluteString,
+            "https://cdn.example/blob"
+        )
+    }
+
     private func decodedEvent(from header: String) throws -> NostrEvent {
         let token = String(header.dropFirst("Nostr ".count))
         var padded = token.replacingOccurrences(of: "-", with: "+")

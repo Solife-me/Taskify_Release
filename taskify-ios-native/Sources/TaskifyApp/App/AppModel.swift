@@ -156,6 +156,8 @@ private final class AppSnapshotLookupCache {
     private var contactsByPublicKey: [String: NostrContact]?
     private var groupsByID: [String: NostrGroupConversation]?
     private var cachedVisibleBoards: [Board]?
+    private var cachedAcceptedTaskifyEvents: [TaskifyEvent]?
+    private var cachedTaskifyEventIDs: Set<String>?
 
     func invalidate() {
         boardsByID = nil
@@ -165,6 +167,26 @@ private final class AppSnapshotLookupCache {
         contactsByPublicKey = nil
         groupsByID = nil
         cachedVisibleBoards = nil
+        cachedAcceptedTaskifyEvents = nil
+        cachedTaskifyEventIDs = nil
+    }
+
+    /// `TaskifySnapshot.acceptedTaskifyEvents` filters and sorts the whole event array on every
+    /// read, and each board column reads it while building its own day/column slice. Holding the
+    /// result for the life of a snapshot keeps a horizontal swipe from re-sorting the same array
+    /// once per column per render.
+    func acceptedTaskifyEvents(snapshot: TaskifySnapshot) -> [TaskifyEvent] {
+        if let cachedAcceptedTaskifyEvents { return cachedAcceptedTaskifyEvents }
+        let events = snapshot.acceptedTaskifyEvents
+        cachedAcceptedTaskifyEvents = events
+        return events
+    }
+
+    func taskifyEventIDs(snapshot: TaskifySnapshot) -> Set<String> {
+        if let cachedTaskifyEventIDs { return cachedTaskifyEventIDs }
+        let ids = Set(acceptedTaskifyEvents(snapshot: snapshot).map(\.id))
+        cachedTaskifyEventIDs = ids
+        return ids
     }
 
     func board(id: String, snapshot: TaskifySnapshot) -> Board? {
@@ -362,6 +384,9 @@ final class AppModel {
     private(set) var streaksEnabled = TaskStreakSettings.enabled
     private(set) var newTaskPosition = TaskOrderingSettings.position
     private(set) var weekStart = WeekLayoutSettings.start
+    private(set) var showFullWeekRecurring = (UserDefaults.standard.object(
+        forKey: TaskPresentationSettings.showFullWeekRecurringKey
+    ) as? Bool) ?? TaskPresentationSettings.showFullWeekRecurringDefault
     private(set) var chatMessageRetention = ChatHistorySettings.retention
     private(set) var walletConversionEnabled = WalletCurrencySettings.conversionEnabled
     private(set) var walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
@@ -454,7 +479,12 @@ final class AppModel {
     var sharedContactInboxItems: [SharedContactInboxItem] { snapshot.sharedContactInbox }
     var sharedCalendarInviteItems: [SharedCalendarInviteInboxItem] { snapshot.sharedCalendarInvites }
     var sharedBoardInboxItems: [SharedBoardInboxItem] { snapshot.sharedBoardInbox }
-    var taskifyEvents: [TaskifyEvent] { snapshot.acceptedTaskifyEvents }
+    var taskifyEvents: [TaskifyEvent] {
+        snapshotLookupCache.acceptedTaskifyEvents(snapshot: snapshot)
+    }
+    var taskifyEventIDs: Set<String> {
+        snapshotLookupCache.taskifyEventIDs(snapshot: snapshot)
+    }
     var walletPaymentRequestRelayURLs: [String] { sharedInboxRelayURLs }
     var pendingSharedInboxCount: Int { snapshot.pendingSharedInboxCount }
     var activeTaskIDs: Set<String> {
@@ -898,6 +928,78 @@ final class AppModel {
             calendar: weekCalendar
         ) else { return }
         synchronizeTask(task.id)
+    }
+
+    /// Creates a fully configured task in one local transaction, then publishes only the finished
+    /// record. The full editor uses this for a new-task draft so cancelling never leaks an
+    /// "Untitled" placeholder to storage or Nostr.
+    @discardableResult
+    func addDetailedTask(
+        id: String,
+        title: String,
+        note: String,
+        boardID: String,
+        columnID: String?,
+        dueDate: Date?,
+        dueDateEnabled: Bool,
+        dueTimeEnabled: Bool,
+        dueTimeZone: String?,
+        urgent: Bool,
+        priority: TaskPriority?,
+        subtasks: [TaskSubtask],
+        recurrence: TaskRecurrence?,
+        reminders: [TaskReminder],
+        reminderTime: String?,
+        images: [String],
+        documents: [TaskDocument]
+    ) -> TaskItem? {
+        guard let created = snapshot.addTask(
+            id: id,
+            title: title,
+            boardID: boardID,
+            columnID: columnID,
+            dueDate: dueDateEnabled ? dueDate : nil,
+            note: note,
+            priority: priority,
+            authorPublicKey: identityPublicKey.nilIfEmpty,
+            newTaskPosition: newTaskPosition,
+            weekStartsOn: weekStart,
+            calendar: weekCalendar
+        ) else { return nil }
+
+        let configured = snapshot.updateTask(
+            taskID: created.id,
+            title: title,
+            note: note,
+            dueDate: dueDate,
+            dueDateEnabled: dueDateEnabled,
+            dueTimeEnabled: dueTimeEnabled,
+            dueTimeZone: dueTimeEnabled ? (dueTimeZone ?? TimeZone.current.identifier) : nil,
+            priority: priority,
+            columnID: columnID,
+            subtasks: subtasks,
+            recurrence: recurrence,
+            reminders: reminders,
+            reminderTime: reminderTime,
+            editorPublicKey: identityPublicKey.nilIfEmpty,
+            calendar: weekCalendar,
+            weekStartsOn: weekStart
+        ) && snapshot.replaceTaskAttachments(
+            taskID: created.id,
+            images: images,
+            documents: documents,
+            editorPublicKey: identityPublicKey.nilIfEmpty
+        )
+        guard configured, let finalTask = task(withID: created.id) else {
+            snapshot.tasks.removeAll { $0.id == created.id }
+            return nil
+        }
+
+        TaskUrgentAlarmPreferences.setEnabled(urgent, for: finalTask)
+        synchronizeTask(finalTask.id)
+        if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
+        refreshNotifications(requestPermission: !reminders.isEmpty || urgent)
+        return task(withID: finalTask.id)
     }
 
     @discardableResult
@@ -1367,6 +1469,7 @@ final class AppModel {
         dueDateEnabled: Bool,
         dueTimeEnabled: Bool,
         dueTimeZone: String? = nil,
+        urgent: Bool? = nil,
         priority: TaskPriority?,
         columnID: String?,
         subtasks: [TaskSubtask],
@@ -1400,9 +1503,22 @@ final class AppModel {
             documents: documents,
             editorPublicKey: identityPublicKey.nilIfEmpty
         ) else { return false }
+        if let urgent, let updatedTask = task(withID: taskID) {
+            TaskUrgentAlarmPreferences.setEnabled(urgent, for: updatedTask)
+        }
         synchronizeTask(taskID)
-        refreshNotifications(requestPermission: !reminders.isEmpty)
+        if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
+        refreshNotifications(requestPermission: !reminders.isEmpty || urgent == true)
         return true
+    }
+
+    func isUrgentAlarmEnabled(for taskID: String) -> Bool {
+        guard let task = task(withID: taskID) else { return false }
+        return TaskUrgentAlarmPreferences.isEnabled(for: task)
+    }
+
+    func requestUrgentAlarmAuthorization() async -> Bool {
+        await notificationCoordinator.requestUrgentAlarmAuthorization()
     }
 
     /// Shifts a task's due date forward by the given number of days, preserving its due time.
@@ -1450,13 +1566,19 @@ final class AppModel {
             streaksEnabled: streaksEnabled,
             weekStartsOn: weekStart
         ) else { return }
-        synchronizeTask(taskID)
+        // Scripture Memory completion must update its review state and retarget the freshly cloned
+        // occurrence before either record is published. Publishing the generic clone first left a
+        // short-lived duplicate passage on other clients and could cause the PWA to advance the
+        // wrong entry when relay delivery happened out of order.
+        let reconciledTaskIDs = reconcileScriptureMemory()
+        if !reconciledTaskIDs.contains(taskID) {
+            synchronizeTask(taskID)
+        }
         snapshot.tasks
             .map(\.id)
-            .filter { !existingIDs.contains($0) }
+            .filter { !existingIDs.contains($0) && !reconciledTaskIDs.contains($0) }
             .forEach { synchronizeTask($0) }
         refreshNotifications(requestPermission: false)
-        reconcileScriptureMemory()
     }
 
     func toggleSubtaskCompletion(taskID: String, subtaskID: String) {
@@ -1476,6 +1598,27 @@ final class AppModel {
         for taskID in taskIDs where task(withID: taskID)?.completed == false {
             toggleCompletion(taskID)
         }
+    }
+
+    /// Handles the background action exposed by a long-pressed task notification. iOS can launch
+    /// the process directly into this path, before the JSON snapshot has finished loading, so wait
+    /// briefly for that load rather than completing against the temporary empty workspace. The
+    /// immediate save and notification rebuild make the action durable even if iOS suspends the app
+    /// again as soon as the response handler returns.
+    func completeTaskFromNotification(_ taskID: String) async {
+        let loadDeadline = Date().addingTimeInterval(15)
+        while isLoading, Date() < loadDeadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard !Task.isCancelled,
+              !isLoading,
+              let task = task(withID: taskID),
+              !task.completed,
+              !task.isDeleted else { return }
+
+        toggleCompletion(taskID)
+        await persistImmediately()
+        await refreshNotificationsImmediately()
     }
 
     /// Bulk counterpart to `deleteTask`.
@@ -2753,7 +2896,7 @@ final class AppModel {
         }
     }
 
-    private static let scriptureMemorySeriesID = "scripture-memory-series"
+    private static let scriptureMemorySeriesID = ScriptureMemoryAlgorithm.seriesID
     private static let scriptureMemoryStorageKey = "taskify.scriptureMemory.state.v1"
 
     static func loadScriptureMemoryState() -> ScriptureMemoryState {
@@ -2792,10 +2935,13 @@ final class AppModel {
         guard scriptureMemoryState.entries.contains(where: { $0.id == entryID }) else { return }
         scriptureMemoryState.entries.removeAll { $0.id == entryID }
         persistScriptureMemoryState()
-        if let pendingTaskID = snapshot.tasks.first(where: {
-            $0.scriptureMemoryID == entryID && !$0.completed && !$0.isDeleted
-        })?.id {
-            deleteTask(pendingTaskID)
+        // The PWA removes every task tied to the passage. Do the same here so an older completed
+        // occurrence cannot later seed another recurrence after the passage has been removed.
+        let taskIDs = snapshot.tasks.compactMap { task in
+            task.scriptureMemoryID == entryID && !task.isDeleted ? task.id : nil
+        }
+        for taskID in taskIDs {
+            deleteTask(taskID)
         }
         reconcileScriptureMemory()
     }
@@ -2831,20 +2977,93 @@ final class AppModel {
             max(0, scriptureMemoryState.entries[index].stage + 1)
         )
         scriptureMemoryState.entries[index].totalReviews += 1
-        scriptureMemoryState.entries[index].lastReviewISO = ISO8601DateFormatter().string(from: Date())
+        let completedAtISO = ISO8601DateFormatter().string(from: Date())
+        scriptureMemoryState.entries[index].lastReviewISO = completedAtISO
         scriptureMemoryState.entries[index].scheduledAtISO = nil
+        scriptureMemoryState.lastReviewISO = completedAtISO
         persistScriptureMemoryState()
         reconcileScriptureMemory()
     }
 
-    /// Advances entries whose review task was completed, then makes sure exactly one active
-    /// review task exists (picking the most-overdue entry) — mirrors the PWA's two scripture
-    /// memory effects (`markScriptureEntryReviewed` reconciliation + task generation).
-    func reconcileScriptureMemory() {
-        guard scriptureMemoryEnabled, !scriptureMemoryState.entries.isEmpty else { return }
+    /// Advances completed reviews, repairs tasks created by older native builds, and maintains
+    /// the same recurring review series as the PWA. In particular, "Daily" is a real daily
+    /// recurrence; spaced-repetition chooses *which passage* appears on each occurrence rather
+    /// than delaying the next task beyond the configured frequency.
+    @discardableResult
+    func reconcileScriptureMemory() -> Set<String> {
+        guard scriptureMemoryEnabled, !scriptureMemoryState.entries.isEmpty else { return [] }
 
         let isoFormatter = ISO8601DateFormatter()
+        let now = Date()
+        let nowISO = isoFormatter.string(from: now)
+        let recurrence = ScriptureMemoryAlgorithm.recurrence(for: scriptureMemoryFrequency)
+        var updatedTaskIDs: Set<String> = []
+        var reviewedTasks: [(entryID: String, dueDate: Date?, completedAt: Date)] = []
         var stateChanged = false
+
+        // Older native builds left these PWA fields in preservedSyncFields and used a different
+        // series id. Promote them into the native model so review history survives local storage
+        // and future Nostr publishes.
+        for index in snapshot.tasks.indices {
+            var task = snapshot.tasks[index]
+            guard isScriptureMemoryTask(task) else { continue }
+            var taskChanged = false
+
+            if task.scriptureMemoryID == nil,
+               let value = scriptureMemoryStringField(task, key: "scriptureMemoryId") {
+                task.scriptureMemoryID = value
+                taskChanged = true
+            }
+            if task.scriptureMemoryStage == nil,
+               let value = scriptureMemoryIntegerField(task, key: "scriptureMemoryStage") {
+                task.scriptureMemoryStage = value
+                taskChanged = true
+            }
+            if task.scriptureMemoryPreviousReviewISO == nil,
+               let value = scriptureMemoryStringField(task, key: "scriptureMemoryPrevReviewISO") {
+                task.scriptureMemoryPreviousReviewISO = value
+                taskChanged = true
+            }
+            if task.scriptureMemoryScheduledAtISO == nil,
+               let value = scriptureMemoryStringField(task, key: "scriptureMemoryScheduledAt") {
+                task.scriptureMemoryScheduledAtISO = value
+                taskChanged = true
+            }
+            if let entryID = task.scriptureMemoryID,
+               let entry = scriptureMemoryState.entries.first(where: { $0.id == entryID }) {
+                if task.scriptureMemoryStage == nil {
+                    task.scriptureMemoryStage = entry.stage
+                    taskChanged = true
+                }
+                if task.scriptureMemoryPreviousReviewISO == nil,
+                   let lastReviewISO = entry.lastReviewISO {
+                    task.scriptureMemoryPreviousReviewISO = lastReviewISO
+                    taskChanged = true
+                }
+                if task.scriptureMemoryScheduledAtISO == nil,
+                   let scheduledAtISO = entry.scheduledAtISO {
+                    task.scriptureMemoryScheduledAtISO = scheduledAtISO
+                    taskChanged = true
+                }
+            }
+            if task.seriesID != Self.scriptureMemorySeriesID {
+                task.seriesID = Self.scriptureMemorySeriesID
+                taskChanged = true
+            }
+            if task.recurrence != recurrence {
+                task.recurrence = recurrence
+                taskChanged = true
+            }
+
+            if taskChanged {
+                snapshot.tasks[index] = task
+                updatedTaskIDs.insert(task.id)
+            }
+        }
+
+        // Apply every newly observed completion exactly once. The stage stored on the task is the
+        // pre-review stage used by the PWA, which prevents out-of-order relay events from jumping
+        // an entry more than one level.
         for task in snapshot.tasks where task.completed && !task.isDeleted {
             guard let entryID = task.scriptureMemoryID,
                   let completedAt = task.completedAt,
@@ -2854,86 +3073,212 @@ final class AppModel {
                entryLastReview >= completedAt {
                 continue
             }
-            scriptureMemoryState.entries[entryIndex].stage = min(ScriptureMemoryAlgorithm.maxStage, max(0, entry.stage + 1))
+            let stageBefore = task.scriptureMemoryStage ?? entry.stage
+            scriptureMemoryState.entries[entryIndex].stage = min(
+                ScriptureMemoryAlgorithm.maxStage,
+                max(0, stageBefore + 1)
+            )
             scriptureMemoryState.entries[entryIndex].totalReviews += 1
             scriptureMemoryState.entries[entryIndex].lastReviewISO = isoFormatter.string(from: completedAt)
             scriptureMemoryState.entries[entryIndex].scheduledAtISO = nil
+            if (scriptureMemoryState.lastReviewISO.flatMap { isoFormatter.date(from: $0) }
+                ?? .distantPast) < completedAt {
+                scriptureMemoryState.lastReviewISO = isoFormatter.string(from: completedAt)
+            }
+            reviewedTasks.append((entryID, task.dueDate, completedAt))
             stateChanged = true
         }
-        if stateChanged { persistScriptureMemoryState() }
 
-        guard let boardID = scriptureMemoryBoardID,
-              let targetBoard = scriptureMemoryEligibleBoards.first(where: { $0.id == boardID }),
+        let eligibleBoards = scriptureMemoryEligibleBoards
+        let selectedBoard = scriptureMemoryBoardID.flatMap { boardID in
+            eligibleBoards.first(where: { $0.id == boardID })
+        }
+        guard let targetBoard = selectedBoard ?? eligibleBoards.first,
               targetBoard.kind != .list || !targetBoard.columns.isEmpty else {
-            return
+            if stateChanged { persistScriptureMemoryState() }
+            if !updatedTaskIDs.isEmpty {
+                scheduleSave()
+                updatedTaskIDs.sorted().forEach { synchronizeTask($0) }
+            }
+            return updatedTaskIDs
+        }
+
+        // The PWA automatically chooses the first eligible board if a saved board was removed or
+        // Scripture Memory was enabled before any board existed. Persist that fallback instead of
+        // merely displaying it in the picker while task creation remains blocked by a nil id.
+        if scriptureMemoryBoardID != targetBoard.id {
+            ScriptureMemorySettings.setBoardID(targetBoard.id)
+            scriptureMemoryBoardID = targetBoard.id
+        }
+
+        let calendar = weekCalendar
+        for index in snapshot.tasks.indices {
+            var task = snapshot.tasks[index]
+            guard isScriptureMemoryTask(task) else { continue }
+            var taskChanged = false
+            if task.boardID != targetBoard.id {
+                task.boardID = targetBoard.id
+                task.columnID = targetBoard.kind == .week
+                    ? task.dueDate.map { WeekdayColumn.containing($0, calendar: calendar).rawValue }
+                    : targetBoard.columns.first?.id
+                taskChanged = true
+            } else if targetBoard.kind == .week,
+                      let dueDate = task.dueDate {
+                let dueColumnID = WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
+                if task.columnID != dueColumnID {
+                    task.columnID = dueColumnID
+                    taskChanged = true
+                }
+            } else if targetBoard.kind == .list,
+                      !targetBoard.columns.contains(where: { $0.id == task.columnID }),
+                      let firstColumnID = targetBoard.columns.first?.id {
+                task.columnID = firstColumnID
+                taskChanged = true
+            }
+            if taskChanged {
+                snapshot.tasks[index] = task
+                updatedTaskIDs.insert(task.id)
+            }
+        }
+
+        // The generic recurrence engine initially clones the passage that was just completed.
+        // Retarget that new occurrence to the passage the spaced-repetition algorithm selects,
+        // exactly as the PWA's completion path does.
+        var retargetedTaskIDs: Set<String> = []
+        for review in reviewedTasks.sorted(by: { $0.completedAt < $1.completedAt }) {
+            let candidates = snapshot.tasks.indices.filter { index in
+                let task = snapshot.tasks[index]
+                guard !task.completed,
+                      !task.isDeleted,
+                      task.scriptureMemoryID == review.entryID,
+                      !retargetedTaskIDs.contains(task.id) else { return false }
+                guard let reviewDueDate = review.dueDate, let dueDate = task.dueDate else {
+                    return task.createdAt >= review.completedAt.addingTimeInterval(-2)
+                }
+                return dueDate > reviewDueDate
+            }
+            guard let nextIndex = candidates.min(by: {
+                (snapshot.tasks[$0].dueDate ?? .distantFuture) < (snapshot.tasks[$1].dueDate ?? .distantFuture)
+            }) else { continue }
+            let selectionDate = snapshot.tasks[nextIndex].dueDate ?? now
+            guard let selection = ScriptureMemoryAlgorithm.chooseNext(
+                entries: scriptureMemoryState.entries,
+                baseDays: Double(scriptureMemoryFrequency.days),
+                now: selectionDate
+            ) else { continue }
+            applyScriptureMemorySelection(selection.entry, toTaskAt: nextIndex, scheduledAtISO: nowISO)
+            if let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == selection.entry.id }) {
+                scriptureMemoryState.entries[entryIndex].scheduledAtISO = nowISO
+            }
+            stateChanged = true
+            updatedTaskIDs.insert(snapshot.tasks[nextIndex].id)
+            retargetedTaskIDs.insert(snapshot.tasks[nextIndex].id)
         }
 
         let hasActive = snapshot.tasks.contains {
-            $0.seriesID == Self.scriptureMemorySeriesID && !$0.completed && !$0.isDeleted
+            isScriptureMemoryTask($0) && !$0.completed && !$0.isDeleted
         }
-        guard !hasActive else { return }
-
-        let baseDays = Double(scriptureMemoryFrequency.days)
-        guard let selection = ScriptureMemoryAlgorithm.chooseNext(
-            entries: scriptureMemoryState.entries,
-            baseDays: baseDays,
-            now: Date()
-        ) else { return }
-
-        let calendar = weekCalendar
-        let now = Date()
-        let dueDays = selection.stats.dueInDays.isFinite && selection.stats.dueInDays > 0
-            ? Int(selection.stats.dueInDays.rounded(.up))
-            : 0
-        let dueDate = calendar.startOfDay(for: calendar.date(byAdding: .day, value: dueDays, to: now) ?? now)
-
-        let resolvedColumnID: String? = targetBoard.kind == .week
-            ? WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
-            : targetBoard.columns.first?.id
-
-        let hiddenUntil: Date?
-        if targetBoard.kind == .list {
-            hiddenUntil = dueDate > calendar.startOfDay(for: now) ? dueDate : nil
-        } else {
-            let nowWeekStart = WeekDateResolver.startOfWeek(
-                containing: now,
-                startingOn: weekStart,
-                calendar: calendar
+        if !hasActive,
+           let selection = ScriptureMemoryAlgorithm.chooseNext(
+               entries: scriptureMemoryState.entries,
+               baseDays: Double(scriptureMemoryFrequency.days),
+               now: now
+           ) {
+            let dueDays = selection.stats.dueInDays.isFinite && selection.stats.dueInDays > 0
+                ? Int(selection.stats.dueInDays.rounded(.up))
+                : 0
+            let dueDate = calendar.startOfDay(
+                for: calendar.date(byAdding: .day, value: dueDays, to: now) ?? now
             )
-            let dueWeekStart = WeekDateResolver.startOfWeek(
-                containing: dueDate,
-                startingOn: weekStart,
-                calendar: calendar
-            )
-            hiddenUntil = dueWeekStart > nowWeekStart ? dueWeekStart : nil
-        }
-
-        let nextOrder = (
-            snapshot.tasks
-                .filter { $0.boardID == targetBoard.id && $0.columnID == resolvedColumnID }
+            let resolvedColumnID = targetBoard.kind == .week
+                ? WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
+                : targetBoard.columns.first?.id
+            let hiddenUntil: Date?
+            if targetBoard.kind == .list {
+                hiddenUntil = dueDate > calendar.startOfDay(for: now) ? dueDate : nil
+            } else {
+                let currentWeek = WeekDateResolver.startOfWeek(
+                    containing: now,
+                    startingOn: weekStart,
+                    calendar: calendar
+                )
+                let dueWeek = WeekDateResolver.startOfWeek(
+                    containing: dueDate,
+                    startingOn: weekStart,
+                    calendar: calendar
+                )
+                hiddenUntil = dueWeek > currentWeek ? dueWeek : nil
+            }
+            let siblingOrders = snapshot.tasks.lazy
+                .filter { $0.boardID == targetBoard.id && $0.columnID == resolvedColumnID && !$0.isDeleted }
                 .map(\.order)
-                .max() ?? -1
-        ) + 1
-
-        let task = TaskItem(
-            boardID: targetBoard.id,
-            title: "Review \(ScriptureMemoryAlgorithm.reference(for: selection.entry))",
-            dueDate: dueDate,
-            dueDateEnabled: true,
-            seriesID: Self.scriptureMemorySeriesID,
-            scriptureMemoryID: selection.entry.id,
-            hiddenUntilDate: hiddenUntil,
-            createdAt: now,
-            order: nextOrder,
-            columnID: resolvedColumnID
-        )
-        snapshot.tasks.append(task)
-        if let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == selection.entry.id }) {
-            scriptureMemoryState.entries[entryIndex].scheduledAtISO = isoFormatter.string(from: now)
-            persistScriptureMemoryState()
+            let nextOrder = newTaskPosition == .top
+                ? (siblingOrders.min() ?? 1) - 1
+                : (siblingOrders.max() ?? -1) + 1
+            let task = TaskItem(
+                boardID: targetBoard.id,
+                title: "Review \(ScriptureMemoryAlgorithm.reference(for: selection.entry))",
+                dueDate: dueDate,
+                dueDateEnabled: true,
+                recurrence: recurrence,
+                seriesID: Self.scriptureMemorySeriesID,
+                scriptureMemoryID: selection.entry.id,
+                scriptureMemoryStage: selection.entry.stage,
+                scriptureMemoryPreviousReviewISO: selection.entry.lastReviewISO,
+                scriptureMemoryScheduledAtISO: nowISO,
+                hiddenUntilDate: hiddenUntil,
+                createdAt: now,
+                order: nextOrder,
+                columnID: resolvedColumnID
+            )
+            snapshot.tasks.append(task)
+            if let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == selection.entry.id }) {
+                scriptureMemoryState.entries[entryIndex].scheduledAtISO = nowISO
+            }
+            stateChanged = true
+            updatedTaskIDs.insert(task.id)
         }
-        scheduleSave()
-        synchronizeTask(task.id)
+
+        if stateChanged { persistScriptureMemoryState() }
+        if !updatedTaskIDs.isEmpty {
+            scheduleSave()
+            updatedTaskIDs.sorted().forEach { synchronizeTask($0) }
+        }
+        return updatedTaskIDs
+    }
+
+    private func isScriptureMemoryTask(_ task: TaskItem) -> Bool {
+        ScriptureMemoryAlgorithm.isSeriesID(task.seriesID)
+            || task.scriptureMemoryID != nil
+            || scriptureMemoryStringField(task, key: "scriptureMemoryId") != nil
+    }
+
+    private func scriptureMemoryStringField(_ task: TaskItem, key: String) -> String? {
+        guard case .string(let value)? = task.preservedSyncFields?[key] else { return nil }
+        return value
+    }
+
+    private func scriptureMemoryIntegerField(_ task: TaskItem, key: String) -> Int? {
+        switch task.preservedSyncFields?[key] {
+        case .integer(let value):
+            return Int(exactly: value)
+        case .number(let value) where value.isFinite && value.rounded() == value:
+            return Int(exactly: value)
+        default:
+            return nil
+        }
+    }
+
+    private func applyScriptureMemorySelection(
+        _ entry: ScriptureMemoryEntry,
+        toTaskAt index: Int,
+        scheduledAtISO: String
+    ) {
+        snapshot.tasks[index].title = "Review \(ScriptureMemoryAlgorithm.reference(for: entry))"
+        snapshot.tasks[index].scriptureMemoryID = entry.id
+        snapshot.tasks[index].scriptureMemoryStage = entry.stage
+        snapshot.tasks[index].scriptureMemoryPreviousReviewISO = entry.lastReviewISO
+        snapshot.tasks[index].scriptureMemoryScheduledAtISO = scheduledAtISO
     }
 
     @discardableResult
@@ -2974,6 +3319,13 @@ final class AppModel {
 
         reconcileFastingReminders()
         reconcileScriptureMemory()
+        if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
+    }
+
+    func setShowFullWeekRecurring(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: TaskPresentationSettings.showFullWeekRecurringKey)
+        showFullWeekRecurring = enabled
+        if enabled { ensureFullWeekTaskRecurrences() }
     }
 
     func setStartupTab(_ tab: StartupTab) {
@@ -3051,6 +3403,189 @@ final class AppModel {
             }
         }
         return true
+    }
+
+    struct BoardRepublishResult: Equatable, Sendable {
+        let taskCount: Int
+        let eventCount: Int
+        var publishedRecordCount: Int { 1 + taskCount + (eventCount * 2) }
+    }
+
+    struct BoardStaleCleanupResult: Equatable, Sendable {
+        let staleEventCount: Int
+        let scannedEventCount: Int
+        let respondingRelayCount: Int
+    }
+
+    /// Forces fresh subscriptions. Native subscriptions intentionally request the full board
+    /// history, so unlike the PWA there is no persisted cursor to clear first.
+    func resyncBoardHistory(boardID: String) async throws {
+        guard snapshot.boards.contains(where: { $0.id == boardID }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        await syncEngine.retryNow()
+    }
+
+    /// Rebuilds one coherent board snapshot and enqueues it as a single outbox batch. The relay
+    /// pacer can then deliver it without flooding stricter relays.
+    @discardableResult
+    func republishBoardSnapshot(boardID: String) async throws -> BoardRepublishResult {
+        guard let board = snapshot.boards.first(where: { $0.id == boardID }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+
+        let boardTimestamp = nextNostrTimestamp()
+        var refreshedTasks: [TaskItem] = []
+        var refreshedEvents: [TaskifyEvent] = []
+        var requests: [TaskSyncPublishRequest] = [
+            TaskSyncPublishRequest(
+                event: try TaskEventCodec.boardEvent(board: board, createdAt: boardTimestamp),
+                board: board,
+                taskID: "_board"
+            )
+        ]
+
+        for current in snapshot.tasks.filter({ $0.boardID == boardID }) {
+            var task = current
+            let timestamp = nextNostrTimestamp()
+            task.nostrUpdatedAt = timestamp
+            refreshedTasks.append(task)
+            requests.append(TaskSyncPublishRequest(
+                event: try TaskEventCodec.taskEvent(task: task, board: board, createdAt: timestamp),
+                board: board,
+                taskID: task.id
+            ))
+        }
+
+        for current in (snapshot.taskifyEvents ?? []).filter({
+            $0.boardID == boardID && !$0.isReadOnly
+        }) {
+            let pair = try TaskifyCalendarEventCodec.eventPair(
+                event: current,
+                board: board,
+                createdAt: nextNostrTimestamp()
+            )
+            refreshedEvents.append(pair.normalizedEvent)
+            requests.append(TaskSyncPublishRequest(
+                event: pair.canonical,
+                board: board,
+                taskID: "event:\(current.id):canonical"
+            ))
+            requests.append(TaskSyncPublishRequest(
+                event: pair.view,
+                board: board,
+                taskID: "event:\(current.id):view"
+            ))
+        }
+
+        try await syncEngine.queueForPublish(requests)
+        await syncEngine.flushQueuedPublishes()
+
+        let tasksByID = Dictionary(uniqueKeysWithValues: refreshedTasks.map { ($0.id, $0) })
+        for index in snapshot.tasks.indices {
+            if let refreshed = tasksByID[snapshot.tasks[index].id],
+               snapshot.tasks[index].boardID == boardID {
+                snapshot.tasks[index] = refreshed
+            }
+        }
+        refreshedEvents.forEach { _ = snapshot.upsertTaskifyEvent($0) }
+        if let index = snapshot.boards.firstIndex(where: { $0.id == boardID }) {
+            snapshot.boards[index].nostrUpdatedAt = boardTimestamp
+        }
+        scheduleSave()
+        scheduleAccountBackupPublish()
+        return BoardRepublishResult(
+            taskCount: refreshedTasks.count,
+            eventCount: refreshedEvents.count
+        )
+    }
+
+    @discardableResult
+    func regenerateBoardNostrID(boardID: String) async throws -> String {
+        guard let index = snapshot.boards.firstIndex(where: { $0.id == boardID }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let previousID = snapshot.boards[index].effectiveNostrBoardID
+        let newID = UUID().uuidString
+        snapshot.boards[index].nostrBoardID = newID
+        snapshot.boards[index].nostrUpdatedAt = nil
+
+        // Imported compound boards can reference a child by its shared ID rather than local ID.
+        // Keep those references attached when this board moves to a fresh relay namespace.
+        for boardIndex in snapshot.boards.indices where snapshot.boards[boardIndex].kind == .compound {
+            snapshot.boards[boardIndex].children = snapshot.boards[boardIndex].children.map {
+                $0 == previousID ? newID : $0
+            }
+        }
+        scheduleSave()
+        reconfigureSync()
+        scheduleAccountBackupPublish()
+        _ = try await republishBoardSnapshot(boardID: boardID)
+        snapshot.boards
+            .filter { $0.kind == .compound && $0.children.contains(newID) }
+            .forEach(publishBoard)
+        return newID
+    }
+
+    func cleanStaleBoardEvents(boardID: String) async throws -> BoardStaleCleanupResult {
+        guard let board = snapshot.boards.first(where: { $0.id == boardID }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let author = try BoardCrypto.signingPublicKey(
+            for: board.effectiveNostrBoardID
+        ).hexString
+        let boardTag = BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
+        let relayResults = await withTaskGroup(of: (Bool, [NostrEvent]).self) { group in
+            for relayURL in board.effectiveRelayURLs {
+                group.addTask {
+                    do {
+                        return (true, try await NostrRelayHistoryFetcher.authoredBoardEvents(
+                            relayURL: relayURL,
+                            kinds: [TaskEventCodec.taskEventKind],
+                            authorPublicKey: author,
+                            boardTag: boardTag
+                        ))
+                    } catch {
+                        return (false, [])
+                    }
+                }
+            }
+            var values: [(Bool, [NostrEvent])] = []
+            for await result in group { values.append(result) }
+            return values
+        }
+        let respondingRelayCount = relayResults.filter { $0.0 }.count
+        guard respondingRelayCount > 0 else { throw URLError(.cannotConnectToHost) }
+
+        let allEvents = relayResults.flatMap { $0.1 }
+        let uniqueEvents = Array(Dictionary(uniqueKeysWithValues: allEvents.map {
+            ($0.id, $0)
+        }).values)
+        let staleIDs = TaskEventCodec.staleReplaceableEventIDs(
+            uniqueEvents,
+            expectedAuthor: author
+        )
+        if !staleIDs.isEmpty {
+            let requests = try stride(from: 0, to: staleIDs.count, by: 50).map { start in
+                let end = min(start + 50, staleIDs.count)
+                return TaskSyncPublishRequest(
+                    event: try TaskEventCodec.eventDeletionRequest(
+                        eventIDs: Array(staleIDs[start..<end]),
+                        board: board,
+                        createdAt: nextNostrTimestamp()
+                    ),
+                    board: board,
+                    taskID: "cleanup:\(start / 50)"
+                )
+            }
+            try await syncEngine.queueForPublish(requests)
+            await syncEngine.flushQueuedPublishes()
+        }
+        return BoardStaleCleanupResult(
+            staleEventCount: staleIDs.count,
+            scannedEventCount: uniqueEvents.count,
+            respondingRelayCount: respondingRelayCount
+        )
     }
 
     @discardableResult
@@ -3605,6 +4140,9 @@ final class AppModel {
         deferredStartupTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled, let self else { return }
+            if self.showFullWeekRecurring {
+                self.ensureFullWeekTaskRecurrences()
+            }
             self.startSync()
 
             try? await Task.sleep(for: .milliseconds(350))
@@ -3617,6 +4155,28 @@ final class AppModel {
                 )
             }
         }
+    }
+
+    private func ensureFullWeekTaskRecurrences(now: Date = Date()) {
+        var updated = snapshot
+        let result = updated.ensureCurrentWeekTaskRecurrences(
+            weekStartsOn: weekStart,
+            newTaskPosition: newTaskPosition,
+            now: now,
+            calendar: weekCalendar
+        )
+        guard updated != snapshot else { return }
+        snapshot = updated
+        let changedIDs = result.updatedIDs + result.created.map(\.id)
+        changedIDs.forEach { synchronizeTask($0) }
+        refreshNotifications(requestPermission: false)
+    }
+
+    /// Refreshes the current-week recurrence window after a day or week boundary while the app
+    /// was suspended. Stable occurrence IDs make this a no-op when the week is already complete.
+    func refreshFullWeekRecurrencesIfNeeded(now: Date = Date()) {
+        guard showFullWeekRecurring, !isLoading else { return }
+        ensureFullWeekTaskRecurrences(now: now)
     }
 
     private func prepareInitialBoardViewCache(now: Date = Date()) {
@@ -3831,6 +4391,12 @@ final class AppModel {
             var updated = snapshot
             if updated.mergeRemoteTask(record.task, eventCreatedAt: record.eventCreatedAt) {
                 snapshot = updated
+                if showFullWeekRecurring {
+                    ensureFullWeekTaskRecurrences()
+                }
+                // A completion or recurrence created by the PWA must advance the same Scripture
+                // Memory state and choose the same next "Needs review" passage as a local action.
+                reconcileScriptureMemory()
                 scheduleSave()
                 refreshNotifications(requestPermission: false)
             }
@@ -3914,6 +4480,12 @@ final class AppModel {
 
             guard result.tasksChanged || result.calendarChanged else { return }
             snapshot = result.snapshot
+            if result.tasksChanged, showFullWeekRecurring {
+                ensureFullWeekTaskRecurrences()
+            }
+            if result.tasksChanged {
+                reconcileScriptureMemory()
+            }
             scheduleSave()
             if result.calendarChanged {
                 maintainTaskifyEventRecurrenceWindow()

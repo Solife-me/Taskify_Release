@@ -13,12 +13,34 @@ public struct TaskifyAddTaskDestination {
     public let columnID: String?
     public let dueDate: Date?
 
+    /// Boards people can name when adding a task. Compound child lists are intentionally hidden
+    /// from the main board picker, but they remain visible as lists inside their parent and are
+    /// valid task destinations (for example, “Work Tasks”). Siri therefore needs both top-level
+    /// boards and linked child lists, in stable display order, with duplicates removed.
+    public static func namedBoards(in snapshot: TaskifySnapshot) -> [Board] {
+        var result: [Board] = []
+        var seen = Set<String>()
+
+        for board in snapshot.visibleBoards where board.kind != .bible {
+            if seen.insert(board.id).inserted {
+                result.append(board)
+            }
+            guard board.kind == .compound else { continue }
+            for child in snapshot.compoundChildBoards(for: board.id)
+                where seen.insert(child.id).inserted {
+                result.append(child)
+            }
+        }
+        return result
+    }
+
     public static func resolve(
         in snapshot: TaskifySnapshot,
         requestedBoardName: String?,
         now: Date = Date()
     ) -> TaskifyAddTaskDestination? {
-        let addable = snapshot.visibleBoards.filter { $0.kind == .week || $0.kind == .list }
+        let namedBoards = namedBoards(in: snapshot)
+        let addable = namedBoards.filter { $0.kind == .week || $0.kind == .list }
 
         func destination(for board: Board) -> TaskifyAddTaskDestination? {
             switch board.kind {
@@ -57,8 +79,9 @@ public struct TaskifyAddTaskDestination {
         if let requestedBoardName {
             let needle = requestedBoardName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if !needle.isEmpty {
-                let matched = snapshot.visibleBoards.first { $0.name.lowercased() == needle }
-                    ?? snapshot.visibleBoards.first { $0.name.lowercased().contains(needle) }
+                let matched = namedBoards.first { $0.name.lowercased() == needle }
+                    ?? namedBoards.first { $0.name.lowercased().contains(needle) }
+                    ?? namedBoards.first { needle.contains($0.name.lowercased()) }
                 if let matched, let resolved = resolvedDestination(for: matched) {
                     return resolved
                 }

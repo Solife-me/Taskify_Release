@@ -1213,6 +1213,128 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return true
     }
 
+    /// Materializes every frequent recurring occurrence in the current week, matching the PWA's
+    /// optional "Show full week for recurring tasks" behavior. Stable occurrence IDs and an
+    /// all-record duplicate check make this safe to call after launch, edits, and relay merges.
+    /// Deleted occurrences are deliberately not recreated.
+    public mutating func ensureCurrentWeekTaskRecurrences(
+        weekStartsOn: WeekdayColumn,
+        newTaskPosition: NewTaskPosition,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> (created: [TaskItem], updatedIDs: [String]) {
+        let weekStart = WeekDateResolver.startOfWeek(
+            containing: now,
+            startingOn: weekStartsOn,
+            calendar: calendar
+        )
+        guard let weekEnd = calendar.date(byAdding: .day, value: 7, to: weekStart) else {
+            return ([], [])
+        }
+
+        var earliestSeedBySeries: [String: TaskItem] = [:]
+        for task in tasks where !task.isDeleted && task.recurrence?.revealsOnDueDate == true && task.dueDate != nil {
+            let seriesID = task.seriesID ?? task.id
+            if let existing = earliestSeedBySeries[seriesID],
+               let existingDate = existing.dueDate,
+               let taskDate = task.dueDate,
+               existingDate <= taskDate {
+                continue
+            }
+            earliestSeedBySeries[seriesID] = task
+        }
+
+        var created: [TaskItem] = []
+        var updatedIDs: [String] = []
+        for (seriesID, seed) in earliestSeedBySeries {
+            guard let recurrence = seed.recurrence, let seedDueDate = seed.dueDate else { continue }
+            var recurrenceCalendar = calendar
+            if seed.dueTimeEnabled,
+               let zoneID = seed.dueTimeZone,
+               let zone = TimeZone(identifier: zoneID) {
+                recurrenceCalendar.timeZone = zone
+            }
+            if let index = tasks.firstIndex(where: { $0.id == seed.id }), tasks[index].seriesID == nil {
+                tasks[index].seriesID = seriesID
+                updatedIDs.append(seed.id)
+            }
+
+            var previous = seedDueDate
+            var generated = 0
+            while let occurrence = recurrence.nextOccurrence(
+                after: previous,
+                dueTimeEnabled: seed.dueTimeEnabled,
+                timeZoneIdentifier: seed.dueTimeZone,
+                calendar: recurrenceCalendar
+            ) {
+                generated += 1
+                guard generated <= 10_000, occurrence > previous else { break }
+                guard occurrence < weekEnd else { break }
+                previous = occurrence
+                guard occurrence >= weekStart else { continue }
+
+                let occurrenceID = Self.recurringInstanceID(
+                    seriesID: seriesID,
+                    dueDate: occurrence,
+                    recurrence: recurrence,
+                    timeZoneIdentifier: seed.dueTimeZone
+                )
+                guard !tasks.contains(where: { $0.id == occurrenceID }) else { continue }
+
+                let board = boards.first(where: { $0.id == seed.boardID })
+                let columnID = board?.kind == .week
+                    ? WeekdayColumn.containing(occurrence, calendar: recurrenceCalendar).rawValue
+                    : seed.columnID
+                let siblingOrders = tasks.lazy
+                    .filter { !$0.isDeleted && $0.boardID == seed.boardID && $0.columnID == columnID }
+                    .map(\.order)
+                let order: Int
+                switch newTaskPosition {
+                case .top:
+                    order = (siblingOrders.min() ?? 1) - 1
+                case .bottom:
+                    order = (siblingOrders.max() ?? -1) + 1
+                }
+                let resetSubtasks = seed.subtasks?.map {
+                    TaskSubtask(id: $0.id, title: $0.title, completed: false)
+                }
+                let clone = TaskItem(
+                    id: occurrenceID,
+                    boardID: seed.boardID,
+                    title: seed.title,
+                    note: seed.note,
+                    dueDate: occurrence,
+                    dueDateEnabled: true,
+                    dueTimeEnabled: seed.dueTimeEnabled,
+                    dueTimeZone: seed.dueTimeZone,
+                    priority: seed.priority,
+                    images: seed.images,
+                    documents: seed.documents,
+                    subtasks: resetSubtasks,
+                    recurrence: recurrence,
+                    seriesID: seriesID,
+                    scriptureMemoryID: seed.scriptureMemoryID,
+                    scriptureMemoryStage: seed.scriptureMemoryStage,
+                    scriptureMemoryPreviousReviewISO: seed.scriptureMemoryPreviousReviewISO,
+                    scriptureMemoryScheduledAtISO: seed.scriptureMemoryScheduledAtISO,
+                    reminders: seed.reminders,
+                    reminderTime: seed.reminderTime,
+                    hiddenUntilDate: nil,
+                    createdAt: now,
+                    order: order,
+                    columnID: columnID,
+                    createdBy: seed.createdBy,
+                    lastEditedBy: seed.lastEditedBy,
+                    streak: seed.streak,
+                    longestStreak: seed.longestStreak
+                )
+                tasks.append(clone)
+                created.append(clone)
+            }
+        }
+        return (created, updatedIDs)
+    }
+
     private mutating func appendNextRecurrence(
         afterCompletingAt index: Int,
         weekStartsOn: WeekdayColumn?,
@@ -1273,6 +1395,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             subtasks: resetSubtasks,
             recurrence: recurrence,
             seriesID: seriesID,
+            scriptureMemoryID: completedTask.scriptureMemoryID,
+            scriptureMemoryStage: completedTask.scriptureMemoryStage,
+            scriptureMemoryPreviousReviewISO: completedTask.scriptureMemoryPreviousReviewISO,
+            scriptureMemoryScheduledAtISO: completedTask.scriptureMemoryScheduledAtISO,
             reminders: completedTask.reminders,
             reminderTime: completedTask.reminderTime,
             hiddenUntilDate: Self.hiddenUntilForNext(

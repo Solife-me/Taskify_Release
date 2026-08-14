@@ -358,6 +358,61 @@ private enum CompletionTapCoalescer {
     }
 }
 
+/// Memoizes the link-derived text every task card shows.
+///
+/// `hasMedia`, `displayTitle`, and `displayNote` each run an `NSRegularExpression` pass over a
+/// task's title and note. They're pure functions of those two strings, but SwiftUI re-evaluates a
+/// card's body every time the row is instantiated — and in a `LazyVStack` a whole column's worth
+/// of rows instantiates at once, every time that column pages into view. That put a burst of
+/// regex passes (plus the NSString bridging they need) directly in the path of a horizontal
+/// swipe.
+///
+/// Keyed by content rather than task id, so an entry stays valid across snapshot writes that
+/// don't touch the text — which is most of them — and goes stale the moment the task is edited.
+@MainActor
+private enum TaskCardTextCache {
+    struct Derived {
+        let displayTitle: String
+        let displayNote: String
+        let hasLink: Bool
+    }
+
+    private struct Key: Hashable {
+        let title: String
+        let note: String
+    }
+
+    /// A board renders far fewer distinct cards than this between evictions, so the cheap
+    /// drop-everything eviction below effectively never runs during normal scrolling. It exists
+    /// only so a long session across many boards can't grow this without bound.
+    private static let capacity = 512
+    private static var entries: [Key: Derived] = [:]
+
+    static func derived(title: String, note: String) -> Derived {
+        let key = Key(title: title, note: note)
+        if let cached = entries[key] { return cached }
+
+        let displayTitle: String
+        if TaskContentLinks.isURLOnly(title),
+           let url = TaskContentLinks.firstURL(title: title, note: "") {
+            displayTitle = TaskContentLinks.fallbackTitle(for: url)
+        } else {
+            displayTitle = title
+        }
+        let derived = Derived(
+            displayTitle: displayTitle,
+            displayNote: TaskContentLinks.removingURLs(from: note),
+            hasLink: TaskContentLinks.firstURL(title: title, note: note) != nil
+        )
+
+        if entries.count >= capacity {
+            entries.removeAll(keepingCapacity: true)
+        }
+        entries[key] = derived
+        return derived
+    }
+}
+
 /// Tracks the board's scroll views so a touch-down can tell whether the list is moving.
 ///
 /// Completing on touch-down means a tap that was really meant to halt a coasting list would
@@ -384,21 +439,37 @@ enum BoardScrollActivity {
 /// exposes no modifier for it, hence the walk up the UIKit superview chain. Scrolling still
 /// cancels an in-progress press, because `canCancelContentTouches` remains true.
 struct ImmediateScrollTouchDelivery: UIViewRepresentable {
+    /// Remembers which superview the chain was last configured from. SwiftUI calls `updateUIView`
+    /// on every render pass of the enclosing list — which, mid-swipe, is a steady stream — and the
+    /// walk below is pure repeat work once a chain has been configured: `delaysContentTouches`
+    /// stays false and re-registering a scroll view is a no-op. Re-running only when the view is
+    /// re-parented keeps a `DispatchQueue.main.async` hop off the main thread during scrolling
+    /// while still covering the case where SwiftUI moves the view to a new chain.
+    @MainActor
+    final class Coordinator {
+        weak var configuredFrom: UIView?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: .zero)
         view.isUserInteractionEnabled = false
         return view
     }
 
-
     func updateUIView(_ uiView: UIView, context: Context) {
         // Deferred: on the first update pass the view is not in the hierarchy yet, so there is no
         // superview chain to walk.
         DispatchQueue.main.async {
+            guard let superview = uiView.superview else { return }
+            guard context.coordinator.configuredFrom !== superview else { return }
+            context.coordinator.configuredFrom = superview
+
             // Every scroll view in the chain, not just the nearest: a board column's vertical
             // scroll view sits inside the horizontal day-pager, and the outer one delays touches
             // to everything within it regardless of what the inner one allows.
-            var ancestor = uiView.superview
+            var ancestor: UIView? = superview
             while let current = ancestor {
                 if let scrollView = current as? UIScrollView {
                     scrollView.delaysContentTouches = false
@@ -603,9 +674,15 @@ struct BoardsView: View {
     @State private var showingClearCompletedConfirmation = false
     @State private var showingSelectionMoveSheet = false
     @State private var showingVoiceDictation = false
+    @State private var detailedTaskDraft: TaskItem?
+    @State private var physicalChecklistJob: PhysicalChecklistJob?
     /// Raised by a quick-add deep link from a widget or the Control Center button. Cleared as soon
     /// as the field takes focus so a later return to Boards doesn't pop the keyboard again.
     @Binding var focusQuickAdd: Bool
+    /// A configurable Board widget can target a particular list. This is consumed together with
+    /// `focusQuickAdd`, after the board transition has settled, so resetFocusedPage cannot replace
+    /// the requested list before the field appears.
+    @Binding var quickAddColumnID: String?
     @State private var newListName = ""
     @State private var quickTaskDraft = ""
     @State private var focusedPageID: String?
@@ -619,14 +696,6 @@ struct BoardsView: View {
 
     private var sortDirection: UpcomingSortDirection {
         UpcomingSortDirection(rawValue: sortDirectionRaw) ?? sortMode.defaultDirection
-    }
-
-    private var availableTaskIDs: Set<String> {
-        model.activeTaskIDs
-    }
-
-    private var availableTaskifyEventIDs: Set<String> {
-        Set(model.taskifyEvents.map(\.id))
     }
 
     private var completedTasksAreVisible: Bool {
@@ -662,6 +731,10 @@ struct BoardsView: View {
                 SelectionActionBar(
                     selection: selection,
                     onMove: { showingSelectionMoveSheet = true },
+                    onPrint: {
+                        physicalChecklistJob = makeBoardPrintJob(taskIDs: selection.selectedTaskIDs)
+                        selection.exit()
+                    },
                     onComplete: {
                         model.completeTasks(selection.selectedTaskIDs)
                         selection.exit()
@@ -696,6 +769,17 @@ struct BoardsView: View {
             VoiceDictationSheet()
                 .environment(model)
         }
+        .sheet(item: $detailedTaskDraft) { draft in
+            TaskEditorView(draft: draft)
+                .environment(model)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $physicalChecklistJob) { job in
+            PhysicalChecklistSheet(job: job) { scannedIDs in
+                model.completeTasks(scannedIDs)
+            }
+        }
         .sheet(isPresented: $showingAddBoard) {
             BoardAddSheet()
                 .environment(model)
@@ -719,7 +803,9 @@ struct BoardsView: View {
         }
         .sheet(isPresented: $showingBoardShare) {
             if let board = model.selectedBoard {
-                BoardShareSheet(board: board)
+                BoardShareSheet(board: board) {
+                    physicalChecklistJob = makeBoardPrintJob()
+                }
             }
         }
         .sheet(isPresented: $showingSortOptions) {
@@ -751,6 +837,11 @@ struct BoardsView: View {
             // A beat after the tab switch: focusing while the view is still appearing gets
             // dropped, and the keyboard never comes up.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                if let requestedColumnID = quickAddColumnID,
+                   model.selectedBoard?.columns.contains(where: { $0.id == requestedColumnID }) == true {
+                    focusedPageID = requestedColumnID
+                }
+                quickAddColumnID = nil
                 quickTaskFieldIsFocused = true
                 focusQuickAdd = false
             }
@@ -763,11 +854,14 @@ struct BoardsView: View {
             quickTaskFieldIsFocused = false
             resetFocusedPage()
         }
-        .onChange(of: availableTaskIDs) { _, taskIDs in
-            selection.retainOnlyTasks(taskIDs)
-        }
-        .onChange(of: availableTaskifyEventIDs) { _, eventIDs in
-            selection.retainOnlyEvents(eventIDs)
+        // Keyed on the snapshot revision rather than on the id sets themselves: comparing those
+        // meant building a set of every event id and hashing all ~500 task ids on *every* body
+        // evaluation, including the ones a horizontal page change triggers, when the ids can only
+        // have moved if the snapshot was written.
+        .onChange(of: model.snapshotRevision) { _, _ in
+            guard selection.isActive, !selection.isEmpty else { return }
+            selection.retainOnlyTasks(model.activeTaskIDs)
+            selection.retainOnlyEvents(model.taskifyEventIDs)
         }
         .onChange(of: completedTabEnabled) { _, enabled in
             showCompleted = false
@@ -807,7 +901,8 @@ struct BoardsView: View {
                         showCompleted: completedTasksAreVisible,
                         sortMode: sortMode,
                         sortDirection: sortDirection,
-                        focusedPageID: $focusedPageID
+                        focusedPageID: $focusedPageID,
+                        onAddList: { showingAddList = true }
                     )
                 }
             case .compound:
@@ -913,7 +1008,12 @@ struct BoardsView: View {
     private func addQuickTask(dismissKeyboard: Bool) {
         guard let quickAddDestination else { return }
         let title = quickTaskDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
+        guard !title.isEmpty else {
+            guard dismissKeyboard else { return }
+            dismissQuickTaskKeyboard()
+            detailedTaskDraft = makeDetailedTaskDraft(for: quickAddDestination)
+            return
+        }
 
         quickTaskDraft = ""
         if dismissKeyboard {
@@ -929,6 +1029,25 @@ struct BoardsView: View {
                 columnID: quickAddDestination.columnID
             )
         }
+    }
+
+    private func makeDetailedTaskDraft(
+        for destination: BoardQuickAddDestination
+    ) -> TaskItem {
+        let dueDate = destination.weekday.map {
+            WeekDateResolver.date(
+                for: $0,
+                inWeekContaining: Date(),
+                weekStartsOn: model.weekStart
+            )
+        }
+        return TaskItem(
+            boardID: destination.boardID,
+            title: "",
+            dueDate: dueDate,
+            dueDateEnabled: dueDate != nil,
+            columnID: destination.columnID
+        )
     }
 
     private func selectSortMode(_ mode: UpcomingSortMode) {
@@ -1045,15 +1164,6 @@ struct BoardsView: View {
                     .opacity(hasCompletedTasks ? 1 : 0.42)
                 }
 
-                if model.selectedBoard?.kind == .list {
-                    HeaderIconButton(
-                        systemName: "rectangle.stack.badge.plus",
-                        accessibilityLabel: "Add list"
-                    ) {
-                        showingAddList = true
-                    }
-                }
-
                 if model.selectedBoard?.kind != .bible {
                     HeaderIconButton(
                         systemName: "calendar",
@@ -1079,6 +1189,55 @@ struct BoardsView: View {
                 }
             }
         }
+    }
+
+    private func makeBoardPrintJob(taskIDs: Set<String>? = nil) -> PhysicalChecklistJob? {
+        guard let board = model.selectedBoard, board.kind != .bible else { return nil }
+        let rows: [(task: TaskItem, section: String)]
+
+        if let taskIDs {
+            rows = taskIDs.compactMap { taskID in
+                guard let task = model.task(withID: taskID), !task.completed, !task.isDeleted else { return nil }
+                return (task, printSection(for: task, selectedBoard: board))
+            }
+            .sorted {
+                if $0.section != $1.section {
+                    return $0.section.localizedStandardCompare($1.section) == .orderedAscending
+                }
+                return $0.task.order < $1.task.order
+            }
+        } else {
+            let boards = board.kind == .compound ? model.compoundChildBoards(for: board.id) : [board]
+            rows = boards.flatMap { scopedBoard in
+                scopedBoard.columns.sorted { $0.order < $1.order }.flatMap { column in
+                    model.tasks(
+                        boardID: scopedBoard.id,
+                        columnID: column.id,
+                        includeCompleted: false
+                    ).map { task in
+                        let section = board.kind == .compound
+                            ? "\(scopedBoard.name) — \(column.name)"
+                            : column.name
+                        return (task, section)
+                    }
+                }
+            }
+        }
+
+        guard !rows.isEmpty else { return nil }
+        return PhysicalChecklistJob(
+            ownerID: "board:\(board.id)",
+            title: board.name,
+            items: rows.map {
+                PhysicalChecklistItem(id: $0.task.id, title: $0.task.title, section: $0.section)
+            }
+        )
+    }
+
+    private func printSection(for task: TaskItem, selectedBoard: Board) -> String {
+        let board = model.visibleBoards.first(where: { $0.id == task.boardID }) ?? selectedBoard
+        let column = board.columns.first(where: { $0.id == task.columnID })?.name ?? "Tasks"
+        return selectedBoard.kind == .compound ? "\(board.name) — \(column)" : column
     }
 }
 
@@ -1992,8 +2151,11 @@ private struct FloatingQuickAddBar: View {
                     )
             }
             .buttonStyle(.plain)
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityLabel("Add task to \(destinationName) and close keyboard")
+            .accessibilityLabel(
+                draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "Add task details to \(destinationName)"
+                    : "Add task to \(destinationName) and close keyboard"
+            )
         }
     }
 }
@@ -2166,13 +2328,12 @@ private struct QuickAddTextField: UIViewRepresentable {
 }
 
 /// Bottom action bar shown while `TaskSelectionController.isActive`, ported from the PWA's
-/// `SelectionOverlays.tsx` selection bar. Printing is intentionally not ported — the PWA's
-/// "Print" action feeds the fiducial-marker print/scan round-trip system, which is a separate,
-/// much larger milestone (see `BibleTrackerView`'s printing note) not built natively yet.
+/// `SelectionOverlays.tsx` selection bar, including its physical checklist action.
 private struct SelectionActionBar: View {
     @Environment(AppModel.self) private var model
     var selection: TaskSelectionController
     let onMove: () -> Void
+    let onPrint: () -> Void
     let onComplete: () -> Void
     let onDelete: () -> Void
 
@@ -2201,6 +2362,7 @@ private struct SelectionActionBar: View {
                     selection.clear()
                 }
                 SelectionBarAction(systemName: "square.grid.2x2", label: "Move", disabled: selectedCount == 0, action: onMove)
+                SelectionBarAction(systemName: "printer", label: "Print", disabled: selection.selectedTaskIDs.isEmpty, action: onPrint)
                 SelectionBarAction(systemName: "checkmark", label: "Done", disabled: !hasIncompleteSelected, action: onComplete)
                 SelectionBarAction(
                     systemName: "trash",
@@ -2383,6 +2545,7 @@ private struct BoardShareSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
     let board: Board
+    let onPrint: () -> Void
 
     @State private var shareMode = ShareMode.board
     @State private var copied = false
@@ -2398,6 +2561,7 @@ private struct BoardShareSheet: View {
     private enum ShareMode: String, CaseIterable, Identifiable {
         case board = "Board"
         case template = "Template"
+        case print = "Print"
 
         var id: String { rawValue }
     }
@@ -2406,11 +2570,12 @@ private struct BoardShareSheet: View {
         switch shareMode {
         case .board: board
         case .template: templateShare?.board
+        case .print: nil
         }
     }
 
     private var sharePayload: String? {
-        guard let activeShareBoard else { return nil }
+        guard shareMode != .print, let activeShareBoard else { return nil }
         return (try? BoardShareContract.encode(board: activeShareBoard))
             ?? activeShareBoard.effectiveNostrBoardID
     }
@@ -2426,132 +2591,136 @@ private struct BoardShareSheet: View {
                     }
                     .pickerStyle(.segmented)
 
-                    VStack(spacing: 5) {
-                        Label(
-                            shareMode == .board ? "Live board" : "Independent copy",
-                            systemImage: shareMode == .board
-                                ? "arrow.triangle.2.circlepath"
-                                : "square.on.square"
-                        )
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(TaskifyTheme.accent)
-                        Text(
-                            shareMode == .board
-                                ? "Changes remain synced for everyone who joins this board."
-                                : "Creates a snapshot with a new board ID. Future changes won't sync between the two boards."
-                        )
-                            .font(.caption)
-                            .foregroundStyle(TaskifyTheme.secondaryText)
-                            .multilineTextAlignment(.center)
-                    }
-
-                    if let sharePayload {
-                        Button(action: copyBoardID) {
-                            VStack(spacing: 11) {
-                                TaskifyQRCode(value: sharePayload)
-                                    .frame(width: 250, height: 250)
-                                    .padding(10)
-                                    .background(.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-                                Label(copied ? "Board ID copied" : "Tap QR to copy board ID", systemImage: copied ? "checkmark" : "doc.on.doc")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(copied ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(copied ? "Board ID copied" : "Copy board ID")
+                    if shareMode == .print {
+                        printModeContent
                     } else {
-                        VStack(spacing: 14) {
-                            if isGeneratingTemplate {
-                                ProgressView()
-                                    .controlSize(.large)
-                                    .tint(TaskifyTheme.accent)
-                                Text("Creating a template snapshot…")
-                            } else {
-                                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
-                                    .font(.system(size: 34, weight: .medium))
-                                Text(templateError ?? "The template isn't ready yet.")
-                                Button("Try again", action: generateTemplate)
-                                    .buttonStyle(.bordered)
-                            }
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                        .multilineTextAlignment(.center)
-                        .frame(width: 270, height: 270)
-                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 22).stroke(TaskifyTheme.border, lineWidth: 1))
-                    }
-
-                    if let templateShare, shareMode == .template {
-                        Label(
-                            templateStatus(templateShare),
-                            systemImage: templateShare.failedTaskCount == 0 && templateShare.failedEventCount == 0
-                                ? "checkmark.circle.fill"
-                                : "exclamationmark.triangle.fill"
-                        )
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(
-                                templateShare.failedTaskCount == 0 && templateShare.failedEventCount == 0
-                                    ? Color.green
-                                    : Color.orange
+                        VStack(spacing: 5) {
+                            Label(
+                                shareMode == .board ? "Live board" : "Independent copy",
+                                systemImage: shareMode == .board
+                                    ? "arrow.triangle.2.circlepath"
+                                    : "square.on.square"
                             )
-                            .multilineTextAlignment(.center)
-                    }
-
-                    if let activeShareBoard {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(shareMode == .board ? "BOARD ID" : "TEMPLATE BOARD ID")
-                                .font(.system(size: 10, weight: .bold))
-                                .tracking(1.2)
-                                .foregroundStyle(TaskifyTheme.tertiaryText)
-                            Text(activeShareBoard.effectiveNostrBoardID)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(TaskifyTheme.primaryText)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(TaskifyTheme.accent)
+                            Text(
+                                shareMode == .board
+                                    ? "Changes remain synced for everyone who joins this board."
+                                    : "Creates a snapshot with a new board ID. Future changes won't sync between the two boards."
+                            )
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .multilineTextAlignment(.center)
                         }
-                        .padding(14)
-                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 17).stroke(TaskifyTheme.border, lineWidth: 1))
-                    }
 
-                    if let sharePayload {
-                        HStack(spacing: 10) {
+                        if let sharePayload {
                             Button(action: copyBoardID) {
-                                Label(copied ? "Copied" : "Copy ID", systemImage: copied ? "checkmark" : "doc.on.doc")
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 48)
-                            }
-                            .buttonStyle(.bordered)
+                                VStack(spacing: 11) {
+                                    TaskifyQRCode(value: sharePayload)
+                                        .frame(width: 250, height: 250)
+                                        .padding(10)
+                                        .background(.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
 
-                            ShareLink(
-                                item: sharePayload,
-                                subject: Text(shareSubject),
-                                preview: SharePreview(shareSubject)
-                            ) {
-                                Label("Share", systemImage: "square.and.arrow.up")
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 48)
+                                    Label(copied ? "Board ID copied" : "Tap QR to copy board ID", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(copied ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                                }
                             }
-                            .buttonStyle(.borderedProminent)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Relays")
-                            .font(.caption.weight(.bold))
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(copied ? "Board ID copied" : "Copy board ID")
+                        } else {
+                            VStack(spacing: 14) {
+                                if isGeneratingTemplate {
+                                    ProgressView()
+                                        .controlSize(.large)
+                                        .tint(TaskifyTheme.accent)
+                                    Text("Creating a template snapshot…")
+                                } else {
+                                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                                        .font(.system(size: 34, weight: .medium))
+                                    Text(templateError ?? "The template isn't ready yet.")
+                                    Button("Try again", action: generateTemplate)
+                                        .buttonStyle(.bordered)
+                                }
+                            }
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(TaskifyTheme.secondaryText)
-                        ForEach(board.effectiveRelayURLs, id: \.self) { relay in
-                            Label(relay, systemImage: "antenna.radiowaves.left.and.right")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 270, height: 270)
+                            .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 22).stroke(TaskifyTheme.border, lineWidth: 1))
                         }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if activeShareBoard != nil {
-                        sendToContactCard
+                        if let templateShare, shareMode == .template {
+                            Label(
+                                templateStatus(templateShare),
+                                systemImage: templateShare.failedTaskCount == 0 && templateShare.failedEventCount == 0
+                                    ? "checkmark.circle.fill"
+                                    : "exclamationmark.triangle.fill"
+                            )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(
+                                    templateShare.failedTaskCount == 0 && templateShare.failedEventCount == 0
+                                        ? Color.green
+                                        : Color.orange
+                                )
+                                .multilineTextAlignment(.center)
+                        }
+
+                        if let activeShareBoard {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text(shareMode == .board ? "BOARD ID" : "TEMPLATE BOARD ID")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .tracking(1.2)
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                                Text(activeShareBoard.effectiveNostrBoardID)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(14)
+                            .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 17).stroke(TaskifyTheme.border, lineWidth: 1))
+                        }
+
+                        if let sharePayload {
+                            HStack(spacing: 10) {
+                                Button(action: copyBoardID) {
+                                    Label(copied ? "Copied" : "Copy ID", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 48)
+                                }
+                                .buttonStyle(.bordered)
+
+                                ShareLink(
+                                    item: sharePayload,
+                                    subject: Text(shareSubject),
+                                    preview: SharePreview(shareSubject)
+                                ) {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 48)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Relays")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                            ForEach(board.effectiveRelayURLs, id: \.self) { relay in
+                                Label(relay, systemImage: "antenna.radiowaves.left.and.right")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(TaskifyTheme.tertiaryText)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if activeShareBoard != nil {
+                            sendToContactCard
+                        }
                     }
                 }
                 .padding(20)
@@ -2575,6 +2744,37 @@ private struct BoardShareSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private var printModeContent: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 5) {
+                Label("Printable checklist", systemImage: "printer")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("Print open tasks as a paper checklist, or scan a printed sheet to mark tasks complete.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
+
+            Image(systemName: "printer")
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(width: 270, height: 200)
+                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 22).stroke(TaskifyTheme.border, lineWidth: 1))
+
+            Button {
+                dismiss()
+                onPrint()
+            } label: {
+                Label("Print or scan checklist", systemImage: "printer")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+            }
+            .buttonStyle(.borderedProminent)
+        }
     }
 
     private func copyBoardID() {
@@ -2872,6 +3072,7 @@ private struct ListBoardView: View {
     let sortMode: UpcomingSortMode
     let sortDirection: UpcomingSortDirection
     @Binding var focusedPageID: String?
+    let onAddList: () -> Void
 
     private var columns: [BoardColumn] {
         board.columns.sorted {
@@ -2902,7 +3103,8 @@ private struct ListBoardView: View {
                             column: column,
                             showCompleted: showCompleted,
                             sortMode: sortMode,
-                            sortDirection: sortDirection
+                            sortDirection: sortDirection,
+                            onAddList: onAddList
                         )
                             .frame(width: min(330, proxy.size.width - 50))
                             .id(column.id)
@@ -3156,6 +3358,7 @@ private struct ListColumnView: View {
     let showCompleted: Bool
     let sortMode: UpcomingSortMode
     let sortDirection: UpcomingSortDirection
+    let onAddList: () -> Void
     @State private var renameDraft = ""
     @State private var showingRename = false
     @State private var showingDeleteConfirmation = false
@@ -3240,6 +3443,10 @@ private struct ListColumnView: View {
                     }
 
                     Divider()
+
+                    Button(action: onAddList) {
+                        Label("Add list", systemImage: "rectangle.stack.badge.plus")
+                    }
 
                     Button {
                         renameDraft = column.name
@@ -3534,6 +3741,7 @@ struct TaskCardView: View {
     /// see `TaskifySnapshot.toggleCompletion`), but only *displayed* for the simple daily/weekly
     /// cases, matching the PWA's narrower badge condition.
     private var visibleStreak: Int? {
+        guard model.streaksEnabled else { return nil }
         switch task.recurrence {
         case .daily, .weekly:
             break
@@ -3548,33 +3756,31 @@ struct TaskCardView: View {
         model.board(withID: task.boardID)?.effectiveNostrBoardID ?? task.boardID
     }
 
+    private var cardText: TaskCardTextCache.Derived {
+        TaskCardTextCache.derived(title: task.title, note: task.note)
+    }
+
     private var hasMedia: Bool {
         !(task.images ?? []).isEmpty ||
             !(task.documents ?? []).isEmpty ||
-            TaskContentLinks.firstURL(title: task.title, note: task.note) != nil
+            cardText.hasLink
     }
 
-    private var displayTitle: String {
-        guard TaskContentLinks.isURLOnly(task.title),
-              let url = TaskContentLinks.firstURL(title: task.title, note: "") else {
-            return task.title
-        }
-        return TaskContentLinks.fallbackTitle(for: url)
-    }
+    private var displayTitle: String { cardText.displayTitle }
 
-    private var displayNote: String {
-        TaskContentLinks.removingURLs(from: task.note)
-    }
+    private var displayNote: String { cardText.displayNote }
 
     var body: some View {
         // Hoisted once per body evaluation: these are all plain computed properties (not
-        // memoized by Swift), and several run regex matching over the title/note
-        // (`hasMedia`/`displayTitle`/`displayNote` via `TaskContentLinks`). The old code read
-        // them directly at each use site, re-running that work up to 7x per row per frame
-        // during scroll.
-        let hasMedia = hasMedia
-        let displayTitle = displayTitle
-        let displayNote = displayNote
+        // memoized by Swift). The link-derived text goes through `TaskCardTextCache` so the
+        // regex work behind it happens once per distinct title/note rather than once per body
+        // evaluation; reading it once here keeps that to a single cache lookup per row.
+        let cardText = cardText
+        let hasMedia = !(task.images ?? []).isEmpty
+            || !(task.documents ?? []).isEmpty
+            || cardText.hasLink
+        let displayTitle = cardText.displayTitle
+        let displayNote = cardText.displayNote
         let subtaskProgress = subtaskProgress
         let visibleSubtasks = visibleSubtasks
         let visibleStreak = visibleStreak
@@ -3770,13 +3976,22 @@ struct TaskCardView: View {
         .allowsHitTesting(!isSelectionMode)
         .padding(.horizontal, hasMedia ? 10 : 13)
         .padding(.vertical, hasMedia ? 10 : 12)
+        // The drop shadow hangs on the background shape rather than on the card as a whole.
+        // A `.shadow` applied to the finished card makes the renderer resolve the entire row —
+        // text, badges, thumbnails — into an offscreen buffer just to derive the shadow's alpha,
+        // once per card per frame. With a column's worth of rows on screen (and two or three
+        // columns in flight during a horizontal swipe) that was the bulk of the paging cost.
+        // The silhouette is the rounded rectangle either way, so this renders the same.
         .background(
-            LinearGradient(
-                colors: [Color.white.opacity(0.13), Color.white.opacity(0.035)],
-                startPoint: .top,
-                endPoint: .bottom
-            ),
-            in: RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.13), Color.white.opacity(0.035)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .shadow(color: Color.black.opacity(0.22), radius: 8, y: 5)
         )
         .overlay(
             RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
@@ -3797,7 +4012,6 @@ struct TaskCardView: View {
                 .accessibilityLabel(isSelected ? "Deselect \(displayTitle)" : "Select \(displayTitle)")
             }
         }
-        .shadow(color: Color.black.opacity(0.22), radius: 8, y: 5)
         .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .modifier(TaskDragSourceModifier(
             payload: (allowsDragging && !isSelectionMode) ? TaskDragPayload(taskID: task.id) : nil,
