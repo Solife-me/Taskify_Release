@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Speech
+import TaskifyCore
 
 /// Live speech-to-text for the voice dictation sheet, standing in for the PWA's Web Speech API
 /// (`useVoiceSession.ts`'s `createSpeechRecognition`). Same shape of output -- a stream of final
@@ -31,10 +32,8 @@ final class SpeechDictationRecognizer {
     private let audioEngine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
-    /// How much of the current recognition result has already been handed to `onCommit`. A single
-    /// `SFSpeechRecognitionTask` reports the whole utterance each time rather than just the delta,
-    /// so without this the transcript accumulates duplicated text.
-    private var committedCharacterCount = 0
+    /// Keeps already-recognized time ranges when Speech returns only the words after a pause.
+    private var transcriptAccumulator = SpeechTranscriptAccumulator()
 
     var isAvailable: Bool { availability == .ready }
 
@@ -80,11 +79,12 @@ final class SpeechDictationRecognizer {
 
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
+            request.taskHint = .dictation
             if recognizer.supportsOnDeviceRecognition {
                 request.requiresOnDeviceRecognition = true
             }
             self.request = request
-            committedCharacterCount = 0
+            transcriptAccumulator.reset()
 
             let inputNode = audioEngine.inputNode
             let format = inputNode.outputFormat(forBus: 0)
@@ -122,23 +122,23 @@ final class SpeechDictationRecognizer {
     }
 
     private func handle(_ result: SFSpeechRecognitionResult) {
-        let full = result.bestTranscription.formattedString
-        guard full.count >= committedCharacterCount else {
-            // The recognizer revised its transcript shorter than what we already committed; restart
-            // the accounting against the new text rather than slicing out of range.
-            committedCharacterCount = 0
-            onInterim?(full)
-            return
-        }
+        let transcription = result.bestTranscription
+        let accumulated = transcriptAccumulator.update(
+            segments: transcription.segments.map {
+                SpeechTranscriptSegment(
+                    text: $0.substring,
+                    timestamp: $0.timestamp,
+                    duration: $0.duration
+                )
+            },
+            fallbackText: transcription.formattedString
+        )
 
-        let pending = String(full.dropFirst(committedCharacterCount))
         if result.isFinal {
-            let trimmed = pending.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { onCommit?(trimmed) }
-            committedCharacterCount = full.count
+            if !accumulated.isEmpty { onCommit?(accumulated) }
             onInterim?("")
         } else {
-            onInterim?(pending.trimmingCharacters(in: .whitespacesAndNewlines))
+            onInterim?(accumulated)
         }
     }
 

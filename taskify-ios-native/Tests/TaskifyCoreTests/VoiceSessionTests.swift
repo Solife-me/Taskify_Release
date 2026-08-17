@@ -42,6 +42,90 @@ final class VoiceSessionTests: XCTestCase {
         XCTAssertEqual(VoiceSessionState().combinedTranscript(), "")
     }
 
+    func testSpeechAccumulatorPreservesWordsBeforeAPause() {
+        var accumulator = SpeechTranscriptAccumulator()
+        accumulator.update(
+            segments: [
+                .init(text: "Buy", timestamp: 0, duration: 0.3),
+                .init(text: "milk", timestamp: 0.35, duration: 0.3),
+            ],
+            fallbackText: "Buy milk"
+        )
+
+        let transcript = accumulator.update(
+            segments: [
+                .init(text: "and", timestamp: 1.8, duration: 0.2),
+                .init(text: "eggs", timestamp: 2.05, duration: 0.35),
+            ],
+            fallbackText: "and eggs"
+        )
+
+        XCTAssertEqual(transcript, "Buy milk and eggs")
+    }
+
+    func testSpeechAccumulatorRevisesWordsInTheSameTimeRange() {
+        var accumulator = SpeechTranscriptAccumulator()
+        accumulator.update(
+            segments: [
+                .init(text: "Call", timestamp: 0, duration: 0.25),
+                .init(text: "Anne", timestamp: 0.3, duration: 0.35),
+            ]
+        )
+
+        let transcript = accumulator.update(
+            segments: [
+                .init(text: "Call", timestamp: 0, duration: 0.25),
+                .init(text: "Anna", timestamp: 0.3, duration: 0.35),
+            ]
+        )
+
+        XCTAssertEqual(transcript, "Call Anna")
+    }
+
+    func testSpeechAccumulatorDoesNotLoseATrailingWordToAShorterRevision() {
+        var accumulator = SpeechTranscriptAccumulator()
+        accumulator.update(
+            segments: [
+                .init(text: "Call", timestamp: 0, duration: 0.25),
+                .init(text: "Mom", timestamp: 0.3, duration: 0.25),
+                .init(text: "tomorrow", timestamp: 0.65, duration: 0.45),
+            ]
+        )
+
+        let transcript = accumulator.update(
+            segments: [
+                .init(text: "Call", timestamp: 0, duration: 0.25),
+                .init(text: "Mom", timestamp: 0.3, duration: 0.25),
+            ]
+        )
+
+        XCTAssertEqual(transcript, "Call Mom tomorrow")
+    }
+
+    func testSpeechAccumulatorFallbackAppendsNewPhraseWithoutDuplicatingOverlap() {
+        var accumulator = SpeechTranscriptAccumulator()
+        accumulator.update(segments: [], fallbackText: "Buy milk and")
+        XCTAssertEqual(
+            accumulator.update(segments: [], fallbackText: "and eggs"),
+            "Buy milk and eggs"
+        )
+    }
+
+    func testSpeechAccumulatorResetStartsANewSession() {
+        var accumulator = SpeechTranscriptAccumulator()
+        accumulator.update(
+            segments: [.init(text: "First", timestamp: 0, duration: 0.2)]
+        )
+        accumulator.reset()
+
+        XCTAssertEqual(
+            accumulator.update(
+                segments: [.init(text: "Second", timestamp: 0, duration: 0.2)]
+            ),
+            "Second"
+        )
+    }
+
     // MARK: - create_task
 
     func testCreateTaskAppendsConfirmedCandidate() {
