@@ -123,7 +123,8 @@ public actor NostrOutboxStore {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // See `JSONTaskStore.save` — deterministic, but not indented for human reading.
+        encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(entries).write(to: fileURL, options: .atomic)
     }
 }

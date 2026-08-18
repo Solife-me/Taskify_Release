@@ -352,6 +352,7 @@ final class AppModel {
         didSet {
             snapshotLookupCache.invalidate()
             snapshotRevision &+= 1
+            TaskifyPerfMonitor.shared.recordSnapshotWrite()
         }
     }
 
@@ -808,7 +809,7 @@ final class AppModel {
         }
         return BoardUpcomingOrganizer.groups(
             tasks: snapshot.tasks,
-            events: snapshot.acceptedTaskifyEvents,
+            events: taskifyEvents,
             includedBoardIDs: scopedBoardIDs,
             now: now
         )
@@ -2990,6 +2991,19 @@ final class AppModel {
     /// recurrence; spaced-repetition chooses *which passage* appears on each occurrence rather
     /// than delaying the next task beyond the configured frequency.
     @discardableResult
+    /// Writes a batch of task edits to `snapshot` as a single observed mutation.
+    ///
+    /// Empties the batch so a caller can reuse it between passes without re-applying edits.
+    private func applyPendingTaskEdits(_ edits: inout [Int: TaskItem]) {
+        guard !edits.isEmpty else { return }
+        var tasks = snapshot.tasks
+        for (index, task) in edits where tasks.indices.contains(index) {
+            tasks[index] = task
+        }
+        snapshot.tasks = tasks
+        edits.removeAll(keepingCapacity: true)
+    }
+
     func reconcileScriptureMemory() -> Set<String> {
         guard scriptureMemoryEnabled, !scriptureMemoryState.entries.isEmpty else { return [] }
 
@@ -3000,6 +3014,23 @@ final class AppModel {
         var updatedTaskIDs: Set<String> = []
         var reviewedTasks: [(entryID: String, dueDate: Date?, completedAt: Date)] = []
         var stateChanged = false
+
+        /// Entry position by id, so the passes below can look one up directly. They previously
+        /// scanned the entry array for every task on the board, which is a full O(tasks × entries)
+        /// sweep — and this runs once per merged task during a relay replay.
+        var entryIndexByID: [String: Int] = [:]
+        entryIndexByID.reserveCapacity(scriptureMemoryState.entries.count)
+        for (index, entry) in scriptureMemoryState.entries.enumerated() {
+            entryIndexByID[entry.id] = index
+        }
+
+        /// Task edits are collected and applied in a single write.
+        ///
+        /// `snapshot.tasks[index] = task` goes through `snapshot`'s observed setter, so each one
+        /// copies the whole snapshot, fires `didSet`, wipes the lookup cache and bumps the
+        /// revision every view memoizes against. Doing that once per changed task turned a
+        /// routine reconcile into dozens of full invalidations.
+        var pendingTaskEdits: [Int: TaskItem] = [:]
 
         // Older native builds left these PWA fields in preservedSyncFields and used a different
         // series id. Promote them into the native model so review history survives local storage
@@ -3030,7 +3061,8 @@ final class AppModel {
                 taskChanged = true
             }
             if let entryID = task.scriptureMemoryID,
-               let entry = scriptureMemoryState.entries.first(where: { $0.id == entryID }) {
+               let entryIndex = entryIndexByID[entryID] {
+                let entry = scriptureMemoryState.entries[entryIndex]
                 if task.scriptureMemoryStage == nil {
                     task.scriptureMemoryStage = entry.stage
                     taskChanged = true
@@ -3056,10 +3088,12 @@ final class AppModel {
             }
 
             if taskChanged {
-                snapshot.tasks[index] = task
+                pendingTaskEdits[index] = task
                 updatedTaskIDs.insert(task.id)
             }
         }
+
+        applyPendingTaskEdits(&pendingTaskEdits)
 
         // Apply every newly observed completion exactly once. The stage stored on the task is the
         // pre-review stage used by the PWA, which prevents out-of-order relay events from jumping
@@ -3067,7 +3101,7 @@ final class AppModel {
         for task in snapshot.tasks where task.completed && !task.isDeleted {
             guard let entryID = task.scriptureMemoryID,
                   let completedAt = task.completedAt,
-                  let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == entryID }) else { continue }
+                  let entryIndex = entryIndexByID[entryID] else { continue }
             let entry = scriptureMemoryState.entries[entryIndex]
             if let entryLastReview = entry.lastReviewISO.flatMap({ isoFormatter.date(from: $0) }),
                entryLastReview >= completedAt {
@@ -3136,10 +3170,12 @@ final class AppModel {
                 taskChanged = true
             }
             if taskChanged {
-                snapshot.tasks[index] = task
+                pendingTaskEdits[index] = task
                 updatedTaskIDs.insert(task.id)
             }
         }
+
+        applyPendingTaskEdits(&pendingTaskEdits)
 
         // The generic recurrence engine initially clones the passage that was just completed.
         // Retarget that new occurrence to the passage the spaced-repetition algorithm selects,
@@ -3167,7 +3203,7 @@ final class AppModel {
                 now: selectionDate
             ) else { continue }
             applyScriptureMemorySelection(selection.entry, toTaskAt: nextIndex, scheduledAtISO: nowISO)
-            if let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == selection.entry.id }) {
+            if let entryIndex = entryIndexByID[selection.entry.id] {
                 scriptureMemoryState.entries[entryIndex].scheduledAtISO = nowISO
             }
             stateChanged = true
@@ -3232,7 +3268,7 @@ final class AppModel {
                 columnID: resolvedColumnID
             )
             snapshot.tasks.append(task)
-            if let entryIndex = scriptureMemoryState.entries.firstIndex(where: { $0.id == selection.entry.id }) {
+            if let entryIndex = entryIndexByID[selection.entry.id] {
                 scriptureMemoryState.entries[entryIndex].scheduledAtISO = nowISO
             }
             stateChanged = true
@@ -4337,6 +4373,9 @@ final class AppModel {
         cachedIdentity = identity
         identityPublicKey = identity.publicKeyHex
         identityNpub = identity.npub
+        Task { [syncEngine] in
+            await syncEngine.setIdentity(identity)
+        }
     }
 
     private func startSync() {
@@ -5557,10 +5596,8 @@ final class AppModel {
     }
 
     private func refreshNotifications(requestPermission: Bool) {
-        let tasks = snapshot.tasks
-        let events = snapshot.acceptedTaskifyEvents
         notificationTask?.cancel()
-        notificationTask = Task { [notificationCoordinator] in
+        notificationTask = Task { [notificationCoordinator, weak self] in
             // Debounce: this is called once per merged task during initial sync, and a
             // full UNUserNotificationCenter reschedule per event is expensive. The sleep
             // lets the cancel-and-respawn above collapse a burst into one reschedule.
@@ -5569,6 +5606,14 @@ final class AppModel {
                 try? await Task.sleep(for: .milliseconds(400))
                 guard !Task.isCancelled else { return }
             }
+            // Read the snapshot *after* the debounce, the same way `scheduleSave` does. Reading
+            // it up front meant every merged event paid for `acceptedTaskifyEvents` — a filter
+            // and sort of the whole event array — on the main actor, only for the surrounding
+            // task to be cancelled a moment later and the result thrown away. Going through the
+            // model's accessor also shares the lookup cache's copy instead of rebuilding it.
+            guard let self else { return }
+            let tasks = self.snapshot.tasks
+            let events = self.taskifyEvents
             let status = await notificationCoordinator.reschedule(
                 tasks: tasks,
                 events: events,
@@ -5586,7 +5631,7 @@ final class AppModel {
         notificationTask = nil
         notificationStatus = await notificationCoordinator.reschedule(
             tasks: snapshot.tasks,
-            events: snapshot.acceptedTaskifyEvents,
+            events: taskifyEvents,
             requestPermission: false
         )
     }

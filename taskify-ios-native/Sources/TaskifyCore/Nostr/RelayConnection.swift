@@ -7,6 +7,7 @@ public enum NostrRelayMessage: Sendable {
     case notice(String)
     case closed(subscriptionID: String, message: String)
     case disconnected(String)
+    case auth(challenge: String)
 
     static func decode(_ data: Data) throws -> NostrRelayMessage? {
         guard let array = try JSONSerialization.jsonObject(with: data) as? [Any],
@@ -38,10 +39,19 @@ public enum NostrRelayMessage: Sendable {
                   let subscriptionID = array[1] as? String,
                   let message = array[2] as? String else { return nil }
             return .closed(subscriptionID: subscriptionID, message: message)
+        case "AUTH":
+            guard array.count >= 2, let challenge = array[1] as? String else { return nil }
+            return .auth(challenge: challenge)
         default:
             return nil
         }
     }
+}
+
+/// NIP-42: relay-issued authentication. A client proves control of a pubkey by signing a
+/// kind 22242 event echoing the relay's challenge and sending it back as an `AUTH` frame.
+public enum NIP42AuthContract {
+    public static let eventKind = 22_242
 }
 
 enum NostrRelayWire {
@@ -270,6 +280,13 @@ public actor NostrRelayConnection {
         let eventData = try JSONEncoder().encode(event)
         let eventObject = try JSONSerialization.jsonObject(with: eventData)
         try await send(["EVENT", eventObject])
+    }
+
+    /// Responds to a NIP-42 `AUTH` challenge with a signed kind 22242 event.
+    public func authenticate(_ event: NostrEvent) async throws {
+        let eventData = try JSONEncoder().encode(event)
+        let eventObject = try JSONSerialization.jsonObject(with: eventData)
+        try await send(["AUTH", eventObject])
     }
 
     private func send(_ object: [Any]) async throws {

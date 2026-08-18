@@ -189,21 +189,42 @@ extension TaskRecurrence: Codable {
         }
     }
 
-    private static func formatISO(_ date: Date) -> String {
+    /// `ISO8601DateFormatter` costs more to construct than to use, and these run on the task
+    /// decode path — once per recurrence carrying an end date, for every task in the store. One
+    /// formatter each, guarded by a lock because decoding is not confined to a single actor.
+    private static let isoLock = NSLock()
+    /// Writer and readers are kept separate: the writer pins GMT, while the readers keep the
+    /// default zone the previous per-call formatters used. Same configuration as before, just
+    /// not rebuilt on every call.
+    nonisolated(unsafe) private static let isoWriter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        return formatter.string(from: date)
+        return formatter
+    }()
+    nonisolated(unsafe) private static let isoFractionalReader: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let isoStandardReader: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static func formatISO(_ date: Date) -> String {
+        isoLock.lock()
+        defer { isoLock.unlock() }
+        return isoWriter.string(from: date)
     }
 
     private static func parseISO(_ value: String?) -> Date? {
         guard let value else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) { return date }
-        let standard = ISO8601DateFormatter()
-        standard.formatOptions = [.withInternetDateTime]
-        return standard.date(from: value)
+        isoLock.lock()
+        defer { isoLock.unlock() }
+        if let date = isoFractionalReader.date(from: value) { return date }
+        return isoStandardReader.date(from: value)
     }
 }
 

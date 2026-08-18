@@ -491,3 +491,41 @@ struct HeaderIconButton: View {
         .accessibilityLabel(accessibilityLabel)
     }
 }
+
+// MARK: - Photo background legibility
+
+/// Whether a user-selected photo is currently behind the app's content.
+///
+/// The default gradient guarantees a dark backdrop, so text and card surfaces can rely on it for
+/// contrast. A photo guarantees nothing: a bright sky can land exactly where a caption or a task
+/// card does. Rather than dimming the whole app to cover that case, the few surfaces that actually
+/// sit on the wallpaper read this and add local contrast only for themselves.
+///
+/// Injected once by `RootTabView`; the `false` default keeps the standard theme untouched.
+private struct TaskifyOverPhotoKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var taskifyOverPhoto: Bool {
+        get { self[TaskifyOverPhotoKey.self] }
+        set { self[TaskifyOverPhotoKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// A soft dark halo behind small or dim text that has no guaranteed backdrop.
+    ///
+    /// Applied to leaves rather than to a composed row: a shadow forces its subtree into an
+    /// offscreen buffer, and that cost is what kept the card's drop shadow on the background shape
+    /// instead of the finished card. When `enabled` is false this returns the view untouched, so
+    /// the default theme pays nothing and looks identical.
+    @ViewBuilder
+    func taskifyLegibilityShadow(_ enabled: Bool) -> some View {
+        if enabled {
+            shadow(color: .black.opacity(0.55), radius: 3, y: 1)
+        } else {
+            self
+        }
+    }
+}

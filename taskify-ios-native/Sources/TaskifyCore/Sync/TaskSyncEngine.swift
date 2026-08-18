@@ -199,6 +199,14 @@ enum NostrRelayRejection {
             .lowercased()
             .hasPrefix("rate-limited:")
     }
+
+    /// NIP-42: relay is refusing an action until the client authenticates via `AUTH`.
+    static func isAuthRequired(_ message: String) -> Bool {
+        message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("auth-required:")
+    }
 }
 
 struct TaskSyncRelaySubscriptionPlan: Equatable, Sendable {
@@ -258,6 +266,15 @@ public actor TaskSyncEngine {
     private var relayMessages: [String: String] = [:]
     private var publishPacers: [String: RelayPublishPacer] = [:]
     private var rateLimitRetryTasks: [String: Task<Void, Never>] = [:]
+    // Per-subscription retries for CLOSED "rate-limited: ..." — NIP-01 scopes that message to
+    // the one REQ, so only that subscription is resent rather than tearing down the connection.
+    private var subscriptionRateLimitRetryTasks: [String: Task<Void, Never>] = [:]
+    private var subscriptionRateLimitAttempts: [String: Int] = [:]
+    // NIP-42 authentication state, keyed by relayURL.
+    private var identity: NostrIdentity?
+    private var relayAuthChallenges: [String: String] = [:]
+    private var relayAuthEventIDs: [String: String] = [:]
+    private var pendingAuthResubscriptions: [String: Set<String>] = [:]
     private var activeRelayDrains: Set<String> = []
     private var requestedRelayDrains: Set<String> = []
     private var inFlightEventIDs: [String: Set<String>] = [:]
@@ -284,11 +301,18 @@ public actor TaskSyncEngine {
         listenerTasks.values.forEach { $0.cancel() }
         reconnectTasks.values.forEach { $0.cancel() }
         rateLimitRetryTasks.values.forEach { $0.cancel() }
+        subscriptionRateLimitRetryTasks.values.forEach { $0.cancel() }
         updateContinuation.finish()
     }
 
     public nonisolated func updates() -> AsyncStream<TaskSyncUpdate> {
         updateStream
+    }
+
+    /// The identity used to sign NIP-42 `AUTH` responses. Relays that never challenge us never
+    /// need this; relays that do get an exemption from tighter rate limits once authenticated.
+    public func setIdentity(_ identity: NostrIdentity?) async {
+        self.identity = identity
     }
 
     public func configure(
@@ -332,6 +356,13 @@ public actor TaskSyncEngine {
             publishPacers.removeValue(forKey: relayURL)
             requestedRelayDrains.remove(relayURL)
             inFlightEventIDs.removeValue(forKey: relayURL)
+            relayAuthChallenges.removeValue(forKey: relayURL)
+            relayAuthEventIDs.removeValue(forKey: relayURL)
+            pendingAuthResubscriptions.removeValue(forKey: relayURL)
+            for key in subscriptionRateLimitRetryTasks.keys where key.hasPrefix("\(relayURL)#") {
+                subscriptionRateLimitRetryTasks.removeValue(forKey: key)?.cancel()
+                subscriptionRateLimitAttempts.removeValue(forKey: key)
+            }
             if let connection = connections.removeValue(forKey: relayURL) {
                 await connection.disconnect()
             }
@@ -380,6 +411,9 @@ public actor TaskSyncEngine {
         reconnectTasks.removeAll()
         rateLimitRetryTasks.values.forEach { $0.cancel() }
         rateLimitRetryTasks.removeAll()
+        subscriptionRateLimitRetryTasks.values.forEach { $0.cancel() }
+        subscriptionRateLimitRetryTasks.removeAll()
+        subscriptionRateLimitAttempts.removeAll()
         reconnectAttempts.removeAll()
         for connection in connections.values {
             await connection.disconnect()
@@ -392,6 +426,9 @@ public actor TaskSyncEngine {
         publishPacers.removeAll()
         requestedRelayDrains.removeAll()
         inFlightEventIDs.removeAll()
+        relayAuthChallenges.removeAll()
+        relayAuthEventIDs.removeAll()
+        pendingAuthResubscriptions.removeAll()
         configurationFingerprint = nil
         await emitStatus(state: .stopped)
     }
@@ -401,10 +438,14 @@ public actor TaskSyncEngine {
         reconnectTasks.removeAll()
         rateLimitRetryTasks.values.forEach { $0.cancel() }
         rateLimitRetryTasks.removeAll()
+        subscriptionRateLimitRetryTasks.values.forEach { $0.cancel() }
+        subscriptionRateLimitRetryTasks.removeAll()
+        subscriptionRateLimitAttempts.removeAll()
         reconnectAttempts.removeAll()
         pendingSubscriptions.removeAll()
         relayBatches.removeAll()
         inFlightEventIDs.removeAll()
+        pendingAuthResubscriptions.removeAll()
         configurationFingerprint = nil
         for connection in connections.values {
             await connection.disconnect()
@@ -675,6 +716,26 @@ public actor TaskSyncEngine {
                 updateContinuation.yield(.task(record))
             }
         case .acknowledgement(let eventID, let accepted, let message):
+            if relayAuthEventIDs[relayURL] == eventID {
+                relayAuthEventIDs[relayURL] = nil
+                if accepted {
+                    relayMessages[relayURL] = nil
+                    if let subscriptionIDs = pendingAuthResubscriptions.removeValue(forKey: relayURL) {
+                        for subscriptionID in subscriptionIDs {
+                            try? await resubscribe(subscriptionID: subscriptionID, relayURL: relayURL)
+                        }
+                    }
+                    await markRelayOnline(relayURL)
+                    await flushOutbox(to: relayURL)
+                } else {
+                    pendingAuthResubscriptions.removeValue(forKey: relayURL)
+                    relayPhases[relayURL] = .offline
+                    relayMessages[relayURL] = message
+                    await emitStatus()
+                    scheduleReconnect(relayURL: relayURL)
+                }
+                return
+            }
             inFlightEventIDs[relayURL]?.remove(eventID)
             let isDuplicate = message
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -693,6 +754,8 @@ public actor TaskSyncEngine {
                 }
             } else if NostrRelayRejection.isRateLimited(message) {
                 await registerRateLimit(message: message, relayURL: relayURL)
+            } else if NostrRelayRejection.isAuthRequired(message) {
+                await handleAuthRequired(relayURL: relayURL)
             } else {
                 relayPhases[relayURL] = .offline
                 relayMessages[relayURL] = message
@@ -707,10 +770,19 @@ public actor TaskSyncEngine {
         case .notice(let message):
             if NostrRelayRejection.isRateLimited(message) {
                 await registerRateLimit(message: message, relayURL: relayURL)
+            } else if NostrRelayRejection.isAuthRequired(message) {
+                await handleAuthRequired(relayURL: relayURL)
             } else {
                 relayMessages[relayURL] = message
                 await emitStatus()
             }
+        case .auth(let challenge):
+            relayAuthChallenges[relayURL] = challenge
+            await authenticate(relayURL: relayURL, challenge: challenge)
+        case .closed(let subscriptionID, let message) where NostrRelayRejection.isRateLimited(message):
+            await handleRateLimitedClose(subscriptionID: subscriptionID, relayURL: relayURL)
+        case .closed(let subscriptionID, let message) where NostrRelayRejection.isAuthRequired(message):
+            await handleAuthRequiredClose(subscriptionID: subscriptionID, relayURL: relayURL)
         case .closed(_, let message):
             inFlightEventIDs.removeValue(forKey: relayURL)
             relayPhases[relayURL] = .offline
@@ -811,6 +883,129 @@ public actor TaskSyncEngine {
         relayMessages[relayURL] = "Retrying queued changes"
         await emitStatus()
         await flushOutbox(to: relayURL)
+    }
+
+    /// NIP-01: a `CLOSED "rate-limited: ..."` scopes the back-off to the one REQ that triggered
+    /// it, not the whole connection. Re-sends just that subscription instead of the full
+    /// disconnect/reconnect/resubscribe-everything the generic CLOSED path performs.
+    private func handleRateLimitedClose(subscriptionID: String, relayURL: String) async {
+        let key = subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)
+        guard subscriptionRateLimitRetryTasks[key] == nil else { return }
+        let attempt = subscriptionRateLimitAttempts[key, default: 0]
+        subscriptionRateLimitAttempts[key] = attempt + 1
+        let delay = min(1 << min(attempt, 5), 30)
+        if relayPhases[relayURL] != .online {
+            relayPhases[relayURL] = .syncing
+        }
+        relayMessages[relayURL] = "Rate limited • retrying subscription in \(delay)s"
+        await emitStatus()
+        subscriptionRateLimitRetryTasks[key] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await self?.retrySubscriptionAfterRateLimit(subscriptionID: subscriptionID, relayURL: relayURL)
+        }
+    }
+
+    private func retrySubscriptionAfterRateLimit(subscriptionID: String, relayURL: String) async {
+        let key = subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)
+        subscriptionRateLimitRetryTasks[key] = nil
+        guard connections[relayURL] != nil else { return }
+        do {
+            try await resubscribe(subscriptionID: subscriptionID, relayURL: relayURL)
+            subscriptionRateLimitAttempts[key] = nil
+            if relayMessages[relayURL]?.hasPrefix("Rate limited") == true {
+                relayMessages[relayURL] = nil
+                await emitStatus()
+            }
+        } catch {
+            // The subscription no longer maps to a known board/inbox (e.g. it was reconfigured
+            // away) or the relay dropped us in the meantime — fall back to a full reconnect.
+            relayPhases[relayURL] = .offline
+            relayMessages[relayURL] = error.localizedDescription
+            await emitStatus()
+            scheduleReconnect(relayURL: relayURL)
+        }
+    }
+
+    private func subscriptionRetryKey(relayURL: String, subscriptionID: String) -> String {
+        "\(relayURL)#\(subscriptionID)"
+    }
+
+    /// Re-issues the REQ for a single subscription ID without touching any other subscription
+    /// on the relay. Used after a rate-limited or auth-required CLOSED.
+    private func resubscribe(subscriptionID: String, relayURL: String) async throws {
+        guard let connection = connections[relayURL] else { throw URLError(.notConnectedToInternet) }
+        for board in boards where board.effectiveRelayURLs.contains(relayURL) {
+            let boardTag = BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
+            guard self.subscriptionID(relayURL: relayURL, boardTag: boardTag) == subscriptionID else { continue }
+            pendingSubscriptions[relayURL, default: []].insert(subscriptionID)
+            relayBatches[relayURL, default: [:]][subscriptionID] = TaskRelayStartupBatch()
+            try await connection.subscribe(
+                id: subscriptionID,
+                kinds: [
+                    TaskEventCodec.boardEventKind,
+                    TaskEventCodec.taskEventKind,
+                    TaskifyCalendarEventCodec.canonicalEventKind,
+                ],
+                boardTag: boardTag
+            )
+            return
+        }
+        if let inboxPublicKey, inboxPublicKey.count == 64,
+           inboxSubscriptionID(relayURL: relayURL, publicKey: inboxPublicKey) == subscriptionID {
+            pendingSubscriptions[relayURL, default: []].insert(subscriptionID)
+            relayBatches[relayURL, default: [:]][subscriptionID] = TaskRelayStartupBatch()
+            try await connection.subscribeToSharedInbox(
+                id: subscriptionID,
+                recipientPublicKey: inboxPublicKey,
+                since: Int(Date().timeIntervalSince1970) - (30 * 24 * 60 * 60),
+                limit: 500
+            )
+            return
+        }
+        throw URLError(.badURL)
+    }
+
+    /// NIP-42: sign and send the relay's challenge back as an `AUTH` event so it can grant this
+    /// pubkey any rate-limit exemption it offers to known/authenticated clients.
+    private func authenticate(relayURL: String, challenge: String) async {
+        guard let identity else {
+            relayMessages[relayURL] = "Relay requires authentication"
+            await emitStatus()
+            return
+        }
+        guard let connection = connections[relayURL] else { return }
+        guard let event = try? NostrEvent.signed(
+            privateKey: identity.privateKey,
+            createdAt: Int(Date().timeIntervalSince1970),
+            kind: NIP42AuthContract.eventKind,
+            tags: [["relay", relayURL], ["challenge", challenge]],
+            content: ""
+        ) else { return }
+        relayAuthEventIDs[relayURL] = event.id
+        do {
+            try await connection.authenticate(event)
+        } catch {
+            relayAuthEventIDs[relayURL] = nil
+            relayMessages[relayURL] = error.localizedDescription
+            await emitStatus()
+        }
+    }
+
+    private func handleAuthRequired(relayURL: String) async {
+        if relayPhases[relayURL] != .online {
+            relayPhases[relayURL] = .syncing
+        }
+        relayMessages[relayURL] = "Relay requires authentication"
+        await emitStatus()
+        if let challenge = relayAuthChallenges[relayURL] {
+            await authenticate(relayURL: relayURL, challenge: challenge)
+        }
+    }
+
+    private func handleAuthRequiredClose(subscriptionID: String, relayURL: String) async {
+        pendingAuthResubscriptions[relayURL, default: []].insert(subscriptionID)
+        await handleAuthRequired(relayURL: relayURL)
     }
 
     private func reconnectAfterDelay(relayURL: String) async {

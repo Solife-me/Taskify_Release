@@ -130,6 +130,7 @@ struct UpcomingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.taskifyOverPhoto) private var overPhoto
     @AppStorage("taskify.upcoming.view") private var displayModeRaw = UpcomingDisplayMode.details.rawValue
     @AppStorage("taskify.upcoming.sort.mode") private var sortModeRaw = UpcomingSortMode.dueDate.rawValue
     @AppStorage("taskify.upcoming.sort.direction") private var sortDirectionRaw = UpcomingSortDirection.ascending.rawValue
@@ -580,6 +581,7 @@ struct UpcomingView: View {
                         Text(group.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
                             .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(TaskifyTheme.secondaryText)
+                            .taskifyLegibilityShadow(overPhoto)
                             .padding(.top, 4)
 
                         if !group.reminders.isEmpty {
@@ -1893,6 +1895,7 @@ private struct UsHolidayCard: View {
 
 private struct UpcomingTaskList: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.taskifyOverPhoto) private var overPhoto
     let tasks: [TaskItem]
     let boardGrouping: UpcomingBoardGrouping
 
@@ -1920,6 +1923,7 @@ private struct UpcomingTaskList: View {
                     .foregroundStyle(TaskifyTheme.accent)
                     .textCase(.uppercase)
                     .tracking(0.7)
+                    .taskifyLegibilityShadow(overPhoto)
                     .padding(.top, 2)
 
                 ForEach(section.tasks) { task in
@@ -1929,9 +1933,13 @@ private struct UpcomingTaskList: View {
         } else {
             ForEach(tasks) { task in
                 VStack(alignment: .leading, spacing: 4) {
+                    // This label has no card under it at all — it sits on the wallpaper. Tertiary
+                    // grey is legible on the standard gradient and invisible on a bright sky, so
+                    // step it up one level rather than darkening what is behind it.
                     Text(model.board(withID: task.boardID)?.name ?? "Board")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .foregroundStyle(overPhoto ? TaskifyTheme.secondaryText : TaskifyTheme.tertiaryText)
+                        .taskifyLegibilityShadow(overPhoto)
                         .padding(.leading, 10)
                     TaskCardView(task: task)
                 }

@@ -113,6 +113,44 @@ public enum ScriptureMemoryAlgorithm {
         public let dueNow: Bool
     }
 
+    /// Parses the ISO strings entries store their dates in.
+    ///
+    /// `ISO8601DateFormatter` is expensive to construct — measurably more expensive than the parse
+    /// it performs — so this holds one instead of allocating per call. Entry dates are read once
+    /// per entry per sort, and the previous per-call allocation made a 150-entry sort cost about
+    /// three quarters of a second on the main thread.
+    ///
+    /// The lock keeps it usable from any isolation domain; `ISO8601DateFormatter` is not
+    /// `Sendable` and callers here are not all MainActor-bound.
+    /// The parse itself is also slow enough to matter — an entry's dates are re-read on every
+    /// sort, and a sort runs on every render of the list — so results are memoized by string.
+    /// Entry timestamps are immutable once written, so a hit is always valid; the bound only
+    /// exists so a long session can't grow this without limit.
+    private static let isoParserLock = NSLock()
+    nonisolated(unsafe) private static let isoParser = ISO8601DateFormatter()
+    nonisolated(unsafe) private static var isoCache: [String: Date] = [:]
+    private static let isoCacheCapacity = 1_024
+
+    static func parseISODate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        isoParserLock.lock()
+        defer { isoParserLock.unlock() }
+        if let cached = isoCache[value] { return cached }
+        guard let parsed = isoParser.date(from: value) else { return nil }
+        if isoCache.count >= isoCacheCapacity { isoCache.removeAll(keepingCapacity: true) }
+        isoCache[value] = parsed
+        return parsed
+    }
+
+    /// Canonical position of each book, built once rather than rediscovered by a linear scan of
+    /// the 66-book catalog on every comparison the canonical sort makes.
+    private static let bookOrder: [String: Int] = {
+        var order: [String: Int] = [:]
+        order.reserveCapacity(BibleCatalog.books.count)
+        for (index, book) in BibleCatalog.books.enumerated() { order[book.id] = index }
+        return order
+    }()
+
     public static func recurrence(for frequency: ScriptureMemoryFrequency) -> TaskRecurrence {
         frequency.days == 1
             ? .daily()
@@ -137,7 +175,7 @@ public enum ScriptureMemoryAlgorithm {
         now: Date
     ) -> Stats {
         let interval = intervalDays(stage: entry.stage, baseDays: baseDays, totalEntries: totalEntries)
-        let lastReview = entry.lastReviewISO.flatMap { ISO8601DateFormatter().date(from: $0) }
+        let lastReview = parseISODate(entry.lastReviewISO)
         var daysSinceReview = lastReview.map { now.timeIntervalSince($0) / 86400 } ?? .infinity
         if !daysSinceReview.isFinite { daysSinceReview = .infinity }
         let score = lastReview == nil ? Double.infinity : daysSinceReview / max(interval, 0.5)
@@ -180,8 +218,8 @@ public enum ScriptureMemoryAlgorithm {
         switch sort {
         case .canonical:
             return decorated.sorted { lhs, rhs in
-                let orderA = BibleCatalog.books.firstIndex { $0.id == lhs.0.bookID } ?? 0
-                let orderB = BibleCatalog.books.firstIndex { $0.id == rhs.0.bookID } ?? 0
+                let orderA = bookOrder[lhs.0.bookID] ?? 0
+                let orderB = bookOrder[rhs.0.bookID] ?? 0
                 if orderA != orderB { return orderA < orderB }
                 if lhs.0.chapter != rhs.0.chapter { return lhs.0.chapter < rhs.0.chapter }
                 let startA = lhs.0.startVerse ?? 0
@@ -189,14 +227,13 @@ public enum ScriptureMemoryAlgorithm {
                 if startA != startB { return startA < startB }
                 return (lhs.0.endVerse ?? 0) < (rhs.0.endVerse ?? 0)
             }
+        // `addedAtTime` parses an ISO string. A comparator runs O(n log n) times, so parsing
+        // inside one re-parsed the same handful of dates hundreds of times over; the keys are
+        // computed once here and the sort then compares plain doubles.
         case .oldest:
-            return decorated.sorted {
-                addedAtTime($0.0) < addedAtTime($1.0)
-            }
+            return sortedByAddedAt(decorated, ascending: true)
         case .newest:
-            return decorated.sorted {
-                addedAtTime($0.0) > addedAtTime($1.0)
-            }
+            return sortedByAddedAt(decorated, ascending: false)
         case .needsReview:
             return decorated.sorted { lhs, rhs in
                 if lhs.1.score == rhs.1.score { return lhs.1.dueInDays < rhs.1.dueInDays }
@@ -205,8 +242,17 @@ public enum ScriptureMemoryAlgorithm {
         }
     }
 
+    private static func sortedByAddedAt(
+        _ decorated: [(ScriptureMemoryEntry, Stats)],
+        ascending: Bool
+    ) -> [(entry: ScriptureMemoryEntry, stats: Stats)] {
+        let keyed = decorated.map { ($0.0, $0.1, addedAtTime($0.0)) }
+        let sorted = keyed.sorted { ascending ? $0.2 < $1.2 : $0.2 > $1.2 }
+        return sorted.map { ($0.0, $0.1) }
+    }
+
     private static func addedAtTime(_ entry: ScriptureMemoryEntry) -> TimeInterval {
-        ISO8601DateFormatter().date(from: entry.addedAtISO)?.timeIntervalSince1970 ?? 0
+        parseISODate(entry.addedAtISO)?.timeIntervalSince1970 ?? 0
     }
 
     public static func formatDueInLabel(_ dueInDays: Double) -> String {

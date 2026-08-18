@@ -45,7 +45,10 @@ public actor JSONTaskStore {
         )
 
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Sorted for deterministic output; not pretty-printed. Nothing reads this file by eye,
+        // and the indentation was roughly a third of the bytes written on every debounced save
+        // and read back on every launch.
+        encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(snapshot)
         try data.write(to: fileURL, options: .atomic)
     }

@@ -35,6 +35,9 @@ struct RootTabView: View {
     @State private var pendingQuickAdd = false
     @State private var pendingQuickAddColumnID: String?
     @State private var pendingWatchSetupRequestID: UUID?
+    /// Reading the revision here — rather than the raw appearance flag in each card — is what makes
+    /// `taskifyOverPhoto` update the moment a background is chosen or cleared in Settings.
+    @AppStorage(TaskifyAppearanceSettings.revisionKey) private var appearanceRevision = ""
 
     init() {
 #if DEBUG
@@ -48,6 +51,10 @@ struct RootTabView: View {
 
     var body: some View {
         content
+            .environment(\.taskifyOverPhoto, {
+                _ = appearanceRevision
+                return TaskifyAppearanceSettings.hasBackgroundImage
+            }())
             .onOpenURL { url in
                 guard let link = TaskifyWidgetLink(url: url) else { return }
                 handle(link)
@@ -171,6 +178,14 @@ struct RootTabView: View {
         }
         .overlay(alignment: .top) {
             WalletStatusToast()
+        }
+        .overlay(alignment: .bottomLeading) {
+            TaskifyPerfOverlay()
+                .padding(.leading, 8)
+                .padding(.bottom, 96)
+        }
+        .task {
+            TaskifyPerfMonitor.shared.start()
         }
         .fullScreenCover(isPresented: Binding(
             get: { model.showsFirstRunOnboarding },

@@ -184,7 +184,7 @@ final class WalletViewModel: ObservableObject {
             startLightningMonitoring()
             startPriceMonitoring()
             refreshLightningAddresses()
-            if NpubCashSettings.autoClaimEnabled {
+            if LightningAddressSettings.provider == .npubCash, LightningAddressSettings.autoClaimEnabled {
                 await claimNpubCash(auto: true)
             }
         } catch {
@@ -219,7 +219,7 @@ final class WalletViewModel: ObservableObject {
             await recoverPendingEcashReceives(force: true)
             await recoverNostrPaymentRequests()
             await recoverIncomingTokenInbox()
-            if NpubCashSettings.autoClaimEnabled {
+            if LightningAddressSettings.provider == .npubCash, LightningAddressSettings.autoClaimEnabled {
                 await claimNpubCash(auto: true)
             }
             await refresh()
@@ -273,17 +273,16 @@ final class WalletViewModel: ObservableObject {
         }
     }
 
-    /// Derives the `<npub>@npub.cash` address from the stored Nostr identity — local only, no
-    /// network call. Called whenever the wallet starts or the app returns to the foreground, and
-    /// whenever the user turns receiving on, so the address is ready to show immediately.
-    /// Derives the always-on `<npub>@solife.me` address (a pure forwarder — any Nostr key works,
-    /// nothing to enable) and, if the user has opted in, the `<npub>@npub.cash` address. Both are
-    /// local-only, no network call.
+    /// Derives the `<npub>@solife.me` forwarding address (any Nostr key works, nothing to enable)
+    /// and, when npub.cash is the selected provider, the `<npub>@npub.cash` address. Both are
+    /// local-only, no network call. Called whenever the wallet starts, the app returns to the
+    /// foreground, or the user changes the selected provider, so the address is ready to show
+    /// immediately.
     func refreshLightningAddresses() {
         let identity = try? KeychainIdentityStore().load()
         solifeAddress = identity.map { SolifeClient.address(npub: $0.npub) }
 
-        guard NpubCashSettings.receivingEnabled else {
+        guard LightningAddressSettings.provider == .npubCash else {
             npubCashIdentity = nil
             npubCashIdentityError = nil
             return
@@ -303,7 +302,7 @@ final class WalletViewModel: ObservableObject {
     /// history handling as any other incoming ecash.
     @discardableResult
     func claimNpubCash(auto: Bool) async -> Int {
-        guard NpubCashSettings.receivingEnabled, !isClaimingNpubCash else { return 0 }
+        guard LightningAddressSettings.provider == .npubCash, !isClaimingNpubCash else { return 0 }
         guard let identity = try? KeychainIdentityStore().load() else {
             if !auto {
                 npubCashClaimStatus = .error
@@ -780,10 +779,21 @@ final class WalletViewModel: ObservableObject {
     /// the npub-derived one -- an `npub1...@solife.me` string is technically valid but unreadable,
     /// and this is the first thing someone is asked to scan or read aloud.
     var preferredLightningAddress: String? {
-        if let custom = solifeAccount?.addresses.first?.address, !custom.isEmpty {
-            return custom
+        switch LightningAddressSettings.provider {
+        case .none:
+            return nil
+        case .npubCash:
+            return npubCashIdentity?.address
+        case .solife:
+            if let selected = LightningAddressSettings.selectedSolifeAddress,
+               solifeAccount?.addresses.contains(where: { $0.address.lowercased() == selected }) == true {
+                return selected
+            }
+            if let account = solifeAccount, !account.lightningAddress.isEmpty {
+                return account.lightningAddress
+            }
+            return solifeAddress
         }
-        return solifeAddress ?? npubCashIdentity?.address
     }
 
     // MARK: - Amount entry
@@ -1484,7 +1494,7 @@ struct WalletView: View {
     @State private var showingHistory = false
     @State private var showingReceive = false
     @State private var showingLightningReceive = false
-    @State private var showingLightningAddress = false
+    @State private var showingAddressManager = false
     @State private var showingScanner = false
     @State private var showingSend = false
     @State private var showingLightningSend = false
@@ -1619,8 +1629,8 @@ struct WalletView: View {
         .sheet(isPresented: $showingRecovery) {
             WalletRecoverySheet(wallet: wallet)
         }
-        .sheet(isPresented: $showingLightningAddress) {
-            LightningAddressReceiveSheet(wallet: wallet)
+        .sheet(isPresented: $showingAddressManager) {
+            WalletAddressManagerView(wallet: wallet)
         }
         .alert(
             "Wallet",
@@ -1682,6 +1692,10 @@ struct WalletView: View {
 
                     WalletUtilityButton(title: "Backup", systemImage: "key.viewfinder") {
                         showingRecovery = true
+                    }
+
+                    WalletUtilityButton(title: "Address", systemImage: "at") {
+                        showingAddressManager = true
                     }
                 }
             }
@@ -3773,6 +3787,19 @@ private struct ReceiveLightningSheet: View {
                 .padding(18)
                 .frame(maxWidth: .infinity)
                 .taskifyGlass(cornerRadius: 24)
+            } else if LightningAddressSettings.provider == .none {
+                VStack(spacing: 8) {
+                    Text("Lightning address disabled")
+                        .font(.headline)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text("Use Amount to create an invoice, or turn an address back on in Wallet \u{2192} Address.")
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity)
+                .taskifyGlass(cornerRadius: 24)
             } else {
                 VStack(spacing: 8) {
                     Text("No Lightning address yet")
@@ -4023,144 +4050,38 @@ private struct ReceiveLightningSheet: View {
     }
 }
 
-/// A `<npub>@npub.cash` Lightning address that resolves without any signup step. Enabling it
-/// only derives and displays the address; claiming pending eCash is a separate, explicit step
-/// (or automatic if the user opts into that too) that redeems through the wallet's normal
-/// receive path.
-private struct LightningAddressReceiveSheet: View {
+/// The wallet's dedicated Lightning-address management screen -- choosing solife.me / npub.cash /
+/// none as the address shown on Receive, npub.cash auto-claim, and (when solife.me is selected)
+/// which of the account's addresses to show plus its payment mint. Mirrors the PWA's
+/// `WalletAddressView`, reachable from the wallet toolbar rather than nested inside Receive.
+private struct WalletAddressManagerView: View {
     @ObservedObject var wallet: WalletViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var receivingEnabled = NpubCashSettings.receivingEnabled
-    @State private var autoClaimEnabled = NpubCashSettings.autoClaimEnabled
-    @State private var copiedSolife = false
+    @State private var provider = LightningAddressSettings.provider
+    @State private var autoClaimEnabled = LightningAddressSettings.autoClaimEnabled
+    @State private var selectedSolifeAddress = LightningAddressSettings.selectedSolifeAddress
     @State private var copied = false
-    @State private var showingSolifeManager = false
+    @State private var showingPurchase = false
+    @State private var mintUpdateError: String?
+
+    private var mintChoices: [String] {
+        var urls = wallet.snapshot.mints.map(\.url)
+        if let configured = wallet.solifeConfig?.mintUrl, !urls.contains(configured) {
+            urls.append(configured)
+        }
+        return urls
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
-                    VStack(spacing: 6) {
-                        Image(systemName: "at.circle.fill")
-                            .font(.system(size: 44))
-                            .foregroundStyle(TaskifyTheme.accent)
-                        Text("Lightning Address")
-                            .font(.title3.bold())
-                            .foregroundStyle(TaskifyTheme.primaryText)
-                        Text("Permanent addresses derived from your Taskify Nostr identity. Anyone can pay them like a normal Lightning address.")
-                            .font(.subheadline)
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(TaskifyTheme.secondaryText)
-                    }
+                    providerPicker
 
-                    if let solifeAddress = wallet.solifeAddress {
-                        VStack(spacing: 8) {
-                            Text("solife.me")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(TaskifyTheme.secondaryText)
-                            Button {
-                                UIPasteboard.general.string = solifeAddress
-                                withAnimation(.snappy) { copiedSolife = true }
-                            } label: {
-                                VStack(spacing: 8) {
-                                    Text(solifeAddress)
-                                        .font(.system(.body, design: .monospaced))
-                                        .foregroundStyle(TaskifyTheme.primaryText)
-                                        .multilineTextAlignment(.center)
-                                    Label(
-                                        copiedSolife ? "Copied" : "Tap to copy",
-                                        systemImage: copiedSolife ? "checkmark" : "doc.on.doc"
-                                    )
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(copiedSolife ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            Text("Always on — solife.me forwards payments to this address as eCash automatically. No setup needed.")
-                                .font(.caption2)
-                                .foregroundStyle(TaskifyTheme.tertiaryText)
-                                .multilineTextAlignment(.center)
-
-                            Button {
-                                showingSolifeManager = true
-                            } label: {
-                                Label("Manage custom addresses & mint", systemImage: "slider.horizontal.3")
-                                    .font(.caption.weight(.semibold))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(TaskifyTheme.accent)
-                            .padding(.top, 2)
-                        }
-                        .padding(16)
-                        .taskifyGlass(cornerRadius: 18)
-                    }
-
-                    Toggle("Enable npub.cash receiving", isOn: $receivingEnabled)
-                        .padding(16)
-                        .taskifyGlass(cornerRadius: 18)
-                        .onChange(of: receivingEnabled) { _, enabled in
-                            NpubCashSettings.setReceivingEnabled(enabled)
-                            if !enabled { autoClaimEnabled = false; NpubCashSettings.setAutoClaimEnabled(false) }
-                            wallet.refreshLightningAddresses()
-                        }
-
-                    if receivingEnabled {
-                        if let identity = wallet.npubCashIdentity {
-                            VStack(spacing: 12) {
-                                Button {
-                                    UIPasteboard.general.string = identity.address
-                                    withAnimation(.snappy) { copied = true }
-                                } label: {
-                                    VStack(spacing: 8) {
-                                        Text(identity.address)
-                                            .font(.system(.body, design: .monospaced))
-                                            .foregroundStyle(TaskifyTheme.primaryText)
-                                            .multilineTextAlignment(.center)
-                                        Label(copied ? "Copied" : "Tap to copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(copied ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-
-                                Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
-                                    .onChange(of: autoClaimEnabled) { _, enabled in
-                                        NpubCashSettings.setAutoClaimEnabled(enabled)
-                                    }
-                                Text("Automatically check for and redeem pending eCash each time the wallet opens.")
-                                    .font(.caption2)
-                                    .foregroundStyle(TaskifyTheme.tertiaryText)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                                Button {
-                                    Task { await wallet.claimNpubCash(auto: false) }
-                                } label: {
-                                    if wallet.npubCashClaimStatus == .checking {
-                                        ProgressView().frame(maxWidth: .infinity).frame(height: 46)
-                                    } else {
-                                        Text("Check for pending eCash")
-                                            .frame(maxWidth: .infinity)
-                                            .frame(height: 46)
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(wallet.npubCashClaimStatus == .checking)
-
-                                if let message = wallet.npubCashClaimMessage {
-                                    Label(message, systemImage: statusIcon)
-                                        .font(.caption)
-                                        .foregroundStyle(statusColor)
-                                }
-                            }
-                            .padding(16)
-                            .taskifyGlass(cornerRadius: 18)
-                        } else if let identityError = wallet.npubCashIdentityError {
-                            Label(identityError, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                                .padding(16)
-                                .taskifyGlass(cornerRadius: 18)
-                        }
+                    switch provider {
+                    case .solife: solifeSection
+                    case .npubCash: npubCashSection
+                    case .none: disabledSection
                     }
                 }
                 .padding(20)
@@ -4178,9 +4099,115 @@ private struct LightningAddressReceiveSheet: View {
         .tint(TaskifyTheme.accent)
         .onAppear {
             wallet.refreshLightningAddresses()
+            if provider == .solife, wallet.solifeAccount == nil {
+                Task { await wallet.refreshSolifeAccount() }
+            }
         }
-        .sheet(isPresented: $showingSolifeManager) {
-            SolifeAddressManagerSheet(wallet: wallet)
+        .sheet(isPresented: $showingPurchase) {
+            SolifeCustomAddressPurchaseSheet(wallet: wallet) { claimed in
+                selectAddress(claimed)
+            }
+        }
+    }
+
+    private var providerPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Address Type")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            Text("Choose the address shown when receiving Lightning.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+            Picker("Address Type", selection: $provider) {
+                ForEach(LightningAddressProvider.allCases) { option in
+                    Text(option.displayName).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: provider) { _, next in
+                LightningAddressSettings.setProvider(next)
+                if next != .npubCash { autoClaimEnabled = false }
+                wallet.refreshLightningAddresses()
+                if next == .solife, wallet.solifeAccount == nil {
+                    Task { await wallet.refreshSolifeAccount() }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .taskifyGlass(cornerRadius: 18)
+    }
+
+    private var disabledSection: some View {
+        Text("Lightning address disabled. Use Amount to create an invoice.")
+            .font(.subheadline)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(20)
+            .taskifyGlass(cornerRadius: 18)
+    }
+
+    // MARK: - npub.cash
+
+    private var npubCashSection: some View {
+        Group {
+            if let identity = wallet.npubCashIdentity {
+                VStack(spacing: 12) {
+                    Button {
+                        UIPasteboard.general.string = identity.address
+                        withAnimation(.snappy) { copied = true }
+                    } label: {
+                        VStack(spacing: 8) {
+                            Text(identity.address)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                                .multilineTextAlignment(.center)
+                            Label(copied ? "Copied" : "Tap to copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(copied ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
+                        .onChange(of: autoClaimEnabled) { _, enabled in
+                            LightningAddressSettings.setAutoClaimEnabled(enabled)
+                        }
+                    Text("Automatically check for and redeem pending eCash each time the wallet opens.")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button {
+                        Task { await wallet.claimNpubCash(auto: false) }
+                    } label: {
+                        if wallet.npubCashClaimStatus == .checking {
+                            ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                        } else {
+                            Text("Check for pending eCash")
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 46)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(wallet.npubCashClaimStatus == .checking)
+
+                    if let message = wallet.npubCashClaimMessage {
+                        Label(message, systemImage: statusIcon)
+                            .font(.caption)
+                            .foregroundStyle(statusColor)
+                    }
+                }
+                .padding(16)
+                .taskifyGlass(cornerRadius: 18)
+            } else if let identityError = wallet.npubCashIdentityError {
+                Label(identityError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(16)
+                    .taskifyGlass(cornerRadius: 18)
+            }
         }
     }
 
@@ -4199,107 +4226,81 @@ private struct LightningAddressReceiveSheet: View {
         case .checking, .idle: TaskifyTheme.secondaryText
         }
     }
-}
 
-/// solife.me's default address always works with no setup. This sheet is for the optional
-/// enhancements that do need the server's authenticated API: buying a vanity handle instead of
-/// the default npub-based one, and choosing which mint receives payments for either.
-private struct SolifeAddressManagerSheet: View {
-    @ObservedObject var wallet: WalletViewModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var showingPurchase = false
-    @State private var mintUpdateError: String?
+    // MARK: - solife.me
 
-    private var mintChoices: [String] {
-        var urls = wallet.snapshot.mints.map(\.url)
-        if let configured = wallet.solifeConfig?.mintUrl, !urls.contains(configured) {
-            urls.append(configured)
-        }
-        return urls
-    }
+    private var solifeSection: some View {
+        Group {
+            if wallet.solifeAccountStatus == .loading, wallet.solifeAccount == nil {
+                ProgressView("Loading your solife.me account…")
+                    .padding(.top, 40)
+            } else if let account = wallet.solifeAccount {
+                let defaultIsSelected = selectedSolifeAddress == nil
+                    || !account.addresses.contains { $0.address.lowercased() == selectedSolifeAddress }
 
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 18) {
-                    if wallet.solifeAccountStatus == .loading, wallet.solifeAccount == nil {
-                        ProgressView("Loading your solife.me account…")
-                            .padding(.top, 40)
-                    } else if let account = wallet.solifeAccount {
-                        addressCard(
-                            title: "Default address",
-                            address: account.lightningAddress,
-                            mintURL: account.lightningAddressMintUrl,
-                            onSelectMint: { mintURL in
-                                await updateMint { try await wallet.updateSolifeDefaultMint(mintURL) }
-                            }
-                        )
+                addressCard(
+                    title: "Default address",
+                    address: account.lightningAddress,
+                    mintURL: account.lightningAddressMintUrl,
+                    isSelected: defaultIsSelected,
+                    onSelect: { selectAddress(nil) },
+                    onSelectMint: { mintURL in
+                        await updateMint { try await wallet.updateSolifeDefaultMint(mintURL) }
+                    }
+                )
 
-                        if !account.addresses.isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Custom addresses")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(TaskifyTheme.secondaryText)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                ForEach(account.addresses, id: \.handle) { customAddress in
-                                    addressCard(
-                                        title: customAddress.handle,
-                                        address: customAddress.address,
-                                        mintURL: customAddress.mintUrl,
-                                        onSelectMint: { mintURL in
-                                            await updateMint {
-                                                try await wallet.updateSolifeCustomAddressMint(
-                                                    handle: customAddress.handle,
-                                                    mintURL: mintURL
-                                                )
-                                            }
-                                        }
-                                    )
+                if !account.addresses.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Custom addresses")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ForEach(account.addresses, id: \.handle) { customAddress in
+                            addressCard(
+                                title: customAddress.handle,
+                                address: customAddress.address,
+                                mintURL: customAddress.mintUrl,
+                                isSelected: selectedSolifeAddress == customAddress.address.lowercased(),
+                                onSelect: { selectAddress(customAddress.address) },
+                                onSelectMint: { mintURL in
+                                    await updateMint {
+                                        try await wallet.updateSolifeCustomAddressMint(
+                                            handle: customAddress.handle,
+                                            mintURL: mintURL
+                                        )
+                                    }
                                 }
-                            }
+                            )
                         }
-
-                        if let price = wallet.solifeConfig?.customAddressPriceSats {
-                            Button {
-                                showingPurchase = true
-                            } label: {
-                                Text(price > 0 ? "New Custom Address (\(wallet.formattedSats(price)))" : "New Custom Address")
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 46)
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-
-                        if let mintUpdateError {
-                            Label(mintUpdateError, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-                    } else if let message = wallet.solifeAccountMessage {
-                        Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .padding(.top, 40)
                     }
                 }
-                .padding(20)
-            }
-            .background(TaskifyTheme.background.ignoresSafeArea())
-            .navigationTitle("solife.me")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+
+                Button {
+                    showingPurchase = true
+                } label: {
+                    if let price = wallet.solifeConfig?.customAddressPriceSats {
+                        Text(price > 0 ? "New Custom Address (\(wallet.formattedSats(price)))" : "New Custom Address")
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                    } else {
+                        Text("New Custom Address")
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+
+                if let mintUpdateError {
+                    Label(mintUpdateError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } else if let message = wallet.solifeAccountMessage {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.top, 40)
             }
-        }
-        .preferredColorScheme(.dark)
-        .tint(TaskifyTheme.accent)
-        .task {
-            await wallet.refreshSolifeAccount()
-        }
-        .sheet(isPresented: $showingPurchase) {
-            SolifeCustomAddressPurchaseSheet(wallet: wallet)
         }
     }
 
@@ -4307,12 +4308,25 @@ private struct SolifeAddressManagerSheet: View {
         title: String,
         address: String,
         mintURL: String,
+        isSelected: Bool,
+        onSelect: @escaping () -> Void,
         onSelectMint: @escaping (String?) async -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(TaskifyTheme.secondaryText)
+            HStack {
+                Text(title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                Spacer()
+                if isSelected {
+                    Label("Shown on Receive", systemImage: "checkmark.circle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.accent)
+                } else {
+                    Button("Show on Receive", action: onSelect)
+                        .font(.caption2.weight(.semibold))
+                }
+            }
             Text(address)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(TaskifyTheme.primaryText)
@@ -4340,6 +4354,12 @@ private struct SolifeAddressManagerSheet: View {
         .taskifyGlass(cornerRadius: 18)
     }
 
+    private func selectAddress(_ address: String?) {
+        selectedSolifeAddress = address?.lowercased()
+        LightningAddressSettings.setSelectedSolifeAddress(address)
+        wallet.refreshLightningAddresses()
+    }
+
     private func updateMint(_ action: () async throws -> Void) async {
         mintUpdateError = nil
         do {
@@ -4354,6 +4374,7 @@ private struct SolifeAddressManagerSheet: View {
 /// settlement verification — the same sequence as the PWA's `handlePurchaseCustomAddress`.
 private struct SolifeCustomAddressPurchaseSheet: View {
     @ObservedObject var wallet: WalletViewModel
+    var onClaimed: (String) -> Void = { _ in }
     @Environment(\.dismiss) private var dismiss
     @State private var handle = ""
     @State private var availability: SolifeAddressAvailability?
@@ -4525,6 +4546,7 @@ private struct SolifeCustomAddressPurchaseSheet: View {
             switch try await wallet.purchaseSolifeCustomAddress(handle: normalizedHandle) {
             case .address(let address):
                 claimedAddress = address.address
+                onClaimed(address.address)
             case .purchase(let purchase):
                 pendingPurchase = purchase
                 guard let mintURL = wallet.activeMint?.url else {
@@ -4557,6 +4579,7 @@ private struct SolifeCustomAddressPurchaseSheet: View {
             if latest.status == "address_claimed" {
                 claimedAddress = latest.address
                 pendingPurchase = nil
+                onClaimed(latest.address)
             } else if latest.status == "expired" {
                 errorMessage = "The invoice expired for \(latest.address)."
                 pendingPurchase = nil

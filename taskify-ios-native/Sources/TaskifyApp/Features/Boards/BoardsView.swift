@@ -3711,6 +3711,7 @@ struct TaskCardView: View {
     @Environment(TaskCompletionAnimationController.self)
     private var completionAnimations: TaskCompletionAnimationController?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.taskifyOverPhoto) private var overPhoto
     @AppStorage(TaskPresentationSettings.completedTabKey)
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
@@ -3787,6 +3788,8 @@ struct TaskCardView: View {
         let cardCornerRadius = hasMedia ? CGFloat(24) : 18
         let isSelectionMode = selection?.isActive ?? false
         let isSelected = selection?.selectedTaskIDs.contains(task.id) ?? false
+
+        TaskifyPerfMonitor.shared.recordCardBody()
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 11) {
@@ -3909,6 +3912,9 @@ struct TaskCardView: View {
                             }
                         }
                     }
+                    // Text only — the media thumbnails stay outside this subtree, so the shadow's
+                    // offscreen pass covers glyphs rather than the whole row.
+                    .taskifyLegibilityShadow(overPhoto)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
@@ -3969,6 +3975,9 @@ struct TaskCardView: View {
                         )
                     }
                 }
+                // Caption-sized secondary text is the first thing a photo washes out, and the
+                // unchecked box is a hairline square in the same colour.
+                .taskifyLegibilityShadow(overPhoto)
                 .padding(.leading, 41)
                 .padding(.trailing, 3)
             }
@@ -3983,20 +3992,38 @@ struct TaskCardView: View {
         // columns in flight during a horizontal swipe) that was the bulk of the paging cost.
         // The silhouette is the rounded rectangle either way, so this renders the same.
         .background(
-            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.13), Color.white.opacity(0.035)],
-                        startPoint: .top,
-                        endPoint: .bottom
+            ZStack {
+                // Alone among the app's cards, a task card carries no material — just a white
+                // sheen over whatever is behind it. On the standard gradient that reads as glass
+                // because the gradient is already dark; over a photo it is a clear pane, so a
+                // bright sky or a hard light/shadow edge lands directly under the text.
+                //
+                // The blur is what fixes that, not a tint: it flattens the backdrop's local
+                // contrast so the card has a smooth base wherever it sits, while still showing
+                // the photo's colour through. This is the same recipe as `GlassPanel`, which is
+                // why event cards on the same screen already held up where task cards did not.
+                if overPhoto, !TaskifyPerfMonitor.cardMaterialDisabled {
+                    RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                }
+
+                RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.13), Color.white.opacity(0.035)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
                     )
-                )
-                .shadow(color: Color.black.opacity(0.22), radius: 8, y: 5)
+            }
+            .shadow(color: Color.black.opacity(0.22), radius: 8, y: 5)
         )
         .overlay(
             RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
                 .stroke(
-                    isSelected ? TaskifyTheme.accent : Color.white.opacity(hasMedia ? 0.15 : 0.12),
+                    isSelected
+                        ? TaskifyTheme.accent
+                        : Color.white.opacity(overPhoto ? 0.22 : (hasMedia ? 0.15 : 0.12)),
                     lineWidth: isSelected ? 2 : 1
                 )
         )
