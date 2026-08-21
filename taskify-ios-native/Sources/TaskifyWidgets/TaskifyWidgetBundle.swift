@@ -192,7 +192,7 @@ private struct CalendarScheduleWidgetBody: View {
 
     private var maximumItemCount: Int {
         switch family {
-        case .systemSmall: 8
+        case .systemSmall: 6
         case .systemMedium: 4
         default: 5
         }
@@ -239,10 +239,8 @@ private struct CalendarScheduleWidgetBody: View {
             } else if family == .systemSmall {
                 // StandBy presents system-small widgets at a much larger physical scale. Use
                 // natural-height rows and take the first candidate that fits so same-day lists
-                // can show eight tasks while several date headings can gracefully fall back.
+                // can show six tasks while several date headings can gracefully fall back.
                 ViewThatFits(in: .vertical) {
-                    scheduleContent(visibleItems: visibleItems(limit: 8))
-                    scheduleContent(visibleItems: visibleItems(limit: 7))
                     scheduleContent(visibleItems: visibleItems(limit: 6))
                     scheduleContent(visibleItems: visibleItems(limit: 5))
                     scheduleContent(visibleItems: visibleItems(limit: 4))
@@ -258,7 +256,7 @@ private struct CalendarScheduleWidgetBody: View {
 
     @ViewBuilder
     private func scheduleContent(visibleItems: [TaskifyWidgetTask]) -> some View {
-        VStack(alignment: .leading, spacing: family == .systemSmall ? 1 : (family == .systemLarge ? 7 : 3)) {
+        VStack(alignment: .leading, spacing: family == .systemSmall ? 2 : (family == .systemLarge ? 7 : 3)) {
             HStack(alignment: .firstTextBaseline) {
                 Text(header.uppercased())
                     .font((family == .systemSmall ? Font.system(size: 9) : .caption).weight(.bold))
@@ -291,7 +289,7 @@ private struct CalendarScheduleWidgetBody: View {
                 }
                 Spacer(minLength: 0)
             } else {
-                VStack(alignment: .leading, spacing: family == .systemSmall ? 1 : (family == .systemLarge ? 7 : 3)) {
+                VStack(alignment: .leading, spacing: family == .systemSmall ? 2 : (family == .systemLarge ? 7 : 3)) {
                     ForEach(sections(for: visibleItems)) { section in
                         CalendarScheduleSectionView(
                             section: section,
@@ -332,7 +330,7 @@ private struct CalendarScheduleSectionView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: dense ? 1 : (compact ? 1 : 5)) {
+        VStack(alignment: .leading, spacing: dense ? 2 : (compact ? 1 : 5)) {
             if showsHeading {
                 Text(heading.uppercased())
                     .font((dense ? Font.system(size: 7) : (compact ? Font.system(size: 9) : .caption2)).weight(.semibold))
@@ -367,7 +365,7 @@ private struct CalendarTaskWidgetRow: View {
                     Image(systemName: item.kind.symbolName)
                         .font(dense ? .system(size: 8.5, weight: .semibold) : (compact ? .caption.weight(.semibold) : .body.weight(.semibold)))
                         .foregroundStyle(.secondary)
-                        .frame(width: dense ? 15 : (compact ? 24 : 29), height: dense ? 14 : (compact ? 24 : 29))
+                        .frame(width: dense ? 17 : (compact ? 24 : 29), height: dense ? 17 : (compact ? 24 : 29))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -375,14 +373,14 @@ private struct CalendarTaskWidgetRow: View {
                 Image(systemName: item.kind.symbolName)
                     .font(dense ? .system(size: 8.5, weight: .semibold) : (compact ? .caption.weight(.semibold) : .body.weight(.semibold)))
                     .foregroundStyle(.secondary)
-                    .frame(width: dense ? 15 : (compact ? 24 : 29), height: dense ? 14 : (compact ? 24 : 29))
+                    .frame(width: dense ? 17 : (compact ? 24 : 29), height: dense ? 17 : (compact ? 24 : 29))
             }
 
             // Only the text opens the task, so it can't swallow the checkbox's taps.
             Link(destination: destination) {
                 HStack(alignment: .center, spacing: 5) {
                     Text(item.title)
-                        .font((dense ? Font.system(size: 9.5) : (compact ? Font.caption : .subheadline)).weight(.medium))
+                        .font((dense ? Font.system(size: 8.5) : (compact ? Font.caption : .subheadline)).weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 3)
@@ -399,8 +397,8 @@ private struct CalendarTaskWidgetRow: View {
         }
         .padding(.vertical, dense ? 0 : (compact ? 1 : 5))
         .padding(.horizontal, dense ? 3 : (compact ? 5 : 7))
-        .frame(maxWidth: .infinity, minHeight: dense ? 14 : nil)
-        .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: dense ? 4.5 : (compact ? 8 : 10), style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: dense ? 17 : nil)
+        .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: dense ? 5.5 : (compact ? 8 : 10), style: .continuous))
     }
 
     private var destination: URL {
@@ -439,9 +437,9 @@ private struct CalendarEventWidgetRow: View {
             .padding(.horizontal, dense ? 3 : (compact ? 5 : 7))
             .frame(
                 maxWidth: .infinity,
-                minHeight: dense ? 14 : (compact ? 24 : 42)
+                minHeight: dense ? 17 : (compact ? 24 : 42)
             )
-            .background(.primary.opacity(0.11), in: RoundedRectangle(cornerRadius: dense ? 4.5 : (compact ? 8 : 10), style: .continuous))
+            .background(.primary.opacity(0.11), in: RoundedRectangle(cornerRadius: dense ? 5.5 : (compact ? 8 : 10), style: .continuous))
             .contentShape(Rectangle())
         }
     }
