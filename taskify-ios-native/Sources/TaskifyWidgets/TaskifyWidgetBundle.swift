@@ -192,7 +192,7 @@ private struct CalendarScheduleWidgetBody: View {
 
     private var maximumItemCount: Int {
         switch family {
-        case .systemSmall: 4
+        case .systemSmall: 8
         case .systemMedium: 4
         default: 5
         }
@@ -239,8 +239,12 @@ private struct CalendarScheduleWidgetBody: View {
             } else if family == .systemSmall {
                 // StandBy presents system-small widgets at a much larger physical scale. Use
                 // natural-height rows and take the first candidate that fits so same-day lists
-                // can show four tasks while several date headings can gracefully fall back.
+                // can show eight tasks while several date headings can gracefully fall back.
                 ViewThatFits(in: .vertical) {
+                    scheduleContent(visibleItems: visibleItems(limit: 8))
+                    scheduleContent(visibleItems: visibleItems(limit: 7))
+                    scheduleContent(visibleItems: visibleItems(limit: 6))
+                    scheduleContent(visibleItems: visibleItems(limit: 5))
                     scheduleContent(visibleItems: visibleItems(limit: 4))
                     scheduleContent(visibleItems: visibleItems(limit: 3))
                     scheduleContent(visibleItems: visibleItems(limit: 2))
@@ -254,10 +258,10 @@ private struct CalendarScheduleWidgetBody: View {
 
     @ViewBuilder
     private func scheduleContent(visibleItems: [TaskifyWidgetTask]) -> some View {
-        VStack(alignment: .leading, spacing: family == .systemLarge ? 7 : 3) {
+        VStack(alignment: .leading, spacing: family == .systemSmall ? 1 : (family == .systemLarge ? 7 : 3)) {
             HStack(alignment: .firstTextBaseline) {
                 Text(header.uppercased())
-                    .font((family == .systemSmall ? Font.caption2 : .caption).weight(.bold))
+                    .font((family == .systemSmall ? Font.system(size: 9) : .caption).weight(.bold))
                     .tracking(0.35)
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
@@ -265,7 +269,7 @@ private struct CalendarScheduleWidgetBody: View {
                 let hiddenCount = hiddenTaskCount(for: visibleItems)
                 if hiddenCount > 0 {
                     Text("+\(hiddenCount)")
-                        .font(.caption2.weight(.semibold))
+                        .font(family == .systemSmall ? .system(size: 8, weight: .semibold) : .caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -287,7 +291,7 @@ private struct CalendarScheduleWidgetBody: View {
                 }
                 Spacer(minLength: 0)
             } else {
-                VStack(alignment: .leading, spacing: family == .systemLarge ? 7 : 3) {
+                VStack(alignment: .leading, spacing: family == .systemSmall ? 1 : (family == .systemLarge ? 7 : 3)) {
                     ForEach(sections(for: visibleItems)) { section in
                         CalendarScheduleSectionView(
                             section: section,
@@ -328,11 +332,11 @@ private struct CalendarScheduleSectionView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: dense ? 0 : (compact ? 1 : 5)) {
+        VStack(alignment: .leading, spacing: dense ? 1 : (compact ? 1 : 5)) {
             if showsHeading {
                 Text(heading.uppercased())
-                    .font((dense ? Font.system(size: 8) : (compact ? Font.system(size: 9) : .caption2)).weight(.semibold))
-                    .tracking(0.3)
+                    .font((dense ? Font.system(size: 7) : (compact ? Font.system(size: 9) : .caption2)).weight(.semibold))
+                    .tracking(dense ? 0.2 : 0.3)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -355,36 +359,36 @@ private struct CalendarTaskWidgetRow: View {
     let dense: Bool
 
     var body: some View {
-        HStack(alignment: .center, spacing: dense ? 3 : (compact ? 5 : 7)) {
+        HStack(alignment: .center, spacing: dense ? 2 : (compact ? 5 : 7)) {
             if item.kind.isCompletable {
-                // Completes in place (iOS 17+). The tappable area is the padded frame, not the
-                // glyph -- a bare SF Symbol is a ~15pt target and near-impossible to hit.
+                // Completes in place (iOS 17+). StandBy scales this compact frame up with the
+                // system-small widget while the larger widget families keep their wider target.
                 Button(intent: CompleteTaskIntent(taskID: item.id)) {
                     Image(systemName: item.kind.symbolName)
-                        .font(dense ? .system(size: 10, weight: .semibold) : (compact ? .caption.weight(.semibold) : .body.weight(.semibold)))
+                        .font(dense ? .system(size: 8.5, weight: .semibold) : (compact ? .caption.weight(.semibold) : .body.weight(.semibold)))
                         .foregroundStyle(.secondary)
-                        .frame(width: dense ? 20 : (compact ? 24 : 29), height: dense ? 20 : (compact ? 24 : 29))
+                        .frame(width: dense ? 15 : (compact ? 24 : 29), height: dense ? 14 : (compact ? 24 : 29))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             } else {
                 Image(systemName: item.kind.symbolName)
-                    .font(dense ? .system(size: 10, weight: .semibold) : (compact ? .caption.weight(.semibold) : .body.weight(.semibold)))
+                    .font(dense ? .system(size: 8.5, weight: .semibold) : (compact ? .caption.weight(.semibold) : .body.weight(.semibold)))
                     .foregroundStyle(.secondary)
-                    .frame(width: dense ? 20 : (compact ? 24 : 29), height: dense ? 20 : (compact ? 24 : 29))
+                    .frame(width: dense ? 15 : (compact ? 24 : 29), height: dense ? 14 : (compact ? 24 : 29))
             }
 
             // Only the text opens the task, so it can't swallow the checkbox's taps.
             Link(destination: destination) {
                 HStack(alignment: .center, spacing: 5) {
                     Text(item.title)
-                        .font((dense ? Font.system(size: 10.5) : (compact ? Font.caption : .subheadline)).weight(.medium))
+                        .font((dense ? Font.system(size: 9.5) : (compact ? Font.caption : .subheadline)).weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 3)
                     if let timing = timingLabel {
                         Text(timing)
-                            .font(dense ? .system(size: 9) : .caption2)
+                            .font(dense ? .system(size: 8) : .caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -394,9 +398,9 @@ private struct CalendarTaskWidgetRow: View {
             }
         }
         .padding(.vertical, dense ? 0 : (compact ? 1 : 5))
-        .padding(.horizontal, dense ? 4 : (compact ? 5 : 7))
-        .frame(maxWidth: .infinity, minHeight: dense ? 20 : nil)
-        .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: dense ? 6 : (compact ? 8 : 10), style: .continuous))
+        .padding(.horizontal, dense ? 3 : (compact ? 5 : 7))
+        .frame(maxWidth: .infinity, minHeight: dense ? 14 : nil)
+        .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: dense ? 4.5 : (compact ? 8 : 10), style: .continuous))
     }
 
     private var destination: URL {
@@ -418,26 +422,26 @@ private struct CalendarEventWidgetRow: View {
 
     var body: some View {
         Link(destination: TaskifyWidgetLink.upcoming.url) {
-            HStack(alignment: .center, spacing: dense ? 3 : (compact ? 5 : 7)) {
+            HStack(alignment: .center, spacing: dense ? 2 : (compact ? 5 : 7)) {
                 Capsule()
                     .fill(Color.accentColor)
-                    .frame(width: dense ? 2 : (compact ? 3 : 4))
+                    .frame(width: dense ? 1.5 : (compact ? 3 : 4))
 
                 Text(item.title)
-                    .font((dense ? Font.system(size: 10.5) : (compact ? Font.caption : .subheadline)).weight(.semibold))
+                    .font((dense ? Font.system(size: 9.5) : (compact ? Font.caption : .subheadline)).weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(compact ? 1 : 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 eventTiming
             }
-            .padding(.vertical, dense ? 1 : (compact ? 2 : 6))
-            .padding(.horizontal, dense ? 4 : (compact ? 5 : 7))
+            .padding(.vertical, dense ? 0 : (compact ? 2 : 6))
+            .padding(.horizontal, dense ? 3 : (compact ? 5 : 7))
             .frame(
                 maxWidth: .infinity,
-                minHeight: dense ? 20 : (compact ? 24 : 42)
+                minHeight: dense ? 14 : (compact ? 24 : 42)
             )
-            .background(.primary.opacity(0.11), in: RoundedRectangle(cornerRadius: dense ? 6 : (compact ? 8 : 10), style: .continuous))
+            .background(.primary.opacity(0.11), in: RoundedRectangle(cornerRadius: dense ? 4.5 : (compact ? 8 : 10), style: .continuous))
             .contentShape(Rectangle())
         }
     }
@@ -446,7 +450,7 @@ private struct CalendarEventWidgetRow: View {
     private var eventTiming: some View {
         if item.isAllDay {
             Text("all-day")
-                .font(dense ? .system(size: 9) : .caption2)
+                .font(dense ? .system(size: 8) : .caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         } else if let start = item.dueDate {
@@ -457,7 +461,7 @@ private struct CalendarEventWidgetRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .font(dense ? .system(size: 9) : .caption2)
+            .font(dense ? .system(size: 8) : .caption2)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
         }
