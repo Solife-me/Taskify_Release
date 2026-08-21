@@ -286,6 +286,7 @@ public actor TaskSyncEngine {
     private var deliveredEventIDs: Set<String> = []
     private var deliveredEventIDOrder: [String] = []
     private var configurationFingerprint: TaskSyncConfigurationFingerprint?
+    private var isCheckingForegroundRelayHealth = false
 
     public init(outbox: NostrOutboxStore = NostrOutboxStore()) {
         self.outbox = outbox
@@ -455,6 +456,52 @@ public actor TaskSyncEngine {
             auxiliaryRelayURLs: auxiliaryRelayURLs,
             inboxPublicKey: inboxPublicKey
         )
+    }
+
+    /// Verifies sockets after iOS resumes the app and repairs only the relays that stopped
+    /// responding while suspended. A relay can retain an apparently live WebSocket task without
+    /// delivering a disconnect callback, so relying on the aggregate `.online` state is not
+    /// enough. Healthy sockets keep their subscriptions; failed sockets reconnect, reissue every
+    /// board/inbox subscription, and replay any events missed in the background.
+    public func refreshAfterForeground(healthCheckTimeout: Duration = .seconds(2)) async {
+        guard !isCheckingForegroundRelayHealth else { return }
+        isCheckingForegroundRelayHealth = true
+        defer { isCheckingForegroundRelayHealth = false }
+
+        let currentConnections = connections
+        guard !currentConnections.isEmpty else { return }
+
+        let healthByRelay = await withTaskGroup(
+            of: (String, Bool).self,
+            returning: [String: Bool].self
+        ) { group in
+            for (relayURL, connection) in currentConnections {
+                group.addTask {
+                    (relayURL, await connection.isResponsive(timeout: healthCheckTimeout))
+                }
+            }
+            var result: [String: Bool] = [:]
+            for await (relayURL, isResponsive) in group {
+                result[relayURL] = isResponsive
+            }
+            return result
+        }
+
+        let unhealthyRelays = healthByRelay.compactMap { relayURL, isResponsive in
+            isResponsive ? nil : relayURL
+        }.sorted()
+        for relayURL in unhealthyRelays {
+            guard let currentConnection = currentConnections[relayURL],
+                  let configuredConnection = connections[relayURL],
+                  configuredConnection === currentConnection else { continue }
+            await resetForForegroundReconnect(relayURL: relayURL)
+            await reconnect(relayURL: relayURL)
+        }
+
+        // Foregrounding is also the earliest reliable opportunity to deliver edits that were
+        // queued after iOS exhausted the background handoff window.
+        await flushOutbox()
+        await emitStatus()
     }
 
     public func publish(
@@ -1011,6 +1058,25 @@ public actor TaskSyncEngine {
     private func reconnectAfterDelay(relayURL: String) async {
         reconnectTasks[relayURL] = nil
         await reconnect(relayURL: relayURL)
+    }
+
+    private func resetForForegroundReconnect(relayURL: String) async {
+        reconnectTasks.removeValue(forKey: relayURL)?.cancel()
+        rateLimitRetryTasks.removeValue(forKey: relayURL)?.cancel()
+        reconnectAttempts[relayURL] = 0
+        pendingSubscriptions.removeValue(forKey: relayURL)
+        relayBatches.removeValue(forKey: relayURL)
+        inFlightEventIDs.removeValue(forKey: relayURL)
+        relayAuthChallenges.removeValue(forKey: relayURL)
+        relayAuthEventIDs.removeValue(forKey: relayURL)
+        pendingAuthResubscriptions.removeValue(forKey: relayURL)
+        for key in subscriptionRateLimitRetryTasks.keys where key.hasPrefix("\(relayURL)#") {
+            subscriptionRateLimitRetryTasks.removeValue(forKey: key)?.cancel()
+            subscriptionRateLimitAttempts.removeValue(forKey: key)
+        }
+        if let connection = connections[relayURL] {
+            await connection.disconnect()
+        }
     }
 
     private func reconnect(relayURL: String) async {

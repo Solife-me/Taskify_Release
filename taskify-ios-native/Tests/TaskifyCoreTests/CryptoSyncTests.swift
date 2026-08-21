@@ -1318,6 +1318,30 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(decoded[1] as? String, "taskify-test")
     }
 
+    func testDisconnectedRelayHealthCheckFailsWithoutWaitingForTimeout() async {
+        let connection = NostrRelayConnection(relayURL: "wss://relay.example")
+        let startedAt = ProcessInfo.processInfo.systemUptime
+
+        let isResponsive = await connection.isResponsive(timeout: .seconds(5))
+
+        XCTAssertFalse(isResponsive)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - startedAt, 0.25)
+    }
+
+    func testForegroundRelayRefreshIsSafeBeforeSyncConfiguration() async {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-foreground-refresh-\(UUID().uuidString)", isDirectory: true)
+        let engine = TaskSyncEngine(
+            outbox: NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        )
+
+        await engine.refreshAfterForeground(healthCheckTimeout: .milliseconds(10))
+
+        let pendingPublishCount = await engine.pendingPublishCount()
+        XCTAssertEqual(pendingPublishCount, 0)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     func testIdentityImportsHexAndNsec() throws {
         let hex = String(repeating: "0", count: 63) + "1"
         let identity = try NostrIdentity(importedValue: hex)

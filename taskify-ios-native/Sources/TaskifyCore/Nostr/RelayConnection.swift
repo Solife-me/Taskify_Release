@@ -67,6 +67,28 @@ enum NostrRelayWire {
     }
 }
 
+/// Resolves a WebSocket ping from either its pong callback or a timeout, whichever arrives first.
+/// `URLSessionWebSocketTask.sendPing` has no native async timeout and a suspended socket can leave
+/// its callback pending indefinitely. Keeping the one-shot resolution behind a lock lets the
+/// foreground health check return promptly without risking a double-resumed continuation when a
+/// late pong arrives after the timeout.
+private final class NostrRelayPingResolution: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ isResponsive: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: isResponsive)
+    }
+}
+
 public actor NostrRelayConnection {
     public nonisolated let relayURL: String
 
@@ -118,6 +140,26 @@ public actor NostrRelayConnection {
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         connectionGeneration = nil
+    }
+
+    /// Confirms that the relay socket can still exchange WebSocket control frames.
+    ///
+    /// iOS can suspend a backgrounded WebSocket without immediately completing `receive()` with
+    /// an error. In that state `socket` is non-nil and the sync engine still looks online even
+    /// though no new relay events can arrive. A pong proves the existing subscription is alive;
+    /// a missing pong tells the engine to reconnect and replay the subscription backlog.
+    public func isResponsive(timeout: Duration = .seconds(2)) async -> Bool {
+        guard let socket, socket.state == .running else { return false }
+        return await withCheckedContinuation { continuation in
+            let resolution = NostrRelayPingResolution(continuation: continuation)
+            socket.sendPing { error in
+                resolution.resolve(error == nil)
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                resolution.resolve(false)
+            }
+        }
     }
 
     public func subscribe(

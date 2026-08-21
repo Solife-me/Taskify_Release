@@ -1844,7 +1844,9 @@ final class AppModel {
         case .offline, .stopped:
             retrySync()
         case .connecting, .online:
-            return
+            Task { [syncEngine] in
+                await syncEngine.refreshAfterForeground()
+            }
         }
     }
 
