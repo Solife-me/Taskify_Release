@@ -110,7 +110,9 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     func sendSnapshot(_ snapshot: TaskifyWatchSnapshot) {
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
         do {
-            let data = try TaskifyWatchTransfer.encode(snapshotIncludingAcknowledgements(snapshot))
+            let data = try TaskifyWatchTransfer.encodeConnectivitySnapshot(
+                snapshotIncludingAcknowledgements(snapshot)
+            )
             // Application context contains task display data only. It never contains an nsec,
             // raw private key, wallet seed, or Cashu proof.
             try WCSession.default.updateApplicationContext([
@@ -379,6 +381,14 @@ extension TaskifyWatchBridge: WCSessionDelegate {
         refreshState(for: session)
     }
 
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        guard session.isReachable else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let model = self.model else { return }
+            self.scheduleSnapshot(from: model)
+        }
+    }
+
     func session(
         _ session: WCSession,
         didReceiveMessageData messageData: Data,
@@ -421,6 +431,25 @@ extension TaskifyWatchBridge: WCSessionDelegate {
         didReceiveMessage message: [String: Any],
         replyHandler: @escaping ([String: Any]) -> Void
     ) {
+        if TaskifyWatchTransfer.isSnapshotRequest(message) {
+            Task { @MainActor [weak self] in
+                guard let self, let model = self.model else {
+                    replyHandler([:])
+                    return
+                }
+                let snapshot = self.snapshotIncludingAcknowledgements(model.watchSnapshot())
+                do {
+                    let data = try TaskifyWatchTransfer.encodeConnectivitySnapshot(snapshot)
+                    // Also replace application context so this same current state remains queued
+                    // for the next background delivery if the interactive reply is interrupted.
+                    self.sendSnapshot(snapshot)
+                    replyHandler([TaskifyWatchTransfer.snapshotDataKey: data])
+                } catch {
+                    replyHandler([:])
+                }
+            }
+            return
+        }
         guard TaskifyWatchTransfer.isSetupNavigationRequest(message) else {
             replyHandler([:])
             return

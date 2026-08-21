@@ -401,8 +401,16 @@ public enum TaskifyWatchTransfer {
         [setupNavigationRequestKey: true]
     }
 
+    public static var snapshotRequest: [String: Any] {
+        [requestSnapshotKey: true]
+    }
+
     public static func isSetupNavigationRequest(_ values: [String: Any]) -> Bool {
         values[setupNavigationRequestKey] as? Bool == true
+    }
+
+    public static func isSnapshotRequest(_ values: [String: Any]) -> Bool {
+        values[requestSnapshotKey] as? Bool == true
     }
 
     public static func encode(_ snapshot: TaskifyWatchSnapshot) throws -> Data {
@@ -415,6 +423,65 @@ public enum TaskifyWatchTransfer {
             throw TransferError.unsupportedSchema(snapshot.schemaVersion)
         }
         return snapshot
+    }
+
+    /// Encodes the latest-state snapshot for WatchConnectivity. Application-context and
+    /// interactive-message payloads have a relatively small practical budget, while a Watch
+    /// snapshot can contain the lossless encrypted-task context needed for independent writes.
+    /// LZFSE keeps the full projection in the common case; if an unusually attachment-heavy
+    /// account is still too large, the least relevant trailing tasks are removed while board
+    /// order and counts remain intact.
+    public static func encodeConnectivitySnapshot(
+        _ snapshot: TaskifyWatchSnapshot,
+        maximumBytes: Int = 48 * 1_024
+    ) throws -> Data {
+        let byteLimit = max(1_024, maximumBytes)
+        var lowerBound = 0
+        var upperBound = snapshot.tasks.count
+        var bestData: Data?
+
+        while lowerBound <= upperBound {
+            let taskCount = lowerBound + (upperBound - lowerBound) / 2
+            let candidate = taskCount == snapshot.tasks.count
+                ? snapshot
+                : TaskifyWatchSnapshot(
+                    schemaVersion: snapshot.schemaVersion,
+                    tasks: Array(snapshot.tasks.prefix(taskCount)),
+                    boards: snapshot.boards,
+                    selectedBoardID: snapshot.selectedBoardID,
+                    generatedAt: snapshot.generatedAt,
+                    acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs
+                )
+            let data = try compressedSnapshotData(candidate)
+            if data.count <= byteLimit {
+                bestData = data
+                lowerBound = taskCount + 1
+            } else {
+                upperBound = taskCount - 1
+            }
+        }
+
+        if let bestData { return bestData }
+        // A very large board list is still more useful than silently failing every update. The
+        // caller will surface the system transport error if even this minimal state cannot fit.
+        return try compressedSnapshotData(TaskifyWatchSnapshot(
+            schemaVersion: snapshot.schemaVersion,
+            tasks: [],
+            boards: snapshot.boards,
+            selectedBoardID: snapshot.selectedBoardID,
+            generatedAt: snapshot.generatedAt,
+            acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs
+        ))
+    }
+
+    public static func decodeConnectivitySnapshot(_ data: Data) throws -> TaskifyWatchSnapshot {
+        guard data.starts(with: compressedSnapshotHeader) else {
+            // Backward compatibility with application contexts written by older iPhone builds.
+            return try decodeSnapshot(data)
+        }
+        let compressed = data.dropFirst(compressedSnapshotHeader.count)
+        let decoded = try (Data(compressed) as NSData).decompressed(using: .lzfse) as Data
+        return try decodeSnapshot(decoded)
     }
 
     public static func encode(_ command: TaskifyWatchCommand) throws -> Data {
@@ -545,5 +612,13 @@ public enum TaskifyWatchTransfer {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         return decoder
+    }
+
+    private static let compressedSnapshotHeader = Data([0x54, 0x46, 0x57, 0x53, 0x01])
+
+    private static func compressedSnapshotData(_ snapshot: TaskifyWatchSnapshot) throws -> Data {
+        let source = try encode(snapshot)
+        let compressed = try (source as NSData).compressed(using: .lzfse) as Data
+        return compressedSnapshotHeader + compressed
     }
 }

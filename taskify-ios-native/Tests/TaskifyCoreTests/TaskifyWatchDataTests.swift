@@ -18,6 +18,16 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertFalse(TaskifyWatchTransfer.isSetupNavigationRequest([:]))
     }
 
+    func testSnapshotRequestHasAnExplicitTypedMarker() {
+        XCTAssertTrue(
+            TaskifyWatchTransfer.isSnapshotRequest(TaskifyWatchTransfer.snapshotRequest)
+        )
+        XCTAssertFalse(TaskifyWatchTransfer.isSnapshotRequest([
+            TaskifyWatchTransfer.requestSnapshotKey: false,
+        ]))
+        XCTAssertFalse(TaskifyWatchTransfer.isSnapshotRequest([:]))
+    }
+
     private let now = Date(timeIntervalSince1970: 1_785_945_600) // 2026-08-06 12:00 UTC
 
     private var calendar: Calendar {
@@ -181,6 +191,74 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertEqual(snapshot.watchData(now: now).boards.map(\.id), ["first", "second"])
     }
 
+    func testConnectivitySnapshotCompressionRoundTripsAndReadsLegacyPayloads() throws {
+        let snapshot = TaskifyWatchSnapshot(
+            tasks: [
+                TaskifyWatchTask(
+                    id: "task",
+                    title: "Review the proposal",
+                    boardID: "work",
+                    boardName: "Work",
+                    columnName: "Inbox",
+                    dueDate: now,
+                    dueTimeEnabled: true,
+                    priority: 2,
+                    order: 1,
+                    syncPayload: Data(repeating: 0x41, count: 2_048)
+                ),
+            ],
+            boards: [TaskifyWatchBoard(id: "work", name: "Work", openTaskCount: 1)],
+            selectedBoardID: "work",
+            generatedAt: now,
+            acknowledgedCommandIDs: ["command"]
+        )
+
+        let connectivityData = try TaskifyWatchTransfer.encodeConnectivitySnapshot(snapshot)
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeConnectivitySnapshot(connectivityData),
+            snapshot
+        )
+
+        let legacyData = try TaskifyWatchTransfer.encode(snapshot)
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeConnectivitySnapshot(legacyData),
+            snapshot
+        )
+    }
+
+    func testConnectivitySnapshotTrimsTrailingTasksToStayInsideTransportBudget() throws {
+        let board = TaskifyWatchBoard(id: "work", name: "Work", openTaskCount: 80)
+        let tasks = (0..<80).map { index in
+            TaskifyWatchTask(
+                id: "task-\(index)",
+                title: "Task \(index)",
+                boardID: board.id,
+                boardName: board.name,
+                columnName: "Inbox",
+                dueDate: now.addingTimeInterval(TimeInterval(index * 60)),
+                dueTimeEnabled: true,
+                priority: nil,
+                order: index,
+                syncPayload: deterministicPayload(seed: UInt64(index + 1), count: 1_024)
+            )
+        }
+        let snapshot = TaskifyWatchSnapshot(
+            tasks: tasks,
+            boards: [board],
+            selectedBoardID: board.id,
+            generatedAt: now
+        )
+
+        let data = try TaskifyWatchTransfer.encodeConnectivitySnapshot(snapshot, maximumBytes: 8_000)
+        let decoded = try TaskifyWatchTransfer.decodeConnectivitySnapshot(data)
+
+        XCTAssertLessThanOrEqual(data.count, 8_000)
+        XCTAssertFalse(decoded.tasks.isEmpty)
+        XCTAssertLessThan(decoded.tasks.count, tasks.count)
+        XCTAssertEqual(decoded.tasks, Array(tasks.prefix(decoded.tasks.count)))
+        XCTAssertEqual(decoded.boards, [board])
+    }
+
     func testWatchWidgetSnapshotContainsOnlyGlanceableTodayData() {
         let widgetSource = TaskifyWatchSnapshot(
             tasks: [
@@ -230,6 +308,17 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertEqual(widget.tasks.map(\.id), ["later", "tomorrow"])
         XCTAssertEqual(widget.tasks.first?.boardName, "Work")
         XCTAssertEqual(widget.todayTasks(now: now, calendar: calendar).map(\.id), ["later"])
+    }
+
+    private func deterministicPayload(seed: UInt64, count: Int) -> Data {
+        var state = seed
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(count)
+        for _ in 0..<count {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            bytes.append(UInt8(truncatingIfNeeded: state >> 24))
+        }
+        return Data(bytes)
     }
 
     func testWatchTransferRoundTripsSnapshotsAndCommands() throws {

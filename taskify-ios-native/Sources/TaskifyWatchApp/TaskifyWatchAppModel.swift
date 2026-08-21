@@ -129,6 +129,7 @@ final class TaskifyWatchAppModel: NSObject {
     @ObservationIgnored private var directSyncCommandIDs: Set<String> = []
     @ObservationIgnored private var independentProfile: TaskifyWatchIndependentProfile?
     @ObservationIgnored private var requestedInitialSetupNavigation = false
+    @ObservationIgnored private var latestPhoneSnapshotGeneratedAt = Date.distantPast
 
     override init() {
         let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -318,6 +319,14 @@ final class TaskifyWatchAppModel: NSObject {
 
     /// Refreshes encrypted Taskify task records through the Watch HTTPS transport. This works
     /// over the Watch's own Wi-Fi/cellular route and does not require a reachable iPhone.
+    func refreshLatestData() async {
+        // Apply the phone projection first, then let the relay's latest replaceable events win.
+        // Running these concurrently can allow a delayed phone reply to overwrite a newer edit
+        // fetched directly from a web client.
+        await requestLatestSnapshotFromPhone()
+        await refreshFromRelays()
+    }
+
     func refreshFromRelays() async {
         guard isProvisioned,
               !snapshot.boards.isEmpty,
@@ -702,6 +711,27 @@ final class TaskifyWatchAppModel: NSObject {
         apply(applicationContext: session.receivedApplicationContext)
     }
 
+    /// Pulls the current projection while both apps are reachable instead of relying solely on
+    /// application-context delivery. This is especially important after the Watch app has been
+    /// suspended: WatchConnectivity may wake it with an older cached context before delivering
+    /// the replacement context.
+    private func requestLatestSnapshotFromPhone() async {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return }
+        await withCheckedContinuation { continuation in
+            session.sendMessage(TaskifyWatchTransfer.snapshotRequest) { [weak self] reply in
+                Task { @MainActor in
+                    self?.apply(applicationContext: reply)
+                    continuation.resume()
+                }
+            } errorHandler: { _ in
+                // Independent relay refresh and the queued application context remain available.
+                continuation.resume()
+            }
+        }
+    }
+
     private func retryPendingCommands() {
         for command in pendingCommands {
             deliver(command)
@@ -805,12 +835,19 @@ final class TaskifyWatchAppModel: NSObject {
 
     private func apply(applicationContext: [String: Any]) {
         guard let data = applicationContext[TaskifyWatchTransfer.snapshotDataKey] as? Data,
-              let received = try? TaskifyWatchTransfer.decodeSnapshot(data) else { return }
+              let received = try? TaskifyWatchTransfer.decodeConnectivitySnapshot(data) else { return }
         apply(snapshot: received)
     }
 
     private func apply(snapshot received: TaskifyWatchSnapshot) {
-        guard received.generatedAt >= snapshot.generatedAt else { return }
+        // `generatedAt` is a cache timestamp, not a cross-device causal revision. A relay refresh
+        // performed on Watch can legitimately have a later wall-clock time than an authoritative
+        // iPhone snapshot that arrives afterward. Rejecting that phone state leaves the Watch
+        // permanently stale until an even newer phone mutation occurs. Compare only against the
+        // last phone projection instead, which still prevents delayed WatchConnectivity payloads
+        // from rolling back a newer phone projection.
+        guard received.generatedAt >= latestPhoneSnapshotGeneratedAt else { return }
+        latestPhoneSnapshotGeneratedAt = received.generatedAt
         snapshot = received
         let acknowledged = Set(received.acknowledgedCommandIDs ?? [])
         if !acknowledged.isEmpty {
@@ -935,6 +972,7 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
             } else {
                 self?.requestInitialSetupNavigation()
                 self?.retryPendingCommands()
+                await self?.requestLatestSnapshotFromPhone()
             }
         }
     }
@@ -944,6 +982,7 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
         Task { @MainActor [weak self] in
             self?.requestInitialSetupNavigation()
             self?.retryPendingCommands()
+            await self?.requestLatestSnapshotFromPhone()
         }
     }
 

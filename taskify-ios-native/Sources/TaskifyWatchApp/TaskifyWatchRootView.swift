@@ -17,6 +17,7 @@ private enum TaskifyWatchTheme {
 
 struct TaskifyWatchRootView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingQuickAdd = false
     @State private var quickAddBoardID: String?
     @State private var showingInitialSetupPrompt = false
@@ -74,6 +75,9 @@ struct TaskifyWatchRootView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .refreshable {
+                    await model.refreshLatestData()
+                }
                 .navigationTitle("Taskify")
             }
             .safeAreaInset(edge: .bottom) {
@@ -110,8 +114,17 @@ struct TaskifyWatchRootView: View {
                 TaskifyWatchQuickAddSheet(destinationBoardID: quickAddBoardID)
                     .environment(model)
             }
-            .task {
-                await model.refreshFromRelays()
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await model.refreshLatestData()
+                // The independent client intentionally uses short-lived HTTPS relay queries
+                // rather than keeping a persistent Watch WebSocket alive. Refresh modestly while
+                // the UI is active so edits from a web client appear without reopening the app.
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(60))
+                    guard !Task.isCancelled else { return }
+                    await model.refreshLatestData()
+                }
             }
         } else {
             NavigationStack {
@@ -515,6 +528,9 @@ private struct TaskifyWatchTaskList: View {
             }
         }
         .navigationTitle(title)
+        .refreshable {
+            await model.refreshLatestData()
+        }
         .onAppear { model.setActiveQuickAddBoardID(source.boardID) }
         .onDisappear {
             if model.activeQuickAddBoardID == source.boardID {
