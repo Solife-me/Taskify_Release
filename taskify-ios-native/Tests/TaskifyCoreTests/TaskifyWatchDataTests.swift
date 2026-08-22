@@ -259,7 +259,7 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertEqual(decoded.boards, [board])
     }
 
-    func testWatchWidgetSnapshotContainsOnlyGlanceableTodayData() {
+    func testWatchWidgetSnapshotContainsOnlyGlanceableComplicationData() {
         let widgetSource = TaskifyWatchSnapshot(
             tasks: [
                 TaskifyWatchTask(
@@ -308,6 +308,59 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertEqual(widget.tasks.map(\.id), ["later", "tomorrow"])
         XCTAssertEqual(widget.tasks.first?.boardName, "Work")
         XCTAssertEqual(widget.todayTasks(now: now, calendar: calendar).map(\.id), ["later"])
+        XCTAssertEqual(
+            widget.upcomingTasks(now: now, calendar: calendar).map(\.id),
+            ["later", "tomorrow"]
+        )
+        XCTAssertEqual(
+            TaskifyWatchWidgetCache.widgetKinds,
+            [
+                TaskifyWatchWidgetCache.todayWidgetKind,
+                TaskifyWatchWidgetCache.upcomingWidgetKind,
+            ]
+        )
+    }
+
+    func testWatchWidgetUpcomingExcludesPriorDaysAndSortsByDateThenTitle() {
+        let startOfToday = calendar.startOfDay(for: now)
+        let sameFutureDate = now.addingTimeInterval(2 * 86_400)
+        let widget = TaskifyWatchWidgetSnapshot(tasks: [
+            TaskifyWatchWidgetTask(
+                id: "past",
+                title: "Past task",
+                boardName: "Work",
+                dueDate: startOfToday.addingTimeInterval(-1)
+            ),
+            TaskifyWatchWidgetTask(
+                id: "beta",
+                title: "Beta",
+                boardName: "Work",
+                dueDate: sameFutureDate
+            ),
+            TaskifyWatchWidgetTask(
+                id: "today",
+                title: "Today",
+                boardName: "Personal",
+                dueDate: now
+            ),
+            TaskifyWatchWidgetTask(
+                id: "alpha",
+                title: "Alpha",
+                boardName: "Work",
+                dueDate: sameFutureDate
+            ),
+            TaskifyWatchWidgetTask(
+                id: "undated",
+                title: "Undated",
+                boardName: "Personal",
+                dueDate: nil
+            ),
+        ])
+
+        XCTAssertEqual(
+            widget.upcomingTasks(now: now, calendar: calendar).map(\.id),
+            ["today", "alpha", "beta"]
+        )
     }
 
     private func deterministicPayload(seed: UInt64, count: Int) -> Data {

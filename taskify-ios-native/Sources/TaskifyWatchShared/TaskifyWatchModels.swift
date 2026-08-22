@@ -194,6 +194,23 @@ public struct TaskifyWatchWidgetSnapshot: Codable, Equatable, Sendable {
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
     }
+
+    /// Open tasks due today or later, ordered the same way as the Watch app's Upcoming view.
+    /// Undated tasks are intentionally omitted because they are not part of the dated agenda.
+    public func upcomingTasks(
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [TaskifyWatchWidgetTask] {
+        let start = calendar.startOfDay(for: now)
+        return tasks
+            .filter { ($0.dueDate ?? .distantPast) >= start }
+            .sorted { lhs, rhs in
+                if lhs.dueDate != rhs.dueDate {
+                    return (lhs.dueDate ?? .distantFuture) < (rhs.dueDate ?? .distantFuture)
+                }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
 }
 
 /// Shares non-secret widget data between the Watch app and its WidgetKit extension. App Groups
@@ -201,6 +218,8 @@ public struct TaskifyWatchWidgetSnapshot: Codable, Equatable, Sendable {
 public enum TaskifyWatchWidgetCache {
     public static let appGroupIdentifier = "group.solife.me.Taskify"
     public static let todayWidgetKind = "TaskifyWatchTodayWidget"
+    public static let upcomingWidgetKind = "TaskifyWatchUpcomingWidget"
+    public static let widgetKinds = [todayWidgetKind, upcomingWidgetKind]
 
     private static let snapshotKey = "taskify-watch-widget-snapshot-v1"
 

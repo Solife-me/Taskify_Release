@@ -319,12 +319,15 @@ final class TaskifyWatchAppModel: NSObject {
 
     /// Refreshes encrypted Taskify task records through the Watch HTTPS transport. This works
     /// over the Watch's own Wi-Fi/cellular route and does not require a reachable iPhone.
-    func refreshLatestData() async {
+    func refreshLatestData(forceComplicationReload: Bool = false) async {
         // Apply the phone projection first, then let the relay's latest replaceable events win.
         // Running these concurrently can allow a delayed phone reply to overwrite a newer edit
         // fetched directly from a web client.
         await requestLatestSnapshotFromPhone()
         await refreshFromRelays()
+        if forceComplicationReload {
+            reloadComplicationTimelines()
+        }
     }
 
     func refreshFromRelays() async {
@@ -949,7 +952,13 @@ final class TaskifyWatchAppModel: NSObject {
             excludingTaskIDs: pendingCompletionIDs
         )
         guard TaskifyWatchWidgetCache.saveIfChanged(widgetSnapshot) else { return }
-        WidgetCenter.shared.reloadTimelines(ofKind: TaskifyWatchWidgetCache.todayWidgetKind)
+        reloadComplicationTimelines()
+    }
+
+    private func reloadComplicationTimelines() {
+        for kind in TaskifyWatchWidgetCache.widgetKinds {
+            WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        }
     }
 
     private func sessionSetupTransfers() -> [WCSessionUserInfoTransfer] {

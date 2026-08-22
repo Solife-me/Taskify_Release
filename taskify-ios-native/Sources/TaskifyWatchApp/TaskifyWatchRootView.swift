@@ -76,7 +76,7 @@ struct TaskifyWatchRootView: View {
                     }
                 }
                 .refreshable {
-                    await model.refreshLatestData()
+                    await model.refreshLatestData(forceComplicationReload: true)
                 }
                 .navigationTitle("Taskify")
             }
@@ -116,7 +116,10 @@ struct TaskifyWatchRootView: View {
             }
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
-                await model.refreshLatestData()
+                // Retry WidgetKit when the app becomes active even if the shared snapshot itself
+                // did not change. A previously budget-delayed complication reload must not leave
+                // an old "All clear" timeline beside a Watch app that already has today's tasks.
+                await model.refreshLatestData(forceComplicationReload: true)
                 // The independent client intentionally uses short-lived HTTPS relay queries
                 // rather than keeping a persistent Watch WebSocket alive. Refresh modestly while
                 // the UI is active so edits from a web client appear without reopening the app.
@@ -529,7 +532,7 @@ private struct TaskifyWatchTaskList: View {
         }
         .navigationTitle(title)
         .refreshable {
-            await model.refreshLatestData()
+            await model.refreshLatestData(forceComplicationReload: true)
         }
         .onAppear { model.setActiveQuickAddBoardID(source.boardID) }
         .onDisappear {
