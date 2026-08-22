@@ -160,7 +160,7 @@ private struct TaskifyWatchTodayView: View {
     private var inline: some View {
         Group {
             if let first = entry.todayTasks.first {
-                Label("\(entry.todayTasks.count) due · \(first.title)", systemImage: "checklist")
+                Label("\(entry.todayTasks.count) · \(first.title)", systemImage: "checklist")
                     .privacySensitive()
             } else {
                 Label("All clear today", systemImage: "checkmark.circle")
@@ -261,7 +261,7 @@ private struct TaskifyWatchUpcomingView: View {
     private var inline: some View {
         Group {
             if let first = entry.upcomingTasks.first {
-                Label("\(entry.upcomingTasks.count) upcoming · \(first.title)", systemImage: "calendar")
+                Label("\(entry.upcomingTasks.count) · \(first.title)", systemImage: "calendar")
                     .privacySensitive()
             } else {
                 Label("No upcoming tasks", systemImage: "calendar.badge.checkmark")
