@@ -7,6 +7,51 @@ final class SolifeClientTests: XCTestCase {
         XCTAssertEqual(SolifeClient.address(npub: "npub1example"), "npub1example@solife.me")
     }
 
+    func testPreferredReceiveAddressKeepsPersistedCustomAddressBeforeAccountLoads() {
+        XCTAssertEqual(
+            SolifeClient.preferredReceiveAddress(
+                selectedAddress: " Nathan@Solife.me ",
+                account: nil,
+                derivedAddress: "npub1example@solife.me"
+            ),
+            "nathan@solife.me"
+        )
+    }
+
+    func testPreferredReceiveAddressRevalidatesSelectionWhenAccountLoads() {
+        let customAddress = SolifeAddress(
+            handle: "nathan",
+            address: "nathan@solife.me",
+            mintUrl: "https://mint.solife.me",
+            mintOverride: false
+        )
+        let account = SolifeAccount(
+            npub: "npub1example",
+            lightningAddress: "npub1example@solife.me",
+            lightningAddressMintUrl: "https://mint.solife.me",
+            lightningAddressMintOverride: false,
+            addresses: [customAddress],
+            addressPurchases: []
+        )
+
+        XCTAssertEqual(
+            SolifeClient.preferredReceiveAddress(
+                selectedAddress: "nathan@solife.me",
+                account: account,
+                derivedAddress: nil
+            ),
+            "nathan@solife.me"
+        )
+        XCTAssertEqual(
+            SolifeClient.preferredReceiveAddress(
+                selectedAddress: "former@solife.me",
+                account: account,
+                derivedAddress: nil
+            ),
+            "npub1example@solife.me"
+        )
+    }
+
     func testParseConfigFallsBackToDefaultsForMissingFields() throws {
         let full = try SolifeClient.parseConfig(Data(#"""
         {"domain":"solife.me","mintUrl":"https://mint.solife.me","customAddressPriceSats":1000,"authKind":27235}

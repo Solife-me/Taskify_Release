@@ -81,6 +81,37 @@ public enum SolifeClient {
         "\(npub)@\(domain)"
     }
 
+    /// Resolves the address shown on Receive without requiring an account fetch on every launch.
+    /// A custom address was already authenticated when the user selected it, so its persisted
+    /// value remains authoritative while the account is not loaded. Once fresh account data is
+    /// available, a selection that is no longer owned falls back to the account default.
+    public static func preferredReceiveAddress(
+        selectedAddress: String?,
+        account: SolifeAccount?,
+        derivedAddress: String?
+    ) -> String? {
+        let selected = normalizedAddress(selectedAddress)
+        if let selected {
+            if account == nil || account?.addresses.contains(where: {
+                normalizedAddress($0.address) == selected
+            }) == true {
+                return selected
+            }
+        }
+
+        if let accountAddress = normalizedAddress(account?.lightningAddress) {
+            return accountAddress
+        }
+        return normalizedAddress(derivedAddress)
+    }
+
+    private static func normalizedAddress(_ address: String?) -> String? {
+        let normalized = address?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized?.isEmpty == false ? normalized : nil
+    }
+
     public static func fetchConfig(session: URLSession = .shared) async throws -> SolifeConfig {
         let data = try await request(path: "/api/config", method: "GET", session: session)
         return try parseConfig(data)

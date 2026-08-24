@@ -785,14 +785,11 @@ final class WalletViewModel: ObservableObject {
         case .npubCash:
             return npubCashIdentity?.address
         case .solife:
-            if let selected = LightningAddressSettings.selectedSolifeAddress,
-               solifeAccount?.addresses.contains(where: { $0.address.lowercased() == selected }) == true {
-                return selected
-            }
-            if let account = solifeAccount, !account.lightningAddress.isEmpty {
-                return account.lightningAddress
-            }
-            return solifeAddress
+            return SolifeClient.preferredReceiveAddress(
+                selectedAddress: LightningAddressSettings.selectedSolifeAddress,
+                account: solifeAccount,
+                derivedAddress: solifeAddress
+            )
         }
     }
 
