@@ -12,8 +12,8 @@ import UIKit
 /// and "Create new login" just surfaces/backs up the key that's already there. The PWA's third
 /// option — restoring from a local backup *file* — isn't ported here: native has no local backup
 /// file export/import to restore from yet. Signing in with an existing key already triggers the
-/// existing automatic PWA-account-backup search (`AppModel.findPWAAccountBackup`), which covers
-/// the common "I already used Taskify" case without new plumbing.
+/// existing automatic account-sync search (`AppModel.refreshAccountSync`), which covers the
+/// common "I already used Taskify" case without new plumbing.
 struct FirstRunOnboardingView: View {
     @Environment(AppModel.self) private var model
 

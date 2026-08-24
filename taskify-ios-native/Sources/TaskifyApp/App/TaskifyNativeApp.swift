@@ -98,6 +98,7 @@ struct TaskifyNativeApp: App {
                         model.refreshSyncIfNeeded()
                         model.refreshFullWeekRecurrencesIfNeeded()
                         model.refreshContactsIfNeeded()
+                        model.refreshAccountSyncIfNeeded()
                         wallet.appDidBecomeActive()
                     case .background:
                         TaskifyBackgroundSyncCoordinator.shared.appDidEnterBackground()

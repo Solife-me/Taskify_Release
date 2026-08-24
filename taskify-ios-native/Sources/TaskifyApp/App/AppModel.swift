@@ -402,7 +402,6 @@ final class AppModel {
     private(set) var taskifyEventRSVPsByEventID: [String: [TaskifyEventRSVPResponse]] = [:]
     private(set) var refreshingTaskifyEventRSVPIDs: Set<String> = []
     private(set) var unavailableTaskifyEventRSVPIDs: Set<String> = []
-    var pendingAccountBackup: NostrAppBackupPayload?
     var errorMessage: String?
     private(set) var showsFirstRunOnboarding = false
 
@@ -432,6 +431,7 @@ final class AppModel {
     @ObservationIgnored private var accountBackupBaseline: NostrAppBackupPayload?
     @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
     @ObservationIgnored private var lastAccountBackupCreatedAt = 0
+    @ObservationIgnored private var lastAccountBackupCheckAt: Date?
     @ObservationIgnored private var lastNostrCreatedAt = 0
     @ObservationIgnored private var accountBackupPublishPending = false
     @ObservationIgnored private var syncState: TaskSyncState = .connecting
@@ -2784,6 +2784,13 @@ final class AppModel {
             accountBackupPublishTask?.cancel()
             await publishAccountBackupSafely()
         }
+        if let identity = cachedIdentity {
+            refreshAccountSync(identity: identity)
+            let accountSyncDeadline = Date().addingTimeInterval(6)
+            while !Task.isCancelled, isCheckingAccountBackup, Date() < accountSyncDeadline {
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+        }
 
         await syncEngine.retryNow()
         let listenUntil = Date().addingTimeInterval(3)
@@ -3954,6 +3961,18 @@ final class AppModel {
         showsFirstRunOnboarding = false
     }
 
+    /// Returns the raw nsec for export. Callers are responsible for gating this behind device
+    /// authentication before displaying or copying it — the model performs no auth of its own,
+    /// matching how `WalletViewModel.recoveryPhrase()` leaves Face ID/passcode to the view layer.
+    func exportIdentityNsec() throws -> String {
+        if let cachedIdentity { return cachedIdentity.nsec }
+        guard let identity = try identityStore.load() else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
+        cachedIdentity = identity
+        return identity.nsec
+    }
+
     @discardableResult
     func importIdentity(_ value: String) -> Bool {
         do {
@@ -4000,7 +4019,7 @@ final class AppModel {
                 )
             }
             reconfigureSync()
-            findPWAAccountBackup(identity: imported)
+            refreshAccountSync(identity: imported)
             refreshContacts()
             return true
         } catch {
@@ -4009,55 +4028,44 @@ final class AppModel {
         }
     }
 
-    var pendingAccountBackupReview: NostrAppBackupReview? {
-        pendingAccountBackup.map {
-            NostrAppBackupReview(payload: $0, currentBoards: snapshot.boards)
+    /// Manual "Sync now" entry point from Settings — loads the identity if it isn't already
+    /// cached, then runs the same silent check/merge as the automatic background triggers.
+    func checkAccountSyncNow() {
+        if let cachedIdentity {
+            refreshAccountSync(identity: cachedIdentity)
+            return
         }
-    }
-
-    func findPWAAccountBackup() {
         do {
             guard let identity = try identityStore.load() else {
-                accountBackupMessage = "Import a Nostr identity before looking for a PWA backup."
+                accountBackupMessage = "Import a Nostr identity before checking account sync."
                 return
             }
-            findPWAAccountBackup(identity: identity)
+            refreshAccountSync(identity: identity)
         } catch {
             accountBackupMessage = error.localizedDescription
         }
     }
 
-    func dismissPWAAccountBackup() {
-        pendingAccountBackup = nil
-        accountBackupMessage = "PWA backup left unchanged. You can check again at any time."
+    /// Throttled automatic entry point for the app-active and background-refresh triggers — an
+    /// account-sync check is a relay round trip, so this avoids re-running it on every brief
+    /// foreground return.
+    func refreshAccountSyncIfNeeded() {
+        guard !isLoading,
+              !isCheckingAccountBackup,
+              let identity = cachedIdentity,
+              lastAccountBackupCheckAt.map({ Date().timeIntervalSince($0) > 300 }) ?? true else { return }
+        refreshAccountSync(identity: identity)
     }
 
-    func applyPendingPWAAccountBackup() {
-        guard let payload = pendingAccountBackup else { return }
-        accountBackupBaseline = payload
-        managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
-        lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
-        applyPWASettings(from: payload)
-        let result = snapshot.mergePWAAccountBackup(payload)
-        pendingAccountBackup = nil
-        let imported = result.importedBoardCount
-        let updated = result.updatedBoardCount
-        accountBackupMessage = imported > 0
-            ? "Added \(imported) board\(imported == 1 ? "" : "s") and connected \(updated) existing board\(updated == 1 ? "" : "s"). Tasks will arrive through Nostr sync."
-            : "Connected \(updated) existing board\(updated == 1 ? "" : "s") to the backup relay settings."
-        scheduleSave()
-        reconfigureSync()
-        scheduleAccountBackupPublish()
-    }
-
-    private func findPWAAccountBackup(
-        identity: NostrIdentity,
-        automaticallyActivateWhenAlreadyConnected: Bool = false
-    ) {
+    /// Finds the latest encrypted account-sync event for this identity and merges it in
+    /// immediately — no review step. This is meant to be an ongoing background sync between
+    /// every client (native or PWA) sharing this account's nsec, not a one-time restore, so a
+    /// found payload is always applied silently.
+    private func refreshAccountSync(identity: NostrIdentity) {
         accountBackupSearchTask?.cancel()
-        pendingAccountBackup = nil
         isCheckingAccountBackup = true
-        accountBackupMessage = "Checking your configured relays for a PWA account backup…"
+        lastAccountBackupCheckAt = Date()
+        accountBackupMessage = "Checking your linked devices for updates…"
         let relays = TaskifyRelayURL.normalizedList(
             appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
         )
@@ -4082,40 +4090,38 @@ final class AppModel {
             guard !Task.isCancelled else { return }
             isCheckingAccountBackup = false
             if let decodedPayload {
-                let review = NostrAppBackupReview(
-                    payload: decodedPayload,
-                    currentBoards: snapshot.boards
-                )
-                if automaticallyActivateWhenAlreadyConnected,
-                   review.importableBoardCount == 0 {
-                    accountBackupBaseline = decodedPayload
-                    managedAccountBackupBoardIDs = decodedPayload.nativeManagedNostrBoardIDs
-                    applyPWASettings(from: decodedPayload)
-                    lastAccountBackupCreatedAt = max(
-                        lastAccountBackupCreatedAt,
-                        decodedPayload.timestamp
-                    )
-                    accountBackupMessage = "Encrypted PWA account-backup continuity is active."
-                    reconfigureSync()
-                    let projectedPayload = decodedPayload.updatingNativeBoards(
-                        snapshot.boards,
-                        managedNostrBoardIDs: managedAccountBackupBoardIDs,
-                        timestamp: decodedPayload.timestamp
-                    )
-                    if projectedPayload != decodedPayload {
-                        scheduleAccountBackupPublish()
-                    }
-                } else {
-                    pendingAccountBackup = decodedPayload
-                    accountBackupMessage = "PWA account backup found. Review it before adding its boards."
-                }
+                applyAccountSyncPayload(decodedPayload)
             } else if candidates.isEmpty {
-                accountBackupMessage = automaticallyActivateWhenAlreadyConnected
-                    ? nil
-                    : "No PWA account backup was found on your configured Taskify relays."
+                accountBackupMessage = "No linked device found on your configured relays yet."
             } else {
-                accountBackupMessage = "A backup event was found, but it could not be decrypted with this identity."
+                accountBackupMessage = "A sync update was found, but it could not be decrypted with this identity."
             }
+        }
+    }
+
+    /// Merges a decoded account-sync payload into the local snapshot and republishes if this
+    /// device's own boards have since diverged from it. Safe to call repeatedly with the same
+    /// payload — board merging matches by Nostr board ID, so re-applying is a no-op.
+    private func applyAccountSyncPayload(_ payload: NostrAppBackupPayload) {
+        accountBackupBaseline = payload
+        managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
+        lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
+        applySyncedSettings(from: payload)
+        let result = snapshot.mergePWAAccountBackup(payload)
+        let imported = result.importedBoardCount
+        let updated = result.updatedBoardCount
+        accountBackupMessage = imported > 0
+            ? "Synced \(imported) new board\(imported == 1 ? "" : "s") from your other device."
+            : "Account sync is up to date."
+        scheduleSave()
+        reconfigureSync()
+        let projectedPayload = payload.updatingNativeBoards(
+            snapshot.boards,
+            managedNostrBoardIDs: managedAccountBackupBoardIDs,
+            timestamp: payload.timestamp
+        )
+        if projectedPayload != payload {
+            scheduleAccountBackupPublish()
         }
     }
 
@@ -4187,10 +4193,7 @@ final class AppModel {
             guard !Task.isCancelled else { return }
             self.refreshContacts()
             if let identity = self.cachedIdentity {
-                self.findPWAAccountBackup(
-                    identity: identity,
-                    automaticallyActivateWhenAlreadyConnected: true
-                )
+                self.refreshAccountSync(identity: identity)
             }
         }
     }
@@ -5553,14 +5556,14 @@ final class AppModel {
                     .filter { $0.kind != .bible }
                     .map(\.effectiveNostrBoardID)
             )
-            accountBackupMessage = "Native board changes are queued in your encrypted PWA account backup."
+            accountBackupMessage = "Native board changes are queued in your encrypted account sync."
             accountBackupPublishPending = false
         } catch {
             accountBackupMessage = "Taskify could not queue the encrypted account backup update."
         }
     }
 
-    private func applyPWASettings(from payload: NostrAppBackupPayload) {
+    private func applySyncedSettings(from payload: NostrAppBackupPayload) {
         // Applied before the selected-server value below, since selectServer only accepts a URL
         // that's already present in the list.
         if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.serverListPWAKey] {

@@ -1,3 +1,4 @@
+import LocalAuthentication
 import SwiftUI
 import TaskifyCore
 import UIKit
@@ -22,6 +23,10 @@ struct SettingsView: View {
     @State private var sharedBoardName = ""
     @State private var showingBoardScanner = false
     @State private var identityInput = ""
+    @State private var revealedNsec: String?
+    @State private var nsecCopied = false
+    @State private var isAuthenticatingNsec = false
+    @State private var nsecAuthError: String?
     @State private var showingAddFileServer = false
     @State private var newFileServerType: TaskifyFileServerType = .originless
     @State private var newFileServerURL = ""
@@ -66,11 +71,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        // @Environment values aren't bindable directly; @Bindable re-wraps the same model
-        // reference so `$model.pendingAccountBackup` below still works post-@Observable.
-        @Bindable var model = model
-
-        return VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Settings")
                 .taskifyScreenTitle()
                 .padding(.horizontal, 18)
@@ -115,6 +116,7 @@ struct SettingsView: View {
 
                         settingsGroup("Nostr & Sync", systemImage: "network") {
                             identityCard
+                            accountSyncCard
                             syncCard
                             watchCard
                                 .id(Self.watchCardID)
@@ -163,9 +165,16 @@ struct SettingsView: View {
             CompoundBoardManagerSheet(boardID: board.id)
                 .environment(model)
         }
-        .sheet(item: $model.pendingAccountBackup) { payload in
-            PWAAccountBackupReviewSheet(payload: payload)
-                .environment(model)
+        .alert(
+            "Private key",
+            isPresented: Binding(
+                get: { nsecAuthError != nil },
+                set: { if !$0 { nsecAuthError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { nsecAuthError = nil }
+        } message: {
+            Text(nsecAuthError ?? "")
         }
         .alert(
             "Clear all message history?",
@@ -365,17 +374,67 @@ struct SettingsView: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Private key (nsec)")
+                    .font(.subheadline.weight(.semibold))
+                Text("Anyone with this key can act as you on Nostr and control this account's boards, chat, and sync. Keep it private.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+
+                if let revealedNsec {
+                    Text(revealedNsec)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                        .privacySensitive()
+                }
+
+                HStack(spacing: 12) {
+                    Button {
+                        revealedNsec == nil ? revealNsec() : hideNsec()
+                    } label: {
+                        Label(
+                            isAuthenticatingNsec ? "Authenticating…" : (revealedNsec == nil ? "Show nsec" : "Hide nsec"),
+                            systemImage: revealedNsec == nil ? "eye" : "eye.slash"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isAuthenticatingNsec || model.identityNpub.isEmpty)
+
+                    Button { copyNsec() } label: {
+                        Label(nsecCopied ? "Copied" : "Copy nsec", systemImage: nsecCopied ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(revealedNsec == nil)
+                }
+            }
+        }
+        .padding(18)
+        .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var accountSyncCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                    .font(.title2)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text("Account Sync")
+                    .font(.headline)
+            }
+
             Button {
-                model.findPWAAccountBackup()
+                model.checkAccountSyncNow()
             } label: {
                 if model.isCheckingAccountBackup {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Checking for PWA backup…")
+                        Text("Syncing…")
                     }
                 } else {
-                    Label("Find PWA account backup", systemImage: "arrow.triangle.2.circlepath.icloud")
+                    Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
             .buttonStyle(.bordered)
@@ -387,7 +446,7 @@ struct SettingsView: View {
                     .foregroundStyle(TaskifyTheme.secondaryText)
             }
 
-            Text("After a backup is restored, native board additions, names, lists, archive state, and relay changes are written back through the same encrypted PWA backup. Wallet data and unsupported fields are preserved unchanged.")
+            Text("Boards and settings stay synced in the background with any other Taskify client using the same account. Wallet data and device-only settings are never included.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
@@ -1825,7 +1884,7 @@ struct SettingsView: View {
             StatusRow(title: "Task streaks", status: "Active", complete: true)
             StatusRow(title: "Recurrence & native reminders", status: "Active", complete: true)
             StatusRow(title: "Nostr sync", status: model.syncStatus, complete: model.syncIsOnline)
-            StatusRow(title: "PWA account backup continuity", status: "Active", complete: true)
+            StatusRow(title: "Account sync continuity", status: "Active", complete: true)
             StatusRow(title: "Task sharing & assignments", status: "Active", complete: true)
             StatusRow(title: "Background sync", status: model.backgroundSyncStatus, complete: true)
             StatusRow(title: "Encrypted chat", status: "Active", complete: true)
@@ -2041,6 +2100,64 @@ struct SettingsView: View {
     private func appearanceAccentColor(for choice: TaskifyAccentChoice) -> Color {
         TaskifyTheme.color(for: choice)
     }
+
+    private func revealNsec() {
+        isAuthenticatingNsec = true
+        Task {
+            defer { isAuthenticatingNsec = false }
+            do {
+                try await authenticateForIdentity(reason: "Show your Taskify private key")
+                revealedNsec = try model.exportIdentityNsec()
+            } catch {
+                nsecAuthError = error.localizedDescription
+            }
+        }
+    }
+
+    private func hideNsec() {
+        if nsecCopied { UIPasteboard.general.items = [] }
+        revealedNsec = nil
+        nsecCopied = false
+    }
+
+    private func copyNsec() {
+        guard let revealedNsec else { return }
+        UIPasteboard.general.setItems(
+            [[UTType.plainText.identifier: revealedNsec]],
+            options: [
+                .localOnly: true,
+                .expirationDate: Date().addingTimeInterval(60),
+            ]
+        )
+        nsecCopied = true
+    }
+
+    private func authenticateForIdentity(reason: String) async throws {
+        let context = LAContext()
+        context.localizedCancelTitle = "Cancel"
+        var authenticationError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authenticationError) else {
+            if let authenticationError { throw authenticationError }
+            throw IdentityAuthenticationError.unavailable
+        }
+        guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) else {
+            throw IdentityAuthenticationError.failed
+        }
+    }
+}
+
+private enum IdentityAuthenticationError: LocalizedError {
+    case unavailable
+    case failed
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "Set a device passcode before viewing or copying your private key."
+        case .failed:
+            "Device authentication did not complete."
+        }
+    }
 }
 
 private struct AppearanceAccentSwatch: View {
@@ -2077,137 +2194,6 @@ private struct AppearanceAccentSwatch: View {
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
-    }
-}
-
-private struct PWAAccountBackupReviewSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    let payload: NostrAppBackupPayload
-
-    private var review: NostrAppBackupReview {
-        NostrAppBackupReview(payload: payload, currentBoards: model.snapshot.boards)
-    }
-
-    private var backupDate: Date {
-        Date(timeIntervalSince1970: TimeInterval(payload.timestamp))
-    }
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                TaskifyTheme.background.ignoresSafeArea()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        summaryCard
-                        boardsCard
-                        if review.containsWalletSeed || review.containsPWASettings {
-                            safetyCard
-                        }
-
-                        Button {
-                            model.applyPendingPWAAccountBackup()
-                            dismiss()
-                        } label: {
-                            Label("Add compatible boards", systemImage: "square.and.arrow.down")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(review.importableBoardCount == 0 && review.alreadyConnectedBoardCount == 0)
-                    }
-                    .padding(18)
-                }
-            }
-            .navigationTitle("Restore from PWA")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Not now") {
-                        model.dismissPWAAccountBackup()
-                        dismiss()
-                    }
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
-        .tint(TaskifyTheme.accent)
-    }
-
-    private var summaryCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("PWA backup found")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 10) {
-                LabeledContent("Backup date", value: backupDate.formatted(date: .abbreviated, time: .shortened))
-                LabeledContent("Boards to add", value: "\(review.importableBoardCount)")
-                LabeledContent("Already connected", value: "\(review.alreadyConnectedBoardCount)")
-                LabeledContent("Relay addresses", value: "\(review.relayCount)")
-                if review.unsupportedBoardCount > 0 {
-                    LabeledContent("Not yet supported", value: "\(review.unsupportedBoardCount)")
-                }
-            }
-            .font(.subheadline)
-
-            Text("Import adds compatible boards and relay settings. It does not delete native boards or tasks.")
-                .font(.caption)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .taskifyGlass(cornerRadius: 24)
-    }
-
-    private var boardsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Boards")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(payload.boards.enumerated()), id: \.offset) { _, board in
-                    HStack(spacing: 12) {
-                        Image(systemName: board.kind == .compound ? "square.stack.3d.up" : "rectangle.3.group")
-                            .foregroundStyle(board.kind == .bible ? TaskifyTheme.tertiaryText : TaskifyTheme.accent)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(board.name?.isEmpty == false ? board.name! : "Shared Board")
-                            Text(board.kind == .bible ? "Bible board • not imported yet" : boardKindLabel(board.kind))
-                                .font(.caption)
-                                .foregroundStyle(TaskifyTheme.secondaryText)
-                        }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .taskifyGlass(cornerRadius: 24)
-    }
-
-    private var safetyCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Kept separate for safety")
-                .font(.headline)
-            if review.containsWalletSeed {
-                Label("Wallet seed stays encrypted and is not imported", systemImage: "lock.shield")
-                    .font(.subheadline)
-            }
-            if review.containsPWASettings {
-                Label("PWA-only appearance and device settings are not imported", systemImage: "slider.horizontal.3")
-                    .font(.subheadline)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .taskifyGlass(cornerRadius: 24)
-    }
-
-    private func boardKindLabel(_ kind: BoardKind?) -> String {
-        switch kind ?? .list {
-        case .week: "Weekly board"
-        case .list: "List board"
-        case .compound: "Compound board"
-        case .bible: "Bible board"
-        }
     }
 }
 
