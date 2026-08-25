@@ -17,6 +17,24 @@ test("deriveBoardKeyPair is deterministic", () => {
 });
 
 test("normalizeRelayUrls trims, dedupes, sorts", () => {
-  const relays = normalizeRelayUrls([" wss://b ", "wss://a", "wss://b", "", "   "]);
+  const relays = normalizeRelayUrls([" wss://B/ ", "wss://a", "wss://b", "", "   "]);
   assert.deepEqual(relays, ["wss://a", "wss://b"]);
+});
+
+test("normalizeRelayUrls canonicalizes equivalent URLs and rejects non-relays", () => {
+  const relays = normalizeRelayUrls([
+    "WSS://Relay.Example/",
+    "wss://relay.example",
+    "wss://relay.example/#ignored",
+    "wss://relay.example/path/",
+    "ws://localhost:8080/",
+    "https://relay.example",
+    "wss://user:pass@relay.example",
+    "not a url",
+  ]);
+  assert.deepEqual(relays, [
+    "ws://localhost:8080",
+    "wss://relay.example",
+    "wss://relay.example/path/",
+  ]);
 });
