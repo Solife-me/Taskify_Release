@@ -1,5 +1,5 @@
 import { verifyEvent, type Event as NostrEvent } from "nostr-tools";
-import { verifyGcalAuth } from "./gcal.ts";
+import { verifyTaskifyAuth } from "./nostr-auth.ts";
 import { jsonResponse, parseJson } from "./lib.ts";
 
 const TASK_KIND = 30_301;
@@ -153,7 +153,7 @@ async function queryRelay(relay: string, filter: NostrFilter): Promise<NostrEven
 }
 
 export async function handleWatchNostrPublish(request: Request): Promise<Response> {
-  if (!await verifyGcalAuth(request)) return jsonResponse({ error: "Unauthorized" }, 401);
+  if (!await verifyTaskifyAuth(request)) return jsonResponse({ error: "Unauthorized" }, 401);
   const body = await parseJson(request.clone());
   const relays = normalizedRelayURLs(body?.relays);
   if (!relays.length || !validTaskEvent(body?.event)) {
@@ -165,7 +165,7 @@ export async function handleWatchNostrPublish(request: Request): Promise<Respons
 }
 
 export async function handleWatchNostrQuery(request: Request): Promise<Response> {
-  if (!await verifyGcalAuth(request)) return jsonResponse({ error: "Unauthorized" }, 401);
+  if (!await verifyTaskifyAuth(request)) return jsonResponse({ error: "Unauthorized" }, 401);
   const body = await parseJson(request.clone());
   const relays = normalizedRelayURLs(body?.relays);
   const filter = normalizedFilter(body?.filter);

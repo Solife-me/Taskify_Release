@@ -4,6 +4,7 @@
 
 import { getPreviewFromContent } from "link-preview-js";
 import { jsonResponse, JSON_HEADERS } from "./lib.ts";
+import { assertPublicHttpUrl, fetchPublicHttpUrl, UnsafePublicUrlError } from "./public-fetch.ts";
 
 const PREVIEW_TITLE_MAX_LENGTH = 160;
 const PREVIEW_DESCRIPTION_MAX_LENGTH = 260;
@@ -1108,10 +1109,9 @@ async function fetchAlternateHtml(url: string, referer?: string): Promise<{ html
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
+    const { response, finalUrl } = await fetchPublicHttpUrl(url, {
       method: "GET",
       headers: buildBrowserHeaders({ referer }),
-      redirect: "follow",
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -1119,7 +1119,7 @@ async function fetchAlternateHtml(url: string, referer?: string): Promise<{ html
     }
     const html = await readResponseBodyLimited(response);
     if (!html) return null;
-    return { html, finalUrl: response.url || url };
+    return { html, finalUrl };
   } catch {
     return null;
   } finally {
@@ -1579,27 +1579,30 @@ async function handlePreviewProxy(url: URL): Promise<Response> {
   const normalizedTarget = unwrapGoogleRedirectUrl(targetRaw);
   let parsed: URL;
   try {
-    parsed = new URL(normalizedTarget);
-  } catch {
-    return jsonResponse({ error: "Invalid URL" }, 400);
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return jsonResponse({ error: "Only http(s) URLs are supported" }, 400);
+    parsed = assertPublicHttpUrl(normalizedTarget);
+  } catch (error) {
+    const message = error instanceof UnsafePublicUrlError ? error.message : "Invalid URL";
+    return jsonResponse({ error: message }, 400);
   }
   const requestedUrl = parsed.toString();
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS);
   let upstream: Response;
+  let upstreamFinalUrl = requestedUrl;
   try {
-    upstream = await fetch(requestedUrl, {
+    const fetched = await fetchPublicHttpUrl(requestedUrl, {
       method: "GET",
       headers: buildBrowserHeaders(),
-      redirect: "follow",
       signal: controller.signal,
     });
-  } catch {
+    upstream = fetched.response;
+    upstreamFinalUrl = fetched.finalUrl;
+  } catch (error) {
     clearTimeout(timeout);
+    if (error instanceof UnsafePublicUrlError) {
+      return jsonResponse({ error: error.message }, 400);
+    }
     const alternate = await attemptAlternatePreview(requestedUrl, requestedUrl, "blocked", null);
     if (alternate) {
       return buildPreviewResponse(alternate.preview, alternate.fallback ? { fallback: true } : undefined);
@@ -1610,11 +1613,11 @@ async function handlePreviewProxy(url: URL): Promise<Response> {
   clearTimeout(timeout);
 
   if (!upstream.ok) {
-    const alternate = await attemptAlternatePreview(requestedUrl, upstream.url || requestedUrl, "blocked", null);
+    const alternate = await attemptAlternatePreview(requestedUrl, upstreamFinalUrl, "blocked", null);
     if (alternate) {
       return buildPreviewResponse(alternate.preview, alternate.fallback ? { fallback: true } : undefined);
     }
-    const fallback = buildFallbackPreview(requestedUrl, upstream.url || requestedUrl);
+    const fallback = buildFallbackPreview(requestedUrl, upstreamFinalUrl);
     return buildPreviewResponse(fallback, { fallback: true });
   }
 
@@ -1622,15 +1625,15 @@ async function handlePreviewProxy(url: URL): Promise<Response> {
   try {
     bodyText = await readResponseBodyLimited(upstream);
   } catch {
-    const alternate = await attemptAlternatePreview(requestedUrl, upstream.url || requestedUrl, "blocked", null);
+    const alternate = await attemptAlternatePreview(requestedUrl, upstreamFinalUrl, "blocked", null);
     if (alternate) {
       return buildPreviewResponse(alternate.preview, alternate.fallback ? { fallback: true } : undefined);
     }
-    const fallback = buildFallbackPreview(requestedUrl, upstream.url || requestedUrl);
+    const fallback = buildFallbackPreview(requestedUrl, upstreamFinalUrl);
     return buildPreviewResponse(fallback, { fallback: true });
   }
 
-  const finalUrlRaw = upstream.url || requestedUrl;
+  const finalUrlRaw = upstreamFinalUrl;
   const finalUrl = unwrapGoogleRedirectUrl(finalUrlRaw);
   const headerMap: Record<string, string> = {};
   upstream.headers.forEach((value, key) => {

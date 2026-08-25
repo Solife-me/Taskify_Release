@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import P256K
 
@@ -50,4 +51,20 @@ public struct NostrIdentity: Equatable, Sendable {
     public var publicKeyHex: String { publicKey.hexString }
     public var nsec: String { (try? Bech32.encode(prefix: "nsec", data: privateKey)) ?? "" }
     public var npub: String { (try? Bech32.encode(prefix: "npub", data: publicKey)) ?? "" }
+
+    /// Authenticate a Taskify Worker request without sending the account secret key.
+    public func taskifyRequestHeaders(
+        body: Data,
+        timestamp: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> [String: String] {
+        let hash = CryptoKit.SHA256.hash(data: Data("\(timestamp).".utf8) + body)
+        let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKey)
+        var message = Array(hash)
+        let signature = try key.signature(message: &message, auxiliaryRand: nil, strict: false)
+        return [
+            "X-Taskify-Npub": publicKeyHex,
+            "X-Taskify-Timestamp": String(timestamp),
+            "X-Taskify-Sig": signature.dataRepresentation.hexString,
+        ]
+    }
 }

@@ -12,6 +12,7 @@ export type VoiceDictationModalProps = {
   onSave: (tasks: FinalTask[]) => void;
   workerBaseUrl: string;
   npub: string;
+  privateKeyHex: string;
   defaultBoardId?: string;
   testingMode?: boolean;
 };
@@ -136,6 +137,7 @@ export function VoiceDictationModal({
   onSave,
   workerBaseUrl,
   npub,
+  privateKeyHex,
   defaultBoardId,
   testingMode = false,
 }: VoiceDictationModalProps) {
@@ -150,7 +152,7 @@ export function VoiceDictationModal({
   const [testingText, setTestingText] = useState("");
 
   const { session, startListening, stopListening, dismissCandidate, confirmCandidate, extractFromText, save, reset } =
-    useVoiceSession({ workerBaseUrl, npub, defaultBoardId, onSave: handleSave });
+    useVoiceSession({ workerBaseUrl, npub, privateKeyHex, defaultBoardId, onSave: handleSave });
 
   // Auto-scroll transcript area when text grows
   useEffect(() => {

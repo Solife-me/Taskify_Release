@@ -100,11 +100,21 @@ struct TaskifyWatchIndependentClient: Sendable {
     func interpretVoice(
         transcript: String,
         boardID: String,
-        npub: String
+        profile: TaskifyWatchIndependentProfile,
+        privateKey: Data
     ) async throws -> TaskifyWatchVoicePreview {
         let requestID = UUID().uuidString
-        let candidateTasks = try await extractVoice(transcript: transcript, npub: npub)
-        let tasks = await finalizeVoice(candidates: candidateTasks, boardID: boardID, npub: npub)
+        let candidateTasks = try await extractVoice(
+            transcript: transcript,
+            profile: profile,
+            privateKey: privateKey
+        )
+        let tasks = await finalizeVoice(
+            candidates: candidateTasks,
+            boardID: boardID,
+            profile: profile,
+            privateKey: privateKey
+        )
         let final = tasks.isEmpty
             ? [VoiceFinalWire(title: transcript, dueISO: nil, notes: nil, subtasks: nil, priority: nil)]
             : tasks
@@ -124,7 +134,11 @@ struct TaskifyWatchIndependentClient: Sendable {
         )
     }
 
-    private func extractVoice(transcript: String, npub: String) async throws -> [VoiceCandidateWire] {
+    private func extractVoice(
+        transcript: String,
+        profile: TaskifyWatchIndependentProfile,
+        privateKey: Data
+    ) async throws -> [VoiceCandidateWire] {
         struct Body: Encodable {
             let npub: String
             let transcript: String
@@ -134,12 +148,18 @@ struct TaskifyWatchIndependentClient: Sendable {
         struct Reply: Decodable { let operations: [VoiceOperationWire]? }
 
         let body = Body(
-            npub: npub,
+            npub: profile.publicKeyNpub,
             transcript: transcript,
             candidates: [],
             sessionDurationSeconds: max(1, transcript.split(whereSeparator: \.isWhitespace).count / 2)
         )
-        let reply: Reply = try await post(path: "api/voice/extract", body: body, acceptsRateLimitBody: true)
+        let reply: Reply = try await authenticatedPost(
+            path: "api/voice/extract",
+            body: body,
+            profile: profile,
+            privateKey: privateKey,
+            acceptsRateLimitBody: true
+        )
         let candidates = (reply.operations ?? []).compactMap { operation -> VoiceCandidateWire? in
             guard operation.type == "create_task" else { return nil }
             let title = (operation.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,7 +182,8 @@ struct TaskifyWatchIndependentClient: Sendable {
     private func finalizeVoice(
         candidates: [VoiceCandidateWire],
         boardID: String,
-        npub: String
+        profile: TaskifyWatchIndependentProfile,
+        privateKey: Data
     ) async -> [VoiceFinalWire] {
         struct Body: Encodable {
             let npub: String
@@ -176,14 +197,19 @@ struct TaskifyWatchIndependentClient: Sendable {
         let now = Date()
         let timeZone = TimeZone.current
         let body = Body(
-            npub: npub,
+            npub: profile.publicKeyNpub,
             candidates: candidates,
             boardId: boardID,
             referenceDate: ISO8601DateFormatter().string(from: now),
             referenceTimeZone: timeZone.identifier,
             referenceOffsetMinutes: -timeZone.secondsFromGMT(for: now) / 60
         )
-        guard let reply: Reply = try? await post(path: "api/voice/finalize", body: body) else {
+        guard let reply: Reply = try? await authenticatedPost(
+            path: "api/voice/finalize",
+            body: body,
+            profile: profile,
+            privateKey: privateKey
+        ) else {
             return candidates.map {
                 VoiceFinalWire(title: $0.title, dueISO: nil, notes: nil, subtasks: $0.subtasks, priority: nil)
             }
@@ -197,7 +223,8 @@ struct TaskifyWatchIndependentClient: Sendable {
         path: String,
         body: Body,
         profile: TaskifyWatchIndependentProfile,
-        privateKey: Data
+        privateKey: Data,
+        acceptsRateLimitBody: Bool = false
     ) async throws -> Reply {
         let data = try encoded(body)
         let authentication = try TaskifyWatchNostrCrypto.requestAuthentication(
@@ -213,32 +240,17 @@ struct TaskifyWatchIndependentClient: Sendable {
         for (name, value) in authentication.headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        return try await response(for: request)
+        return try await response(for: request, acceptsRateLimitBody: acceptsRateLimitBody)
     }
 
-    private func post<Body: Encodable, Reply: Decodable>(
-        path: String,
-        body: Body,
+    private func response<Reply: Decodable>(
+        for request: URLRequest,
         acceptsRateLimitBody: Bool = false
     ) async throws -> Reply {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: 30)
-        request.httpMethod = "POST"
-        request.httpBody = try encoded(body)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, rawResponse) = try await session.data(for: request)
         guard let response = rawResponse as? HTTPURLResponse,
-              (200..<300).contains(response.statusCode) || (acceptsRateLimitBody && response.statusCode == 429),
-              let decoded = try? JSONDecoder().decode(Reply.self, from: data) else {
-            throw TaskifyWatchIndependentError.serviceUnavailable
-        }
-        return decoded
-    }
-
-    private func response<Reply: Decodable>(for request: URLRequest) async throws -> Reply {
-        let (data, rawResponse) = try await session.data(for: request)
-        guard let response = rawResponse as? HTTPURLResponse,
-              (200..<300).contains(response.statusCode) else {
+              (200..<300).contains(response.statusCode)
+                || (acceptsRateLimitBody && response.statusCode == 429) else {
             throw TaskifyWatchIndependentError.serviceUnavailable
         }
         guard let decoded = try? JSONDecoder().decode(Reply.self, from: data) else {

@@ -8,6 +8,7 @@
 // hammering during sync storms).
 
 import { jsonResponse, MINUTE_MS } from "./lib.ts";
+import { assertPublicHttpUrl, fetchPublicHttpUrl, UnsafePublicUrlError } from "./public-fetch.ts";
 
 const NIP05_CACHE_MAX_AGE_MS = 15 * MINUTE_MS;
 
@@ -30,6 +31,14 @@ export function parseNip05Address(input: string | null | undefined): { name: str
   const name = value.slice(0, atIndex).trim().toLowerCase();
   const domain = value.slice(atIndex + 1).trim().toLowerCase();
   if (!name || !domain) return null;
+  if (name.length > 64 || domain.length > 253 || /[\s/@?#]/.test(domain)) return null;
+  try {
+    const parsedDomain = new URL(`https://${domain}`);
+    if (parsedDomain.pathname !== "/" || parsedDomain.username || parsedDomain.password) return null;
+    assertPublicHttpUrl(parsedDomain.href);
+  } catch {
+    return null;
+  }
   return { name, domain, normalized: `${name}@${domain}` };
 }
 
@@ -71,28 +80,24 @@ export async function handleNip05Lookup(url: URL): Promise<Response> {
   }
 
   const searchParam = encodeURIComponent(name);
-  const isLocalhost =
-    /^localhost(?::\d+)?$/i.test(domain) || /^127\.0\.0\.1(?::\d+)?$/i.test(domain) || domain === "[::1]";
-
-  const buildUrls = (scheme: "https" | "http") => [
-    `${scheme}://${domain}/.well-known/nostr.json?name=${searchParam}`,
-    `${scheme}://${domain}/.well-known/nostr.json`,
+  const buildUrls = () => [
+    `https://${domain}/.well-known/nostr.json?name=${searchParam}`,
+    `https://${domain}/.well-known/nostr.json`,
   ];
 
-  const urls = [...buildUrls("https"), ...(isLocalhost ? [] : buildUrls("http"))];
+  const urls = buildUrls();
   let lastError = "NIP-05 lookup failed";
   for (const target of urls) {
     try {
-      const res = await fetch(target, {
+      const { response: res, finalUrl } = await fetchPublicHttpUrl(target, {
         headers: { Accept: "application/json" },
-        redirect: "follow",
       });
       if (!res.ok) {
         lastError = `NIP-05 lookup failed (${res.status})`;
         continue;
       }
       const record = await res.json();
-      const response = jsonResponse({ nip05: normalized, resolvedFrom: target, record });
+      const response = jsonResponse({ nip05: normalized, resolvedFrom: finalUrl, record });
       if (cacheStorage && cacheKey) {
         response.headers.set("Cache-Control", `public, max-age=${Math.floor(NIP05_CACHE_MAX_AGE_MS / 1000)}`);
         const now = new Date();
@@ -102,6 +107,9 @@ export async function handleNip05Lookup(url: URL): Promise<Response> {
       }
       return response;
     } catch (err) {
+      if (err instanceof UnsafePublicUrlError) {
+        return jsonResponse({ error: err.message }, 400);
+      }
       lastError = err instanceof Error ? err.message : String(err);
     }
   }

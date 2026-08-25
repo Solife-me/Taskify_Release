@@ -37,7 +37,7 @@ Taskify has three runtime surfaces that collaborate:
 │                      │   │                          │
 │  - Push notify subs  │   │  - Task/board events     │
 │  - Reminder cron     │   │  - App state sync        │
-│  - Google Calendar   │   │  - Profile metadata      │
+│  - Legacy GCal APIs  │   │  - Profile metadata      │
 │  - Static PWA assets │   │  - Wallet events (NWC)   │
 │  - D1: device/remind │   │                          │
 │  - KV: device/remind │   │                          │
@@ -46,7 +46,7 @@ Taskify has three runtime surfaces that collaborate:
 
 ### Key Principle
 
-Tasks and app state are **not stored in the Worker** — they live in the user's local IndexedDB and are synced peer-to-peer via encrypted Nostr events. The Worker serves PWA assets, handles Web Push delivery, and coordinates Google Calendar integration.
+Tasks and app state are **not stored in the Worker** — they live in the user's local IndexedDB and are synced peer-to-peer via encrypted Nostr events. The Worker serves PWA assets and handles Web Push delivery. Google Calendar is no longer exposed by the PWA; its backend routes remain temporarily for existing connection cleanup and compatibility.
 
 ---
 
@@ -205,7 +205,7 @@ The router delegates feature-specific behavior to modules under `worker/src/`. R
 | **Reminder scheduling** | `PUT /api/reminders` — upserts reminder rows in D1 (`reminders` table) per device |
 | **Reminder delivery polling** | `POST /api/reminders/poll` — drains pending reminder rows for clients that poll after push wake-up |
 | **Cron handler** | Runs every minute; reads due reminders from D1, appends pending notifications, sends Web Push ping |
-| **Google Calendar** | Browser-bound OAuth plus calendar/watch/event synchronization in D1 |
+| **Legacy Google Calendar** | Backend OAuth/watch/event routes retained temporarily; the PWA no longer calls or displays this integration |
 | **Independent Apple Watch sync** | Authenticated HTTPS transport forwards Watch-signed, board-encrypted kind-30301 events to configured public Nostr relays without receiving decryption keys or task plaintext |
 | **VAPID signing** | Signs Web Push requests using P-256 ECDSA; private key resolved from `VAPID_PRIVATE_KEY` env/KV binding |
 
@@ -215,6 +215,8 @@ The router delegates feature-specific behavior to modules under `worker/src/`. R
 - `TASKIFY_REMINDERS` KV (optional) — legacy reminder storage keyspace
 - `TASKIFY_PENDING` KV (optional) — legacy pending-notification keyspace
 - `VAPID_PRIVATE_KEY` env or KV binding — VAPID signing key material
+- `PREVIEW_RATE_LIMITER` — 30 requests/minute per connecting IP
+- `NIP05_RATE_LIMITER` — 60 requests/minute per connecting IP
 
 ---
 

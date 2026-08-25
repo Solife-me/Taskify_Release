@@ -289,12 +289,13 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
         boardID: String,
         using model: AppModel
     ) async throws -> [VoiceFinalTask] {
-        guard !transcript.isEmpty, !model.identityNpub.isEmpty else {
+        guard !transcript.isEmpty,
+              let identity = try? KeychainIdentityStore().load() else {
             throw TaskifyWatchBridgeError.invalidCommand
         }
         let client = VoiceDictationClient()
         let extraction = try await client.extract(
-            npub: model.identityNpub,
+            identity: identity,
             transcript: transcript,
             candidates: [],
             sessionDurationSeconds: max(
@@ -309,7 +310,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             ? [VoiceTaskCandidate(title: transcript)]
             : voiceSession.confirmedCandidates
         return await client.finalize(
-            npub: model.identityNpub,
+            identity: identity,
             candidates: candidates,
             boardID: boardID
         )

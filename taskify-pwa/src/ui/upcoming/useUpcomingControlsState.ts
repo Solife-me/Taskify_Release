@@ -19,11 +19,6 @@ const LS_UPCOMING_SORT = "taskify_upcoming_sort_v1";
 const LS_UPCOMING_BOARD_GROUPING = "taskify_upcoming_board_grouping_v1";
 const LS_UPCOMING_FILTER_PRESETS = "taskify_upcoming_filter_presets_v1";
 
-type GcalCalendarOption = {
-  id: string;
-  name: string;
-};
-
 type UpcomingFilterOption = {
   id: string;
   label: string;
@@ -46,15 +41,11 @@ type UpcomingFilterPreset = {
 };
 
 type UseUpcomingControlsStateParams = {
-  gcalCalendars: GcalCalendarOption[];
-  gcalConnected: boolean;
   usHolidaysLabel: string;
   visibleBoards: Board[];
 };
 
 export function useUpcomingControlsState({
-  gcalCalendars,
-  gcalConnected,
   usHolidaysLabel,
   visibleBoards,
 }: UseUpcomingControlsStateParams) {
@@ -216,16 +207,8 @@ export function useUpcomingControlsState({
   }, [visibleBoards]);
 
   const upcomingFilterOptions = useMemo(() => {
-    const boardOptions = upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]);
-    const gcalOptions: UpcomingFilterOption[] = gcalConnected
-      ? gcalCalendars.map((cal) => ({
-          id: `gcal:${cal.id}`,
-          label: cal.name,
-          boardId: `gcal:${cal.id}`,
-        }))
-      : [];
-    return [...boardOptions, ...gcalOptions];
-  }, [upcomingFilterGroups, gcalCalendars, gcalConnected]);
+    return upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]);
+  }, [upcomingFilterGroups]);
   const upcomingFilterOptionMap = useMemo(() => {
     const map = new Map<string, UpcomingFilterOption>();
     upcomingFilterOptions.forEach((option) => {

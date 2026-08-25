@@ -1,9 +1,9 @@
 // Google Calendar Integration — extracted from index.ts (Item #12 worker module split).
 // Handles OAuth, calendar/event sync, push webhooks, and AES-256-GCM token encryption.
 
-import { schnorr } from "@noble/curves/secp256k1.js";
 import type { Env, D1Database, D1PreparedStatement } from "./lib.ts";
 import { requireDb, jsonResponse, base64UrlEncode, base64UrlDecode, parseJson } from "./lib.ts";
+import { verifyTaskifyAuth } from "./nostr-auth.ts";
 
 // =============================================================================
 
@@ -105,80 +105,8 @@ function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-// --- NIP-01 auth verification helper -----------------------------------------
-
-// Minimal bech32 decode for npub (no checksum verification — sufficient for auth use)
-const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-function bech32Decode(str: string): { hrp: string; data: Uint8Array } | null {
-  const s = str.toLowerCase();
-  const sep = s.lastIndexOf("1");
-  if (sep < 1 || sep + 7 > s.length) return null;
-  const hrp = s.slice(0, sep);
-  const dataPart = s.slice(sep + 1);
-  // Decode 5-bit words (strip 6-char checksum suffix)
-  const words: number[] = [];
-  for (let i = 0; i < dataPart.length - 6; i++) {
-    const idx = BECH32_CHARSET.indexOf(dataPart[i]);
-    if (idx < 0) return null;
-    words.push(idx);
-  }
-  // Convert 5-bit groups → 8-bit bytes
-  let acc = 0, bits = 0;
-  const bytes: number[] = [];
-  for (const w of words) {
-    acc = (acc << 5) | w;
-    bits += 5;
-    while (bits >= 8) {
-      bits -= 8;
-      bytes.push((acc >> bits) & 0xff);
-    }
-  }
-  return { hrp, data: new Uint8Array(bytes) };
-}
-
-// Accept either raw 64-hex pubkey or bech32 "npub1…" string → lowercase hex
-function npubToHex(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed.toLowerCase();
-  const decoded = bech32Decode(trimmed);
-  if (!decoded || decoded.hrp !== "npub" || decoded.data.length !== 32) return null;
-  return [...decoded.data].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-// NIP-01 Schnorr request authentication
-// Headers: X-Taskify-Npub, X-Taskify-Timestamp, X-Taskify-Sig
-// Sig is a hex Schnorr signature over SHA-256(timestamp + "." + body)
-// GET requests use empty string as body.
-async function verifyGcalAuth(request: Request): Promise<{ npub: string } | null> {
-  const npubHeader = request.headers.get("X-Taskify-Npub");
-  const tsHeader = request.headers.get("X-Taskify-Timestamp");
-  const sigHeader = request.headers.get("X-Taskify-Sig");
-
-  if (!npubHeader || !tsHeader || !sigHeader) return null;
-
-  const ts = parseInt(tsHeader, 10);
-  if (!Number.isFinite(ts)) return null;
-  const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - ts) > 300) return null;
-
-  const pubkeyHex = npubToHex(npubHeader);
-  if (!pubkeyHex) return null;
-
-  // Compute signing payload: SHA-256(timestamp + "." + body)
-  const body = await request.clone().text();
-  const payload = `${ts}.${body}`;
-  const msgHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
-  const msgHash = new Uint8Array(msgHashBuf);
-
-  try {
-    const valid = schnorr.verify(hexToBytes(sigHeader), msgHash, hexToBytes(pubkeyHex));
-    if (!valid) return null;
-  } catch {
-    return null;
-  }
-
-  return { npub: pubkeyHex };
-}
+// Kept as an alias for the existing calendar API and public test surface.
+const verifyGcalAuth = verifyTaskifyAuth;
 
 // --- ensureGcalSchema --------------------------------------------------------
 

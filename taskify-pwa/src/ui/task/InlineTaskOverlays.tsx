@@ -9,6 +9,7 @@ type InlineTaskOverlaysProps = {
   currentBoardId?: string;
   handleVoiceSave: (key: string, finalTasks: FinalTask[]) => void;
   nostrPK: string;
+  nostrSkHex: string;
   openInlineTaskEditorDirect: (key: string) => void;
   setAddMenuKey: (key: string | null) => void;
   setVoiceDictationKey: (key: string | null) => void;
@@ -21,6 +22,7 @@ export function InlineTaskOverlays({
   currentBoardId,
   handleVoiceSave,
   nostrPK,
+  nostrSkHex,
   openInlineTaskEditorDirect,
   setAddMenuKey,
   setVoiceDictationKey,
@@ -84,6 +86,7 @@ export function InlineTaskOverlays({
           }}
           workerBaseUrl={workerBaseUrl}
           npub={npub}
+          privateKeyHex={nostrSkHex}
           testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
           defaultBoardId={currentBoardId}
         />

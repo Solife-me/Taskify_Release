@@ -570,6 +570,22 @@ final class TaskifyWatchDataTests: XCTestCase {
         )
     }
 
+    func testNativeVoiceAuthenticationMatchesWatchRequestProtocol() throws {
+        let privateKey = Data(repeating: 9, count: 32)
+        let identity = try NostrIdentity(privateKey: privateKey)
+        let body = Data("{\"transcript\":\"call dentist\"}".utf8)
+        let timestamp = 1_786_000_123
+        let nativeHeaders = try identity.taskifyRequestHeaders(body: body, timestamp: timestamp)
+        let watchAuthentication = try TaskifyWatchNostrCrypto.requestAuthentication(
+            privateKey: privateKey,
+            publicKeyHex: identity.publicKeyHex,
+            body: body,
+            timestamp: timestamp
+        )
+
+        XCTAssertEqual(nativeHeaders, watchAuthentication.headers)
+    }
+
     func testSnapshotWrittenBeforeCommandAcknowledgementsStillDecodes() throws {
         let legacyJSON = """
         {"schemaVersion":1,"tasks":[],"boards":[],"generatedAt":1785945600000}

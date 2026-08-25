@@ -5,6 +5,7 @@ import { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth } from "./index.ts";
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { watchNostrBridgeTestHooks } from "./nostr-bridge.ts";
+import { assertPublicHttpUrl, UnsafePublicUrlError } from "./public-fetch.ts";
 
 type DeviceRow = {
   device_id: string;
@@ -243,6 +244,51 @@ test("GET /api/config returns worker origin and vapid key", async () => {
   const body = await res.json() as any;
   assert.equal(body.workerBaseUrl, "https://taskify-v2.solife.me");
   assert.equal(body.vapidPublicKey, env.VAPID_PUBLIC_KEY);
+});
+
+test("public fetch validation blocks local and private network targets", () => {
+  for (const target of [
+    "http://localhost/admin",
+    "http://127.0.0.1/",
+    "http://2130706433/",
+    "http://10.0.0.5/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://[::1]/",
+    "https://service.internal/",
+  ]) {
+    assert.throws(() => assertPublicHttpUrl(target), UnsafePublicUrlError, target);
+  }
+  assert.equal(assertPublicHttpUrl("https://example.com/path").href, "https://example.com/path");
+});
+
+test("preview and NIP-05 endpoints honor their rate-limit bindings", async () => {
+  const env = await makeEnv(new MockD1());
+  const denied = { limit: async () => ({ success: false }) };
+  env.PREVIEW_RATE_LIMITER = denied;
+  env.NIP05_RATE_LIMITER = denied;
+
+  const preview = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/preview?url=https://example.com"),
+    env,
+  );
+  const nip05 = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/nip05?address=user@example.com"),
+    env,
+  );
+  assert.equal(preview.status, 429);
+  assert.equal(nip05.status, 429);
+  assert.equal(preview.headers.get("Retry-After"), "60");
+});
+
+test("NIP-05 rejects private-network and malformed domains before fetching", async () => {
+  const env = await makeEnv(new MockD1());
+  for (const address of ["alice@localhost", "alice@127.0.0.1", "alice@example.com/path"]) {
+    const response = await worker.fetch(
+      new Request(`https://taskify-v2.solife.me/api/nip05?address=${encodeURIComponent(address)}`),
+      env,
+    );
+    assert.equal(response.status, 400, address);
+  }
 });
 
 test("static assets are served with security headers", async () => {
@@ -770,12 +816,42 @@ async function makeVoiceEnv(db: MockD1WithVoice, geminiApiKey = "fake-gemini-key
   return { ...base, GEMINI_API_KEY: geminiApiKey } as any;
 }
 
+const VOICE_TEST_PRIVATE_KEY = schnorr.utils.randomSecretKey();
+const VOICE_TEST_PUBLIC_KEY = gcalBytesToHex(schnorr.getPublicKey(VOICE_TEST_PRIVATE_KEY));
+
+function authenticatedVoiceRequest(input: string, init: RequestInit): Request {
+  const parsedBody = typeof init.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null;
+  if (parsedBody && Object.prototype.hasOwnProperty.call(parsedBody, "npub")) {
+    parsedBody.npub = VOICE_TEST_PUBLIC_KEY;
+  }
+  const body = parsedBody ? JSON.stringify(parsedBody) : "";
+  return new Request(input, {
+    ...init,
+    body,
+    headers: {
+      ...(init.headers as Record<string, string> | undefined),
+      ...makeGcalAuthHeaders(VOICE_TEST_PRIVATE_KEY, VOICE_TEST_PUBLIC_KEY, body),
+    },
+  });
+}
+
+test("POST /api/voice/extract rejects unsigned requests", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+  const response = await worker.fetch(new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "call dentist" }),
+  }), env);
+  assert.equal(response.status, 401);
+});
+
 // ── Test 1: POST /api/voice/extract — returns 501 when GEMINI_API_KEY missing ─
 test("POST /api/voice/extract returns 501 when GEMINI_API_KEY not configured", async () => {
   const db = new MockD1WithVoice();
   const env = await makeEnv(db); // no GEMINI_API_KEY
 
-  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+  const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ npub: "npub1abc", transcript: "call dentist tomorrow", sessionDurationSeconds: 5 }),
@@ -791,7 +867,7 @@ test("POST /api/voice/extract returns 400 when npub is missing", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
-  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+  const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ transcript: "call dentist tomorrow", sessionDurationSeconds: 5 }),
@@ -807,7 +883,7 @@ test("POST /api/voice/extract returns 400 when transcript is empty", async () =>
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
-  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+  const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ npub: "npub1abc", transcript: "   ", sessionDurationSeconds: 0 }),
@@ -842,7 +918,7 @@ test("POST /api/voice/extract calls Gemini and returns operations on success", a
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -868,7 +944,7 @@ test("POST /api/voice/extract calls Gemini and returns operations on success", a
 test("POST /api/voice/extract increments quota after successful Gemini call", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
-  const npub = "npub1quotatest";
+  const npub = VOICE_TEST_PUBLIC_KEY;
   const date = new Date().toISOString().slice(0, 10);
 
   const originalFetch = globalThis.fetch;
@@ -885,7 +961,7 @@ test("POST /api/voice/extract increments quota after successful Gemini call", as
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ npub, transcript: "hello world", candidates: [], sessionDurationSeconds: 15 }),
@@ -904,13 +980,13 @@ test("POST /api/voice/extract increments quota after successful Gemini call", as
 test("POST /api/voice/extract returns 429 when quota exceeded", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
-  const npub = "npub1overquota";
+  const npub = VOICE_TEST_PUBLIC_KEY;
   const date = new Date().toISOString().slice(0, 10);
 
   // Pre-seed quota at limit
   db.quota.set(`${npub}:${date}`, { session_count: 5, total_seconds: 300 });
 
-  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+  const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ npub, transcript: "call dentist and pick up groceries", sessionDurationSeconds: 10 }),
@@ -931,7 +1007,7 @@ test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
   globalThis.fetch = (async () => new Response("error", { status: 503 })) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -980,7 +1056,7 @@ test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fa
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1033,7 +1109,7 @@ test("POST /api/voice/extract applies correction phrases to prior task dueText",
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1092,7 +1168,7 @@ test("POST /api/voice/extract preserves explicit reminder requests", async () =>
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1118,7 +1194,7 @@ test("POST /api/voice/finalize returns 501 when GEMINI_API_KEY not configured", 
   const db = new MockD1WithVoice();
   const env = await makeEnv(db); // no key
 
-  const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+  const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1136,7 +1212,7 @@ test("POST /api/voice/finalize returns 400 when candidates array has no confirme
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
-  const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+  const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1193,7 +1269,7 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1267,7 +1343,7 @@ test("POST /api/voice/finalize only returns reminders for explicit reminder requ
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1330,7 +1406,7 @@ test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini f
   }) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1357,7 +1433,7 @@ test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
   globalThis.fetch = (async () => new Response("error", { status: 503 })) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1385,7 +1461,7 @@ test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when 
   globalThis.fetch = (async () => new Response("error", { status: 503 })) as any;
 
   try {
-    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

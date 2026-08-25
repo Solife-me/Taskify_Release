@@ -26,7 +26,7 @@ import {
 import { handleNip05Lookup } from "./nip05.ts";
 import { handleWatchNostrPublish, handleWatchNostrQuery } from "./nostr-bridge.ts";
 import type { Env, D1Database } from "./lib.ts";
-import { jsonResponse, requireDb } from "./lib.ts";
+import { enforceRateLimit, jsonResponse, requireDb } from "./lib.ts";
 // Re-export shared lib for trailing test re-exports that import from "./index.ts".
 export type { Env, D1Database } from "./lib.ts";
 export {
@@ -189,9 +189,13 @@ export default {
         });
       }
       if (url.pathname === "/api/preview" && request.method === "GET") {
+        const limited = await enforceRateLimit(request, env.PREVIEW_RATE_LIMITER, "preview");
+        if (limited) return limited;
         return await handlePreviewProxy(url);
       }
       if (url.pathname === "/api/nip05" && request.method === "GET") {
+        const limited = await enforceRateLimit(request, env.NIP05_RATE_LIMITER, "nip05");
+        if (limited) return limited;
         return await handleNip05Lookup(url);
       }
       if (url.pathname === "/api/devices" && request.method === "PUT") {
@@ -294,3 +298,4 @@ export default {
 
 // Named re-exports for unit testing — implementation lives in ./gcal.ts.
 export { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth } from "./gcal.ts";
+export { normalizeNostrPublicKey, verifyTaskifyAuth } from "./nostr-auth.ts";

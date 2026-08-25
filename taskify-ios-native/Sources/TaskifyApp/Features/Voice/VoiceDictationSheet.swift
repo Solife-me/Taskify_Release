@@ -293,8 +293,7 @@ struct VoiceDictationSheet: View {
         let transcript = session.combinedTranscript()
         guard !transcript.isEmpty else { return }
 
-        let npub = model.identityNpub
-        guard !npub.isEmpty else {
+        guard let identity = try? KeychainIdentityStore().load() else {
             statusMessage = "Set up your Taskify identity in Settings before using voice."
             return
         }
@@ -305,7 +304,7 @@ struct VoiceDictationSheet: View {
 
         do {
             let result = try await client.extract(
-                npub: npub,
+                identity: identity,
                 transcript: transcript,
                 candidates: session.candidates,
                 sessionDurationSeconds: Int(Date().timeIntervalSince(listeningStartedAt).rounded())
@@ -332,8 +331,12 @@ struct VoiceDictationSheet: View {
         isSaving = true
         defer { isSaving = false }
 
+        guard let identity = try? KeychainIdentityStore().load() else {
+            statusMessage = "Set up your Taskify identity in Settings before using voice."
+            return
+        }
         let finalTasks = await client.finalize(
-            npub: model.identityNpub,
+            identity: identity,
             candidates: confirmed,
             boardID: model.selectedBoardID
         )

@@ -38,6 +38,10 @@ export interface D1Database {
   batch<T = unknown>(statements: D1PreparedStatement<T>[]): Promise<D1Result<T>[]>;
 }
 
+export interface RateLimitBinding {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface Env {
   ASSETS: AssetFetcher;
   TASKIFY_DB: D1Database;
@@ -56,6 +60,8 @@ export interface Env {
   GCAL_TOKEN_ENC_KEY_PREV?: string;
   GCAL_WEBHOOK_SECRET: string;
   GCAL_KEY_VERSION?: string;  // current key version number as string, default "1"
+  PREVIEW_RATE_LIMITER?: RateLimitBinding;
+  NIP05_RATE_LIMITER?: RateLimitBinding;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,6 +100,22 @@ export async function parseJson(request: Request): Promise<any> {
   } catch {
     return null;
   }
+}
+
+export async function enforceRateLimit(
+  request: Request,
+  binding: RateLimitBinding | undefined,
+  scope: string,
+): Promise<Response | null> {
+  if (!binding) return null;
+  const clientAddress = request.headers.get("CF-Connecting-IP")
+    || request.headers.get("X-Real-IP")
+    || "unknown";
+  const result = await binding.limit({ key: `${scope}:${clientAddress}` });
+  if (result.success) return null;
+  const response = jsonResponse({ error: "Too many requests" }, 429);
+  response.headers.set("Retry-After", "60");
+  return response;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

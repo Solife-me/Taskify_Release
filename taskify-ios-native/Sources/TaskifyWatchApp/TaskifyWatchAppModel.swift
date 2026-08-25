@@ -262,12 +262,15 @@ final class TaskifyWatchAppModel: NSObject {
         guard !transcript.isEmpty else {
             throw TaskifyWatchDictationError.invalidResponse
         }
-        if let profile = independentProfile, !profile.publicKeyNpub.isEmpty {
+        if let profile = independentProfile,
+           !profile.publicKeyNpub.isEmpty,
+           let privateKey = try? identityStore.load() {
             do {
                 return try await independentClient.interpretVoice(
                     transcript: transcript,
                     boardID: boardID,
-                    npub: profile.publicKeyNpub
+                    profile: profile,
+                    privateKey: privateKey
                 )
             } catch {
                 // A reachable iPhone remains a seamless fallback while the Watch service or its

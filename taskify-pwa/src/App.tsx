@@ -294,8 +294,6 @@ import {
 import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
 import { EventCard } from "./ui/calendar/EventCard";
 
-import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
-
 const AppModalStack = lazy(() =>
   import("./ui/app/AppModalStack").then((module) => ({ default: module.AppModalStack })),
 );
@@ -2034,18 +2032,6 @@ export default function App() {
     }
   }, []);
   const inboxPoolRef = useRef<SessionPool | null>(null);
-
-  // ── Google Calendar integration ──────────────────────────────────────────
-  const {
-    connectionStatus: gcalStatus,
-    calendars: gcalCalendars,
-    gcalEvents: gcalCalendarEvents,
-    loading: gcalLoading,
-    connect: gcalConnect,
-    disconnect: gcalDisconnect,
-    toggleCalendar: gcalToggleCalendar,
-    sync: gcalSync,
-  } = useGoogleCalendar(workerBaseUrl, nostrSkHex || null);
 
   const inboxRelays = useMemo(
     () =>
@@ -3802,8 +3788,6 @@ export default function App() {
     upcomingView,
     upcomingViewSheetOpen,
   } = useUpcomingControlsState({
-    gcalCalendars,
-    gcalConnected: gcalStatus.connected,
     usHolidaysLabel: SPECIAL_CALENDAR_US_HOLIDAYS_LABEL,
     visibleBoards,
   });
@@ -5272,18 +5256,13 @@ export default function App() {
       const ts = Date.parse(ev.startISO);
       return !Number.isNaN(ts);
     });
-    let result = upcomingUsHolidaysEnabled ? [...boardEvents, ...upcomingUsHolidayEvents] : boardEvents;
-    if (gcalCalendarEvents.length > 0) {
-      result = [...result, ...(gcalCalendarEvents as unknown as typeof result)];
-    }
-    return result;
+    return upcomingUsHolidaysEnabled ? [...boardEvents, ...upcomingUsHolidayEvents] : boardEvents;
   }, [
     calendarEvents,
     messagesBoardId,
     upcomingBoardOrder,
     upcomingUsHolidayEvents,
     upcomingUsHolidaysEnabled,
-    gcalCalendarEvents,
   ]);
 
   const upcomingItemCount = upcoming.length + upcomingEvents.length;
@@ -5330,7 +5309,6 @@ export default function App() {
         const { selectedBoards, selectedLists } = upcomingFilterMap;
         filtered = upcomingEvents.filter((ev) => {
           if (isUsHolidayCalendarEvent(ev)) return upcomingUsHolidaysEnabled;
-          if (isGcalBoardId(ev.boardId)) return upcomingFilter === null || upcomingFilter.includes(ev.boardId);
           if (ev.external) return true;
           const board = boardMap.get(ev.boardId);
           const listSet = selectedLists.get(ev.boardId);
@@ -5802,18 +5780,12 @@ export default function App() {
 
 	  const renderUpcomingEventCard = useCallback((ev: CalendarEvent) => {
 	    const isUsHoliday = isUsHolidayCalendarEvent(ev);
-	    const isGcal = (ev as any).gcalSource === true;
-	    const gcalCalendarName = isGcal && typeof (ev as any).gcalCalendarName === "string"
-	      ? (ev as any).gcalCalendarName
-	      : "";
 	    const board = boardMap.get(ev.boardId);
 	    const boardLabel = isUsHoliday
 	      ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL
-	      : isGcal
-	        ? (gcalCalendarName || "Google Calendar")
-	        : (board?.name || "Board");
+	      : (board?.name || "Board");
 	    const listLabel =
-	      !isGcal && board?.kind === "lists"
+	      board?.kind === "lists"
 	        ? board.columns.find((column) => column.id === ev.columnId)?.name || ""
 	        : "";
 	    const placementLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
@@ -12861,13 +12833,6 @@ export default function App() {
             onBoardChanged={handleBoardChanged}
             onResyncBoardHistory={handleResyncBoardHistory}
             onClose={closeSettings}
-            gcalStatus={gcalStatus}
-            gcalCalendars={gcalCalendars}
-            gcalLoading={gcalLoading}
-            onGcalConnect={gcalConnect}
-            onGcalDisconnect={gcalDisconnect}
-            onGcalToggleCalendar={gcalToggleCalendar}
-            onGcalSync={gcalSync}
           />
         </Suspense>
       )}
@@ -13052,8 +13017,6 @@ export default function App() {
         boardSortOptions={boardSortOptions}
         boardSortSheetOpen={boardSortSheetOpen}
         cancelUpcomingPresetHold={cancelUpcomingPresetHold}
-        gcalCalendars={gcalCalendars}
-        gcalStatus={gcalStatus}
         handleBoardSortSelect={handleBoardSortSelect}
         handleUpcomingSortSelect={handleUpcomingSortSelect}
         handleUpcomingViewChange={handleUpcomingViewChange}
@@ -13070,10 +13033,8 @@ export default function App() {
         toggleUpcomingFilter={toggleUpcomingFilter}
         upcomingBoardGrouping={upcomingBoardGrouping}
         upcomingBoardGroupingOptions={upcomingBoardGroupingOptions}
-        upcomingFilter={upcomingFilter}
         upcomingFilterGroups={upcomingFilterGroups}
         upcomingFilterOpen={upcomingFilterOpen}
-        upcomingFilterOptions={upcomingFilterOptions}
         upcomingFilterPresets={upcomingFilterPresets}
         upcomingFilterSelection={upcomingFilterSelection}
         upcomingPresetHoldTriggeredRef={upcomingPresetHoldTriggeredRef}
@@ -13351,6 +13312,7 @@ export default function App() {
         currentBoardId={currentBoard?.id}
         handleVoiceSave={handleVoiceSave}
         nostrPK={nostrPK}
+        nostrSkHex={nostrSkHex}
         openInlineTaskEditorDirect={openInlineTaskEditorDirect}
         setAddMenuKey={setAddMenuKey}
         setVoiceDictationKey={setVoiceDictationKey}

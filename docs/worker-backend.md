@@ -11,7 +11,7 @@ It is written for contributors/agents who need to safely modify reminder deliver
 The Worker is responsible for four backend concerns:
 
 1. **Push device + reminder orchestration** (HTTP APIs + cron)
-2. **Google Calendar OAuth and synchronization**
+2. **Legacy Google Calendar OAuth and synchronization** (not exposed by the PWA)
 3. **Independent Apple Watch opaque Nostr transport**
 4. **Static PWA asset serving** (`ASSETS` binding fallback)
 
@@ -53,6 +53,7 @@ Router dispatch in `fetch()`:
 - `POST /api/reminders/poll` → fetch and acknowledge pending reminder notifications
 - `POST /api/watch/nostr/publish` → forward one Watch-signed encrypted task event to bounded `wss` relays
 - `POST /api/watch/nostr/query` → fetch signed encrypted task events for bounded board authors
+- `POST /api/voice/extract` and `/api/voice/finalize` → Nostr-authenticated voice processing
 
 Reference: `worker/src/index.ts:290–307`.
 
@@ -549,7 +550,8 @@ Contract:
 Input behavior:
 1. requires query `url`,
 2. normalizes Google redirect wrappers (`unwrapGoogleRedirectUrl`),
-3. rejects non-`http(s)` URLs with `400`.
+3. rejects non-`http(s)`, credentialed, local, and private-network URLs with `400`,
+4. validates every redirect hop; Cloudflare's strict-public fetch mode also blocks DNS-resolved private targets.
 
 Anchors:
 - request parse/validation: `worker/src/index.ts:2215–2227`
@@ -601,10 +603,10 @@ Anchor: `worker/src/index.ts` (`handlePreviewProxy`)
 Request requirements:
 - query param `url` is required.
 - URL is normalized through `unwrapGoogleRedirectUrl(...)`.
-- only `http:` and `https:` protocols are accepted.
+- only public `http:` and `https:` targets are accepted.
 
 Core flow:
-1. Fetch target with browser-like headers (`buildBrowserHeaders`) and redirect-following.
+1. Fetch target with browser-like headers (`buildBrowserHeaders`) and manually validate each redirect.
 2. Abort the fetch after `PREVIEW_TIMEOUT_MS` via `AbortController`.
 3. Read body through `readResponseBodyLimited(...)` (bounded body read).
 4. Attempt rich extraction via `derivePreviewFromHtml(...)`.
@@ -613,6 +615,7 @@ Core flow:
 
 Behavioral invariants:
 - endpoint never proxies arbitrary non-http(s) protocols.
+- endpoint is limited to 30 requests/minute per connecting IP.
 - failures degrade to structured fallback preview payloads instead of hard 5xx whenever possible.
 - response metadata includes fallback/blocked hints when rich preview extraction fails.
 
@@ -630,13 +633,13 @@ Lookup sequence:
 1. Try Cloudflare cache hit (`caches.default`) keyed by normalized address.
 2. If cache stale/miss, fetch `https://<domain>/.well-known/nostr.json?name=<name>`.
 3. Then fetch `https://<domain>/.well-known/nostr.json`.
-4. For non-localhost domains, also try the two `http://` variants.
-5. Return first successful JSON record and cache it with timestamp headers.
+4. Return the first successful JSON record and cache it with timestamp headers.
 
 Status semantics:
 - `400` for invalid address format.
 - `502` when all upstream lookup attempts fail.
 - `200` with `{ nip05, resolvedFrom, record }` on success.
+- `429` when the 60 requests/minute per-IP limit is exceeded.
 
 Compatibility note:
 - fallback to the no-query `.well-known/nostr.json` path is intentionally preserved for providers that return the full names map without `?name=` filtering.
@@ -647,7 +650,7 @@ If you modify preview or NIP-05 logic, preserve:
 - URL protocol allowlist (`http/https`) for preview fetches,
 - timeout-bounded preview fetch + fallback response behavior,
 - cache-first NIP-05 response path with bounded freshness,
-- multi-endpoint NIP-05 lookup order (`https` first, localhost-safe `http` handling),
+- HTTPS-only NIP-05 lookup with private-network and redirect-hop rejection,
 - stable response shape consumed by existing PWA callers.
 
 ## 19) Schema bootstrap + concurrency contract (agent verification chunk)

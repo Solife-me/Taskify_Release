@@ -5,7 +5,6 @@ import type {
   UpcomingBoardGrouping,
 } from "taskify-core";
 import { ActionSheet } from "../../components/ActionSheet";
-import type { GcalCalendar, GcalConnectionStatus } from "../../hooks/useGoogleCalendar";
 
 type SortOption = {
   id: BoardSortMode;
@@ -42,8 +41,6 @@ type AppSortSheetsProps = {
   boardSortOptions: readonly SortOption[];
   boardSortSheetOpen: boolean;
   cancelUpcomingPresetHold: () => void;
-  gcalCalendars: GcalCalendar[];
-  gcalStatus: GcalConnectionStatus;
   handleBoardSortSelect: (id: BoardSortMode) => void;
   handleUpcomingSortSelect: (id: BoardSortMode) => void;
   handleUpcomingViewChange: (view: "details" | "list") => void;
@@ -60,10 +57,8 @@ type AppSortSheetsProps = {
   toggleUpcomingFilter: (id: string) => void;
   upcomingBoardGrouping: UpcomingBoardGrouping;
   upcomingBoardGroupingOptions: readonly BoardGroupingOption[];
-  upcomingFilter: string[] | null;
   upcomingFilterGroups: FilterGroup[];
   upcomingFilterOpen: boolean;
-  upcomingFilterOptions: FilterOption[];
   upcomingFilterPresets: FilterPreset[];
   upcomingFilterSelection: Set<string>;
   upcomingPresetHoldTriggeredRef: MutableRefObject<boolean>;
@@ -94,8 +89,6 @@ export function AppSortSheets({
   boardSortOptions,
   boardSortSheetOpen,
   cancelUpcomingPresetHold,
-  gcalCalendars,
-  gcalStatus,
   handleBoardSortSelect,
   handleUpcomingSortSelect,
   handleUpcomingViewChange,
@@ -112,10 +105,8 @@ export function AppSortSheets({
   toggleUpcomingFilter,
   upcomingBoardGrouping,
   upcomingBoardGroupingOptions,
-  upcomingFilter,
   upcomingFilterGroups,
   upcomingFilterOpen,
-  upcomingFilterOptions,
   upcomingFilterPresets,
   upcomingFilterSelection,
   upcomingPresetHoldTriggeredRef,
@@ -353,46 +344,6 @@ export function AppSortSheets({
                 <span className="upcoming-filter__label">US Holidays</span>
               </button>
             </div>
-            {gcalStatus.connected && gcalCalendars.map((cal) => {
-              const boardId = `gcal:${cal.id}`;
-              const isSelected = upcomingFilter === null || upcomingFilter.includes(boardId);
-              return (
-                <div key={cal.id} className="upcoming-filter__group">
-                  <button
-                    type="button"
-                    className="upcoming-filter__row pressable"
-                    onClick={() => {
-                      if (upcomingFilter === null) {
-                        const allIds = upcomingFilterOptions.map((option) => option.id);
-                        setUpcomingFilter(allIds.filter((id) => id !== boardId));
-                      } else if (isSelected) {
-                        setUpcomingFilter(upcomingFilter.filter((id) => id !== boardId));
-                      } else {
-                        setUpcomingFilter([...upcomingFilter, boardId]);
-                      }
-                    }}
-                    role="checkbox"
-                    aria-checked={isSelected}
-                  >
-                    <span
-                      className={`upcoming-filter__check${isSelected ? " is-checked" : ""}`}
-                      aria-hidden="true"
-                    >
-                      {isSelected && <CheckIcon />}
-                    </span>
-                    <span className="upcoming-filter__label">
-                      {cal.color && (
-                        <span
-                          className="inline-block w-2 h-2 rounded-full mr-1.5"
-                          style={{ backgroundColor: cal.color, verticalAlign: "middle" }}
-                        />
-                      )}
-                      {cal.name}
-                    </span>
-                  </button>
-                </div>
-              );
-            })}
             <div>
               <button
                 type="button"

@@ -2,7 +2,7 @@
 name = "taskify"
 main = "worker/src/index.ts"
 compatibility_date = "2024-03-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
 preview_urls = true
 
@@ -52,3 +52,13 @@ binding = "TASKIFY_DB"
 database_name = "taskify-notifications"
 database_id = "1f1f5293-4694-4319-b56b-320faa325bf1"
 migrations_dir = "worker/migrations"
+
+[[ratelimits]]
+name = "PREVIEW_RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "NIP05_RATE_LIMITER"
+namespace_id = "1002"
+simple = { limit = 60, period = 60 }

@@ -8,16 +8,13 @@
 
 import type { Env, D1Database } from "./lib.ts";
 import { requireDb, jsonResponse, parseJson } from "./lib.ts";
+import { normalizeNostrPublicKey, verifyTaskifyAuth } from "./nostr-auth.ts";
 
 // ---- Constants ----
 
 const VOICE_MAX_SESSIONS_PER_DAY = 10;
 const VOICE_MAX_SECONDS_PER_DAY = 300;
 
-const VOICE_TEST_BYPASS_NPUBS = new Set([
-  "npub13p5mg2wszus5nt7seldn8d6dnppvf3xqe5q2vsq076r2ysvh93eqwhgqdm",
-  "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g",
-]);
 const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash-lite";
 const GEMINI_MODEL_FALLBACK_1 = "gemini-3-flash-preview";
 const GEMINI_MODEL_FALLBACK_2 = "gemini-2.5-flash";
@@ -461,6 +458,9 @@ async function callVoiceModelWithFallback(env: Env, prompt: string): Promise<unk
 }
 
 async function handleVoiceExtract(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyTaskifyAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
   if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
     return jsonResponse({ error: "Voice extraction is not configured" }, 501);
   }
@@ -474,29 +474,24 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
       ? Math.max(0, body.sessionDurationSeconds)
       : 0;
 
-  if (!npub) {
-    return jsonResponse({ error: "npub is required" }, 400);
-  }
-  if (!/^npub1[0-9a-z]+$/i.test(npub)) {
-    return jsonResponse({ error: "npub must be a valid bech32 npub" }, 400);
+  if (!npub) return jsonResponse({ error: "npub is required" }, 400);
+  if (normalizeNostrPublicKey(npub) !== auth.npub) {
+    return jsonResponse({ error: "Authenticated identity does not match request npub" }, 401);
   }
   if (!transcript) {
     return jsonResponse({ error: "transcript must be a non-empty string" }, 400);
   }
 
-  const npubNormalized = npub.trim().toLowerCase();
-  const bypassQuota = VOICE_TEST_BYPASS_NPUBS.has(npubNormalized);
-
   const db = requireDb(env);
   const today = utcDateString();
-  const quota = await getVoiceQuota(db, npub, today);
+  const quota = await getVoiceQuota(db, auth.npub, today);
 
   const currentSessions = quota?.session_count ?? 0;
   const currentSeconds = quota?.total_seconds ?? 0;
   const projectedSessions = currentSessions + 1;
   const projectedSeconds = currentSeconds + sessionDurationSeconds;
 
-  const overQuota = !bypassQuota && (
+  const overQuota = (
     projectedSessions > VOICE_MAX_SESSIONS_PER_DAY ||
     projectedSeconds > VOICE_MAX_SECONDS_PER_DAY
   );
@@ -551,12 +546,15 @@ Output JSON only.`;
   operations = applyTranscriptCorrections(operations, transcript);
 
   // Increment quota on successful (non-quota-exceeded) path
-  await incrementVoiceQuota(db, npub, today, sessionDurationSeconds);
+  await incrementVoiceQuota(db, auth.npub, today, sessionDurationSeconds);
 
   return jsonResponse({ operations });
 }
 
 async function handleVoiceFinalize(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyTaskifyAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
   if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
     return jsonResponse({ error: "Voice finalization is not configured" }, 501);
   }
@@ -578,11 +576,9 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
       ? body.referenceOffsetMinutes
       : 0;
 
-  if (!npub) {
-    return jsonResponse({ error: "npub is required" }, 400);
-  }
-  if (!/^npub1[0-9a-z]+$/i.test(npub)) {
-    return jsonResponse({ error: "npub must be a valid bech32 npub" }, 400);
+  if (!npub) return jsonResponse({ error: "npub is required" }, 400);
+  if (normalizeNostrPublicKey(npub) !== auth.npub) {
+    return jsonResponse({ error: "Authenticated identity does not match request npub" }, 401);
   }
   if (!Array.isArray(rawCandidates) || rawCandidates.length === 0) {
     return jsonResponse({ error: "candidates must be a non-empty array" }, 400);

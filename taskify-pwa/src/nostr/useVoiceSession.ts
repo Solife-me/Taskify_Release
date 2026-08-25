@@ -7,6 +7,7 @@
  *   POST /api/voice/finalize (Gemini structured output) → FinalTask[]
  */
 import { useCallback, useEffect, useRef, useReducer } from "react";
+import { signTaskifyRequestHeaders } from "../lib/taskifyRequestAuth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared types (mirrored from worker)
@@ -306,6 +307,7 @@ function createSpeechRecognition(): SpeechRecognition | null {
 export type UseVoiceSessionOptions = {
   workerBaseUrl: string;
   npub: string;
+  privateKeyHex: string;
   defaultBoardId?: string;
   onSave: (tasks: FinalTask[]) => void;
 };
@@ -327,7 +329,7 @@ export type UseVoiceSessionResult = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessionResult {
-  const { workerBaseUrl, npub, defaultBoardId, onSave } = options;
+  const { workerBaseUrl, npub, privateKeyHex, defaultBoardId, onSave } = options;
   const [session, dispatch] = useReducer(voiceSessionReducer, INITIAL_VOICE_SESSION);
 
   const recRef = useRef<SpeechRecognition | null>(null);
@@ -356,31 +358,33 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
       const sessionDurationSeconds = Math.round((Date.now() - sessionStartRef.current) / 1000);
 
       try {
+        const body = JSON.stringify({
+          npub,
+          transcript,
+          candidates: candidatesRef.current,
+          sessionDurationSeconds,
+        });
+        const authHeaders = await signTaskifyRequestHeaders(privateKeyHex, body);
         const res = await fetch(`${workerBaseUrl}/api/voice/extract`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            npub,
-            transcript,
-            candidates: candidatesRef.current,
-            sessionDurationSeconds,
-          }),
+          headers: { "Content-Type": "application/json", ...authHeaders },
+          body,
         });
 
         if (res.status === 429) {
-          const body = await res.json() as { error: string; operations?: TaskOperation[] };
+          const responseBody = await res.json() as { error: string; operations?: TaskOperation[] };
           dispatch({ type: "SET_QUOTA_EXHAUSTED" });
-          if (Array.isArray(body.operations) && body.operations.length > 0) {
-            dispatch({ type: "APPLY_OPERATIONS", operations: body.operations });
+          if (Array.isArray(responseBody.operations) && responseBody.operations.length > 0) {
+            dispatch({ type: "APPLY_OPERATIONS", operations: responseBody.operations });
           }
           return;
         }
 
         if (!res.ok) return;
 
-        const body = await res.json() as { operations: TaskOperation[] };
-        if (Array.isArray(body.operations) && body.operations.length > 0) {
-          dispatch({ type: "APPLY_OPERATIONS", operations: body.operations });
+        const responseBody = await res.json() as { operations: TaskOperation[] };
+        if (Array.isArray(responseBody.operations) && responseBody.operations.length > 0) {
+          dispatch({ type: "APPLY_OPERATIONS", operations: responseBody.operations });
         }
       } catch {
         // Network error — silently skip; next transcript commit will retry
@@ -389,7 +393,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
         dispatch({ type: "SET_PROCESSING", value: false });
       }
     },
-    [workerBaseUrl, npub],
+    [workerBaseUrl, npub, privateKeyHex],
   );
 
   const runFinalExtractPass = useCallback(async () => {
@@ -484,17 +488,19 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
 
     dispatch({ type: "SET_PROCESSING", value: true });
     try {
+      const requestBody = JSON.stringify({
+        npub,
+        candidates: confirmed,
+        boardId: defaultBoardId,
+        referenceDate: new Date().toISOString(),
+        referenceTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        referenceOffsetMinutes: new Date().getTimezoneOffset(),
+      });
+      const authHeaders = await signTaskifyRequestHeaders(privateKeyHex, requestBody);
       const res = await fetch(`${workerBaseUrl}/api/voice/finalize`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          npub,
-          candidates: confirmed,
-          boardId: defaultBoardId,
-          referenceDate: new Date().toISOString(),
-          referenceTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          referenceOffsetMinutes: new Date().getTimezoneOffset(),
-        }),
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: requestBody,
       });
       if (!res.ok) {
         // Fallback: use candidate titles as-is
@@ -519,7 +525,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
     } finally {
       dispatch({ type: "SET_PROCESSING", value: false });
     }
-  }, [workerBaseUrl, npub, defaultBoardId, onSave]);
+  }, [workerBaseUrl, npub, privateKeyHex, defaultBoardId, onSave]);
 
   const reset = useCallback(() => {
     stopListening();

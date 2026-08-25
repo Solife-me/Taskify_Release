@@ -35,8 +35,8 @@ public struct VoiceExtractionResult: Equatable, Sendable {
 /// `/api/voice/finalize` resolves confirmed candidates into concrete tasks with real due dates.
 ///
 /// The transcription itself is on-device (`SFSpeechRecognizer`); only the text is ever sent, and
-/// only when the user has finished speaking. The npub is included because the worker meters a
-/// daily per-identity quota against it.
+/// only when the user has finished speaking. Requests are signed with the existing Nostr identity
+/// so another caller cannot spend that identity's daily quota.
 public struct VoiceDictationClient: Sendable {
     /// The deployed Taskify Worker. The PWA discovers this at runtime from `/api/config` because it
     /// is served by the Worker itself; a native app has no such origin, so it is pinned here.
@@ -51,7 +51,7 @@ public struct VoiceDictationClient: Sendable {
     }
 
     public func extract(
-        npub: String,
+        identity: NostrIdentity,
         transcript: String,
         candidates: [VoiceTaskCandidate],
         sessionDurationSeconds: Int
@@ -62,12 +62,13 @@ public struct VoiceDictationClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = try JSONEncoder().encode(
             ExtractRequest(
-                npub: npub,
+                npub: identity.npub,
                 transcript: transcript,
                 candidates: candidates,
                 sessionDurationSeconds: sessionDurationSeconds
             )
         )
+        try authenticate(&request, identity: identity)
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw VoiceDictationError.unavailable(status: 0) }
@@ -89,7 +90,7 @@ public struct VoiceDictationClient: Sendable {
     /// candidate titles verbatim rather than losing what the user just dictated -- the same
     /// trade the PWA makes, on the grounds that a task with no due date beats no task at all.
     public func finalize(
-        npub: String,
+        identity: NostrIdentity,
         candidates: [VoiceTaskCandidate],
         boardID: String?,
         now: Date = Date(),
@@ -107,7 +108,7 @@ public struct VoiceDictationClient: Sendable {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.httpBody = try JSONEncoder().encode(
                 FinalizeRequest(
-                    npub: npub,
+                    npub: identity.npub,
                     candidates: candidates,
                     boardId: boardID,
                     referenceDate: ISO8601DateFormatter().string(from: now),
@@ -115,6 +116,7 @@ public struct VoiceDictationClient: Sendable {
                     referenceOffsetMinutes: -timeZone.secondsFromGMT(for: now) / 60
                 )
             )
+            try authenticate(&request, identity: identity)
 
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -140,6 +142,13 @@ public struct VoiceDictationClient: Sendable {
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data) else { return [] }
         return (envelope.tasks ?? []).filter {
             !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private func authenticate(_ request: inout URLRequest, identity: NostrIdentity) throws {
+        let headers = try identity.taskifyRequestHeaders(body: request.httpBody ?? Data())
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
         }
     }
 
