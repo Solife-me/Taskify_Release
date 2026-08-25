@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
-import { nip19 } from "nostr-tools";
+import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 const NIP96_DISCOVERY_PATH = "/.well-known/nostr/nip96.json";
@@ -41,7 +41,6 @@ function buildNip98AuthHeader(
   const sk = decoded.data as Uint8Array;
 
   // Build a NIP-98 auth event (kind 27235) and base64-encode it
-  const { getPublicKey, finalizeEvent } = require("nostr-tools") as typeof import("nostr-tools");
   const pubkey = getPublicKey(sk);
   const event = finalizeEvent(
     {
