@@ -106,18 +106,21 @@ async function bootstrapApp(): Promise<void> {
     { NwcProvider },
     { ToastProvider },
     { P2PKProvider },
+    { StorageFailureBanner },
   ] = await Promise.all([
     import('./App.tsx'),
     import('./context/CashuContext'),
     import('./context/NwcContext.tsx'),
     import('./context/ToastContext.tsx'),
     import('./context/P2PKContext.tsx'),
+    import('./storage/StorageFailureBanner.tsx'),
   ]);
 
   root.render(
     <StrictMode>
       <RootErrorBoundary>
         <ToastProvider>
+          <StorageFailureBanner />
           <NwcProvider>
             <P2PKProvider>
               <CashuProvider>

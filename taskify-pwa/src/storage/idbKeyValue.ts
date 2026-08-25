@@ -12,6 +12,31 @@ type StoreState = {
 
 const stores = new Map<string, StoreState>();
 
+export type IndexedDbFailure = {
+  id: number;
+  operation: "read" | "write";
+  storeName: string;
+  error: unknown;
+};
+
+let failureSequence = 0;
+let latestFailure: IndexedDbFailure | null = null;
+const failureListeners = new Set<() => void>();
+
+function reportFailure(operation: "read" | "write", storeName: string, error: unknown): void {
+  latestFailure = { id: ++failureSequence, operation, storeName, error };
+  for (const listener of failureListeners) listener();
+}
+
+export function getLatestIndexedDbFailure(): IndexedDbFailure | null {
+  return latestFailure;
+}
+
+export function subscribeToIndexedDbFailures(listener: () => void): () => void {
+  failureListeners.add(listener);
+  return () => failureListeners.delete(listener);
+}
+
 function getStoreState(storeName: string): StoreState {
   const existing = stores.get(storeName);
   if (existing) return existing;
@@ -36,6 +61,7 @@ function queueWrite(storeName: string, fn: () => Promise<void>): void {
     .catch((err) => {
       state.failureCount += 1;
       state.lastWriteError = err;
+      reportFailure("write", storeName, err);
       console.warn(`[idbKeyValue] Write failed for store "${storeName}":`, err);
     });
 }
@@ -66,7 +92,9 @@ export const idbKeyValue = {
     try {
       const db = await getTaskifyDb();
       values = await idbStorage.getMany<string>(db, storeName, keysToLoad);
-    } catch {
+    } catch (error) {
+      reportFailure("read", storeName, error);
+      console.warn(`[idbKeyValue] Read failed for store "${storeName}":`, error);
       values = keysToLoad.map(() => undefined);
     }
 

@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   getMany: vi.fn(async (_db: unknown, _storeName: string, keys: readonly IDBValidKey[]) =>
     keys.map((key) => `value:${String(key)}`),
   ),
+  put: vi.fn(async () => undefined),
+  delete: vi.fn(async () => undefined),
 }));
 
 vi.mock("./taskifyDb.ts", () => ({
@@ -14,17 +16,21 @@ vi.mock("./taskifyDb.ts", () => ({
 vi.mock("./idbStorage.ts", () => ({
   idbStorage: {
     getMany: mocks.getMany,
-    put: vi.fn(async () => undefined),
-    delete: vi.fn(async () => undefined),
+    put: mocks.put,
+    delete: mocks.delete,
   },
 }));
 
-import { idbKeyValue } from "./idbKeyValue";
+import { getLatestIndexedDbFailure, idbKeyValue, subscribeToIndexedDbFailures } from "./idbKeyValue";
 
 describe("idbKeyValue startup loading", () => {
   beforeEach(() => {
     mocks.getTaskifyDb.mockClear();
     mocks.getMany.mockClear();
+    mocks.put.mockClear();
+    mocks.put.mockResolvedValue(undefined);
+    mocks.delete.mockClear();
+    mocks.delete.mockResolvedValue(undefined);
   });
 
   it("loads all uncached keys for a store in one batched transaction", async () => {
@@ -46,5 +52,19 @@ describe("idbKeyValue startup loading", () => {
     await idbKeyValue.initStore(storeName, ["beta", "gamma"]);
     expect(mocks.getMany).toHaveBeenCalledTimes(2);
     expect(mocks.getMany.mock.calls[1]?.[2]).toEqual(["gamma"]);
+  });
+
+  it("reports a failed write to the UI and still rejects the next flush", async () => {
+    const storeName = `write-failure-${crypto.randomUUID()}`;
+    const listener = vi.fn();
+    const unsubscribe = subscribeToIndexedDbFailures(listener);
+    mocks.put.mockRejectedValueOnce(new Error("quota exceeded"));
+
+    idbKeyValue.setItem(storeName, "key", "value");
+    await expect(idbKeyValue.flushStore(storeName)).rejects.toThrow("quota exceeded");
+
+    expect(listener).toHaveBeenCalled();
+    expect(getLatestIndexedDbFailure()).toMatchObject({ operation: "write", storeName });
+    unsubscribe();
   });
 });
