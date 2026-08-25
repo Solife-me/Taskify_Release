@@ -34,7 +34,7 @@ Taskify has a working product across two primary surfaces (PWA + Worker) with a 
 |---|---|---|
 | `docs/nostr-session-layer.md` | SessionPool, RelayHealth, startup stability, relay auth (NIP-42) | ✅ Done |
 | `docs/cashu-wallet-layer.md` | Mint connections, swap flow, P2PK (NIP-61), NWC (NIP-47), seed derivation | ✅ Done |
-| `docs/worker-backend.md` | Cron behavior, KV schemas, D1 schema, push notification and Google Calendar flows | ✅ Done |
+| `docs/worker-backend.md` | Cron behavior, KV schemas, D1 schema, push notification, voice, and public endpoint flows | ✅ Done |
 | `docs/agent-mode.md` | Full command reference (all 12 ops), security mode matrix, task shape, error codes | ✅ Done |
 
 **Acceptance criteria:**

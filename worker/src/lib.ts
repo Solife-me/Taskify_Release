@@ -2,7 +2,7 @@
 // Shared worker types, helpers, and constants — extracted from index.ts
 // (Item #12 worker module split, pass 5).
 //
-// Handler modules (gcal, preview, reminders, voice, nip05) import
+// Handler modules (preview, reminders, voice, nip05) import
 // from here instead of "./index.ts", which removes the circular-import
 // pattern that grew during passes 1-4.
 
@@ -54,12 +54,6 @@ export interface Env {
   GEMINI_API_KEY?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
-  GCAL_CLIENT_ID: string;
-  GCAL_CLIENT_SECRET: string;
-  GCAL_TOKEN_ENC_KEY: string;
-  GCAL_TOKEN_ENC_KEY_PREV?: string;
-  GCAL_WEBHOOK_SECRET: string;
-  GCAL_KEY_VERSION?: string;  // current key version number as string, default "1"
   PREVIEW_RATE_LIMITER?: RateLimitBinding;
   NIP05_RATE_LIMITER?: RateLimitBinding;
 }
@@ -119,7 +113,7 @@ export async function enforceRateLimit(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Base64url codec (shared with VAPID JWT + GCal token crypto + preview proxy)
+// Base64url codec (shared with VAPID JWT and preview handling)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function base64UrlEncode(buffer: Uint8Array): string {

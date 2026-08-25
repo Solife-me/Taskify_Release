@@ -39,14 +39,6 @@ id = "448d7dc7170c4aff81c2a58c5e07e739"
 binding = "VAPID_PRIVATE_KEY"
 id = "45bbad6e354443ff9b101d61a27e5dd9"
 
-# Google Calendar
-# - GCAL_CLIENT_ID
-# - GCAL_CLIENT_SECRET
-# - GCAL_TOKEN_ENC_KEY
-# - GCAL_TOKEN_ENC_KEY_PREV
-# - GCAL_WEBHOOK_SECRET
-# - GCAL_KEY_VERSION
-
 [[d1_databases]]
 binding = "TASKIFY_DB"
 database_name = "taskify-notifications"

@@ -1,19 +1,4 @@
 /* eslint-disable no-console */
-import { schnorr } from "@noble/curves/secp256k1.js";
-import {
-  ensureGcalSchema,
-  handleGcalAuthUrl,
-  handleGcalAuthCallback,
-  handleGcalDisconnect,
-  handleGcalStatus,
-  handleGcalCalendars,
-  handleGcalToggleCalendar,
-  handleGcalEvents,
-  handleGcalSync,
-  handleGcalWebhook,
-  gcalRenewExpiredWatches,
-  gcalRetryFailedSyncs,
-} from "./gcal.ts";
 import { handlePreviewProxy } from "./preview.ts";
 import { handleVoiceExtract, handleVoiceFinalize } from "./voice.ts";
 import {
@@ -25,9 +10,9 @@ import {
 } from "./reminders.ts";
 import { handleNip05Lookup } from "./nip05.ts";
 import { handleWatchNostrPublish, handleWatchNostrQuery } from "./nostr-bridge.ts";
-import type { Env, D1Database } from "./lib.ts";
+import type { Env } from "./lib.ts";
 import { enforceRateLimit, jsonResponse, requireDb } from "./lib.ts";
-// Re-export shared lib for trailing test re-exports that import from "./index.ts".
+// Keep the shared library exports available to existing Worker-side consumers.
 export type { Env, D1Database } from "./lib.ts";
 export {
   JSON_HEADERS,
@@ -39,7 +24,6 @@ export {
 } from "./lib.ts";
 
 let schemaReadyPromise: Promise<void> | null = null;
-
 
 async function ensureSchema(env: Env): Promise<void> {
   if (schemaReadyPromise) {
@@ -106,8 +90,6 @@ async function ensureSchema(env: Env): Promise<void> {
          PRIMARY KEY (npub, date)
        )`,
     ).run();
-
-    await ensureGcalSchema(env);
   })()
     .catch((err) => {
       schemaReadyPromise = null;
@@ -123,8 +105,7 @@ function routeUsesDatabase(pathname: string): boolean {
     || pathname.startsWith("/api/devices/")
     || pathname === "/api/reminders"
     || pathname === "/api/reminders/poll"
-    || pathname.startsWith("/api/voice/")
-    || pathname.startsWith("/api/gcal/");
+    || pathname.startsWith("/api/voice/");
 }
 
 interface ScheduledEvent {
@@ -158,9 +139,8 @@ async function serveAsset(request: Request, env: Env): Promise<Response> {
   return response;
 }
 
-
 export default {
-  async fetch(request: Request, env: Env, ctx: SchedulerController): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -223,36 +203,6 @@ export default {
       if (url.pathname === "/api/watch/nostr/query" && request.method === "POST") {
         return await handleWatchNostrQuery(request);
       }
-      // Google Calendar routes
-      if (url.pathname === "/api/gcal/auth/url" && request.method === "GET") {
-        return await handleGcalAuthUrl(request, env);
-      }
-      if (url.pathname === "/api/gcal/auth/callback" && request.method === "GET") {
-        return await handleGcalAuthCallback(request, env);
-      }
-      if (url.pathname === "/api/gcal/connection" && request.method === "DELETE") {
-        return await handleGcalDisconnect(request, env);
-      }
-      if (url.pathname === "/api/gcal/status" && request.method === "GET") {
-        return await handleGcalStatus(request, env);
-      }
-      if (url.pathname === "/api/gcal/calendars" && request.method === "GET") {
-        return await handleGcalCalendars(request, env);
-      }
-      if (url.pathname.startsWith("/api/gcal/calendars/") && request.method === "PATCH") {
-        const calendarId = decodeURIComponent(url.pathname.substring("/api/gcal/calendars/".length));
-        return await handleGcalToggleCalendar(request, env, calendarId);
-      }
-      if (url.pathname === "/api/gcal/events" && request.method === "GET") {
-        return await handleGcalEvents(request, env);
-      }
-      if (url.pathname === "/api/gcal/sync" && request.method === "POST") {
-        return await handleGcalSync(request, env);
-      }
-      if (url.pathname.startsWith("/api/gcal/webhook/") && request.method === "POST") {
-        const channelId = decodeURIComponent(url.pathname.substring("/api/gcal/webhook/".length));
-        return await handleGcalWebhook(request, env, channelId, ctx);
-      }
     } catch (err) {
       console.error("Worker error", err);
       return jsonResponse({ error: (err as Error).message || "Internal error" }, 500);
@@ -271,8 +221,6 @@ export default {
       try {
         await ensureSchema(env);
         await processDueReminders(env);
-        await gcalRenewExpiredWatches(env);
-        await gcalRetryFailedSyncs(env);
       } catch (err) {
         console.error('Scheduled task failed', { cron: event?.cron, error: err instanceof Error ? err.message : String(err) });
         throw err;
@@ -289,13 +237,4 @@ export default {
   },
 };
 
-
-
-
-
-
-
-
-// Named re-exports for unit testing — implementation lives in ./gcal.ts.
-export { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth } from "./gcal.ts";
 export { normalizeNostrPublicKey, verifyTaskifyAuth } from "./nostr-auth.ts";

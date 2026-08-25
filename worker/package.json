@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/index.test.ts"
+    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/*.test.ts"
   },
   "dependencies": {
     "@noble/curves": "^2.2.0",

@@ -10,7 +10,7 @@ Compiled from two independent audits (Claude Code + Codex). Every item below was
 
 ### 1. Bypass `/api/*` in service-worker cache (~30 min) ✅ easiest critical fix
 
-**Problem.** [public/sw.js:23](../taskify-pwa/public/sw.js:23) caches every successful GET unless the response sets `Cache-Control: no-store`. The worker's [JSON_HEADERS at worker/src/index.ts:157](../worker/src/index.ts:157) only sets `Content-Type` + `Access-Control-Allow-Origin` — no cache directive. Result: signed Google Calendar responses, backup status, push registration, and reminder polling can be cached and served stale.
+**Problem.** [public/sw.js:23](../taskify-pwa/public/sw.js:23) caches every successful GET unless the response sets `Cache-Control: no-store`. The worker's [JSON_HEADERS at worker/src/index.ts:157](../worker/src/index.ts:157) only sets `Content-Type` + `Access-Control-Allow-Origin` — no cache directive. Result: API responses can be cached and served stale.
 
 **Fix.** Either:
 - Add `Cache-Control: no-store` to `JSON_HEADERS` in `worker/src/index.ts`, **or**
@@ -259,12 +259,11 @@ Acceptance for the grouped upcoming view: ✅ rendered DOM is now O(visible) reg
 
 ### 12. Worker backend cleanup (~half day, low priority)
 
-**Problem.** [worker/src/index.ts](../worker/src/index.ts) is 4,757 lines doing push notifications, reminder cron, Google Calendar OAuth + webhook handling, link previews, voice quotas, and D1 queries — no clear domain boundaries.
+**Problem.** [worker/src/index.ts](../worker/src/index.ts) was 4,757 lines combining push notifications, reminder cron, link previews, voice quotas, third-party integrations, and D1 queries with no clear domain boundaries.
 
 **Fix.** Add `// region: <name>` markers and split into modules under `worker/src/`:
 - `worker/src/push.ts`
 - `worker/src/reminders.ts`
-- `worker/src/google-calendar.ts`
 - `worker/src/preview.ts`
 - `worker/src/voice.ts`
 
@@ -274,7 +273,7 @@ Document the public HTTP contract in [docs/worker-backend.md](worker-backend.md)
 
 **Progress.** index.ts down from **4,758 → 257 lines** (−4,501, **−95%**) across five passes. All shared types/helpers consolidated in [`worker/src/lib.ts`](../worker/src/lib.ts); circular-import pattern fully resolved.
 
-- ✅ **Pass 1 — Google Calendar extraction**: created [worker/src/gcal.ts](../worker/src/gcal.ts) (1,059 lines) containing the entire OAuth + sync + webhook + token-encryption flow (15 exported functions: `gcalEncryptToken`, `gcalDecryptToken`, `verifyGcalAuth`, `ensureGcalSchema`, `handleGcalAuthUrl`, `handleGcalAuthCallback`, `handleGcalDisconnect`, `handleGcalStatus`, `handleGcalCalendars`, `handleGcalToggleCalendar`, `handleGcalEvents`, `handleGcalSync`, `handleGcalWebhook`, `gcalRenewExpiredWatches`, `gcalRetryFailedSyncs`). Also exported the necessary shared helpers from index.ts (`requireDb`, `jsonResponse`, `base64UrlEncode`, `base64UrlDecode`, `parseJson`, `D1Database`) so gcal.ts can import them. Trailing test re-exports preserved by re-exporting from gcal.ts. All **43 worker tests still pass**.
+- ✅ **Pass 1 — Third-party integration extraction**: isolated the former calendar integration from the router. That integration was fully retired in August 2026; its routes and implementation have since been deleted, and migration `0005_remove_gcal_integration.sql` removes its stored OAuth state and cached data.
 
 - ✅ **Pass 2 — Link preview extraction**: created [worker/src/preview.ts](../worker/src/preview.ts) (1,665 lines) containing `handlePreviewProxy` + 22 helpers for OG/Twitter/JSON-LD metadata extraction, fallback heuristics for blocked pages, image asset picking, title normalization, etc. Self-contained: no preview helper was used outside the block. Also exported `JSON_HEADERS` from index.ts and moved the `link-preview-js` library import from index.ts to preview.ts.
 
@@ -292,7 +291,7 @@ All **43 worker tests still pass** after every pass.
 
 **index.ts** is now 257 lines: route table inside `export default { fetch, scheduled }`, `ensureSchema` (D1 schema migration), and a thin re-export block of lib.ts symbols (kept for backward compat with any external consumer importing from `./index.ts`).
 
-**Item #12 status: substantively complete.** Cohesion > the arbitrary <800-line line count means **gcal.ts (1,059), preview.ts (1,665), and reminders.ts (826) deliberately exceed 800** — splitting them further would separate tightly-coupled concerns without much value. If the bar is hard, the cleanest sub-splits would be `gcal-crypto.ts` (~200 lines), `preview-extract.ts` vs `preview-response.ts`, and `vapid.ts` (split JWT+key resolution out of reminders.ts, ~150 lines). voice.ts (646), backups.ts (229), nip05.ts (109), lib.ts (145), and index.ts (257) are all under target.
+**Item #12 status: substantively complete.** Cohesion > the arbitrary <800-line line count means **preview.ts (1,665) and reminders.ts (826) deliberately exceed 800** — splitting them further would separate tightly-coupled concerns without much value. If the bar is hard, the cleanest sub-splits would be `preview-extract.ts` vs `preview-response.ts` and `vapid.ts` (split JWT+key resolution out of reminders.ts, ~150 lines). voice.ts, nip05.ts, lib.ts, and index.ts are all under target.
 
 ---
 

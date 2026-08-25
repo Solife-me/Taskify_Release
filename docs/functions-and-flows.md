@@ -711,7 +711,7 @@ Error codes: `PARSE_JSON` | `VALIDATION` | `NOT_FOUND` | `CONFLICT` | `FORBIDDEN
 ```
 Worker cron trigger (*/1 * * * *)
   Path: worker/src/index.ts → scheduled() handler
-  Runs reminder delivery plus Google Calendar watch-renewal/retry maintenance.
+  Runs reminder delivery and push wake-up processing.
 
   processDueReminders steps:
   1. Query due rows from D1 `reminders` table (batched):

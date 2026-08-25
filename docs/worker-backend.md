@@ -2,18 +2,19 @@
 
 This guide documents the **current production backend flow** implemented in `worker/src/index.ts`.
 
-It is written for contributors/agents who need to safely modify reminder delivery, push registration, Google Calendar sync, or OAuth behavior without introducing silent regressions.
+It is written for contributors/agents who need to safely modify reminder delivery, push registration, authenticated voice processing, public metadata endpoints, or Watch transport without introducing silent regressions.
 
 ---
 
 ## 1) Purpose and runtime boundaries
 
-The Worker is responsible for four backend concerns:
+The Worker is responsible for five backend concerns:
 
 1. **Push device + reminder orchestration** (HTTP APIs + cron)
-2. **Legacy Google Calendar OAuth and synchronization** (not exposed by the PWA)
-3. **Independent Apple Watch opaque Nostr transport**
-4. **Static PWA asset serving** (`ASSETS` binding fallback)
+2. **Authenticated voice extraction and finalization**
+3. **Rate-limited link preview and NIP-05 lookups**
+4. **Independent Apple Watch opaque Nostr transport**
+5. **Static PWA asset serving** (`ASSETS` binding fallback)
 
 Primary entry points:
 - Fetch router: `worker/src/index.ts` (around lines 261–337)
@@ -391,11 +392,10 @@ Within `scheduled()`, the runner currently executes in strict sequence:
 
 1. `ensureSchema(env)`
 2. `processDueReminders(env)`
-3. Google Calendar watch renewal and failed-sync retry
 
 Anchor: `worker/src/index.ts:317–323`
 
-Independent scheduled jobs should remain failure-isolated so one integration cannot starve another.
+Additional scheduled jobs should remain failure-isolated so one integration cannot starve another.
 
 ### 15.2 waitUntil compatibility behavior
 
