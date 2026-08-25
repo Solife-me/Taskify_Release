@@ -1,12 +1,14 @@
 node_modules/
 .build/
-*.xcuserdata
+xcuserdata/
+*.xcuserdatad/
 taskify-ios/build/
 taskify-ios-native/build/
 *.xcuserstate
 .DS_Store
 *.pid
 worker/node_modules/
+.wrangler/
 dist/
 !taskify-runtime-nostr/dist/
 !taskify-runtime-nostr/dist/NostrOutbox.d.ts
