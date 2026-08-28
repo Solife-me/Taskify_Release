@@ -2552,7 +2552,7 @@ final class AppModel {
 
         let rumor = try NIP17Rumor(
             publicKey: identity.publicKeyHex,
-            createdAt: nextNostrTimestamp(),
+            createdAt: currentDirectMessageTimestamp(),
             kind: kind,
             tags: rumorTags,
             content: content
@@ -2711,7 +2711,7 @@ final class AppModel {
         if let replyID = validNostrEventID(replyToEventID) { tags.append(["e", replyID]) }
         let rumor = try NIP17Rumor(
             publicKey: identity.publicKeyHex,
-            createdAt: nextNostrTimestamp(),
+            createdAt: currentDirectMessageTimestamp(),
             kind: kind,
             tags: tags,
             content: content
@@ -4355,9 +4355,18 @@ final class AppModel {
             errorMessage = "Your native data could not be loaded. A fresh local workspace is being shown."
         }
 #if DEBUG
-        applyChatUITestFixtureIfRequested()
-        applyBoardUITestFixtureIfRequested()
-        applyPerformanceUITestFixtureIfRequested()
+        let fixtureApplied = applyChatUITestFixtureIfRequested()
+            || applyBoardUITestFixtureIfRequested()
+            || applyPerformanceUITestFixtureIfRequested()
+        if fixtureApplied {
+            // A UI-test fixture lives only in this process's memory, and the scenePhase-active
+            // pass calls reloadIfChangedExternally(), which treats any store file newer than our
+            // last write as someone else's update and replaces the snapshot with it — wiping the
+            // fixture before the test's first assertion. Persist the fixture and stamp the write
+            // so that reload recognises the file as our own.
+            try? await store.save(snapshot)
+            lastStoreWriteAt = Date()
+        }
 #endif
         applyStartupBoardPreference()
         refreshNotifications(requestPermission: false)
@@ -4470,9 +4479,10 @@ final class AppModel {
     }
 
 #if DEBUG
-    private func applyBoardUITestFixtureIfRequested() {
+    /// Returns true when the fixture was applied.
+    private func applyBoardUITestFixtureIfRequested() -> Bool {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_BOARD_FIXTURE"] == "1" else {
-            return
+            return false
         }
         let board = Board.week(name: "UI Test Board")
         snapshot = TaskifySnapshot(
@@ -4481,11 +4491,13 @@ final class AppModel {
             selectedBoardID: board.id
         )
         errorMessage = nil
+        return true
     }
 
-    private func applyPerformanceUITestFixtureIfRequested() {
+    /// Returns true when the fixture was applied.
+    private func applyPerformanceUITestFixtureIfRequested() -> Bool {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] == "1" else {
-            return
+            return false
         }
 
         let board = Board.week(name: "Performance")
@@ -4524,11 +4536,13 @@ final class AppModel {
             selectedBoardID: board.id
         )
         errorMessage = nil
+        return true
     }
 
-    private func applyChatUITestFixtureIfRequested() {
+    /// Returns true when the fixture was applied.
+    private func applyChatUITestFixtureIfRequested() -> Bool {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1" else {
-            return
+            return false
         }
         let peerPublicKey = String(repeating: "1", count: 64)
         let ownPublicKey = identityPublicKey.isEmpty
@@ -4540,14 +4554,26 @@ final class AppModel {
                 petname: "UI Test Contact"
             ),
         ].compactMap { $0 }
-        snapshot.directMessages = (1...40).map { index in
+        // 300 messages so the thread is several screens deep: short fixtures realize their
+        // whole LazyVStack almost immediately, which hides scroll anchoring problems that only
+        // show up while rows are still being realized mid-drag.
+        let fixtureMessageCount = 300
+        snapshot.directMessages = (1...fixtureMessageCount).map { index in
             let content: String
             switch index {
             case 2:
                 content = "Searchable early fixture needle"
             case 8, 20, 32:
                 content = "Repeatable fixture match \(index)"
-            case 40:
+            case 296:
+                content = "Hi"
+            case 297:
+                content = "Could we make replies look more like Messages?"
+            case 298:
+                content = "Yes — the referenced message is separate now."
+            case 299:
+                content = "And reactions sit above the opposite corner."
+            case fixtureMessageCount:
                 content = "Newest fixture message"
             default:
                 content = "Fixture conversation message \(index)"
@@ -4560,13 +4586,53 @@ final class AppModel {
                 senderPublicKey: incoming ? peerPublicKey : ownPublicKey,
                 content: content,
                 createdAt: 1_784_647_200 + index,
-                isIncoming: incoming
+                isIncoming: incoming,
+                replyToEventID: index == 298 ? "ui-message-297" : nil
             )
         }
+        snapshot.directMessageReactions = [
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-1",
+                wrapEventID: "ui-reaction-wrap-1",
+                targetEventID: "ui-message-299",
+                senderPublicKey: peerPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "❤️",
+                createdAt: 1_784_647_500
+            ),
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-2",
+                wrapEventID: "ui-reaction-wrap-2",
+                targetEventID: "ui-message-300",
+                senderPublicKey: ownPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "👍",
+                createdAt: 1_784_647_501
+            ),
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-3",
+                wrapEventID: "ui-reaction-wrap-3",
+                targetEventID: "ui-message-300",
+                senderPublicKey: ownPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "❤️",
+                createdAt: 1_784_647_502
+            ),
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-4",
+                wrapEventID: "ui-reaction-wrap-4",
+                targetEventID: "ui-message-296",
+                senderPublicKey: ownPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "❤️",
+                createdAt: 1_784_647_503
+            ),
+        ]
         snapshot.directMessageReadAt = [:]
         snapshot.directMessageArchivedAt = [:]
         snapshot.directMessageDeletedEventIDs = [:]
         errorMessage = nil
+        return true
     }
 #endif
 
@@ -5480,6 +5546,15 @@ final class AppModel {
     private func nextNostrTimestamp(after timestamp: Int) -> Int {
         lastNostrCreatedAt = max(lastNostrCreatedAt, timestamp)
         return nextNostrTimestamp()
+    }
+
+    /// Direct messages are chronological conversation events, not last-write-wins state. The
+    /// app-wide Nostr clock may be ahead of wall time after processing remote board/task events;
+    /// using it here can make a later reply from another device sort before the message it
+    /// answers. Use the actual send time and let the stable message ordering preserve events
+    /// that share Nostr's one-second timestamp resolution.
+    private func currentDirectMessageTimestamp() -> Int {
+        Int(Date().timeIntervalSince1970)
     }
 
     private func scheduleSave() {

@@ -132,6 +132,32 @@ test("PublishCoordinator keeps partial failures and drains only pending relays",
   }
 });
 
+test("PublishCoordinator treats zero relay acknowledgements as a queued failure", async () => {
+  const store = new MemoryOutboxStore();
+  const coordinator = buildCoordinator(store);
+  const originalPublish = NDKEvent.prototype.publish;
+  NDKEvent.prototype.publish = async function publishMock() {
+    return new Set() as never;
+  };
+
+  try {
+    await assert.rejects(
+      coordinator.publish(template, {
+        relayUrls: ["wss://relay.one"],
+        signer: generateSecretKey(),
+      }),
+      /No relay acknowledged the write/,
+    );
+    assert.equal(store.rows.size, 1);
+    const [row] = Array.from(store.rows.values());
+    assert.deepEqual(row.pendingRelays, ["wss://relay.one"]);
+    assert.equal(row.attempts, 1);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    coordinator.shutdown();
+  }
+});
+
 test("PublishCoordinator backs off when a successful publish only acknowledges some relays", async () => {
   const store = new MemoryOutboxStore();
   const coordinator = buildCoordinator(store);

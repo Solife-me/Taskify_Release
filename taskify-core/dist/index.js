@@ -17,3 +17,4 @@ export * from "./boardCrypto.js";
 export * from "./relayNormalize.js";
 export * from "./shareNormalize.js";
 export * from "./entityResolution.js";
+export * from "./locationContracts.js";

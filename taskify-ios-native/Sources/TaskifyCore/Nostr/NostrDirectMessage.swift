@@ -583,7 +583,7 @@ public extension TaskifySnapshot {
     }
 
     var directMessageHistory: [NostrDirectMessage] {
-        (directMessages ?? []).sorted(by: Self.directMessageSort)
+        Self.sortedDirectMessages(directMessages ?? [])
     }
 
     /// Applies the same local cache-retention contract as the PWA. This deliberately does not
@@ -652,9 +652,9 @@ public extension TaskifySnapshot {
 
     func directMessages(with peerPublicKey: String) -> [NostrDirectMessage] {
         guard let peer = Self.normalizedConversationID(peerPublicKey) else { return [] }
-        return (directMessages ?? [])
-            .filter { $0.peerPublicKey == peer }
-            .sorted(by: Self.directMessageSort)
+        return Self.sortedDirectMessages(
+            (directMessages ?? []).filter { $0.peerPublicKey == peer }
+        )
     }
 
     func directMessageThreads() -> [NostrDirectMessageThread] {
@@ -696,7 +696,7 @@ public extension TaskifySnapshot {
             .union(groupedBoards.keys)
             .union(groupIDs)
         let threads = peerIDs.map { peer -> NostrDirectMessageThread in
-            let sorted = (groupedMessages[peer] ?? []).sorted(by: Self.directMessageSort)
+            let sorted = Self.sortedDirectMessages(groupedMessages[peer] ?? [])
             let sharedTasks = (groupedShares[peer] ?? []).sorted {
                 if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
                 return $0.id < $1.id
@@ -1039,7 +1039,7 @@ public extension TaskifySnapshot {
             return false
         }
         values.append(message)
-        values.sort(by: Self.directMessageSort)
+        values = Self.sortedDirectMessages(values)
         if values.count > maximumCount {
             values.removeFirst(values.count - maximumCount)
         }
@@ -1110,12 +1110,20 @@ public extension TaskifySnapshot {
         return true
     }
 
-    private static func directMessageSort(
-        _ lhs: NostrDirectMessage,
-        _ rhs: NostrDirectMessage
-    ) -> Bool {
-        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
-        return lhs.rumorEventID < rhs.rumorEventID
+    /// Nostr timestamps have one-second precision, so event IDs are not a meaningful tiebreaker
+    /// for chat chronology. Preserve the stored/observed order when timestamps match instead of
+    /// letting unrelated event hashes randomly reverse a prompt and its response.
+    private static func sortedDirectMessages(
+        _ messages: [NostrDirectMessage]
+    ) -> [NostrDirectMessage] {
+        messages.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.createdAt != rhs.element.createdAt {
+                    return lhs.element.createdAt < rhs.element.createdAt
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     private static func normalizedConversationID(_ value: String) -> String? {

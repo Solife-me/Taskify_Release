@@ -1,6 +1,14 @@
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { createNostrOutboxMutation, cloneNostrEvent, markOutboxPublishFailure, mergeOutboxRelayAcks, pendingRelayUrlsForMutation, } from "./NostrOutbox.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+export class NostrWriteQueuedError extends Error {
+    code = "WRITE_QUEUED";
+    retryable = true;
+    constructor() {
+        super("No relay acknowledged the write; it remains queued for retry.");
+        this.name = "NostrWriteQueuedError";
+    }
+}
 function signerFromInput(value) {
     if (!value)
         return undefined;
@@ -56,6 +64,9 @@ export class PublishCoordinator {
     async publishNow(event, relaySet) {
         const createdAt = event.created_at || Math.floor(Date.now() / 1000);
         const publishedRelays = await event.publish(relaySet);
+        if (!(publishedRelays instanceof Set) || publishedRelays.size === 0) {
+            throw new NostrWriteQueuedError();
+        }
         const raw = event.rawEvent();
         this.eventCache?.add(raw);
         return { createdAt, event: raw, ackedRelays: relayUrlsFromPublishResult(publishedRelays) };

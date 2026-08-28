@@ -95,7 +95,8 @@ The native target includes an App Store-ready app-icon catalog based on the rele
 DM push requires the Push Notifications capability on the `solife.me.Taskify.Native` App ID and
 signing profile. Install the StartOS package from `taskify-push-relay/`, configure its APNs Team ID,
 Key ID, and `.p8` provider key, expose its interface as `https://push.solife.me` /
-`wss://push.solife.me`, then enable the desired categories under Taskify Settings. Until the
+`wss://push.solife.me`, then enable the desired categories under Taskify Settings (first-run
+onboarding's "Enable notifications" also opts in with the default categories). Until the
 Notification Service Extension ships, APNs shows a generic alert and the app enriches it after the
 background wake (local message notifications and verified redeemed-amount payment notifications).
 Payment redemption is a best-effort background operation and completes on the next app run if iOS
