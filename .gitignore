@@ -10,6 +10,7 @@ taskify-ios-native/build/
 worker/node_modules/
 .wrangler/
 dist/
+!taskify-core/dist/
 !taskify-runtime-nostr/dist/
 !taskify-runtime-nostr/dist/NostrOutbox.d.ts
 !taskify-runtime-nostr/dist/NostrOutbox.js

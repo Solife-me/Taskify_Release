@@ -1,4 +1,4 @@
-import NDK, { NDKEvent, NDKRelaySet, type NDKFilter, type NDKRelay } from "@nostr-dev-kit/ndk";
+import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus, type NDKFilter, type NDKRelay } from "@nostr-dev-kit/ndk";
 import type { EventTemplate, NostrEvent } from "nostr-tools";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
@@ -7,9 +7,10 @@ import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
 import type { NostrOutboxStore } from "./NostrOutbox.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+import type { RelayInfo } from "./RelayInfoCache.js";
 
 export type RelayInfoCacheLike = {
-  prime: (relayUrl: string, loader: (nip11Url: string) => Promise<unknown>) => Promise<{ info?: unknown } | null>;
+  prime: (relayUrl: string, loader: (nip11Url: string) => Promise<RelayInfo | null>) => Promise<{ info?: unknown } | null>;
   needsRefresh: (relayUrl: string) => boolean;
   get: (relayUrl: string) => unknown;
   getAgeMs: (relayUrl: string) => number | null;
@@ -18,7 +19,7 @@ export type RelayInfoCacheLike = {
 
 export type RelayHealthLike = {
   canAttempt: (relayUrl: string) => boolean;
-  markFailure: (relayUrl: string, meta?: { severity?: string; reason?: string }) => void;
+  markFailure: (relayUrl: string, meta?: { severity?: "low" | "normal" | "high"; reason?: string }) => void;
   markSuccess: (relayUrl: string) => void;
   onBackoffExpiry: (relayUrl: string, fn: () => void) => void;
   nextAttemptIn: (relayUrl: string) => number;
@@ -51,6 +52,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   private knownRelays: Set<string>;
   private relayRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private loggedDebugSummary = false;
+  private shuttingDown = false;
 
   private readonly relayInfoCache: RelayInfoCacheLike;
   private readonly relayHealth: RelayHealthLike;
@@ -84,6 +86,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async init(relays: string[]): Promise<this> {
+    this.shuttingDown = false;
     const normalized = normalizeRelayUrls(relays);
     await this.ensureRelays(normalized);
     await this.connect();
@@ -101,13 +104,32 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     this.publisher.shutdown();
     this.subscriptions.shutdown();
-    try {
-      await (this.ndk.pool as any)?.disconnect?.();
-    } catch {
-      // ignore
+    for (const timer of this.relayRetryTimers.values()) {
+      clearTimeout(timer);
     }
+    this.relayRetryTimers.clear();
+    for (const relay of this.ndk.pool.relays.values()) {
+      try {
+        relay.disconnect();
+      } catch {
+        // ignore individual relay teardown errors
+      }
+    }
+    try {
+      (this.ndk.pool as unknown as { destroy?: () => void }).destroy?.();
+    } catch {
+      // ignore pool teardown errors
+    }
+    // Some NDK relay implementations emit disconnect asynchronously. Clear a
+    // second time after initiating teardown; the hook also checks shuttingDown.
+    for (const timer of this.relayRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.relayRetryTimers.clear();
+    this.initialized = false;
   }
 
   private async buildRelaySet(relayUrls?: string[]): Promise<NDKRelaySet | undefined> {
@@ -180,6 +202,10 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     return this.publisher.publishRaw(event, options);
   }
 
+  createEvent(event?: NostrEvent): NDKEvent {
+    return new NDKEvent(this.ndk, event);
+  }
+
   async fetchEvents(filters: NDKFilter[], relayUrls?: string[], timeoutMs = 8_000, eoseGraceMs = 200, inactivityMs = 1_500): Promise<NostrEvent[]> {
     const relaySet = await this.buildRelaySet(relayUrls);
     return new Promise<NostrEvent[]>((resolve) => {
@@ -229,6 +255,19 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     });
   }
 
+  relayStatuses(): Array<{ url: string; connected: boolean; status: string }> {
+    return Array.from(this.knownRelays).map((url) => {
+      const relay = Array.from(this.ndk.pool.relays.values()).find((candidate) =>
+        normalizeRelayUrls([candidate.url])[0] === url);
+      const status = relay?.status;
+      return {
+        url,
+        connected: status === NDKRelayStatus.CONNECTED,
+        status: status === undefined ? "unknown" : NDKRelayStatus[status] ?? String(status),
+      };
+    });
+  }
+
   private setupRelayHooks() {
     this.ndk.relayAuthDefaultPolicy = async (relay, challenge) => {
       try {
@@ -240,21 +279,25 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     };
 
     this.ndk.pool.on("relay:connect", (relay: NDKRelay) => {
+      if (this.shuttingDown) return;
       this.relayHealth.markSuccess(relay.url);
       this.authManager.reset(relay.url);
       this.drainOutbox("relay:connect");
       this.logDebugSummary();
     });
     this.ndk.pool.on("relay:ready", (relay: NDKRelay) => {
+      if (this.shuttingDown) return;
       this.relayHealth.markSuccess(relay.url);
       this.drainOutbox("relay:ready");
     });
     this.ndk.pool.on("relay:disconnect", (relay: NDKRelay) => {
+      if (this.shuttingDown) return;
       this.relayHealth.markFailure(relay.url, { reason: "disconnect" });
       this.authManager.reset(relay.url);
       this.scheduleRelayConnect(relay.url);
     });
     this.ndk.pool.on("relay:authed", (relay: NDKRelay) => {
+      if (this.shuttingDown) return;
       this.authManager.markAuthed(relay);
       this.relayHealth.markSuccess(relay.url);
       this.drainOutbox("relay:authed");
@@ -266,7 +309,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     // auth). Respect each row's persisted retry deadline so those events do not
     // bypass backoff and hammer a relay that just returned a partial result.
     void this.publisher.drainOutbox().catch((err) => {
-      if (this.isDev) console.debug("[nostr] outbox drain failed", reason, err);
+      if (this.isDev) console.error("[nostr] outbox drain failed", reason, err);
     });
   }
 
@@ -280,6 +323,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   private scheduleRelayConnect(relayUrl: string): void {
+    if (this.shuttingDown) return;
     if (this.relayRetryTimers.has(relayUrl)) return;
     const delay = this.relayHealth.nextAttemptIn(relayUrl);
     const timer = setTimeout(() => {
@@ -290,7 +334,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
         const connectPromise = relay.connect?.();
         if (connectPromise?.catch) {
           connectPromise.catch((err: unknown) => {
-            if (this.isDev) console.debug("[nostr] relay reconnect failed", relayUrl, err);
+            if (this.isDev) console.error("[nostr] relay reconnect failed", relayUrl, err);
           });
         }
       } catch {}
@@ -314,6 +358,6 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
         failures: health?.consecutiveFailures ?? 0,
       };
     });
-    console.debug("[nostr][debug] relay state", summary);
+    console.error("[nostr][debug] relay state", summary);
   }
 }

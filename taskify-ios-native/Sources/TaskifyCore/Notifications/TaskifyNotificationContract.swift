@@ -9,6 +9,12 @@ public enum TaskifyNotificationContract {
     public static let completeTaskActionIdentifier = "me.solife.taskify.notification.complete-task"
     public static let taskIDKey = "taskID"
     public static let boardIDKey = "boardID"
+    public static let destinationKey = "taskifyDestination"
+
+    public enum Destination: String, Equatable, Sendable {
+        case chat
+        case wallet
+    }
 
     public enum Action: Equatable, Sendable {
         case completeTask(taskID: String)
@@ -22,6 +28,12 @@ public enum TaskifyNotificationContract {
               let taskID = userInfo[taskIDKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !taskID.isEmpty else { return nil }
         return .completeTask(taskID: taskID)
+    }
+
+    public static func destination(userInfo: [String: String]) -> Destination? {
+        guard let value = userInfo[destinationKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return Destination(rawValue: value)
     }
 }
 

@@ -59,7 +59,7 @@ export async function fetchShareInboxNip17(input: {
       kinds: [1059],
       "#p": [pubkey],
       limit: Math.max(1, Math.min(200, input.limit ?? 50)),
-    });
+    }, { maxWait: 5_000 });
     const out: InboxShareItem[] = [];
     for (const wrap of wraps) {
       try {

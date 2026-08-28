@@ -36,6 +36,16 @@ type PendingPublish = {
 export type PublishResult = number | { createdAt: number; event: NostrEvent };
 type PublishEventResult = { createdAt: number; event: NostrEvent; ackedRelays: string[] };
 
+export class NostrWriteQueuedError extends Error {
+  readonly code = "WRITE_QUEUED";
+  readonly retryable = true;
+
+  constructor() {
+    super("No relay acknowledged the write; it remains queued for retry.");
+    this.name = "NostrWriteQueuedError";
+  }
+}
+
 export type PublishCoordinatorOptions = {
   outboxStore?: NostrOutboxStore;
   retryBaseMs?: number;
@@ -97,6 +107,9 @@ export class PublishCoordinator {
   private async publishNow(event: NDKEvent, relaySet?: NDKRelaySet): Promise<PublishEventResult> {
     const createdAt = event.created_at || Math.floor(Date.now() / 1000);
     const publishedRelays = await event.publish(relaySet);
+    if (!(publishedRelays instanceof Set) || publishedRelays.size === 0) {
+      throw new NostrWriteQueuedError();
+    }
     const raw = event.rawEvent() as NostrEvent;
     this.eventCache?.add(raw);
     return { createdAt, event: raw, ackedRelays: relayUrlsFromPublishResult(publishedRelays) };

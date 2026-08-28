@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 test("CLI board resolution is delegated to shared helpers", () => {
   const indexSource = readFileSync(resolve("src/index.ts"), "utf8");
   assert.match(indexSource, /import\s+\{[^}]*resolveBoardReference[^}]*\}\s+from\s+"taskify-core"/);
-  assert.match(indexSource, /resolveBoardForCommand\(config\.boards,\s*boardOpt\)/);
+  assert.match(indexSource, /resolveBoardForCommand\(config\.boards,\s*boardOpt,\s*config\.defaultLocation\)/);
   assert.match(indexSource, /resolveBoardReference\(config\.boards,\s*boardId\)/);
   assert.match(indexSource, /resolveBoardReference\(config\.boards,\s*boardArg\)/);
 });

@@ -651,11 +651,16 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
         const { title, note = "", dueISO, priority, idempotencyKey } = command.params;
         const boardId = command.params.boardId ?? runtime.getDefaultBoardId() ?? "inbox";
         const idempotencyStore = getAgentIdempotencyStore();
+        let reservedTaskId: string | undefined;
 
         if (idempotencyKey) {
-          const existingTaskId = await idempotencyStore.get(idempotencyKey);
-          if (existingTaskId) {
-            const existingTask = await runtime.getTask(existingTaskId);
+          const reservation = await idempotencyStore.reserve(
+            `${boardId}:${idempotencyKey}`,
+            crypto.randomUUID(),
+          );
+          reservedTaskId = reservation.taskId;
+          if (!reservation.created) {
+            const existingTask = await runtime.getTask(reservation.taskId);
             if (existingTask) {
               const securityConfig = await getSecurityConfig(runtime);
               return success(command.id, {
@@ -667,6 +672,7 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
         }
 
         const createdTask = await runtime.createTask({
+          taskId: reservedTaskId,
           title,
           note,
           boardId,
@@ -674,9 +680,6 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
           ...(priority ? { priority } : {}),
           ...(idempotencyKey ? { idempotencyKey } : {}),
         } satisfies AgentTaskCreateInput);
-        if (idempotencyKey) {
-          await idempotencyStore.set(idempotencyKey, createdTask.id);
-        }
         const securityConfig = await getSecurityConfig(runtime);
         return success(command.id, {
           taskId: createdTask.id,

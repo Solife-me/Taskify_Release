@@ -1,7 +1,7 @@
 {
   "name": "taskify-nostr",
   "version": "0.3.11",
-  "description": "Nostr-powered task management CLI",
+  "description": "Agent-facing CLI for Taskify collaboration over Nostr",
   "type": "module",
   "bin": {
     "taskify": "dist/index.js"
@@ -11,6 +11,7 @@
     "prepare": "npm run build",
     "start": "node dist/index.js",
     "dev": "node --experimental-strip-types src/index.ts",
+    "pretest": "npm run build",
     "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
   "files": [

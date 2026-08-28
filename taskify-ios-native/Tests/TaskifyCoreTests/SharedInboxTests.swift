@@ -664,6 +664,39 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertThrowsError(try NIP17GiftWrap.unwrap(wrap, recipient: wrongRecipient))
     }
 
+    func testNIP17GiftWrapPairCreatesIndependentRecipientAndSenderCopies() throws {
+        let sender = try identity(senderPrivateKey)
+        let recipient = try identity(recipientPrivateKey)
+        let envelope = TaskifyShareEnvelope(
+            item: .contact(SharedContactDelivery(
+                npub: recipient.npub,
+                displayName: "Alice"
+            )),
+            senderNpub: sender.npub
+        )
+
+        let pair = try NIP17GiftWrap.wrapPair(
+            envelope: envelope,
+            sender: sender,
+            recipientPublicKey: recipient.publicKey,
+            createdAt: 1_784_647_200
+        )
+        let recipientRumor = try NIP17GiftWrap.unwrapRumor(
+            pair.recipientWrap,
+            recipient: recipient
+        ).rumor
+        let senderRumor = try NIP17GiftWrap.unwrapRumor(
+            pair.senderWrap,
+            recipient: sender
+        ).rumor
+
+        XCTAssertEqual(pair.rumor, recipientRumor)
+        XCTAssertEqual(pair.rumor, senderRumor)
+        XCTAssertNotEqual(pair.recipientWrap.publicKey, pair.senderWrap.publicKey)
+        XCTAssertEqual(pair.recipientWrap.firstTagValue(named: "p"), recipient.publicKeyHex)
+        XCTAssertEqual(pair.senderWrap.firstTagValue(named: "p"), sender.publicKeyHex)
+    }
+
     func testNIP17AcceptsCDKPaymentRumorWithoutInnerRecipientTag() throws {
         let sender = try identity(senderPrivateKey)
         let recipient = try identity(recipientPrivateKey)
@@ -869,6 +902,56 @@ final class SharedInboxTests: XCTestCase {
             ),
             ["wss://relay.solife.me", "wss://inbox.example"]
         )
+    }
+
+    func testNIP17DeliveryPlanKeepsRecipientAndSenderInboxRelaysSeparate() throws {
+        let plan = try XCTUnwrap(NIP17RelayRouting.deliveryPlan(
+            recipientInboxRelayURLs: [
+                "wss://recipient-inbox.example/",
+                "wss://recipient-backup.example",
+            ],
+            senderInboxRelayURLs: ["wss://sender-inbox.example/"]
+        ))
+
+        XCTAssertEqual(plan.recipientRelayURLs, [
+            "wss://recipient-inbox.example",
+            "wss://recipient-backup.example",
+        ])
+        XCTAssertEqual(plan.senderRelayURLs, ["wss://sender-inbox.example"])
+        XCTAssertFalse(plan.senderRelayURLs.contains("wss://recipient-inbox.example"))
+    }
+
+    func testNIP17DeliveryPlanRequiresBothAdvertisedInboxLists() {
+        XCTAssertNil(NIP17RelayRouting.deliveryPlan(
+            recipientInboxRelayURLs: [],
+            senderInboxRelayURLs: ["wss://sender-inbox.example"]
+        ))
+        XCTAssertNil(NIP17RelayRouting.deliveryPlan(
+            recipientInboxRelayURLs: ["wss://recipient-inbox.example"],
+            senderInboxRelayURLs: []
+        ))
+    }
+
+    func testCreatesSignedNIP17InboxRelayPreferenceEvent() throws {
+        let owner = try identity(recipientPrivateKey)
+        let event = try NIP17InboxRelayPreference.event(
+            identity: owner,
+            relayURLs: [
+                "push.taskify.example",
+                "wss://push.taskify.example/",
+                "wss://backup.example",
+            ],
+            createdAt: 1_784_647_200
+        )
+
+        XCTAssertEqual(event.kind, 10_050)
+        XCTAssertEqual(event.publicKey, owner.publicKeyHex)
+        XCTAssertEqual(event.tags, [
+            ["relay", "wss://push.taskify.example"],
+            ["relay", "wss://backup.example"],
+        ])
+        XCTAssertEqual(event.content, "")
+        XCTAssertTrue(event.verify())
     }
 
     func testInboxRelayPreferenceCacheStoresEmptyResultsAndExpires() async {

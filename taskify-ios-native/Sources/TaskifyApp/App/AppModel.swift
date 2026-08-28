@@ -3,6 +3,7 @@ import Security
 import SwiftUI
 import TaskifyCore
 import TaskifyWatchShared
+import UIKit
 import WidgetKit
 
 struct BoardTemplateShareResult: Sendable {
@@ -348,6 +349,7 @@ final class AppModel {
     private static let sharedInboxOutboxScope = "__taskify-shared-inbox__"
     private static let contactsOutboxScope = "__taskify-contacts__"
     private static let directMessagesOutboxScope = "__taskify-direct-messages__"
+    private static let nip17PreferencesOutboxScope = "__taskify-nip17-preferences__"
     private(set) var snapshot = TaskifySnapshot.empty {
         didSet {
             snapshotLookupCache.invalidate()
@@ -370,6 +372,11 @@ final class AppModel {
     private(set) var relayStatuses: [TaskRelayStatus] = []
     private(set) var pendingSyncChangeCount = 0
     private(set) var notificationStatus = "Checking"
+    private(set) var dmPushEnabled = TaskifyDMPushSettings.isEnabled
+    private(set) var dmPushSelection = TaskifyDMPushSettings.selection
+    private(set) var dmPushRelayURL = TaskifyDMPushSettings.relayURL
+    private(set) var dmPushServerURL = TaskifyDMPushSettings.serverURL
+    private(set) var dmPushStatus = TaskifyDMPushSettings.isEnabled ? "Enabled" : "Off"
     private(set) var backgroundSyncStatus = "Ready"
     private(set) var encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
     private(set) var encryptedFileServers = TaskifyMediaServerSettings.servers
@@ -395,6 +402,7 @@ final class AppModel {
     private(set) var startupTab = StartupViewSettings.tab
     private(set) var startupBoardIDsByWeekday = StartupViewSettings.boardIDsByWeekday
     private(set) var appRelays = AppRelaySettings.urls
+    private(set) var nip17InboxRelayURLs: [String] = []
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
     private(set) var contactSyncStatus = "Preparing private contact sync"
@@ -437,6 +445,9 @@ final class AppModel {
     @ObservationIgnored private var syncState: TaskSyncState = .connecting
     @ObservationIgnored private var lastContactRefreshAt: Date?
     @ObservationIgnored private var walletPaymentDeliveryHandler: (() -> Void)?
+    @ObservationIgnored private var walletDMPushRefreshHandler: ((Bool) async -> Bool)?
+    @ObservationIgnored private var isHandlingDMPushWake = false
+    @ObservationIgnored private var pendingDMPushCategories: Set<DMPushNotificationCategory> = []
     // Keychain reads are slow syscalls; shared-inbox events arrive in bursts during initial
     // sync and each needs the identity to unwrap its gift wrap, so cache it in memory.
     @ObservationIgnored private var cachedIdentity: NostrIdentity?
@@ -569,6 +580,14 @@ final class AppModel {
         walletPaymentDeliveryHandler = { [weak wallet] in
             wallet?.paymentDeliveryWasQueued()
         }
+        walletDMPushRefreshHandler = { [weak wallet] notifyPayments in
+            await wallet?.performDMPushRefresh(
+                notifyPayments: notifyPayments,
+                senderName: { [weak self] publicKey in
+                    self?.dmPushSenderName(publicKey: publicKey) ?? "Unknown sender"
+                }
+            ) ?? false
+        }
     }
 
     func task(withID taskID: String) -> TaskItem? {
@@ -581,6 +600,15 @@ final class AppModel {
 
     func directMessages(with peerPublicKey: String) -> [NostrDirectMessage] {
         snapshot.directMessages(with: peerPublicKey)
+    }
+
+    private func dmPushSenderName(publicKey: String) -> String {
+        if let contact = snapshotLookupCache.contact(publicKey: publicKey, snapshot: snapshot) {
+            return contact.displayName
+        }
+        guard let key = NostrPublicKey.parse(publicKey),
+              let npub = NostrPublicKey.npub(from: key) else { return "Unknown sender" }
+        return npub.count > 22 ? "\(npub.prefix(12))…\(npub.suffix(6))" : npub
     }
 
     func directMessageReactions(for message: NostrDirectMessage) -> [NostrDirectMessageReaction] {
@@ -662,9 +690,16 @@ final class AppModel {
         ) else { throw NostrDirectMessageError.invalidGroup }
         if snapshot.upsertGroupConversation(renamedGroup) { scheduleSave() }
 
+        if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
+        let senderRelays = effectiveNIP17InboxRelayURLs
         let relayMap = await groupDeliveryRelays(group: renamedGroup, identity: identity)
         let recipientRelays = relayMap.values.flatMap { $0 }
-        guard !recipientRelays.isEmpty else { return false }
+        let recipientCount = renamedGroup.memberPublicKeys.filter {
+            $0 != identity.publicKeyHex
+        }.count
+        guard relayMap.count == recipientCount,
+              !recipientRelays.isEmpty,
+              !senderRelays.isEmpty else { return false }
 
         let rumor = try NIP17Rumor(
             publicKey: identity.publicKeyHex,
@@ -689,7 +724,13 @@ final class AppModel {
             )
         }
 
-        let allRelays = TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + recipientRelays)
+        let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: allRelays,
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: senderRelays
+        )
         let selfWrap = try NIP17GiftWrap.wrap(
             rumor: rumor,
             sender: identity,
@@ -697,11 +738,10 @@ final class AppModel {
         )
         try await syncEngine.publish(
             selfWrap,
-            relayURLs: allRelays,
+            relayURLs: senderRelays,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "group-metadata:\(renamedGroup.groupID):sender"
         )
-        reconfigureChatRelays(allRelays, identity: identity)
         return true
     }
 
@@ -1735,6 +1775,185 @@ final class AppModel {
         refreshNotifications(requestPermission: false)
     }
 
+    func enableDMPushNotifications(
+        selection: DMPushNotificationSelection,
+        relayURL rawRelayURL: String,
+        serverURL rawServerURL: String
+    ) async {
+        guard let relayURL = TaskifyRelayURL.normalize(rawRelayURL),
+              let serverURL = Self.normalizedDMPushServerURL(rawServerURL) else {
+            dmPushStatus = "Enter valid wss:// and https:// addresses"
+            return
+        }
+        let identity: NostrIdentity
+        do {
+            guard let storedIdentity = try identityStore.load() else {
+                dmPushStatus = "A Nostr identity is required"
+                return
+            }
+            identity = storedIdentity
+        } catch {
+            dmPushStatus = error.localizedDescription
+            return
+        }
+
+        dmPushStatus = "Registering with Apple…"
+        do {
+            let deviceToken = try await TaskifyDMPushCoordinator.shared.requestDeviceToken()
+            dmPushStatus = "Registering this device…"
+            _ = try await DMPushRegistrationClient.register(
+                deviceToken: deviceToken,
+                environment: Self.dmPushAPNsEnvironment,
+                installationID: TaskifyDMPushSettings.installationID,
+                baseURL: serverURL,
+                identity: identity
+            )
+
+            if nip17InboxRelayURLs.isEmpty {
+                await ensureNIP17InboxRelayPreference()
+            }
+            let existingRelays = nip17InboxRelayURLs.isEmpty ? appRelays : nip17InboxRelayURLs
+            let relayAlreadyPresent = existingRelays.contains(relayURL)
+            if !relayAlreadyPresent {
+                do {
+                    try await updateNIP17InboxRelayPreference(existingRelays + [relayURL], identity: identity)
+                } catch {
+                    _ = try? await DMPushRegistrationClient.unregister(
+                        installationID: TaskifyDMPushSettings.installationID,
+                        baseURL: serverURL,
+                        identity: identity
+                    )
+                    throw error
+                }
+            }
+
+            TaskifyDMPushSettings.saveEnabled(
+                selection: selection,
+                relayURL: relayURL,
+                serverURL: serverURL.absoluteString,
+                deviceToken: deviceToken
+            )
+            dmPushEnabled = true
+            dmPushSelection = selection
+            dmPushRelayURL = relayURL
+            dmPushServerURL = serverURL.absoluteString
+            dmPushStatus = "Enabled for \(selection.title.lowercased())"
+        } catch {
+            dmPushStatus = error.localizedDescription
+        }
+    }
+
+    func setDMPushSelection(_ selection: DMPushNotificationSelection) {
+        TaskifyDMPushSettings.saveSelection(selection)
+        dmPushSelection = selection
+        if dmPushEnabled {
+            dmPushStatus = "Enabled for \(selection.title.lowercased())"
+        }
+    }
+
+    func disableDMPushNotifications() async {
+        guard dmPushEnabled else { return }
+        guard let serverURL = Self.normalizedDMPushServerURL(dmPushServerURL),
+              let identity = try? identityStore.load() else {
+            dmPushStatus = "The current push registration could not be authenticated"
+            return
+        }
+        dmPushStatus = "Disabling…"
+        do {
+            let response = try await DMPushRegistrationClient.unregister(
+                installationID: TaskifyDMPushSettings.installationID,
+                baseURL: serverURL,
+                identity: identity
+            )
+            if response.remainingRegistrations == 0,
+               nip17InboxRelayURLs.contains(dmPushRelayURL) {
+                var remaining = nip17InboxRelayURLs.filter { $0 != dmPushRelayURL }
+                if remaining.isEmpty {
+                    remaining = appRelays.filter { $0 != dmPushRelayURL }
+                }
+                if !remaining.isEmpty {
+                    try await updateNIP17InboxRelayPreference(remaining, identity: identity)
+                }
+            }
+            TaskifyDMPushSettings.clearEnabled()
+            dmPushEnabled = false
+            dmPushStatus = "Off"
+        } catch {
+            dmPushStatus = error.localizedDescription
+        }
+    }
+
+    func refreshDMPushRegistration(deviceToken: String) async {
+        guard dmPushEnabled,
+              let serverURL = Self.normalizedDMPushServerURL(dmPushServerURL),
+              let identity = try? identityStore.load() else { return }
+        do {
+            _ = try await DMPushRegistrationClient.register(
+                deviceToken: deviceToken,
+                environment: Self.dmPushAPNsEnvironment,
+                installationID: TaskifyDMPushSettings.installationID,
+                baseURL: serverURL,
+                identity: identity
+            )
+            TaskifyDMPushSettings.saveDeviceToken(deviceToken)
+            if nip17InboxRelayURLs.isEmpty {
+                await ensureNIP17InboxRelayPreference()
+            }
+            if !nip17InboxRelayURLs.contains(dmPushRelayURL) {
+                let existing = nip17InboxRelayURLs.isEmpty ? appRelays : nip17InboxRelayURLs
+                try await updateNIP17InboxRelayPreference(existing + [dmPushRelayURL], identity: identity)
+            }
+            dmPushStatus = "Enabled for \(dmPushSelection.title.lowercased())"
+        } catch {
+            dmPushStatus = "Needs attention: \(error.localizedDescription)"
+        }
+    }
+
+    func handleDMPushWake(notifyMessages: Bool = true) async -> UIBackgroundFetchResult {
+        guard dmPushEnabled, !isHandlingDMPushWake else { return .noData }
+        isHandlingDMPushWake = true
+        pendingDMPushCategories.removeAll()
+        defer { isHandlingDMPushWake = false }
+
+        await syncEngine.retryNow()
+        for _ in 0..<8 {
+            if !pendingDMPushCategories.isEmpty { break }
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return .failed }
+        }
+
+        let categories = pendingDMPushCategories
+        pendingDMPushCategories.removeAll()
+        if notifyMessages,
+           categories.contains(.message),
+           dmPushSelection.allows(.message) {
+            await TaskifyDMPushLocalNotifier.shared.notifyNewMessage()
+        }
+        let paymentReceived = await walletDMPushRefreshHandler?(
+            dmPushSelection.allows(.paymentReceived)
+        ) ?? false
+        return categories.isEmpty && !paymentReceived ? .noData : .newData
+    }
+
+    private static var dmPushAPNsEnvironment: String {
+#if DEBUG
+        "sandbox"
+#else
+        "production"
+#endif
+    }
+
+    private static func normalizedDMPushServerURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              components.scheme?.lowercased() == "https",
+              components.host != nil else { return nil }
+        components.query = nil
+        components.fragment = nil
+        if components.path == "/" { components.path = "" }
+        return components.url
+    }
+
     func selectEncryptedFileServer(_ url: String) {
         guard let normalized = TaskifyMediaServerSettings.selectServer(url) else { return }
         encryptedMediaServerURL = normalized
@@ -2002,7 +2221,6 @@ final class AppModel {
     ) {
         guard !recipientPublicKeys.isEmpty,
               let event = snapshot.taskifyEvents?.first(where: { $0.id == eventID }) else { return }
-        let isOnline = syncIsOnline
         let targets = recipientPublicKeys.compactMap { value -> (
             recipient: Data,
             delivery: SharedCalendarEventDelivery,
@@ -2027,18 +2245,17 @@ final class AppModel {
         }
         guard !targets.isEmpty else { return }
 
-        Task { [identityStore, syncEngine, weak self] in
-            guard let identity = try? identityStore.load() else { return }
+        Task { [weak self] in
+            guard let self,
+                  let identity = try? self.identityStore.load() else { return }
             var failed = false
             for target in targets {
                 do {
-                    let deliveryRelays = isOnline
-                        ? await NIP17InboxRelayResolver.resolve(
-                            recipientPublicKey: target.recipient.hexString,
-                            fallbackRelayURLs: target.fallbackRelays
-                        )
-                        : target.fallbackRelays
-                    guard !deliveryRelays.isEmpty else {
+                    guard let deliveryPlan = await self.nip17DeliveryPlan(
+                        recipientPublicKey: target.recipient.hexString,
+                        discoveryRelayURLs: target.fallbackRelays,
+                        identity: identity
+                    ) else {
                         failed = true
                         continue
                     }
@@ -2046,25 +2263,19 @@ final class AppModel {
                         item: .calendarEvent(target.delivery),
                         senderNpub: identity.npub
                     )
-                    let wrap = try NIP17GiftWrap.wrap(
-                        envelope: envelope,
-                        sender: identity,
-                        recipientPublicKey: target.recipient
-                    )
-                    try await syncEngine.publish(
-                        wrap,
-                        relayURLs: deliveryRelays,
-                        outboxScope: Self.sharedInboxOutboxScope,
-                        recordID: "calendar-invite:\(eventID):\(target.recipient.hexString)"
+                    try await self.publishNIP17Envelope(
+                        envelope,
+                        recipientPublicKey: target.recipient,
+                        deliveryPlan: deliveryPlan,
+                        identity: identity,
+                        recordIDBase: "calendar-invite:\(eventID):\(target.recipient.hexString)"
                     )
                 } catch {
                     failed = true
                 }
             }
             if failed {
-                await MainActor.run {
-                    self?.errorMessage = "The event was saved, but Taskify could not queue every invitation yet."
-                }
+                self.errorMessage = "The event was saved, but Taskify could not queue every invitation yet."
             }
         }
     }
@@ -2097,54 +2308,43 @@ final class AppModel {
         )
         guard !fallbackRelays.isEmpty else { throw SharedTaskSendError.noRelays }
         let recipientHex = recipientPublicKey.hexString
-        let deliveryRelays = syncIsOnline
-            ? await NIP17InboxRelayResolver.resolve(
-                recipientPublicKey: recipientHex,
-                fallbackRelayURLs: fallbackRelays
-            )
-            : fallbackRelays
-        guard !deliveryRelays.isEmpty else { throw SharedTaskSendError.noRelays }
+        guard let deliveryPlan = await nip17DeliveryPlan(
+            recipientPublicKey: recipientHex,
+            discoveryRelayURLs: fallbackRelays,
+            identity: identity
+        ) else { throw SharedTaskSendError.noRelays }
 
         let delivery = SharedTaskDelivery(
             task: task,
-            relayURLs: deliveryRelays,
+            relayURLs: deliveryPlan.recipientRelayURLs,
             assignmentRecipientPublicKey: assignment ? recipientHex : nil
         )
         let envelope = TaskifyShareEnvelope(
             item: .task(delivery),
             senderNpub: identity.npub
         )
-        let event = try NIP17GiftWrap.wrap(
-            envelope: envelope,
-            sender: identity,
-            recipientPublicKey: recipientPublicKey
-        )
 
         snapshot.upsertSharedTaskRecipient(SharedTaskRecipient(
             publicKey: recipientHex,
             npub: recipientNpub,
-            relayURLs: deliveryRelays
+            relayURLs: deliveryPlan.recipientRelayURLs
         ))
         scheduleSave()
-        await syncEngine.configure(
-            boards: snapshot.boardsForSync,
-            auxiliaryRelayURLs: sharedInboxRelayURLs,
-            inboxPublicKey: identityPublicKey.nilIfEmpty
-        )
-        try await syncEngine.publish(
-            event,
-            relayURLs: deliveryRelays,
-            outboxScope: Self.sharedInboxOutboxScope,
-            recordID: assignment
+        try await publishNIP17Envelope(
+            envelope,
+            recipientPublicKey: recipientPublicKey,
+            deliveryPlan: deliveryPlan,
+            identity: identity,
+            recordIDBase: assignment
                 ? "assignment:\(task.id):\(recipientHex)"
-                : "share:\(event.id)"
+                : nil
         )
 
         if assignment,
            snapshot.markTaskAssigned(
                taskID: task.id,
                recipientPublicKey: recipientHex,
-               recipientRelayURL: deliveryRelays.first,
+               recipientRelayURL: deliveryPlan.recipientRelayURLs.first,
                editorPublicKey: identity.publicKeyHex
            ) != nil {
             scheduleSave()
@@ -2152,7 +2352,7 @@ final class AppModel {
         }
         return SharedTaskSendResult(
             recipientNpub: recipientNpub,
-            relayCount: deliveryRelays.count,
+            relayCount: deliveryPlan.recipientRelayURLs.count,
             assignment: assignment
         )
     }
@@ -2180,33 +2380,26 @@ final class AppModel {
             knownRecipientRelays + contact.relayURLs + sharedInboxRelayURLs
         )
         guard !fallbackRelays.isEmpty else { throw StructuredShareSendError.noRelays }
-        let deliveryRelays = syncIsOnline
-            ? await NIP17InboxRelayResolver.resolve(
-                recipientPublicKey: recipientPublicKey.hexString,
-                fallbackRelayURLs: fallbackRelays
-            )
-            : fallbackRelays
-        guard !deliveryRelays.isEmpty else { throw StructuredShareSendError.noRelays }
+        guard let deliveryPlan = await nip17DeliveryPlan(
+            recipientPublicKey: recipientPublicKey.hexString,
+            discoveryRelayURLs: fallbackRelays,
+            identity: identity
+        ) else { throw StructuredShareSendError.noRelays }
 
         var delivery = SharedContactDelivery(contact: contact)
         let contactRelays = TaskifyRelayURL.normalizedList(
-            (delivery.relayURLs ?? []) + deliveryRelays
+            (delivery.relayURLs ?? []) + deliveryPlan.recipientRelayURLs
         )
         delivery.relayURLs = contactRelays.isEmpty ? nil : contactRelays
         let envelope = TaskifyShareEnvelope(
             item: .contact(delivery),
             senderNpub: identity.npub
         )
-        let event = try NIP17GiftWrap.wrap(
-            envelope: envelope,
-            sender: identity,
-            recipientPublicKey: recipientPublicKey
-        )
-        try await syncEngine.publish(
-            event,
-            relayURLs: deliveryRelays,
-            outboxScope: Self.sharedInboxOutboxScope,
-            recordID: "contact-share:\(event.id)"
+        try await publishNIP17Envelope(
+            envelope,
+            recipientPublicKey: recipientPublicKey,
+            deliveryPlan: deliveryPlan,
+            identity: identity
         )
     }
 
@@ -2235,33 +2428,28 @@ final class AppModel {
             knownRecipientRelays + relayURLs + sharedInboxRelayURLs
         )
         guard !fallbackRelays.isEmpty else { throw StructuredShareSendError.noRelays }
-        let deliveryRelays = syncIsOnline
-            ? await NIP17InboxRelayResolver.resolve(
-                recipientPublicKey: recipientPublicKey.hexString,
-                fallbackRelayURLs: fallbackRelays
-            )
-            : fallbackRelays
-        guard !deliveryRelays.isEmpty else { throw StructuredShareSendError.noRelays }
+        guard let deliveryPlan = await nip17DeliveryPlan(
+            recipientPublicKey: recipientPublicKey.hexString,
+            discoveryRelayURLs: fallbackRelays,
+            identity: identity
+        ) else { throw StructuredShareSendError.noRelays }
 
         let delivery = SharedBoardDelivery(
             boardID: boardID,
             boardName: boardName,
-            relayURLs: TaskifyRelayURL.normalizedList(relayURLs + deliveryRelays)
+            relayURLs: TaskifyRelayURL.normalizedList(
+                relayURLs + deliveryPlan.recipientRelayURLs
+            )
         )
         let envelope = TaskifyShareEnvelope(
             item: .board(delivery),
             senderNpub: identity.npub
         )
-        let event = try NIP17GiftWrap.wrap(
-            envelope: envelope,
-            sender: identity,
-            recipientPublicKey: recipientPublicKey
-        )
-        try await syncEngine.publish(
-            event,
-            relayURLs: deliveryRelays,
-            outboxScope: Self.sharedInboxOutboxScope,
-            recordID: "board-share:\(event.id)"
+        try await publishNIP17Envelope(
+            envelope,
+            recipientPublicKey: recipientPublicKey,
+            deliveryPlan: deliveryPlan,
+            identity: identity
         )
     }
 
@@ -2347,13 +2535,11 @@ final class AppModel {
             contactRelays + rememberedRelays + sharedInboxRelayURLs
         )
         guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-        let deliveryRelays = syncIsOnline
-            ? await NIP17InboxRelayResolver.resolve(
-                recipientPublicKey: recipientHex,
-                fallbackRelayURLs: fallbackRelays
-            )
-            : fallbackRelays
-        guard !deliveryRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
+        guard let deliveryPlan = await nip17DeliveryPlan(
+            recipientPublicKey: recipientHex,
+            discoveryRelayURLs: fallbackRelays,
+            identity: identity
+        ) else { throw NostrDirectMessageError.noRelays }
 
         var rumorTags = [["p", recipientHex]] + additionalTags
         if let replyID = replyToEventID?
@@ -2366,7 +2552,7 @@ final class AppModel {
 
         let rumor = try NIP17Rumor(
             publicKey: identity.publicKeyHex,
-            createdAt: nextNostrTimestamp(),
+            createdAt: currentDirectMessageTimestamp(),
             kind: kind,
             tags: rumorTags,
             content: content
@@ -2388,33 +2574,31 @@ final class AppModel {
         guard let localMessage = NostrDirectMessage(
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex,
-            relayURLs: deliveryRelays
+            relayURLs: deliveryPlan.recipientRelayURLs
         ) else { throw NostrDirectMessageError.invalidRecipient }
 
         if snapshot.ingestDirectMessage(localMessage) { scheduleSave() }
         let allDeliveryRelays = TaskifyRelayURL.normalizedList(
-            sharedInboxRelayURLs + deliveryRelays
+            deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
+        )
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: allDeliveryRelays,
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: deliveryPlan.senderRelayURLs
         )
         try await syncEngine.publish(
             recipientWrap,
-            relayURLs: deliveryRelays,
+            relayURLs: deliveryPlan.recipientRelayURLs,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):recipient"
         )
         try await syncEngine.publish(
             senderWrap,
-            relayURLs: allDeliveryRelays,
+            relayURLs: deliveryPlan.senderRelayURLs,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):sender"
         )
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allDeliveryRelays,
-                inboxPublicKey: identity.publicKeyHex
-            )
-        }
     }
 
     func sendDirectMessageReaction(
@@ -2450,13 +2634,11 @@ final class AppModel {
             contactRelays + rememberedRelays + sharedInboxRelayURLs
         )
         guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-        let deliveryRelays = syncIsOnline
-            ? await NIP17InboxRelayResolver.resolve(
-                recipientPublicKey: recipientHex,
-                fallbackRelayURLs: fallbackRelays
-            )
-            : fallbackRelays
-        guard !deliveryRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
+        guard let deliveryPlan = await nip17DeliveryPlan(
+            recipientPublicKey: recipientHex,
+            discoveryRelayURLs: fallbackRelays,
+            identity: identity
+        ) else { throw NostrDirectMessageError.noRelays }
 
         let rumor = try NIP17Rumor(
             publicKey: identity.publicKeyHex,
@@ -2487,28 +2669,26 @@ final class AppModel {
         if snapshot.ingestDirectMessageReaction(localReaction) { scheduleSave() }
 
         let allDeliveryRelays = TaskifyRelayURL.normalizedList(
-            sharedInboxRelayURLs + deliveryRelays
+            deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
+        )
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: allDeliveryRelays,
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: deliveryPlan.senderRelayURLs
         )
         try await syncEngine.publish(
             recipientWrap,
-            relayURLs: deliveryRelays,
+            relayURLs: deliveryPlan.recipientRelayURLs,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):reaction:recipient"
         )
         try await syncEngine.publish(
             senderWrap,
-            relayURLs: allDeliveryRelays,
+            relayURLs: deliveryPlan.senderRelayURLs,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):reaction:sender"
         )
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allDeliveryRelays,
-                inboxPublicKey: identity.publicKeyHex
-            )
-        }
     }
 
     private func publishGroupRumor(
@@ -2531,14 +2711,21 @@ final class AppModel {
         if let replyID = validNostrEventID(replyToEventID) { tags.append(["e", replyID]) }
         let rumor = try NIP17Rumor(
             publicKey: identity.publicKeyHex,
-            createdAt: nextNostrTimestamp(),
+            createdAt: currentDirectMessageTimestamp(),
             kind: kind,
             tags: tags,
             content: content
         )
         let relayMap = await groupDeliveryRelays(group: group, identity: identity)
         let recipientRelays = relayMap.values.flatMap { $0 }
-        guard !recipientRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
+        if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
+        let senderRelays = effectiveNIP17InboxRelayURLs
+        let recipientCount = group.memberPublicKeys.filter {
+            $0 != identity.publicKeyHex
+        }.count
+        guard relayMap.count == recipientCount,
+              !recipientRelays.isEmpty,
+              !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
 
         let selfWrap = try NIP17GiftWrap.wrap(
             rumor: rumor,
@@ -2568,14 +2755,19 @@ final class AppModel {
                 recordID: "\(rumor.id):group:\(member)"
             )
         }
-        let allRelays = TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + recipientRelays)
+        let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: allRelays,
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: senderRelays
+        )
         try await syncEngine.publish(
             selfWrap,
-            relayURLs: allRelays,
+            relayURLs: senderRelays,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):group:sender"
         )
-        reconfigureChatRelays(allRelays, identity: identity)
     }
 
     private func publishGroupReaction(
@@ -2599,7 +2791,14 @@ final class AppModel {
         )
         let relayMap = await groupDeliveryRelays(group: group, identity: identity)
         let recipientRelays = relayMap.values.flatMap { $0 }
-        guard !recipientRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
+        if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
+        let senderRelays = effectiveNIP17InboxRelayURLs
+        let recipientCount = group.memberPublicKeys.filter {
+            $0 != identity.publicKeyHex
+        }.count
+        guard relayMap.count == recipientCount,
+              !recipientRelays.isEmpty,
+              !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
         let selfWrap = try NIP17GiftWrap.wrap(
             rumor: rumor,
             sender: identity,
@@ -2626,14 +2825,19 @@ final class AppModel {
                 recordID: "\(rumor.id):group-reaction:\(member)"
             )
         }
-        let allRelays = TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + recipientRelays)
+        let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: allRelays,
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: senderRelays
+        )
         try await syncEngine.publish(
             selfWrap,
-            relayURLs: allRelays,
+            relayURLs: senderRelays,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):group-reaction:sender"
         )
-        reconfigureChatRelays(allRelays, identity: identity)
     }
 
     private func groupDeliveryRelays(
@@ -2650,12 +2854,12 @@ final class AppModel {
                 contactRelays + remembered + sharedInboxRelayURLs
             )
             guard !fallback.isEmpty else { continue }
-            result[member] = syncIsOnline
-                ? await NIP17InboxRelayResolver.resolve(
-                    recipientPublicKey: member,
-                    fallbackRelayURLs: fallback
-                )
-                : fallback
+            let relays = await NIP17InboxRelayResolver.resolve(
+                recipientPublicKey: member,
+                discoveryRelayURLs: fallback
+            )
+            guard !relays.isEmpty else { continue }
+            result[member] = relays
         }
         return result
     }
@@ -2667,17 +2871,6 @@ final class AppModel {
               normalized.count == 64,
               (try? Data(hex: normalized))?.count == 32 else { return nil }
         return normalized
-    }
-
-    private func reconfigureChatRelays(_ relays: [String], identity: NostrIdentity) {
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: relays,
-                inboxPublicKey: identity.publicKeyHex
-            )
-        }
     }
 
     func refreshContacts() {
@@ -2719,7 +2912,7 @@ final class AppModel {
         guard !fallback.isEmpty else { throw NostrContactDirectoryError.noRelays }
         let discovered = await NIP17InboxRelayResolver.resolve(
             recipientPublicKey: key.hexString,
-            fallbackRelayURLs: fallback
+            discoveryRelayURLs: fallback
         )
         let timestamp = nextNostrTimestamp(after: snapshot.contactsListUpdatedAt ?? 0)
         guard let contact = snapshot.upsertContact(
@@ -3417,6 +3610,7 @@ final class AppModel {
         let boardsForSync = snapshot.boardsForSync
         let auxiliaryRelays = sharedInboxRelayURLs
         let inboxPublicKey = identityPublicKey.nilIfEmpty
+        let inboxRelays = effectiveNIP17InboxRelayURLs
         let timestamp = nextNostrTimestamp()
         let boardRelayTargets = board.effectiveRelayURLs
         scheduleSave()
@@ -3430,7 +3624,8 @@ final class AppModel {
                 await syncEngine.configure(
                     boards: boardsForSync,
                     auxiliaryRelayURLs: auxiliaryRelays,
-                    inboxPublicKey: inboxPublicKey
+                    inboxPublicKey: inboxPublicKey,
+                    inboxRelayURLs: inboxRelays
                 )
                 let boardEvent = try TaskEventCodec.boardEvent(
                     board: board,
@@ -4160,9 +4355,18 @@ final class AppModel {
             errorMessage = "Your native data could not be loaded. A fresh local workspace is being shown."
         }
 #if DEBUG
-        applyChatUITestFixtureIfRequested()
-        applyBoardUITestFixtureIfRequested()
-        applyPerformanceUITestFixtureIfRequested()
+        let fixtureApplied = applyChatUITestFixtureIfRequested()
+            || applyBoardUITestFixtureIfRequested()
+            || applyPerformanceUITestFixtureIfRequested()
+        if fixtureApplied {
+            // A UI-test fixture lives only in this process's memory, and the scenePhase-active
+            // pass calls reloadIfChangedExternally(), which treats any store file newer than our
+            // last write as someone else's update and replaces the snapshot with it — wiping the
+            // fixture before the test's first assertion. Persist the fixture and stamp the write
+            // so that reload recognises the file as our own.
+            try? await store.save(snapshot)
+            lastStoreWriteAt = Date()
+        }
 #endif
         applyStartupBoardPreference()
         refreshNotifications(requestPermission: false)
@@ -4188,6 +4392,7 @@ final class AppModel {
                 self.ensureFullWeekTaskRecurrences()
             }
             self.startSync()
+            await self.ensureNIP17InboxRelayPreference()
 
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
@@ -4274,9 +4479,10 @@ final class AppModel {
     }
 
 #if DEBUG
-    private func applyBoardUITestFixtureIfRequested() {
+    /// Returns true when the fixture was applied.
+    private func applyBoardUITestFixtureIfRequested() -> Bool {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_BOARD_FIXTURE"] == "1" else {
-            return
+            return false
         }
         let board = Board.week(name: "UI Test Board")
         snapshot = TaskifySnapshot(
@@ -4285,11 +4491,13 @@ final class AppModel {
             selectedBoardID: board.id
         )
         errorMessage = nil
+        return true
     }
 
-    private func applyPerformanceUITestFixtureIfRequested() {
+    /// Returns true when the fixture was applied.
+    private func applyPerformanceUITestFixtureIfRequested() -> Bool {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] == "1" else {
-            return
+            return false
         }
 
         let board = Board.week(name: "Performance")
@@ -4328,11 +4536,13 @@ final class AppModel {
             selectedBoardID: board.id
         )
         errorMessage = nil
+        return true
     }
 
-    private func applyChatUITestFixtureIfRequested() {
+    /// Returns true when the fixture was applied.
+    private func applyChatUITestFixtureIfRequested() -> Bool {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1" else {
-            return
+            return false
         }
         let peerPublicKey = String(repeating: "1", count: 64)
         let ownPublicKey = identityPublicKey.isEmpty
@@ -4344,14 +4554,26 @@ final class AppModel {
                 petname: "UI Test Contact"
             ),
         ].compactMap { $0 }
-        snapshot.directMessages = (1...40).map { index in
+        // 300 messages so the thread is several screens deep: short fixtures realize their
+        // whole LazyVStack almost immediately, which hides scroll anchoring problems that only
+        // show up while rows are still being realized mid-drag.
+        let fixtureMessageCount = 300
+        snapshot.directMessages = (1...fixtureMessageCount).map { index in
             let content: String
             switch index {
             case 2:
                 content = "Searchable early fixture needle"
             case 8, 20, 32:
                 content = "Repeatable fixture match \(index)"
-            case 40:
+            case 296:
+                content = "Hi"
+            case 297:
+                content = "Could we make replies look more like Messages?"
+            case 298:
+                content = "Yes — the referenced message is separate now."
+            case 299:
+                content = "And reactions sit above the opposite corner."
+            case fixtureMessageCount:
                 content = "Newest fixture message"
             default:
                 content = "Fixture conversation message \(index)"
@@ -4364,13 +4586,53 @@ final class AppModel {
                 senderPublicKey: incoming ? peerPublicKey : ownPublicKey,
                 content: content,
                 createdAt: 1_784_647_200 + index,
-                isIncoming: incoming
+                isIncoming: incoming,
+                replyToEventID: index == 298 ? "ui-message-297" : nil
             )
         }
+        snapshot.directMessageReactions = [
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-1",
+                wrapEventID: "ui-reaction-wrap-1",
+                targetEventID: "ui-message-299",
+                senderPublicKey: peerPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "❤️",
+                createdAt: 1_784_647_500
+            ),
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-2",
+                wrapEventID: "ui-reaction-wrap-2",
+                targetEventID: "ui-message-300",
+                senderPublicKey: ownPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "👍",
+                createdAt: 1_784_647_501
+            ),
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-3",
+                wrapEventID: "ui-reaction-wrap-3",
+                targetEventID: "ui-message-300",
+                senderPublicKey: ownPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "❤️",
+                createdAt: 1_784_647_502
+            ),
+            NostrDirectMessageReaction(
+                rumorEventID: "ui-reaction-4",
+                wrapEventID: "ui-reaction-wrap-4",
+                targetEventID: "ui-message-296",
+                senderPublicKey: ownPublicKey,
+                peerPublicKey: peerPublicKey,
+                emoji: "❤️",
+                createdAt: 1_784_647_503
+            ),
+        ]
         snapshot.directMessageReadAt = [:]
         snapshot.directMessageArchivedAt = [:]
         snapshot.directMessageDeletedEventIDs = [:]
         errorMessage = nil
+        return true
     }
 #endif
 
@@ -4399,11 +4661,13 @@ final class AppModel {
         let boards = snapshot.boardsForSync
         let auxiliaryRelays = sharedInboxRelayURLs
         let inboxPublicKey = identityPublicKey.nilIfEmpty
+        let inboxRelays = effectiveNIP17InboxRelayURLs
         Task { [syncEngine] in
             await syncEngine.configure(
                 boards: boards,
                 auxiliaryRelayURLs: auxiliaryRelays,
-                inboxPublicKey: inboxPublicKey
+                inboxPublicKey: inboxPublicKey,
+                inboxRelayURLs: inboxRelays
             )
         }
     }
@@ -4612,7 +4876,7 @@ final class AppModel {
                 for taskID in effects.taskIDsToSynchronize {
                     synchronizeTask(taskID)
                 }
-                if effects.walletDeliveryQueued {
+                if effects.walletDeliveryQueued, !isHandlingDMPushWake {
                     walletPaymentDeliveryHandler?()
                 }
                 if effects.walletDeliveryFailed {
@@ -4662,12 +4926,18 @@ final class AppModel {
             rumor: rumor,
             identityPublicKey: identity.publicKeyHex
         ) {
-            if updatedSnapshot.upsertGroupConversation(group) {
+            let inserted = updatedSnapshot.upsertGroupConversation(group)
+            if inserted {
                 effects.snapshotChanged = true
             }
             if rumor.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                rumor.tags.contains(where: { $0.count >= 2 && $0[0] == "subject" }) {
                 return
+            }
+            if inserted, rumor.publicKey != identity.publicKeyHex {
+                recordDMPushCategory(
+                    forIncomingContent: rumor.content
+                )
             }
         }
         if rumor.kind == NIP17GiftWrap.rumorKind,
@@ -4812,7 +5082,19 @@ final class AppModel {
 
         if updatedSnapshot.ingestDirectMessage(directMessage) {
             effects.snapshotChanged = true
+            if directMessage.isIncoming {
+                recordDMPushCategory(
+                    forIncomingContent: directMessage.content
+                )
+            }
         }
+    }
+
+    private func recordDMPushCategory(forIncomingContent content: String) {
+        guard isHandlingDMPushWake else { return }
+        pendingDMPushCategories.insert(
+            DMPushNotificationPolicy.category(forIncomingContent: content)
+        )
     }
 
     private func sharedInboxSender(for message: NIP17InboxMessage) -> SharedInboxSender {
@@ -4866,25 +5148,25 @@ final class AppModel {
             )),
             senderNpub: senderNpub
         )
-        Task { [identityStore, syncEngine] in
+        Task { [weak self] in
             do {
-                guard let identity = try identityStore.load(),
+                guard let self,
+                      let identity = try self.identityStore.load(),
                       let recipientPublicKey = try? Data(hex: item.sender.publicKey) else { return }
-                let event = try NIP17GiftWrap.wrap(
-                    envelope: envelope,
-                    sender: identity,
-                    recipientPublicKey: recipientPublicKey
-                )
-                try await syncEngine.publish(
-                    event,
-                    relayURLs: responseRelayURLs,
-                    outboxScope: Self.sharedInboxOutboxScope,
-                    recordID: "\(sourceTaskID):\(item.sender.publicKey)"
+                guard let deliveryPlan = await self.nip17DeliveryPlan(
+                    recipientPublicKey: item.sender.publicKey,
+                    discoveryRelayURLs: responseRelayURLs,
+                    identity: identity
+                ) else { throw NostrDirectMessageError.noRelays }
+                try await self.publishNIP17Envelope(
+                    envelope,
+                    recipientPublicKey: recipientPublicKey,
+                    deliveryPlan: deliveryPlan,
+                    identity: identity,
+                    recordIDBase: "assignment-response:\(sourceTaskID):\(item.sender.publicKey)"
                 )
             } catch {
-                await MainActor.run {
-                    self.errorMessage = "Your response is saved, but Taskify could not queue its delivery yet."
-                }
+                self?.errorMessage = "Your response is saved, but Taskify could not queue its delivery yet."
             }
         }
     }
@@ -5266,6 +5548,15 @@ final class AppModel {
         return nextNostrTimestamp()
     }
 
+    /// Direct messages are chronological conversation events, not last-write-wins state. The
+    /// app-wide Nostr clock may be ahead of wall time after processing remote board/task events;
+    /// using it here can make a later reply from another device sort before the message it
+    /// answers. Use the actual send time and let the stable message ordering preserve events
+    /// that share Nostr's one-second timestamp resolution.
+    private func currentDirectMessageTimestamp() -> Int {
+        Int(Date().timeIntervalSince1970)
+    }
+
     private func scheduleSave() {
         saveTask?.cancel()
         saveTask = Task { [store, weak self] in
@@ -5309,12 +5600,143 @@ final class AppModel {
             : baseline.defaultRelayURLs
     }
 
+    private var nip17DiscoveryRelayURLs: [String] {
+        TaskifyRelayURL.normalizedList(
+            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+        )
+    }
+
+    /// Only the account's verified or successfully queued kind-10050 relay set may receive its
+    /// `#p` subscription. Startup briefly runs without a DM subscription while that list is
+    /// discovered or bootstrapped instead of leaking the account's inbox interest to fallbacks.
+    private var effectiveNIP17InboxRelayURLs: [String] {
+        nip17InboxRelayURLs
+    }
+
+    /// Existing Taskify users predate the native kind-10050 publisher. Preserve their configured
+    /// relay choice, but only bootstrap a preference when the account has no signed list already;
+    /// never overwrite another NIP-17 client's valid preference during startup.
+    private func ensureNIP17InboxRelayPreference() async {
+        guard let identity = cachedIdentity else { return }
+        let advertised = await NIP17InboxRelayResolver.resolveAdvertised(
+            recipientPublicKey: identity.publicKeyHex,
+            discoveryRelayURLs: nip17DiscoveryRelayURLs
+        )
+        if !advertised.isEmpty {
+            guard advertised != nip17InboxRelayURLs else { return }
+            nip17InboxRelayURLs = advertised
+            reconfigureSync()
+            return
+        }
+
+        do {
+            try await updateNIP17InboxRelayPreference(appRelays, identity: identity)
+        } catch {
+            #if DEBUG
+            print("Taskify could not publish its NIP-17 inbox preference: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    /// Single mutation point for inbox preferences, including the DM-push toggle. APNs device
+    /// registration remains an authenticated HTTPS concern; only standard relay URLs are
+    /// published to Nostr.
+    func updateNIP17InboxRelayPreference(_ relayURLs: [String]) async throws {
+        guard let identity = try identityStore.load() else {
+            throw NostrDirectMessageError.identityUnavailable
+        }
+        try await updateNIP17InboxRelayPreference(relayURLs, identity: identity)
+    }
+
+    private func updateNIP17InboxRelayPreference(
+        _ relayURLs: [String],
+        identity: NostrIdentity
+    ) async throws {
+        let inboxRelays = TaskifyRelayURL.normalizedList(relayURLs)
+        guard !inboxRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
+        let publicationRelays = TaskifyRelayURL.normalizedList(
+            nip17DiscoveryRelayURLs + nip17InboxRelayURLs + inboxRelays
+        )
+        let event = try NIP17InboxRelayPreference.event(
+            identity: identity,
+            relayURLs: inboxRelays,
+            createdAt: nextNostrTimestamp()
+        )
+        try await syncEngine.publish(
+            event,
+            relayURLs: publicationRelays,
+            outboxScope: Self.nip17PreferencesOutboxScope,
+            recordID: "kind-10050"
+        )
+        nip17InboxRelayURLs = inboxRelays
+        reconfigureSync()
+    }
+
+    private func nip17DeliveryPlan(
+        recipientPublicKey: String,
+        discoveryRelayURLs: [String],
+        identity: NostrIdentity
+    ) async -> NIP17DeliveryPlan? {
+        guard recipientPublicKey.lowercased() != identity.publicKeyHex else { return nil }
+        async let recipientRelays = NIP17InboxRelayResolver.resolve(
+            recipientPublicKey: recipientPublicKey,
+            discoveryRelayURLs: discoveryRelayURLs
+        )
+        if nip17InboxRelayURLs.isEmpty {
+            await ensureNIP17InboxRelayPreference()
+        }
+        return NIP17RelayRouting.deliveryPlan(
+            recipientInboxRelayURLs: await recipientRelays,
+            senderInboxRelayURLs: effectiveNIP17InboxRelayURLs
+        )
+    }
+
+    @discardableResult
+    private func publishNIP17Envelope(
+        _ envelope: TaskifyShareEnvelope,
+        recipientPublicKey: Data,
+        deliveryPlan: NIP17DeliveryPlan,
+        identity: NostrIdentity,
+        recordIDBase: String? = nil
+    ) async throws -> NIP17GiftWrapPair {
+        let pair = try NIP17GiftWrap.wrapPair(
+            envelope: envelope,
+            sender: identity,
+            recipientPublicKey: recipientPublicKey,
+            createdAt: nextNostrTimestamp()
+        )
+        let base = recordIDBase ?? pair.rumor.id
+        let allDeliveryRelays = TaskifyRelayURL.normalizedList(
+            deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
+        )
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: allDeliveryRelays,
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: deliveryPlan.senderRelayURLs
+        )
+        try await syncEngine.publish(
+            pair.senderWrap,
+            relayURLs: deliveryPlan.senderRelayURLs,
+            outboxScope: Self.sharedInboxOutboxScope,
+            recordID: "\(base):sender"
+        )
+        try await syncEngine.publish(
+            pair.recipientWrap,
+            relayURLs: deliveryPlan.recipientRelayURLs,
+            outboxScope: Self.sharedInboxOutboxScope,
+            recordID: "\(base):recipient"
+        )
+        return pair
+    }
+
     /// Relays used for everything that is not board sync: the shared inbox, direct messages,
     /// shared tasks and invites. Rooted on the app relay set, plus whatever relays the people
     /// and shares involved have told us to use.
     private var sharedInboxRelayURLs: [String] {
         TaskifyRelayURL.normalizedList(
             appRelays
+                + nip17InboxRelayURLs
                 + accountBackupRelayURLs
                 + (snapshot.sharedInboxItems ?? []).flatMap { $0.task.relayURLs ?? [] }
                 + (snapshot.sharedContactInboxItems ?? []).flatMap { $0.contact.relayURLs ?? [] }
@@ -5421,7 +5843,8 @@ final class AppModel {
         await syncEngine.configure(
             boards: snapshot.boardsForSync,
             auxiliaryRelayURLs: TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + relays),
-            inboxPublicKey: identity.publicKeyHex
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: effectiveNIP17InboxRelayURLs
         )
         try await syncEngine.publish(
             event,
@@ -5541,7 +5964,8 @@ final class AppModel {
             await syncEngine.configure(
                 boards: snapshot.boardsForSync,
                 auxiliaryRelayURLs: auxiliaryRelayURLs,
-                inboxPublicKey: identity.publicKeyHex
+                inboxPublicKey: identity.publicKeyHex,
+                inboxRelayURLs: effectiveNIP17InboxRelayURLs
             )
             try await syncEngine.publish(
                 event,

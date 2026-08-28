@@ -181,7 +181,7 @@ struct FirstRunOnboardingView: View {
                 .font(.headline)
                 .foregroundStyle(TaskifyTheme.primaryText)
 
-            Text("Taskify only sends notifications for reminders you create on tasks or events. Taskify never sends unsolicited notifications.")
+            Text("Taskify only sends notifications for reminders you create on tasks or events. Taskify never sends unsolicited notifications. This also enables push notifications for new chat messages — message contents stay encrypted end to end.")
                 .font(.subheadline)
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
@@ -195,6 +195,17 @@ struct FirstRunOnboardingView: View {
                 Button {
                     notificationBusy = true
                     model.requestNotificationPermission()
+                    // Onboarding also opts the account into DM push with the default
+                    // categories. The registration runs in the background — onboarding
+                    // shouldn't wait on the network — and a failure is surfaced later as
+                    // Settings' push status, where it can be retried.
+                    Task {
+                        await model.enableDMPushNotifications(
+                            selection: .both,
+                            relayURL: TaskifyDMPushSettings.relayURL,
+                            serverURL: TaskifyDMPushSettings.serverURL
+                        )
+                    }
                     finish()
                 } label: {
                     Text(notificationBusy ? "Enabling…" : "Enable notifications")

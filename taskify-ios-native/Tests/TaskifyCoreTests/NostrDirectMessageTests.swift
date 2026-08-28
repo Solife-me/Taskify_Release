@@ -92,6 +92,51 @@ final class NostrDirectMessageTests: XCTestCase {
         XCTAssertEqual(roundTrip.directMessageReadAt, snapshot.directMessageReadAt)
     }
 
+    func testMessagesSentInTheSameSecondPreserveObservedConversationOrder() throws {
+        let sender = try identity(senderPrivateKey)
+        let recipient = try identity(recipientPrivateKey)
+        var snapshot = TaskifySnapshot.empty
+        let sentFirst = message(
+            rumorID: String(repeating: "f", count: 64),
+            wrapID: String(repeating: "e", count: 64),
+            peer: sender.publicKeyHex,
+            sender: recipient.publicKeyHex,
+            content: "Sent first",
+            createdAt: 100,
+            incoming: false
+        )
+        let response = message(
+            rumorID: String(repeating: "a", count: 64),
+            wrapID: String(repeating: "b", count: 64),
+            peer: sender.publicKeyHex,
+            sender: sender.publicKeyHex,
+            content: "Response",
+            createdAt: 100,
+            incoming: true
+        )
+
+        XCTAssertTrue(snapshot.ingestDirectMessage(sentFirst))
+        XCTAssertTrue(snapshot.ingestDirectMessage(response))
+
+        XCTAssertEqual(
+            snapshot.directMessages(with: sender.publicKeyHex).map(\.content),
+            ["Sent first", "Response"]
+        )
+        XCTAssertEqual(
+            snapshot.directMessageThreads().first?.messages.map(\.content),
+            ["Sent first", "Response"]
+        )
+
+        let roundTrip = try JSONDecoder().decode(
+            TaskifySnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+        XCTAssertEqual(
+            roundTrip.directMessageHistory.map(\.content),
+            ["Sent first", "Response"]
+        )
+    }
+
     func testPWAGroupRumorUsesDeterministicThreadAndCanonicalIDAcrossWraps() throws {
         let sender = try identity(senderPrivateKey)
         let recipient = try identity(recipientPrivateKey)

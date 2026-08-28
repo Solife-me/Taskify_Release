@@ -77,6 +77,40 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertNotEqual(original, identityChange)
     }
 
+    func testSyncConfigurationSubscribesToInboxOnlyOnAdvertisedInboxRelays() throws {
+        let publicKey = String(repeating: "a", count: 64)
+        let fingerprint = TaskSyncConfigurationFingerprint(
+            boards: [],
+            auxiliaryRelayURLs: [
+                "wss://sender-inbox.example",
+                "wss://recipient-inbox.example",
+            ],
+            inboxPublicKey: publicKey,
+            inboxRelayURLs: ["wss://sender-inbox.example/"]
+        )
+
+        let senderPlan = try XCTUnwrap(fingerprint.relayPlans.first {
+            $0.relayURL == "wss://sender-inbox.example"
+        })
+        let recipientPlan = try XCTUnwrap(fingerprint.relayPlans.first {
+            $0.relayURL == "wss://recipient-inbox.example"
+        })
+        XCTAssertEqual(senderPlan.inboxPublicKey, publicKey)
+        XCTAssertNil(recipientPlan.inboxPublicKey)
+    }
+
+    func testSyncConfigurationDoesNotUseFallbackInboxRelaysForAnExplicitEmptyList() {
+        let fingerprint = TaskSyncConfigurationFingerprint(
+            boards: [],
+            auxiliaryRelayURLs: ["wss://discovery.example"],
+            inboxPublicKey: String(repeating: "b", count: 64),
+            inboxRelayURLs: []
+        )
+
+        XCTAssertEqual(fingerprint.relayPlans.count, 1)
+        XCTAssertNil(fingerprint.relayPlans.first?.inboxPublicKey)
+    }
+
     func testBoardShareContractEncodesPWAEnvelope() throws {
         let board = Board(
             id: "local-board",

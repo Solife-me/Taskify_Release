@@ -258,6 +258,44 @@ final class WalletViewModel: ObservableObject {
         return true
     }
 
+    /// The APNs alert has already caused AppModel to fetch and decrypt the NIP-17 gift wrap.
+    /// Redeem any resulting ecash before claiming "Payment Received" so a malformed,
+    /// spent, or transiently unavailable token never produces a false receipt notification.
+    func performDMPushRefresh(
+        notifyPayments: Bool,
+        senderName: (String) -> String
+    ) async -> Bool {
+        if !hasStarted {
+            await start(recoverLightningReceives: false)
+        }
+        guard service != nil else { return false }
+        let requestReceipts = await recoverNostrPaymentRequests(presentInApp: false)
+        let incomingReceipts = await recoverIncomingTokenInbox(presentInApp: false)
+        if notifyPayments {
+            let requestSenderNames = Dictionary(
+                requestReceipts.map {
+                    ($0.senderPublicKey.lowercased(), senderName($0.senderPublicKey))
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+            await paymentNotificationCoordinator.notifyCashuRequestReceipts(
+                requestReceipts,
+                senderNames: requestSenderNames
+            )
+            let incomingSenderNames = Dictionary(
+                incomingReceipts.map {
+                    ($0.senderPublicKey.lowercased(), senderName($0.senderPublicKey))
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+            await paymentNotificationCoordinator.notifyDMPushPaymentReceived(
+                incomingReceipts,
+                senderNames: incomingSenderNames
+            )
+        }
+        return !requestReceipts.isEmpty || !incomingReceipts.isEmpty
+    }
+
     func paymentDeliveryWasQueued() {
         guard hasStarted else { return }
         paymentInboxNeedsAnotherPass = true
@@ -985,20 +1023,23 @@ final class WalletViewModel: ObservableObject {
     /// token. Unlike `recoverNostrPaymentRequests`, there's no request on this device to match:
     /// any decodable token found in an incoming DM is fair game.
     @discardableResult
-    private func recoverIncomingTokenInbox(presentInApp: Bool = true) async -> UInt64 {
+    private func recoverIncomingTokenInbox(
+        presentInApp: Bool = true
+    ) async -> [DMPushRedeemedPaymentReceipt] {
         guard !isRecoveringIncomingTokenInbox else {
             paymentInboxNeedsAnotherPass = true
-            return 0
+            return []
         }
         isRecoveringIncomingTokenInbox = true
         defer { isRecoveringIncomingTokenInbox = false }
         guard let service,
-              let inboxURL = try? CashuIncomingTokenInboxStore.defaultURL() else { return 0 }
+              let inboxURL = try? CashuIncomingTokenInboxStore.defaultURL() else { return [] }
         let deliveries = CashuIncomingTokenInboxStore.load(from: inboxURL)
-        guard !deliveries.isEmpty else { return 0 }
+        guard !deliveries.isEmpty else { return [] }
 
         var claimedTotal: UInt64 = 0
         var claimedCount = 0
+        var receipts: [DMPushRedeemedPaymentReceipt] = []
         for delivery in deliveries {
             guard !Task.isCancelled else { break }
             do {
@@ -1006,6 +1047,11 @@ final class WalletViewModel: ObservableObject {
                 case .received(let amount):
                     claimedTotal += amount
                     claimedCount += 1
+                    receipts.append(DMPushRedeemedPaymentReceipt(
+                        eventID: delivery.eventID,
+                        amount: amount,
+                        senderPublicKey: delivery.senderPublicKey
+                    ))
                 case .alreadyReceived:
                     // Idempotent replay of a token this wallet credited earlier. It is handled,
                     // but it is not a fresh balance change and must not produce another receipt.
@@ -1021,7 +1067,7 @@ final class WalletViewModel: ObservableObject {
                 try? CashuIncomingTokenInboxStore.markHandled(delivery, at: inboxURL)
             }
         }
-        guard claimedCount > 0 else { return 0 }
+        guard claimedCount > 0 else { return [] }
 
         await refresh()
         if presentInApp {
@@ -1030,7 +1076,7 @@ final class WalletViewModel: ObservableObject {
                 : "Received \(formattedSats(claimedTotal)) from \(claimedCount) payments"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
-        return claimedTotal
+        return receipts
     }
 
     /// `.paymentRequestUncertain` deliveries get this many recovery passes (not raw retries --

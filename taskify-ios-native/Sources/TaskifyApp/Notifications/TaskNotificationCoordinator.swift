@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import TaskifyCore
 import UserNotifications
 #if canImport(AlarmKit)
@@ -344,6 +345,12 @@ private struct ScheduledReminder: Sendable {
     var fireDate: Date
 }
 
+struct DMPushRedeemedPaymentReceipt: Sendable {
+    let eventID: String
+    let amount: UInt64
+    let senderPublicKey: String
+}
+
 actor WalletPaymentNotificationCoordinator {
     private static let identifierPrefix = "taskify.wallet.lightning."
     private static let ecashIdentifierPrefix = "taskify.wallet.ecash."
@@ -396,6 +403,8 @@ actor WalletPaymentNotificationCoordinator {
                 "lightningQuoteID": quote.id,
                 "mintURL": quote.mintURL,
                 "amount": amount,
+                TaskifyNotificationContract.destinationKey:
+                    TaskifyNotificationContract.Destination.wallet.rawValue,
             ]
             let request = UNNotificationRequest(
                 identifier: identifier,
@@ -423,13 +432,14 @@ actor WalletPaymentNotificationCoordinator {
             let identifier = Self.ecashIdentifierPrefix + receipt.pending.id
             guard !hasAlreadyNotified(identifier) else { continue }
             let content = UNMutableNotificationContent()
-            content.title = "Ecash received"
-            content.body = "\(receipt.receivedAmount.formatted()) sats were added to your Taskify wallet."
+            content.title = "Payment Received"
             content.sound = .default
             content.userInfo = [
                 "pendingReceiveID": receipt.pending.id,
                 "mintURL": receipt.pending.mintURL,
                 "amount": receipt.receivedAmount,
+                TaskifyNotificationContract.destinationKey:
+                    TaskifyNotificationContract.Destination.wallet.rawValue,
             ]
             let request = UNNotificationRequest(
                 identifier: identifier,
@@ -441,7 +451,10 @@ actor WalletPaymentNotificationCoordinator {
         }
     }
 
-    func notifyCashuRequestReceipts(_ receipts: [CashuPaymentRequestReceipt]) async {
+    func notifyCashuRequestReceipts(
+        _ receipts: [CashuPaymentRequestReceipt],
+        senderNames: [String: String] = [:]
+    ) async {
         guard !receipts.isEmpty else { return }
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
@@ -457,14 +470,57 @@ actor WalletPaymentNotificationCoordinator {
             let identifier = Self.cashuRequestIdentifierPrefix + receipt.eventID
             guard !hasAlreadyNotified(identifier) else { continue }
             let content = UNMutableNotificationContent()
-            content.title = "Cashu payment received"
-            content.body = "\(receipt.amount.formatted()) sats were added to your Taskify wallet."
+            content.title = "Payment Received"
+            let sender = senderNames[receipt.senderPublicKey.lowercased()]
+            content.body = sender.map { "\(receipt.amount.formatted()) sats from \($0)" }
+                ?? "\(receipt.amount.formatted()) sats"
             content.sound = .default
             content.userInfo = [
                 "cashuPaymentRequestID": receipt.requestID,
                 "nostrEventID": receipt.eventID,
                 "mintURL": receipt.mintURL,
                 "amount": receipt.amount,
+                TaskifyNotificationContract.destinationKey:
+                    TaskifyNotificationContract.Destination.wallet.rawValue,
+            ]
+            let request = UNNotificationRequest(
+                identifier: identifier,
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
+            markNotified(identifier)
+        }
+    }
+
+    func notifyDMPushPaymentReceived(
+        _ receipts: [DMPushRedeemedPaymentReceipt],
+        senderNames: [String: String]
+    ) async {
+        guard !receipts.isEmpty else { return }
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            break
+        case .notDetermined, .denied:
+            return
+        @unknown default:
+            return
+        }
+        for receipt in receipts {
+            let identifier = Self.ecashIdentifierPrefix + receipt.eventID
+            guard !hasAlreadyNotified(identifier) else { continue }
+            let content = UNMutableNotificationContent()
+            content.title = "Payment Received"
+            let sender = senderNames[receipt.senderPublicKey.lowercased()]
+            content.body = sender.map { "\(receipt.amount.formatted()) sats from \($0)" }
+                ?? "\(receipt.amount.formatted()) sats"
+            content.sound = .default
+            content.userInfo = [
+                "nostrEventID": receipt.eventID,
+                "amount": receipt.amount,
+                TaskifyNotificationContract.destinationKey:
+                    TaskifyNotificationContract.Destination.wallet.rawValue,
             ]
             let request = UNNotificationRequest(
                 identifier: identifier,
@@ -514,6 +570,21 @@ private final class NotificationPresentationDelegate: NSObject, UNUserNotificati
             guard let key = pair.key as? String, let value = pair.value as? String else { return }
             result[key] = value
         }
+        let remotePreviewDestination: TaskifyNotificationContract.Destination? = {
+            guard let taskify = response.notification.request.content.userInfo["taskify"]
+                as? [String: Any],
+                  taskify["type"] as? String == "dm-preview" else { return nil }
+            return .chat
+        }()
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           let destination = TaskifyNotificationContract.destination(userInfo: userInfo)
+            ?? remotePreviewDestination {
+            Task { @MainActor in
+                TaskNotificationNavigationRouter.shared.route(to: destination)
+                completionHandler()
+            }
+            return
+        }
         guard let action = TaskifyNotificationContract.action(
             for: response.actionIdentifier,
             userInfo: userInfo
@@ -526,6 +597,27 @@ private final class NotificationPresentationDelegate: NSObject, UNUserNotificati
             await TaskNotificationActionRouter.shared.handle(action)
             completionHandler()
         }
+    }
+}
+
+/// Holds a notification-tap destination until SwiftUI is ready to select the corresponding tab.
+/// Keeping the pending value in memory covers both a running app and the cold-launch interval.
+@Observable
+@MainActor
+final class TaskNotificationNavigationRouter {
+    static let shared = TaskNotificationNavigationRouter()
+
+    private(set) var pendingDestination: TaskifyNotificationContract.Destination?
+
+    private init() {}
+
+    func route(to destination: TaskifyNotificationContract.Destination) {
+        pendingDestination = destination
+    }
+
+    func consumeDestination() -> TaskifyNotificationContract.Destination? {
+        defer { pendingDestination = nil }
+        return pendingDestination
     }
 }
 

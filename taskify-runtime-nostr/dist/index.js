@@ -9,3 +9,4 @@ export * from "./RuntimeNostrSession.js";
 export * from "./RelayHealth.js";
 export * from "./RelayInfoCache.js";
 export * from "./RelayAuth.js";
+export * from "./runtimeRelays.js";

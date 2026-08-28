@@ -20,6 +20,8 @@ export type AgentTaskRecord = {
 export type AgentTaskStatus = "open" | "done";
 
 export type AgentTaskCreateInput = {
+  /** Reserved internally before publish so retries converge on one replaceable task event. */
+  taskId?: string;
   title: string;
   note: string;
   boardId: string;
