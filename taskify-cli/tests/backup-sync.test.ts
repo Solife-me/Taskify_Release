@@ -22,6 +22,10 @@ test("mergeBoardsFromBackup maps nostr backup boards into CLI board entries", ()
       id: "local-1",
       name: "Shared Board",
       kind: "lists",
+      archived: true,
+      hidden: false,
+      clearCompletedDisabled: true,
+      indexCardEnabled: true,
       relays: ["wss://relay.old"],
     },
   ];
@@ -39,7 +43,13 @@ test("mergeBoardsFromBackup maps nostr backup boards into CLI board entries", ()
   const merged = mergeBoardsFromBackup(current, incoming, ["wss://relay.default"]);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].name, "Team Board");
-  assert.equal(merged[0].id, "local-1");
+  // The CLI queries Nostr by BoardEntry.id, so imported boards must use the
+  // Nostr board id rather than the PWA's device-local board id.
+  assert.equal(merged[0].id, "nostr-1");
+  assert.equal(merged[0].archived, true);
+  assert.equal(merged[0].hidden, false);
+  assert.equal(merged[0].clearCompletedDisabled, true);
+  assert.equal(merged[0].indexCardEnabled, true);
   assert.deepEqual(merged[0].relays, ["wss://relay.new"]);
   assert.deepEqual(merged[0].columns, [{ id: "col-1", name: "Todo" }]);
 });

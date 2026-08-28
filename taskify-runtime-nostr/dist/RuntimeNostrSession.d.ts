@@ -1,4 +1,4 @@
-import NDK, { NDKRelaySet, type NDKFilter, type NDKRelay } from "@nostr-dev-kit/ndk";
+import NDK, { NDKEvent, NDKRelaySet, type NDKFilter, type NDKRelay } from "@nostr-dev-kit/ndk";
 import type { EventTemplate, NostrEvent } from "nostr-tools";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
@@ -6,8 +6,9 @@ import { PublishCoordinator, type PublishResult } from "./PublishCoordinator.js"
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
 import type { NostrOutboxStore } from "./NostrOutbox.js";
+import type { RelayInfo } from "./RelayInfoCache.js";
 export type RelayInfoCacheLike = {
-    prime: (relayUrl: string, loader: (nip11Url: string) => Promise<unknown>) => Promise<{
+    prime: (relayUrl: string, loader: (nip11Url: string) => Promise<RelayInfo | null>) => Promise<{
         info?: unknown;
     } | null>;
     needsRefresh: (relayUrl: string) => boolean;
@@ -21,7 +22,7 @@ export type RelayInfoCacheLike = {
 export type RelayHealthLike = {
     canAttempt: (relayUrl: string) => boolean;
     markFailure: (relayUrl: string, meta?: {
-        severity?: string;
+        severity?: "low" | "normal" | "high";
         reason?: string;
     }) => void;
     markSuccess: (relayUrl: string) => void;
@@ -55,6 +56,7 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
     private knownRelays;
     private relayRetryTimers;
     private loggedDebugSummary;
+    private shuttingDown;
     private readonly relayInfoCache;
     private readonly relayHealth;
     private readonly authManager;
@@ -76,7 +78,13 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
     subscribe(filters: NDKFilter | NDKFilter[], options?: SubscribeOptions): Promise<ManagedSubscription>;
     publish(event: EventTemplate, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult>;
     publishRaw(event: NostrEvent, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult>;
+    createEvent(event?: NostrEvent): NDKEvent;
     fetchEvents(filters: NDKFilter[], relayUrls?: string[], timeoutMs?: number, eoseGraceMs?: number, inactivityMs?: number): Promise<NostrEvent[]>;
+    relayStatuses(): Array<{
+        url: string;
+        connected: boolean;
+        status: string;
+    }>;
     private setupRelayHooks;
     private drainOutbox;
     private primeRelayInfo;

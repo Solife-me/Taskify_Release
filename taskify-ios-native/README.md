@@ -46,9 +46,11 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Aggregate Nostr health reporting with per-relay status, queued-change visibility, and manual/foreground retry
 - iOS background app refresh with an immediate background handoff, atomic persistence, bounded relay listening, durable-outbox delivery, automatic rescheduling, and expiration-safe completion
 - Native NIP-17 shared-task and assignment inbox with encrypted gift-wrap verification, multi-relay deduplication, review-before-add, persisted delivery state, rich task-field import, and queued Accept/Decline/Maybe responses wrapped so PWA chat cannot misclassify them as eCash
-- Native outbound task sharing and assignments with npub/hex validation, NIP-17 inbox-relay preference discovery, persisted recent recipients, durable encrypted delivery, PWA-readable assignment messages, assignee-state badges, and authenticated response updates on the source task
+- Native outbound task/contact/board/calendar sharing and assignments with npub/hex validation, strict kind-10050 inbox routing, independent recipient and sender gift wraps, persisted recent recipients, durable encrypted delivery, PWA-readable assignment messages, assignee-state badges, and authenticated response updates on the source task
 - Native Nostr contact directory with encrypted PWA-compatible NIP-51 private-list sync, signed kind-0 profile names/photos, automatic inbox-relay discovery, add/edit/delete controls, and contact selection for task shares and assignments
-- Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, preferred inbox-relay discovery, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, and encrypted message bubbles
+- Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, strict delivery only to the relays each account advertises in kind 10050, a signed native kind-10050 preference publisher, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, and encrypted message bubbles
+- Privacy-isolated NIP-17 relay sessions that may connect to recipient relays for outbound publishing but send the user's `#p` inbox subscription only to the user's own advertised inbox relays
+- Opt-in native DM push through `push.solife.me`: NIP-98-authenticated APNs token registration, automatic signed kind-10050 inbox updates, NIP-42 relay authentication, generic-alert APNs delivery with background-wake enrichment, and verified redeemed-amount payment notifications with separate message/payment/both controls (rich decrypted previews are deferred until the Notification Service Extension ships)
 - Interoperable Chat replies and emoji reactions with canonical rumor references, PWA-style kind-7 reaction rumors, long-press actions, quoted reply previews, optimistic offline delivery, replacement/removal ordering, and out-of-order reaction recovery
 - PWA-compatible encrypted group conversations with deterministic member-derived threads, synced group names, participant details, media/link tabs, encrypted photo/document attachments, newest-message opening, global individual-message results, and searchable conversation history with stable result navigation
 - PWA-familiar Chat organization and presentation with a separate unknown-sender inbox, add/block safety actions, native archive/delete gestures, replay-safe local deletion, configurable local history retention and clearing, group mute/leave/rejoin controls, day and sender message grouping, compact link cards, and Liquid Glass composer/search controls
@@ -89,6 +91,16 @@ a later companion sync.
 The migration bundle identifier is `solife.me.Taskify.Native`, which allows the native build to coexist with the release WebView app during parity testing.
 
 The native target includes an App Store-ready app-icon catalog based on the release app's Taskify artwork.
+
+DM push requires the Push Notifications capability on the `solife.me.Taskify.Native` App ID and
+signing profile. Install the StartOS package from `taskify-push-relay/`, configure its APNs Team ID,
+Key ID, and `.p8` provider key, expose its interface as `https://push.solife.me` /
+`wss://push.solife.me`, then enable the desired categories under Taskify Settings (first-run
+onboarding's "Enable notifications" also opts in with the default categories). Until the
+Notification Service Extension ships, APNs shows a generic alert and the app enriches it after the
+background wake (local message notifications and verified redeemed-amount payment notifications).
+Payment redemption is a best-effort background operation and completes on the next app run if iOS
+withholds background time.
 
 The native target and its Swift package tests are validated with Xcode 27 beta, the iOS 27 SDK, and an iOS 26.4 simulator runtime.
 

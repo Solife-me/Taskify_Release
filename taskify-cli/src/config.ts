@@ -52,6 +52,8 @@ export type ProfileConfig = {
   defaultColumn?: string;
   /** "boardName listName" — the "home list" (column) for this profile */
   defaultList?: string;
+  /** Canonical default used by non-interactive clients. */
+  defaultLocation?: { boardId: string; listId?: string };
   trustedNpubs: string[];
   securityMode: "moderate" | "strict" | "off";
   securityEnabled: boolean;
@@ -102,6 +104,7 @@ const DEFAULT_PROFILE: ProfileConfig = {
 };
 
 function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
+  const boards = partial.boards ?? [];
   return {
     ...DEFAULT_PROFILE,
     ...partial,
@@ -109,13 +112,86 @@ function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
     taskReminders: partial.taskReminders ?? {},
     processedInboxRumorIds: partial.processedInboxRumorIds ?? [],
     trustedNpubs: partial.trustedNpubs ?? [],
-    boards: partial.boards ?? [],
+    boards,
     defaultColumn: partial.defaultColumn,
     defaultList: partial.defaultList,
+    defaultLocation: normalizeDefaultLocation(partial, boards),
     contacts: partial.contacts ?? [],
     fileStorageServer: partial.fileStorageServer ?? DEFAULT_PUBLIC_FILE_STORAGE_SERVER,
     encryptedFileStorageServer: partial.encryptedFileStorageServer ?? DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
   };
+}
+
+function findBoard(boards: BoardEntry[], reference: string | undefined): BoardEntry | undefined {
+  const ref = reference?.trim();
+  if (!ref) return undefined;
+  const exact = boards.find((board) => board.id === ref);
+  if (exact) return exact;
+  const lower = ref.toLocaleLowerCase();
+  return boards.find((board) => board.name.toLocaleLowerCase() === lower);
+}
+
+function findList(board: BoardEntry | undefined, reference: string | undefined): { id: string; name: string } | undefined {
+  const ref = reference?.trim();
+  if (!board || !ref) return undefined;
+  const exact = board.columns?.find((list) => list.id === ref);
+  if (exact) return exact;
+  const lower = ref.toLocaleLowerCase();
+  return board.columns?.find((list) => list.name.toLocaleLowerCase() === lower);
+}
+
+function parseLegacyDefaultList(
+  raw: string | undefined,
+  boards: BoardEntry[],
+): { board: BoardEntry; listRef: string } | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+
+  const slash = value.indexOf("/");
+  if (slash > 0 && slash < value.length - 1) {
+    const board = findBoard(boards, value.slice(0, slash));
+    if (board) return { board, listRef: value.slice(slash + 1).trim() };
+  }
+
+  const references = boards.flatMap((board) => [
+    { board, value: board.id },
+    { board, value: board.name },
+  ]).sort((left, right) => right.value.length - left.value.length);
+  const lower = value.toLocaleLowerCase();
+  for (const candidate of references) {
+    const prefix = `${candidate.value.toLocaleLowerCase()} `;
+    if (lower.startsWith(prefix)) {
+      return { board: candidate.board, listRef: value.slice(candidate.value.length).trim() };
+    }
+  }
+  return undefined;
+}
+
+function normalizeDefaultLocation(
+  partial: Partial<ProfileConfig>,
+  boards: BoardEntry[],
+): { boardId: string; listId?: string } | undefined {
+  if (partial.defaultLocation?.boardId?.trim()) {
+    const board = findBoard(boards, partial.defaultLocation.boardId);
+    const list = findList(board, partial.defaultLocation.listId);
+    return {
+      boardId: board?.id ?? partial.defaultLocation.boardId.trim(),
+      ...(partial.defaultLocation.listId
+        ? { listId: list?.id ?? partial.defaultLocation.listId.trim() }
+        : {}),
+    };
+  }
+
+  const legacyList = parseLegacyDefaultList(partial.defaultList, boards);
+  if (legacyList) {
+    const list = findList(legacyList.board, legacyList.listRef);
+    if (list) return { boardId: legacyList.board.id, listId: list.id };
+  }
+
+  const board = findBoard(boards, partial.defaultBoard);
+  if (!board) return undefined;
+  const list = findList(board, partial.defaultColumn);
+  return { boardId: board.id, ...(list ? { listId: list.id } : {}) };
 }
 
 function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
@@ -157,9 +233,6 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
     } catch (error) {
       throw new Error(`Config file is malformed; refusing to overwrite ${CONFIG_PATH}`, { cause: error });
     }
-    await ensurePrivateConfigDirectory();
-    await chmod(CONFIG_PATH, 0o600);
-
     // Migration: detect old flat format (has nsec or relays at top level, no profiles key)
     if (!parsed.profiles && (parsed.nsec !== undefined || Array.isArray(parsed.relays))) {
       const profile = profileDefaults(parsed as Partial<ProfileConfig>);
@@ -167,9 +240,7 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
         activeProfile: "default",
         profiles: { default: profile },
       };
-      // Save migrated config
-      await writeStoredConfig(stored);
-      process.stderr.write("✓ Config migrated to multi-profile format\n");
+      // Migrate in memory. A later explicit save persists the new shape; reads stay read-only.
     } else if (parsed.profiles && parsed.activeProfile) {
       stored = parsed as unknown as StoredConfig;
     } else {
@@ -224,6 +295,7 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     defaultBoard: cfg.defaultBoard,
     defaultColumn: cfg.defaultColumn,
     defaultList: cfg.defaultList,
+    defaultLocation: cfg.defaultLocation,
     trustedNpubs: cfg.trustedNpubs,
     securityMode: cfg.securityMode,
     securityEnabled: cfg.securityEnabled,
@@ -259,6 +331,21 @@ export function getActiveProfile(cfg: TaskifyConfig): ProfileConfig {
 
 export async function setActiveProfile(cfg: TaskifyConfig, name: string): Promise<void> {
   await saveProfiles(name, cfg.profiles);
+}
+
+export function redactConfig<T>(value: T): T {
+  const visit = (current: unknown, key = ""): unknown => {
+    if (/^(nsec|apiKey|secretKey|walletSeed|mnemonic)$/i.test(key) && current !== undefined) {
+      return "[redacted]";
+    }
+    if (Array.isArray(current)) return current.map((entry) => visit(entry));
+    if (!current || typeof current !== "object") return current;
+    return Object.fromEntries(
+      Object.entries(current as Record<string, unknown>)
+        .map(([childKey, childValue]) => [childKey, visit(childValue, childKey)]),
+    );
+  };
+  return visit(value) as T;
 }
 
 export function resolveProfile(cfg: TaskifyConfig, name?: string): ProfileConfig {

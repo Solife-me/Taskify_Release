@@ -49,6 +49,9 @@ struct SettingsView: View {
     @State private var backgroundPhotoItem: PhotosPickerItem?
     @State private var backgroundPhotoIsLoading = false
     @State private var appearanceMessage: String?
+    @State private var dmPushSelection = TaskifyDMPushSettings.selection
+    @State private var dmPushRelayURL = TaskifyDMPushSettings.relayURL
+    @State private var dmPushServerURL = TaskifyDMPushSettings.serverURL
     /// Empty by default -- every settings group starts collapsed, matching the PWA's
     /// collapsed-by-default accordions, so opening Settings shows a scannable list of category
     /// headers instead of every card's full contents at once.
@@ -68,6 +71,9 @@ struct SettingsView: View {
 
     init(watchSetupRequestID: Binding<UUID?> = .constant(nil)) {
         _watchSetupRequestID = watchSetupRequestID
+        _dmPushSelection = State(initialValue: TaskifyDMPushSettings.selection)
+        _dmPushRelayURL = State(initialValue: TaskifyDMPushSettings.relayURL)
+        _dmPushServerURL = State(initialValue: TaskifyDMPushSettings.serverURL)
     }
 
     var body: some View {
@@ -1925,6 +1931,76 @@ struct SettingsView: View {
                     model.requestNotificationPermission()
                 }
                 .buttonStyle(.borderedProminent)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Direct message push")
+                            .font(.headline)
+                        Text(model.dmPushStatus)
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    Spacer()
+                    Text(model.dmPushEnabled ? "On" : "Off")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(model.dmPushEnabled ? TaskifyTheme.accent : TaskifyTheme.tertiaryText)
+                }
+
+                Picker(
+                    "Notify me about",
+                    selection: Binding(
+                        get: { model.dmPushEnabled ? model.dmPushSelection : dmPushSelection },
+                        set: { selection in
+                            dmPushSelection = selection
+                            if model.dmPushEnabled { model.setDMPushSelection(selection) }
+                        }
+                    )
+                ) {
+                    ForEach(DMPushNotificationSelection.allCases, id: \.self) { selection in
+                        Text(selection.title).tag(selection)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                if model.dmPushEnabled {
+                    Text(model.dmPushRelayURL)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .textSelection(.enabled)
+                    Button("Disable DM push", role: .destructive) {
+                        Task { await model.disableDMPushNotifications() }
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    TextField("wss://push.solife.me", text: $dmPushRelayURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("https://push.solife.me", text: $dmPushServerURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Enable DM push") {
+                        Task {
+                            await model.enableDMPushNotifications(
+                                selection: dmPushSelection,
+                                relayURL: dmPushRelayURL,
+                                serverURL: dmPushServerURL
+                            )
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Text("The push server sends a generic alert with a short-lived opaque link. Taskify decrypts the standard NIP-17 gift wrap on this iPhone to show the sender and a rich message or activity preview. Payment amounts appear only after the wallet successfully redeems them. Apple and the relay do not receive the category, sender, amount, or message text.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

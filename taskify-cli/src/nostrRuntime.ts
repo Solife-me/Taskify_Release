@@ -1,6 +1,6 @@
-import NDK, { NDKEvent, NDKRelayStatus } from "@nostr-dev-kit/ndk";
+import { type NDKEvent } from "@nostr-dev-kit/ndk";
 import { getPublicKey, nip19 } from "nostr-tools";
-import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
+import { boardTagHash, collectRuntimeRelayUrls, deriveBoardKeyPair } from "taskify-runtime-nostr";
 import type { ReminderPreset, Recurrence, Subtask, TaskAssignee } from "./shared/taskTypes.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
@@ -37,6 +37,7 @@ import {
   buildCalendarCanonicalEnvelope,
   buildCalendarViewEnvelope,
 } from "./shared/calendarEnvelope.js";
+import { createCliNostrSession } from "./shared/nodeRuntimeSession.js";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -469,50 +470,21 @@ async function parseDecryptedCalendarEvent(
 // ---- Runtime factory ----
 
 export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
-  const ndk = new NDK({
-    explicitRelayUrls: config.relays,
-  });
+  const runtimeRelays = collectRuntimeRelayUrls(config.relays, config.boards);
+  const { session } = createCliNostrSession(config);
 
   let connected = false;
 
   async function ensureConnected(): Promise<void> {
-    // If NDK's pool already knows relays are disconnected, reset our flag and let NDK
-    // handle the reconnect.  Without this, stale pools from system sleep/wake or
-    // transient network blips can leave the gateway in a "connected but actually offline"
-    // state, causing queries to time out and fall back to stale cache.
-    let stats: { disconnected: number } | null = null;
-    try { stats = ndk.pool.stats(); } catch { /* pool may not be ready yet */ }
-    if (stats && stats.disconnected > 0) {
-      connected = false;
-    }
-    if (!connected) {
-      await Promise.race([
-        ndk.connect(),
-        new Promise<void>((resolve) =>
-          setTimeout(() => {
-            process.stderr.write(
-              "⚠ Relay connection slow — continuing with available relays\n",
-            );
-            resolve();
-          }, 3000),
-        ),
-      ]);
-      connected = true;
-    }
+    if (connected) return;
+    await session.init(runtimeRelays);
+    connected = true;
   }
 
-  // Listen for relay disconnections and reset our wrapper's connected flag so that the
-  // next ensureConnected() call triggers a fresh connection handshake.  NDK's own pool
-  // has reconnection logic but the wrapper's `connected` flag masks it once set.
-  ndk.pool.on("relay:disconnect", () => {
-    const stats = ndk.pool.stats();
-    if (stats.disconnected > 0) {
-      connected = false;
-      process.stderr.write(
-        "⚠ Relay connection dropped — will reconnect on next query\n",
-      );
-    }
-  });
+  function boardRelays(boardId: string): string[] {
+    const configured = config.boards.find((board) => board.id === boardId)?.relays;
+    return configured?.length ? configured : config.relays;
+  }
 
   async function fetchBoardEvents(boardId: string, taskId?: string, since?: number): Promise<Set<NDKEvent>> {
     const bTag = boardTagHash(boardId);
@@ -528,79 +500,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     };
     if (taskId) filter["#d"] = [taskId];
 
-    // NDK fires a single subscription-level EOSE only after ALL configured relays
-    // respond. With disconnected relays that never send EOSE, this means the hard
-    // timeout is always the exit path — slow even for incremental fetches.
-    //
-    // Strategy: use a per-relay inactivity timer instead.
-    // - Reset a short inactivity window on every incoming event.
-    // - Once EOSE fires (or inactivity window expires), settle after a brief grace.
-    // - Hard timeout is a last-resort fallback for completely unresponsive relays.
-    //
-    // Timeouts are shorter for cursor-based (incremental) fetches where only a
-    // handful of events are expected.
     const isCursor = since !== undefined && !taskId;
-    const HARD_TIMEOUT_MS  = taskId ? 8_000  : isCursor ? 5_000  : 12_000;
-    const INACTIVITY_MS    = taskId ? 2_000  : isCursor ? 1_000  : 3_000;
-    const EOSE_GRACE_MS    = isCursor ? 150 : 200;
-
-    let hardTimer: ReturnType<typeof setTimeout>;
-
-    return new Promise<Set<NDKEvent>>((resolve) => {
-      const collected = new Set<NDKEvent>();
-      let graceTimer: ReturnType<typeof setTimeout> | null = null;
-      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-      let settled = false;
-      let firstEventReceived = false;
-
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        if (graceTimer) clearTimeout(graceTimer);
-        if (inactivityTimer) clearTimeout(inactivityTimer);
-        if (hardTimer) clearTimeout(hardTimer);
-        try { sub.stop(); } catch { /* ignore */ }
-        resolve(collected);
-      };
-
-      const startGrace = () => {
-        if (!graceTimer && !settled) {
-          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
-          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
-        }
-      };
-
-      const resetInactivity = () => {
-        if (settled || graceTimer) return;
-        if (inactivityTimer) clearTimeout(inactivityTimer);
-        // Only start inactivity timer once we've received at least one event,
-        // so we don't prematurely settle on an empty board before relay responds.
-        if (firstEventReceived) {
-          inactivityTimer = setTimeout(startGrace, INACTIVITY_MS);
-        }
-      };
-
-      hardTimer = setTimeout(settle, HARD_TIMEOUT_MS);
-
-      const sub = ndk.subscribe(
-        filter as Parameters<typeof ndk.subscribe>[0],
-        { closeOnEose: false },
-      );
-
-      sub.on("event", (evt: NDKEvent) => {
-        if (!settled) {
-          collected.add(evt);
-          firstEventReceived = true;
-          resetInactivity();
-        }
-      });
-
-      sub.on("eose", () => {
-        // NDK's subscription-level EOSE fires when all relays respond.
-        // Treat it as the definitive "done" signal — start grace immediately.
-        startGrace();
-      });
-    });
+    const events = await session.fetchEvents(
+      [filter as never],
+      boardRelays(boardId),
+      taskId ? 8_000 : isCursor ? 5_000 : 12_000,
+      isCursor ? 150 : 200,
+      taskId ? 2_000 : isCursor ? 1_000 : 3_000,
+    );
+    return new Set(events.map((event) => session.createEvent(event)));
   }
 
   async function fetchBoardCalendarEvents(boardId: string, eventId?: string): Promise<Set<NDKEvent>> {
@@ -613,63 +521,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     };
     if (eventId) filter["#d"] = [eventId];
 
-    const HARD_TIMEOUT_MS = eventId ? 8_000 : 12_000;
-    const INACTIVITY_MS   = eventId ? 2_000 : 3_000;
-    const EOSE_GRACE_MS   = 200;
-
-    let hardTimer: ReturnType<typeof setTimeout>;
-
-    return new Promise<Set<NDKEvent>>((resolve) => {
-      const collected = new Set<NDKEvent>();
-      let graceTimer: ReturnType<typeof setTimeout> | null = null;
-      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-      let settled = false;
-      let firstEventReceived = false;
-
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        if (graceTimer) clearTimeout(graceTimer);
-        if (inactivityTimer) clearTimeout(inactivityTimer);
-        if (hardTimer) clearTimeout(hardTimer);
-        try { sub.stop(); } catch { /* ignore */ }
-        resolve(collected);
-      };
-
-      const startGrace = () => {
-        if (!graceTimer && !settled) {
-          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
-          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
-        }
-      };
-
-      const resetInactivity = () => {
-        if (settled || graceTimer) return;
-        if (inactivityTimer) clearTimeout(inactivityTimer);
-        if (firstEventReceived) {
-          inactivityTimer = setTimeout(startGrace, INACTIVITY_MS);
-        }
-      };
-
-      hardTimer = setTimeout(settle, HARD_TIMEOUT_MS);
-
-      const sub = ndk.subscribe(
-        filter as Parameters<typeof ndk.subscribe>[0],
-        { closeOnEose: false },
-      );
-
-      sub.on("event", (evt: NDKEvent) => {
-        if (!settled) {
-          collected.add(evt);
-          firstEventReceived = true;
-          resetInactivity();
-        }
-      });
-
-      sub.on("eose", () => {
-        startGrace();
-      });
-    });
+    const events = await session.fetchEvents(
+      [filter as never],
+      boardRelays(boardId),
+      eventId ? 8_000 : 12_000,
+      200,
+      eventId ? 2_000 : 3_000,
+    );
+    return new Set(events.map((event) => session.createEvent(event)));
   }
 
   // Resolve from the local full-state cache first, then fall back to relay tags.
@@ -716,7 +575,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     const { signer } = deriveBoardKeyPair(boardId);
     const bTag = boardTagHash(boardId);
     const encrypted = await encryptContent(boardId, JSON.stringify(payload));
-    const event = new NDKEvent(ndk);
+    const event = session.createEvent();
     event.created_at = Math.max(
       Math.floor(Date.now() / 1000),
       typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
@@ -730,13 +589,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ["status", status],
     ];
     await event.sign(signer);
-    try {
-      await event.publish();
-    } catch (err) {
-      throw new Error(
-        `Publish failed — check relay connectivity (taskify relay status): ${String(err)}`,
-      );
-    }
+    await session.publishRaw(event.rawEvent(), { relayUrls: boardRelays(boardId) });
     return event;
   }
 
@@ -754,7 +607,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     const canonicalPayload = buildCalendarCanonicalEnvelope(calEventId, eventKey, payload);
     const viewPayload = buildCalendarViewEnvelope(canonicalPayload);
     const encrypted = await encryptCalendarPayloadForBoard(canonicalPayload, boardKeys.skHex, boardKeys.pk);
-    const event = new NDKEvent(ndk);
+    const event = session.createEvent();
     event.created_at = Math.max(
       Math.floor(Date.now() / 1000),
       typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
@@ -770,8 +623,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     ];
     await event.sign(boardKeys.signer);
     try {
-      await event.publish();
-      const viewEvent = new NDKEvent(ndk);
+      await session.publishRaw(event.rawEvent(), { relayUrls: boardRelays(boardId) });
+      const viewEvent = session.createEvent();
       viewEvent.kind = TASKIFY_CALENDAR_VIEW_KIND;
       viewEvent.created_at = event.created_at;
       viewEvent.content = await encryptCalendarPayloadWithEventKey(viewPayload, eventKey);
@@ -780,11 +633,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ["a", calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, calEventId)],
       ];
       await viewEvent.sign(boardKeys.signer);
-      await viewEvent.publish();
+      await session.publishRaw(viewEvent.rawEvent(), { relayUrls: boardRelays(boardId) });
     } catch (err) {
-      throw new Error(
-        `Publish failed — check relay connectivity (taskify relay status): ${String(err)}`,
-      );
+      throw err;
     }
     return event;
   }
@@ -808,7 +659,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       version: 1,
     };
     const encrypted = await encryptContent(board.id, JSON.stringify(payload));
-    const event = new NDKEvent(ndk);
+    const event = session.createEvent();
     event.kind = 30300;
     event.content = encrypted;
     event.tags = [
@@ -821,20 +672,17 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ...(board.sortMode ? [["sort", board.sortMode, board.sortDirection ?? "asc"]] : []),
     ];
     await event.sign(signer);
-    await event.publish();
+    await session.publishRaw(event.rawEvent(), { relayUrls: board.relays?.length ? board.relays : config.relays });
   }
 
   return {
     getDefaultBoardId(): string | null {
-      return config.boards[0]?.id ?? null;
+      return config.defaultLocation?.boardId ?? config.boards[0]?.id ?? null;
     },
 
     async disconnect(): Promise<void> {
-      try {
-        (ndk.pool as unknown as { destroy?(): void })?.destroy?.();
-      } catch {
-        // ignore teardown errors
-      }
+      await session.shutdown();
+      connected = false;
     },
 
     async listTasks({ boardId, status, columnId, refresh, noCache }): Promise<FullTaskRecord[]> {
@@ -1270,14 +1118,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await ensureConnected();
       const bTag = boardTagHash(boardId);
       const boardPubkey = deriveBoardKeyPair(boardId).pk;
-      const fetchPromise = ndk.fetchEvents(
-        { kinds: [30300], authors: [boardPubkey], "#b": [bTag], limit: 25 } as unknown as Parameters<typeof ndk.fetchEvents>[0],
-        { closeOnEose: true },
+      const rawEvents = await session.fetchEvents(
+        [{ kinds: [30300], authors: [boardPubkey], "#b": [bTag], limit: 25 } as never],
+        boardRelays(boardId),
+        10_000,
       );
-      const timeoutPromise = new Promise<Set<NDKEvent>>((resolve) =>
-        setTimeout(() => resolve(new Set<NDKEvent>()), 10000),
-      );
-      const events = await Promise.race([fetchPromise, timeoutPromise]);
+      const events = new Set(rawEvents.map((event) => session.createEvent(event)));
 
       // Use config from closure (avoids extra file read and ensures correct profile)
       const entry = config.boards.find((b) => b.id === boardId);
@@ -1350,7 +1196,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         );
       }
       const boardId = entry.id;
-      const taskId = crypto.randomUUID();
+      const taskId = input.taskId?.trim() || crypto.randomUUID();
       const userPubkey = getUserPubkeyHex(config);
       if (!userPubkey) {
         process.stderr.write(
@@ -1570,13 +1416,13 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const boardKeys = deriveBoardKeyPair(entry.id);
       const aTag = `30301:${boardKeys.pk}:${taskId}`;
       try {
-        const nip09Event = new NDKEvent(ndk);
+        const nip09Event = session.createEvent();
         nip09Event.kind = 5;
         nip09Event.content = "Task deleted";
         nip09Event.tags = [["a", aTag]];
         nip09Event.created_at = Math.floor(Date.now() / 1000);
-        ndk.signer = boardKeys.signer;
-        await nip09Event.publish();
+        await nip09Event.sign(boardKeys.signer);
+        await session.publishRaw(nip09Event.rawEvent(), { relayUrls: boardRelays(entry.id) });
       } catch {
         // Non-fatal: NIP-09 relay support varies; soft delete already published
       }
@@ -1747,18 +1593,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
     async getRelayStatus(): Promise<{ url: string; connected: boolean }[]> {
       await ensureConnected();
-      const results: { url: string; connected: boolean }[] = [];
-      for (const [url, relay] of ndk.pool.relays) {
-        const connected = relay.status === NDKRelayStatus.CONNECTED;
-        results.push({ url, connected });
-      }
-      // If pool is empty (no relays in map), fall back to config list as disconnected
-      if (results.length === 0) {
-        for (const url of config.relays) {
-          results.push({ url, connected: false });
-        }
-      }
-      return results;
+      return session.relayStatuses().map(({ url, connected }) => ({ url, connected }));
     },
 
     async createBoard(input: {

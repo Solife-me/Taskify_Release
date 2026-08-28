@@ -278,8 +278,14 @@ struct ContactsView: View {
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
                     .scrollIndicators(.hidden)
+                    .scrollDismissesKeyboard(.interactively)
                     .contentMargins(.bottom, 90, for: .scrollContent)
                 }
+            }
+            .onChange(of: navigationPath) { _, _ in
+                // Leaving the search field behind when a thread (or search result) opens; the
+                // pushed conversation manages its own keyboard.
+                searchFocused = false
             }
             // NavigationStack supplies an opaque dark surface of its own, so the root tab's
             // backdrop cannot show through it. Render the shared backdrop inside the stack.
@@ -357,6 +363,7 @@ struct ContactsView: View {
                     }
                 } else {
                     Button {
+                        searchFocused = false
                         showingContactDirectory = true
                     } label: {
                         ChatPeerAvatar(
@@ -379,6 +386,7 @@ struct ContactsView: View {
                         accent: true,
                         accessibilityLabel: "New message"
                     ) {
+                        searchFocused = false
                         showingNewConversation = true
                     }
                 }
@@ -399,7 +407,9 @@ struct ContactsView: View {
                 .font(.subheadline)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .submitLabel(.search)
                 .focused($searchFocused)
+                .onSubmit { searchFocused = false }
 
             if !searchText.isEmpty {
                 Button {
@@ -411,6 +421,19 @@ struct ContactsView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
+            }
+
+            // The only exit from the keyboard once this custom field is focused. Without it a
+            // focused field with no results traps the screen: the keyboard hides the tab bar and
+            // there is nothing outside the field to tap that would resign focus.
+            if searchFocused || !searchText.isEmpty {
+                Button("Cancel") {
+                    searchText = ""
+                    searchFocused = false
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(TaskifyTheme.accent)
+                .accessibilityLabel("Close search")
             }
         }
         .padding(.horizontal, 14)
@@ -437,6 +460,7 @@ struct ContactsView: View {
                 .foregroundStyle(TaskifyTheme.secondaryText)
                 .multilineTextAlignment(.center)
             Button {
+                searchFocused = false
                 showingNewConversation = true
             } label: {
                 Label("Start a Conversation", systemImage: "square.and.pencil")
@@ -847,18 +871,15 @@ private struct NewGroupConversationSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            Group {
                 if isNamingGroup {
-                    namingSections
+                    list
                 } else {
-                    participantSelectionSection
-                }
-
-                if let errorMessage {
-                    Section {
-                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                    }
+                    // Plain `.searchable` gives the search bar its own working Cancel button.
+                    // Forcing it always-presented via a constant `isPresented` binding made that
+                    // Cancel a no-op: the keyboard could never be dismissed, and it covered the
+                    // participant list.
+                    list.searchable(text: $searchText, prompt: "Search contacts")
                 }
             }
             .overlay {
@@ -875,11 +896,7 @@ private struct NewGroupConversationSheet: View {
             .background(TaskifyTheme.background)
             .navigationTitle(isNamingGroup ? "New Group" : "Add Participants")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(
-                text: $searchText,
-                isPresented: .constant(!isNamingGroup),
-                prompt: "Search contacts"
-            )
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(isNamingGroup ? "Back" : "Cancel") {
@@ -908,6 +925,23 @@ private struct NewGroupConversationSheet: View {
         }
         .preferredColorScheme(.dark)
         .tint(TaskifyTheme.accent)
+    }
+
+    private var list: some View {
+        List {
+            if isNamingGroup {
+                namingSections
+            } else {
+                participantSelectionSection
+            }
+
+            if let errorMessage {
+                Section {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1764,17 +1798,24 @@ private struct DirectMessageConversationView: View {
             }
     }
     private var timeline: [ChatTimelineItem] {
-        (
+        let items =
             messages.map(ChatTimelineItem.message)
                 + sharedTasks.map(ChatTimelineItem.sharedTask)
                 + sharedContacts.map(ChatTimelineItem.sharedContact)
                 + calendarInvites.map(ChatTimelineItem.calendarInvite)
                 + sharedBoards.map(ChatTimelineItem.sharedBoard)
-        )
+
+        // `created_at` has one-second precision. Keep the order established by the message store
+        // for ties; an event-ID tiebreaker is effectively random and can flip a just-sent message
+        // behind the response that followed it.
+        return items.enumerated()
             .sorted {
-                if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
-                return $0.id < $1.id
+                if $0.element.timestamp != $1.element.timestamp {
+                    return $0.element.timestamp < $1.element.timestamp
+                }
+                return $0.offset < $1.offset
             }
+            .map(\.element)
     }
     private var structuredSenderName: String? {
         var values: [(Date, String)] = sharedTasks.map { ($0.receivedAt, $0.sender.displayName) }
@@ -1887,6 +1928,10 @@ private struct DirectMessageConversationView: View {
                                     isSelectedSearchResult: selectedSearchResultID == item.id
                                 )
                                 .contextMenu {
+                                    Label(
+                                        "Sent \(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(date: .abbreviated, time: .shortened))",
+                                        systemImage: "clock"
+                                    )
                                     Menu("React", systemImage: "face.smiling") {
                                         ForEach(["❤️", "👍", "👎", "😂", "😮", "😢"], id: \.self) { emoji in
                                             Button(emoji) { react(to: message, with: emoji) }
@@ -1946,7 +1991,7 @@ private struct DirectMessageConversationView: View {
                 .padding(.vertical, 12)
             }
             .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
+            .conversationBottomInitialAnchor()
             .safeAreaInset(edge: .top, spacing: 6) {
                 VStack(spacing: 7) {
                     if isStranger {
@@ -3381,7 +3426,6 @@ private struct DirectMessageBubble: View {
     let isGroupedWithNext: Bool
     let isSearchMatch: Bool
     let isSelectedSearchResult: Bool
-    @GestureState private var timestampReveal: CGFloat = 0
 
     private var links: [URL] {
         Array(TaskContentLinks.allURLs(in: message.content).prefix(2))
@@ -3396,15 +3440,18 @@ private struct DirectMessageBubble: View {
     }
 
     var body: some View {
-        ZStack(alignment: .trailing) {
-            Text(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(
-                date: .omitted,
-                time: .shortened
-            ))
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(TaskifyTheme.tertiaryText)
-            .frame(width: 68, alignment: .trailing)
-            .opacity(timestampReveal / 44)
+        // No per-row DragGesture here: a drag recognizer attached to every bubble races the
+        // scroll view's pan recognizer on each touch-down and scrolling becomes sticky to the
+        // point of immobility (an earlier swipe-left timestamp reveal did exactly that). The
+        // timestamp is available through the bubble's context menu instead.
+        VStack(spacing: repliedMessage == nil ? 0 : 2) {
+            if let repliedMessage {
+                DirectMessageReplyContext(
+                    message: repliedMessage,
+                    responseIsIncoming: message.isIncoming,
+                    responseHasAvatar: showsSenderAvatar
+                )
+            }
 
             HStack(alignment: .bottom, spacing: 7) {
                 if !message.isIncoming { Spacer(minLength: 68) }
@@ -3424,30 +3471,14 @@ private struct DirectMessageBubble: View {
                 }
 
                 VStack(alignment: message.isIncoming ? .leading : .trailing, spacing: 3) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if message.isIncoming, let senderName {
-                            Text(senderName)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(TaskifyTheme.secondaryText)
-                                .padding(.leading, 2)
-                        }
-                        if let repliedMessage {
-                            HStack(spacing: 7) {
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(message.isIncoming ? TaskifyTheme.accent : Color.white.opacity(0.8))
-                                    .frame(width: 3)
-                                Text(repliedMessage.displayContent)
-                                    .font(.caption)
-                                    .foregroundStyle(
-                                        message.isIncoming
-                                            ? TaskifyTheme.secondaryText
-                                            : Color.white.opacity(0.78)
-                                    )
-                                    .lineLimit(2)
-                            }
-                            .frame(minHeight: 28)
-                        }
+                    if message.isIncoming, let senderName {
+                        Text(senderName)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .padding(.leading, 2)
+                    }
 
+                    VStack(alignment: .leading, spacing: 6) {
                         if let attachment = message.attachment {
                             DirectMessageAttachmentView(attachment: attachment)
                         } else if let detectedPaymentToken {
@@ -3463,7 +3494,8 @@ private struct DirectMessageBubble: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.leading, message.isIncoming && !isGroupedWithNext ? 18 : 14)
+                    .padding(.trailing, !message.isIncoming && !isGroupedWithNext ? 18 : 14)
                     .padding(.vertical, 9)
                     .background {
                         bubbleShape
@@ -3473,46 +3505,23 @@ private struct DirectMessageBubble: View {
                                     : TaskifyTheme.accent
                             )
                     }
-                    .overlay(alignment: message.isIncoming ? .topLeading : .topTrailing) {
+                    .overlay(alignment: message.isIncoming ? .topTrailing : .topLeading) {
                         if !reactions.isEmpty {
-                            HStack(spacing: 3) {
-                                ForEach(reactionEmojis, id: \.self) { emoji in
-                                    HStack(spacing: 2) {
-                                        Text(emoji)
-                                        let count = reactions.filter { $0.emoji == emoji }.count
-                                        if count > 1 {
-                                            Text("\(count)")
-                                                .font(.caption2.bold())
-                                        }
-                                    }
-                                }
-                            }
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.regularMaterial, in: Capsule())
-                            .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 0.7))
-                            .offset(y: -13)
-                            .padding(.horizontal, 10)
+                            DirectMessageReactionBadge(
+                                reactions: reactions,
+                                isIncoming: message.isIncoming
+                            )
+                            .offset(x: message.isIncoming ? 10 : -10, y: -30)
                         }
                     }
-                    .padding(.top, reactions.isEmpty ? 0 : 10)
+                    .padding(.top, reactions.isEmpty ? 0 : 30)
                 }
 
                 if message.isIncoming { Spacer(minLength: 68) }
             }
-            .offset(x: -timestampReveal)
         }
-        .padding(.vertical, isGroupedWithPrevious ? 1 : 4)
+        .padding(.vertical, isGroupedWithPrevious && repliedMessage == nil ? 1 : 4)
         .contentShape(Rectangle())
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12)
-                .updating($timestampReveal) { value, state, _ in
-                    guard abs(value.translation.width) > abs(value.translation.height),
-                          value.translation.width < 0 else { return }
-                    state = min(68, -value.translation.width)
-                }
-        )
         .background {
             if isSearchMatch {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -3528,30 +3537,264 @@ private struct DirectMessageBubble: View {
         .animation(.easeInOut(duration: 0.18), value: isSelectedSearchResult)
     }
 
-    private var reactionEmojis: [String] {
+    private var bubbleShape: DirectMessageBubbleShape {
+        DirectMessageBubbleShape(
+            isIncoming: message.isIncoming,
+            isGroupedWithPrevious: isGroupedWithPrevious,
+            isGroupedWithNext: isGroupedWithNext
+        )
+    }
+}
+
+private struct DirectMessageReplyContext: View {
+    let message: NostrDirectMessage
+    let responseIsIncoming: Bool
+    let responseHasAvatar: Bool
+
+    private var bubbleShape: DirectMessageBubbleShape {
+        DirectMessageBubbleShape(
+            isIncoming: message.isIncoming,
+            isGroupedWithPrevious: false,
+            isGroupedWithNext: false
+        )
+    }
+
+    private var strokeColor: Color {
+        message.isIncoming ? Color.white.opacity(0.34) : TaskifyTheme.accent.opacity(0.82)
+    }
+
+    private var textColor: Color {
+        message.isIncoming ? TaskifyTheme.secondaryText : TaskifyTheme.accent
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                if !message.isIncoming { Spacer(minLength: 68) }
+
+                Text(message.displayContent)
+                    .font(.caption)
+                    .foregroundStyle(textColor)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(message.isIncoming ? .leading : .trailing)
+                    .padding(.leading, message.isIncoming ? 17 : 12)
+                    .padding(.trailing, message.isIncoming ? 12 : 17)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: 310, alignment: message.isIncoming ? .leading : .trailing)
+                    .background {
+                        bubbleShape.fill(Color.black.opacity(0.42))
+                    }
+                    .overlay {
+                        bubbleShape.stroke(strokeColor, lineWidth: 1)
+                    }
+
+                if message.isIncoming { Spacer(minLength: 68) }
+            }
+            .padding(.leading, message.isIncoming && responseHasAvatar ? 41 : 0)
+
+            ReplyConnectorShape(isIncoming: responseIsIncoming)
+                .stroke(
+                    Color.white.opacity(0.22),
+                    style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round)
+                )
+                .frame(width: 31, height: 18)
+                .frame(maxWidth: .infinity, alignment: responseIsIncoming ? .leading : .trailing)
+                .padding(.leading, responseIsIncoming ? (responseHasAvatar ? 52 : 12) : 0)
+                .padding(.trailing, responseIsIncoming ? 0 : 12)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("In reply to \(message.displayContent)")
+    }
+}
+
+private struct DirectMessageReactionBadge: View {
+    let reactions: [NostrDirectMessageReaction]
+    let isIncoming: Bool
+
+    private let badgeFill = Color(red: 37 / 255, green: 37 / 255, blue: 41 / 255)
+
+    private var emojis: [String] {
         reactions.reduce(into: [String]()) { values, reaction in
             if !values.contains(reaction.emoji) { values.append(reaction.emoji) }
         }
     }
 
-    private var bubbleShape: UnevenRoundedRectangle {
-        let topNear: CGFloat = isGroupedWithPrevious ? 8 : 21
-        let bottomNear: CGFloat = isGroupedWithNext ? 8 : 7
-        return message.isIncoming
-            ? UnevenRoundedRectangle(
-                topLeadingRadius: topNear,
-                bottomLeadingRadius: bottomNear,
-                bottomTrailingRadius: 21,
-                topTrailingRadius: 21,
-                style: .continuous
+    var body: some View {
+        HStack(spacing: -4) {
+            ForEach(emojis, id: \.self) { emoji in
+                let count = reactions.filter { $0.emoji == emoji }.count
+                ZStack {
+                    Circle()
+                        .fill(badgeFill)
+                    Circle()
+                        .stroke(Color.white.opacity(0.13), lineWidth: 0.7)
+                    Text(emoji)
+                        .font(.system(size: 20))
+                }
+                .frame(width: 38, height: 38)
+                .overlay(alignment: .topTrailing) {
+                    if count > 1 {
+                        Text("\(count)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.9))
+                            .frame(width: 15, height: 15)
+                            .background(Color(red: 79 / 255, green: 79 / 255, blue: 84 / 255), in: Circle())
+                            .offset(x: 2, y: -2)
+                    }
+                }
+            }
+        }
+        .overlay(alignment: isIncoming ? .bottomTrailing : .bottomLeading) {
+            ZStack {
+                Circle()
+                    .frame(width: 9, height: 9)
+                Circle()
+                    .frame(width: 4.5, height: 4.5)
+                    .offset(x: isIncoming ? 7 : -7, y: 8)
+            }
+            .foregroundStyle(badgeFill)
+            .offset(x: isIncoming ? 1 : -1, y: 5)
+        }
+        .shadow(color: Color.black.opacity(0.28), radius: 2, y: 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Reactions: \(emojis.joined(separator: ", "))")
+    }
+}
+
+private struct ReplyConnectorShape: Shape {
+    let isIncoming: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        if isIncoming {
+            path.move(to: CGPoint(x: rect.maxX - 2, y: rect.minY + 2))
+            path.addCurve(
+                to: CGPoint(x: rect.minX + 2, y: rect.maxY - 2),
+                control1: CGPoint(x: rect.minX + 11, y: rect.minY + 2),
+                control2: CGPoint(x: rect.minX + 2, y: rect.minY + 9)
             )
-            : UnevenRoundedRectangle(
-                topLeadingRadius: 21,
-                bottomLeadingRadius: 21,
-                bottomTrailingRadius: bottomNear,
-                topTrailingRadius: topNear,
-                style: .continuous
+        } else {
+            path.move(to: CGPoint(x: rect.minX + 2, y: rect.minY + 2))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX - 2, y: rect.maxY - 2),
+                control1: CGPoint(x: rect.maxX - 11, y: rect.minY + 2),
+                control2: CGPoint(x: rect.maxX - 2, y: rect.minY + 9)
             )
+        }
+        return path
+    }
+}
+
+private struct DirectMessageBubbleShape: Shape {
+    let isIncoming: Bool
+    let isGroupedWithPrevious: Bool
+    let isGroupedWithNext: Bool
+
+    func path(in rect: CGRect) -> Path {
+        let showsTail = !isGroupedWithNext
+        let tailWidth: CGFloat = showsTail ? 7 : 0
+        let bodyLeft = rect.minX + (isIncoming ? tailWidth : 0)
+        let bodyRight = rect.maxX - (isIncoming ? 0 : tailWidth)
+        let top = rect.minY
+        let bottom = rect.maxY
+        // Short one-line and reply-preview bubbles can be under 38 points tall. Clamp the
+        // radius so their top and bottom curves never cross when the path is drawn manually.
+        let farRadius = min(CGFloat(19), rect.height / 2)
+        let groupedRadius = min(CGFloat(7), farRadius)
+        let topNearRadius = isGroupedWithPrevious ? groupedRadius : farRadius
+        var path = Path()
+
+        if isIncoming {
+            path.move(to: CGPoint(x: bodyLeft + topNearRadius, y: top))
+            path.addLine(to: CGPoint(x: bodyRight - farRadius, y: top))
+            path.addQuadCurve(
+                to: CGPoint(x: bodyRight, y: top + farRadius),
+                control: CGPoint(x: bodyRight, y: top)
+            )
+            path.addLine(to: CGPoint(x: bodyRight, y: bottom - farRadius))
+            path.addQuadCurve(
+                to: CGPoint(x: bodyRight - farRadius, y: bottom),
+                control: CGPoint(x: bodyRight, y: bottom)
+            )
+
+            if showsTail {
+                path.addLine(to: CGPoint(x: bodyLeft + 18, y: bottom))
+                path.addCurve(
+                    to: CGPoint(x: bodyLeft + 7, y: bottom - 5),
+                    control1: CGPoint(x: bodyLeft + 13, y: bottom),
+                    control2: CGPoint(x: bodyLeft + 10, y: bottom - 1)
+                )
+                path.addCurve(
+                    to: CGPoint(x: rect.minX + 0.5, y: bottom),
+                    control1: CGPoint(x: bodyLeft + 5, y: bottom - 3),
+                    control2: CGPoint(x: rect.minX + 4, y: bottom)
+                )
+                path.addCurve(
+                    to: CGPoint(x: bodyLeft, y: bottom - farRadius),
+                    control1: CGPoint(x: rect.minX + 6, y: bottom - 2),
+                    control2: CGPoint(x: bodyLeft, y: bottom - 10)
+                )
+            } else {
+                path.addLine(to: CGPoint(x: bodyLeft + groupedRadius, y: bottom))
+                path.addQuadCurve(
+                    to: CGPoint(x: bodyLeft, y: bottom - groupedRadius),
+                    control: CGPoint(x: bodyLeft, y: bottom)
+                )
+            }
+
+            path.addLine(to: CGPoint(x: bodyLeft, y: top + topNearRadius))
+            path.addQuadCurve(
+                to: CGPoint(x: bodyLeft + topNearRadius, y: top),
+                control: CGPoint(x: bodyLeft, y: top)
+            )
+        } else {
+            path.move(to: CGPoint(x: bodyLeft + farRadius, y: top))
+            path.addLine(to: CGPoint(x: bodyRight - topNearRadius, y: top))
+            path.addQuadCurve(
+                to: CGPoint(x: bodyRight, y: top + topNearRadius),
+                control: CGPoint(x: bodyRight, y: top)
+            )
+
+            if showsTail {
+                path.addLine(to: CGPoint(x: bodyRight, y: bottom - farRadius))
+                path.addCurve(
+                    to: CGPoint(x: rect.maxX - 0.5, y: bottom),
+                    control1: CGPoint(x: bodyRight, y: bottom - 10),
+                    control2: CGPoint(x: rect.maxX - 6, y: bottom - 2)
+                )
+                path.addCurve(
+                    to: CGPoint(x: bodyRight - 7, y: bottom - 5),
+                    control1: CGPoint(x: rect.maxX - 4, y: bottom),
+                    control2: CGPoint(x: bodyRight - 5, y: bottom - 3)
+                )
+                path.addCurve(
+                    to: CGPoint(x: bodyRight - 18, y: bottom),
+                    control1: CGPoint(x: bodyRight - 10, y: bottom - 1),
+                    control2: CGPoint(x: bodyRight - 13, y: bottom)
+                )
+            } else {
+                path.addLine(to: CGPoint(x: bodyRight, y: bottom - groupedRadius))
+                path.addQuadCurve(
+                    to: CGPoint(x: bodyRight - groupedRadius, y: bottom),
+                    control: CGPoint(x: bodyRight, y: bottom)
+                )
+            }
+
+            path.addLine(to: CGPoint(x: bodyLeft + farRadius, y: bottom))
+            path.addQuadCurve(
+                to: CGPoint(x: bodyLeft, y: bottom - farRadius),
+                control: CGPoint(x: bodyLeft, y: bottom)
+            )
+            path.addLine(to: CGPoint(x: bodyLeft, y: top + farRadius))
+            path.addQuadCurve(
+                to: CGPoint(x: bodyLeft + farRadius, y: top),
+                control: CGPoint(x: bodyLeft, y: top)
+            )
+        }
+
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -4040,6 +4283,25 @@ private enum ChatAttachmentError: LocalizedError {
         case .invalidURL: "The attachment URL is invalid."
         case .unreadableFile: "The selected attachment could not be read."
         case .downloadFailed(let status): "The attachment server returned an error (\(status))."
+        }
+    }
+}
+
+/// Starts the conversation at the bottom without pinning it there. The unscoped
+/// `defaultScrollAnchor(.bottom)` re-applies the anchor every time the content size
+/// changes — which happens constantly in a `LazyVStack` while the user scrolls up and
+/// older rows are realized, or when relay traffic mutates the timeline mid-drag — and
+/// each re-application yanks the scroll position back toward the bottom, so swipes
+/// never glide. On iOS 18+, scoping the anchor to the initial offset keeps the
+/// chat-open behavior and frees the scroll. On iOS 17 there is no scoped variant, so
+/// apply no anchor at all: the `onAppear` mark-read path already scrolls to the newest
+/// message, and a momentary settle there beats a thread that fights the finger.
+private extension View {
+    @ViewBuilder
+    func conversationBottomInitialAnchor() -> some View {
+        if #available(iOS 18.0, *) {
+            self
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
         }
     }
 }

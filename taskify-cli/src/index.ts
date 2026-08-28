@@ -6,7 +6,8 @@ import { createInterface } from "readline";
 import { createRequire } from "module";
 import { nip19, getPublicKey, generateSecretKey } from "nostr-tools";
 import { hexToBytes, bytesToHex } from "@noble/hashes/utils.js";
-import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig, type Contact, type BoardEntry } from "./config.js";
+import { loadConfig, redactConfig, saveConfig, saveProfiles, CONFIG_DIR, DEFAULT_RELAYS, type ProfileConfig, type Contact, type BoardEntry } from "./config.js";
+import { join } from "node:path";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
 import { renderTable, renderTaskCard, renderJson } from "./render.js";
 import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js";
@@ -27,6 +28,16 @@ import {
 } from "taskify-core";
 import { resolveBoardForCommand } from "./shared/commandResolution.js";
 import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
+import { applyAccountCatalogBackup, mergeBoardsFromShareInbox } from "./shared/backupSync.js";
+import { findAccountCatalogBackup } from "./shared/accountBackup.js";
+import {
+  createCliNostrSession,
+  FileNostrOutboxStore,
+  secretKeyHexFromNsec,
+} from "./shared/nodeRuntimeSession.js";
+import { agentFailure, agentSuccess, writeAgentJson } from "./shared/agentOutput.js";
+import { CliLocationError, resolveCliLocation } from "./shared/cliLocation.js";
+import { createFileAgentIdempotencyStore } from "./shared/agentIdempotency.js";
 import { sendShareEnvelopeNip17, fetchShareInboxNip17 } from "./shared/shareTransport.js";
 import { resolveBoardColumn, formatAvailableColumns } from "./shared/columnResolution.js";
 import { parseOnOffState } from "./shared/boardState.js";
@@ -54,7 +65,9 @@ program
   .name("taskify")
   .version(version)
   .description("Taskify CLI — manage tasks over Nostr")
-  .option("-P, --profile <name>", "Use a specific profile for this command (does not change active profile)");
+  .option("-P, --profile <name>", "Use a specific profile for this command (does not change active profile)")
+  .option("--human", "Render core commands for a human instead of JSON")
+  .option("--verbose", "Write transport diagnostics to stderr");
 
 // ---- Validation helpers ----
 
@@ -82,7 +95,7 @@ function warnShortTaskId(taskId: string): void {
 
 /**
  * Resolve a task by title + optional due-date when no taskId is provided.
- * Returns the matched taskId or exits with an error if ambiguous / not found.
+ * Returns the matched taskId or throws a structured error if ambiguous / not found.
  * This is the primary fallback for recurring instances whose IDs start with
  * "recurrence:" and can't be identified by a short 8-char prefix.
  */
@@ -108,17 +121,27 @@ async function resolveTaskIdByTitle(
   });
   if (matches.length === 0) {
     const hint = duePart ? ` due ${duePart}` : "";
-    console.error(chalk.red(`No task found matching title "${title}"${hint}.`));
-    console.error(chalk.dim("Tip: use taskify search to find the exact task first."));
-    process.exit(1);
+    throw new CliCommandError(
+      "NOT_FOUND",
+      `No task found matching title "${title}"${hint}.`,
+      { details: { hint: "Use taskify search to find the exact task first." } },
+    );
   }
   if (matches.length > 1) {
-    console.error(chalk.red(`Ambiguous: ${matches.length} tasks match "${title}"${duePart ? ` on ${duePart}` : ""}.`));
-    console.error(chalk.dim("Add --due YYYY-MM-DD to narrow down, or pass the full task ID."));
-    for (const t of matches.slice(0, 5)) {
-      console.error(chalk.dim(`  ${t.id.slice(0, 20)}  ${t.title}  ${(t.dueISO ?? "").slice(0, 10)}`));
-    }
-    process.exit(1);
+    throw new CliCommandError(
+      "AMBIGUOUS_TASK",
+      `${matches.length} tasks match "${title}"${duePart ? ` on ${duePart}` : ""}.`,
+      {
+        details: {
+          hint: "Add --due YYYY-MM-DD to narrow the match, or pass the full task ID.",
+          candidates: matches.slice(0, 20).map((task) => ({
+            id: task.id,
+            title: task.title,
+            due: (task.dueISO ?? "").slice(0, 10) || null,
+          })),
+        },
+      },
+    );
   }
   return matches[0].id;
 }
@@ -130,8 +153,7 @@ function parseJsonOption(label: string, raw: string | undefined): unknown {
   try {
     return JSON.parse(raw);
   } catch {
-    console.error(chalk.red(`Invalid ${label} JSON.`));
-    process.exit(1);
+    throw new CliCommandError("VALIDATION_ERROR", `Invalid ${label} JSON.`);
   }
 }
 
@@ -166,7 +188,7 @@ async function resolveBoardId(
   boardOpt: string | undefined,
   config: Awaited<ReturnType<typeof loadConfig>>,
 ): Promise<string> {
-  const resolved = resolveBoardForCommand(config.boards, boardOpt);
+  const resolved = resolveBoardForCommand(config.boards, boardOpt, config.defaultLocation);
   if (resolved.ok) return resolved.boardId;
 
   if (boardOpt && resolved.listBoards) {
@@ -254,6 +276,360 @@ function resolveDocumentByRef(documents: Record<string, unknown>[] | undefined, 
   });
   return idx >= 0 ? { index: idx, doc: documents[idx] as Record<string, unknown> } : null;
 }
+
+function useHumanOutput(localOptions?: { human?: boolean }): boolean {
+  return Boolean(localOptions?.human || program.opts().human);
+}
+
+class CliCommandError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly details?: Record<string, unknown>;
+
+  constructor(code: string, message: string, options: { retryable?: boolean; details?: Record<string, unknown> } = {}) {
+    super(message);
+    this.name = "CliCommandError";
+    this.code = code;
+    this.retryable = options.retryable ?? false;
+    this.details = options.details;
+  }
+}
+
+type CoreErrorDetails = {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+  retryable: boolean;
+};
+
+function requireWriteIdentity(config: Awaited<ReturnType<typeof loadConfig>>): void {
+  if (!profilePubkey(config)) {
+    throw new CliCommandError(
+      "CONFIG_INVALID",
+      "The active profile has no valid Nostr identity. Configure an nsec before writing tasks.",
+    );
+  }
+}
+
+function validateCoreDue(due: string | undefined): void {
+  if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) {
+    throw new CliCommandError("VALIDATION_ERROR", `Invalid --due format: "${due}". Expected YYYY-MM-DD.`);
+  }
+}
+
+function validateCorePriority(priority: string | undefined): void {
+  if (priority && !["1", "2", "3"].includes(priority)) {
+    throw new CliCommandError("VALIDATION_ERROR", `Invalid --priority: "${priority}". Must be 1, 2, or 3.`);
+  }
+}
+
+function commandErrorDetails(error: unknown): CoreErrorDetails {
+  if (error instanceof CliLocationError) {
+    return {
+      code: error.code,
+      message: error.message,
+      details: error.candidates.length ? { candidates: error.candidates } : undefined,
+      retryable: false,
+    };
+  }
+  if (error instanceof CliCommandError) {
+    return { code: error.code, message: error.message, details: error.details, retryable: error.retryable };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const typed = error as { code?: unknown; retryable?: unknown; details?: unknown };
+  if (typed.code === "WRITE_QUEUED") {
+    return {
+      code: "WRITE_QUEUED",
+      message,
+      details: typeof typed.details === "object" && typed.details ? typed.details as Record<string, unknown> : undefined,
+      retryable: true,
+    };
+  }
+  if (/task not found|no task found/i.test(message)) {
+    return { code: "NOT_FOUND", message, retryable: false };
+  }
+  if (/requires explicit confirmation/i.test(message)) {
+    return { code: "CONFIRMATION_REQUIRED", message, retryable: false };
+  }
+  if (/no nsec|nostr identity|invalid nsec|config file is malformed|profile not found/i.test(message)) {
+    return { code: "CONFIG_INVALID", message, retryable: false };
+  }
+  const relayFailure = /relay|connect|network|timeout|publish/i.test(message);
+  return {
+    code: relayFailure ? "TEMPORARY_CONNECTIVITY" : "COMMAND_FAILED",
+    message,
+    retryable: relayFailure,
+  };
+}
+
+function writeCoreFailure(command: string, error: unknown, human: boolean): number {
+  const failure = commandErrorDetails(error);
+  if (human) {
+    console.error(chalk.red(failure.message));
+    if (Array.isArray(failure.details?.candidates)) {
+      for (const candidate of failure.details.candidates as Array<{ path?: string; id?: string }>) {
+        console.error(chalk.dim(`  ${candidate.path ?? candidate.id ?? ""}`));
+      }
+    }
+  } else {
+    writeAgentJson(agentFailure(command, failure.code, failure.message, {
+      details: failure.details,
+      retryable: failure.retryable,
+    }));
+  }
+  return failure.retryable ? 75 : 1;
+}
+
+function profilePubkey(config: Awaited<ReturnType<typeof loadConfig>>): { hex: string; npub: string } | null {
+  try {
+    const secret = secretKeyHexFromNsec(config.nsec);
+    const hex = getPublicKey(hexToBytes(secret));
+    return { hex, npub: nip19.npubEncode(hex) };
+  } catch {
+    return null;
+  }
+}
+
+// ---- agent-first discovery and diagnostics ----
+program
+  .command("context")
+  .description("Describe the active profile, boards, lists, defaults, and core agent commands")
+  .option("--human", "Render readable text instead of JSON")
+  .action(async (opts: { human?: boolean }) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const identity = profilePubkey(config);
+    const defaultBoard = config.defaultLocation
+      ? config.boards.find((board) => board.id === config.defaultLocation?.boardId)
+      : undefined;
+    const defaultList = defaultBoard && config.defaultLocation?.listId
+      ? defaultBoard.columns?.find((list) => list.id === config.defaultLocation?.listId)
+      : undefined;
+    let effectiveLocation: ReturnType<typeof resolveCliLocation> | null = null;
+    let effectiveLocationError: CoreErrorDetails | null = null;
+    try {
+      effectiveLocation = resolveCliLocation(config, { intent: "write" });
+    } catch (error) {
+      effectiveLocationError = commandErrorDetails(error);
+    }
+    const data = {
+      profile: {
+        name: config.selectedProfile,
+        active: config.selectedProfile === config.activeProfile,
+        npub: identity?.npub ?? null,
+        configured: Boolean(identity),
+      },
+      hierarchy: "profile > board > list > task",
+      defaultLocation: config.defaultLocation
+        ? {
+            boardId: config.defaultLocation.boardId,
+            boardName: defaultBoard?.name ?? null,
+            listId: config.defaultLocation.listId ?? null,
+            listName: defaultList?.name ?? null,
+            path: defaultBoard
+              ? `${defaultBoard.name}${defaultList ? `/${defaultList.name}` : ""}`
+              : null,
+          }
+        : null,
+      effectiveWriteLocation: effectiveLocation
+        ? { ...effectiveLocation, path: `${effectiveLocation.boardName}${effectiveLocation.listName ? `/${effectiveLocation.listName}` : ""}` }
+        : null,
+      locationError: effectiveLocationError
+        ? {
+            code: effectiveLocationError.code,
+            message: effectiveLocationError.message,
+            details: effectiveLocationError.details,
+          }
+        : null,
+      boards: config.boards.map((board) => ({
+        id: board.id,
+        name: board.name,
+        kind: board.kind ?? "lists",
+        visible: !board.archived && !board.hidden,
+        writable: board.kind !== "compound" && !board.archived && !board.hidden,
+        archived: Boolean(board.archived),
+        hidden: Boolean(board.hidden),
+        relays: board.relays?.length ? board.relays : config.relays,
+        lists: (board.columns ?? []).map((list) => ({ id: list.id, name: list.name, path: `${board.name}/${list.name}` })),
+      })),
+      commands: {
+        sync: "taskify sync",
+        add: "taskify add \"Task title\" --in \"Board/List\" --idempotency-key <stable-key>",
+        list: "taskify list --in \"Board/List\" --mine",
+        done: "taskify done <task-id>",
+        doctor: "taskify doctor",
+      },
+    };
+
+    if (!useHumanOutput(opts)) {
+      writeAgentJson(agentSuccess("context", data, { profile: config.selectedProfile }));
+      return;
+    }
+    console.log(`Profile: ${data.profile.name} (${data.profile.npub ?? "identity not configured"})`);
+    console.log(`Destination: ${data.effectiveWriteLocation?.path ?? data.locationError?.message ?? "not set"}`);
+    for (const board of data.boards) {
+      console.log(`${board.writable ? "" : "[read-only] "}${board.name}  ${board.id}`);
+      for (const list of board.lists) console.log(`  ${list.name}  ${list.id}`);
+    }
+  });
+
+program
+  .command("sync")
+  .description("Discover the account board catalog and refresh board/list metadata")
+  .option("--catalog-only", "Skip per-board metadata refresh")
+  .option("--human", "Render readable text instead of JSON")
+  .action(async (opts: { catalogOnly?: boolean; human?: boolean }) => {
+    const command = "sync";
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    let session: ReturnType<typeof createCliNostrSession>["session"] | null = null;
+    try {
+      const transport = createCliNostrSession(config, { verbose: Boolean(program.opts().verbose) });
+      if (!transport.secretKeyHex) {
+        throw new CliCommandError("CONFIG_INVALID", "No valid nsec is configured for the active profile.");
+      }
+      session = transport.session;
+      await session.init(transport.relays);
+      const pubkey = getPublicKey(hexToBytes(transport.secretKeyHex));
+      const backup = await findAccountCatalogBackup({
+        session,
+        pubkey,
+        secretKeyHex: transport.secretKeyHex,
+        relays: transport.relays,
+      });
+      const account = backup
+        ? applyAccountCatalogBackup(config, backup)
+        : {
+            backupFound: false as const,
+            backupEventId: null,
+            boardsBefore: config.boards.length,
+            boardsAfter: config.boards.length,
+            boardsAdded: 0,
+            relaysBefore: config.relays.length,
+            relaysAfter: config.relays.length,
+          };
+      let boardShares = { sharesScanned: 0, boardSharesFound: 0, boardsAdded: 0 };
+      if (!backup) {
+        const inbox = await fetchShareInboxNip17({
+          recipientSecretHex: transport.secretKeyHex,
+          relays: transport.relays,
+          limit: 100,
+        });
+        boardShares = mergeBoardsFromShareInbox(config, inbox);
+      }
+      if (backup || boardShares.boardsAdded > 0) await saveConfig(config);
+      await session.shutdown();
+      session = null;
+
+      const boardResults: Array<{ boardId: string; name: string; ok: boolean; lists: number; error?: string }> = [];
+      if (!opts.catalogOnly && config.boards.length > 0) {
+        const runtime = initRuntime(config);
+        try {
+          await Promise.all(config.boards.map(async (board) => {
+            try {
+              const metadata = await runtime.syncBoard(board.id);
+              boardResults.push({
+                boardId: board.id,
+                name: metadata.name ?? board.name,
+                ok: true,
+                lists: metadata.columns?.length ?? board.columns?.length ?? 0,
+              });
+            } catch (error) {
+              boardResults.push({
+                boardId: board.id,
+                name: board.name,
+                ok: false,
+                lists: board.columns?.length ?? 0,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }));
+        } finally {
+          await runtime.disconnect();
+        }
+      }
+      boardResults.sort((left, right) => left.name.localeCompare(right.name));
+      const ready = config.boards.some((board) => !board.archived && !board.hidden);
+      const nextActions = ready
+        ? []
+        : [
+            "Publish account sync once from Taskify PWA, then rerun `taskify sync`.",
+            "Or join a known board with `taskify board join <board-id> --name <name>` or receive a Taskify board share.",
+          ];
+      const data = { ready, account, boardShares, boards: boardResults, nextActions };
+      if (!useHumanOutput(opts)) {
+        writeAgentJson(agentSuccess(command, data, { profile: config.selectedProfile }));
+        return;
+      }
+      if (account.backupFound) {
+        console.log(`Account catalog synced (${account.boardsAdded} board(s) added).`);
+      } else if (boardShares.boardSharesFound > 0) {
+        console.log(`No account backup found; imported ${boardShares.boardsAdded} board(s) from encrypted shares.`);
+      } else {
+        console.log("Sync connected, but this identity has no published account catalog or board shares.");
+      }
+      for (const board of boardResults) {
+        console.log(`${board.ok ? "✓" : "✗"} ${board.name} (${board.lists} lists)`);
+      }
+      for (const action of nextActions) console.log(`Next: ${action}`);
+    } catch (error) {
+      process.exitCode = writeCoreFailure(command, error, useHumanOutput(opts));
+    } finally {
+      await session?.shutdown().catch(() => undefined);
+    }
+  });
+
+program
+  .command("doctor")
+  .description("Check identity, defaults, relay connectivity, and queued writes")
+  .option("--human", "Render readable text instead of JSON")
+  .action(async (opts: { human?: boolean }) => {
+    const command = "doctor";
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    let session: ReturnType<typeof createCliNostrSession>["session"] | null = null;
+    try {
+      const identity = profilePubkey(config);
+      let defaultCheck: { ok: boolean; message: string };
+      try {
+        const location = resolveCliLocation(config, { intent: "read" });
+        defaultCheck = { ok: true, message: `${location.boardName}${location.listName ? `/${location.listName}` : ""}` };
+      } catch (error) {
+        defaultCheck = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+
+      const transport = createCliNostrSession(config, { verbose: Boolean(program.opts().verbose) });
+      session = transport.session;
+      await session.init(transport.relays);
+      const relays = session.relayStatuses();
+      const queuedWrites = (await new FileNostrOutboxStore().listPending()).length;
+      const checks = {
+        identity: { ok: Boolean(identity), npub: identity?.npub ?? null },
+        catalog: { ok: config.boards.length > 0, boards: config.boards.length },
+        defaultLocation: defaultCheck,
+        relays: {
+          ok: relays.some((relay) => relay.connected),
+          connected: relays.filter((relay) => relay.connected).length,
+          total: relays.length,
+          entries: relays,
+        },
+        outbox: { ok: queuedWrites === 0, queuedWrites },
+      };
+      const healthy = checks.identity.ok && checks.catalog.ok && checks.defaultLocation.ok && checks.relays.ok;
+      if (!useHumanOutput(opts)) {
+        writeAgentJson(agentSuccess(command, { healthy, checks }, { profile: config.selectedProfile }));
+      } else {
+        console.log(`${healthy ? "✓" : "✗"} Taskify CLI ${healthy ? "is ready" : "needs attention"}`);
+        console.log(`${checks.identity.ok ? "✓" : "✗"} identity`);
+        console.log(`${checks.catalog.ok ? "✓" : "✗"} catalog (${checks.catalog.boards} boards)`);
+        console.log(`${checks.defaultLocation.ok ? "✓" : "✗"} default (${checks.defaultLocation.message})`);
+        console.log(`${checks.relays.ok ? "✓" : "✗"} relays (${checks.relays.connected}/${checks.relays.total} connected)`);
+        console.log(`${checks.outbox.ok ? "✓" : "!"} outbox (${queuedWrites} queued)`);
+      }
+      if (!healthy) process.exitCode = 1;
+    } catch (error) {
+      process.exitCode = writeCoreFailure(command, error, useHumanOutput(opts));
+    } finally {
+      await session?.shutdown().catch(() => undefined);
+    }
+  });
 
 // ---- board command group ----
 const boardCmd = program
@@ -429,8 +805,12 @@ boardCmd
     const profileCfg = config.profiles?.[config.selectedProfile];
     if (profileCfg) {
       profileCfg.defaultColumn = colId;
+      profileCfg.defaultBoard = entry.id;
+      profileCfg.defaultLocation = { boardId: entry.id, listId: colId };
     }
+    config.defaultBoard = entry.id;
     config.defaultColumn = colId;
+    config.defaultLocation = { boardId: entry.id, listId: colId };
     await saveConfig(config);
     console.log(chalk.green(`✓ Default column for profile "${config.selectedProfile}" → "${entry.name}": ${colId}`));
     process.exit(0);
@@ -445,8 +825,12 @@ boardCmd
     if (opts.clear) {
       // Clear defaultBoard reference on all boards (set to empty list or remove defaultBoard setting)
       const profileCfg = config.profiles?.[config.selectedProfile];
-      if (profileCfg) delete (profileCfg as any).defaultBoard;
+      if (profileCfg) {
+        delete (profileCfg as any).defaultBoard;
+        delete profileCfg.defaultLocation;
+      }
       delete (config as any).defaultBoard;
+      delete config.defaultLocation;
       await saveConfig(config);
       console.log(chalk.green("✓ Default board cleared — you'll be prompted to select one when needed"));
       process.exit(0);
@@ -463,9 +847,11 @@ boardCmd
     // Store as profile-level defaultBoard so add/list commands auto-resolve to this board
     const profileCfg = config.profiles?.[config.selectedProfile];
     if (profileCfg) {
-      (profileCfg as any).defaultBoard = entry.id;
+      profileCfg.defaultBoard = entry.id;
+      profileCfg.defaultLocation = { boardId: entry.id };
     }
     config.defaultBoard = entry.id;
+    config.defaultLocation = { boardId: entry.id };
     await saveConfig(config);
     console.log(chalk.green(`✓ Default board set to "${entry.name}" (${entry.id})`));
     process.exit(0);
@@ -1459,18 +1845,64 @@ function resolveColumnOrExit(
 program
   .command("list")
   .description("List tasks (use --all to see full board)")
+  .option("--in <Board/List>", "Board or Board/List path")
   .option("--board <id|name>", "Filter by board (UUID or name)")
   .option("--status <status>", "Filter: open (default), done, or any", "open")
   .option("--column <id|name>", "Filter by column id or name (use day names for week boards)")
   .option("--refresh", "Bypass cache and fetch live from relay")
   .option("--no-cache", "Do not fall back to stale cache if relay returns empty")
   .option("--json", "Output as JSON")
+  .option("--human", "Render a table instead of JSON")
+  .option("--mine", "Only tasks assigned to the active profile")
   .option("--all", "Show all columns on the board")
   .action(async (opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
+    const human = useHumanOutput(opts);
+    const coreMode = !human || Boolean(opts.in || opts.mine);
     let exitCode = 0;
     try {
+      if (coreMode) {
+        if (!["open", "done", "any"].includes(opts.status)) {
+          throw new CliCommandError(
+            "VALIDATION_ERROR",
+            `Invalid --status: "${opts.status}". Must be open, done, or any.`,
+          );
+        }
+        const location = resolveCliLocation(config, {
+          in: opts.in,
+          board: opts.board,
+          list: opts.column,
+          intent: "read",
+          ignoreDefaultList: Boolean(opts.all),
+        });
+        let tasks = await runtime.listTasks({
+          boardId: location.boardId,
+          status: opts.status as "open" | "done" | "any",
+          columnId: opts.all ? undefined : location.listId,
+          refresh: Boolean(opts.refresh),
+          noCache: !opts.cache,
+        });
+        if (opts.mine) {
+          const identity = profilePubkey(config);
+          if (!identity) throw new Error("The active profile has no valid Nostr identity for --mine.");
+          tasks = tasks.filter((task) => (task.assignees ?? []).some((assignee) =>
+            (typeof assignee === "string" ? assignee : assignee.pubkey).toLocaleLowerCase() === identity.hex));
+        }
+        if (!human) {
+          writeAgentJson(agentSuccess("task.list", {
+            tasks,
+            count: tasks.length,
+            location,
+          }, { profile: config.selectedProfile, filters: { status: opts.status, mine: Boolean(opts.mine) } }));
+        } else if (tasks.length === 0) {
+          console.log(chalk.dim("No tasks found."));
+        } else {
+          const board = config.boards.find((candidate) => candidate.id === location.boardId);
+          renderTable(tasks, config.trustedNpubs, location.listName, board?.columns);
+        }
+        return;
+      }
       let columnId: string | undefined;
       let columnName: string | undefined;
       let resolvedBoardId: string | undefined;
@@ -1640,8 +2072,8 @@ program
         }
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = coreMode ? writeCoreFailure("task.list", err, human) : 1;
+      if (!coreMode) console.error(chalk.red(String(err)));
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -1710,27 +2142,41 @@ program
 program
   .command("show <taskId>")
   .description("Show full task details (accepts 8-char prefix or full UUID)")
+  .option("--in <Board/List>", "Board or Board/List path")
   .option("--board <id|name>", "Board to search in (optional; scans all if omitted)")
   .option("--json", "Output raw task fields as JSON")
+  .option("--human", "Render a task card instead of JSON")
   .action(async (taskId: string, opts) => {
-    warnShortTaskId(taskId);
     const config = await loadConfig(program.opts().profile as string | undefined);
+    const human = useHumanOutput(opts);
+    if (human) warnShortTaskId(taskId);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
-      const task = await runtime.getTask(taskId, opts.board);
+      const location = opts.in || opts.board
+        ? resolveCliLocation(config, { in: opts.in, board: opts.board, intent: "read", ignoreDefaultList: true })
+        : null;
+      const task = await runtime.getTask(taskId, location?.boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${taskId}`));
-        exitCode = 1;
-      } else if (opts.json) {
-        renderJson(task);
+        throw new Error(`Task not found: ${taskId}`);
+      } else if (!human) {
+        const board = config.boards.find((candidate) => candidate.id === task.boardId);
+        const list = board?.columns?.find((candidate) => candidate.id === task.column);
+        writeAgentJson(agentSuccess("task.get", {
+          task,
+          location: {
+            boardId: task.boardId,
+            boardName: board?.name ?? task.boardName ?? null,
+            listId: task.column ?? null,
+            listName: list?.name ?? null,
+          },
+        }, { profile: config.selectedProfile }));
       } else {
         const localReminders = runtime.getLocalReminders(task.id);
         renderTaskCard(task, config.trustedNpubs, localReminders);
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = writeCoreFailure("task.get", err, human);
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -1741,25 +2187,44 @@ program
 program
   .command("search <query>")
   .description("Full-text search tasks by title or note across all configured boards")
+  .option("--in <Board/List>", "Limit to a Board or Board/List path")
   .option("--board <id|name>", "Limit to a specific board")
+  .option("--mine", "Only tasks assigned to the active profile")
   .option("--json", "Output as JSON")
+  .option("--human", "Render a table instead of JSON")
   .action(async (query: string, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
+    const human = useHumanOutput(opts);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
-      const allTasks = await runtime.listTasks({
-        boardId: opts.board,
+      const location = opts.in || opts.board
+        ? resolveCliLocation(config, { in: opts.in, board: opts.board, intent: "read" })
+        : null;
+      let allTasks = await runtime.listTasks({
+        boardId: location?.boardId,
         status: "any",
+        columnId: location?.listId,
       });
+      if (opts.mine) {
+        const identity = profilePubkey(config);
+        if (!identity) throw new Error("The active profile has no valid Nostr identity for --mine.");
+        allTasks = allTasks.filter((task) => (task.assignees ?? []).some((assignee) =>
+          (typeof assignee === "string" ? assignee : assignee.pubkey).toLocaleLowerCase() === identity.hex));
+      }
       const q = query.toLowerCase();
       const matched = allTasks.filter((t) => {
         const inTitle = t.title.toLowerCase().includes(q);
         const inNote = t.note ? t.note.toLowerCase().includes(q) : false;
         return inTitle || inNote;
       });
-      if (opts.json) {
-        renderJson(matched);
+      if (!human) {
+        writeAgentJson(agentSuccess("task.search", {
+          tasks: matched,
+          count: matched.length,
+          query,
+          location,
+        }, { profile: config.selectedProfile, filters: { mine: Boolean(opts.mine) } }));
       } else {
         if (matched.length === 0) {
           console.log(chalk.dim(`No tasks matching "${query}".`));
@@ -1768,8 +2233,7 @@ program
         }
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = writeCoreFailure("task.search", err, human);
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -1823,6 +2287,7 @@ program
 program
   .command("add <title>")
   .description("Create a new task")
+  .option("--in <Board/List>", "Board or Board/List path")
   .option("--board <id|name>", "Board to add to (required if multiple boards configured)")
   .option("--due <YYYY-MM-DD>", "Due date")
   .option("--priority <1|2|3>", "Priority (1=low, 3=high)")
@@ -1837,54 +2302,83 @@ program
   .option("--recurrence-json <json>", "Recurrence object JSON (shared contract shape)")
   .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
   .option("--assignee <npubOrHex>", "Assign to pubkey/npub (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--assign-me", "Assign the task to the active profile")
   .option("--documents-json <json>", "Documents/attachments array JSON")
   .option("--attach <path>", "Attach local file/image (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
   .option("--file-server <url>", "Encrypted file server override for shared attachment uploads")
   .option("--due-time <HH:MM>", "Due time (combine with --due to form ISO datetime, sets dueTimeEnabled)")
   .option("--timezone <iana>", "IANA timezone for due time (e.g. America/New_York)")
   .option("--hidden-until <ISO>", "Hide task until this ISO datetime")
+  .option("--idempotency-key <key>", "Stable retry key; repeated calls return the original task")
   .option("--json", "Output created task as JSON")
+  .option("--human", "Render readable text instead of JSON")
   .action(async (title: string, opts) => {
-    validateDue(opts.due);
-    validatePriority(opts.priority);
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const boardId = await resolveBoardId(opts.board, config);
+    const human = useHumanOutput(opts);
+    let location: ReturnType<typeof resolveCliLocation>;
+    try {
+      if (!title.trim()) throw new CliCommandError("VALIDATION_ERROR", "Task title cannot be empty.");
+      validateCoreDue(opts.due);
+      validateCorePriority(opts.priority);
+      location = resolveCliLocation(config, {
+        in: opts.in,
+        board: opts.board,
+        list: opts.column,
+        intent: "write",
+      });
+      requireWriteIdentity(config);
+    } catch (error) {
+      process.exitCode = writeCoreFailure("task.create", error, human);
+      return;
+    }
+    const boardId = location.boardId;
     const boardEntry = config.boards.find((b) => b.id === boardId)!;
 
-    // Block add on compound boards
     if (boardEntry.kind === "compound") {
-      const childNames = (boardEntry.children ?? []).map((cid) => {
-        const ce = config.boards.find((b) => b.id === cid);
-        return ce ? `  ${ce.name} (${cid})` : `  ${cid}`;
-      }).join("\n");
-      console.error(chalk.red("Cannot add tasks directly to a compound board. Use one of its child boards:"));
-      if (childNames) console.error(childNames);
-      process.exit(1);
+      process.exitCode = writeCoreFailure("task.create", new Error("Compound boards are read-only; choose a child board."), human);
+      return;
     }
 
     if (boardEntry.kind === "lists" && (!boardEntry.columns || boardEntry.columns.length === 0)) {
-      console.error(chalk.red(`Board "${boardEntry.name}" has no columns/lists yet.`));
-      console.error(chalk.dim("Add a list first (PWA or `taskify board column-add`) then retry."));
-      process.exit(1);
+      process.exitCode = writeCoreFailure("task.create", new Error(`Board "${boardEntry.name}" has no lists yet.`), human);
+      return;
     }
 
     if (boardEntry.kind === "week" && !opts.due) {
-      console.error(chalk.red(`Week board "${boardEntry.name}" requires --due <YYYY-MM-DD>.`));
-      process.exit(1);
+      process.exitCode = writeCoreFailure("task.create", new Error(`Week board "${boardEntry.name}" requires --due <YYYY-MM-DD>.`), human);
+      return;
     }
 
-    // Resolve --column (use board-level defaultColumn as fallback)
-    let resolvedColumnId: string | undefined;
-    let resolvedColumnName: string | undefined;
-    if (opts.column) {
-      const col = resolveColumnOrExit(boardEntry, opts.column);
-      resolvedColumnId = col.id;
-      resolvedColumnName = col.name;
-    }
+    const resolvedColumnId = location.listId;
+    const resolvedColumnName = location.listName;
 
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
+      const idempotencyStore = createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"));
+      const idempotencyKey = opts.idempotencyKey
+        ? `${config.selectedProfile}:${boardId}:${String(opts.idempotencyKey).trim()}`
+        : undefined;
+      let reservedTaskId: string | undefined;
+      if (idempotencyKey) {
+        const reservation = await idempotencyStore.reserve(idempotencyKey, crypto.randomUUID());
+        reservedTaskId = reservation.taskId;
+        if (!reservation.created) {
+          const existing = await runtime.getTask(reservation.taskId, boardId);
+          if (existing) {
+            if (!human) {
+              writeAgentJson(agentSuccess("task.create", {
+                task: existing,
+                location,
+                idempotentReplay: true,
+              }, { profile: config.selectedProfile }));
+            } else {
+              console.log(chalk.green(`✓ Already created: ${existing.title} (${existing.id})`));
+            }
+            return;
+          }
+        }
+      }
       const subtasks = (opts.subtask as string[]).map((text) => ({
         id: crypto.randomUUID(),
         title: text,
@@ -1893,7 +2387,13 @@ program
       const recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
       const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
       const documents = await resolveAttachmentDocuments({ files: opts.attach as string[], boardId, config, fileServer: opts.fileServer, documentsJson: opts.documentsJson });
-      const assignees = normalizeAssigneeArgs(opts.assignee as string[]);
+      const assigneeArgs = [...(opts.assignee as string[])];
+      if (opts.assignMe) {
+        const identity = profilePubkey(config);
+        if (!identity) throw new Error("The active profile has no valid Nostr identity for --assign-me.");
+        assigneeArgs.push(identity.hex);
+      }
+      const assignees = normalizeAssigneeArgs(assigneeArgs);
       let dueISO = opts.due as string | undefined;
       let dueTimeEnabled: boolean | undefined;
       if (opts.dueTime) {
@@ -1903,6 +2403,7 @@ program
         dueTimeEnabled = true;
       }
       const task = await runtime.createTaskFull({
+        taskId: reservedTaskId,
         title,
         note: opts.note ?? "",
         boardId,
@@ -1918,8 +2419,12 @@ program
         dueTimeZone: opts.timezone,
         hiddenUntilISO: opts.hiddenUntil,
       });
-      if (opts.json) {
-        renderJson(task);
+      if (!human) {
+        writeAgentJson(agentSuccess("task.create", {
+          task,
+          location,
+          idempotentReplay: false,
+        }, { profile: config.selectedProfile }));
       } else {
         const colStr = task.column
           ? chalk.dim(`  [col: ${task.column}${resolvedColumnName ? ` (${resolvedColumnName})` : ""}]`)
@@ -1932,8 +2437,7 @@ program
         }
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = writeCoreFailure("task.create", err, human);
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -1944,38 +2448,52 @@ program
 program
   .command("done [taskId]")
   .description("Mark a task as done (accepts 8-char prefix, full UUID, or full recurring instance ID)")
+  .option("--in <Board/List>", "Board or Board/List path")
   .option("--board <id|name>", "Board the task belongs to")
   .option("--title <title>", "Resolve task by title match (use with --due for recurring instances)")
   .option("--due <YYYY-MM-DD>", "Filter by due date when resolving by title")
   .option("--json", "Output updated task as JSON")
+  .option("--human", "Render readable text instead of JSON")
   .action(async (taskId: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const boardId = await resolveBoardId(opts.board, config);
+    const human = useHumanOutput(opts);
+    let location: ReturnType<typeof resolveCliLocation>;
+    try {
+      location = resolveCliLocation(config, {
+        in: opts.in,
+        board: opts.board,
+        intent: "read",
+        ignoreDefaultList: true,
+      });
+      validateCoreDue(opts.due);
+      requireWriteIdentity(config);
+    } catch (error) {
+      process.exitCode = writeCoreFailure("task.done", error, human);
+      return;
+    }
+    const boardId = location.boardId;
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
       let resolvedId = taskId;
       if (!resolvedId) {
         if (!opts.title) {
-          console.error(chalk.red("Provide a taskId or --title to identify the task."));
-          process.exit(1);
+          throw new Error("Provide a taskId or --title to identify the task.");
         }
         resolvedId = await resolveTaskIdByTitle(runtime, opts.title, opts.due, boardId, config);
       } else {
-        warnShortTaskId(resolvedId);
+        if (human) warnShortTaskId(resolvedId);
       }
       const task = await runtime.setTaskStatus(resolvedId, "done", boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${resolvedId}`));
-        exitCode = 1;
-      } else if (opts.json) {
-        renderJson(task);
+        throw new Error(`Task not found: ${resolvedId}`);
+      } else if (!human) {
+        writeAgentJson(agentSuccess("task.done", { task, location }, { profile: config.selectedProfile }));
       } else {
         console.log(chalk.green(`✓ Marked done: ${task.title}`));
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = writeCoreFailure("task.done", err, human);
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -1986,38 +2504,52 @@ program
 program
   .command("reopen [taskId]")
   .description("Reopen a completed task (accepts 8-char prefix, full UUID, or full recurring instance ID)")
+  .option("--in <Board/List>", "Board or Board/List path")
   .option("--board <id|name>", "Board the task belongs to")
   .option("--title <title>", "Resolve task by title match (use with --due for recurring instances)")
   .option("--due <YYYY-MM-DD>", "Filter by due date when resolving by title")
   .option("--json", "Output updated task as JSON")
+  .option("--human", "Render readable text instead of JSON")
   .action(async (taskId: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const boardId = await resolveBoardId(opts.board, config);
+    const human = useHumanOutput(opts);
+    let location: ReturnType<typeof resolveCliLocation>;
+    try {
+      location = resolveCliLocation(config, {
+        in: opts.in,
+        board: opts.board,
+        intent: "read",
+        ignoreDefaultList: true,
+      });
+      validateCoreDue(opts.due);
+      requireWriteIdentity(config);
+    } catch (error) {
+      process.exitCode = writeCoreFailure("task.reopen", error, human);
+      return;
+    }
+    const boardId = location.boardId;
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
       let resolvedId = taskId;
       if (!resolvedId) {
         if (!opts.title) {
-          console.error(chalk.red("Provide a taskId or --title to identify the task."));
-          process.exit(1);
+          throw new Error("Provide a taskId or --title to identify the task.");
         }
         resolvedId = await resolveTaskIdByTitle(runtime, opts.title, opts.due, boardId, config);
       } else {
-        warnShortTaskId(resolvedId);
+        if (human) warnShortTaskId(resolvedId);
       }
       const task = await runtime.setTaskStatus(resolvedId, "open", boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${resolvedId}`));
-        exitCode = 1;
-      } else if (opts.json) {
-        renderJson(task);
+        throw new Error(`Task not found: ${resolvedId}`);
+      } else if (!human) {
+        writeAgentJson(agentSuccess("task.reopen", { task, location }, { profile: config.selectedProfile }));
       } else {
         console.log(chalk.green(`✓ Reopened: ${task.title}`));
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = writeCoreFailure("task.reopen", err, human);
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -2028,21 +2560,42 @@ program
 program
   .command("delete <taskId>")
   .description("Delete a task (publishes status=deleted to Nostr; accepts 8-char prefix or full UUID)")
+  .option("--in <Board/List>", "Board or Board/List path")
   .option("--board <id|name>", "Board the task belongs to")
-  .option("--force", "Skip confirmation prompt")
+  .option("-y, --force", "Confirm deletion without a prompt")
   .option("--json", "Output deleted task as JSON")
+  .option("--human", "Render readable text instead of JSON")
   .action(async (taskId: string, opts) => {
-    warnShortTaskId(taskId);
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const boardId = await resolveBoardId(opts.board, config);
+    const human = useHumanOutput(opts);
+    if (human) warnShortTaskId(taskId);
+    let location: ReturnType<typeof resolveCliLocation>;
+    try {
+      location = resolveCliLocation(config, {
+        in: opts.in,
+        board: opts.board,
+        intent: "read",
+        ignoreDefaultList: true,
+      });
+      requireWriteIdentity(config);
+      if (!human && !opts.force) {
+        throw new CliCommandError(
+          "CONFIRMATION_REQUIRED",
+          "Deletion requires explicit confirmation. Retry with --force.",
+        );
+      }
+    } catch (error) {
+      process.exitCode = writeCoreFailure("task.delete", error, human);
+      return;
+    }
+    const boardId = location.boardId;
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
       // Fetch task first so we can show the title in the prompt
       const task = await runtime.getTask(taskId, boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${taskId}`));
-        exitCode = 1;
+        throw new Error(`Task not found: ${taskId}`);
       } else {
         if (!opts.force) {
           const { createInterface } = await import("readline");
@@ -2064,17 +2617,15 @@ program
         }
         const deleted = await runtime.deleteTask(taskId, boardId);
         if (!deleted) {
-          console.error(chalk.red(`Task not found: ${taskId}`));
-          exitCode = 1;
-        } else if (opts.json) {
-          renderJson(deleted);
+          throw new Error(`Task not found: ${taskId}`);
+        } else if (!human) {
+          writeAgentJson(agentSuccess("task.delete", { task: deleted, location }, { profile: config.selectedProfile }));
         } else {
           console.log(chalk.green(`✓ Deleted: ${deleted.title}`));
         }
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = writeCoreFailure("task.delete", err, human);
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -2141,6 +2692,7 @@ program
 program
   .command("update <taskId>")
   .description("Update task fields (accepts 8-char prefix or full UUID)")
+  .option("--in <Board/List>", "Board or Board/List path")
   .option("--board <id|name>", "Board the task belongs to")
   .option("--title <t>", "New title")
   .option("--due <d>", "New due date")
@@ -2159,12 +2711,28 @@ program
   .option("--timezone <iana>", "IANA timezone for due time (e.g. America/New_York)")
   .option("--hidden-until <ISO>", "Hide task until this ISO datetime")
   .option("--json", "Output updated task as JSON")
+  .option("--human", "Render readable text instead of JSON")
   .action(async (taskId: string, opts) => {
-    warnShortTaskId(taskId);
-    validateDue(opts.due);
-    validatePriority(opts.priority);
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const boardId = await resolveBoardId(opts.board, config);
+    const human = useHumanOutput(opts);
+    if (human) warnShortTaskId(taskId);
+    let location: ReturnType<typeof resolveCliLocation>;
+    try {
+      validateCoreDue(opts.due);
+      validateCorePriority(opts.priority);
+      location = resolveCliLocation(config, {
+        in: opts.in,
+        board: opts.board,
+        list: opts.column,
+        intent: opts.column || opts.in?.includes("/") ? "write" : "read",
+        ignoreDefaultList: !opts.column && !opts.in?.includes("/"),
+      });
+      requireWriteIdentity(config);
+    } catch (error) {
+      process.exitCode = writeCoreFailure("task.update", error, human);
+      return;
+    }
+    const boardId = location.boardId;
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
@@ -2177,8 +2745,7 @@ program
       if (opts.documentsJson !== undefined || ((opts.attach as string[]).length > 0) || ((opts.removeAttachment as string[]).length > 0) || opts.replaceAttachments) {
         const existingTask = await runtime.getTask(taskId, boardId);
         if (!existingTask) {
-          console.error(chalk.red(`Task not found: ${taskId}`));
-          process.exit(1);
+          throw new Error(`Task not found: ${taskId}`);
         }
         patch.documents = await mergeAttachmentDocuments({
           existing: existingTask.documents as Record<string, unknown>[] | undefined,
@@ -2192,13 +2759,7 @@ program
         }) ?? null;
       }
       if ((opts.assignee as string[]).length > 0) patch.assignees = normalizeAssigneeArgs(opts.assignee as string[]) ?? [];
-      if (opts.column !== undefined) {
-        const bEntry = config.boards.find((b) => b.id === boardId);
-        if (bEntry) {
-          const col = resolveColumnOrExit(bEntry, opts.column);
-          patch.columnId = col.id;
-        }
-      }
+      if (opts.column !== undefined || opts.in?.includes("/")) patch.columnId = location.listId;
       // due / due-time combination
       let dueISO = opts.due as string | undefined;
       if (opts.dueTime) {
@@ -2212,16 +2773,14 @@ program
       if (opts.hiddenUntil !== undefined) patch.hiddenUntilISO = opts.hiddenUntil;
       const task = await runtime.updateTask(taskId, boardId, patch);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${taskId}`));
-        exitCode = 1;
-      } else if (opts.json) {
-        renderJson(task);
+        throw new Error(`Task not found: ${taskId}`);
+      } else if (!human) {
+        writeAgentJson(agentSuccess("task.update", { task, location }, { profile: config.selectedProfile }));
       } else {
         console.log(chalk.green(`✓ Updated: ${task.id.slice(0, 8)}  ${task.title}  ${task.boardId}`));
       }
     } catch (err) {
-      console.error(chalk.red(String(err)));
-      exitCode = 1;
+      exitCode = writeCoreFailure("task.update", err, human);
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
@@ -2663,31 +3222,29 @@ configSet
       } catch { // non-fatal
       }
     }
-    // Check columns
-    let colFound = false;
-    if (resolvedBoard.columns) {
-      const match = resolvedBoard.columns.find(
-        c => c.name.toLowerCase() === list.toLowerCase(),
-      );
-      if (match) colFound = true;
-    }
-    // Still save even if column not found yet — it may be added later
-    if (!colFound && resolvedBoard.columns && resolvedBoard.columns.length > 0) {
-      console.warn(
-        chalk.yellow(`  Warning: column "${list}" not found on "${resolvedBoard.name}". `
-          + `Saved anyway. Use "taskify board sync" to update columns.`),
-      );
+    const resolvedList = resolveBoardColumn(resolvedBoard, list);
+    if (!resolvedList.ok) {
+      console.error(chalk.red(`List not found: "${list}" on "${resolvedBoard.name}".`));
+      console.error(chalk.dim(`Available lists:\n${formatAvailableColumns(resolvedList.available)}`));
+      await runtime.disconnect();
+      process.exit(1);
     }
     const profileCfg = config.profiles?.[config.selectedProfile];
     if (!profileCfg) {
       console.error(chalk.red("No selected profile found."));
       process.exit(1);
     }
-    config.defaultList = `${board} ${list}`;
+    config.defaultBoard = resolvedBoard.id;
+    config.defaultColumn = resolvedList.column.id;
+    config.defaultLocation = { boardId: resolvedBoard.id, listId: resolvedList.column.id };
+    config.defaultList = `${resolvedBoard.name}/${resolvedList.column.name}`;
+    profileCfg.defaultBoard = config.defaultBoard;
+    profileCfg.defaultColumn = config.defaultColumn;
+    profileCfg.defaultLocation = config.defaultLocation;
     profileCfg.defaultList = config.defaultList;
     await saveConfig(config);
-    console.log(chalk.green(`✓ Default list set: "${resolvedBoard.name}" → ${list}`));
-    console.log(chalk.dim(`  In this profile, "taskify list" will now show the "${list}" column.`));
+    console.log(chalk.green(`✓ Default list set: "${resolvedBoard.name}" → ${resolvedList.column.name}`));
+    console.log(chalk.dim(`  In this profile, "taskify list" will now show the "${resolvedList.column.name}" list.`));
     await runtime.disconnect();
     process.exit(0);
   });
@@ -2730,10 +3287,7 @@ configCmd
   .description("Show current config")
   .action(async () => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const display = {
-      ...config,
-      nsec: config.nsec ? "nsec1****" : undefined,
-    };
+    const display = redactConfig(config);
     console.log(JSON.stringify(display, null, 2));
 
     console.log("\nChecking relays...");
@@ -2789,7 +3343,7 @@ program
 // ---- agent command group ----
 const agentCmd = program
   .command("agent")
-  .description("AI-powered task commands");
+  .description("Legacy LLM-assisted helpers (external agents should use root task commands)");
 
 const agentConfigCmd = agentCmd
   .command("config")
@@ -4575,11 +5129,22 @@ program
   });
 
 // ---- auto-onboarding trigger + parse ----
-const cfg = await loadConfig(program.opts().profile as string | undefined);
-// Trigger onboarding if no profiles have an nsec and no command was given
-const hasAnyNsec = Object.values(cfg.profiles).some((p) => p.nsec);
-if (!hasAnyNsec && process.argv.length <= 2) {
-  await runOnboarding();
-} else {
-  program.parse(process.argv);
+// Commands (including --help) load configuration only inside their actions.
+// This keeps read-only invocations usable in sandboxes and mounted home dirs.
+try {
+  if (process.argv.length <= 2) {
+    const cfg = await loadConfig();
+    const hasAnyNsec = Object.values(cfg.profiles).some((profile) => profile.nsec);
+    if (!hasAnyNsec) await runOnboarding();
+    else program.outputHelp();
+  } else {
+    await program.parseAsync(process.argv);
+    // NDK relay objects maintain long-lived housekeeping timers by design.
+    // Command actions have already awaited persistence and transport shutdown,
+    // so terminate the one-shot CLI explicitly instead of keeping agents open.
+    process.exit(process.exitCode ?? 0);
+  }
+} catch (error) {
+  process.exitCode = writeCoreFailure("taskify", error, Boolean(program.opts().human));
+  process.exit(process.exitCode);
 }

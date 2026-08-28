@@ -535,6 +535,45 @@ final class ScrollPerformanceUITests: XCTestCase {
             app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5),
             "Opening a conversation should reveal its newest message"
         )
+        attach(app, name: "chat-02-imessage-style")
+    }
+
+    /// Swiping back through the history must actually travel through the thread and stay where
+    /// the user left it. Older messages sit above the viewport, so the gesture that reaches them
+    /// is a downward drag (content moves down, history enters from the top). Regression test: a
+    /// `simultaneousGesture(DragGesture)` attached to every message bubble races the scroll
+    /// view's pan recognizer on each touch-down, making the thread sticky to the point of
+    /// immobility — 40 fast flicks covered fewer than 30 messages of a 300-message thread, while
+    /// without the recognizer 12 flicks covered ~230. The fixture is 300 messages deep so the
+    /// assertion cannot pass on travel alone; only freely gliding scroll reaches message 1.
+    func testConversationScrollsFreelyWhenSwipingBackThroughHistory() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+
+        let newest = app.staticTexts["Newest fixture message"]
+        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+
+        let oldest = app.staticTexts["Fixture conversation message 1"]
+        var swipes = 0
+        while !oldest.isHittable && swipes < 40 {
+            app.swipeDown(velocity: .fast)
+            swipes += 1
+        }
+        XCTAssertTrue(
+            oldest.waitForExistence(timeout: 2) && oldest.isHittable,
+            "Repeated swipes toward the history should reach the oldest message instead of being pulled back"
+        )
+
+        // Give any delayed re-anchoring a chance to fire before checking the resting position.
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertFalse(
+            newest.isHittable,
+            "After scrolling to the oldest message, the thread must not snap back to the newest"
+        )
     }
 
     func testChatSearchShowsIndividualMessageAndOpensItsLocation() throws {
@@ -583,6 +622,93 @@ final class ScrollPerformanceUITests: XCTestCase {
 
         app.buttons["Close conversation search"].tap()
         XCTAssertFalse(app.textFields["Search conversation"].waitForExistence(timeout: 2))
+    }
+
+    /// Regression test: the chat tab's search field had no way to resign focus — no Cancel,
+    /// no submit action, no scroll dismissal — so once focused with no results, the keyboard
+    /// covered the tab bar and the only escape was force-quitting the app.
+    func testChatSearchKeyboardCanBeDismissedAndTabStaysNavigable() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+
+        let search = app.textFields["Search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        search.typeText("zzz no such fixture message")
+
+        let cancel = app.buttons["Close search"]
+        XCTAssertTrue(
+            cancel.waitForExistence(timeout: 5),
+            "a focused search field must offer a way out"
+        )
+        cancel.tap()
+
+        XCTAssertTrue(
+            app.keyboards.element.waitForNonExistence(timeout: 3),
+            "Cancel should dismiss the keyboard"
+        )
+        // Assert on app state rather than the field's accessibility value, which can report
+        // the placeholder once empty: with a cleared query the clear button disappears.
+        XCTAssertFalse(
+            app.buttons["Clear search"].waitForExistence(timeout: 2),
+            "Cancel should clear the query"
+        )
+        // The keyboard used to block every control below it.
+        XCTAssertTrue(app.buttons["Chat"].isHittable, "tab bar must be reachable again")
+    }
+
+    /// Regression test: the create-group sheet forced its search bar always-presented via a
+    /// constant `isPresented` binding, which turned the searchable Cancel into a no-op — the
+    /// keyboard could never be dismissed. Note the sheet legitimately has two Cancel buttons
+    /// while searching: the nav-bar one cancels the whole sheet, the searchable one dismisses
+    /// the keyboard, so the test must pick the one outside the navigation bar.
+    func testGroupCreationSearchKeyboardCanBeDismissed() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+
+        XCTAssertTrue(app.buttons["New message"].waitForExistence(timeout: 10))
+        app.buttons["New message"].tap()
+        // The row's label aggregates its title and subtitle, so match on the title.
+        let newGroup = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "New Group")
+        ).firstMatch
+        XCTAssertTrue(newGroup.waitForExistence(timeout: 5))
+        newGroup.tap()
+
+        // `.searchable` exposes its field as a SearchField (rendered bottom-anchored on
+        // iOS 27), not a TextField.
+        let search = app.searchFields["Search contacts"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("zzz no such contact")
+
+        let navBar = app.navigationBars.firstMatch
+        // iOS renders the searchable dismissal beside the field — as a "Cancel" label on
+        // older systems, as an xmark control on iOS 27. Match either; the nav-bar Cancel
+        // (which cancels the whole sheet) is excluded by frame.
+        let byLabel = app.buttons.matching(NSPredicate(format: "label == 'Cancel'"))
+            .allElementsBoundByIndex
+            .first { !$0.frame.intersects(navBar.frame) }
+        let dismissControl = byLabel
+            ?? app.buttons.matching(
+                // iOS 27 renders the searchable dismissal as a button labelled 'close'.
+                NSPredicate(format: "label ==[c] 'close' OR identifier CONTAINS[c] 'xmark' OR label CONTAINS[c] 'xmark'")
+            ).allElementsBoundByIndex.first
+
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "group-search-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+
+        let cancel = try XCTUnwrap(dismissControl, "the searchable field should expose its own dismissal control")
+        cancel.tap()
+
+        XCTAssertTrue(
+            app.keyboards.element.waitForNonExistence(timeout: 3),
+            "Cancel should dismiss the keyboard"
+        )
+        // The sheet itself must stay up — the searchable Cancel is not the nav-bar Cancel.
+        XCTAssertTrue(app.searchFields["Search contacts"].exists)
     }
 
     private func chatFixtureApplication() -> XCUIApplication {

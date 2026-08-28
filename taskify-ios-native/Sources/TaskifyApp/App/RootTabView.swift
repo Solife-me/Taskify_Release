@@ -29,6 +29,7 @@ struct RootTabView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var watchBridge = TaskifyWatchBridge.shared
+    @State private var notificationNavigationRouter = TaskNotificationNavigationRouter.shared
     @State private var selectedTab: AppTab
     @State private var hasPresentedInitialContent = false
     /// Set by a quick-add deep link; BoardsView clears it once it has focused its field.
@@ -64,6 +65,7 @@ struct RootTabView: View {
             .onAppear {
                 consumeQuickAddRequest()
                 routePendingWatchSetup()
+                routePendingNotificationDestination()
             }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
@@ -74,6 +76,10 @@ struct RootTabView: View {
                 guard let requestID else { return }
                 pendingWatchSetupRequestID = requestID
                 selectedTab = .settings
+            }
+            .onChange(of: notificationNavigationRouter.pendingDestination) { _, destination in
+                guard destination != nil else { return }
+                routePendingNotificationDestination()
             }
     }
 
@@ -86,6 +92,16 @@ struct RootTabView: View {
         guard let requestID = watchBridge.pendingSetupNavigationRequestID else { return }
         pendingWatchSetupRequestID = requestID
         selectedTab = .settings
+    }
+
+    private func routePendingNotificationDestination() {
+        guard let destination = notificationNavigationRouter.consumeDestination() else { return }
+        switch destination {
+        case .chat:
+            selectedTab = .chat
+        case .wallet:
+            selectedTab = .wallet
+        }
     }
 
     /// Routes a widget's `taskify://` link to the view it represents. Anything the app can't place

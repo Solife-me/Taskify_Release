@@ -16,6 +16,11 @@ export type PublishResult = number | {
     createdAt: number;
     event: NostrEvent;
 };
+export declare class NostrWriteQueuedError extends Error {
+    readonly code = "WRITE_QUEUED";
+    readonly retryable = true;
+    constructor();
+}
 export type PublishCoordinatorOptions = {
     outboxStore?: NostrOutboxStore;
     retryBaseMs?: number;
