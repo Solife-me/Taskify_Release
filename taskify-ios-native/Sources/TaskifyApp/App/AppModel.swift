@@ -5543,7 +5543,7 @@ final class AppModel {
     /// never overwrite another NIP-17 client's valid preference during startup.
     private func ensureNIP17InboxRelayPreference() async {
         guard let identity = cachedIdentity else { return }
-        let advertised = await NIP17InboxRelayResolver.resolve(
+        let advertised = await NIP17InboxRelayResolver.resolveAdvertised(
             recipientPublicKey: identity.publicKeyHex,
             discoveryRelayURLs: nip17DiscoveryRelayURLs
         )

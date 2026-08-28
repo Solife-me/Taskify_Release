@@ -10,9 +10,10 @@ public struct NIP17DeliveryPlan: Equatable, Sendable {
     }
 }
 
-/// NIP-17 requires a separate gift wrap for each receiver, delivered only to that receiver's
-/// advertised kind-10050 inbox relays. In particular, the sender's self-copy must not be copied
-/// to the other participant's inbox relays.
+/// NIP-17 requires a separate gift wrap for each receiver, delivered to that receiver's
+/// advertised kind-10050 inbox relays. Recipients that have not advertised any inbox relays
+/// fall back to the sender's discovery relays so DMs still reach them. In particular, the
+/// sender's self-copy must not be copied to the other participant's inbox relays.
 public enum NIP17RelayRouting {
     public static func deliveryPlan(
         recipientInboxRelayURLs: [String],
@@ -117,7 +118,36 @@ public enum NIP17InboxRelayResolver {
         })
     }
 
+    /// Resolves the relays to deliver a NIP-17 gift wrap to. Prefers the recipient's advertised
+    /// kind-10050 inbox relays and falls back to `discoveryRelayURLs` — which therefore double as
+    /// the delivery fallback — when the recipient has advertised none.
     public static func resolve(
+        recipientPublicKey: String,
+        discoveryRelayURLs: [String],
+        timeout: Duration = .seconds(2)
+    ) async -> [String] {
+        let fallback = TaskifyRelayURL.normalizedList(discoveryRelayURLs)
+        guard NostrPublicKey.parse(recipientPublicKey) != nil, !fallback.isEmpty else {
+            return fallback
+        }
+
+        let normalizedRecipient = recipientPublicKey.lowercased()
+        if let cached = await preferenceCache.relayURLs(for: normalizedRecipient) {
+            return TaskifyRelayURL.normalizedList(cached + fallback)
+        }
+
+        let discovered = await resolveAdvertised(
+            recipientPublicKey: recipientPublicKey,
+            discoveryRelayURLs: discoveryRelayURLs,
+            timeout: timeout
+        )
+        return TaskifyRelayURL.normalizedList(discovered + fallback)
+    }
+
+    /// Resolves only the inbox relays the recipient has actually advertised via kind-10050,
+    /// without any delivery fallback. Used for self-discovery, where an empty result means
+    /// "no signed preference published yet" and must trigger bootstrapping.
+    public static func resolveAdvertised(
         recipientPublicKey: String,
         discoveryRelayURLs: [String],
         timeout: Duration = .seconds(2)
