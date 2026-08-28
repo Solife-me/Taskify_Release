@@ -119,7 +119,7 @@ Backups
 | **NIP-96** | File/backup storage over Nostr | `nostr/Nip96Client.ts` |
 | **Cashu NUT-16** | Offline/deterministic tokens | `wallet/nut16.ts` |
 | **Web Push (RFC 8030)** | Push notifications via VAPID | `worker/src/index.ts` |
-| **Apple Push Notification service** | Generic DM alert delivery with device-side rich preview decryption | `taskify-ios-native/Sources/TaskifyNotificationService/NotificationService.swift`, `taskify-ios-native/Sources/TaskifyApp/Notifications/DMPushNotificationCoordinator.swift`, `taskify-push-relay/src/apns.js` |
+| **Apple Push Notification service** | Generic DM alert delivery with background-wake enrichment | `taskify-ios-native/Sources/TaskifyApp/Notifications/DMPushNotificationCoordinator.swift`, `taskify-push-relay/src/apns.js` |
 | **DLEQ proofs** | Cashu blind signature verification | `wallet/dleq.ts` |
 
 ---

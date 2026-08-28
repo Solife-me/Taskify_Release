@@ -7,10 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		R10000000000000000000001 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = R10000000000000000000006 /* NotificationService.swift */; };
-		R10000000000000000000002 /* KeychainIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */; };
-		R10000000000000000000003 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = R10000000000000000000012 /* TaskifyCore */; };
-		R10000000000000000000004 /* TaskifyNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = R10000000000000000000005 /* TaskifyNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */; };
 		0B64CE2D2E8DC2C381D5DFA2 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */; };
 		0F0D02A663DD9FC10DEA44B1 /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE60E2576148EFF86B5FB8E /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift */; };
@@ -80,13 +76,6 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		R10000000000000000000009 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = B00000000000000000000500 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = R1000000000000000000000D;
-			remoteInfo = TaskifyNotificationService;
-		};
 		CC3D8384A4E30EB2C695F5DF /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = B00000000000000000000500 /* Project object */;
@@ -118,10 +107,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		R10000000000000000000005 /* TaskifyNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TaskifyNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		R10000000000000000000006 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyNotificationService/NotificationService.swift; sourceTree = SOURCE_ROOT; };
-		R10000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Sources/TaskifyNotificationService/Info.plist; sourceTree = SOURCE_ROOT; };
-		R10000000000000000000008 /* TaskifyNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TaskifyNotificationService.entitlements; sourceTree = SOURCE_ROOT; };
 		12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScrollPerformanceUITests.swift; sourceTree = "<group>"; };
 		18EC57FC792E425B9E02B191 /* BibleTrackerUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BibleTrackerUITests.swift; sourceTree = "<group>"; };
 		1A62BC5630844B0DB46DFD5B /* Sources/TaskifyApp/App/TaskStreakSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskStreakSettings.swift; sourceTree = SOURCE_ROOT; };
@@ -194,14 +179,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		R1000000000000000000000A /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				R10000000000000000000003 /* TaskifyCore in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		B00000000000000000000301 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -250,7 +227,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				R10000000000000000000004 /* TaskifyNotificationService.appex in Embed Foundation Extensions */,
 				B0000000000000000000W22 /* TaskifyWidgets.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
@@ -295,9 +271,7 @@
 			isa = PBXGroup;
 			children = (
 				46E40FCC301F6E5C00C80779 /* TaskifyNative.entitlements */,
-				R10000000000000000000008 /* TaskifyNotificationService.entitlements */,
 				B00000000000000000000402 /* App Sources */,
-				R1000000000000000000000C /* TaskifyNotificationService */,
 				A10000000000000000000701 /* TaskifyWatch */,
 				C10000000000000000000701 /* TaskifyWatchWidgets */,
 				B00000000000000000000403 /* Products */,
@@ -358,22 +332,12 @@
 			isa = PBXGroup;
 			children = (
 				B00000000000000000000220 /* TaskifyNative.app */,
-				R10000000000000000000005 /* TaskifyNotificationService.appex */,
 				A10000000000000000000001 /* TaskifyWatch.app */,
 				C10000000000000000000001 /* TaskifyWatchWidgets.appex */,
 				B0000000000000000000W01 /* TaskifyWidgets.appex */,
 				69AB7FE65898EA9D39EC4DAE /* TaskifyNativeUITests.xctest */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		R1000000000000000000000C /* TaskifyNotificationService */ = {
-			isa = PBXGroup;
-			children = (
-				R10000000000000000000006 /* NotificationService.swift */,
-				R10000000000000000000007 /* Info.plist */,
-			);
-			name = TaskifyNotificationService;
 			sourceTree = "<group>";
 		};
 		C287FF03CABF1B6C1D79307E /* iOS */ = {
@@ -426,25 +390,6 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		R1000000000000000000000D /* TaskifyNotificationService */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = R10000000000000000000011 /* Build configuration list for PBXNativeTarget "TaskifyNotificationService" */;
-			buildPhases = (
-				R1000000000000000000000B /* Sources */,
-				R1000000000000000000000A /* Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = TaskifyNotificationService;
-			packageProductDependencies = (
-				R10000000000000000000012 /* TaskifyCore */,
-			);
-			productName = TaskifyNotificationService;
-			productReference = R10000000000000000000005 /* TaskifyNotificationService.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
 		1FD53C360FA145FA69A4DD58 /* TaskifyNativeUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B8A5EACD4A802D0E5DBF5AF6 /* Build configuration list for PBXNativeTarget "TaskifyNativeUITests" */;
@@ -477,7 +422,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				R1000000000000000000000E /* PBXTargetDependency */,
 				B0000000000000000000W11 /* PBXTargetDependency */,
 				A10000000000000000000602 /* PBXTargetDependency */,
 			);
@@ -561,9 +505,6 @@
 				LastSwiftUpdateCheck = 2600;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
-					R1000000000000000000000D = {
-						CreatedOnToolsVersion = 26.3;
-					};
 					A10000000000000000000000 = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -597,7 +538,6 @@
 			projectRoot = "";
 			targets = (
 				B00000000000000000000501 /* TaskifyNative */,
-				R1000000000000000000000D /* TaskifyNotificationService */,
 				A10000000000000000000000 /* TaskifyWatch */,
 				C10000000000000000000000 /* TaskifyWatchWidgets */,
 				B0000000000000000000W00 /* TaskifyWidgets */,
@@ -663,15 +603,6 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		R1000000000000000000000B /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				R10000000000000000000001 /* NotificationService.swift in Sources */,
-				R10000000000000000000002 /* KeychainIdentityStore.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		390DDC7A023A56A894E73458 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -765,11 +696,6 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		R1000000000000000000000E /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = R1000000000000000000000D /* TaskifyNotificationService */;
-			targetProxy = R10000000000000000000009 /* PBXContainerItemProxy */;
-		};
 		6B52B2D242D5AF2B46C9BB9D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = TaskifyNative;
@@ -794,61 +720,6 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		R1000000000000000000000F /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 37;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.NotificationService;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Debug;
-		};
-		R10000000000000000000010 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 37;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.NotificationService;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Release;
-		};
 		A10000000000000000000501 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1156,15 +1027,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		R10000000000000000000011 /* Build configuration list for PBXNativeTarget "TaskifyNotificationService" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				R1000000000000000000000F /* Debug */,
-				R10000000000000000000010 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		A10000000000000000000503 /* Build configuration list for PBXNativeTarget "TaskifyWatch" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1229,11 +1091,6 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		R10000000000000000000012 /* TaskifyCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B00000000000000000000600 /* XCLocalSwiftPackageReference "" */;
-			productName = TaskifyCore;
-		};
 		A10000000000000000000401 /* TaskifyWatchShared */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000600 /* XCLocalSwiftPackageReference "" */;
