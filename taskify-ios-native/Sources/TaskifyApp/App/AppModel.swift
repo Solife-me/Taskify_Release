@@ -52,6 +52,16 @@ enum NostrContactDirectoryError: LocalizedError {
     }
 }
 
+enum ProfilePictureUploadError: LocalizedError {
+    case invalidServer
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidServer: "The configured file server URL is invalid."
+        }
+    }
+}
+
 enum SharedTaskSendError: LocalizedError {
     case taskUnavailable
     case identityUnavailable
@@ -350,6 +360,7 @@ final class AppModel {
     private static let contactsOutboxScope = "__taskify-contacts__"
     private static let directMessagesOutboxScope = "__taskify-direct-messages__"
     private static let nip17PreferencesOutboxScope = "__taskify-nip17-preferences__"
+    private static let profileOutboxScope = "__taskify-profile__"
     private(set) var snapshot = TaskifySnapshot.empty {
         didSet {
             snapshotLookupCache.invalidate()
@@ -406,6 +417,10 @@ final class AppModel {
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
     private(set) var contactSyncStatus = "Preparing private contact sync"
+    private(set) var ownProfile: NostrContactProfile?
+    private(set) var isLoadingOwnProfile = false
+    private(set) var isPublishingProfile = false
+    private(set) var profilePublishMessage: String?
     private(set) var accountBackupMessage: String?
     private(set) var taskifyEventRSVPsByEventID: [String: [TaskifyEventRSVPResponse]] = [:]
     private(set) var refreshingTaskifyEventRSVPIDs: Set<String> = []
@@ -451,6 +466,9 @@ final class AppModel {
     // Keychain reads are slow syscalls; shared-inbox events arrive in bursts during initial
     // sync and each needs the identity to unwrap its gift wrap, so cache it in memory.
     @ObservationIgnored private var cachedIdentity: NostrIdentity?
+    @ObservationIgnored private var ownProfileEventID: String?
+    @ObservationIgnored private var ownProfileEventContent: String?
+    @ObservationIgnored private var ownProfileLoadTask: Task<Void, Never>?
 
     init(
         store: JSONTaskStore = JSONTaskStore(),
@@ -473,6 +491,7 @@ final class AppModel {
         accountBackupPublishTask?.cancel()
         contactRefreshTask?.cancel()
         sharedInboxProcessingTask?.cancel()
+        ownProfileLoadTask?.cancel()
         deferredStartupTask?.cancel()
     }
 
@@ -2949,6 +2968,133 @@ final class AppModel {
         scheduleSave()
         try await publishContacts(identity: identity, createdAt: timestamp)
         contactSyncStatus = "Contacts synced privately"
+    }
+
+    // MARK: - Own profile (My Card)
+
+    /// The user's own contact-style representation for avatars and the chat header: the saved
+    /// directory entry when one exists, otherwise the locally-known profile.
+    var ownContactRepresentation: NostrContact? {
+        guard !identityPublicKey.isEmpty else { return nil }
+        if let stored = nostrContact(publicKey: identityPublicKey) { return stored }
+        return NostrContact(publicKeyValue: identityPublicKey, profile: ownProfile)
+    }
+
+    func loadOwnProfileIfNeeded() {
+        guard !isLoadingOwnProfile else { return }
+        ownProfileLoadTask?.cancel()
+        ownProfileLoadTask = Task { [weak self] in
+            await self?.loadOwnProfile()
+        }
+    }
+
+    func loadOwnProfile() async {
+        guard !identityPublicKey.isEmpty, !isLoadingOwnProfile else { return }
+        let relays = TaskifyRelayURL.normalizedList(contactsSyncRelayURLs + appRelayURLs)
+        guard !relays.isEmpty else { return }
+        isLoadingOwnProfile = true
+        defer { isLoadingOwnProfile = false }
+        guard let event = await NostrContactFinder.latestProfileEvent(
+            publicKey: identityPublicKey,
+            relayURLs: relays
+        ) else { return }
+        guard let profile = NostrContactProfile.decode(event: event) else { return }
+        ownProfile = profile
+        ownProfileEventID = event.id
+        ownProfileEventContent = event.content
+    }
+
+    /// Publishes the edited profile as a NIP-01 kind:0 event and deletes the superseded profile
+    /// event, mirroring the PWA's `publishProfileMetadata` (`taskify-pwa/src/nostr/ProfilePublisher.ts`).
+    func publishOwnProfile(_ draft: NostrProfileDraft) async throws {
+        guard let identity = try identityStore.load() else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
+        let relays = contactsSyncRelayURLs
+        guard !relays.isEmpty else { throw NostrContactDirectoryError.noRelays }
+
+        isPublishingProfile = true
+        profilePublishMessage = nil
+        defer { isPublishingProfile = false }
+
+        // Deleting the superseded event needs its id and content, so learn the current
+        // profile first; the content is merged into the new event so keys other clients
+        // wrote (banner, website, …) survive the edit.
+        if ownProfileEventID == nil {
+            await loadOwnProfile()
+        }
+        let previousEventID = ownProfileEventID
+        let createdAt = nextNostrTimestamp()
+        let event = try NostrProfileContract.event(
+            draft: draft,
+            previousContent: ownProfileEventContent,
+            identity: identity,
+            createdAt: createdAt
+        )
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + contactsSyncRelayURLs),
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: effectiveNIP17InboxRelayURLs
+        )
+        try await syncEngine.publish(
+            event,
+            relayURLs: relays,
+            outboxScope: Self.profileOutboxScope,
+            recordID: "kind-0"
+        )
+        ownProfileEventID = event.id
+        ownProfileEventContent = event.content
+        ownProfile = NostrContactProfile(
+            name: draft.username,
+            displayName: draft.displayName,
+            username: draft.username,
+            about: draft.about,
+            picture: draft.picture,
+            lud16: draft.lud16,
+            nip05: draft.nip05,
+            eventCreatedAt: createdAt
+        )
+        profilePublishMessage = "Profile published"
+
+        if let previousEventID, previousEventID != event.id {
+            let deletion = try NostrProfileContract.deletionEvent(
+                previousEventID: previousEventID,
+                identity: identity,
+                createdAt: nextNostrTimestamp()
+            )
+            try? await syncEngine.publish(
+                deletion,
+                relayURLs: contactsSyncRelayURLs,
+                outboxScope: Self.profileOutboxScope,
+                recordID: "kind-5-\(previousEventID)"
+            )
+        }
+    }
+
+    /// Uploads a profile picture to the configured file server (plain, unencrypted — the URL
+    /// goes into the public kind:0 content). Mirrors the PWA's `uploadAvatar` NIP-96 path.
+    func uploadProfilePicture(_ imageData: Data, filename: String) async throws -> String {
+        guard let identity = try identityStore.load() else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
+        let entry = TaskifyMediaServerSettings.configuredEntry
+        guard let server = URL(string: entry.url) else {
+            throw ProfilePictureUploadError.invalidServer
+        }
+        if entry.type == .blossom {
+            return try await BlossomClient.upload(
+                imageData,
+                privateKey: identity.privateKey,
+                server: server
+            )
+        }
+        return try await Nip96Client.upload(
+            imageData,
+            filename: filename,
+            privateKey: identity.privateKey,
+            server: server
+        )
     }
 
     func prepareForBackground() async {

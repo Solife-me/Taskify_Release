@@ -44,7 +44,9 @@ struct ContactsView: View {
 
     private var ownContact: NostrContact? {
         guard !model.identityPublicKey.isEmpty else { return nil }
-        return model.nostrContact(publicKey: model.identityPublicKey)
+        // Falls back to the published profile so the header avatar shows your picture and name
+        // even before you appear in your own contact directory.
+        return model.nostrContact(publicKey: model.identityPublicKey) ?? model.ownContactRepresentation
     }
 
     private var activeThreads: [NostrDirectMessageThread] {

@@ -11,12 +11,13 @@ struct NostrContactsDirectoryView: View {
 
     private var filteredContacts: [NostrContact] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return model.nostrContacts }
-        return model.nostrContacts.filter {
+        let matches = query.isEmpty ? model.nostrContacts : model.nostrContacts.filter {
             $0.displayName.localizedCaseInsensitiveContains(query) ||
                 $0.subtitle.localizedCaseInsensitiveContains(query) ||
                 $0.npub.localizedCaseInsensitiveContains(query)
         }
+        // Alphabetical like the PWA's sortedContacts (`useContactsDerived.ts`).
+        return matches.sorted { $0.displayName.localizedCompare($1.displayName) == .orderedAscending }
     }
 
     var body: some View {
@@ -53,6 +54,14 @@ struct NostrContactsDirectoryView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     contactHeader
+
+                    NavigationLink {
+                        NostrProfileDetailView()
+                            .environment(model)
+                    } label: {
+                        MyCardRow()
+                    }
+                    .buttonStyle(.plain)
 
                     if model.nostrContacts.isEmpty {
                         emptyState
@@ -227,6 +236,50 @@ struct NostrContactAvatar: View {
     }
 }
 
+/// The pinned "My Card" row at the top of the directory, matching the PWA's profile row
+/// (`WalletContactsSheet.tsx`): your avatar and name, tappable into the profile detail.
+private struct MyCardRow: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 13) {
+            if let contact = model.ownContactRepresentation {
+                NostrContactAvatar(contact: contact)
+            } else {
+                ZStack {
+                    Circle().fill(TaskifyTheme.accent.opacity(0.22))
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                }
+                .frame(width: 46, height: 46)
+                .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.ownContactRepresentation?.displayName ?? "My Card")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .lineLimit(1)
+                Text(model.ownContactRepresentation?.subtitle ?? "Set up your public profile")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .padding(14)
+        .taskifyGlass(cornerRadius: 20)
+        .contentShape(Rectangle())
+        .onAppear {
+            model.loadOwnProfileIfNeeded()
+        }
+        .accessibilityLabel("Open your profile")
+    }
+}
+
 private struct NostrContactRow: View {
     let contact: NostrContact
 
@@ -234,10 +287,20 @@ private struct NostrContactRow: View {
         HStack(spacing: 13) {
             NostrContactAvatar(contact: contact)
             VStack(alignment: .leading, spacing: 3) {
-                Text(contact.displayName)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(contact.displayName)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(1)
+                    // The PWA shows the verified badge on rows with a NIP-05; the detail view
+                    // performs the live verification.
+                    if contact.profile?.nip05 != nil {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                            .accessibilityLabel("Has NIP-05 address")
+                    }
+                }
                 Text(contact.subtitle)
                     .font(.caption)
                     .foregroundStyle(TaskifyTheme.secondaryText)
@@ -258,6 +321,8 @@ private struct NostrContactDetailView: View {
     @Environment(AppModel.self) private var model
     let contactPublicKey: String
     @State private var nip05Status: Nip05VerificationStatus = .unverified
+    @State private var showingEditor = false
+    @State private var copiedField: String?
 
     private var contact: NostrContact? {
         model.nostrContacts.first { $0.publicKey == contactPublicKey }
@@ -267,27 +332,52 @@ private struct NostrContactDetailView: View {
         ScrollView {
             if let contact {
                 VStack(spacing: 18) {
-                    NostrContactAvatar(contact: contact, size: 88)
-                    VStack(spacing: 5) {
-                        Text(contact.displayName)
-                            .font(.title2.bold())
-                        Text(contact.subtitle)
-                            .font(.subheadline)
+                    VStack(spacing: 10) {
+                        NostrContactAvatar(contact: contact, size: 88)
+                        VStack(spacing: 5) {
+                            HStack(spacing: 6) {
+                                Text(contact.displayName)
+                                    .font(.title2.bold())
+                                if nip05Status == .verified {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .font(.callout)
+                                        .foregroundStyle(.green)
+                                        .accessibilityLabel("Verified NIP-05")
+                                }
+                            }
+                            Text(contact.subtitle)
+                                .font(.subheadline)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                    }
+                    .padding(.top, 6)
+
+                    // QR of the share value, like the PWA's detail hero (`detailShareValue`).
+                    VStack(spacing: 12) {
+                        ContactQRCodeView(value: contact.npub)
+                            .frame(width: 200, height: 200)
+                            .padding(14)
+                            .background(Color.white, in: RoundedRectangle(cornerRadius: 18))
+                        Text("Scan to add \(contact.displayName)")
+                            .font(.caption)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                     }
+                    .padding(18)
+                    .taskifyGlass(cornerRadius: 24)
+
                     VStack(alignment: .leading, spacing: 14) {
-                        contactField("Nostr public key", value: contact.npub, icon: "key")
+                        copyableField("Nostr public key", value: contact.npub, icon: "key")
                         if let nip05 = contact.profile?.nip05 {
                             nip05Field(nip05)
                         }
                         if let lud16 = contact.profile?.lud16 {
-                            contactField("Lightning", value: lud16, icon: "bolt")
+                            copyableField("Lightning", value: lud16, icon: "bolt")
                         }
                         if let about = contact.profile?.about {
-                            contactField("About", value: about, icon: "person.text.rectangle")
+                            copyableField("About", value: about, icon: "person.text.rectangle")
                         }
                         if !contact.relayURLs.isEmpty {
-                            contactField(
+                            copyableField(
                                 "Delivery relays",
                                 value: contact.relayURLs.joined(separator: "\n"),
                                 icon: "dot.radiowaves.left.and.right"
@@ -312,6 +402,22 @@ private struct NostrContactDetailView: View {
         .background(TaskifyTheme.background.ignoresSafeArea())
         .navigationTitle("Contact")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingEditor = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .accessibilityLabel("Edit contact")
+                }
+            }
+        }
+        .sheet(isPresented: $showingEditor) {
+            if let contact {
+                NostrContactEditorSheet(contact: contact)
+                    .environment(model)
+            }
+        }
         .task(id: contact?.profile?.nip05) {
             guard let contact, let nip05 = contact.profile?.nip05 else {
                 nip05Status = .unverified
@@ -364,22 +470,45 @@ private struct NostrContactDetailView: View {
         }
     }
 
-    private func contactField(_ label: String, value: String, icon: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(TaskifyTheme.accent)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-                Text(value)
-                    .font(.subheadline)
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .textSelection(.enabled)
+    /// A field that copies on tap with haptic feedback, like the PWA's `handleCopyContactField`.
+    private func copyableField(_ label: String, value: String, icon: String) -> some View {
+        Button {
+            UIPasteboard.general.string = value
+            copiedField = label
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                if copiedField == label { copiedField = nil }
             }
-            Spacer()
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon)
+                    .foregroundStyle(TaskifyTheme.accent)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text(label)
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                        if copiedField == label {
+                            Image(systemName: "checkmark")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    Text(value)
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer()
+                Image(systemName: "doc.on.doc")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.tertiaryText)
+            }
         }
+        .buttonStyle(.plain)
+        .accessibilityHint("Copies this value")
     }
 }
 
@@ -400,6 +529,7 @@ private struct NostrContactEditorSheet: View {
     @State private var relayURL: String
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var showingScanner = false
 
     init(contact: NostrContact? = nil) {
         existingContact = contact
@@ -435,6 +565,13 @@ private struct NostrContactEditorSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                    if existingContact == nil {
+                        Button {
+                            showingScanner = true
+                        } label: {
+                            Label("Scan QR", systemImage: "qrcode.viewfinder")
+                        }
+                    }
                 }
 
                 Section {
@@ -478,6 +615,53 @@ private struct NostrContactEditorSheet: View {
         .preferredColorScheme(.dark)
         .tint(TaskifyTheme.accent)
         .interactiveDismissDisabled(isSaving)
+        .fullScreenCover(isPresented: $showingScanner) {
+            ContactScannerSheet { code in
+                handleScannedCode(code)
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    /// Fills the form from a scanned QR and returns `nil` when accepted, otherwise an error
+    /// message the scanner sheet shows while the camera keeps running. Accepts the PWA's share
+    /// payloads — `npub`, `nprofile` (with relay hints), and `taskify:contact:` envelopes
+    /// (`useScannerFlow.ts`).
+    private func handleScannedCode(_ code: String) -> String? {
+        if let payload = ContactSharePayload.decode(code) {
+            guard let npub = payload.npub else {
+                return "That QR code did not contain a Nostr public key."
+            }
+            applyScan(
+                npub: npub,
+                relayHint: payload.relays.first,
+                suggestedNickname: payload.displayName ?? payload.name
+            )
+            return nil
+        }
+        if let nprofile = NostrProfilePayload.decodeNprofile(code) {
+            let npub = NostrPublicKey.npub(from: nprofile.publicKey) ?? nprofile.publicKey.hexString
+            applyScan(npub: npub, relayHint: nprofile.relayURLs.first, suggestedNickname: nil)
+            return nil
+        }
+        if let key = NostrPublicKey.parse(code), let npub = NostrPublicKey.npub(from: key) {
+            applyScan(npub: npub, relayHint: nil, suggestedNickname: nil)
+            return nil
+        }
+        return "That QR code is not a Taskify or Nostr contact code."
+    }
+
+    private func applyScan(npub: String, relayHint: String?, suggestedNickname: String?) {
+        publicKeyValue = npub
+        if let relayHint,
+           relayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            relayURL = relayHint
+        }
+        if let suggestedNickname,
+           nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            nickname = suggestedNickname
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     private func save() {
