@@ -1982,6 +1982,18 @@ public enum NIP17GiftWrapError: LocalizedError {
     }
 }
 
+public struct NIP17GiftWrapPair: Equatable, Sendable {
+    public let rumor: NIP17Rumor
+    public let recipientWrap: NostrEvent
+    public let senderWrap: NostrEvent
+
+    public init(rumor: NIP17Rumor, recipientWrap: NostrEvent, senderWrap: NostrEvent) {
+        self.rumor = rumor
+        self.recipientWrap = recipientWrap
+        self.senderWrap = senderWrap
+    }
+}
+
 public enum NIP17GiftWrap {
     public static let wrapKind = 1_059
     public static let sealKind = 13
@@ -2071,6 +2083,44 @@ public enum NIP17GiftWrap {
             sender: sender,
             recipientPublicKey: recipientPublicKey,
             ephemeralIdentity: ephemeralIdentity
+        )
+    }
+
+    /// Creates the two independently encrypted gift wraps required by NIP-17: one for the
+    /// recipient and one for the sender's own inbox. Both contain the same unsigned rumor, but
+    /// use distinct ephemeral keys so the outer events cannot be correlated by author key.
+    public static func wrapPair(
+        envelope: TaskifyShareEnvelope,
+        sender: NostrIdentity,
+        recipientPublicKey: Data,
+        createdAt: Int = Int(Date().timeIntervalSince1970),
+        recipientEphemeralIdentity: NostrIdentity? = nil,
+        senderEphemeralIdentity: NostrIdentity? = nil
+    ) throws -> NIP17GiftWrapPair {
+        guard recipientPublicKey.count == 32 else { throw NIP17GiftWrapError.wrongRecipient }
+        let rumor = try NIP17Rumor(
+            publicKey: sender.publicKeyHex,
+            createdAt: createdAt,
+            kind: rumorKind,
+            tags: [["p", recipientPublicKey.hexString]],
+            content: try envelope.messageContent()
+        )
+        let recipientWrap = try wrap(
+            rumor: rumor,
+            sender: sender,
+            recipientPublicKey: recipientPublicKey,
+            ephemeralIdentity: recipientEphemeralIdentity
+        )
+        let senderWrap = try wrap(
+            rumor: rumor,
+            sender: sender,
+            recipientPublicKey: sender.publicKey,
+            ephemeralIdentity: senderEphemeralIdentity
+        )
+        return NIP17GiftWrapPair(
+            rumor: rumor,
+            recipientWrap: recipientWrap,
+            senderWrap: senderWrap
         )
     }
 

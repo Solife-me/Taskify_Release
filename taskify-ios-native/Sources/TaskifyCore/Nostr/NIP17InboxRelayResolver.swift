@@ -1,5 +1,53 @@
 import Foundation
 
+public struct NIP17DeliveryPlan: Equatable, Sendable {
+    public let recipientRelayURLs: [String]
+    public let senderRelayURLs: [String]
+
+    public init(recipientRelayURLs: [String], senderRelayURLs: [String]) {
+        self.recipientRelayURLs = recipientRelayURLs
+        self.senderRelayURLs = senderRelayURLs
+    }
+}
+
+/// NIP-17 requires a separate gift wrap for each receiver, delivered only to that receiver's
+/// advertised kind-10050 inbox relays. In particular, the sender's self-copy must not be copied
+/// to the other participant's inbox relays.
+public enum NIP17RelayRouting {
+    public static func deliveryPlan(
+        recipientInboxRelayURLs: [String],
+        senderInboxRelayURLs: [String]
+    ) -> NIP17DeliveryPlan? {
+        let recipientRelays = TaskifyRelayURL.normalizedList(recipientInboxRelayURLs)
+        let senderRelays = TaskifyRelayURL.normalizedList(senderInboxRelayURLs)
+        guard !recipientRelays.isEmpty, !senderRelays.isEmpty else { return nil }
+        return NIP17DeliveryPlan(
+            recipientRelayURLs: recipientRelays,
+            senderRelayURLs: senderRelays
+        )
+    }
+}
+
+public enum NIP17InboxRelayPreference {
+    public static let eventKind = 10_050
+
+    public static func event(
+        identity: NostrIdentity,
+        relayURLs: [String],
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> NostrEvent {
+        let relays = TaskifyRelayURL.normalizedList(relayURLs)
+        guard !relays.isEmpty else { throw NostrEventError.invalidEvent }
+        return try NostrEvent.signed(
+            privateKey: identity.privateKey,
+            createdAt: createdAt,
+            kind: eventKind,
+            tags: relays.map { ["relay", $0] },
+            content: ""
+        )
+    }
+}
+
 actor NIP17InboxRelayPreferenceCache {
     private struct Entry: Sendable {
         let relayURLs: [String]
@@ -46,7 +94,7 @@ actor NIP17InboxRelayPreferenceCache {
 }
 
 public enum NIP17InboxRelayResolver {
-    public static let preferenceEventKind = 10_050
+    public static let preferenceEventKind = NIP17InboxRelayPreference.eventKind
     private static let preferenceCache = NIP17InboxRelayPreferenceCache()
     private static let positiveCacheLifetime: TimeInterval = 10 * 60
     private static let negativeCacheLifetime: TimeInterval = 90
@@ -71,22 +119,21 @@ public enum NIP17InboxRelayResolver {
 
     public static func resolve(
         recipientPublicKey: String,
-        fallbackRelayURLs: [String],
+        discoveryRelayURLs: [String],
         timeout: Duration = .seconds(2)
     ) async -> [String] {
-        let fallback = TaskifyRelayURL.normalizedList(fallbackRelayURLs)
-        guard NostrPublicKey.parse(recipientPublicKey) != nil, !fallback.isEmpty else {
-            return fallback
-        }
+        let discoveryRelays = TaskifyRelayURL.normalizedList(discoveryRelayURLs)
+        guard NostrPublicKey.parse(recipientPublicKey) != nil,
+              !discoveryRelays.isEmpty else { return [] }
 
         let normalizedRecipient = recipientPublicKey.lowercased()
         if let cached = await preferenceCache.relayURLs(for: normalizedRecipient) {
-            return TaskifyRelayURL.normalizedList(cached + fallback)
+            return cached
         }
 
         let fetchTask = await preferenceCache.fetchTask(for: normalizedRecipient) {
             let events = await withTaskGroup(of: [NostrEvent].self) { group in
-                for relayURL in fallback {
+                for relayURL in discoveryRelays {
                     group.addTask {
                         await fetchPreferenceEvents(
                             relayURL: relayURL,
@@ -107,9 +154,7 @@ public enum NIP17InboxRelayResolver {
             for: normalizedRecipient,
             expiresAfter: discovered.isEmpty ? negativeCacheLifetime : positiveCacheLifetime
         )
-        return TaskifyRelayURL.normalizedList(
-            discovered + fallback
-        )
+        return discovered
     }
 
     private static func fetchPreferenceEvents(

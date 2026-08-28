@@ -102,6 +102,28 @@ final class TaskifyNotificationContractTests: XCTestCase {
         ))
     }
 
+    func testNotificationTapDestinationsUseStableDeviceLocalValues() {
+        XCTAssertEqual(
+            TaskifyNotificationContract.destination(userInfo: [
+                TaskifyNotificationContract.destinationKey: "chat",
+            ]),
+            .chat
+        )
+        XCTAssertEqual(
+            TaskifyNotificationContract.destination(userInfo: [
+                TaskifyNotificationContract.destinationKey: "wallet",
+            ]),
+            .wallet
+        )
+    }
+
+    func testNotificationTapDestinationRejectsMissingOrUnknownValues() {
+        XCTAssertNil(TaskifyNotificationContract.destination(userInfo: [:]))
+        XCTAssertNil(TaskifyNotificationContract.destination(userInfo: [
+            TaskifyNotificationContract.destinationKey: "boards",
+        ]))
+    }
+
     func testUrgentAlarmRequiresAnIncompleteFutureTaskWithDueTime() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let eligible = TaskItem(
