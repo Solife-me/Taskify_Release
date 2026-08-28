@@ -29,6 +29,16 @@ Taskify_Release/
 │   │   └── index.ts      # Worker entry: push notifications, reminders, cron, backups
 │   └── migrations/       # D1 SQL migrations
 │
+├── taskify-ios-native/   # Native SwiftUI app and TaskifyCore Swift package
+│   ├── Sources/TaskifyApp/        # iOS UI, APNs lifecycle, wallet, settings
+│   ├── Sources/TaskifyCore/       # Nostr/NIP-17 crypto, relay sync, core policy
+│   └── Tests/TaskifyCoreTests/    # Native unit and interoperability tests
+│
+├── taskify-push-relay/   # Dedicated NIP-17 inbox relay, APNs bridge, StartOS package
+│   ├── src/              # Relay, NIP-42/NIP-98 auth, store, APNs provider
+│   ├── startos/          # Start SDK 2.x manifest, action, daemon, interface, backup
+│   └── test/             # Protocol, persistence, APNs, and WebSocket integration tests
+│
 ├── docs/                 # Project documentation
 │   ├── agent-mode.md              # Agent Mode command reference
 │   ├── architecture-overview.md   # Runtime architecture and data flows
@@ -53,6 +63,8 @@ Taskify is a **privacy-first, local-first task manager** with Nostr-based sync a
 |---|---|---|
 | **PWA** | React 19, Vite, Tailwind | UI, local state, Nostr sync, Cashu wallet |
 | **Cloudflare Worker** | Wrangler, TypeScript | Push notifications, reminder scheduling, backup storage, cron triggers |
+| **Native iOS app** | SwiftUI, TaskifyCore | Native task/chat/wallet client, NIP-17 inbox, local notification classification |
+| **Taskify Push Relay** | Node.js, Nostr, APNs, StartOS | Encrypted kind-1059 retention and opaque-token APNs rich-preview delivery |
 | **Nostr relay network** | NDK, nostr-tools | Decentralized event transport and persistence |
 
 ### Data Flow
@@ -98,12 +110,16 @@ Backups
 | Protocol | Purpose | Key Files |
 |---|---|---|
 | **NIP-01** | Core Nostr event structure | `nostr/`, `domains/nostr/` |
-| **NIP-42** | Relay authentication | `nostr/RelayAuth.ts` |
+| **NIP-17** | Private DMs, kind-10050 inbox relay preferences, sender/recipient delivery copies | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift`, `taskify-ios-native/Sources/TaskifyCore/Nostr/NIP17InboxRelayResolver.swift` |
+| **NIP-59** | Gift-wrapped Nostr events with randomized timestamps and ephemeral outer keys | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift` |
+| **NIP-42** | Relay authentication | `nostr/RelayAuth.ts`, `taskify-ios-native/Sources/TaskifyCore/Sync/TaskSyncEngine.swift`, `taskify-push-relay/src/server.js` |
+| **NIP-98** | Authenticated native APNs device registration | `taskify-ios-native/Sources/TaskifyCore/Nostr/DMPushRegistrationClient.swift`, `taskify-push-relay/src/auth.js` |
 | **NIP-47** | Nostr Wallet Connect (NWC) | `wallet/nwc.ts` |
 | **NIP-61** | Nutzap / P2PK Cashu | `wallet/p2pk.ts` |
 | **NIP-96** | File/backup storage over Nostr | `nostr/Nip96Client.ts` |
 | **Cashu NUT-16** | Offline/deterministic tokens | `wallet/nut16.ts` |
 | **Web Push (RFC 8030)** | Push notifications via VAPID | `worker/src/index.ts` |
+| **Apple Push Notification service** | Generic DM alert delivery with device-side rich preview decryption | `taskify-ios-native/Sources/TaskifyNotificationService/NotificationService.swift`, `taskify-ios-native/Sources/TaskifyApp/Notifications/DMPushNotificationCoordinator.swift`, `taskify-push-relay/src/apns.js` |
 | **DLEQ proofs** | Cashu blind signature verification | `wallet/dleq.ts` |
 
 ---
@@ -158,6 +174,11 @@ npx wrangler dev
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
+| `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, strict kind-10050 routing, and signed inbox preferences |
+| `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
+| `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
+| `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
+| `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, and authenticated WebSocket delivery |
 
 Additional tests exist on feature branches and are being promoted into `New_Features_Fixes`:
 
@@ -168,10 +189,8 @@ Additional tests exist on feature branches and are being promoted into `New_Feat
 
 ### Current Gaps (see `docs/engineering-roadmap.md` for plan)
 
-- **No tests** for wallet/Cashu layer (swap, P2PK, NWC, mint sessions)
-- **No tests** for push notification Worker logic
-- **No tests** for relay health / relay auth flows
-- **No integration tests** — all tests are unit-level
+- **No tests** for the legacy Web Push reminder Worker logic
+- Native relay health and NIP-42 retry behavior still lack a live-relay integration test
 - **No E2E tests** — browser-level flows are untested
 - Coverage tooling not yet configured (no c8/nyc setup)
 

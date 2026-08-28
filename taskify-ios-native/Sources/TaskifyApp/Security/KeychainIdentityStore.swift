@@ -15,6 +15,9 @@ enum KeychainIdentityError: LocalizedError {
 struct KeychainIdentityStore {
     private let service = "solife.me.Taskify.Native"
     private let account = "nostr-identity-private-key"
+    private var sharedAccessGroup: String? {
+        Bundle.main.object(forInfoDictionaryKey: "TaskifyKeychainAccessGroup") as? String
+    }
 
     func loadOrCreate() throws -> NostrIdentity {
         if let storedKey = try loadPrivateKey() {
@@ -31,11 +34,12 @@ struct KeychainIdentityStore {
     }
 
     func save(_ identity: NostrIdentity) throws {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        if let sharedAccessGroup { query[kSecAttrAccessGroup as String] = sharedAccessGroup }
         let attributes: [String: Any] = [
             kSecValueData as String: identity.privateKey,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -52,13 +56,27 @@ struct KeychainIdentityStore {
     }
 
     private func loadPrivateKey() throws -> Data? {
-        let query: [String: Any] = [
+        if let sharedAccessGroup,
+           let shared = try loadPrivateKey(accessGroup: sharedAccessGroup) {
+            return shared
+        }
+        guard let legacy = try loadPrivateKey(accessGroup: nil) else { return nil }
+        if sharedAccessGroup != nil {
+            let identity = try NostrIdentity(privateKey: legacy)
+            try save(identity)
+        }
+        return legacy
+    }
+
+    private func loadPrivateKey(accessGroup: String?) throws -> Data? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }

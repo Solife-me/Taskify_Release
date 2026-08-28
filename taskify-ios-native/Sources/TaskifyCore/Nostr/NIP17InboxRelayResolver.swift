@@ -1,5 +1,54 @@
 import Foundation
 
+public struct NIP17DeliveryPlan: Equatable, Sendable {
+    public let recipientRelayURLs: [String]
+    public let senderRelayURLs: [String]
+
+    public init(recipientRelayURLs: [String], senderRelayURLs: [String]) {
+        self.recipientRelayURLs = recipientRelayURLs
+        self.senderRelayURLs = senderRelayURLs
+    }
+}
+
+/// NIP-17 requires a separate gift wrap for each receiver, delivered to that receiver's
+/// advertised kind-10050 inbox relays. Recipients that have not advertised any inbox relays
+/// fall back to the sender's discovery relays so DMs still reach them. In particular, the
+/// sender's self-copy must not be copied to the other participant's inbox relays.
+public enum NIP17RelayRouting {
+    public static func deliveryPlan(
+        recipientInboxRelayURLs: [String],
+        senderInboxRelayURLs: [String]
+    ) -> NIP17DeliveryPlan? {
+        let recipientRelays = TaskifyRelayURL.normalizedList(recipientInboxRelayURLs)
+        let senderRelays = TaskifyRelayURL.normalizedList(senderInboxRelayURLs)
+        guard !recipientRelays.isEmpty, !senderRelays.isEmpty else { return nil }
+        return NIP17DeliveryPlan(
+            recipientRelayURLs: recipientRelays,
+            senderRelayURLs: senderRelays
+        )
+    }
+}
+
+public enum NIP17InboxRelayPreference {
+    public static let eventKind = 10_050
+
+    public static func event(
+        identity: NostrIdentity,
+        relayURLs: [String],
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> NostrEvent {
+        let relays = TaskifyRelayURL.normalizedList(relayURLs)
+        guard !relays.isEmpty else { throw NostrEventError.invalidEvent }
+        return try NostrEvent.signed(
+            privateKey: identity.privateKey,
+            createdAt: createdAt,
+            kind: eventKind,
+            tags: relays.map { ["relay", $0] },
+            content: ""
+        )
+    }
+}
+
 actor NIP17InboxRelayPreferenceCache {
     private struct Entry: Sendable {
         let relayURLs: [String]
@@ -46,7 +95,7 @@ actor NIP17InboxRelayPreferenceCache {
 }
 
 public enum NIP17InboxRelayResolver {
-    public static let preferenceEventKind = 10_050
+    public static let preferenceEventKind = NIP17InboxRelayPreference.eventKind
     private static let preferenceCache = NIP17InboxRelayPreferenceCache()
     private static let positiveCacheLifetime: TimeInterval = 10 * 60
     private static let negativeCacheLifetime: TimeInterval = 90
@@ -69,12 +118,15 @@ public enum NIP17InboxRelayResolver {
         })
     }
 
+    /// Resolves the relays to deliver a NIP-17 gift wrap to. Prefers the recipient's advertised
+    /// kind-10050 inbox relays and falls back to `discoveryRelayURLs` — which therefore double as
+    /// the delivery fallback — when the recipient has advertised none.
     public static func resolve(
         recipientPublicKey: String,
-        fallbackRelayURLs: [String],
+        discoveryRelayURLs: [String],
         timeout: Duration = .seconds(2)
     ) async -> [String] {
-        let fallback = TaskifyRelayURL.normalizedList(fallbackRelayURLs)
+        let fallback = TaskifyRelayURL.normalizedList(discoveryRelayURLs)
         guard NostrPublicKey.parse(recipientPublicKey) != nil, !fallback.isEmpty else {
             return fallback
         }
@@ -84,9 +136,34 @@ public enum NIP17InboxRelayResolver {
             return TaskifyRelayURL.normalizedList(cached + fallback)
         }
 
+        let discovered = await resolveAdvertised(
+            recipientPublicKey: recipientPublicKey,
+            discoveryRelayURLs: discoveryRelayURLs,
+            timeout: timeout
+        )
+        return TaskifyRelayURL.normalizedList(discovered + fallback)
+    }
+
+    /// Resolves only the inbox relays the recipient has actually advertised via kind-10050,
+    /// without any delivery fallback. Used for self-discovery, where an empty result means
+    /// "no signed preference published yet" and must trigger bootstrapping.
+    public static func resolveAdvertised(
+        recipientPublicKey: String,
+        discoveryRelayURLs: [String],
+        timeout: Duration = .seconds(2)
+    ) async -> [String] {
+        let discoveryRelays = TaskifyRelayURL.normalizedList(discoveryRelayURLs)
+        guard NostrPublicKey.parse(recipientPublicKey) != nil,
+              !discoveryRelays.isEmpty else { return [] }
+
+        let normalizedRecipient = recipientPublicKey.lowercased()
+        if let cached = await preferenceCache.relayURLs(for: normalizedRecipient) {
+            return cached
+        }
+
         let fetchTask = await preferenceCache.fetchTask(for: normalizedRecipient) {
             let events = await withTaskGroup(of: [NostrEvent].self) { group in
-                for relayURL in fallback {
+                for relayURL in discoveryRelays {
                     group.addTask {
                         await fetchPreferenceEvents(
                             relayURL: relayURL,
@@ -107,9 +184,7 @@ public enum NIP17InboxRelayResolver {
             for: normalizedRecipient,
             expiresAfter: discovered.isEmpty ? negativeCacheLifetime : positiveCacheLifetime
         )
-        return TaskifyRelayURL.normalizedList(
-            discovered + fallback
-        )
+        return discovered
     }
 
     private static func fetchPreferenceEvents(

@@ -224,15 +224,20 @@ struct TaskSyncConfigurationFingerprint: Equatable, Sendable {
     init(
         boards: [Board],
         auxiliaryRelayURLs: [String],
-        inboxPublicKey: String?
+        inboxPublicKey: String?,
+        inboxRelayURLs: [String]? = nil
     ) {
         let normalizedAuxiliaryRelays = TaskifyRelayURL.normalizedList(auxiliaryRelayURLs)
+        let normalizedInboxRelays = inboxRelayURLs.map(TaskifyRelayURL.normalizedList)
         let normalizedInboxPublicKey = inboxPublicKey?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         let wantedRelays = Set(
-            boards.flatMap(\.effectiveRelayURLs) + normalizedAuxiliaryRelays
+            boards.flatMap(\.effectiveRelayURLs)
+                + normalizedAuxiliaryRelays
+                + (normalizedInboxRelays ?? [])
         )
+        let inboxRelays = Set(normalizedInboxRelays ?? Array(wantedRelays))
         relayPlans = wantedRelays.map { relayURL in
             let boardTags = Set<String>(
                 boards.compactMap { board -> String? in
@@ -243,7 +248,9 @@ struct TaskSyncConfigurationFingerprint: Equatable, Sendable {
             return TaskSyncRelaySubscriptionPlan(
                 relayURL: relayURL,
                 boardTags: boardTags,
-                inboxPublicKey: normalizedInboxPublicKey
+                inboxPublicKey: inboxRelays.contains(relayURL)
+                    ? normalizedInboxPublicKey
+                    : nil
             )
         }.sorted { $0.relayURL < $1.relayURL }
     }
@@ -256,6 +263,7 @@ public actor TaskSyncEngine {
     private var boards: [Board] = []
     private var auxiliaryRelayURLs: [String] = []
     private var inboxPublicKey: String?
+    private var inboxRelayURLs: Set<String> = []
     private var connections: [String: NostrRelayConnection] = [:]
     private var listenerTasks: [String: Task<Void, Never>] = [:]
     private var reconnectTasks: [String: Task<Void, Never>] = [:]
@@ -319,17 +327,20 @@ public actor TaskSyncEngine {
     public func configure(
         boards: [Board],
         auxiliaryRelayURLs: [String] = [],
-        inboxPublicKey: String? = nil
+        inboxPublicKey: String? = nil,
+        inboxRelayURLs: [String]? = nil
     ) async {
         let fingerprint = TaskSyncConfigurationFingerprint(
             boards: boards,
             auxiliaryRelayURLs: auxiliaryRelayURLs,
-            inboxPublicKey: inboxPublicKey
+            inboxPublicKey: inboxPublicKey,
+            inboxRelayURLs: inboxRelayURLs
         )
         let subscriptionsAreUnchanged = fingerprint == configurationFingerprint
         configurationFingerprint = fingerprint
         self.boards = boards
         self.auxiliaryRelayURLs = TaskifyRelayURL.normalizedList(auxiliaryRelayURLs)
+        let normalizedInboxRelayURLs = inboxRelayURLs.map(TaskifyRelayURL.normalizedList)
         let normalizedInboxPublicKey = inboxPublicKey?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
@@ -342,8 +353,11 @@ public actor TaskSyncEngine {
         self.inboxPublicKey = normalizedInboxPublicKey
         guard !subscriptionsAreUnchanged else { return }
         let wantedRelays = Set(
-            self.boards.flatMap(\.effectiveRelayURLs) + self.auxiliaryRelayURLs
+            self.boards.flatMap(\.effectiveRelayURLs)
+                + self.auxiliaryRelayURLs
+                + (normalizedInboxRelayURLs ?? [])
         )
+        self.inboxRelayURLs = Set(normalizedInboxRelayURLs ?? Array(wantedRelays))
 
         for relayURL in Set(connections.keys).subtracting(wantedRelays) {
             listenerTasks.removeValue(forKey: relayURL)?.cancel()
@@ -454,7 +468,8 @@ public actor TaskSyncEngine {
         await configure(
             boards: boards,
             auxiliaryRelayURLs: auxiliaryRelayURLs,
-            inboxPublicKey: inboxPublicKey
+            inboxPublicKey: inboxPublicKey,
+            inboxRelayURLs: Array(inboxRelayURLs)
         )
     }
 
@@ -597,7 +612,9 @@ public actor TaskSyncEngine {
                 boardTag: boardTag
             )
         }
-        if let inboxPublicKey, inboxPublicKey.count == 64 {
+        if let inboxPublicKey,
+           inboxPublicKey.count == 64,
+           inboxRelayURLs.contains(relayURL) {
             let id = inboxSubscriptionID(relayURL: relayURL, publicKey: inboxPublicKey)
             pendingSubscriptions[relayURL, default: []].insert(id)
             relayBatches[relayURL, default: [:]][id] = TaskRelayStartupBatch()
@@ -998,7 +1015,9 @@ public actor TaskSyncEngine {
             )
             return
         }
-        if let inboxPublicKey, inboxPublicKey.count == 64,
+        if let inboxPublicKey,
+           inboxPublicKey.count == 64,
+           inboxRelayURLs.contains(relayURL),
            inboxSubscriptionID(relayURL: relayURL, publicKey: inboxPublicKey) == subscriptionID {
             pendingSubscriptions[relayURL, default: []].insert(subscriptionID)
             relayBatches[relayURL, default: [:]][subscriptionID] = TaskRelayStartupBatch()

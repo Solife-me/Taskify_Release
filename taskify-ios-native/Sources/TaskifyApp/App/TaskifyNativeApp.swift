@@ -42,6 +42,7 @@ struct TaskifyShortcuts: AppShortcutsProvider {
 @main
 @MainActor
 struct TaskifyNativeApp: App {
+    @UIApplicationDelegateAdaptor(TaskifyApplicationDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: AppModel
     @StateObject private var wallet: WalletViewModel
@@ -58,6 +59,7 @@ struct TaskifyNativeApp: App {
         let wallet = WalletViewModel()
         model.registerWalletPaymentReceiver(wallet)
         TaskNotificationActionRouter.shared.register(model: model)
+        TaskifyDMPushCoordinator.shared.register(model: model)
         _model = State(initialValue: model)
         _wallet = StateObject(wrappedValue: wallet)
         TaskifyBackgroundSyncCoordinator.shared.register(model: model, wallet: wallet)
