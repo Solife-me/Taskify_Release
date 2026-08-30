@@ -1,6 +1,6 @@
 {
   "name": "taskify-nostr",
-  "version": "0.3.11",
+  "version": "0.4.0",
   "description": "Agent-facing CLI for Taskify collaboration over Nostr",
   "type": "module",
   "bin": {
@@ -9,15 +9,19 @@
   "scripts": {
     "build": "node build.mjs",
     "prepare": "npm run build",
+    "prepublishOnly": "npm test",
     "start": "node dist/index.js",
     "dev": "node --experimental-strip-types src/index.ts",
     "pretest": "npm run build",
     "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
   "files": [
-    "dist/",
+    "dist/index.js",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bundledDependencies": [],
   "engines": {
     "node": ">=22.12.0"
@@ -38,13 +42,13 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "chalk": "^5.6.2",
     "commander": "^15.0.0",
-    "nostr-tools": "^2.23.9",
-    "taskify-core": "file:../taskify-core",
-    "taskify-runtime-nostr": "file:../taskify-runtime-nostr"
+    "nostr-tools": "^2.23.9"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "esbuild": "^0.28.1",
+    "taskify-core": "file:../taskify-core",
+    "taskify-runtime-nostr": "file:../taskify-runtime-nostr",
     "typescript": "^6.0.3"
   }
 }
