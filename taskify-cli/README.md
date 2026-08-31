@@ -9,6 +9,13 @@ Core commands are non-interactive and emit one JSON envelope by default. Add `--
 Requirements: Node.js 22.12 or newer.
 
 ```bash
+npm install --global taskify-nostr
+taskify --help
+```
+
+For local development from the repository:
+
+```bash
 cd taskify-cli
 npm install
 npm link

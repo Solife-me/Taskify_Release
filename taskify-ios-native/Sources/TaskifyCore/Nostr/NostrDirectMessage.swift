@@ -281,6 +281,12 @@ public struct DirectMessageHistoryPruneResult: Equatable, Sendable {
     }
 }
 
+public enum NostrDirectMessageDeliveryState: String, Codable, Equatable, Sendable {
+    case queued
+    case sent
+    case failed
+}
+
 public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
     public var id: String { rumorEventID }
     public var rumorEventID: String
@@ -295,6 +301,9 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
     public var attachment: NostrDirectMessageAttachment?
     public var groupID: String?
     public var groupMemberPublicKeys: [String]?
+    /// Local delivery state for messages authored by this account. Older snapshots omit this
+    /// field and incoming messages leave it nil.
+    public var deliveryState: NostrDirectMessageDeliveryState?
 
     public init(
         rumorEventID: String,
@@ -308,7 +317,8 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         replyToEventID: String? = nil,
         attachment: NostrDirectMessageAttachment? = nil,
         groupID: String? = nil,
-        groupMemberPublicKeys: [String]? = nil
+        groupMemberPublicKeys: [String]? = nil,
+        deliveryState: NostrDirectMessageDeliveryState? = nil
     ) {
         self.rumorEventID = rumorEventID.lowercased()
         self.wrapEventID = wrapEventID.lowercased()
@@ -322,6 +332,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         self.attachment = attachment
         self.groupID = groupID?.lowercased()
         self.groupMemberPublicKeys = groupMemberPublicKeys?.map { $0.lowercased() }.sorted().nilIfEmpty
+        self.deliveryState = isIncoming ? nil : deliveryState
     }
 
     public init?(
@@ -354,7 +365,6 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
                 guard onlyRecipient == identity else { return nil }
                 peer = rumor.publicKey
             } else {
-                guard onlyRecipient != identity else { return nil }
                 peer = onlyRecipient
             }
             guard NostrPublicKey.parse(peer) != nil else { return nil }
@@ -380,7 +390,8 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
             replyToEventID: rumor.tags.first(where: { $0.count >= 2 && $0[0] == "e" })?[1],
             attachment: attachment,
             groupID: group?.groupID,
-            groupMemberPublicKeys: group?.memberPublicKeys
+            groupMemberPublicKeys: group?.memberPublicKeys,
+            deliveryState: incoming ? nil : .sent
         )
     }
 
@@ -473,9 +484,7 @@ public struct NostrDirectMessageReaction: Identifiable, Codable, Equatable, Send
                 guard recipients.contains(identity) else { return nil }
                 peer = rumor.publicKey
             } else {
-                guard let recipient = recipients.first(where: { $0 != identity }) else {
-                    return nil
-                }
+                guard let recipient = recipients.first else { return nil }
                 peer = recipient
             }
             guard NostrPublicKey.parse(peer) != nil else { return nil }
@@ -1035,14 +1044,38 @@ public extension TaskifySnapshot {
         guard suppressed[message.rumorEventID] == nil,
               suppressed[message.wrapEventID] == nil else { return false }
         var values = directMessages ?? []
-        guard !values.contains(where: { $0.rumorEventID == message.rumorEventID }) else {
-            return false
+        if let existingIndex = values.firstIndex(where: {
+            $0.rumorEventID == message.rumorEventID
+        }) {
+            guard !values[existingIndex].isIncoming,
+                  !message.isIncoming,
+                  values[existingIndex].deliveryState != .sent,
+                  message.deliveryState == .sent else { return false }
+            values[existingIndex].deliveryState = .sent
+            directMessages = values
+            return true
         }
         values.append(message)
         values = Self.sortedDirectMessages(values)
         if values.count > maximumCount {
             values.removeFirst(values.count - maximumCount)
         }
+        directMessages = values
+        return true
+    }
+
+    @discardableResult
+    mutating func setDirectMessageDeliveryState(
+        rumorEventID: String,
+        state: NostrDirectMessageDeliveryState
+    ) -> Bool {
+        let eventID = rumorEventID.lowercased()
+        var values = directMessages ?? []
+        guard let index = values.firstIndex(where: { $0.rumorEventID == eventID }),
+              !values[index].isIncoming,
+              values[index].deliveryState != .sent || state == .sent,
+              values[index].deliveryState != state else { return false }
+        values[index].deliveryState = state
         directMessages = values
         return true
     }

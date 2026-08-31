@@ -1,5 +1,13 @@
 import Foundation
 
+public enum NostrOutboxAcknowledgementPolicy: String, Codable, Equatable, Sendable {
+    /// State-replication events remain queued until every configured replica accepts them.
+    case everyRelay
+    /// Delivery events are complete once one destination accepts them. Other inbox relays are
+    /// redundancy, not a reason to leave a chat message pending forever.
+    case anyRelay
+}
+
 public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
     public var id: String { event.id }
     public var event: NostrEvent
@@ -8,6 +16,9 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
     public var taskID: String
     public var queuedAt: Date
     public var acceptedRelayURLs: [String]?
+    /// Optional for backward-compatible decoding of existing outbox files.
+    public var acknowledgementPolicy: NostrOutboxAcknowledgementPolicy?
+    public var expiresAt: Date?
 
     public init(
         event: NostrEvent,
@@ -15,7 +26,9 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
         boardLocalID: String,
         taskID: String,
         queuedAt: Date = Date(),
-        acceptedRelayURLs: [String]? = nil
+        acceptedRelayURLs: [String]? = nil,
+        acknowledgementPolicy: NostrOutboxAcknowledgementPolicy = .everyRelay,
+        expiresAt: Date? = nil
     ) {
         self.event = event
         self.relayURLs = relayURLs
@@ -23,11 +36,17 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
         self.taskID = taskID
         self.queuedAt = queuedAt
         self.acceptedRelayURLs = acceptedRelayURLs
+        self.acknowledgementPolicy = acknowledgementPolicy
+        self.expiresAt = expiresAt
     }
 
     public var pendingRelayURLs: [String] {
         let accepted = Set(acceptedRelayURLs ?? [])
         return relayURLs.filter { !accepted.contains($0) }
+    }
+
+    public var effectiveAcknowledgementPolicy: NostrOutboxAcknowledgementPolicy {
+        acknowledgementPolicy ?? .everyRelay
     }
 }
 
@@ -44,6 +63,7 @@ public actor NostrOutboxStore {
 
     private let fileURL: URL
     private var entries: [NostrOutboxEntry]
+    private var deferredPersistTask: Task<Void, Never>?
 
     public init(fileURL: URL = NostrOutboxStore.defaultURL) {
         self.fileURL = fileURL
@@ -80,17 +100,32 @@ public actor NostrOutboxStore {
         try persist()
     }
 
-    public func markAccepted(eventID: String, relayURL: String) throws {
+    @discardableResult
+    public func markAccepted(eventID: String, relayURL: String) throws -> NostrOutboxEntry? {
         guard let index = entries.firstIndex(where: { $0.event.id == eventID }),
-              entries[index].relayURLs.contains(relayURL) else { return }
+              entries[index].relayURLs.contains(relayURL) else { return nil }
 
         var accepted = Set(entries[index].acceptedRelayURLs ?? [])
         accepted.insert(relayURL)
         entries[index].acceptedRelayURLs = entries[index].relayURLs.filter { accepted.contains($0) }
-        if entries[index].pendingRelayURLs.isEmpty {
-            entries.remove(at: index)
+        let isComplete = entries[index].effectiveAcknowledgementPolicy == .anyRelay ||
+            entries[index].pendingRelayURLs.isEmpty
+        let completed = isComplete ? entries.remove(at: index) : nil
+        scheduleDeferredPersist()
+        return completed
+    }
+
+    @discardableResult
+    public func removeExpired(now: Date = Date()) throws -> [NostrOutboxEntry] {
+        let expired = entries.filter { entry in
+            guard let expiresAt = entry.expiresAt else { return false }
+            return expiresAt <= now
         }
+        guard !expired.isEmpty else { return [] }
+        let expiredIDs = Set(expired.map(\.event.id))
+        entries.removeAll { expiredIDs.contains($0.event.id) }
         try persist()
+        return expired.sorted { $0.queuedAt < $1.queuedAt }
     }
 
     public func replaceRelayTargets(
@@ -120,6 +155,26 @@ public actor NostrOutboxStore {
     }
 
     private func persist() throws {
+        deferredPersistTask?.cancel()
+        deferredPersistTask = nil
+        try persistToDisk()
+    }
+
+    private func scheduleDeferredPersist() {
+        deferredPersistTask?.cancel()
+        deferredPersistTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            await self?.persistDeferredChanges()
+        }
+    }
+
+    private func persistDeferredChanges() {
+        deferredPersistTask = nil
+        try? persistToDisk()
+    }
+
+    private func persistToDisk() throws {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()

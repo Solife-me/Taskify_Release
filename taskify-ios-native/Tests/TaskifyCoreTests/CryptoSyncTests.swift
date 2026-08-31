@@ -1101,6 +1101,100 @@ final class CryptoSyncTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    func testOutboxAnyRelayPolicyCompletesAfterFirstAcknowledgement() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-any-relay-ack-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let event = try referenceEvent(content: "dm", createdAt: 30)
+        let entry = NostrOutboxEntry(
+            event: event,
+            relayURLs: ["wss://one.example", "wss://two.example"],
+            boardLocalID: "__taskify-direct-messages__",
+            taskID: "rumor:recipient",
+            acknowledgementPolicy: .anyRelay,
+            expiresAt: Date(timeIntervalSince1970: 20_000)
+        )
+
+        try await store.enqueue(entry)
+        let completed = try await store.markAccepted(
+            eventID: event.id,
+            relayURL: "wss://one.example"
+        )
+
+        XCTAssertEqual(completed?.taskID, "rumor:recipient")
+        let remaining = await store.allEntries()
+        XCTAssertTrue(remaining.isEmpty)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testOutboxPrunesExpiredEntriesAndReturnsThemForFailureReporting() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-expired-outbox-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let expiredEvent = try referenceEvent(content: "expired", createdAt: 31)
+        let activeEvent = try referenceEvent(content: "active", createdAt: 32)
+        try await store.enqueue([
+            NostrOutboxEntry(
+                event: expiredEvent,
+                relayURLs: ["wss://one.example"],
+                boardLocalID: "__taskify-direct-messages__",
+                taskID: "expired:recipient",
+                expiresAt: Date(timeIntervalSince1970: 100)
+            ),
+            NostrOutboxEntry(
+                event: activeEvent,
+                relayURLs: ["wss://one.example"],
+                boardLocalID: "__taskify-direct-messages__",
+                taskID: "active:recipient",
+                expiresAt: Date(timeIntervalSince1970: 300)
+            ),
+        ])
+
+        let expired = try await store.removeExpired(now: Date(timeIntervalSince1970: 200))
+        let remaining = await store.allEntries()
+
+        XCTAssertEqual(expired.map(\.taskID), ["expired:recipient"])
+        XCTAssertEqual(remaining.map(\.taskID), ["active:recipient"])
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testSyncEngineAtomicallyQueuesRelayPublishBatchWithoutWaitingForDelivery() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-dm-batch-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = directory.appendingPathComponent("outbox.json")
+        let store = NostrOutboxStore(fileURL: fileURL)
+        let engine = TaskSyncEngine(outbox: store)
+        let recipient = try referenceEvent(content: "recipient", createdAt: 40)
+        let sender = try referenceEvent(content: "sender", createdAt: 41)
+
+        try await engine.enqueueForPublish([
+            TaskSyncRelayPublishRequest(
+                event: recipient,
+                relayURLs: ["wss://recipient.example"],
+                outboxScope: "__taskify-direct-messages__",
+                recordID: "rumor:recipient",
+                acknowledgementPolicy: .anyRelay
+            ),
+            TaskSyncRelayPublishRequest(
+                event: sender,
+                relayURLs: ["wss://sender.example"],
+                outboxScope: "__taskify-direct-messages__",
+                recordID: "rumor:sender",
+                acknowledgementPolicy: .anyRelay
+            ),
+        ])
+
+        let pendingCount = await engine.pendingPublishCount()
+        let reloaded = NostrOutboxStore(fileURL: fileURL)
+        let persisted = await reloaded.allEntries()
+        XCTAssertEqual(pendingCount, 2)
+        XCTAssertEqual(persisted.map(\.taskID), [
+            "rumor:recipient",
+            "rumor:sender",
+        ])
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     func testOutboxRetargetsQueuedBoardEventsWhenRelaysChange() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("taskify-relay-retarget-\(UUID().uuidString)", isDirectory: true)
