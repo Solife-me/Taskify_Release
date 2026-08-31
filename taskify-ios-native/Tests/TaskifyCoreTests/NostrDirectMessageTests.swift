@@ -53,6 +53,65 @@ final class NostrDirectMessageTests: XCTestCase {
         XCTAssertEqual(incoming.content, outgoing.content)
     }
 
+    func testSelfAddressedMessageAndReactionFormAnOutgoingSelfConversation() throws {
+        let identity = try identity(senderPrivateKey)
+        let messageRumor = try NIP17Rumor(
+            publicKey: identity.publicKeyHex,
+            createdAt: 1_784_647_200,
+            kind: NIP17GiftWrap.rumorKind,
+            tags: [["p", identity.publicKeyHex]],
+            content: "Note to self"
+        )
+        let messageWrap = try NIP17GiftWrap.wrap(
+            rumor: messageRumor,
+            sender: identity,
+            recipientPublicKey: identity.publicKey,
+            ephemeralIdentity: try self.identity(recipientWrapKey)
+        )
+        let decryptedMessage = try NIP17GiftWrap.unwrapRumor(messageWrap, recipient: identity)
+        let message = try XCTUnwrap(NostrDirectMessage(
+            decrypted: decryptedMessage,
+            identityPublicKey: identity.publicKeyHex
+        ))
+
+        XCTAssertFalse(message.isIncoming)
+        XCTAssertEqual(message.peerPublicKey, identity.publicKeyHex)
+        XCTAssertEqual(message.senderPublicKey, identity.publicKeyHex)
+
+        let reactionRumor = try NIP17Rumor(
+            publicKey: identity.publicKeyHex,
+            createdAt: 1_784_647_201,
+            kind: 7,
+            tags: [
+                ["p", identity.publicKeyHex],
+                ["e", messageRumor.id],
+                ["p", identity.publicKeyHex],
+            ],
+            content: "👍"
+        )
+        let reactionWrap = try NIP17GiftWrap.wrap(
+            rumor: reactionRumor,
+            sender: identity,
+            recipientPublicKey: identity.publicKey,
+            ephemeralIdentity: try self.identity(senderWrapKey)
+        )
+        let decryptedReaction = try NIP17GiftWrap.unwrapRumor(reactionWrap, recipient: identity)
+        let reaction = try XCTUnwrap(NostrDirectMessageReaction(
+            decrypted: decryptedReaction,
+            identityPublicKey: identity.publicKeyHex
+        ))
+
+        XCTAssertEqual(reaction.peerPublicKey, identity.publicKeyHex)
+        XCTAssertEqual(reaction.targetEventID, messageRumor.id)
+
+        var snapshot = TaskifySnapshot.empty
+        XCTAssertTrue(snapshot.ingestDirectMessage(message))
+        XCTAssertTrue(snapshot.ingestDirectMessageReaction(reaction))
+        XCTAssertEqual(snapshot.directMessageThreads().map(\.peerPublicKey), [identity.publicKeyHex])
+        XCTAssertEqual(snapshot.directMessageThreads().first?.unreadCount, 0)
+        XCTAssertEqual(snapshot.directMessageReactions(for: message).map(\.emoji), ["👍"])
+    }
+
     func testSnapshotDeduplicatesRumorsSortsThreadsAndTracksUnread() throws {
         let sender = try identity(senderPrivateKey)
         let recipient = try identity(recipientPrivateKey)
@@ -90,6 +149,38 @@ final class NostrDirectMessageTests: XCTestCase {
         )
         XCTAssertEqual(roundTrip.directMessageHistory, snapshot.directMessageHistory)
         XCTAssertEqual(roundTrip.directMessageReadAt, snapshot.directMessageReadAt)
+    }
+
+    func testOutgoingMessageDeliveryStatePersistsAndCanAdvance() throws {
+        let peer = try identity(recipientPrivateKey).publicKeyHex
+        var snapshot = TaskifySnapshot.empty
+        let queued = NostrDirectMessage(
+            rumorEventID: String(repeating: "a", count: 64),
+            wrapEventID: String(repeating: "b", count: 64),
+            peerPublicKey: peer,
+            senderPublicKey: try identity(senderPrivateKey).publicKeyHex,
+            content: "Queued message",
+            createdAt: 100,
+            isIncoming: false,
+            deliveryState: .queued
+        )
+
+        XCTAssertTrue(snapshot.ingestDirectMessage(queued))
+        XCTAssertTrue(snapshot.setDirectMessageDeliveryState(
+            rumorEventID: queued.rumorEventID,
+            state: .sent
+        ))
+        XCTAssertFalse(snapshot.setDirectMessageDeliveryState(
+            rumorEventID: queued.rumorEventID,
+            state: .failed
+        ))
+        XCTAssertEqual(snapshot.directMessageHistory.first?.deliveryState, .sent)
+
+        let roundTrip = try JSONDecoder().decode(
+            TaskifySnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+        XCTAssertEqual(roundTrip.directMessageHistory.first?.deliveryState, .sent)
     }
 
     func testMessagesSentInTheSameSecondPreserveObservedConversationOrder() throws {

@@ -121,6 +121,7 @@ struct ContactsView: View {
                     let group = model.groupConversation(id: thread.peerPublicKey)
                     let conversationName = group?.displayName
                         ?? contact?.displayName
+                        ?? (thread.peerPublicKey == model.identityPublicKey ? "You" : nil)
                         ?? "Conversation"
                     return thread.messages.compactMap { message in
                         let sender = message.isIncoming
@@ -236,8 +237,11 @@ struct ContactsView: View {
                             )) {
                                 DirectMessageThreadRow(
                                     thread: thread,
-                                    contact: model.nostrContact(publicKey: thread.peerPublicKey),
+                                    contact: thread.peerPublicKey == model.identityPublicKey
+                                        ? ownContact
+                                        : model.nostrContact(publicKey: thread.peerPublicKey),
                                     group: model.groupConversation(id: thread.peerPublicKey),
+                                    isSelf: thread.peerPublicKey == model.identityPublicKey,
                                     isMuted: model.isDirectMessageGroupMuted(thread.peerPublicKey),
                                     isBlocked: model.isDirectMessagePeerBlocked(thread.peerPublicKey)
                                 )
@@ -589,6 +593,7 @@ private struct DirectMessageThreadRow: View {
     let thread: NostrDirectMessageThread
     let contact: NostrContact?
     let group: NostrGroupConversation?
+    let isSelf: Bool
     let isMuted: Bool
     let isBlocked: Bool
 
@@ -648,7 +653,7 @@ private struct DirectMessageThreadRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(group?.displayName ?? contact?.displayName ?? latestStructuredPreview?.senderName ?? shortPublicKey)
+                    Text(group?.displayName ?? contact?.displayName ?? (isSelf ? "You" : nil) ?? latestStructuredPreview?.senderName ?? shortPublicKey)
                         .font(.body.weight(hasAttention ? .bold : .semibold))
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .lineLimit(1)
@@ -1060,6 +1065,15 @@ private struct NewConversationSheet: View {
         }
     }
 
+    private var selfMatchesSearch: Bool {
+        guard !model.identityPublicKey.isEmpty else { return false }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        return "message yourself".localizedCaseInsensitiveContains(query) ||
+            "you".localizedCaseInsensitiveContains(query) ||
+            model.identityNpub.localizedCaseInsensitiveContains(query)
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -1084,6 +1098,31 @@ private struct NewConversationSheet: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
+                if selfMatchesSearch {
+                    Button {
+                        onSelect(model.identityPublicKey)
+                    } label: {
+                        HStack(spacing: 12) {
+                            ChatPeerAvatar(
+                                contact: model.nostrContact(publicKey: model.identityPublicKey),
+                                publicKey: model.identityPublicKey,
+                                size: 42
+                            )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Message Yourself")
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                Text("Keep private notes in your own encrypted chat")
+                                    .font(.caption)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .accessibilityLabel("Message yourself")
+                }
+
                 ForEach(contacts) { contact in
                     Button {
                         onSelect(contact.publicKey)
@@ -1105,15 +1144,6 @@ private struct NewConversationSheet: View {
                 }
             }
             .listStyle(.plain)
-            .overlay {
-                if model.nostrContacts.isEmpty {
-                    ContentUnavailableView(
-                        "No Contacts Yet",
-                        systemImage: "person.2",
-                        description: Text("Add or sync a contact before starting a new conversation.")
-                    )
-                }
-            }
             .scrollContentBackground(.hidden)
             .background(TaskifyTheme.background)
             .navigationTitle("New Message")
@@ -1752,6 +1782,7 @@ private struct DirectMessageConversationView: View {
 
     private var contact: NostrContact? { model.nostrContact(publicKey: peerPublicKey) }
     private var group: NostrGroupConversation? { model.groupConversation(id: peerPublicKey) }
+    private var isSelfConversation: Bool { peerPublicKey == model.identityPublicKey }
     private var messages: [NostrDirectMessage] { model.directMessages(with: peerPublicKey) }
     private var sharedTasks: [SharedInboxItem] {
         model.sharedInboxItems
@@ -1830,7 +1861,8 @@ private struct DirectMessageConversationView: View {
     private var isBlocked: Bool { model.isDirectMessagePeerBlocked(peerPublicKey) }
     private var hasLeftGroup: Bool { group != nil && model.hasLeftDirectMessageGroup(peerPublicKey) }
     private var conversationTitle: String {
-        group?.displayName ?? contact?.displayName ?? structuredSenderName ?? "Message"
+        group?.displayName ?? contact?.displayName ?? (isSelfConversation ? "You" : nil)
+            ?? structuredSenderName ?? "Message"
     }
     private var searchResults: [ChatTimelineItem] {
         timeline.filter {
@@ -1888,9 +1920,17 @@ private struct DirectMessageConversationView: View {
                                 size: 72,
                                 isGroup: group != nil
                             )
-                            Text(group?.displayName ?? contact?.displayName ?? structuredSenderName ?? "New conversation")
+                            Text(
+                                group?.displayName ?? contact?.displayName
+                                    ?? (isSelfConversation ? "Message Yourself" : nil)
+                                    ?? structuredSenderName ?? "New conversation"
+                            )
                                 .font(.headline)
-                            Text("Messages are end-to-end encrypted with your Nostr identity.")
+                            Text(
+                                isSelfConversation
+                                    ? "Keep private notes synced through your encrypted Nostr inbox."
+                                    : "Messages are end-to-end encrypted with your Nostr identity."
+                            )
                                 .font(.caption)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
                                 .multilineTextAlignment(.center)
@@ -2102,6 +2142,9 @@ private struct DirectMessageConversationView: View {
                 return
             }
             Task { await sendFile(URL) }
+        }
+        .task(id: peerPublicKey) {
+            await model.prepareDirectMessageRecipient(peerPublicKey)
         }
         .confirmationDialog(
             "Delete this conversation?",
@@ -3494,8 +3537,7 @@ private struct DirectMessageBubble: View {
                             }
                         }
                     }
-                    .padding(.leading, message.isIncoming && !isGroupedWithNext ? 18 : 14)
-                    .padding(.trailing, !message.isIncoming && !isGroupedWithNext ? 18 : 14)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 9)
                     .background {
                         bubbleShape
@@ -3515,6 +3557,18 @@ private struct DirectMessageBubble: View {
                         }
                     }
                     .padding(.top, reactions.isEmpty ? 0 : 30)
+
+                    if !message.isIncoming, let deliveryState = message.deliveryState {
+                        HStack(spacing: 3) {
+                            Image(systemName: deliveryStateSymbol(deliveryState))
+                            Text(deliveryStateLabel(deliveryState))
+                        }
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(
+                            deliveryState == .failed ? Color.red : TaskifyTheme.tertiaryText
+                        )
+                        .accessibilityLabel("Message \(deliveryStateLabel(deliveryState))")
+                    }
                 }
 
                 if message.isIncoming { Spacer(minLength: 68) }
@@ -3540,9 +3594,24 @@ private struct DirectMessageBubble: View {
     private var bubbleShape: DirectMessageBubbleShape {
         DirectMessageBubbleShape(
             isIncoming: message.isIncoming,
-            isGroupedWithPrevious: isGroupedWithPrevious,
-            isGroupedWithNext: isGroupedWithNext
+            showsTail: !isGroupedWithNext
         )
+    }
+
+    private func deliveryStateSymbol(_ state: NostrDirectMessageDeliveryState) -> String {
+        switch state {
+        case .queued: "clock"
+        case .sent: "checkmark"
+        case .failed: "exclamationmark.circle.fill"
+        }
+    }
+
+    private func deliveryStateLabel(_ state: NostrDirectMessageDeliveryState) -> String {
+        switch state {
+        case .queued: "Sending…"
+        case .sent: "Sent"
+        case .failed: "Failed"
+        }
     }
 }
 
@@ -3554,8 +3623,7 @@ private struct DirectMessageReplyContext: View {
     private var bubbleShape: DirectMessageBubbleShape {
         DirectMessageBubbleShape(
             isIncoming: message.isIncoming,
-            isGroupedWithPrevious: false,
-            isGroupedWithNext: false
+            showsTail: true
         )
     }
 
@@ -3578,8 +3646,7 @@ private struct DirectMessageReplyContext: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(message.isIncoming ? .leading : .trailing)
-                    .padding(.leading, message.isIncoming ? 17 : 12)
-                    .padding(.trailing, message.isIncoming ? 12 : 17)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .frame(maxWidth: 310, alignment: message.isIncoming ? .leading : .trailing)
                     .background {
@@ -3688,107 +3755,81 @@ private struct ReplyConnectorShape: Shape {
 
 private struct DirectMessageBubbleShape: Shape {
     let isIncoming: Bool
-    let isGroupedWithPrevious: Bool
-    let isGroupedWithNext: Bool
+    let showsTail: Bool
 
     func path(in rect: CGRect) -> Path {
-        let showsTail = !isGroupedWithNext
-        let tailWidth: CGFloat = showsTail ? 7 : 0
-        let bodyLeft = rect.minX + (isIncoming ? tailWidth : 0)
-        let bodyRight = rect.maxX - (isIncoming ? 0 : tailWidth)
+        let radius = min(CGFloat(18), rect.height / 2)
+        guard showsTail else {
+            return RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: rect)
+        }
+
+        // Messages uses a compact tail that grows out of the bottom corner. Keep its height
+        // independent from the body radius: tying the two together makes a one-line bubble's
+        // tail start near its vertical midpoint and leaves the whole corner looking pinched.
+        let tailWidth: CGFloat = 6
+        let tailHeight = min(CGFloat(11), max(CGFloat(7), rect.height * 0.3))
+        // The tail protrudes from the body's layout bounds instead of consuming horizontal
+        // space inside them. That keeps the bodies and text of consecutive messages aligned.
+        let bodyLeft = rect.minX
+        let bodyRight = rect.maxX
         let top = rect.minY
         let bottom = rect.maxY
-        // Short one-line and reply-preview bubbles can be under 38 points tall. Clamp the
-        // radius so their top and bottom curves never cross when the path is drawn manually.
-        let farRadius = min(CGFloat(19), rect.height / 2)
-        let groupedRadius = min(CGFloat(7), farRadius)
-        let topNearRadius = isGroupedWithPrevious ? groupedRadius : farRadius
         var path = Path()
 
         if isIncoming {
-            path.move(to: CGPoint(x: bodyLeft + topNearRadius, y: top))
-            path.addLine(to: CGPoint(x: bodyRight - farRadius, y: top))
+            path.move(to: CGPoint(x: bodyLeft + radius, y: top))
+            path.addLine(to: CGPoint(x: bodyRight - radius, y: top))
             path.addQuadCurve(
-                to: CGPoint(x: bodyRight, y: top + farRadius),
+                to: CGPoint(x: bodyRight, y: top + radius),
                 control: CGPoint(x: bodyRight, y: top)
             )
-            path.addLine(to: CGPoint(x: bodyRight, y: bottom - farRadius))
+            path.addLine(to: CGPoint(x: bodyRight, y: bottom - radius))
             path.addQuadCurve(
-                to: CGPoint(x: bodyRight - farRadius, y: bottom),
+                to: CGPoint(x: bodyRight - radius, y: bottom),
                 control: CGPoint(x: bodyRight, y: bottom)
             )
-
-            if showsTail {
-                path.addLine(to: CGPoint(x: bodyLeft + 18, y: bottom))
-                path.addCurve(
-                    to: CGPoint(x: bodyLeft + 7, y: bottom - 5),
-                    control1: CGPoint(x: bodyLeft + 13, y: bottom),
-                    control2: CGPoint(x: bodyLeft + 10, y: bottom - 1)
-                )
-                path.addCurve(
-                    to: CGPoint(x: rect.minX + 0.5, y: bottom),
-                    control1: CGPoint(x: bodyLeft + 5, y: bottom - 3),
-                    control2: CGPoint(x: rect.minX + 4, y: bottom)
-                )
-                path.addCurve(
-                    to: CGPoint(x: bodyLeft, y: bottom - farRadius),
-                    control1: CGPoint(x: rect.minX + 6, y: bottom - 2),
-                    control2: CGPoint(x: bodyLeft, y: bottom - 10)
-                )
-            } else {
-                path.addLine(to: CGPoint(x: bodyLeft + groupedRadius, y: bottom))
-                path.addQuadCurve(
-                    to: CGPoint(x: bodyLeft, y: bottom - groupedRadius),
-                    control: CGPoint(x: bodyLeft, y: bottom)
-                )
-            }
-
-            path.addLine(to: CGPoint(x: bodyLeft, y: top + topNearRadius))
+            path.addLine(to: CGPoint(x: bodyLeft + 16, y: bottom))
+            path.addCurve(
+                to: CGPoint(x: rect.minX - tailWidth, y: bottom),
+                control1: CGPoint(x: bodyLeft + 10, y: bottom),
+                control2: CGPoint(x: rect.minX - tailWidth + 4, y: bottom)
+            )
+            path.addCurve(
+                to: CGPoint(x: bodyLeft, y: bottom - tailHeight),
+                control1: CGPoint(x: rect.minX - tailWidth + 4, y: bottom),
+                control2: CGPoint(x: bodyLeft, y: bottom - 5)
+            )
+            path.addLine(to: CGPoint(x: bodyLeft, y: top + radius))
             path.addQuadCurve(
-                to: CGPoint(x: bodyLeft + topNearRadius, y: top),
+                to: CGPoint(x: bodyLeft + radius, y: top),
                 control: CGPoint(x: bodyLeft, y: top)
             )
         } else {
-            path.move(to: CGPoint(x: bodyLeft + farRadius, y: top))
-            path.addLine(to: CGPoint(x: bodyRight - topNearRadius, y: top))
+            path.move(to: CGPoint(x: bodyLeft + radius, y: top))
+            path.addLine(to: CGPoint(x: bodyRight - radius, y: top))
             path.addQuadCurve(
-                to: CGPoint(x: bodyRight, y: top + topNearRadius),
+                to: CGPoint(x: bodyRight, y: top + radius),
                 control: CGPoint(x: bodyRight, y: top)
             )
-
-            if showsTail {
-                path.addLine(to: CGPoint(x: bodyRight, y: bottom - farRadius))
-                path.addCurve(
-                    to: CGPoint(x: rect.maxX - 0.5, y: bottom),
-                    control1: CGPoint(x: bodyRight, y: bottom - 10),
-                    control2: CGPoint(x: rect.maxX - 6, y: bottom - 2)
-                )
-                path.addCurve(
-                    to: CGPoint(x: bodyRight - 7, y: bottom - 5),
-                    control1: CGPoint(x: rect.maxX - 4, y: bottom),
-                    control2: CGPoint(x: bodyRight - 5, y: bottom - 3)
-                )
-                path.addCurve(
-                    to: CGPoint(x: bodyRight - 18, y: bottom),
-                    control1: CGPoint(x: bodyRight - 10, y: bottom - 1),
-                    control2: CGPoint(x: bodyRight - 13, y: bottom)
-                )
-            } else {
-                path.addLine(to: CGPoint(x: bodyRight, y: bottom - groupedRadius))
-                path.addQuadCurve(
-                    to: CGPoint(x: bodyRight - groupedRadius, y: bottom),
-                    control: CGPoint(x: bodyRight, y: bottom)
-                )
-            }
-
-            path.addLine(to: CGPoint(x: bodyLeft + farRadius, y: bottom))
+            path.addLine(to: CGPoint(x: bodyRight, y: bottom - tailHeight))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX + tailWidth, y: bottom),
+                control1: CGPoint(x: bodyRight, y: bottom - 5),
+                control2: CGPoint(x: rect.maxX + tailWidth - 4, y: bottom)
+            )
+            path.addCurve(
+                to: CGPoint(x: bodyRight - 16, y: bottom),
+                control1: CGPoint(x: rect.maxX + tailWidth - 4, y: bottom),
+                control2: CGPoint(x: bodyRight - 10, y: bottom)
+            )
+            path.addLine(to: CGPoint(x: bodyLeft + radius, y: bottom))
             path.addQuadCurve(
-                to: CGPoint(x: bodyLeft, y: bottom - farRadius),
+                to: CGPoint(x: bodyLeft, y: bottom - radius),
                 control: CGPoint(x: bodyLeft, y: bottom)
             )
-            path.addLine(to: CGPoint(x: bodyLeft, y: top + farRadius))
+            path.addLine(to: CGPoint(x: bodyLeft, y: top + radius))
             path.addQuadCurve(
-                to: CGPoint(x: bodyLeft + farRadius, y: top),
+                to: CGPoint(x: bodyLeft + radius, y: top),
                 control: CGPoint(x: bodyLeft, y: top)
             )
         }

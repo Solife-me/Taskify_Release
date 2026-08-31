@@ -49,14 +49,49 @@ public enum NIP17InboxRelayPreference {
     }
 }
 
+enum NIP17InboxRelayCacheLookup: Equatable, Sendable {
+    case fresh([String])
+    case stale([String])
+    case missing
+}
+
+struct NIP17ResolvedPreference: Sendable {
+    let relayURLs: [String]
+    let eventCreatedAt: Int?
+}
+
 actor NIP17InboxRelayPreferenceCache {
-    private struct Entry: Sendable {
-        let relayURLs: [String]
-        let expiresAt: Date
+    static var defaultURL: URL {
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return applicationSupport
+            .appendingPathComponent("TaskifyNative", isDirectory: true)
+            .appendingPathComponent("nip17-inbox-preferences.json", isDirectory: false)
     }
 
-    private var entries: [String: Entry] = [:]
-    private var inFlightFetches: [String: Task<[String], Never>] = [:]
+    private struct Entry: Codable, Sendable {
+        let relayURLs: [String]
+        let expiresAt: Date
+        let discardAfter: Date
+        let eventCreatedAt: Int?
+    }
+
+    private let fileURL: URL?
+    private var entries: [String: Entry]
+    private var inFlightFetches: [String: Task<NIP17ResolvedPreference, Never>] = [:]
+
+    init(fileURL: URL? = nil) {
+        self.fileURL = fileURL
+        if let fileURL,
+           let data = try? Data(contentsOf: fileURL),
+           let decoded = try? JSONDecoder().decode([String: Entry].self, from: data) {
+            entries = decoded
+        } else {
+            entries = [:]
+        }
+    }
 
     func relayURLs(for recipientPublicKey: String, now: Date = Date()) -> [String]? {
         let key = recipientPublicKey.lowercased()
@@ -68,10 +103,26 @@ actor NIP17InboxRelayPreferenceCache {
         return entry.relayURLs
     }
 
+    func lookup(
+        for recipientPublicKey: String,
+        now: Date = Date()
+    ) -> NIP17InboxRelayCacheLookup {
+        let key = recipientPublicKey.lowercased()
+        guard let entry = entries[key] else { return .missing }
+        guard entry.discardAfter > now else {
+            entries.removeValue(forKey: key)
+            persistSafely()
+            return .missing
+        }
+        return entry.expiresAt > now
+            ? .fresh(entry.relayURLs)
+            : .stale(entry.relayURLs)
+    }
+
     func fetchTask(
         for recipientPublicKey: String,
-        operation: @escaping @Sendable () async -> [String]
-    ) -> Task<[String], Never> {
+        operation: @escaping @Sendable () async -> NIP17ResolvedPreference
+    ) -> Task<NIP17ResolvedPreference, Never> {
         let key = recipientPublicKey.lowercased()
         if let existing = inFlightFetches[key] { return existing }
         let task = Task { await operation() }
@@ -83,22 +134,49 @@ actor NIP17InboxRelayPreferenceCache {
         _ relayURLs: [String],
         for recipientPublicKey: String,
         expiresAfter lifetime: TimeInterval,
+        staleFor staleLifetime: TimeInterval = 0,
+        eventCreatedAt: Int? = nil,
         now: Date = Date()
     ) {
         let key = recipientPublicKey.lowercased()
+        let expiresAt = now.addingTimeInterval(max(0, lifetime))
         entries[key] = Entry(
             relayURLs: TaskifyRelayURL.normalizedList(relayURLs),
-            expiresAt: now.addingTimeInterval(max(0, lifetime))
+            expiresAt: expiresAt,
+            discardAfter: expiresAt.addingTimeInterval(max(0, staleLifetime)),
+            eventCreatedAt: eventCreatedAt
         )
         inFlightFetches.removeValue(forKey: key)
+        persistSafely()
+    }
+
+    private func persistSafely() {
+        guard let fileURL else { return }
+        do {
+            let directory = fileURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(entries).write(to: fileURL, options: .atomic)
+        } catch {
+            // Relay preferences are a performance cache. Delivery still has recipient-specific
+            // fallback relays when the cache cannot be persisted.
+        }
     }
 }
 
 public enum NIP17InboxRelayResolver {
     public static let preferenceEventKind = NIP17InboxRelayPreference.eventKind
-    private static let preferenceCache = NIP17InboxRelayPreferenceCache()
+    private static let preferenceCache = NIP17InboxRelayPreferenceCache(
+        fileURL: NIP17InboxRelayPreferenceCache.defaultURL
+    )
     private static let positiveCacheLifetime: TimeInterval = 10 * 60
     private static let negativeCacheLifetime: TimeInterval = 90
+    private static let positiveStaleLifetime: TimeInterval = 30 * 24 * 60 * 60
+    private static let negativeStaleLifetime: TimeInterval = 10 * 60
 
     public static func relayURLs(
         from events: [NostrEvent],
@@ -132,16 +210,44 @@ public enum NIP17InboxRelayResolver {
         }
 
         let normalizedRecipient = recipientPublicKey.lowercased()
-        if let cached = await preferenceCache.relayURLs(for: normalizedRecipient) {
-            return TaskifyRelayURL.normalizedList(cached + fallback)
+        switch await preferenceCache.lookup(for: normalizedRecipient) {
+        case .fresh(let cached):
+            return deliveryRelayURLs(
+                advertisedRelayURLs: cached,
+                fallbackRelayURLs: fallback
+            )
+        case .stale(let cached):
+            refreshInBackground(
+                recipientPublicKey: normalizedRecipient,
+                discoveryRelayURLs: fallback,
+                timeout: timeout
+            )
+            return deliveryRelayURLs(
+                advertisedRelayURLs: cached,
+                fallbackRelayURLs: fallback
+            )
+        case .missing:
+            break
         }
 
-        let discovered = await resolveAdvertised(
-            recipientPublicKey: recipientPublicKey,
-            discoveryRelayURLs: discoveryRelayURLs,
+        let discovered = await fetchAndCache(
+            recipientPublicKey: normalizedRecipient,
+            discoveryRelayURLs: fallback,
             timeout: timeout
         )
-        return TaskifyRelayURL.normalizedList(discovered + fallback)
+        return deliveryRelayURLs(
+            advertisedRelayURLs: discovered,
+            fallbackRelayURLs: fallback
+        )
+    }
+
+    public static func deliveryRelayURLs(
+        advertisedRelayURLs: [String],
+        fallbackRelayURLs: [String]
+    ) -> [String] {
+        let advertised = TaskifyRelayURL.normalizedList(advertisedRelayURLs)
+        if !advertised.isEmpty { return advertised }
+        return TaskifyRelayURL.normalizedList(fallbackRelayURLs)
     }
 
     /// Resolves only the inbox relays the recipient has actually advertised via kind-10050,
@@ -157,17 +263,40 @@ public enum NIP17InboxRelayResolver {
               !discoveryRelays.isEmpty else { return [] }
 
         let normalizedRecipient = recipientPublicKey.lowercased()
-        if let cached = await preferenceCache.relayURLs(for: normalizedRecipient) {
+        switch await preferenceCache.lookup(for: normalizedRecipient) {
+        case .fresh(let cached):
             return cached
+        case .stale(let cached):
+            refreshInBackground(
+                recipientPublicKey: normalizedRecipient,
+                discoveryRelayURLs: discoveryRelays,
+                timeout: timeout
+            )
+            return cached
+        case .missing:
+            break
         }
 
-        let fetchTask = await preferenceCache.fetchTask(for: normalizedRecipient) {
+        return await fetchAndCache(
+            recipientPublicKey: normalizedRecipient,
+            discoveryRelayURLs: discoveryRelays,
+            timeout: timeout
+        )
+    }
+
+    private static func fetchAndCache(
+        recipientPublicKey: String,
+        discoveryRelayURLs: [String],
+        timeout: Duration
+    ) async -> [String] {
+        let discoveryRelays = TaskifyRelayURL.normalizedList(discoveryRelayURLs)
+        let fetchTask = await preferenceCache.fetchTask(for: recipientPublicKey) {
             let events = await withTaskGroup(of: [NostrEvent].self) { group in
                 for relayURL in discoveryRelays {
                     group.addTask {
                         await fetchPreferenceEvents(
                             relayURL: relayURL,
-                            recipientPublicKey: normalizedRecipient,
+                            recipientPublicKey: recipientPublicKey,
                             timeout: timeout
                         )
                     }
@@ -176,15 +305,47 @@ public enum NIP17InboxRelayResolver {
                 for await relayEvents in group { collected.append(contentsOf: relayEvents) }
                 return collected
             }
-            return relayURLs(from: events, recipientPublicKey: normalizedRecipient)
+            let relayURLs = relayURLs(from: events, recipientPublicKey: recipientPublicKey)
+            let latestCreatedAt = events
+                .filter {
+                    $0.kind == preferenceEventKind &&
+                        $0.publicKey.lowercased() == recipientPublicKey &&
+                        $0.verify()
+                }
+                .map(\.createdAt)
+                .max()
+            return NIP17ResolvedPreference(
+                relayURLs: relayURLs,
+                eventCreatedAt: latestCreatedAt
+            )
         }
         let discovered = await fetchTask.value
         await preferenceCache.store(
-            discovered,
-            for: normalizedRecipient,
-            expiresAfter: discovered.isEmpty ? negativeCacheLifetime : positiveCacheLifetime
+            discovered.relayURLs,
+            for: recipientPublicKey,
+            expiresAfter: discovered.relayURLs.isEmpty
+                ? negativeCacheLifetime
+                : positiveCacheLifetime,
+            staleFor: discovered.relayURLs.isEmpty
+                ? negativeStaleLifetime
+                : positiveStaleLifetime,
+            eventCreatedAt: discovered.eventCreatedAt
         )
-        return discovered
+        return discovered.relayURLs
+    }
+
+    private static func refreshInBackground(
+        recipientPublicKey: String,
+        discoveryRelayURLs: [String],
+        timeout: Duration
+    ) {
+        Task {
+            _ = await fetchAndCache(
+                recipientPublicKey: recipientPublicKey,
+                discoveryRelayURLs: discoveryRelayURLs,
+                timeout: timeout
+            )
+        }
     }
 
     private static func fetchPreferenceEvents(
@@ -195,19 +356,17 @@ public enum NIP17InboxRelayResolver {
         let connection = NostrRelayConnection(relayURL: relayURL)
         let subscriptionID = "taskify-nip17-relays-\(UUID().uuidString)"
         let stream = connection.messages()
-        do {
-            try await connection.connect()
-            try await connection.subscribeToNIP17InboxRelayPreferences(
-                id: subscriptionID,
-                authorPublicKey: recipientPublicKey
-            )
-        } catch {
-            await connection.disconnect()
-            return []
-        }
-
         let result = await withTaskGroup(of: [NostrEvent].self) { group in
             group.addTask {
+                do {
+                    try await connection.connect()
+                    try await connection.subscribeToNIP17InboxRelayPreferences(
+                        id: subscriptionID,
+                        authorPublicKey: recipientPublicKey
+                    )
+                } catch {
+                    return []
+                }
                 var events: [NostrEvent] = []
                 for await message in stream {
                     if Task.isCancelled { return events }

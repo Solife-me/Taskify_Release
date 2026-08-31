@@ -69,6 +69,37 @@ public struct TaskSyncPublishRequest: Sendable {
     }
 }
 
+public struct TaskSyncRelayPublishRequest: Sendable {
+    public let event: NostrEvent
+    public let relayURLs: [String]
+    public let outboxScope: String
+    public let recordID: String
+    public let acknowledgementPolicy: NostrOutboxAcknowledgementPolicy
+    public let expiresAt: Date?
+
+    public init(
+        event: NostrEvent,
+        relayURLs: [String],
+        outboxScope: String,
+        recordID: String,
+        acknowledgementPolicy: NostrOutboxAcknowledgementPolicy = .everyRelay,
+        expiresAt: Date? = nil
+    ) {
+        self.event = event
+        self.relayURLs = TaskifyRelayURL.normalizedList(relayURLs)
+        self.outboxScope = outboxScope
+        self.recordID = recordID
+        self.acknowledgementPolicy = acknowledgementPolicy
+        self.expiresAt = expiresAt
+    }
+}
+
+public enum TaskPublishDeliveryState: Equatable, Sendable {
+    case queued
+    case sent
+    case failed(String)
+}
+
 public enum TaskSyncUpdate: Sendable {
     case board(BoardRelayRecord)
     case task(TaskRelayRecord)
@@ -81,6 +112,7 @@ public enum TaskSyncUpdate: Sendable {
     /// Initial NIP-17 inbox history is expensive to authenticate and decrypt. Deliver the
     /// stored-event replay as a batch so the app can do that crypto away from the UI thread.
     case sharedInboxBatch([NostrEvent])
+    case publishState(recordID: String, state: TaskPublishDeliveryState)
     case status(TaskSyncReport)
 }
 
@@ -295,6 +327,7 @@ public actor TaskSyncEngine {
     private var deliveredEventIDOrder: [String] = []
     private var configurationFingerprint: TaskSyncConfigurationFingerprint?
     private var isCheckingForegroundRelayHealth = false
+    private var scheduledOutboxFlushTask: Task<Void, Never>?
 
     public init(outbox: NostrOutboxStore = NostrOutboxStore()) {
         self.outbox = outbox
@@ -311,6 +344,7 @@ public actor TaskSyncEngine {
         reconnectTasks.values.forEach { $0.cancel() }
         rateLimitRetryTasks.values.forEach { $0.cancel() }
         subscriptionRateLimitRetryTasks.values.forEach { $0.cancel() }
+        scheduledOutboxFlushTask?.cancel()
         updateContinuation.finish()
     }
 
@@ -336,7 +370,8 @@ public actor TaskSyncEngine {
             inboxPublicKey: inboxPublicKey,
             inboxRelayURLs: inboxRelayURLs
         )
-        let subscriptionsAreUnchanged = fingerprint == configurationFingerprint
+        let previousFingerprint = configurationFingerprint
+        let subscriptionsAreUnchanged = fingerprint == previousFingerprint
         configurationFingerprint = fingerprint
         self.boards = boards
         self.auxiliaryRelayURLs = TaskifyRelayURL.normalizedList(auxiliaryRelayURLs)
@@ -352,6 +387,14 @@ public actor TaskSyncEngine {
         }
         self.inboxPublicKey = normalizedInboxPublicKey
         guard !subscriptionsAreUnchanged else { return }
+        let previousPlans = Dictionary(
+            uniqueKeysWithValues: (previousFingerprint?.relayPlans ?? []).map {
+                ($0.relayURL, $0)
+            }
+        )
+        let nextPlans = Dictionary(
+            uniqueKeysWithValues: fingerprint.relayPlans.map { ($0.relayURL, $0) }
+        )
         let wantedRelays = Set(
             self.boards.flatMap(\.effectiveRelayURLs)
                 + self.auxiliaryRelayURLs
@@ -383,9 +426,11 @@ public actor TaskSyncEngine {
             }
         }
 
+        var newlyCreatedRelays: Set<String> = []
         for relayURL in wantedRelays where connections[relayURL] == nil {
             let connection = NostrRelayConnection(relayURL: relayURL)
             connections[relayURL] = connection
+            newlyCreatedRelays.insert(relayURL)
             let stream = connection.messages()
             listenerTasks[relayURL] = Task { [weak self] in
                 for await message in stream {
@@ -395,16 +440,27 @@ public actor TaskSyncEngine {
             }
         }
 
-        for relayURL in wantedRelays {
+        let changedRelays = wantedRelays.filter { relayURL in
+            newlyCreatedRelays.contains(relayURL) || previousPlans[relayURL] != nextPlans[relayURL]
+        }
+        for relayURL in changedRelays {
             relayPhases[relayURL] = .connecting
             relayMessages[relayURL] = nil
         }
         await emitStatus()
 
-        for relayURL in connections.keys.sorted() {
-            guard let connection = connections[relayURL] else { continue }
+        for relayURL in changedRelays.sorted() {
+            guard let connection = connections[relayURL],
+                  let nextPlan = nextPlans[relayURL] else { continue }
             do {
-                try await connectAndSubscribe(connection, relayURL: relayURL)
+                try await reconcileSubscriptions(
+                    connection,
+                    relayURL: relayURL,
+                    previousPlan: newlyCreatedRelays.contains(relayURL)
+                        ? nil
+                        : previousPlans[relayURL],
+                    nextPlan: nextPlan
+                )
                 if relayPhases[relayURL] != .online {
                     relayPhases[relayURL] = .syncing
                 }
@@ -415,8 +471,59 @@ public actor TaskSyncEngine {
                 scheduleReconnect(relayURL: relayURL)
             }
         }
-        await flushOutbox()
+        scheduleOutboxFlush()
         await emitStatus()
+    }
+
+    private func reconcileSubscriptions(
+        _ connection: NostrRelayConnection,
+        relayURL: String,
+        previousPlan: TaskSyncRelaySubscriptionPlan?,
+        nextPlan: TaskSyncRelaySubscriptionPlan
+    ) async throws {
+        try await connection.connect()
+        let previousBoardTags = Set(previousPlan?.boardTags ?? [])
+        let nextBoardTags = Set(nextPlan.boardTags)
+
+        for boardTag in previousBoardTags.subtracting(nextBoardTags) {
+            let id = subscriptionID(relayURL: relayURL, boardTag: boardTag)
+            try? await connection.closeSubscription(id: id)
+            pendingSubscriptions[relayURL]?.remove(id)
+            relayBatches[relayURL]?.removeValue(forKey: id)
+        }
+        for boardTag in nextBoardTags.subtracting(previousBoardTags) {
+            let id = subscriptionID(relayURL: relayURL, boardTag: boardTag)
+            pendingSubscriptions[relayURL, default: []].insert(id)
+            relayBatches[relayURL, default: [:]][id] = TaskRelayStartupBatch()
+            try await connection.subscribe(
+                id: id,
+                kinds: [
+                    TaskEventCodec.boardEventKind,
+                    TaskEventCodec.taskEventKind,
+                    TaskifyCalendarEventCodec.canonicalEventKind,
+                ],
+                boardTag: boardTag
+            )
+        }
+
+        guard previousPlan?.inboxPublicKey != nextPlan.inboxPublicKey else { return }
+        if let previousInboxKey = previousPlan?.inboxPublicKey {
+            let id = inboxSubscriptionID(relayURL: relayURL, publicKey: previousInboxKey)
+            try? await connection.closeSubscription(id: id)
+            pendingSubscriptions[relayURL]?.remove(id)
+            relayBatches[relayURL]?.removeValue(forKey: id)
+        }
+        if let nextInboxKey = nextPlan.inboxPublicKey {
+            let id = inboxSubscriptionID(relayURL: relayURL, publicKey: nextInboxKey)
+            pendingSubscriptions[relayURL, default: []].insert(id)
+            relayBatches[relayURL, default: [:]][id] = TaskRelayStartupBatch()
+            try await connection.subscribeToSharedInbox(
+                id: id,
+                recipientPublicKey: nextInboxKey,
+                since: Int(Date().timeIntervalSince1970) - (30 * 24 * 60 * 60),
+                limit: 500
+            )
+        }
     }
 
     public func stop() async {
@@ -429,6 +536,8 @@ public actor TaskSyncEngine {
         subscriptionRateLimitRetryTasks.values.forEach { $0.cancel() }
         subscriptionRateLimitRetryTasks.removeAll()
         subscriptionRateLimitAttempts.removeAll()
+        scheduledOutboxFlushTask?.cancel()
+        scheduledOutboxFlushTask = nil
         reconnectAttempts.removeAll()
         for connection in connections.values {
             await connection.disconnect()
@@ -572,6 +681,29 @@ public actor TaskSyncEngine {
         await emitStatus()
     }
 
+    /// Atomically persists a group of relay publications, reports them as queued, and schedules
+    /// delivery without making the caller wait behind existing relay backlog or rate limits.
+    public func enqueueForPublish(_ requests: [TaskSyncRelayPublishRequest]) async throws {
+        let entries = requests.compactMap { request -> NostrOutboxEntry? in
+            guard !request.relayURLs.isEmpty else { return nil }
+            return NostrOutboxEntry(
+                event: request.event,
+                relayURLs: request.relayURLs,
+                boardLocalID: request.outboxScope,
+                taskID: request.recordID,
+                acknowledgementPolicy: request.acknowledgementPolicy,
+                expiresAt: request.expiresAt
+            )
+        }
+        guard !entries.isEmpty else { return }
+        try await outbox.enqueue(entries)
+        for entry in entries {
+            updateContinuation.yield(.publishState(recordID: entry.taskID, state: .queued))
+        }
+        await emitStatus()
+        scheduleOutboxFlush()
+    }
+
     public func flushQueuedPublishes() async {
         await flushOutbox()
         await emitStatus()
@@ -628,6 +760,14 @@ public actor TaskSyncEngine {
     }
 
     private func flushOutbox() async {
+        if let expired = try? await outbox.removeExpired() {
+            for entry in expired {
+                updateContinuation.yield(.publishState(
+                    recordID: entry.taskID,
+                    state: .failed("Delivery expired before a relay accepted it.")
+                ))
+            }
+        }
         let entries = await outbox.allEntries()
         let relayURLs = Set(entries.flatMap(\.pendingRelayURLs))
         await withTaskGroup(of: Void.self) { group in
@@ -637,6 +777,20 @@ public actor TaskSyncEngine {
                 }
             }
         }
+    }
+
+    private func scheduleOutboxFlush() {
+        guard scheduledOutboxFlushTask == nil else { return }
+        scheduledOutboxFlushTask = Task { [weak self] in
+            await Task.yield()
+            await self?.runScheduledOutboxFlush()
+        }
+    }
+
+    private func runScheduledOutboxFlush() async {
+        await flushOutbox()
+        scheduledOutboxFlushTask = nil
+        await emitStatus()
     }
 
     private func flushOutbox(to relayURL: String) async {
@@ -806,7 +960,16 @@ public actor TaskSyncEngine {
                 .lowercased()
                 .hasPrefix("duplicate:")
             if accepted || isDuplicate {
-                try? await outbox.markAccepted(eventID: eventID, relayURL: relayURL)
+                let completed = try? await outbox.markAccepted(
+                    eventID: eventID,
+                    relayURL: relayURL
+                )
+                if let completed {
+                    updateContinuation.yield(.publishState(
+                        recordID: completed.taskID,
+                        state: .sent
+                    ))
+                }
                 var pacer = publishPacers[relayURL] ?? RelayPublishPacer()
                 pacer.recordAccepted()
                 publishPacers[relayURL] = pacer

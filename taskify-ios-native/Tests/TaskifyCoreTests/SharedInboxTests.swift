@@ -986,6 +986,59 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertEqual(cached, ["wss://relay.solife.me", "wss://inbox.example"])
     }
 
+    func testNIP17DeliveryUsesFallbackOnlyWithoutAdvertisedInboxRelays() {
+        XCTAssertEqual(
+            NIP17InboxRelayResolver.deliveryRelayURLs(
+                advertisedRelayURLs: ["wss://recipient.example"],
+                fallbackRelayURLs: ["wss://fallback.example"]
+            ),
+            ["wss://recipient.example"]
+        )
+        XCTAssertEqual(
+            NIP17InboxRelayResolver.deliveryRelayURLs(
+                advertisedRelayURLs: [],
+                fallbackRelayURLs: ["wss://fallback.example"]
+            ),
+            ["wss://fallback.example"]
+        )
+    }
+
+    func testInboxRelayPreferenceCachePersistsAndServesStalePositiveResults() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-inbox-cache-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = directory.appendingPathComponent("preferences.json")
+        let storedAt = Date(timeIntervalSince1970: 10_000)
+        let cache = NIP17InboxRelayPreferenceCache(fileURL: fileURL)
+
+        await cache.store(
+            ["wss://recipient.example/"],
+            for: "ABCDEF",
+            expiresAfter: 60,
+            staleFor: 3_600,
+            eventCreatedAt: 9_900,
+            now: storedAt
+        )
+
+        let reloaded = NIP17InboxRelayPreferenceCache(fileURL: fileURL)
+        let fresh = await reloaded.lookup(
+            for: "abcdef",
+            now: storedAt.addingTimeInterval(30)
+        )
+        let stale = await reloaded.lookup(
+            for: "ABCDEF",
+            now: storedAt.addingTimeInterval(120)
+        )
+        let expired = await reloaded.lookup(
+            for: "abcdef",
+            now: storedAt.addingTimeInterval(3_661)
+        )
+
+        XCTAssertEqual(fresh, .fresh(["wss://recipient.example"]))
+        XCTAssertEqual(stale, .stale(["wss://recipient.example"]))
+        XCTAssertEqual(expired, .missing)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     func testSnapshotWithoutInboxFieldStillDecodes() throws {
         let snapshot = TaskifySnapshot.empty
         let encoded = try JSONEncoder().encode(snapshot)
