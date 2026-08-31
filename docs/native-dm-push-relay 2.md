@@ -41,16 +41,6 @@ Device-token rotation uses the same authenticated registration endpoint. The ser
 
 The implementation requires NIP-42. Taskify answers the relay challenge, retries any pre-authentication subscription or publish, and suppresses APNs for an authenticated account's own `p` copy.
 
-## Native send-path performance and delivery state
-
-- The native app persists recipient kind-10050 results by public key. Positive results are fresh for 10 minutes and may be used stale for up to 30 days while a refresh runs in the background; an empty result is cached for 90 seconds and may be used stale for another 10 minutes. Opening a one-to-one conversation also starts a preflight lookup.
-- A recipient's advertised inbox list is authoritative. Contact relays, relays remembered for that conversation, and the app's configured relays are discovery and fallback inputs only; they are used for delivery when the recipient has not advertised an inbox. Relays accumulated from unrelated contacts and chats are not queried or published to.
-- Gift-wrap construction runs off the UI actor. Group recipient lookups are bounded to four concurrent operations, and all wraps for one message, reaction, structured share, or group metadata update are added to the durable outbox in one atomic batch.
-- Tapping Send waits only for local validation, recipient resolution when it was not already cached, encryption, and the durable outbox write. Relay connection, subscription reconciliation, backlog draining, authentication, rate-limit waits, and acknowledgement happen in the background.
-- Inbox delivery entries are complete when any one destination relay accepts the gift wrap. They expire after 48 hours rather than retrying forever. Relay acknowledgements are coalesced before rewriting the outbox file, while enqueue remains immediately durable.
-- The conversation shows outgoing messages as `Sending…`, `Sent`, or `Failed`. `Sent` means a recipient gift wrap was accepted by at least one destination relay; it is not a read receipt.
-- Relay configuration changes are reconciled incrementally, so opening or sending in one conversation does not tear down unchanged subscriptions. Instruments points-of-interest named `DM Send`, `DM Relay Resolution`, `DM Gift Wrap`, and `DM Durable Queue` expose the remaining latency by phase.
-
 ## Registration and APNs
 
 - `PUT /v1/registrations/:installationID` registers or rotates one APNs token. `DELETE` disables it.
