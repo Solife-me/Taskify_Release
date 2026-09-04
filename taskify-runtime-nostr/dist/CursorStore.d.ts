@@ -3,7 +3,8 @@ export declare class CursorStore {
     private lastSeen;
     private keyForParts;
     keyFor(filter: NDKFilter): string;
-    getSince(filter: NDKFilter): number | undefined;
-    update(filter: NDKFilter, createdAt?: number): void;
-    updateMany(filters: NDKFilter[], createdAt?: number): void;
+    private scopedKey;
+    getSince(filter: NDKFilter, relayUrls?: string[]): number | undefined;
+    update(filter: NDKFilter, createdAt?: number, relayUrls?: string[]): void;
+    updateMany(filters: NDKFilter[], createdAt?: number, relayUrls?: string[]): void;
 }

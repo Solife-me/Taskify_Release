@@ -7,7 +7,7 @@ import type {
   NDKSubscriptionOptions,
 } from "@nostr-dev-kit/ndk";
 import type { NostrEvent } from "nostr-tools";
-import { verifyEvent } from "nostr-tools";
+import { verifyEvent, matchFilter } from "nostr-tools";
 import { CursorStore } from "./CursorStore.js";
 import { EventCache } from "./EventCache.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
@@ -46,13 +46,15 @@ type SubscriptionState = {
   flushScheduled: boolean;
   pendingEoseRelays: Array<string | undefined>;
   eoseFlushScheduled: boolean;
+  historyComplete: boolean;
+  pendingCursors: Map<string, { filter: NDKFilter; createdAt: number }>;
 };
 
 const MAX_SEEN_IDS = 4096;
 const FLUSH_BATCH_SIZE = 64;
 
 function scheduleFrame(fn: () => void): void {
-  if (typeof requestAnimationFrame === "function") requestAnimationFrame(fn);
+  if (typeof requestAnimationFrame === "function" && (typeof document === "undefined" || document.visibilityState !== "hidden")) requestAnimationFrame(fn);
   else setTimeout(fn, 0);
 }
 
@@ -134,7 +136,7 @@ export class SubscriptionManager {
       filters.map((f) => {
         const nf = normalizeFilter(f);
         if (!skipSince && nf.since == null) {
-          const since = this.cursorStore.getSince(nf);
+          const since = this.cursorStore.getSince(nf, relayUrls);
           if (since) nf.since = since;
         }
         return nf;
@@ -159,11 +161,18 @@ export class SubscriptionManager {
 
   private flushPending(state: SubscriptionState): void {
     state.flushScheduled = false;
+    if (this.subs.get(state.key) !== state) return;
     const batch = state.pendingEvents.splice(0, FLUSH_BATCH_SIZE);
     for (const { raw, relayUrl } of batch) {
       state.handlers.forEach((h) => {
         try { h.onEvent?.(raw, relayUrl); } catch {}
       });
+      for (const filter of state.filters.filter((filter) => matchFilter(filter, raw))) {
+        const key = this.cursorStore.keyFor(filter);
+        const newest = Math.max(state.pendingCursors.get(key)?.createdAt || 0, raw.created_at);
+        state.pendingCursors.set(key, { filter, createdAt: newest });
+        if (state.historyComplete) this.cursorStore.update(filter, newest, state.relayUrls);
+      }
     }
     if (state.pendingEvents.length > 0) this.scheduleFlush(state);
     else if (state.pendingEoseRelays.length > 0) this.scheduleEoseFlush(state);
@@ -174,6 +183,11 @@ export class SubscriptionManager {
     if (state.pendingEvents.length > 0) {
       this.scheduleFlush(state);
       return;
+    }
+    if (this.subs.get(state.key) !== state) return;
+    state.historyComplete = true;
+    for (const { filter, createdAt } of state.pendingCursors.values()) {
+      this.cursorStore.update(filter, createdAt, state.relayUrls);
     }
     const relays = state.pendingEoseRelays.splice(0);
     for (const relayUrl of relays) {
@@ -197,6 +211,13 @@ export class SubscriptionManager {
     }
 
     const relaySet = await this.resolveRelaySet(relayUrls);
+    // Another caller can finish the same asynchronous relay lookup first.
+    const raced = this.subs.get(key);
+    if (raced) {
+      raced.refCount += 1;
+      raced.handlers.add(handler);
+      return { key, subscription: raced.subscription, release: () => this.release(key, handler), filters: raced.filters, relayUrls: raced.relayUrls };
+    }
     const opts: NDKSubscriptionOptions = { ...options?.opts, closeOnEose: options?.opts?.closeOnEose ?? false, relaySet };
 
     const state: SubscriptionState = {
@@ -211,6 +232,8 @@ export class SubscriptionManager {
       flushScheduled: false,
       pendingEoseRelays: [],
       eoseFlushScheduled: false,
+      historyComplete: false,
+      pendingCursors: new Map(),
     };
     this.subs.set(key, state);
 
@@ -222,13 +245,14 @@ export class SubscriptionManager {
       try { raw = evt.rawEvent() as NostrEvent; } catch { return; }
       if (!raw?.id || typeof raw.id !== "string") return;
       if (state.seenIds.has(raw.id)) return;
+      if (!state.filters.some((filter) => matchFilter(filter, raw))) return;
 
       // NDK's built-in verification is probabilistic per relay (validation
       // ratio drops as relays prove trustworthy) and in async mode events
       // emit to subscribers before verification settles — so forged events
       // can reach handlers. Verifying here is deterministic and synchronous.
       let signatureValid = false;
-      try { signatureValid = verifyEvent(raw as Parameters<typeof verifyEvent>[0]); } catch { signatureValid = false; }
+      try { signatureValid = verifyEvent({ id: raw.id, pubkey: raw.pubkey, sig: raw.sig, kind: raw.kind, created_at: raw.created_at, tags: raw.tags, content: raw.content }); } catch { signatureValid = false; }
       if (!signatureValid) {
         try { console.warn("[nostr] dropping event with invalid signature", raw.id, "from", evt.relay?.url); } catch {}
         return;
@@ -241,7 +265,6 @@ export class SubscriptionManager {
       }
 
       this.eventCache?.add(raw);
-      if (raw.created_at && Number.isFinite(raw.created_at)) this.cursorStore.updateMany(state.filters, raw.created_at);
       state.pendingEvents.push({ raw, relayUrl: evt.relay?.url });
       this.scheduleFlush(state);
     });

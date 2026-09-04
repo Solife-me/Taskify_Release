@@ -40,6 +40,7 @@ export class PublishCoordinator {
     retryBaseMs;
     retryMaxMs;
     activeOutboxIds = new Set();
+    outboxLocks = new Map();
     retryTimers = new Map();
     drainPromise = null;
     constructor(ndk, resolveRelaySet, cache, options) {
@@ -113,29 +114,42 @@ export class PublishCoordinator {
         const mutation = await this.outboxStore.get(id).catch(() => undefined);
         return !!mutation;
     }
+    withOutboxLock(id, work) {
+        const previous = this.outboxLocks.get(id) || Promise.resolve();
+        const operation = previous.catch(() => undefined).then(work);
+        this.outboxLocks.set(id, operation);
+        return operation.finally(() => {
+            if (this.outboxLocks.get(id) === operation)
+                this.outboxLocks.delete(id);
+        });
+    }
     async enqueueOutbox(args) {
         if (!this.outboxStore)
             return null;
         const id = this.outboxMutationId(args.event, args.replaceableKey);
-        const existing = await this.outboxStore.get(id).catch(() => undefined);
-        const mutation = createNostrOutboxMutation({
-            id,
-            event: args.event,
-            relayUrls: args.relayUrls,
-            replaceableKey: args.replaceableKey,
-            existing,
-            nextAttemptAt: args.nextAttemptAt ?? null,
+        return this.withOutboxLock(id, async () => {
+            const existing = await this.outboxStore.get(id).catch(() => undefined);
+            const mutation = createNostrOutboxMutation({
+                id,
+                event: args.event,
+                relayUrls: args.relayUrls,
+                replaceableKey: args.replaceableKey,
+                existing,
+                nextAttemptAt: args.nextAttemptAt ?? null,
+            });
+            try {
+                await this.outboxStore.put(mutation);
+            }
+            catch (error) {
+                if (args.replaceableKey)
+                    this.replaceableCache.delete(args.replaceableKey);
+                throw error;
+            }
+            if (mutation.nextAttemptAt && mutation.nextAttemptAt > Date.now()) {
+                this.scheduleOutboxRetry(id, mutation.nextAttemptAt - Date.now());
+            }
+            return id;
         });
-        try {
-            await this.outboxStore.put(mutation);
-        }
-        catch {
-            return null;
-        }
-        if (mutation.nextAttemptAt && mutation.nextAttemptAt > Date.now()) {
-            this.scheduleOutboxRetry(id, mutation.nextAttemptAt - Date.now());
-        }
-        return id;
     }
     async publishNowWithOutbox(event, relaySet, outboxId) {
         if (outboxId)
@@ -143,12 +157,12 @@ export class PublishCoordinator {
         try {
             const result = await this.publishNow(event, relaySet);
             if (outboxId)
-                await this.markOutboxSuccess(outboxId, result.ackedRelays);
+                await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id);
             return result;
         }
         catch (error) {
             if (outboxId)
-                await this.markOutboxFailure(outboxId, error);
+                await this.markOutboxFailure(outboxId, error, event.id);
             throw error;
         }
         finally {
@@ -156,11 +170,14 @@ export class PublishCoordinator {
                 this.activeOutboxIds.delete(outboxId);
         }
     }
-    async markOutboxSuccess(outboxId, ackedRelays) {
+    async markOutboxSuccess(outboxId, ackedRelays, eventId) {
+        return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId));
+    }
+    async markOutboxSuccessLocked(outboxId, ackedRelays, eventId) {
         if (!this.outboxStore)
             return;
         const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
-        if (!mutation)
+        if (!mutation || mutation.payload.event.id !== eventId)
             return;
         const next = mergeOutboxRelayAcks(mutation, ackedRelays);
         if (!next) {
@@ -177,11 +194,14 @@ export class PublishCoordinator {
         await this.outboxStore.put({ ...next, nextAttemptAt: retryAt }).catch(() => undefined);
         this.scheduleOutboxRetry(outboxId, delay);
     }
-    async markOutboxFailure(outboxId, error) {
+    async markOutboxFailure(outboxId, error, eventId) {
+        return this.withOutboxLock(outboxId, () => this.markOutboxFailureLocked(outboxId, error, eventId));
+    }
+    async markOutboxFailureLocked(outboxId, error, eventId) {
         if (!this.outboxStore)
             return;
         const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
-        if (!mutation)
+        if (!mutation || mutation.payload.event.id !== eventId)
             return;
         const attempts = mutation.attempts + 1;
         const delay = this.retryDelayMs(attempts);

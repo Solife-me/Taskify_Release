@@ -224,3 +224,46 @@ test("PublishCoordinator publishes only the latest replaceable event for a debou
     coordinator.shutdown();
   }
 });
+
+test("an old publish acknowledgement cannot remove a newer queued replacement", async () => {
+  const store = new MemoryOutboxStore();
+  const coordinator = buildCoordinator(store);
+  const originalPublish = NDKEvent.prototype.publish;
+  let finish!: (value: Set<unknown>) => void;
+  NDKEvent.prototype.publish = async function () {
+    return await new Promise((resolve) => { finish = resolve as typeof finish; }) as never;
+  };
+  try {
+    const publishing = coordinator.publish(template, { relayUrls: ["wss://relay.one"], signer: generateSecretKey() });
+    await waitFor(() => !!finish);
+    const current = [...store.rows.values()][0];
+    const newer = clone(current);
+    newer.payload.event.id = "f".repeat(64);
+    newer.payload.event.content = "newer replacement";
+    await store.put(newer);
+    finish(new Set([relay("wss://relay.one")]));
+    await publishing;
+    assert.equal(store.rows.get(current.id)?.payload.event.id, newer.payload.event.id);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    coordinator.shutdown();
+  }
+});
+
+test("a failed durable save prevents sending and does not suppress the next retry", async () => {
+  const store = new MemoryOutboxStore();
+  store.put = async () => { throw new Error("disk full"); };
+  const coordinator = buildCoordinator(store);
+  const originalPublish = NDKEvent.prototype.publish;
+  let sent = 0;
+  NDKEvent.prototype.publish = async () => { sent++; return new Set([relay("wss://relay.one")]) as never; };
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(coordinator.publish(template, { relayUrls: ["wss://relay.one"], signer: generateSecretKey() }), /disk full/);
+    }
+    assert.equal(sent, 0);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    coordinator.shutdown();
+  }
+});

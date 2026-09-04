@@ -37,6 +37,7 @@ export declare class PublishCoordinator {
     private readonly retryBaseMs;
     private readonly retryMaxMs;
     private activeOutboxIds;
+    private outboxLocks;
     private retryTimers;
     private drainPromise;
     constructor(ndk: NDK, resolveRelaySet: RelayResolver, cache?: EventCache, options?: PublishCoordinatorOptions);
@@ -48,10 +49,13 @@ export declare class PublishCoordinator {
     private outboxMutationId;
     private relayUrlsForPublish;
     private outboxHasPending;
+    private withOutboxLock;
     private enqueueOutbox;
     private publishNowWithOutbox;
     private markOutboxSuccess;
+    private markOutboxSuccessLocked;
     private markOutboxFailure;
+    private markOutboxFailureLocked;
     private retryDelayMs;
     private clearOutboxRetry;
     private scheduleOutboxRetry;
