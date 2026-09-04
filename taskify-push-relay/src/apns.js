@@ -5,26 +5,55 @@ function base64url(value) {
   return Buffer.from(value).toString('base64url')
 }
 
-export function genericDMPayload(previewURL) {
+// Keep the phone and Watch payloads byte-for-byte equivalent (apart from their APNs topics).
+// Apple can then route one generic notification to the best available device. The encrypted
+// gift wrap remains on Taskify's relay and is decrypted only after the app refreshes locally.
+export function genericDMPayload() {
   return {
     aps: {
       alert: {
         title: 'New Message',
         body: 'Open Taskify to view it.',
       },
+      sound: 'default',
       'content-available': 1,
-      'mutable-content': 1,
     },
-    taskify: { type: 'dm-preview', previewURL },
+    taskify: { type: 'dm-preview' },
+  }
+}
+
+// Retain a named Watch builder so callers and tests make the platform intent explicit. A generic
+// alert is substantially more reliable than a background-only wake, while content-available still
+// gives watchOS an opportunity to refresh the encrypted inbox before the user opens the app.
+export function genericWatchDMPayload() {
+  return genericDMPayload()
+}
+
+export function apnsDeliveryProfile(registration, { topic, watchTopic }) {
+  const isWatch = registration.platform === 'watchos'
+  return {
+    payload: isWatch ? genericWatchDMPayload() : genericDMPayload(),
+    topic: isWatch ? watchTopic : topic,
+    pushType: 'alert',
+    priority: '10',
   }
 }
 
 export class APNsClient {
-  constructor({ teamID, keyID, privateKey, topic, requestTimeoutMs = 10_000, now = () => Date.now() }) {
+  constructor({
+    teamID,
+    keyID,
+    privateKey,
+    topic,
+    watchTopic = 'solife.me.Taskify.Native.watchkitapp',
+    requestTimeoutMs = 10_000,
+    now = () => Date.now(),
+  }) {
     this.teamID = teamID
     this.keyID = keyID
     this.privateKey = createPrivateKey(privateKey.replaceAll('\\n', '\n'))
     this.topic = topic
+    this.watchTopic = watchTopic
     this.requestTimeoutMs = requestTimeoutMs
     this.now = now
     this.cachedToken = null
@@ -47,11 +76,19 @@ export class APNsClient {
     return value
   }
 
-  async send(registration, previewURL) {
+  invalidateProviderToken() {
+    this.cachedToken = null
+  }
+
+  async send(registration) {
     const authority = registration.environment === 'sandbox'
       ? 'https://api.sandbox.push.apple.com'
       : 'https://api.push.apple.com'
-    const body = Buffer.from(JSON.stringify(genericDMPayload(previewURL)))
+    const delivery = apnsDeliveryProfile(registration, {
+      topic: this.topic,
+      watchTopic: this.watchTopic,
+    })
+    const body = Buffer.from(JSON.stringify(delivery.payload))
     const client = http2.connect(authority)
     return new Promise((resolve, reject) => {
       let settled = false
@@ -70,9 +107,9 @@ export class APNsClient {
         ':method': 'POST',
         ':path': `/3/device/${registration.deviceToken}`,
         authorization: `bearer ${this.providerToken()}`,
-        'apns-topic': this.topic,
-        'apns-push-type': 'alert',
-        'apns-priority': '10',
+        'apns-topic': delivery.topic,
+        'apns-push-type': delivery.pushType,
+        'apns-priority': delivery.priority,
         'content-type': 'application/json',
         'content-length': String(body.length),
       })

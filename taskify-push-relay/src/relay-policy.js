@@ -35,8 +35,8 @@ export function shouldNotifyRecipient({ authenticatedPubkey, recipientPubkey }) 
 }
 
 export function matchesFilter(event, filter) {
-  if (Array.isArray(filter.ids) && !filter.ids.some((id) => event.id.startsWith(id))) return false
-  if (Array.isArray(filter.authors) && !filter.authors.some((author) => event.pubkey.startsWith(author))) return false
+  if (Array.isArray(filter.ids) && !filter.ids.some((id) => event.id === id)) return false
+  if (Array.isArray(filter.authors) && !filter.authors.some((author) => event.pubkey === author)) return false
   if (Array.isArray(filter.kinds) && !filter.kinds.includes(event.kind)) return false
   if (Number.isInteger(filter.since) && event.created_at < filter.since) return false
   if (Number.isInteger(filter.until) && event.created_at > filter.until) return false

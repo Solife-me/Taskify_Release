@@ -8,13 +8,13 @@ export const short = {
 
 export const long = {
   en_US:
-    'Stores encrypted NIP-17 gift wraps and sends generic background wakes through APNs. Message content and notification categories are decrypted and selected only on the recipient iPhone.',
+    'Stores encrypted NIP-17 gift wraps and sends generic background wakes through APNs. Message content and notification behavior are decrypted and selected only on the recipient iPhone or Apple Watch.',
   es_ES:
-    'Almacena envoltorios NIP-17 cifrados y envía avisos genéricos en segundo plano mediante APNs. El contenido y la categoría se descifran y eligen únicamente en el iPhone receptor.',
+    'Almacena envoltorios NIP-17 cifrados y envía avisos genéricos en segundo plano mediante APNs. El contenido y el comportamiento de las notificaciones se descifran y eligen únicamente en el iPhone o Apple Watch del destinatario.',
   de_DE:
-    'Speichert verschlüsselte NIP-17-Gift-Wraps und sendet generische APNs-Hintergrundsignale. Inhalt und Benachrichtigungskategorie werden nur auf dem empfangenden iPhone entschlüsselt und gewählt.',
+    'Speichert verschlüsselte NIP-17-Gift-Wraps und sendet generische APNs-Hintergrundsignale. Inhalt und Benachrichtigungsverhalten werden nur auf dem iPhone oder der Apple Watch des Empfängers entschlüsselt und gewählt.',
   pl_PL:
-    'Przechowuje zaszyfrowane pakiety NIP-17 i wysyła ogólne wybudzenia APNs w tle. Treść i kategoria powiadomienia są odszyfrowywane wyłącznie na iPhonie odbiorcy.',
+    'Przechowuje zaszyfrowane pakiety NIP-17 i wysyła ogólne wybudzenia APNs w tle. Treść i sposób powiadamiania są odszyfrowywane i wybierane wyłącznie na iPhonie lub Apple Watch odbiorcy.',
   fr_FR:
-    'Stocke les enveloppes NIP-17 chiffrées et envoie des réveils APNs génériques en arrière-plan. Le contenu et la catégorie sont déchiffrés et choisis uniquement sur l’iPhone destinataire.',
+    'Stocke les enveloppes NIP-17 chiffrées et envoie des réveils APNs génériques en arrière-plan. Le contenu et le comportement des notifications sont déchiffrés et choisis uniquement sur l’iPhone ou l’Apple Watch du destinataire.',
 }
