@@ -110,11 +110,14 @@ public enum NIP44V2 {
         _ payload: String,
         conversationKey: Data
     ) throws -> Data {
-        guard payload.count >= 132,
+        let maximumEnvelopeBytes = paddedLength(for: maximumPayloadBytes) + 6 + 65
+        guard conversationKey.count == 32,
+              payload.utf8.count <= 4 * ((maximumEnvelopeBytes + 2) / 3),
+              payload.count >= 132,
               payload.first != "#",
               let raw = Data(base64Encoded: payload),
               raw.count >= 99,
-              raw.count <= maximumPayloadBytes else {
+              raw.count <= maximumEnvelopeBytes else {
             throw NIP44V2Error.invalidPayload
         }
         guard raw[raw.startIndex] == 2 else { throw NIP44V2Error.unsupportedVersion }

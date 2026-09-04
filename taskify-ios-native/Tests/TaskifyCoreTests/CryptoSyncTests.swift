@@ -3,6 +3,60 @@ import XCTest
 @testable import TaskifyCore
 
 final class CryptoSyncTests: XCTestCase {
+    func testTaskPayloadDateCodecPreservesWireFormatUnderConcurrentUse() async {
+        let dates = [-1.0, 0, 1.125, 1_700_000_000.875, 1_788_450_000.5].map(Date.init(timeIntervalSince1970:))
+        let legacy = ISO8601DateFormatter()
+        legacy.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        legacy.timeZone = TimeZone(secondsFromGMT: 0)
+        let expected = dates.map { legacy.string(from: $0) }
+        await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<40 {
+                group.addTask {
+                    for (date, text) in zip(dates, expected) {
+                        guard TaskSyncPayload.format(date) == text,
+                              let parsed = TaskSyncPayload.parse(text),
+                              abs(parsed.timeIntervalSince(date)) < 0.001 else { return false }
+                    }
+                    return TaskSyncPayload.parse("2026-09-03T15:00:00Z")
+                        == TaskSyncPayload.parse("2026-09-03T10:00:00-05:00")
+                }
+            }
+            for await matches in group { XCTAssertTrue(matches) }
+        }
+        XCTAssertNil(TaskSyncPayload.parse("invalid"))
+        XCTAssertNil(TaskSyncPayload.parse(nil))
+    }
+
+    func testTaskSyncBatchPersistsAllRecordsBeforeDeliveryAndSurvivesReload() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("outbox.json")
+        let store = NostrOutboxStore(fileURL: file)
+        let engine = TaskSyncEngine(outbox: store)
+        let board = Board(id: "batch-board", name: "Batch", relayURLs: ["wss://batch.example"])
+        let date = Date(timeIntervalSince1970: 1_788_450_000.125)
+        var requests = [TaskSyncPublishRequest(
+            event: try TaskEventCodec.boardEvent(board: board, createdAt: 1), board: board, taskID: "_board"
+        )]
+        for index in 0..<100 {
+            let task = TaskItem(id: "task-\(index)", boardID: board.id, title: "Task \(index)", dueDate: date)
+            requests.append(TaskSyncPublishRequest(
+                event: try TaskEventCodec.taskEvent(task: task, board: board, createdAt: index + 2),
+                board: board, taskID: task.id
+            ))
+        }
+        requests.append(TaskSyncPublishRequest(
+            event: try TaskEventCodec.deletionEvent(taskID: "task-0", board: board, createdAt: 102),
+            board: board, taskID: "deletion:task-0"
+        ))
+        try await engine.enqueueForPublish(requests)
+        let persisted = await NostrOutboxStore(fileURL: file).allEntries()
+        XCTAssertEqual(Set(persisted.map(\.event.id)), Set(requests.map(\.event.id)))
+        XCTAssertEqual(persisted.count, 102)
+        XCTAssertTrue(persisted.allSatisfy { $0.pendingRelayURLs == ["wss://batch.example"] })
+        await engine.stop()
+    }
+
     func testRelayURLNormalizationAcceptsNostrSchemesAndDeduplicates() {
         XCTAssertEqual(
             TaskifyRelayURL.normalize(" Relay.Example/ "),
@@ -1063,6 +1117,104 @@ final class CryptoSyncTests: XCTestCase {
         }
         let remainingEntries = await store.allEntries()
         XCTAssertTrue(remainingEntries.isEmpty)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testOutboxPrioritizesFreshChangesWithoutStarvingOldChanges() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-outbox-priority-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let relayURL = "wss://strict.example"
+        let queuedAt = Date(timeIntervalSince1970: 10_000)
+        let entries = try (0..<6).map { index in
+            NostrOutboxEntry(
+                event: try referenceEvent(content: "change-\(index)", createdAt: index),
+                relayURLs: [relayURL],
+                boardLocalID: "board",
+                taskID: "task-\(index)",
+                queuedAt: queuedAt.addingTimeInterval(TimeInterval(index))
+            )
+        }
+        try await store.enqueue(entries)
+
+        var pending = await store.pendingEntries(for: relayURL)
+        var scheduler = RelayOutboxScheduler(freshBurstLimit: 3)
+        let firstFour = (0..<4).compactMap { _ in scheduler.next(from: &pending) }
+
+        XCTAssertEqual(firstFour.map(\.taskID), ["task-5", "task-4", "task-3", "task-0"])
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testOutboxPrunesOnlyOldReplicaDebtAfterOneRelayAccepted() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-outbox-replica-retention-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let now = Date(timeIntervalSince1970: 20_000)
+        let oldQueuedAt = now.addingTimeInterval(-(8 * 24 * 60 * 60))
+        let freshQueuedAt = now.addingTimeInterval(-(6 * 24 * 60 * 60))
+        let relays = ["wss://healthy.example", "wss://offline.example"]
+        let oldAccepted = try referenceEvent(content: "old-accepted", createdAt: 1)
+        let oldNeverAccepted = try referenceEvent(content: "old-never-accepted", createdAt: 2)
+        let freshAccepted = try referenceEvent(content: "fresh-accepted", createdAt: 3)
+        try await store.enqueue([
+            NostrOutboxEntry(
+                event: oldAccepted,
+                relayURLs: relays,
+                boardLocalID: "board",
+                taskID: "old-accepted",
+                queuedAt: oldQueuedAt,
+                acceptedRelayURLs: [relays[0]]
+            ),
+            NostrOutboxEntry(
+                event: oldNeverAccepted,
+                relayURLs: relays,
+                boardLocalID: "board",
+                taskID: "old-never-accepted",
+                queuedAt: oldQueuedAt
+            ),
+            NostrOutboxEntry(
+                event: freshAccepted,
+                relayURLs: relays,
+                boardLocalID: "board",
+                taskID: "fresh-accepted",
+                queuedAt: freshQueuedAt,
+                acceptedRelayURLs: [relays[0]]
+            ),
+        ])
+
+        let pruned = try await store.removeStaleReplicaBacklog(
+            now: now,
+            retention: 7 * 24 * 60 * 60
+        )
+        let remaining = await store.allEntries()
+
+        XCTAssertEqual(pruned.map(\.taskID), ["old-accepted"])
+        XCTAssertEqual(Set(remaining.map(\.taskID)), Set(["old-never-accepted", "fresh-accepted"]))
+        let reloaded = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let persisted = await reloaded.allEntries()
+        XCTAssertEqual(Set(persisted.map(\.taskID)), Set(["old-never-accepted", "fresh-accepted"]))
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testSyncEnginePrunesOldAcceptedReplicaDebtWhenFlushing() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskify-engine-replica-retention-\(UUID().uuidString)", isDirectory: true)
+        let store = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let event = try referenceEvent(content: "accepted-before-offline-replica", createdAt: 4)
+        try await store.enqueue(NostrOutboxEntry(
+            event: event,
+            relayURLs: ["wss://healthy.example", "wss://offline.example"],
+            boardLocalID: "board",
+            taskID: "task",
+            queuedAt: Date().addingTimeInterval(-(8 * 24 * 60 * 60)),
+            acceptedRelayURLs: ["wss://healthy.example"]
+        ))
+        let engine = TaskSyncEngine(outbox: store)
+
+        await engine.flushQueuedPublishes()
+
+        let pendingCount = await engine.pendingPublishCount()
+        XCTAssertEqual(pendingCount, 0)
         try? FileManager.default.removeItem(at: directory)
     }
 

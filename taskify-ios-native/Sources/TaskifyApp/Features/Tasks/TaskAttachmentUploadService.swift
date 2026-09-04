@@ -123,7 +123,7 @@ enum TaskAttachmentUploadError: LocalizedError {
         case .invalidServer:
             "The encrypted file server is not configured correctly."
         case .fileTooLarge:
-            "Attachments must be 50 MB or smaller."
+            "Attachments must be 500 MB or smaller."
         case .unsupportedFile:
             "That file type is not supported yet."
         case .invalidResponse:
@@ -142,279 +142,74 @@ enum TaskAttachmentUploadError: LocalizedError {
 
 actor TaskAttachmentUploadService {
     static let shared = TaskAttachmentUploadService()
-
     private let session: URLSession
     private let serverURLOverride: URL?
 
-    init(
-        session: URLSession = .shared,
-        serverURL: URL? = nil
-    ) {
-        self.session = session
+    init(session: URLSession? = nil, serverURL: URL? = nil) {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForResource = 3_600
+        self.session = session ?? URLSession(configuration: configuration)
         self.serverURLOverride = serverURL
     }
 
-    func uploadDocument(
-        data: Data,
-        name: String,
-        mimeType: String,
-        boardID: String
-    ) async throws -> TaskDocument {
-        guard data.count <= TaskDocumentContract.maximumUploadBytes else {
-            throw TaskAttachmentUploadError.fileTooLarge
-        }
+    func uploadDocument(data: Data, name: String, mimeType: String, boardID: String) async throws -> TaskDocument {
+        let source = try AttachmentFiles.write(data)
+        defer { try? FileManager.default.removeItem(at: source) }
+        return try await uploadDocument(fileURL: source, name: name, mimeType: mimeType, boardID: boardID)
+    }
+
+    func uploadDocument(fileURL: URL, boardID: String) async throws -> TaskDocument {
+        let accessing = fileURL.startAccessingSecurityScopedResource()
+        defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
+        let values = try fileURL.resourceValues(forKeys: [.contentTypeKey, .nameKey])
+        return try await uploadDocument(fileURL: fileURL, name: values.name ?? fileURL.lastPathComponent,
+            mimeType: values.contentType?.preferredMIMEType ?? "application/octet-stream", boardID: boardID)
+    }
+
+    func uploadDocument(fileURL: URL, name: String, mimeType: String, boardID: String) async throws -> TaskDocument {
+        let size = try AttachmentFiles.size(fileURL)
         guard TaskDocumentContract.inferKind(name: name, mimeType: mimeType) != nil else {
             throw TaskAttachmentUploadError.unsupportedFile
         }
-
-        let encryptedData = try TaskAttachmentCrypto.encrypt(data, boardID: boardID)
-        let remoteURL = try await upload(
-            encryptedData,
-            filename: name
-        )
-        guard let document = TaskDocumentContract.remoteDocument(
-            name: name,
-            mimeType: mimeType,
-            size: data.count,
-            remoteURL: remoteURL,
-            boardID: boardID
-        ) else {
-            throw TaskAttachmentUploadError.unsupportedFile
-        }
+        let encrypted = try AttachmentFileCrypto.encryptTask(fileURL, boardID: boardID)
+        defer { try? FileManager.default.removeItem(at: encrypted) }
+        let remote = try await upload(encrypted, filename: name)
+        guard let document = TaskDocumentContract.remoteDocument(name: name, mimeType: mimeType,
+            size: size, remoteURL: remote, boardID: boardID) else { throw TaskAttachmentUploadError.unsupportedFile }
         return document
     }
 
-    func uploadChatAttachment(
-        data: Data,
-        name: String,
-        mimeType: String,
-        width: Int? = nil,
-        height: Int? = nil
-    ) async throws -> NostrDirectMessageAttachment {
-        guard !data.isEmpty else { throw TaskAttachmentUploadError.unsupportedFile }
-        guard data.count <= TaskDocumentContract.maximumUploadBytes else {
-            throw TaskAttachmentUploadError.fileTooLarge
-        }
-        let encrypted = try NostrDirectMessageAttachmentCrypto.encrypt(data)
-        let remoteURL = try await upload(
-            encrypted.ciphertext,
-            filename: "\(encrypted.sha256).bin"
-        )
-        guard let attachment = NostrDirectMessageAttachment(
-            url: remoteURL,
-            mimeType: mimeType,
-            filename: name,
-            size: data.count,
-            width: width,
-            height: height,
-            keyHex: encrypted.keyHex,
-            nonceHex: encrypted.nonceHex,
-            sha256: encrypted.sha256
-        ) else {
+    func uploadChatAttachment(data: Data, name: String, mimeType: String,
+                              width: Int? = nil, height: Int? = nil) async throws -> NostrDirectMessageAttachment {
+        let source = try AttachmentFiles.write(data)
+        defer { try? FileManager.default.removeItem(at: source) }
+        return try await uploadChatAttachment(fileURL: source, name: name, mimeType: mimeType, width: width, height: height)
+    }
+
+    func uploadChatAttachment(fileURL: URL, name: String, mimeType: String,
+                              width: Int? = nil, height: Int? = nil,
+                              progress: AttachmentProgressHandler? = nil) async throws -> NostrDirectMessageAttachment {
+        let accessing = fileURL.startAccessingSecurityScopedResource()
+        defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
+        let encrypted = try AttachmentFileCrypto.encryptChat(fileURL, progress: progress)
+        defer { try? FileManager.default.removeItem(at: encrypted.url) }
+        try Task.checkCancellation()
+        let remote = try await upload(encrypted.url, filename: "\(encrypted.sha256).bin", progress: progress)
+        guard let attachment = NostrDirectMessageAttachment(url: remote, mimeType: mimeType, filename: name,
+            size: encrypted.plaintextSize, width: width, height: height,
+            keyHex: encrypted.keyHex, nonceHex: encrypted.nonceHex, sha256: encrypted.sha256) else {
             throw TaskAttachmentUploadError.invalidResponse
         }
         return attachment
     }
 
-    func uploadDocument(fileURL: URL, boardID: String) async throws -> TaskDocument {
-        let accessing = fileURL.startAccessingSecurityScopedResource()
-        defer {
-            if accessing { fileURL.stopAccessingSecurityScopedResource() }
-        }
-
-        let values = try fileURL.resourceValues(forKeys: [
-            .contentTypeKey,
-            .fileSizeKey,
-            .nameKey,
-        ])
-        if let fileSize = values.fileSize,
-           fileSize > TaskDocumentContract.maximumUploadBytes {
-            throw TaskAttachmentUploadError.fileTooLarge
-        }
-        let name = values.name ?? fileURL.lastPathComponent
-        let mimeType = values.contentType?.preferredMIMEType ?? "application/octet-stream"
-        guard TaskDocumentContract.inferKind(name: name, mimeType: mimeType) != nil else {
-            throw TaskAttachmentUploadError.unsupportedFile
-        }
-        let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
-        return try await uploadDocument(
-            data: data,
-            name: name,
-            mimeType: mimeType,
-            boardID: boardID
-        )
-    }
-
-    private func upload(_ data: Data, filename: String) async throws -> String {
-        let configuredEntry = TaskifyMediaServerSettings.configuredEntry
-        let serverURL = serverURLOverride ?? URL(string: configuredEntry.url)
-        guard let serverURL,
-              let scheme = serverURL.scheme?.lowercased(),
-              scheme == "https" else {
-            throw TaskAttachmentUploadError.invalidServer
-        }
-
-        let serverType = serverURLOverride == nil
-            ? configuredEntry.type
-            : TaskifyFileServerType.inferred(for: serverURL.absoluteString)
-        if serverType == .blossom {
-            return try await uploadViaBlossom(data, server: serverURL)
-        }
-        if serverType == .nip96 {
-            return try await uploadViaNip96(data, filename: filename, server: serverURL)
-        }
-
-        let uploadURL = serverURL.appendingPathComponent("upload", isDirectory: false)
-        let boundary = "TaskifyNative-\(UUID().uuidString)"
-        var request = URLRequest(url: uploadURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 120
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = multipartBody(
-            data: data,
-            filename: filename,
-            boundary: boundary
-        )
-
-        do {
-            return try await perform(request, serverURL: serverURL)
-        } catch is URLError {
-            var rawRequest = URLRequest(url: uploadURL)
-            rawRequest.httpMethod = "POST"
-            rawRequest.timeoutInterval = 120
-            rawRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            rawRequest.httpBody = data
-            return try await perform(rawRequest, serverURL: serverURL)
-        }
-    }
-
-    /// Blossom (BUD-01/BUD-02) upload path. The `PUT` is authorized with a kind-24242 event signed
-    /// by the device's own Nostr identity — never the board's key — since Blossom servers only
-    /// need to know which app-level identity is writing; `data` has already been encrypted with
-    /// the board's shared key by the caller, so anyone with board access can decrypt it regardless
-    /// of who uploaded it.
-    private func uploadViaBlossom(_ data: Data, server: URL) async throws -> String {
-        guard let identity = try? KeychainIdentityStore().load() else {
-            throw TaskAttachmentUploadError.missingIdentity
-        }
-        do {
-            return try await BlossomClient.upload(
-                data,
-                privateKey: identity.privateKey,
-                server: server,
-                session: session
-            )
-        } catch let error as BlossomError {
-            switch error {
-            case .invalidServer: throw TaskAttachmentUploadError.invalidServer
-            case .invalidResponse: throw TaskAttachmentUploadError.invalidResponse
-            case .requestFailed(let status, let message):
-                throw TaskAttachmentUploadError.server(status: status, message: message)
-            }
-        }
-    }
-
-    /// Standards-compliant NIP-96 path: discovers the server's advertised API endpoint, follows
-    /// delegated discovery, signs the encrypted payload using NIP-98, and handles asynchronous
-    /// processing responses. Multipart bytes are written to a temporary upload file so the
-    /// encrypted attachment is not duplicated again in one large in-memory request body.
-    private func uploadViaNip96(
-        _ data: Data,
-        filename: String,
-        server: URL
-    ) async throws -> String {
-        guard let identity = try? KeychainIdentityStore().load() else {
-            throw TaskAttachmentUploadError.missingIdentity
-        }
-        do {
-            return try await Nip96Client.upload(
-                data,
-                filename: filename,
-                privateKey: identity.privateKey,
-                server: server,
-                session: session
-            )
-        } catch let error as Nip96Error {
-            switch error {
-            case .invalidServer:
-                throw TaskAttachmentUploadError.invalidServer
-            case .invalidDiscoveryResponse, .missingAPIURL, .tooManyDelegations,
-                 .invalidUploadResponse, .processingTimedOut:
-                throw TaskAttachmentUploadError.server(status: 0, message: error.localizedDescription)
-            case .requestFailed(let status, let message):
-                throw TaskAttachmentUploadError.server(status: status, message: message)
-            }
-        }
-    }
-
-    private func perform(_ request: URLRequest, serverURL: URL) async throws -> String {
-        let (data, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse else {
-            throw TaskAttachmentUploadError.invalidResponse
-        }
-        let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        guard (200..<300).contains(response.statusCode) else {
-            throw TaskAttachmentUploadError.server(
-                status: response.statusCode,
-                message: payload?["message"] as? String
-            )
-        }
-        guard let remoteURL = resolveRemoteURL(serverURL: serverURL, payload: payload) else {
-            throw TaskAttachmentUploadError.invalidResponse
-        }
-        return remoteURL
-    }
-
-    private func multipartBody(data: Data, filename: String, boundary: String) -> Data {
-        let safeFilename = filename
-            .replacingOccurrences(of: "\"", with: "'")
-            .replacingOccurrences(of: "\r", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-        var body = Data()
-        body.appendUTF8("--\(boundary)\r\n")
-        body.appendUTF8("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeFilename)\"\r\n")
-        body.appendUTF8("Content-Type: application/octet-stream\r\n\r\n")
-        body.append(data)
-        body.appendUTF8("\r\n--\(boundary)--\r\n")
-        return body
-    }
-
-    private func resolveRemoteURL(serverURL: URL, payload: [String: Any]?) -> String? {
-        for key in ["url", "cidUrl", "gatewayUrl", "fileUrl", "ipfs"] {
-            if let value = payload?[key] as? String,
-               let normalized = normalizedRemoteURL(value) {
-                return normalized
-            }
-        }
-
-        // Content-addressed servers (Originless) return a CID and don't serve the blob themselves;
-        // `{server}/ipfs/{cid}` 404s. Retrieval goes through a public gateway, as its README says.
-        if let cid = payload?["cid"] as? String,
-           let gatewayURL = TaskifyIPFSGateway.url(forCID: cid) {
-            return gatewayURL
-        }
-
-        if let path = (payload?["path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !path.isEmpty {
-            if let absolute = normalizedRemoteURL(path) { return absolute }
-            return serverURL.appendingPathComponent(path, isDirectory: false).absoluteString
-        }
-        return nil
-    }
-
-    private func normalizedRemoteURL(_ value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http" else {
-            return nil
-        }
-        return url.absoluteString
-    }
-}
-
-private extension Data {
-    mutating func appendUTF8(_ value: String) {
-        append(Data(value.utf8))
+    private func upload(_ file: URL, filename: String, progress: AttachmentProgressHandler? = nil) async throws -> String {
+        let entry = serverURLOverride.map {
+            TaskifyFileServerEntry(url: $0.absoluteString, type: .inferred(for: $0.absoluteString))
+        } ?? TaskifyMediaServerSettings.configuredEntry
+        let identity = try KeychainIdentityStore().load()
+        return try await EncryptedFileUpload.upload(file: file, filename: filename, server: entry,
+            privateKey: identity?.privateKey, session: session, progress: progress)
     }
 }

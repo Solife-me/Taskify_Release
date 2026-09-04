@@ -105,5 +105,11 @@
 			<string>me.solife.taskify.task</string>
 		</dict>
 	</array>
+	<key>TaskifyShareKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)solife.me.Taskify.share</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 </dict>
 </plist>

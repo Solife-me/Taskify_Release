@@ -43,6 +43,9 @@ public extension TaskifySnapshot {
         }
         let boundedTasks = Array(sortedTasks.prefix(max(0, taskLimit)))
 
+        // One encoder for the batch; a per-task encoder re-parses the strategy and rebuilds the
+        // date formatters up to 500 times per snapshot build.
+        let payloadEncoder = JSONEncoder()
         let watchTasks = boundedTasks.compactMap { task -> TaskifyWatchTask? in
             guard let board = boardByID[task.boardID] else { return nil }
             return TaskifyWatchTask(
@@ -58,7 +61,7 @@ public extension TaskifySnapshot {
                 columnID: task.columnID,
                 nostrBoardID: board.effectiveNostrBoardID,
                 relayURLs: board.effectiveRelayURLs,
-                syncPayload: try? JSONEncoder().encode(TaskSyncPayload(task: task)),
+                syncPayload: try? payloadEncoder.encode(TaskSyncPayload(task: task)),
                 nostrUpdatedAt: task.nostrUpdatedAt
             )
         }
@@ -72,7 +75,11 @@ public extension TaskifySnapshot {
                 relayURLs: board.effectiveRelayURLs,
                 defaultColumnID: board.kind == .week
                     ? WeekdayColumn.containing(now).rawValue
-                    : board.columns.sorted { $0.order < $1.order }.first?.id
+                    : board.columns.sorted { $0.order < $1.order }.first?.id,
+                columns: board.columns.map {
+                    TaskifyWatchBoardColumn(id: $0.id, name: $0.name, order: $0.order)
+                },
+                nostrUpdatedAt: board.nostrUpdatedAt
             )
         }
 

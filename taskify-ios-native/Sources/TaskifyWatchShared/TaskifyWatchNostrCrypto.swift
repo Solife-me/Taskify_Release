@@ -76,7 +76,24 @@ public enum TaskifyWatchNostrCryptoError: LocalizedError {
 /// derived from the board sync identifier, so task writes never expose the account private key.
 /// The account key is used only to authenticate HTTPS requests to Taskify's opaque relay bridge.
 public enum TaskifyWatchNostrCrypto {
+    public static let boardEventKind = 30_300
     public static let taskEventKind = 30_301
+    public static let taskCacheAccessKind = 27_236
+
+    public static func publicKeyHex(for privateKey: Data) throws -> String {
+        Data(try schnorrPrivateKey(privateKey).xonly.bytes).taskifyHexString
+    }
+
+    public static func randomPrivateKey() throws -> Data {
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<64 {
+            let candidate = Data((0..<32).map {
+                _ in UInt8.random(in: .min ... .max, using: &generator)
+            })
+            if (try? schnorrPrivateKey(candidate)) != nil { return candidate }
+        }
+        throw TaskifyWatchNostrCryptoError.invalidPrivateKey
+    }
 
     public static func boardTag(for boardID: String) -> String {
         CryptoKit.SHA256.hash(data: Data(boardID.utf8)).taskifyHexString
@@ -136,6 +153,27 @@ public enum TaskifyWatchNostrCrypto {
         }
     }
 
+    public static func decryptBoardPayload(
+        _ event: TaskifyWatchNostrEvent,
+        boardID: String
+    ) throws -> Data {
+        guard event.kind == boardEventKind,
+              event.firstTagValue(named: "b") == boardTag(for: boardID),
+              event.publicKey.lowercased() == (try boardPublicKeyHex(for: boardID)),
+              verify(event) else {
+            throw TaskifyWatchNostrCryptoError.invalidEvent
+        }
+        guard let combined = Data(base64Encoded: event.content) else {
+            throw TaskifyWatchNostrCryptoError.invalidPayload
+        }
+        do {
+            let box = try AES.GCM.SealedBox(combined: combined)
+            return try AES.GCM.open(box, using: encryptionKey(for: boardID))
+        } catch {
+            throw TaskifyWatchNostrCryptoError.invalidPayload
+        }
+    }
+
     public static func requestAuthentication(
         privateKey: Data,
         publicKeyHex: String,
@@ -162,7 +200,120 @@ public enum TaskifyWatchNostrCrypto {
         )
     }
 
+    public static func nip98AuthorizationHeader(
+        privateKey: Data,
+        url: URL,
+        method: String,
+        body: Data,
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> String {
+        let event = try signedEvent(
+            privateKey: privateKey,
+            createdAt: createdAt,
+            kind: 27_235,
+            tags: [
+                ["u", url.absoluteString],
+                ["method", method.uppercased()],
+                ["payload", CryptoKit.SHA256.hash(data: body).taskifyHexString],
+                // Prevent a legitimate same-body retry within Nostr's one-second timestamp
+                // resolution from producing an identical event ID rejected by the replay guard.
+                ["nonce", UUID().uuidString.lowercased()],
+            ],
+            content: ""
+        )
+        return "Nostr \(try JSONEncoder().encode(event).base64EncodedString())"
+    }
+
+    public static func nip42AuthorizationEvent(
+        privateKey: Data,
+        relayURL: String,
+        challenge: String,
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> TaskifyWatchNostrEvent {
+        try signedEvent(
+            privateKey: privateKey,
+            createdAt: createdAt,
+            kind: 22_242,
+            tags: [
+                ["relay", relayURL],
+                ["challenge", challenge],
+            ],
+            content: ""
+        )
+    }
+
+    public static func nip42BoardAuthorizationEvent(
+        boardID: String,
+        relayURL: String,
+        challenge: String,
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> TaskifyWatchNostrEvent {
+        try signedEvent(
+            privateKey: boardPrivateKey(for: boardID),
+            createdAt: createdAt,
+            kind: 22_242,
+            tags: [
+                ["relay", relayURL],
+                ["challenge", challenge],
+            ],
+            content: ""
+        )
+    }
+
+    /// Fresh, endpoint-bound proof that this Watch possesses the secret for exactly one board
+    /// subscription. The gateway never receives the board ID or key; it sees only the same
+    /// derived public author and board tag already visible to the configured Nostr relays.
+    public static func taskCacheAccessProof(
+        boardID: String,
+        accountPublicKey: String,
+        url: URL,
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> TaskifyWatchNostrEvent {
+        let account = accountPublicKey.lowercased()
+        guard account.count == 64,
+              account.allSatisfy(\.isHexDigit),
+              url.scheme?.lowercased() == "https" else {
+            throw TaskifyWatchNostrCryptoError.invalidEvent
+        }
+        return try signedEvent(
+            privateKey: boardPrivateKey(for: boardID),
+            createdAt: createdAt,
+            kind: taskCacheAccessKind,
+            tags: [
+                ["u", url.absoluteString],
+                ["method", "POST"],
+                ["account", account],
+                ["b", boardTag(for: boardID)],
+                ["purpose", "taskify-watch-cache"],
+            ],
+            content: ""
+        )
+    }
+
+    public static func inboxPreferenceEvent(
+        privateKey: Data,
+        relayURLs: [String],
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> TaskifyWatchNostrEvent {
+        let relays = TaskifyWatchRelayRouting.normalizedRelayURLs(relayURLs)
+        guard !relays.isEmpty else { throw TaskifyWatchNostrCryptoError.invalidEvent }
+        return try signedEvent(
+            privateKey: privateKey,
+            createdAt: createdAt,
+            kind: 10_050,
+            tags: relays.map { ["relay", $0] },
+            content: ""
+        )
+    }
+
     public static func verify(_ event: TaskifyWatchNostrEvent) -> Bool {
+        func isHex(_ value: String, length: Int) -> Bool {
+            value.utf8.count == length && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        }
+        guard (0...65_535).contains(event.kind), event.createdAt >= 0,
+              isHex(event.id, length: 64), isHex(event.publicKey, length: 64),
+              isHex(event.signature, length: 128), event.tags.allSatisfy({ !$0.isEmpty }) else { return false }
+
         guard let calculated = try? eventID(
             publicKey: event.publicKey,
             createdAt: event.createdAt,
@@ -202,7 +353,7 @@ public enum TaskifyWatchNostrCrypto {
         return combined.base64EncodedString()
     }
 
-    private static func signedEvent(
+    public static func signedEvent(
         privateKey: Data,
         createdAt: Int,
         kind: Int,
@@ -234,7 +385,7 @@ public enum TaskifyWatchNostrCrypto {
         )
     }
 
-    private static func eventID(
+    public static func eventID(
         publicKey: String,
         createdAt: Int,
         kind: Int,

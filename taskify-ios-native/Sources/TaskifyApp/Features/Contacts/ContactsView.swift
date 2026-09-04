@@ -254,61 +254,58 @@ private struct NostrContactRow: View {
     }
 }
 
-private struct NostrContactDetailView: View {
+struct NostrContactDetailView: View {
     @Environment(AppModel.self) private var model
     let contactPublicKey: String
+    let fallbackDisplayName: String?
     @State private var nip05Status: Nip05VerificationStatus = .unverified
+    @State private var selectedTab = ConversationDetailsTab.info
+
+    init(contactPublicKey: String, fallbackDisplayName: String? = nil) {
+        self.contactPublicKey = contactPublicKey
+        self.fallbackDisplayName = fallbackDisplayName
+    }
 
     private var contact: NostrContact? {
-        model.nostrContacts.first { $0.publicKey == contactPublicKey }
+        model.nostrContact(publicKey: contactPublicKey)
+            ?? NostrContact(publicKeyValue: contactPublicKey, petname: fallbackDisplayName)
+    }
+
+    private var messages: [NostrDirectMessage] {
+        model.directMessages(with: contactPublicKey)
     }
 
     var body: some View {
-        ScrollView {
+        Group {
             if let contact {
-                VStack(spacing: 18) {
-                    NostrContactAvatar(contact: contact, size: 88)
-                    VStack(spacing: 5) {
-                        Text(contact.displayName)
-                            .font(.title2.bold())
-                        Text(contact.subtitle)
-                            .font(.subheadline)
-                            .foregroundStyle(TaskifyTheme.secondaryText)
-                    }
-                    VStack(alignment: .leading, spacing: 14) {
-                        contactField("Nostr public key", value: contact.npub, icon: "key")
-                        if let nip05 = contact.profile?.nip05 {
-                            nip05Field(nip05)
-                        }
-                        if let lud16 = contact.profile?.lud16 {
-                            contactField("Lightning", value: lud16, icon: "bolt")
-                        }
-                        if let about = contact.profile?.about {
-                            contactField("About", value: about, icon: "person.text.rectangle")
-                        }
-                        if !contact.relayURLs.isEmpty {
-                            contactField(
-                                "Delivery relays",
-                                value: contact.relayURLs.joined(separator: "\n"),
-                                icon: "dot.radiowaves.left.and.right"
-                            )
-                        }
-                    }
-                    .padding(18)
-                    .taskifyGlass(cornerRadius: 24)
+                VStack(spacing: 0) {
+                    contactHeader(contact)
+                    ConversationDetailsTabBar(selection: $selectedTab)
 
-                    Button {
-                        UIPasteboard.general.string = contact.npub
-                        UINotificationFeedbackGenerator().notificationOccurred(.success)
-                    } label: {
-                        Label("Copy npub", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
+                    switch selectedTab {
+                    case .info:
+                        infoContent(contact)
+                    case .photos:
+                        ConversationPhotosView(
+                            messages: messages,
+                            emptyDescription: "Photos shared in this conversation will appear here."
+                        )
+                    case .links:
+                        ConversationLinksView(
+                            messages: messages,
+                            emptyDescription: "Web links shared in this conversation will appear here."
+                        )
                     }
-                    .buttonStyle(.bordered)
                 }
-                .padding(18)
+            } else {
+                ContentUnavailableView(
+                    "Contact Unavailable",
+                    systemImage: "person.crop.circle.badge.exclamationmark",
+                    description: Text("This contact's public key is not valid.")
+                )
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TaskifyTheme.background.ignoresSafeArea())
         .navigationTitle("Contact")
         .navigationBarTitleDisplayMode(.inline)
@@ -324,6 +321,59 @@ private struct NostrContactDetailView: View {
             } catch {
                 nip05Status = .invalid
             }
+        }
+    }
+
+    private func contactHeader(_ contact: NostrContact) -> some View {
+        VStack(spacing: 10) {
+            NostrContactAvatar(contact: contact, size: 88)
+            VStack(spacing: 5) {
+                Text(contact.displayName)
+                    .font(.title2.bold())
+                Text(contact.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+        }
+        .padding(.top, 14)
+        .padding(.bottom, 16)
+    }
+
+    private func infoContent(_ contact: NostrContact) -> some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
+                    contactField("Nostr public key", value: contact.npub, icon: "key")
+                    if let nip05 = contact.profile?.nip05 {
+                        nip05Field(nip05)
+                    }
+                    if let lud16 = contact.profile?.lud16 {
+                        contactField("Lightning", value: lud16, icon: "bolt")
+                    }
+                    if let about = contact.profile?.about {
+                        contactField("About", value: about, icon: "person.text.rectangle")
+                    }
+                    if !contact.relayURLs.isEmpty {
+                        contactField(
+                            "Delivery relays",
+                            value: contact.relayURLs.joined(separator: "\n"),
+                            icon: "dot.radiowaves.left.and.right"
+                        )
+                    }
+                }
+                .padding(18)
+                .taskifyGlass(cornerRadius: 24)
+
+                Button {
+                    UIPasteboard.general.string = contact.npub
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                } label: {
+                    Label("Copy npub", systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(18)
         }
     }
 

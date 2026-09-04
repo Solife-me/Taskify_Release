@@ -33,22 +33,29 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
   passcode-required device-only Keychain protection, a protected bounded task cache, and native
   Today, Upcoming, and Boards browsing. Watch task creation, Taskify Dictation, completion, and
   relay refresh work over the Watch's own Wi-Fi or cellular connection. Because general-purpose
-  persistent relay WebSockets are not a supported watchOS data path, the Watch signs and encrypts
+  relay WebSockets are not a supported watchOS data path, the Watch signs and encrypts
   task events locally and an authenticated HTTPS bridge only forwards the opaque Nostr events to
-  the configured relays. The paired-iPhone path remains the preferred fast path and an idempotent,
+  the configured relays. The same bridge delivers NIP-17 chat gift wraps to each recipient's
+  kind-10050 inbox relays, with NIP-42 relay authorization, normalization-tolerant relay
+  acknowledgements, bounded relay discovery that falls back to the account's relays (like the
+  iPhone) rather than staying queued, recorded submit failures surfaced on failed bubbles, and a
+  foreground-rearming durable outbox. Watch chat bubbles render the same shared NostrChatMarkdown
+  model as the iPhone (headings, lists, quotes, code blocks, thematic breaks, and inline
+  bold/italic/strikethrough/code/links), on a compressed watchOS type ramp and without the
+  phone's tap-to-copy affordance because watchOS has no pasteboard API. The paired-iPhone path remains the preferred fast path and an idempotent,
   protected 30-day command queue reconciles direct changes with local iPhone state later.
 - Review-before-apply PWA account bootstrap and ongoing native board-index publishing through signed kind-30078 Nostr backups, using interoperable NIP-44 v2 encryption, bounded multi-relay discovery, fetch-before-patch conflict protection, offline outbox delivery, and lossless wallet/PWA-only/future-field preservation
 - PWA-compatible deterministic board keys, AES-256-GCM task payloads, and signed Nostr events
 - Lossless preservation of assignments, bounties, inbox metadata, streaks, scripture state, and future encrypted PWA task fields across native edits, moves, completion, persistence, and relay merges
 - Shared-board join flow, default relay subscriptions, configuration-aware replay coalescing, EOSE startup batching, and clock-based merges
 - Encrypted PWA-compatible list-board metadata sync, including conversion of joined boards to their remote type and columns
-- Disk-backed offline publish outbox with per-relay acknowledgements, stale-event suppression, independent healthy-relay publish lanes, adaptive NIP-01 rate-limit backoff, and reconnect retries
+- Disk-backed offline publish outbox with per-relay acknowledgements, latest-version coalescing, fresh-first/starvation-safe scheduling, four-event acknowledgement windows, adaptive NIP-01 rate-limit backoff, acknowledgement-timeout recovery, and a seven-day retry window for lagging replicas after another relay safely accepts the change; never-published changes are retained without an age limit
 - Aggregate Nostr health reporting with per-relay status, queued-change visibility, and manual/foreground retry
 - iOS background app refresh with an immediate background handoff, atomic persistence, bounded relay listening, durable-outbox delivery, automatic rescheduling, and expiration-safe completion
 - Native NIP-17 shared-task and assignment inbox with encrypted gift-wrap verification, multi-relay deduplication, review-before-add, persisted delivery state, rich task-field import, and queued Accept/Decline/Maybe responses wrapped so PWA chat cannot misclassify them as eCash
-- Native outbound task/contact/board/calendar sharing and assignments with npub/hex validation, strict kind-10050 inbox routing, independent recipient and sender gift wraps, persisted recent recipients, durable encrypted delivery, PWA-readable assignment messages, assignee-state badges, and authenticated response updates on the source task
+- Native outbound task/contact/board/calendar sharing and assignments with npub/hex validation, kind-10050 inbox routing with compatibility fallbacks, independent recipient and sender gift wraps, persisted recent recipients, durable encrypted delivery, PWA-readable assignment messages, assignee-state badges, and authenticated response updates on the source task
 - Native Nostr contact directory with encrypted PWA-compatible NIP-51 private-list sync, signed kind-0 profile names/photos, automatic inbox-relay discovery, add/edit/delete controls, and contact selection for task shares and assignments
-- Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, strict delivery only to the relays each account advertises in kind 10050, a signed native kind-10050 preference publisher, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, and encrypted message bubbles
+- Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, delivery to usable kind-10050 relays with fallback delivery when no usable list is resolved, a signed native kind-10050 preference publisher, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, tappable contact headers, shared Photos/Links contact tabs with photo URLs excluded from Links, Markdown-formatted encrypted message bubbles, and tap-to-copy inline or fenced code
 - Privacy-isolated NIP-17 relay sessions that may connect to recipient relays for outbound publishing but send the user's `#p` inbox subscription only to the user's own advertised inbox relays
 - Opt-in native DM push through `push.solife.me`: NIP-98-authenticated APNs token registration, automatic signed kind-10050 inbox updates, NIP-42 relay authentication, generic-alert APNs delivery with background-wake enrichment, and verified redeemed-amount payment notifications with separate message/payment/both controls (rich decrypted previews are deferred until the Notification Service Extension ships)
 - Interoperable Chat replies and emoji reactions with canonical rumor references, PWA-style kind-7 reaction rumors, long-press actions, quoted reply previews, optimistic offline delivery, replacement/removal ordering, and out-of-order reaction recovery
@@ -104,7 +111,60 @@ withholds background time.
 
 The native target and its Swift package tests are validated with Xcode 27 beta, the iOS 27 SDK, and an iOS 26.4 simulator runtime.
 
+## Watch background chat refresh
+
+Direct Watch APNs wakes and SwiftUI `.appRefresh` fallback tasks share an inbox-only path.
+It stops starting network work after an 18-second monotonic budget, caps each request at
+eight seconds with cancellation, requests 20 envelopes per page, and saves each background
+page immediately. At most ten pages run per wake; the saved cursor resumes unfinished work
+on the next wake or foreground refresh. The remaining notification window is reserved for
+bounded decryption, protected-file writes, and completion. Foreground refresh retains larger
+batches, but saves fetched pages when a later request fails. Chat catch-up runs alongside,
+rather than behind, task-board sync.
+
+The fallback requests a refresh about 30 minutes later and re-arms after delivery. This is
+an opportunity, not a polling guarantee: watchOS controls delivery and budgets, including
+complication eligibility. Background inbox refresh does not start enrollment, phone-directory
+requests, or outbox retries. Passcode-required device-only Keychain storage and complete file
+protection remain unchanged. Unreadable caches are not treated as empty, and failed page
+writes roll back the in-memory cursor so messages can be retried after unlocking.
+
+In Console, filter subsystem `solife.me.Taskify.Native.watchkitapp` and category
+`ChatBackgroundSync` for wake start/completion, busy/key-unavailable deferrals, timeout,
+storage/transport failures, and scheduling/registration failures. Logs contain no message
+content, sender IDs, keys, tokens, URLs, or raw server errors. A missing wake-start entry
+does not by itself prove why watchOS withheld execution.
+
+Physical-device acceptance checks (not established by simulator/unit tests):
+
+1. Provision and open chat once, then background the app on an unlocked, worn Watch.
+   Send a message, confirm a background completion log, and reopen without network to verify
+   the message is already cached. Repeat with iPhone off and Watch Wi-Fi/cellular available.
+2. Lock/remove the Watch, send messages, then unlock/reopen. Verify protected-data deferral
+   and catch-up without losing previously cached messages or pending sends.
+3. Delay/disconnect the network mid-refresh. Verify completed pages survive relaunch and
+   catch-up neither skips nor duplicates messages.
+4. With an active complication and Background App Refresh enabled, verify an eligible
+   scheduled refresh updates the cache without replaying message alerts. Repeat with refresh
+   disabled/Low Power Mode and confirm foreground catch-up remains usable.
+
+Run deterministic transport/cache regression tests with:
+
+```sh
+xcrun swift test --package-path taskify-ios-native --build-system native \
+  --scratch-path /tmp/taskify-native-swiftpm-native --filter TaskifyWatchChatRuntimeTests
+```
+
 ## Validate
+
+The Watch caches parsed Markdown by exact text and reuses chat/task indexes until their source
+data changes. Pending completions, delivery expiry, midnight, and timezone changes remain live.
+Verified received-photo thumbnails are encrypted on disk in a bounded 16 MB / 64-image cache;
+legacy attachments without a content hash are not cached. Backgrounding drops decoded images
+and Markdown from memory, while deleting chats, blocking a sender, clearing chat data, or replacing
+the account clears received-photo and Markdown caches. Profile thumbnails remain available offline
+and are conditionally revalidated with ETag/Last-Modified on foreground (with a five-minute check
+interval within a session), replacing the former seven-day wait for same-URL photo updates.
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
@@ -122,6 +182,108 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   build
 ```
 
+Idle chat checks in `ScrollPerformanceUITests` measure CPU and memory for 30 seconds each on
+the populated inbox and conversation, then verify navigation/search still respond. Relay retries
+back off until an actual response, and rejected subscriptions retry independently so healthy
+histories are not replayed. Unchanged read/delivery updates do not invalidate the app snapshot;
+chat projections are cached per snapshot and Watch projections are built after debouncing.
+These simulator checks do not establish device temperature or long-session stability: validate
+on iPhone by leaving Chat open for at least 20 minutes with no new messages, then repeat while
+a configured relay is unavailable or rejecting a subscription.
+
+A September 3, 2026 Solife device capture found bulk task publication competing with Chat:
+date formatting plus task encryption/signing occupied the main thread, and per-task outbox
+saves caused an iOS excessive-writes report (4,295 MB in 341 seconds). Task publication now
+prepares ordered batches off the main thread, reuses locked ISO-8601 formatters, and durably
+enqueues each batch with one outbox save before independent relay delivery. Backgrounding
+waits for pending task preparation before flushing. `CryptoSyncTests` checks concurrent date
+wire-format compatibility and durable reload of a 102-event batch, including a deletion.
+The fixed build passed 69 targeted core tests and a temporary physical-device conversation
+check: 0.081 seconds of CPU during a 30-second idle measurement, stable memory (about 120 MB),
+and a successful scroll afterward. A separate two-minute chat-list capture used 0.80 seconds
+of CPU with no additional disk writes. These are short follow-up checks, not a controlled
+replay of the original task backlog or a long thermal soak.
+
+For paired iPhone/Watch profiling, use the `Local` configuration with normal signing on both
+simulators. `CODE_SIGNING_ALLOWED=NO` is suitable for a compile check, but it omits the simulated
+Keychain entitlements needed to initialize the account and exercise configured Watch sync.
+Install and authorize the Watch app through the phone's Watch setup, then set
+`TASKIFY_INITIAL_TAB=chat` in each app's debug launch environment to open both on Chat. Include
+an open Watch conversation in the idle check (`TASKIFY_INITIAL_CONVERSATION=<conversation ID>`
+on Watch). `TASKIFY_UI_TEST_ONBOARDING=skip` suppresses the Watch's notification permission
+request during that diagnostic; it does not grant access. Unchanged read positions and equivalent phone
+projections must not advance the Watch cache timestamp, and phone replies to read updates
+must not build or send another snapshot.
+
+Incoming DMs are forwarded before the relay's history-complete signal and decrypted in groups
+of at most eight, with live arrivals prioritized over recovery. Saved ordinary messages skip
+repeat decryption; payment-bearing messages remain eligible for wallet recovery. Relay event
+streams retain arrivals while consumers are busy, and outgoing publish pacing never blocks
+the relay listener. Push wakes refresh only inbox subscriptions on healthy sockets, repairing
+failed sockets individually. `NIP17InboxLatencyTests` covers delayed/missing history completion,
+slow consumers, replay deduplication, and live arrivals during recovery. Verify delivery on
+iPhone both with a conversation already open and after resuming from the background.
+
+Inbox refresh/reconnect cursors retain a two-day overlap plus clock slack: NIP-17 deliberately
+backdates new gift wraps, so using only the newest envelope minus one minute can exclude live
+messages. The overlap is deduplicated before decryption, rather than narrowing away valid arrivals.
+`RelayOutboxLatencyTests` checks 100 messages replayed across three relays, a newly sent backdated
+message, and future-dated envelopes. Conversation rows keep their divider and bubble in one stable
+container, and superseded automatic scroll tasks are cancelled. The 100-message UI regression
+uses current timestamps, injects encrypted plain-text arrivals in triplicate, measures 30 seconds
+of idle CPU/memory, and verifies search still responds. Set `TASKIFY_UI_TEST_CHAT_COUNT=100` and
+`TASKIFY_UI_TEST_CHAT_ARRIVALS=1` alongside `TASKIFY_UI_TEST_CHAT_FIXTURE=1` to run this fixture;
+fixture mode skips contact/account discovery and relay startup so remote data cannot replace it.
+
+Watch chat saves the encrypted outbox and displays the queued bubble before discovery or
+delivery, without decrypting its own newly constructed sender copy. Retries start immediately
+when due and share one coordinator flush. Successful relay lookups are cached for six hours
+from the lookup time, rather than the age of the published preference; failed lookups do not
+erase an existing signed preference. DM submissions opt into the gateway's first-acceptance
+response while retaining pending replicas for retry. The relay no longer waits a fixed 150 ms
+before each remote publish.
+
+`TaskifyWatchChatRuntimeTests` exercises the production store and HTTPS client with a controlled
+URL session: durable enqueue before networking, coalesced retries with immutable event IDs,
+pending replica retention, and cancellation when clearing the account. HTTPS lookup tests cover
+authenticated public-only requests, signature/author/kind validation, completion evidence, cold
+sends, routing-cache reuse across sends, and gateway failure. Routing-cache tests
+cover lookup freshness, seed replacement, unusable results, and bounded storage.
+
+Recipient discovery now uses NIP-98-authenticated HTTPS at
+`/v1/watch/inbox-preference/query`, replacing direct Watch relay WebSockets. The request contains
+one recipient public key and the bounded discovery-relay list. The gateway returns signed events
+and completed-relay evidence; the Watch validates signatures, selects the newest preference,
+and applies its own routing policy. Failed requests remain incomplete, and usable cached signed
+preferences survive lookup failure. No contact-directory scan or gateway preference cache is
+introduced. The gateway can observe lookup metadata, a tradeoff approved on 2026-09-02; message
+encryption and signing remain on the Watch. Deploy the updated relay before the Watch build.
+
+Physical Watch validation remains required. HTTPS is a supported watchOS networking path; see
+[Apple TN3135](https://developer.apple.com/documentation/technotes/tn3135-low-level-networking-on-watchos).
+Measure queued-bubble and first-recipient-acceptance times separately on paired Bluetooth,
+Wi-Fi without the phone, and cellular, including a slow secondary relay.
+
+## Nostr sync audit
+
+The September 3, 2026 [pipeline audit](../docs/nostr-sync-audit-2026-09-03.md) covers native,
+Watch, shared web runtime, and gateway behavior, including fixes, tests, and remaining limits.
+Taskify deliberately retains fallback DM delivery for recipients without a published inbox list,
+as requested by the user. The phone also listens on configured app relays while its own list is
+unavailable. Usable signed lists take precedence; the Watch's bounded degraded fallback policy
+remains enabled. This compatibility behavior differs from strict NIP-17 routing.
+
+Relay rejection never automatically suppresses an entire event kind or declares its queued
+changes sent. The acceptance boolean controls delivery. Verified partial board history flushes
+within 200 ms and before reconnect cleanup; incomplete history does not advance resume cursors.
+Repeated copies avoid decryption, and malformed frames do not tear down healthy sockets.
+Bulk task clocks advance per record instead of adding a second for each unrelated task.
+
+The [Solife performance audit](../docs/solife-performance-audit-2026-09-03.md) records physical-device
+CPU, memory, thermal-state and hang measurements across navigation. Upcoming's calendar event
+date parser now reuses synchronized formatters after repeated formatter construction appeared
+in the device CPU stacks.
+
 ## Migration order
 
 1. Native shell and offline task vertical slice (complete)
@@ -130,3 +292,96 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
 4. Encrypted Chat text, groups, replies, reactions, attachments, group details, search, conversation lifecycle controls, stranger separation, and refined PWA-familiar presentation (complete for the current slice); richer shared task/contact/calendar/payment cards and Wallet remain
 5. Background sync (complete); widgets, App Intents, and accessibility/performance soak remain
 6. Switch the production target only after PWA/native interop and parity sign-off
+
+
+## iOS share sheet and large attachments
+
+Taskify's Share extension accepts up to ten photos, videos, files, links or text
+items, lets the sender choose a DM, group or Note to Self, and queues encrypted file
+uploads in an iOS background URL session. Native app launches retry interrupted
+message delivery and reconcile sent receipts into chat history. Each gift wrap is
+saved before publication so retries keep the same message identity. Files expire
+from the share queue after 48 hours; incomplete private previews expire after 24 hours.
+
+Chat attachments stay in a removable preview until the sender presses Send. Both
+the chat composer and share extension accept an optional comment. Following
+[NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md), the attachment is
+a kind-15 file message and its comment is a separate kind-14 reply whose `e` tag
+references the file's canonical rumor ID. The comment preserves the conversation's
+recipients and group subject. Empty comments produce no extra message. A selection
+of multiple shared files has one comment, replying to the last selected file.
+
+Each recipient's comment waits for that recipient's attachment wrap to be
+acknowledged. Both messages and their dependencies are persisted before delivery;
+retries reuse the existing IDs and only resend unacknowledged copies. A failed
+in-app upload or queue operation preserves the preview and comment. Chat history
+uses reply relationships to keep parents first when timestamps tie, including
+after history replay or restart.
+
+Conversation suggestions are automatic, with no Taskify opt-in setting. The app
+donates actual message interactions with display names and account-scoped opaque
+identifiers. Message bodies, attachment filenames, keys and the contact directory
+are not donated. iOS decides which conversations appear and how they rank.
+
+The extension uses `group.solife.me.Taskify.Share` and a separate
+`$(AppIdentifierPrefix)solife.me.Taskify.share` Keychain group containing only the
+messaging identity. It does not receive the existing application storage/Keychain
+groups or wallet data. Keep the existing Keychain group first in the app entitlement.
+Register/provision the new Share extension bundle ID (`solife.me.Taskify.Native.Share`)
+and App Group when preparing a signed device/TestFlight build.
+
+Native task and chat attachments support 500 MiB (shown as 500 MB), subject to the
+configured host's own limits. File import, AES-GCM, hashing, multipart creation and
+download verification use bounded buffers and protected temporary files. Existing
+PWA/0xchat DM and current/legacy task formats remain readable; other clients may
+still have their own memory limits. CryptoSwift 1.10.0, by Marcin Krzyżanowski and
+contributors, supplies incremental AES-GCM through the isolated TaskifyFileCipher
+module. See the bundled ThirdPartyNotices.txt for its license.
+
+The shared Xcode scheme runs the `Local` configuration. It copies the app targets'
+Debug settings, including development signing, push environment, `DEBUG` and
+debugger support, while Xcode builds Swift package dependencies with Release
+optimization. Keep this configuration's name free of `debug` or `development`:
+Xcode uses those substrings to choose SwiftPM's slow Debug configuration. A local
+benchmark of the same incremental cipher took 5.39 seconds per MiB in Debug versus
+0.047 seconds in Release; an 83 MiB attachment could otherwise appear stalled for
+several minutes before the upload even starts. Test/Analyze still use Debug, and
+Archive/Profile still use Release. This changes no file format or encryption key.
+
+Both composers show encryption progress before queueing or uploading. In-app
+sends also show transmitted bytes and distinguish waiting for the host from
+sending the DM. Cancel stops preparation/upload and retains the preview and
+comment for retry; it is disabled once message queueing starts. Upload failures
+stay beside the attachment, including the rejecting host and HTTP status.
+
+From `taskify-ios-native`, run focused validation:
+
+```sh
+swift test --build-system native --scratch-path /tmp/taskify-media-tests -c release \
+  --filter 'AttachmentFileCryptoTests|ShareContractTests|NostrDirectMessageTests|BlossomClientTests'
+swift test --build-system native --scratch-path /tmp/taskify-media-tests -c release \
+  --filter 'AttachmentCommentTests|NostrDirectMessageTests|CryptoSyncTests|ShareContractTests'
+TASKIFY_TEST_LARGE_FILES=1 swift test --build-system native \
+  --scratch-path /tmp/taskify-media-tests -c release --filter AttachmentFileCryptoTests/test500MiBFileRoundTrip
+```
+
+For bounded-download and cancellation checks, run `python3 Scripts/attachment-test-server.py`
+and use its printed port in `TASKIFY_DOWNLOAD_TEST_BASE_URL=http://127.0.0.1:PORT`
+when running `swift test --filter AttachmentDownloadTests`. The fixture binds only
+loopback and uses synthetic bytes.
+
+For actual file-body transmission, start `python3 Scripts/attachment-upload-test-server.py`
+and use its printed port:
+
+```sh
+TASKIFY_UPLOAD_TEST_BASE_URL=http://127.0.0.1:PORT TASKIFY_TEST_LARGE_FILES=1 \
+  swift test --build-system native --scratch-path /tmp/taskify-media-tests -c release \
+  --filter AttachmentUploadTests
+```
+
+This sends synthetic 83 MiB ciphertext through both Originless multipart and
+authenticated Blossom PUT, downloads/decrypts it, checks hashes and progress, and
+exercises rejection/cancellation. The HTTP endpoint is substituted only in the
+test request; production uploads still require HTTPS. Device share-sheet behavior
+and a full upload to the configured remote host still need release QA; local
+integration tests do not establish remote-host capacity.

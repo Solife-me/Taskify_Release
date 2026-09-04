@@ -51,6 +51,18 @@ public struct TaskifyWatchTask: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+public struct TaskifyWatchBoardColumn: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let order: Int
+
+    public init(id: String, name: String, order: Int) {
+        self.id = id
+        self.name = name
+        self.order = order
+    }
+}
+
 public struct TaskifyWatchBoard: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let name: String
@@ -59,6 +71,8 @@ public struct TaskifyWatchBoard: Identifiable, Codable, Equatable, Sendable {
     public let nostrBoardID: String?
     public let relayURLs: [String]?
     public let defaultColumnID: String?
+    public let columns: [TaskifyWatchBoardColumn]?
+    public let nostrUpdatedAt: Int?
 
     public init(
         id: String,
@@ -67,7 +81,9 @@ public struct TaskifyWatchBoard: Identifiable, Codable, Equatable, Sendable {
         kind: String? = nil,
         nostrBoardID: String? = nil,
         relayURLs: [String]? = nil,
-        defaultColumnID: String? = nil
+        defaultColumnID: String? = nil,
+        columns: [TaskifyWatchBoardColumn]? = nil,
+        nostrUpdatedAt: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -76,6 +92,35 @@ public struct TaskifyWatchBoard: Identifiable, Codable, Equatable, Sendable {
         self.nostrBoardID = nostrBoardID
         self.relayURLs = relayURLs
         self.defaultColumnID = defaultColumnID
+        self.columns = columns
+        self.nostrUpdatedAt = nostrUpdatedAt
+    }
+}
+
+/// The iPhone-selected accent and its legible foreground, represented without SwiftUI so it can
+/// travel through the lightweight cross-target Watch contract.
+public struct TaskifyWatchAccent: Codable, Equatable, Sendable {
+    public let red: UInt8
+    public let green: UInt8
+    public let blue: UInt8
+    public let foregroundRed: UInt8
+    public let foregroundGreen: UInt8
+    public let foregroundBlue: UInt8
+
+    public init(
+        red: UInt8,
+        green: UInt8,
+        blue: UInt8,
+        foregroundRed: UInt8,
+        foregroundGreen: UInt8,
+        foregroundBlue: UInt8
+    ) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.foregroundRed = foregroundRed
+        self.foregroundGreen = foregroundGreen
+        self.foregroundBlue = foregroundBlue
     }
 }
 
@@ -90,6 +135,11 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
     /// Recent command IDs accepted by the iPhone. Optional keeps snapshots written by the first
     /// Watch build decodable after upgrading.
     public let acknowledgedCommandIDs: [String]?
+    /// A bounded, paired-device-only thread index. It may include one short local preview, but no
+    /// message history or attachment keys; full messages still use the independent encrypted path.
+    public let chatProjection: TaskifyWatchChatProjection?
+    /// Optional keeps snapshots from builds before appearance sync decodable.
+    public let accent: TaskifyWatchAccent?
 
     public init(
         schemaVersion: Int = TaskifyWatchSnapshot.currentSchemaVersion,
@@ -97,7 +147,9 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
         boards: [TaskifyWatchBoard] = [],
         selectedBoardID: String? = nil,
         generatedAt: Date = Date(),
-        acknowledgedCommandIDs: [String]? = nil
+        acknowledgedCommandIDs: [String]? = nil,
+        chatProjection: TaskifyWatchChatProjection? = nil,
+        accent: TaskifyWatchAccent? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.tasks = tasks
@@ -105,6 +157,8 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
         self.selectedBoardID = selectedBoardID
         self.generatedAt = generatedAt
         self.acknowledgedCommandIDs = acknowledgedCommandIDs
+        self.chatProjection = chatProjection
+        self.accent = accent
     }
 
     public func tasks(for boardID: String) -> [TaskifyWatchTask] {
@@ -250,7 +304,7 @@ public enum TaskifyWatchWidgetCache {
 /// than application context or background user-info transfers. The receiver must move
 /// `privateKey` directly into its device-only Keychain and must never persist the envelope.
 public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public let schemaVersion: Int
     public let privateKey: Data
@@ -258,6 +312,7 @@ public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
     public let publicKeyNpub: String?
     public let relayURLs: [String]
     public let snapshot: TaskifyWatchSnapshot
+    public let chatContext: TaskifyWatchChatProvisioningContext?
 
     public init(
         schemaVersion: Int = TaskifyWatchProvisioningPayload.currentSchemaVersion,
@@ -265,7 +320,8 @@ public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
         publicKeyHex: String,
         publicKeyNpub: String? = nil,
         relayURLs: [String],
-        snapshot: TaskifyWatchSnapshot
+        snapshot: TaskifyWatchSnapshot,
+        chatContext: TaskifyWatchChatProvisioningContext? = nil
     ) throws {
         guard privateKey.count == 32 else {
             throw TaskifyWatchTransfer.TransferError.invalidPrivateKey
@@ -282,6 +338,7 @@ public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
         self.publicKeyNpub = publicKeyNpub?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.relayURLs = Self.normalizedRelays(relayURLs)
         self.snapshot = snapshot
+        self.chatContext = chatContext
     }
 
     private static func normalizedRelays(_ values: [String]) -> [String] {
@@ -301,9 +358,11 @@ public struct TaskifyWatchProvisioningPayload: Codable, Equatable, Sendable {
 
 public struct TaskifyWatchProvisioningReceipt: Codable, Equatable, Sendable {
     public let publicKeyHex: String
+    public let errorMessage: String?
 
-    public init(publicKeyHex: String) {
+    public init(publicKeyHex: String, errorMessage: String? = nil) {
         self.publicKeyHex = publicKeyHex.lowercased()
+        self.errorMessage = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -415,6 +474,11 @@ public enum TaskifyWatchTransfer {
     public static let commandAcceptedKey = "taskify.watch.commandAccepted.v1"
     public static let provisioningDataKey = "taskify.watch.provisioning.v1"
     public static let setupNavigationRequestKey = "taskify.watch.setup-navigation-request.v1"
+    public static let provisioningStatusRequestKey = "taskify.watch.provisioning-status-request.v1"
+    public static let provisioningStatusPublicKeyKey = "taskify.watch.provisioning-status-pubkey.v1"
+    public static let chatReadConversationIDKey = "taskify.watch.chat-read-conversation.v1"
+    public static let chatReadThroughKey = "taskify.watch.chat-read-through.v1"
+    public static let chatDirectoryRequestKey = "taskify.watch.chat-directory-request.v1"
 
     public static var setupNavigationRequest: [String: Any] {
         [setupNavigationRequestKey: true]
@@ -424,12 +488,66 @@ public enum TaskifyWatchTransfer {
         [requestSnapshotKey: true]
     }
 
+    public static var chatDirectoryRequest: [String: Any] {
+        [chatDirectoryRequestKey: true]
+    }
+
+    public static var provisioningStatusRequest: [String: Any] {
+        [provisioningStatusRequestKey: true]
+    }
+
+    public static func provisioningStatusResponse(publicKeyHex: String?) -> [String: Any] {
+        guard let publicKeyHex else { return [:] }
+        return [provisioningStatusPublicKeyKey: publicKeyHex.lowercased()]
+    }
+
+    public static func chatReadUpdate(
+        conversationID: String,
+        through timestamp: Int
+    ) -> [String: Any]? {
+        let normalized = conversationID.lowercased()
+        guard normalized.count == 64,
+              normalized.allSatisfy(\.isHexDigit),
+              timestamp > 0 else { return nil }
+        return [
+            chatReadConversationIDKey: normalized,
+            chatReadThroughKey: timestamp,
+        ]
+    }
+
+    public static func chatReadUpdate(
+        from values: [String: Any]
+    ) -> (conversationID: String, timestamp: Int)? {
+        guard let conversationID = values[chatReadConversationIDKey] as? String,
+              let timestamp = values[chatReadThroughKey] as? Int else { return nil }
+        let normalized = conversationID.lowercased()
+        guard normalized.count == 64,
+              normalized.allSatisfy(\.isHexDigit),
+              timestamp > 0 else { return nil }
+        return (normalized, timestamp)
+    }
+
     public static func isSetupNavigationRequest(_ values: [String: Any]) -> Bool {
         values[setupNavigationRequestKey] as? Bool == true
     }
 
     public static func isSnapshotRequest(_ values: [String: Any]) -> Bool {
         values[requestSnapshotKey] as? Bool == true
+    }
+
+    public static func isProvisioningStatusRequest(_ values: [String: Any]) -> Bool {
+        values[provisioningStatusRequestKey] as? Bool == true
+    }
+
+    public static func isChatDirectoryRequest(_ values: [String: Any]) -> Bool {
+        values[chatDirectoryRequestKey] as? Bool == true
+    }
+
+    public static func provisioningStatusPublicKey(_ values: [String: Any]) -> String? {
+        guard let value = values[provisioningStatusPublicKeyKey] as? String else { return nil }
+        let normalized = value.lowercased()
+        guard normalized.count == 64, normalized.allSatisfy(\.isHexDigit) else { return nil }
+        return normalized
     }
 
     public static func encode(_ snapshot: TaskifyWatchSnapshot) throws -> Data {
@@ -469,7 +587,9 @@ public enum TaskifyWatchTransfer {
                     boards: snapshot.boards,
                     selectedBoardID: snapshot.selectedBoardID,
                     generatedAt: snapshot.generatedAt,
-                    acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs
+                    acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs,
+                    chatProjection: snapshot.chatProjection,
+                    accent: snapshot.accent
                 )
             let data = try compressedSnapshotData(candidate)
             if data.count <= byteLimit {
@@ -481,16 +601,53 @@ public enum TaskifyWatchTransfer {
         }
 
         if let bestData { return bestData }
-        // A very large board list is still more useful than silently failing every update. The
-        // caller will surface the system transport error if even this minimal state cannot fit.
-        return try compressedSnapshotData(TaskifyWatchSnapshot(
-            schemaVersion: snapshot.schemaVersion,
-            tasks: [],
-            boards: snapshot.boards,
-            selectedBoardID: snapshot.selectedBoardID,
-            generatedAt: snapshot.generatedAt,
-            acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs
-        ))
+
+        // Task payloads are normally the largest part of a snapshot. If the bounded chat index
+        // itself is the remaining pressure, retain as many of the newest threads as fit. An empty
+        // projection is intentionally distinct from nil: it tells the Watch to clear an older
+        // projected index rather than leave stale rows behind.
+        if let projection = snapshot.chatProjection {
+            lowerBound = 0
+            upperBound = projection.threads.count
+            while lowerBound <= upperBound {
+                let threadCount = lowerBound + (upperBound - lowerBound) / 2
+                let candidate = TaskifyWatchSnapshot(
+                    schemaVersion: snapshot.schemaVersion,
+                    tasks: [],
+                    boards: snapshot.boards,
+                    selectedBoardID: snapshot.selectedBoardID,
+                    generatedAt: snapshot.generatedAt,
+                    acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs,
+                    chatProjection: TaskifyWatchChatProjection(
+                        threads: Array(projection.threads.prefix(threadCount)),
+                        accountPublicKey: projection.accountPublicKey,
+                        // Omitting an oversized contact update preserves the Watch's last complete
+                        // provisioned directory while still delivering newest thread state.
+                        contacts: nil,
+                        discoveryRelayURLs: projection.discoveryRelayURLs,
+                        pushRelayHTTPSURL: projection.pushRelayHTTPSURL,
+                        pushRelayWSSURL: projection.pushRelayWSSURL,
+                        // Tombstones survive trimming: they are the only path phone-side
+                        // deletions and blocks have to the Watch cache.
+                        deletedConversationIDs: projection.deletedConversationIDs,
+                        blockedPublicKeys: projection.blockedPublicKeys,
+                        generatedAt: projection.generatedAt
+                    ),
+                    accent: snapshot.accent
+                )
+                let data = try compressedSnapshotData(candidate)
+                if data.count <= byteLimit {
+                    bestData = data
+                    lowerBound = threadCount + 1
+                } else {
+                    upperBound = threadCount - 1
+                }
+            }
+
+        }
+
+        if let bestData { return bestData }
+        throw TransferError.transportPayloadTooLarge
     }
 
     public static func decodeConnectivitySnapshot(_ data: Data) throws -> TaskifyWatchSnapshot {
@@ -572,12 +729,84 @@ public enum TaskifyWatchTransfer {
         return preview
     }
 
-    public static func encode(_ payload: TaskifyWatchProvisioningPayload) throws -> Data {
-        try encoder.encode(payload)
+    /// Encodes the one-time secure setup envelope for WatchConnectivity's immediate-message API.
+    /// The full payload is retained whenever it fits. If it does not, the ordinary application
+    /// context sent immediately after the receipt supplies task state, while this envelope keeps
+    /// the account key, relay configuration, newest thread index, and the routing contacts needed
+    /// by each retained conversation.
+    public static func encode(
+        _ payload: TaskifyWatchProvisioningPayload,
+        maximumBytes: Int = 48 * 1_024
+    ) throws -> Data {
+        let byteLimit = max(1_024, maximumBytes)
+        let fullData = try compressedProvisioningData(payload)
+        if fullData.count <= byteLimit { return fullData }
+
+        let minimalSnapshot = TaskifyWatchSnapshot(
+            schemaVersion: payload.snapshot.schemaVersion,
+            generatedAt: payload.snapshot.generatedAt,
+            acknowledgedCommandIDs: payload.snapshot.acknowledgedCommandIDs,
+            accent: payload.snapshot.accent
+        )
+        guard let context = payload.chatContext else {
+            let candidate = try provisioningCandidate(
+                payload,
+                snapshot: minimalSnapshot,
+                chatContext: nil
+            )
+            let data = try compressedProvisioningData(candidate)
+            guard data.count <= byteLimit else {
+                throw TransferError.transportPayloadTooLarge
+            }
+            return data
+        }
+
+        let allThreads = context.threadSummaries ?? []
+        var threadLimit = allThreads.count
+        var extraContactLimit = context.contacts.count
+        var includeAccountPreference = true
+
+        while true {
+            let boundedContext = boundedProvisioningContext(
+                context,
+                accountPublicKey: payload.publicKeyHex,
+                threadLimit: threadLimit,
+                extraContactLimit: extraContactLimit,
+                includeAccountPreference: includeAccountPreference
+            )
+            let candidate = try provisioningCandidate(
+                payload,
+                snapshot: minimalSnapshot,
+                chatContext: boundedContext
+            )
+            let data = try compressedProvisioningData(candidate)
+            if data.count <= byteLimit { return data }
+
+            if extraContactLimit > 0 {
+                extraContactLimit = reducedLimit(extraContactLimit)
+            } else if threadLimit > 0 {
+                threadLimit = reducedLimit(threadLimit)
+            } else if includeAccountPreference {
+                // The signed preference is public and can be rediscovered by the Watch. Dropping
+                // it is a final size fallback; discovery must still complete before defaults are
+                // used, preserving Taskify's recipient-routing privacy rule.
+                includeAccountPreference = false
+            } else {
+                throw TransferError.transportPayloadTooLarge
+            }
+        }
     }
 
     public static func decodeProvisioningPayload(_ data: Data) throws -> TaskifyWatchProvisioningPayload {
-        let payload = try decoder.decode(TaskifyWatchProvisioningPayload.self, from: data)
+        let decoded: Data
+        if data.starts(with: compressedProvisioningHeader) {
+            let compressed = data.dropFirst(compressedProvisioningHeader.count)
+            decoded = try (Data(compressed) as NSData).decompressed(using: .lzfse) as Data
+        } else {
+            // Backward compatibility with secure setup envelopes written by older iPhone builds.
+            decoded = data
+        }
+        let payload = try decoder.decode(TaskifyWatchProvisioningPayload.self, from: decoded)
         guard payload.schemaVersion <= TaskifyWatchProvisioningPayload.currentSchemaVersion else {
             throw TransferError.unsupportedSchema(payload.schemaVersion)
         }
@@ -603,6 +832,7 @@ public enum TaskifyWatchTransfer {
         case invalidPublicKey
         case invalidCommand
         case invalidVoicePreview
+        case transportPayloadTooLarge
 
         public var errorDescription: String? {
             switch self {
@@ -616,6 +846,8 @@ public enum TaskifyWatchTransfer {
                 "The Watch command is incomplete."
             case .invalidVoicePreview:
                 "The Watch dictation preview is incomplete."
+            case .transportPayloadTooLarge:
+                "The secure Watch setup data is too large to transfer."
             }
         }
     }
@@ -634,10 +866,75 @@ public enum TaskifyWatchTransfer {
     }
 
     private static let compressedSnapshotHeader = Data([0x54, 0x46, 0x57, 0x53, 0x01])
+    private static let compressedProvisioningHeader = Data([0x54, 0x46, 0x57, 0x50, 0x01])
 
     private static func compressedSnapshotData(_ snapshot: TaskifyWatchSnapshot) throws -> Data {
         let source = try encode(snapshot)
         let compressed = try (source as NSData).compressed(using: .lzfse) as Data
         return compressedSnapshotHeader + compressed
+    }
+
+    private static func compressedProvisioningData(
+        _ payload: TaskifyWatchProvisioningPayload
+    ) throws -> Data {
+        let source = try encoder.encode(payload)
+        let compressed = try (source as NSData).compressed(using: .lzfse) as Data
+        return compressedProvisioningHeader + compressed
+    }
+
+    private static func provisioningCandidate(
+        _ source: TaskifyWatchProvisioningPayload,
+        snapshot: TaskifyWatchSnapshot,
+        chatContext: TaskifyWatchChatProvisioningContext?
+    ) throws -> TaskifyWatchProvisioningPayload {
+        try TaskifyWatchProvisioningPayload(
+            schemaVersion: source.schemaVersion,
+            privateKey: source.privateKey,
+            publicKeyHex: source.publicKeyHex,
+            publicKeyNpub: source.publicKeyNpub,
+            relayURLs: source.relayURLs,
+            snapshot: snapshot,
+            chatContext: chatContext
+        )
+    }
+
+    private static func boundedProvisioningContext(
+        _ source: TaskifyWatchChatProvisioningContext,
+        accountPublicKey: String,
+        threadLimit: Int,
+        extraContactLimit: Int,
+        includeAccountPreference: Bool
+    ) -> TaskifyWatchChatProvisioningContext {
+        let threads = Array((source.threadSummaries ?? []).prefix(max(0, threadLimit)))
+        let requiredKeys = Set(threads.flatMap(\.memberPublicKeys))
+            .subtracting([accountPublicKey.lowercased()])
+        var selectedContacts: [TaskifyWatchContact] = []
+        var selectedKeys = Set<String>()
+
+        for contact in source.contacts where requiredKeys.contains(contact.publicKey.lowercased()) {
+            guard selectedKeys.insert(contact.publicKey.lowercased()).inserted else { continue }
+            selectedContacts.append(contact)
+        }
+        var remainingAllowance = max(0, extraContactLimit)
+        for contact in source.contacts where remainingAllowance > 0 {
+            guard selectedKeys.insert(contact.publicKey.lowercased()).inserted else { continue }
+            selectedContacts.append(contact)
+            remainingAllowance -= 1
+        }
+
+        return TaskifyWatchChatProvisioningContext(
+            contacts: selectedContacts,
+            threadSummaries: threads,
+            discoveryRelayURLs: source.discoveryRelayURLs,
+            accountInboxPreferenceEvent: includeAccountPreference
+                ? source.accountInboxPreferenceEvent
+                : nil,
+            pushRelayHTTPSURL: source.pushRelayHTTPSURL,
+            pushRelayWSSURL: source.pushRelayWSSURL
+        )
+    }
+
+    private static func reducedLimit(_ value: Int) -> Int {
+        value <= 1 ? 0 : value / 2
     }
 }

@@ -69,6 +69,11 @@ enum WalletPriceCache {
 @MainActor
 final class WalletViewModel: ObservableObject {
     static let suggestedMintURL = "https://mint.solife.me"
+    /// Outstanding-invoice check cadence. Each unchanged round trip doubles the wait (up to
+    /// the maximum) so a wallet that is merely left open stays quiet; a paid invoice resets
+    /// the interval immediately.
+    private static let lightningPollBaseSeconds: UInt64 = 15
+    private static let lightningPollMaximumSeconds: UInt64 = 60
 
     @Published private(set) var snapshot = CashuWalletSnapshot.empty
     @Published private(set) var isLoading = false
@@ -713,19 +718,27 @@ final class WalletViewModel: ObservableObject {
     private func startLightningMonitoring() {
         guard isAppActive, service != nil, lightningMonitorTask == nil else { return }
         lightningMonitorTask = Task { [weak self] in
+            var pollSeconds = Self.lightningPollBaseSeconds
             while !Task.isCancelled {
                 guard let self else { return }
                 let hasOutstandingInvoices = self.hasOutstandingLightningInvoices
                 let hasPendingEcash = !self.recoverablePendingEcashReceives.isEmpty
                 if hasOutstandingInvoices {
+                    let quotesBefore = self.lightningReceiveQuotes
                     await self.recoverPendingLightningReceives()
+                    // Escalate while checks come back unchanged so an unpaid invoice cannot
+                    // hold the app on a hot multi-second poll for its entire lifetime; any
+                    // state change resets the cadence for responsive claim detection.
+                    pollSeconds = self.lightningReceiveQuotes == quotesBefore
+                        ? min(pollSeconds * 2, Self.lightningPollMaximumSeconds)
+                        : Self.lightningPollBaseSeconds
                 }
                 if hasPendingEcash {
                     await self.recoverPendingEcashReceives()
                 }
                 do {
                     try await Task.sleep(
-                        for: .seconds(hasOutstandingInvoices ? 4 : (hasPendingEcash ? 15 : 30))
+                        for: .seconds(hasOutstandingInvoices ? pollSeconds : (hasPendingEcash ? 15 : 30))
                     )
                 } catch {
                     return
@@ -928,6 +941,9 @@ final class WalletViewModel: ObservableObject {
     private func refreshLightningReceiveQuotes() async {
         guard let service,
               let quotes = try? await service.trackedLightningReceiveQuotes() else { return }
+        // Writing an identical array still fires objectWillChange and re-renders every
+        // observing view -- the monitor used to do that on every poll cycle.
+        guard quotes != lightningReceiveQuotes else { return }
         lightningReceiveQuotes = quotes
     }
 
@@ -938,7 +954,10 @@ final class WalletViewModel: ObservableObject {
     ) async -> [CashuRecoveredReceive] {
         guard let service else { return [] }
         let recovered = await service.recoverPendingReceives(force: force)
-        pendingEcashReceives = await service.savedPendingReceives()
+        let savedPendingReceives = await service.savedPendingReceives()
+        if savedPendingReceives != pendingEcashReceives {
+            pendingEcashReceives = savedPendingReceives
+        }
         guard !recovered.isEmpty else { return [] }
         await refresh()
         guard presentInApp else { return recovered }

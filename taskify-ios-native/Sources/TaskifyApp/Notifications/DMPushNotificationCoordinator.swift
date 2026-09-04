@@ -163,6 +163,11 @@ final class TaskifyDMPushCoordinator {
 }
 
 final class TaskifyApplicationDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        TaskifyShareUploadSession.reconnect(identifier: identifier, completion: completionHandler)
+    }
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data

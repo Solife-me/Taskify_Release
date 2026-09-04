@@ -162,7 +162,7 @@ private struct TaskAttachmentFullScreenImage: View {
                         systemImage: "photo.badge.exclamationmark"
                     )
                 } else {
-                    ProgressView("Loading full-resolution image…")
+                    ProgressView("Loading image…")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -308,6 +308,9 @@ private struct TaskDocumentTile: View {
             await loadThumbnailIfNeeded()
         }
         .quickLookPreview($previewURL)
+        .onChange(of: previewURL) { old, new in
+            if let old, old != new { try? FileManager.default.removeItem(at: old) }
+        }
         .alert(item: $alert) { alert in
             Alert(
                 title: Text("Attachment unavailable"),
@@ -336,7 +339,7 @@ private struct TaskDocumentTile: View {
     private var documentIcon: String {
         switch document.kind.lowercased() {
         case "pdf": "doc.richtext"
-        case "png", "jpg", "jpeg", "webp", "gif": "photo"
+        case "png", "jpg", "jpeg", "webp", "gif", "heic", "heif": "photo"
         case "mp3", "aac", "m4a", "wav": "waveform"
         case "mp4", "mov", "webm": "video"
         case "txt", "md", "json", "csv": "doc.text"
@@ -350,15 +353,14 @@ private struct TaskDocumentTile: View {
         Task {
             do {
                 let boardID = document.encryptionBoardID ?? fallbackBoardID
-                let data = try await TaskAttachmentDataLoader.load(
+                let file = try await TaskAttachmentDataLoader.loadFile(
                     source: source,
                     encrypted: document.encrypted == true,
                     boardID: boardID
                 )
                 let url = try TaskAttachmentDataLoader.previewFile(
-                    data: data,
-                    name: document.name,
-                    documentID: document.id
+                    file: file,
+                    name: document.name
                 )
                 guard !Task.isCancelled else { return }
                 previewURL = url
@@ -412,7 +414,7 @@ private struct TaskDocumentTile: View {
             guard !Task.isCancelled else { return }
 
             let kind = document.kind.lowercased()
-            if ["png", "jpg", "jpeg", "webp", "gif"].contains(kind) {
+            if ["png", "jpg", "jpeg", "webp", "gif", "heic", "heif"].contains(kind) {
                 derivedPreviewImage = await TaskAttachmentThumbnailLoader.shared.image(
                     data: data,
                     cacheKey: "document::\(document.id)::\(source)",
@@ -681,62 +683,45 @@ private actor TaskAttachmentThumbnailLoader {
     }
 
     func fullImage(data: Data, cacheKey: String) async -> UIImage? {
-        let key = cacheKey as NSString
-        if let cached = cache.object(forKey: key) { return cached }
-        let image = await Task.detached(priority: .userInitiated) {
-            UIImage(data: data)?.preparingForDisplay()
-        }.value
-        guard let image else { return nil }
-        let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
-        cache.setObject(image, forKey: key, cost: cost)
-        return image
+        await image(data: data, cacheKey: cacheKey, maximumPixelSize: 4_096)
     }
 }
 
 private enum TaskAttachmentDataLoader {
-    private static let cache: NSCache<NSString, NSData> = {
-        let cache = NSCache<NSString, NSData>()
-        cache.totalCostLimit = 64 * 1_024 * 1_024
-        return cache
-    }()
-    private static let maximumDownloadSize = 50 * 1_024 * 1_024
-
     static func load(source: String, encrypted: Bool, boardID: String) async throws -> Data {
-        if source.hasPrefix("data:") {
-            return try TaskAttachmentCrypto.data(from: source)
-        }
+        let file = try await loadFile(source: source, encrypted: encrypted, boardID: boardID)
+        defer { try? FileManager.default.removeItem(at: file) }
+        // Thumbnail consumers can use a mapping; no full-file plaintext allocation.
+        return try Data(contentsOf: file, options: .alwaysMapped)
+    }
 
-        let cacheKey = "\(encrypted ? "encrypted" : "plain")::\(boardID)::\(source)" as NSString
-        if let cached = cache.object(forKey: cacheKey) {
-            return cached as Data
-        }
-
-        guard let url = URL(string: source),
-              url.scheme?.lowercased() == "https" || url.scheme?.lowercased() == "http" else {
+    static func loadFile(source: String, encrypted: Bool, boardID: String) async throws -> URL {
+        if source.hasPrefix("data:") { return try AttachmentFiles.write(TaskAttachmentCrypto.data(from: source)) }
+        guard let url = URL(string: source), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else {
             throw URLError(.badURL)
         }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 25
-        request.cachePolicy = .returnCacheDataElseLoad
-        let (downloaded, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse,
-              (200...299).contains(response.statusCode) else {
-            throw URLError(.badServerResponse)
+        let downloaded = try await AttachmentDownload.file(from: url,
+            limit: AttachmentFiles.maximumBytes + (encrypted ? 32 : 0))
+        guard encrypted else { return downloaded }
+        defer { try? FileManager.default.removeItem(at: downloaded) }
+        return try await AttachmentFiles.work {
+            try AttachmentFileCrypto.decryptTask(downloaded, boardID: boardID)
         }
-        guard downloaded.count <= maximumDownloadSize else {
-            throw TaskAttachmentLoadingError.tooLarge
-        }
+    }
 
-        let resolved = encrypted
-            ? try TaskAttachmentCrypto.decrypt(downloaded, boardID: boardID)
-            : downloaded
-        cache.setObject(resolved as NSData, forKey: cacheKey, cost: resolved.count)
-        return resolved
+    static func previewFile(file: URL, name: String) throws -> URL {
+        let folder = try AttachmentFiles.directory().appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try AttachmentFiles.protect(folder)
+        let clean = String(name.replacingOccurrences(of: #"[^A-Za-z0-9._-]"#, with: "_", options: .regularExpression).prefix(180))
+        let destination = folder.appendingPathComponent(clean.isEmpty || clean == "." || clean == ".." ? "Attachment" : clean)
+        try FileManager.default.moveItem(at: file, to: destination)
+        try AttachmentFiles.protect(destination)
+        return destination
     }
 
     static func previewFile(data: Data, name: String, documentID: String) throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("TaskifyAttachmentPreviews", isDirectory: true)
+        let directory = try AttachmentFiles.directory()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let safeName = name.replacingOccurrences(
             of: #"[^A-Za-z0-9._-]"#,
@@ -749,7 +734,8 @@ private enum TaskAttachmentDataLoader {
             options: .regularExpression
         )
         let fileURL = directory.appendingPathComponent("\(safeID)-\(safeName.isEmpty ? "attachment" : safeName)")
-        try data.write(to: fileURL, options: .atomic)
+        try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try AttachmentFiles.protect(fileURL)
         return fileURL
     }
 }

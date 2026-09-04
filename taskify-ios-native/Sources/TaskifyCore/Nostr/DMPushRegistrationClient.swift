@@ -48,6 +48,10 @@ public enum DMPushRegistrationClient {
                 ["u", url.absoluteString],
                 ["method", method.uppercased()],
                 ["payload", Data(SHA256.hash(data: body)).hexString],
+                // Nostr event IDs don't include the signature. Without a nonce, two identical
+                // registration refreshes created in the same second produce the same event ID and
+                // the relay's one-use NIP-98 guard rejects the second request as a replay.
+                ["nonce", UUID().uuidString.lowercased()],
             ],
             content: ""
         )

@@ -523,6 +523,107 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Chat"].waitForExistence(timeout: 5))
     }
 
+    func testChatInboxRemainsResponsiveAfterIdle() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+
+        measureChatIdle(app)
+
+        contact.tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 3))
+    }
+
+    func testConversationRemainsResponsiveAfterIdle() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5))
+
+        measureChatIdle(app)
+
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(app.buttons["Conversation actions"].waitForExistence(timeout: 3))
+        app.buttons["Conversation actions"].tap()
+        app.buttons["Search Conversation"].tap()
+        XCTAssertTrue(app.textFields["Search conversation"].waitForExistence(timeout: 3))
+    }
+
+    func testHundredMessageConversationReceivesLiveTextAndReturnsToIdle() throws {
+        let app = chatFixtureApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "100"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ARRIVALS"] = "1"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["UI Test Contact"].waitForExistence(timeout: 10))
+        app.staticTexts["UI Test Contact"].tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5))
+        let incoming = app.staticTexts["Live fixture message 3"]
+        XCTAssertTrue(incoming.waitForExistence(timeout: 6), "Encrypted arrivals must reach the open conversation")
+        XCTAssertTrue(incoming.isHittable, "The newest arrival should scroll into view")
+
+        measureChatIdle(app)
+
+        XCTAssertTrue(app.buttons["Conversation actions"].waitForExistence(timeout: 3))
+        app.buttons["Conversation actions"].tap()
+        app.buttons["Search Conversation"].tap()
+        let search = app.textFields["Search conversation"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("Live fixture message 3")
+        XCTAssertTrue(app.staticTexts["1/1"].waitForExistence(timeout: 3),
+            "Three relay copies must produce one message")
+    }
+
+    func testChatRemainsResponsiveAcrossBackgroundHandoffs() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+
+        // Exercise a quick return while sync may still be handing off, then stay away
+        // beyond the 30-second background-task warning reported during the freeze.
+        for pause: TimeInterval in [1, 35] {
+            XCUIDevice.shared.press(.home)
+            let backgrounded = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    let state = app.state
+                    return state == .runningBackground || state == .runningBackgroundSuspended
+                },
+                object: app
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [backgrounded], timeout: 5), .completed)
+            Thread.sleep(forTimeInterval: pause)
+            XCTAssertNotEqual(app.state, .notRunning, "Taskify should survive its background sync handoff")
+            app.activate()
+            XCTAssertTrue(contact.waitForExistence(timeout: 5))
+        }
+
+        contact.tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5))
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertNotEqual(app.state, .notRunning)
+        app.activate()
+        XCTAssertTrue(app.buttons["Conversation actions"].waitForExistence(timeout: 5))
+        app.buttons["Conversation actions"].tap()
+        app.buttons["Search Conversation"].tap()
+        XCTAssertTrue(app.textFields["Search conversation"].waitForExistence(timeout: 3))
+    }
+
+    /// Records idle CPU and memory separately from launch/scroll costs. The deterministic
+    /// fixture has no incoming traffic; device testing still needs real relays and media.
+    private func measureChatIdle(_ app: XCUIApplication) {
+        let options = XCTMeasureOptions()
+        options.iterationCount = 1
+        measure(metrics: [XCTCPUMetric(application: app), XCTMemoryMetric(application: app)], options: options) {
+            Thread.sleep(forTimeInterval: 30)
+        }
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     func testOpeningChatStartsAtNewestMessage() throws {
         let app = chatFixtureApplication()
         app.launch()
@@ -556,6 +657,8 @@ final class ScrollPerformanceUITests: XCTestCase {
 
         let newest = app.staticTexts["Newest fixture message"]
         XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        let scrollToBottom = app.buttons["chatScrollToBottom"]
+        XCTAssertTrue(scrollToBottom.waitForNonExistence(timeout: 3))
 
         let oldest = app.staticTexts["Fixture conversation message 1"]
         var swipes = 0
@@ -574,6 +677,11 @@ final class ScrollPerformanceUITests: XCTestCase {
             newest.isHittable,
             "After scrolling to the oldest message, the thread must not snap back to the newest"
         )
+        XCTAssertTrue(scrollToBottom.isHittable)
+        scrollToBottom.tap()
+        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        XCTAssertTrue(newest.isHittable, "The down-arrow should reveal the latest message")
+        XCTAssertTrue(scrollToBottom.waitForNonExistence(timeout: 3))
     }
 
     func testChatSearchShowsIndividualMessageAndOpensItsLocation() throws {

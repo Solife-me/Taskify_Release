@@ -3,16 +3,72 @@ import TaskifyWatchShared
 import WatchKit
 
 private enum TaskifyWatchTheme {
-    static let accent = Color(
+    static let fallbackAccent = Color(
         red: TaskifyBrand.accentRed,
         green: TaskifyBrand.accentGreen,
         blue: TaskifyBrand.accentBlue
     )
-    static let accentOn = Color(
+    static let fallbackAccentOn = Color(
         red: TaskifyBrand.accentOnRed,
         green: TaskifyBrand.accentOnGreen,
         blue: TaskifyBrand.accentOnBlue
     )
+}
+
+extension TaskifyWatchAppModel {
+    var taskifyAccentColor: Color {
+        guard let accent = snapshot.accent else { return TaskifyWatchTheme.fallbackAccent }
+        return Color(
+            red: Double(accent.red) / 255,
+            green: Double(accent.green) / 255,
+            blue: Double(accent.blue) / 255
+        )
+    }
+
+    var taskifyAccentForegroundColor: Color {
+        guard let accent = snapshot.accent else { return TaskifyWatchTheme.fallbackAccentOn }
+        return Color(
+            red: Double(accent.foregroundRed) / 255,
+            green: Double(accent.foregroundGreen) / 255,
+            blue: Double(accent.foregroundBlue) / 255
+        )
+    }
+}
+
+/// A clear, untinted circular Liquid Glass surface for compact Watch controls. Keeping the glass
+/// neutral lets the synchronized Taskify accent remain legible on the symbol instead of tinting
+/// both the symbol and its background the same color.
+struct TaskifyWatchCircularGlassControl: ViewModifier {
+    let size: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(watchOS 26.0, *) {
+            content
+                .frame(width: size, height: size)
+                .contentShape(Circle())
+                .glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            content
+                .frame(width: size, height: size)
+                .contentShape(Circle())
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 0.8))
+        }
+    }
+}
+
+extension View {
+    func taskifyWatchCircularGlassControl(size: CGFloat) -> some View {
+        modifier(TaskifyWatchCircularGlassControl(size: size))
+    }
+}
+
+private enum TaskifyWatchRootRoute: Hashable {
+    case today
+    case upcoming
+    case chat
+    case board(String)
 }
 
 struct TaskifyWatchRootView: View {
@@ -22,15 +78,22 @@ struct TaskifyWatchRootView: View {
     @State private var quickAddBoardID: String?
     @State private var showingInitialSetupPrompt = false
     @State private var hasShownInitialSetupPrompt = false
+    @State private var navigationPath: [TaskifyWatchRootRoute] = {
+#if DEBUG
+        // Match the iPhone debug entry point so paired idle profiling can start on Chat.
+        if ProcessInfo.processInfo.environment["TASKIFY_INITIAL_TAB"] == "chat" {
+            return [.chat]
+        }
+#endif
+        return []
+    }()
 
     var body: some View {
         if model.isProvisioned {
-            NavigationStack {
+            NavigationStack(path: $navigationPath) {
                 List {
                     Section {
-                        NavigationLink {
-                            TaskifyWatchTaskList(title: "Today", source: .today)
-                        } label: {
+                        NavigationLink(value: TaskifyWatchRootRoute.today) {
                             WatchDestinationLabel(
                                 title: "Today",
                                 count: model.todayTasks.count,
@@ -39,9 +102,7 @@ struct TaskifyWatchRootView: View {
                             )
                         }
 
-                        NavigationLink {
-                            TaskifyWatchTaskList(title: "Upcoming", source: .upcoming)
-                        } label: {
+                        NavigationLink(value: TaskifyWatchRootRoute.upcoming) {
                             WatchDestinationLabel(
                                 title: "Upcoming",
                                 count: model.upcomingTasks.count,
@@ -49,16 +110,20 @@ struct TaskifyWatchRootView: View {
                                 color: .blue
                             )
                         }
+
+                        NavigationLink(value: TaskifyWatchRootRoute.chat) {
+                            WatchDestinationLabel(
+                                title: "Chat",
+                                count: model.chatUnreadCount,
+                                systemImage: "bubble.left.and.bubble.right.fill",
+                                color: model.taskifyAccentColor
+                            )
+                        }
                     }
 
                     Section("Boards") {
                         ForEach(model.snapshot.boards) { board in
-                            NavigationLink {
-                                TaskifyWatchTaskList(
-                                    title: board.name,
-                                    source: .board(board.id)
-                                )
-                            } label: {
+                            NavigationLink(value: TaskifyWatchRootRoute.board(board.id)) {
                                 WatchDestinationLabel(
                                     title: board.name,
                                     count: model.openTaskCount(for: board.id),
@@ -79,36 +144,51 @@ struct TaskifyWatchRootView: View {
                     await model.refreshLatestData(forceComplicationReload: true)
                 }
                 .navigationTitle("Taskify")
+                .navigationDestination(for: TaskifyWatchRootRoute.self) { route in
+                    switch route {
+                    case .today:
+                        TaskifyWatchTaskList(title: "Today", source: .today)
+                    case .upcoming:
+                        TaskifyWatchTaskList(title: "Upcoming", source: .upcoming)
+                    case .chat:
+                        TaskifyWatchChatListView()
+                    case .board(let boardID):
+                        TaskifyWatchTaskList(
+                            title: model.snapshot.boards.first { $0.id == boardID }?.name ?? "Board",
+                            source: .board(boardID)
+                        )
+                    }
+                }
             }
             .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: 16)
+                if navigationPath.first != .chat {
+                    Color.clear.frame(height: 16)
+                }
             }
             .overlay(alignment: .bottomTrailing) {
-                Button {
-                    // A board task list supplies a fixed destination. Home, Today, and Upcoming
-                    // deliberately pass nil so the sheet asks the user which board to use.
-                    quickAddBoardID = model.activeQuickAddBoardID
-                    WKInterfaceDevice.current().play(.click)
-                    showingQuickAdd = true
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(TaskifyWatchTheme.accent)
-                            .frame(width: 26, height: 26)
+                if navigationPath.first != .chat {
+                    Button {
+                        // A board task list supplies a fixed destination. Home, Today, and Upcoming
+                        // deliberately pass nil so the sheet asks the user which board to use.
+                        quickAddBoardID = model.activeQuickAddBoardID
+                        WKInterfaceDevice.current().play(.click)
+                        showingQuickAdd = true
+                    } label: {
                         Image(systemName: "plus")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(TaskifyWatchTheme.accentOn)
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(model.taskifyAccentColor)
+                            .taskifyWatchCircularGlassControl(size: 36)
+                        // Keep a comfortable invisible hit target without making the visible button
+                        // dominate the small screen.
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
                     }
-                    // Keep a comfortable invisible hit target without making the visible button
-                    // dominate the small screen.
-                    .frame(width: 40, height: 40)
-                    .contentShape(Circle())
+                    .buttonStyle(.plain)
+                    .padding(.trailing, -2)
+                    .padding(.bottom, -2)
+                    .disabled(model.snapshot.boards.isEmpty)
+                    .accessibilityLabel("Add task")
                 }
-                .buttonStyle(.plain)
-                .padding(.trailing, -2)
-                .padding(.bottom, -2)
-                .disabled(model.snapshot.boards.isEmpty)
-                .accessibilityLabel("Add task")
             }
             .sheet(isPresented: $showingQuickAdd) {
                 TaskifyWatchQuickAddSheet(destinationBoardID: quickAddBoardID)
@@ -116,6 +196,7 @@ struct TaskifyWatchRootView: View {
             }
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
+                await model.beginAvatarRefresh()
                 // Retry WidgetKit when the app becomes active even if the shared snapshot itself
                 // did not change. A previously budget-delayed complication reload must not leave
                 // an old "All clear" timeline beside a Watch app that already has today's tasks.
@@ -128,6 +209,20 @@ struct TaskifyWatchRootView: View {
                     guard !Task.isCancelled else { return }
                     await model.refreshLatestData()
                 }
+            }
+            .tint(model.taskifyAccentColor)
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    model.refreshViewClock()
+                    try? await Task.sleep(for: .seconds(model.nextViewClockDelay))
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+                model.refreshViewClock()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+                model.refreshViewClock()
             }
         } else {
             NavigationStack {
@@ -249,7 +344,7 @@ private struct TaskifyWatchQuickAddSheet: View {
                         if isInterpreting {
                             VStack(spacing: 8) {
                                 ProgressView()
-                                    .tint(TaskifyWatchTheme.accent)
+                                    .tint(model.taskifyAccentColor)
                                 Text("Understanding…")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -277,7 +372,7 @@ private struct TaskifyWatchQuickAddSheet: View {
                             )
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(TaskifyWatchTheme.accent)
+                        .tint(model.taskifyAccentColor)
                     } else if dictationError != nil {
                         Button("Try Again") {
                             interpretDictation()
@@ -369,6 +464,7 @@ private struct TaskifyWatchQuickAddSheet: View {
 }
 
 private struct QuickAddChoiceLabel: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
     let title: String
     let systemImage: String
 
@@ -376,7 +472,7 @@ private struct QuickAddChoiceLabel: View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
                 .font(.body.weight(.semibold))
-                .foregroundStyle(TaskifyWatchTheme.accent)
+                .foregroundStyle(model.taskifyAccentColor)
                 .frame(width: 24)
             Text(title)
                 .font(.body.weight(.semibold))
@@ -385,12 +481,13 @@ private struct QuickAddChoiceLabel: View {
 }
 
 private struct TaskifyWatchVoiceDraftRow: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
     let task: TaskifyWatchVoiceDraft
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(TaskifyWatchTheme.accent)
+                .foregroundStyle(model.taskifyAccentColor)
             VStack(alignment: .leading, spacing: 3) {
                 Text(task.title)
                     .font(.body.weight(.semibold))
@@ -491,7 +588,7 @@ private struct TaskifyWatchTaskList: View {
                         } label: {
                             Image(systemName: "circle")
                                 .font(.title3)
-                                .foregroundStyle(TaskifyWatchTheme.accent)
+                                .foregroundStyle(model.taskifyAccentColor)
                                 .frame(width: 40, height: 40)
                                 .contentShape(Circle())
                         }

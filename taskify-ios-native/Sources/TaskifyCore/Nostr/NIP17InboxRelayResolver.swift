@@ -189,7 +189,7 @@ public enum NIP17InboxRelayResolver {
                     $0.publicKey.lowercased() == normalizedRecipient &&
                     $0.verify()
             })
-            .max(by: { $0.createdAt < $1.createdAt }) else { return [] }
+            .max(by: { $0.createdAt == $1.createdAt ? $0.id > $1.id : $0.createdAt < $1.createdAt }) else { return [] }
         return TaskifyRelayURL.normalizedList(latest.tags.compactMap { tag in
             guard tag.count >= 2, tag[0] == "relay" else { return nil }
             return tag[1]

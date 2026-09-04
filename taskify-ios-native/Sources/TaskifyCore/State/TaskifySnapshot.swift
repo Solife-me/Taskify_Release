@@ -121,6 +121,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public var nostrGroupConversations: [NostrGroupConversation]?
     public var directMessageArchivedAt: [String: Int]?
     public var directMessageDeletedEventIDs: [String: Int]?
+    /// Conversation → deletion timestamp. Companion to `directMessageDeletedEventIDs`: event
+    /// suppression alone cannot name a conversation once its messages are removed, and the
+    /// paired Watch cache needs a durable tombstone list to drop threads deleted on iPhone.
+    public var directMessageDeletedThreadAt: [String: Int]?
     public var directMessageBlockedPeers: [String]?
     public var directMessageMutedGroups: [String: Int]?
     public var directMessageLeftGroups: [String]?
@@ -152,6 +156,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         nostrGroupConversations: [NostrGroupConversation]? = nil,
         directMessageArchivedAt: [String: Int]? = nil,
         directMessageDeletedEventIDs: [String: Int]? = nil,
+        directMessageDeletedThreadAt: [String: Int]? = nil,
         directMessageBlockedPeers: [String]? = nil,
         directMessageMutedGroups: [String: Int]? = nil,
         directMessageLeftGroups: [String]? = nil,
@@ -177,6 +182,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         self.nostrGroupConversations = nostrGroupConversations
         self.directMessageArchivedAt = directMessageArchivedAt
         self.directMessageDeletedEventIDs = directMessageDeletedEventIDs
+        self.directMessageDeletedThreadAt = directMessageDeletedThreadAt
         self.directMessageBlockedPeers = directMessageBlockedPeers
         self.directMessageMutedGroups = directMessageMutedGroups
         self.directMessageLeftGroups = directMessageLeftGroups

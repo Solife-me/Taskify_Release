@@ -19,6 +19,14 @@ enum TaskUrgentAlarmPreferences {
             .contains(TaskifyUrgentAlarmContract.preferenceKey(for: task))
     }
 
+    /// Reads the enabled-preference set once so batch callers (notification reschedules run per
+    /// task over the whole snapshot) don't rebuild it — and relock — for every task.
+    static func enabledPreferenceKeys(defaults: UserDefaults = .standard) -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(defaults.stringArray(forKey: enabledKeysDefaultsKey) ?? [])
+    }
+
     static func setEnabled(
         _ enabled: Bool,
         for task: TaskItem,
@@ -129,8 +137,9 @@ actor TaskNotificationCoordinator {
                     )
                 }
             }
+        let urgentEnabledKeys = TaskUrgentAlarmPreferences.enabledPreferenceKeys(defaults: defaults)
         let urgentFallbacks = tasks.compactMap { task -> ScheduledReminder? in
-            guard TaskUrgentAlarmPreferences.isEnabled(for: task, defaults: defaults),
+            guard urgentEnabledKeys.contains(TaskifyUrgentAlarmContract.preferenceKey(for: task)),
                   TaskifyUrgentAlarmContract.isEligible(task, now: now),
                   !alarmedTaskIDs.contains(task.id),
                   !(task.reminders ?? []).contains(where: { $0.minutesBefore == 0 }),
@@ -227,9 +236,10 @@ actor TaskNotificationCoordinator {
         }
         defaults.removeObject(forKey: Self.managedAlarmIDsDefaultsKey)
 
+        let urgentEnabledKeys = TaskUrgentAlarmPreferences.enabledPreferenceKeys(defaults: defaults)
         let urgentTasks = tasks
             .filter { task in
-                TaskUrgentAlarmPreferences.isEnabled(for: task, defaults: defaults)
+                urgentEnabledKeys.contains(TaskifyUrgentAlarmContract.preferenceKey(for: task))
                     && TaskifyUrgentAlarmContract.isEligible(task, now: now)
             }
             .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }

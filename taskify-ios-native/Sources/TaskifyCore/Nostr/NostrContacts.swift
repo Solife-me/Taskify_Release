@@ -256,7 +256,7 @@ public enum NostrContactFinder {
             }
             return eventsByID.values.sorted {
                 if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
-                return $0.id > $1.id
+                return $0.id < $1.id
             }
         }
     }
@@ -284,7 +284,7 @@ public enum NostrContactFinder {
             return collected
         }
         var profiles: [String: NostrContactProfile] = [:]
-        for event in events.sorted(by: { $0.createdAt < $1.createdAt }) {
+        for event in events.sorted(by: { $0.createdAt == $1.createdAt ? $0.id > $1.id : $0.createdAt < $1.createdAt }) {
             guard let profile = NostrContactProfile.decode(event: event) else { continue }
             profiles[event.publicKey.lowercased()] = profile
         }

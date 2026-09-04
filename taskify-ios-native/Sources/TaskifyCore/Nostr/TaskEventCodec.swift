@@ -266,20 +266,43 @@ public struct TaskSyncPayload: Codable, Equatable, Sendable {
     }
 
     static func format(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        return formatter.string(from: date)
+        TaskSyncDateCodec.shared.format(date)
     }
 
     static func parse(_ value: String?) -> Date? {
         guard let value else { return nil }
-        let fractional = ISO8601DateFormatter()
+        return TaskSyncDateCodec.shared.parse(value)
+    }
+}
+
+/// Rebuilding ICU's ISO-8601 formatter for each task date dominated device CPU samples
+/// during bulk sync. Keep the wire format unchanged and serialize access to the two
+/// reusable Foundation formatters, since encoding and decoding run on different executors.
+private final class TaskSyncDateCodec: @unchecked Sendable {
+    static let shared = TaskSyncDateCodec()
+    private let lock = NSLock()
+    private let fractional: ISO8601DateFormatter
+    private let standard: ISO8601DateFormatter
+
+    private init() {
+        fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) { return date }
-        let standard = ISO8601DateFormatter()
+        fractional.timeZone = TimeZone(secondsFromGMT: 0)
+        standard = ISO8601DateFormatter()
         standard.formatOptions = [.withInternetDateTime]
-        return standard.date(from: value)
+        standard.timeZone = TimeZone(secondsFromGMT: 0)
+    }
+
+    func format(_ date: Date) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return fractional.string(from: date)
+    }
+
+    func parse(_ value: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return fractional.date(from: value) ?? standard.date(from: value)
     }
 }
 
