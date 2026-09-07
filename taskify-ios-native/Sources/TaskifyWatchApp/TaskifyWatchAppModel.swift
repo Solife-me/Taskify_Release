@@ -280,6 +280,16 @@ final class TaskifyWatchAppModel: NSObject {
         currentChatIndex.contacts[publicKey.lowercased()]
     }
 
+    func chatGroupAvatarMembers(
+        memberPublicKeys: [String],
+        recentSenderPublicKeys: [String]
+    ) -> [TaskifyWatchGroupAvatarMember] {
+        currentChatIndex.groupAvatarMembers(
+            memberPublicKeys: memberPublicKeys,
+            recentSenderPublicKeys: recentSenderPublicKeys
+        )
+    }
+
     private var currentChatIndex: TaskifyWatchChatIndex {
         // Read observed input even on cache hits so SwiftUI keeps tracking updates.
         _ = chatSnapshot

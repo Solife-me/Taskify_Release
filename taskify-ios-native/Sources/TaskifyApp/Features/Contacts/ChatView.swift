@@ -162,6 +162,10 @@ struct ContactsView: View {
         )
         let messageSearchResults = messageSearchResults(in: activeThreads)
         let strangerUnreadCount = strangerUnreadCount(in: strangerThreads)
+        let chatRows = NostrChatListItem.rows(
+            threads: filteredThreads,
+            strangerThreads: searchText.isEmpty && !showingStrangers ? strangerThreads : []
+        )
 
         return NavigationStack(path: $navigationPath) {
             VStack(alignment: .leading, spacing: 0) {
@@ -194,21 +198,6 @@ struct ContactsView: View {
                     }
                 } else {
                     List {
-                        if searchText.isEmpty, !showingStrangers, !strangerThreads.isEmpty {
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.2)) { showingStrangers = true }
-                            } label: {
-                                StrangerInboxRow(
-                                    threads: strangerThreads,
-                                    unreadCount: strangerUnreadCount
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
-                        }
-
                         if !messageSearchResults.isEmpty {
                             Section {
                                 ForEach(messageSearchResults) { result in
@@ -232,50 +221,66 @@ struct ContactsView: View {
                             }
                         }
 
-                        ForEach(filteredThreads) { thread in
-                            NavigationLink(value: ChatConversationRoute(
-                                peerPublicKey: thread.peerPublicKey
-                            )) {
-                                DirectMessageThreadRow(
-                                    thread: thread,
-                                    contact: thread.peerPublicKey == model.identityPublicKey
-                                        ? ownContact
-                                        : model.nostrContact(publicKey: thread.peerPublicKey),
-                                    group: model.groupConversation(id: thread.peerPublicKey),
-                                    isSelf: thread.peerPublicKey == model.identityPublicKey,
-                                    isMuted: model.isDirectMessageGroupMuted(thread.peerPublicKey),
-                                    isBlocked: model.isDirectMessagePeerBlocked(thread.peerPublicKey)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
-                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        ForEach(chatRows) { row in
+                            switch row {
+                            case .strangers:
                                 Button {
-                                    archive(thread)
+                                    withAnimation(.easeInOut(duration: 0.2)) { showingStrangers = true }
                                 } label: {
-                                    Label("Archive", systemImage: "archivebox")
+                                    StrangerInboxRow(
+                                        threads: strangerThreads,
+                                        unreadCount: strangerUnreadCount
+                                    )
                                 }
-                                .tint(.indigo)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
-                                    threadPendingDeletion = thread
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                                .buttonStyle(.plain)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                            case .thread(let thread):
+                                NavigationLink(value: ChatConversationRoute(
+                                    peerPublicKey: thread.peerPublicKey
+                                )) {
+                                    DirectMessageThreadRow(
+                                        thread: thread,
+                                        contact: thread.peerPublicKey == model.identityPublicKey
+                                            ? ownContact
+                                            : model.nostrContact(publicKey: thread.peerPublicKey),
+                                        group: model.groupConversation(id: thread.peerPublicKey),
+                                        isSelf: thread.peerPublicKey == model.identityPublicKey,
+                                        isMuted: model.isDirectMessageGroupMuted(thread.peerPublicKey),
+                                        isBlocked: model.isDirectMessagePeerBlocked(thread.peerPublicKey)
+                                    )
                                 }
-                            }
-                            .contextMenu {
-                                Button {
-                                    archive(thread)
-                                } label: {
-                                    Label("Archive Conversation", systemImage: "archivebox")
+                                .buttonStyle(.plain)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                    Button {
+                                        archive(thread)
+                                    } label: {
+                                        Label("Archive", systemImage: "archivebox")
+                                    }
+                                    .tint(.indigo)
                                 }
-                                Button(role: .destructive) {
-                                    threadPendingDeletion = thread
-                                } label: {
-                                    Label("Delete Conversation", systemImage: "trash")
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        threadPendingDeletion = thread
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                                .contextMenu {
+                                    Button {
+                                        archive(thread)
+                                    } label: {
+                                        Label("Archive Conversation", systemImage: "archivebox")
+                                    }
+                                    Button(role: .destructive) {
+                                        threadPendingDeletion = thread
+                                    } label: {
+                                        Label("Delete Conversation", systemImage: "trash")
+                                    }
                                 }
                             }
                         }
@@ -655,7 +660,8 @@ private struct DirectMessageThreadRow: View {
             ChatPeerAvatar(
                 contact: contact,
                 publicKey: thread.peerPublicKey,
-                isGroup: group != nil
+                group: group,
+                recentMessages: thread.messages
             )
 
             VStack(alignment: .leading, spacing: 4) {
@@ -827,19 +833,17 @@ private struct ChatPeerAvatar: View {
     let contact: NostrContact?
     let publicKey: String
     var size: CGFloat = 46
-    var isGroup = false
+    var group: NostrGroupConversation? = nil
+    var recentMessages: [NostrDirectMessage] = []
 
     var body: some View {
         Group {
-            if isGroup {
-                ZStack {
-                    Circle().fill(TaskifyTheme.accent.opacity(0.22))
-                    Image(systemName: "person.3.fill")
-                        .font(.system(size: size * 0.36))
-                        .foregroundStyle(TaskifyTheme.primaryText)
-                }
-                .frame(width: size, height: size)
-                .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+            if let group {
+                ChatGroupAvatar(
+                    group: group,
+                    recentMessages: recentMessages,
+                    size: size
+                )
             } else if let contact {
                 NostrContactAvatar(contact: contact, size: size)
             } else {
@@ -854,6 +858,126 @@ private struct ChatPeerAvatar: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+private struct ChatGroupAvatarMember: Identifiable {
+    let id: String
+    let contact: NostrContact?
+    let isCurrentUser: Bool
+
+    var initials: String {
+        if let contact { return contact.initials }
+        return isCurrentUser ? "Y" : "?"
+    }
+}
+
+private struct ChatGroupAvatar: View {
+    @Environment(AppModel.self) private var model
+    let group: NostrGroupConversation
+    let recentMessages: [NostrDirectMessage]
+    let size: CGFloat
+
+    private var members: [ChatGroupAvatarMember] {
+        let memberKeys = group.memberPublicKeys.map { $0.lowercased() }
+        let memberKeySet = Set(memberKeys)
+        var recentKeys: [String] = []
+        var seen = Set<String>()
+
+        for message in recentMessages.reversed() {
+            let key = message.senderPublicKey.lowercased()
+            guard memberKeySet.contains(key), seen.insert(key).inserted else { continue }
+            recentKeys.append(key)
+            if recentKeys.count == 4 { break }
+        }
+
+        let remainingKeys = memberKeys
+            .filter { !seen.contains($0) }
+            .enumerated()
+            .sorted { left, right in
+                let leftHasPhoto = model.nostrContact(publicKey: left.element)?.pictureURL != nil
+                let rightHasPhoto = model.nostrContact(publicKey: right.element)?.pictureURL != nil
+                if leftHasPhoto != rightHasPhoto { return leftHasPhoto && !rightHasPhoto }
+                return left.offset < right.offset
+            }
+            .map(\.element)
+
+        return (recentKeys + remainingKeys).prefix(4).map { key in
+            ChatGroupAvatarMember(
+                id: key,
+                contact: model.nostrContact(publicKey: key),
+                isCurrentUser: key == model.identityPublicKey.lowercased()
+            )
+        }
+    }
+
+    var body: some View {
+        let members = members
+        ZStack {
+            Circle().fill(TaskifyTheme.accent.opacity(0.14))
+            ForEach(Array(members.enumerated()), id: \.element.id) { index, member in
+                let layout = Self.layout(for: members.count, index: index)
+                memberAvatar(member, diameter: size * layout.diameter)
+                    .position(x: size * layout.x, y: size * layout.y)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func memberAvatar(_ member: ChatGroupAvatarMember, diameter: CGFloat) -> some View {
+        Group {
+            if let contact = member.contact {
+                NostrContactAvatar(contact: contact, size: diameter)
+            } else {
+                ZStack {
+                    LinearGradient(
+                        colors: [Color(red: 0.43, green: 0.36, blue: 0.61),
+                                 Color(red: 0.31, green: 0.27, blue: 0.49)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    Text(member.initials)
+                        .font(.system(size: diameter * 0.38, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Color.black.opacity(0.28), lineWidth: 1))
+            }
+        }
+        .frame(width: diameter, height: diameter)
+    }
+
+    private struct MemberLayout {
+        let x: CGFloat
+        let y: CGFloat
+        let diameter: CGFloat
+    }
+
+    private static func layout(for count: Int, index: Int) -> MemberLayout {
+        let layouts: [[MemberLayout]] = [
+            [MemberLayout(x: 0.50, y: 0.50, diameter: 0.64)],
+            [
+                MemberLayout(x: 0.37, y: 0.41, diameter: 0.58),
+                MemberLayout(x: 0.67, y: 0.65, diameter: 0.50),
+            ],
+            [
+                MemberLayout(x: 0.34, y: 0.47, diameter: 0.54),
+                MemberLayout(x: 0.73, y: 0.27, diameter: 0.37),
+                MemberLayout(x: 0.73, y: 0.70, diameter: 0.41),
+            ],
+            [
+                MemberLayout(x: 0.28, y: 0.28, diameter: 0.40),
+                MemberLayout(x: 0.75, y: 0.25, diameter: 0.34),
+                MemberLayout(x: 0.24, y: 0.73, diameter: 0.34),
+                MemberLayout(x: 0.72, y: 0.71, diameter: 0.43),
+            ],
+        ]
+        let safeCount = min(max(count, 1), 4)
+        return layouts[safeCount - 1][min(index, safeCount - 1)]
     }
 }
 
@@ -1532,7 +1656,8 @@ private struct GroupConversationDetailsView: View {
                                 contact: nil,
                                 publicKey: group.groupID,
                                 size: 72,
-                                isGroup: true
+                                group: group,
+                                recentMessages: messages
                             )
                             Text(group.displayName)
                                 .font(.title2.bold())
@@ -1999,6 +2124,158 @@ private final class ChatAttachmentDraft: Identifiable {
     deinit { try? FileManager.default.removeItem(at: fileURL) }
 }
 
+private final class ChatPasteTextView: UITextView {
+    var pasteAttachment: (([NSItemProvider]) -> Bool)?
+    private var shouldFocusWhenAttached = false
+
+    @discardableResult
+    func requestFocus() -> Bool {
+        shouldFocusWhenAttached = true
+        guard window != nil, isEditable, isUserInteractionEnabled else { return false }
+        return isFirstResponder || becomeFirstResponder()
+    }
+
+    func dismissFocus() {
+        shouldFocusWhenAttached = false
+        if isFirstResponder { resignFirstResponder() }
+    }
+
+    func markFocusEnded() {
+        shouldFocusWhenAttached = false
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil, shouldFocusWhenAttached else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, self.shouldFocusWhenAttached else { return }
+            self.requestFocus()
+        }
+    }
+
+    override func paste(itemProviders: [NSItemProvider]) {
+        if pasteAttachment?(itemProviders) == true { return }
+        super.paste(itemProviders: itemProviders)
+    }
+
+    override func paste(_ sender: Any?) {
+        if pasteAttachment?(UIPasteboard.general.itemProviders) == true { return }
+        super.paste(sender)
+    }
+}
+
+private struct ChatComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let isFocused: FocusState<Bool>.Binding
+    let isEnabled: Bool
+    let dismissKeyboard: Bool
+    let accessibilityLabel: String
+    let onSubmit: () -> Void
+    let pasteAttachment: ([NSItemProvider]) -> Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> ChatPasteTextView {
+        let view = ChatPasteTextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.font = .preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.textColor = UIColor(TaskifyTheme.primaryText)
+        view.tintColor = UIColor(TaskifyTheme.accent)
+        view.textContainerInset = UIEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
+        view.textContainer.lineFragmentPadding = 0
+        view.isScrollEnabled = false
+        view.returnKeyType = .send
+        view.keyboardDismissMode = .interactive
+        view.pasteConfiguration = UIPasteConfiguration(
+            acceptableTypeIdentifiers: [UTType.item.identifier]
+        )
+        view.accessibilityLabel = accessibilityLabel
+        view.pasteAttachment = pasteAttachment
+        let tapRecognizer = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.focusComposer(_:))
+        )
+        tapRecognizer.cancelsTouchesInView = false
+        view.addGestureRecognizer(tapRecognizer)
+        return view
+    }
+
+    func updateUIView(_ view: ChatPasteTextView, context: Context) {
+        context.coordinator.parent = self
+        if view.text != text { view.text = text }
+        view.isEditable = isEnabled
+        view.accessibilityLabel = accessibilityLabel
+        view.pasteAttachment = pasteAttachment
+
+        if dismissKeyboard {
+            view.dismissFocus()
+        } else if isFocused.wrappedValue {
+            view.requestFocus()
+        }
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView: ChatPasteTextView,
+        context: Context
+    ) -> CGSize? {
+        guard let width = proposal.width else { return nil }
+        let fitting = uiView.sizeThatFits(
+            CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        )
+        let lineHeight = uiView.font?.lineHeight ?? 20
+        let insetHeight = uiView.textContainerInset.top + uiView.textContainerInset.bottom
+        let maximumHeight = lineHeight * 5 + insetHeight
+        let height = min(max(fitting.height, 42), maximumHeight)
+        uiView.isScrollEnabled = fitting.height > maximumHeight
+        return CGSize(width: width, height: height)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ChatComposerTextView
+
+        init(parent: ChatComposerTextView) { self.parent = parent }
+
+        @objc func focusComposer(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended,
+                  parent.isEnabled,
+                  let textView = recognizer.view as? ChatPasteTextView else { return }
+            textView.requestFocus()
+            if !parent.isFocused.wrappedValue {
+                parent.isFocused.wrappedValue = true
+            }
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            textView.invalidateIntrinsicContentSize()
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            guard !parent.isFocused.wrappedValue else { return }
+            DispatchQueue.main.async { self.parent.isFocused.wrappedValue = true }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            (textView as? ChatPasteTextView)?.markFocusEnded()
+            guard parent.isFocused.wrappedValue else { return }
+            DispatchQueue.main.async { self.parent.isFocused.wrappedValue = false }
+        }
+
+        func textView(
+            _ textView: UITextView,
+            shouldChangeTextIn range: NSRange,
+            replacementText text: String
+        ) -> Bool {
+            guard text == "\n" else { return true }
+            parent.onSubmit()
+            return false
+        }
+    }
+}
+
 private struct DirectMessageConversationView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -2206,7 +2483,8 @@ private struct DirectMessageConversationView: View {
                                 contact: contact,
                                 publicKey: peerPublicKey,
                                 size: 72,
-                                isGroup: group != nil
+                                group: group,
+                                recentMessages: messages
                             )
                             Text(
                                 group?.displayName ?? contact?.displayName
@@ -2533,7 +2811,8 @@ private struct DirectMessageConversationView: View {
                         contact: contact,
                         publicKey: peerPublicKey,
                         size: 42,
-                        isGroup: group != nil
+                        group: group,
+                        recentMessages: messages
                     )
                     Text(conversationTitle)
                         .font(.system(size: 14, weight: .bold))
@@ -2928,14 +3207,27 @@ private struct DirectMessageConversationView: View {
                         Divider().padding(.horizontal, 9)
                     }
                     HStack(alignment: .bottom, spacing: 4) {
-                        TextField(attachmentDraft == nil ? "Message" : "Add comment or Send", text: $draft, axis: .vertical)
-                            .lineLimit(1...5)
-                            .focused($composerFocused)
-                            .submitLabel(.send)
-                            .onSubmit { send() }
-                            .disabled(isSending)
-                            .padding(.leading, 15)
-                            .padding(.vertical, 11)
+                        let composerPrompt = attachmentDraft == nil ? "Message" : "Add comment or Send"
+                        ZStack(alignment: .topLeading) {
+                            if draft.isEmpty {
+                                Text(composerPrompt)
+                                    .font(.body)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                    .padding(.top, 10)
+                                    .allowsHitTesting(false)
+                            }
+                            ChatComposerTextView(
+                                text: $draft,
+                                isFocused: $composerFocused,
+                                isEnabled: !isSending,
+                                dismissKeyboard: isSearchingConversation,
+                                accessibilityLabel: composerPrompt,
+                                onSubmit: send,
+                                pasteAttachment: pasteAttachmentProviders
+                            )
+                        }
+                        .padding(.leading, 15)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                         Button(action: send) {
                             Group {
@@ -3095,6 +3387,153 @@ private struct DirectMessageConversationView: View {
             guard !Task.isCancelled else { return }
             model.errorMessage = error.localizedDescription
             UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    @MainActor
+    private func pasteAttachmentProviders(_ providers: [NSItemProvider]) -> Bool {
+        guard Self.clipboardAttachmentSource(in: providers) != nil else { return false }
+        guard !isSending, !isSendingAttachment else { return true }
+        attachmentPreparationTask?.cancel()
+        attachmentPreparationTask = Task { await stageClipboardAttachment(providers) }
+        return true
+    }
+
+    @MainActor
+    private func stageClipboardAttachment(_ providers: [NSItemProvider]) async {
+        guard !isSending, !isSendingAttachment,
+              let source = Self.clipboardAttachmentSource(in: providers) else { return }
+        isSendingAttachment = true
+        defer { isSendingAttachment = false }
+        var imported: URL?
+        do {
+            let staged: (url: URL, name: String, type: UTType?)
+            if let type = source.contentType {
+                let url = try await Self.importClipboardRepresentation(
+                    from: source.provider,
+                    contentType: type
+                )
+                let baseName = source.provider.suggestedName?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallbackName: String
+                if type.conforms(to: .image) { fallbackName = "Pasted Image" }
+                else if type.conforms(to: .movie) { fallbackName = "Pasted Video" }
+                else if type.conforms(to: .audio) { fallbackName = "Pasted Audio" }
+                else { fallbackName = "Pasted File" }
+                let suppliedName = baseName.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackName
+                let name = URL(fileURLWithPath: suppliedName).pathExtension.isEmpty
+                    ? "\(suppliedName).\(type.preferredFilenameExtension ?? "bin")"
+                    : suppliedName
+                staged = (url, name, type)
+            } else {
+                let fileURL = try await Self.clipboardFileURL(from: source.provider)
+                let values = try fileURL.resourceValues(forKeys: [.contentTypeKey, .nameKey])
+                let url = try await AttachmentFiles.work { try AttachmentFiles.importFile(fileURL) }
+                staged = (
+                    url,
+                    values.name ?? fileURL.lastPathComponent,
+                    values.contentType ?? UTType(filenameExtension: fileURL.pathExtension)
+                )
+            }
+            imported = staged.url
+            try Task.checkCancellation()
+            let size = try AttachmentFiles.size(staged.url)
+            guard size > 0 else { throw AttachmentFileError.empty }
+            attachmentDraft = ChatAttachmentDraft(
+                fileURL: staged.url,
+                name: staged.name,
+                mimeType: staged.type?.preferredMIMEType ?? "application/octet-stream",
+                size: size
+            )
+            attachmentSendError = nil
+            imported = nil
+            composerFocused = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            if let imported { try? FileManager.default.removeItem(at: imported) }
+            guard !Task.isCancelled else { return }
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    private struct ClipboardAttachmentSource {
+        let provider: NSItemProvider
+        let contentType: UTType?
+    }
+
+    private static func clipboardAttachmentSource(
+        in providers: [NSItemProvider]
+    ) -> ClipboardAttachmentSource? {
+        for provider in providers {
+            let types = provider.registeredTypeIdentifiers.compactMap(UTType.init)
+            let namedFile = provider.suggestedName.map {
+                !URL(fileURLWithPath: $0).pathExtension.isEmpty
+            } ?? false
+            let contentType = types.first {
+                $0.conforms(to: .image) || $0.conforms(to: .movie) || $0.conforms(to: .audio)
+            } ?? types.first {
+                $0.conforms(to: .data) &&
+                    (namedFile || !$0.conforms(to: .text)) &&
+                    !$0.conforms(to: .url)
+            }
+            if let contentType { return ClipboardAttachmentSource(provider: provider, contentType: contentType) }
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                return ClipboardAttachmentSource(provider: provider, contentType: nil)
+            }
+        }
+        return nil
+    }
+
+    private static func importClipboardRepresentation(
+        from provider: NSItemProvider,
+        contentType: UTType
+    ) async throws -> URL {
+        do {
+            return try await withCheckedThrowingContinuation { continuation in
+                provider.loadFileRepresentation(forTypeIdentifier: contentType.identifier) { url, error in
+                    do {
+                        if let error { throw error }
+                        guard let url else { throw AttachmentFileError.invalidFile }
+                        // The provider owns this URL only for the duration of its callback.
+                        continuation.resume(returning: try AttachmentFiles.importFile(url))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } catch {
+            return try await withCheckedThrowingContinuation { continuation in
+                provider.loadDataRepresentation(forTypeIdentifier: contentType.identifier) { data, fallbackError in
+                    do {
+                        if let fallbackError { throw fallbackError }
+                        guard let data else { throw AttachmentFileError.invalidFile }
+                        continuation.resume(returning: try AttachmentFiles.write(data))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func clipboardFileURL(from provider: NSItemProvider) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadItem(
+                forTypeIdentifier: UTType.fileURL.identifier,
+                options: nil
+            ) { value, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let url = value as? URL {
+                    continuation.resume(returning: url)
+                } else if let data = value as? Data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(throwing: AttachmentFileError.invalidFile)
+                }
+            }
         }
     }
 

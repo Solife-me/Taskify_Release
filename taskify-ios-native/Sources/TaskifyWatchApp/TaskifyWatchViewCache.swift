@@ -5,6 +5,7 @@ struct TaskifyWatchChatThread: Identifiable, Equatable {
     let id: String
     let displayName: String
     let memberPublicKeys: [String]
+    let recentSenderPublicKeys: [String]
     let latestMessage: TaskifyWatchChatMessage?
     let latestActivityAt: Int
     let preview: String
@@ -14,15 +15,24 @@ struct TaskifyWatchChatThread: Identifiable, Equatable {
     let isGroup: Bool
 }
 
+struct TaskifyWatchGroupAvatarMember: Identifiable, Equatable {
+    var id: String { publicKey }
+    let publicKey: String
+    let displayName: String
+    let avatarURL: URL?
+}
+
 /// Built once for a snapshot. Delivery expiry is evaluated at lookup time, never cached.
 struct TaskifyWatchChatIndex {
     let contacts: [String: TaskifyWatchContact]
     let threads: [TaskifyWatchChatThread]
     let unreadCount: Int
+    private let identity: String
     private let messagesByConversation: [String: [TaskifyWatchChatMessage]]
     private let outboxByRumor: [String: TaskifyWatchChatOutboxEntry]
 
     init(snapshot: TaskifyWatchChatSnapshot, identity: String) {
+        self.identity = identity.lowercased()
         contacts = snapshot.contacts.reduce(into: [:]) { $0[$1.publicKey] = $1 }
         messagesByConversation = Dictionary(grouping: snapshot.messages, by: \.conversationID)
             .mapValues { $0.sorted {
@@ -33,6 +43,45 @@ struct TaskifyWatchChatIndex {
         threads = Self.makeThreads(snapshot: snapshot, identity: identity.lowercased(),
                                    contacts: contacts, messagesByConversation: messagesByConversation)
         unreadCount = threads.reduce(0) { $0 + $1.unreadCount }
+    }
+
+    func groupAvatarMembers(
+        memberPublicKeys: [String],
+        recentSenderPublicKeys: [String],
+        limit: Int = 4
+    ) -> [TaskifyWatchGroupAvatarMember] {
+        var normalizedMembers: [String] = []
+        var memberSet = Set<String>()
+        for publicKey in memberPublicKeys.map({ $0.lowercased() })
+        where memberSet.insert(publicKey).inserted {
+            normalizedMembers.append(publicKey)
+        }
+
+        var orderedKeys: [String] = []
+        var selected = Set<String>()
+        for publicKey in recentSenderPublicKeys.map({ $0.lowercased() })
+        where memberSet.contains(publicKey) && selected.insert(publicKey).inserted {
+            orderedKeys.append(publicKey)
+        }
+
+        let remainingKeys = normalizedMembers.enumerated()
+            .filter { !selected.contains($0.element) }
+            .sorted { left, right in
+                let leftHasPhoto = contacts[left.element]?.avatarURL != nil
+                let rightHasPhoto = contacts[right.element]?.avatarURL != nil
+                if leftHasPhoto != rightHasPhoto { return leftHasPhoto && !rightHasPhoto }
+                return left.offset < right.offset
+            }
+            .map(\.element)
+
+        return (orderedKeys + remainingKeys).prefix(max(0, limit)).map { publicKey in
+            let contact = contacts[publicKey]
+            return TaskifyWatchGroupAvatarMember(
+                publicKey: publicKey,
+                displayName: contact?.displayName ?? (publicKey == identity ? "You" : "?"),
+                avatarURL: contact?.avatarURL
+            )
+        }
     }
 
     func messages(conversationID: String, now: Date = Date()) -> [TaskifyWatchChatMessage] {
@@ -102,10 +151,19 @@ struct TaskifyWatchChatIndex {
                 let isRequest = summary?.isRequest ?? (!isGroup && peers.contains { contacts[$0] == nil })
                 let avatarURL = summary?.avatarURL
                     ?? peers.first.flatMap { contacts[$0]?.avatarURL }
+                var recentSenderPublicKeys: [String] = []
+                var recentSenders = Set<String>()
+                for message in messages.reversed()
+                where message.kind != .reaction
+                    && recentSenders.insert(message.senderPublicKey).inserted {
+                    recentSenderPublicKeys.append(message.senderPublicKey)
+                    if recentSenderPublicKeys.count == 4 { break }
+                }
                 return TaskifyWatchChatThread(
                     id: conversationID,
                     displayName: displayName,
                     memberPublicKeys: members,
+                    recentSenderPublicKeys: recentSenderPublicKeys,
                     latestMessage: latest,
                     latestActivityAt: latestActivityAt,
                     preview: preview,

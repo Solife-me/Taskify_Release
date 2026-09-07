@@ -639,6 +639,27 @@ final class ScrollPerformanceUITests: XCTestCase {
         attach(app, name: "chat-02-imessage-style")
     }
 
+    func testMessageComposerOpensKeyboardWhenTapped() throws {
+        let app = chatFixtureApplication()
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+
+        let composer = app.textViews["Message"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        let sendButton = app.buttons["Send message"]
+        XCTAssertTrue(sendButton.waitForExistence(timeout: 3))
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: sendButton.frame.minX - 12, dy: composer.frame.midY))
+            .tap()
+        XCTAssertTrue(
+            app.keyboards.element.waitForExistence(timeout: 3),
+            "Tapping anywhere across the message composer must make it first responder"
+        )
+    }
+
     /// Swiping back through the history must actually travel through the thread and stay where
     /// the user left it. Older messages sit above the viewport, so the gesture that reaches them
     /// is a downward drag (content moves down, history enters from the top). Regression test: a

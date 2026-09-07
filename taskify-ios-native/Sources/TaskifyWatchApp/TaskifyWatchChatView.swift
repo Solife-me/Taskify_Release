@@ -137,6 +137,8 @@ private struct TaskifyWatchChatThreadLink: View {
                         name: thread.displayName,
                         url: thread.isRequest ? nil : thread.avatarURL,
                         isGroup: thread.isGroup,
+                        memberPublicKeys: thread.memberPublicKeys,
+                        recentSenderPublicKeys: thread.recentSenderPublicKeys,
                         size: 48
                     )
                     VStack(alignment: .leading, spacing: 1) {
@@ -181,22 +183,44 @@ private struct TaskifyWatchChatThreadLink: View {
 
 private struct TaskifyWatchChatAvatar: View {
     @Environment(TaskifyWatchAppModel.self) private var model
-    @State private var loadedPhoto: (url: URL, image: CGImage)?
     let name: String
     let url: URL?
     let isGroup: Bool
+    let memberPublicKeys: [String]
+    let recentSenderPublicKeys: [String]
     let size: CGFloat
 
     var body: some View {
         Group {
             if isGroup {
-                ZStack {
-                    Circle().fill(model.taskifyAccentColor.opacity(0.2))
-                    Image(systemName: "person.3.fill")
-                        .font(.system(size: size * 0.38, weight: .semibold))
-                        .foregroundStyle(model.taskifyAccentColor)
-                }
-            } else if let loadedPhoto, loadedPhoto.url == url {
+                TaskifyWatchGroupAvatar(
+                    members: model.chatGroupAvatarMembers(
+                        memberPublicKeys: memberPublicKeys,
+                        recentSenderPublicKeys: recentSenderPublicKeys
+                    ),
+                    size: size
+                )
+            } else {
+                TaskifyWatchProfileAvatar(name: name, url: url, size: size)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .accessibilityHidden(true)
+    }
+}
+
+private struct TaskifyWatchProfileAvatar: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
+    @State private var loadedPhoto: (url: URL, image: CGImage)?
+    let name: String
+    let url: URL?
+    let size: CGFloat
+    var borderWidth: CGFloat = 0
+
+    var body: some View {
+        Group {
+            if let loadedPhoto, loadedPhoto.url == url {
                 Image(loadedPhoto.image, scale: 1, label: Text(name))
                     .resizable().scaledToFill()
             } else {
@@ -205,10 +229,10 @@ private struct TaskifyWatchChatAvatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .accessibilityHidden(true)
+        .overlay(Circle().stroke(Color.black.opacity(0.28), lineWidth: borderWidth))
         .task(id: "\(url?.absoluteString ?? "")|\(model.avatarRefreshRevision)") {
             if loadedPhoto?.url != url { loadedPhoto = nil }
-            guard !isGroup, let url else { return }
+            guard let url else { return }
             let loader = TaskifyWatchAvatarLoader.shared
             if let cached = await loader.cachedImage(for: url), !Task.isCancelled {
                 loadedPhoto = (url, cached)
@@ -227,6 +251,66 @@ private struct TaskifyWatchChatAvatar: View {
                 .font(.system(size: size * 0.38, weight: .bold))
                 .foregroundStyle(.primary)
         }
+    }
+}
+
+private struct TaskifyWatchGroupAvatar: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
+    let members: [TaskifyWatchGroupAvatarMember]
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().fill(model.taskifyAccentColor.opacity(0.18))
+            if members.isEmpty {
+                Image(systemName: "person.3.fill")
+                    .font(.system(size: size * 0.38, weight: .semibold))
+                    .foregroundStyle(model.taskifyAccentColor)
+            } else {
+                ForEach(Array(members.enumerated()), id: \.element.id) { index, member in
+                    let layout = Self.layout(for: members.count, index: index)
+                    TaskifyWatchProfileAvatar(
+                        name: member.displayName,
+                        url: member.avatarURL,
+                        size: size * layout.diameter,
+                        borderWidth: 0.8
+                    )
+                    .position(x: size * layout.x, y: size * layout.y)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(Color.primary.opacity(0.16), lineWidth: 0.75))
+    }
+
+    private struct MemberLayout {
+        let x: CGFloat
+        let y: CGFloat
+        let diameter: CGFloat
+    }
+
+    private static func layout(for count: Int, index: Int) -> MemberLayout {
+        let layouts: [[MemberLayout]] = [
+            [MemberLayout(x: 0.50, y: 0.50, diameter: 0.64)],
+            [
+                MemberLayout(x: 0.37, y: 0.41, diameter: 0.58),
+                MemberLayout(x: 0.67, y: 0.65, diameter: 0.50),
+            ],
+            [
+                MemberLayout(x: 0.34, y: 0.47, diameter: 0.54),
+                MemberLayout(x: 0.73, y: 0.27, diameter: 0.37),
+                MemberLayout(x: 0.73, y: 0.70, diameter: 0.41),
+            ],
+            [
+                MemberLayout(x: 0.28, y: 0.28, diameter: 0.40),
+                MemberLayout(x: 0.75, y: 0.25, diameter: 0.34),
+                MemberLayout(x: 0.24, y: 0.73, diameter: 0.34),
+                MemberLayout(x: 0.72, y: 0.71, diameter: 0.43),
+            ],
+        ]
+        let safeCount = min(max(count, 1), 4)
+        return layouts[safeCount - 1][min(index, safeCount - 1)]
     }
 }
 
@@ -361,6 +445,13 @@ private struct TaskifyWatchChatTimelineItem: Identifiable {
     let requiresPhotoConsent: Bool
 }
 
+private struct TaskifyWatchMessageAction: Identifiable {
+    let message: TaskifyWatchChatMessage
+    let ownReaction: String?
+
+    var id: String { message.rumorID }
+}
+
 private struct TaskifyWatchConversationView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
     let conversationID: String
@@ -369,6 +460,7 @@ private struct TaskifyWatchConversationView: View {
     let groupID: String?
 
     @State private var replyTarget: TaskifyWatchChatMessage?
+    @State private var messageAction: TaskifyWatchMessageAction?
     @State private var isSending = false
 
     private var bottomAnchorID: String { "chat-bottom-\(conversationID)" }
@@ -385,6 +477,17 @@ private struct TaskifyWatchConversationView: View {
             return nil
         }
         return model.chatContact(publicKey: peer)?.avatarURL
+    }
+
+    private var recentSenderPublicKeys: [String] {
+        var values: [String] = []
+        var seen = Set<String>()
+        for message in model.chatMessages(conversationID: conversationID).reversed()
+        where message.kind != .reaction && seen.insert(message.senderPublicKey).inserted {
+            values.append(message.senderPublicKey)
+            if values.count == 4 { break }
+        }
+        return values
     }
 
     var body: some View {
@@ -430,6 +533,13 @@ private struct TaskifyWatchConversationView: View {
                                         requiresPhotoConsent: item.requiresPhotoConsent,
                                         onRetry: {
                                             model.retryChatMessage(item.message.rumorID)
+                                        },
+                                        onShowActions: {
+                                            WKInterfaceDevice.current().play(.click)
+                                            messageAction = TaskifyWatchMessageAction(
+                                                message: item.message,
+                                                ownReaction: item.ownReaction
+                                            )
                                         },
                                         onReply: { replyTarget = item.message },
                                         onReact: { reaction in
@@ -500,6 +610,8 @@ private struct TaskifyWatchConversationView: View {
                         name: title,
                         url: peerAvatarURL,
                         isGroup: groupID != nil,
+                        memberPublicKeys: memberPublicKeys,
+                        recentSenderPublicKeys: recentSenderPublicKeys,
                         size: 38
                     )
                 }
@@ -509,6 +621,19 @@ private struct TaskifyWatchConversationView: View {
         }
         .onChange(of: model.chatSnapshot.generatedAt) {
             model.markChatRead(conversationID)
+        }
+        .sheet(item: $messageAction) { action in
+            TaskifyWatchMessageActionPicker(
+                selectedReaction: action.ownReaction,
+                onReact: { reaction in
+                    sendReaction(
+                        reaction,
+                        to: action.message,
+                        ownReaction: action.ownReaction
+                    )
+                },
+                onReply: { replyTarget = action.message }
+            )
         }
     }
 
@@ -702,6 +827,7 @@ private struct TaskifyWatchChatMessageRow: View {
     let reactions: [String]
     let requiresPhotoConsent: Bool
     let onRetry: () -> Void
+    let onShowActions: () -> Void
     let onReply: () -> Void
     let onReact: (String) -> Void
 
@@ -754,14 +880,8 @@ private struct TaskifyWatchChatMessageRow: View {
         }
         .padding(.top, reactions.isEmpty ? 0 : 16)
         .contentShape(bubbleShape)
-        .contextMenu {
-            Button("Love", systemImage: "heart.fill") { react("❤️") }
-            Button("Like", systemImage: "hand.thumbsup.fill") { react("👍") }
-            Button("Dislike", systemImage: "hand.thumbsdown.fill") { react("👎") }
-            Button("Laugh", systemImage: "face.smiling.fill") { react("😂") }
-            Button("Emphasize", systemImage: "exclamationmark.2") { react("‼️") }
-            Button("Question", systemImage: "questionmark") { react("❓") }
-            Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
+        .onLongPressGesture(minimumDuration: 0.45) {
+            onShowActions()
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
@@ -849,6 +969,90 @@ private struct TaskifyWatchChatMessageRow: View {
     private func react(_ emoji: String) {
         WKInterfaceDevice.current().play(.click)
         onReact(emoji)
+    }
+}
+
+private struct TaskifyWatchMessageActionPicker: View {
+    @Environment(\.dismiss) private var dismiss
+
+    private static let reactions = ["💗", "👍", "👎", "🤣", "‼️", "❓", "😂", "❤️", "😍"]
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 5), count: 3)
+
+    let selectedReaction: String?
+    let onReact: (String) -> Void
+    let onReply: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 5) {
+                    ForEach(Self.reactions, id: \.self) { reaction in
+                        Button {
+                            WKInterfaceDevice.current().play(.click)
+                            onReact(reaction)
+                            dismiss()
+                        } label: {
+                            Text(reaction)
+                                .font(.system(size: 27))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 42)
+                                .background {
+                                    if selectedReaction == reaction {
+                                        Circle().fill(Color.white.opacity(0.18))
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(reactionName(reaction))
+                        .accessibilityAddTraits(
+                            selectedReaction == reaction ? .isSelected : []
+                        )
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.top, 3)
+
+                Button {
+                    WKInterfaceDevice.current().play(.click)
+                    onReply()
+                    dismiss()
+                } label: {
+                    Label("Reply", systemImage: "arrowshape.turn.up.left")
+                        .font(.body.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .padding(.horizontal, 6)
+                .padding(.top, 8)
+            }
+            .navigationTitle("React")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+        }
+    }
+
+    private func reactionName(_ reaction: String) -> String {
+        switch reaction {
+        case "💗": return "Love"
+        case "👍": return "Like"
+        case "👎": return "Dislike"
+        case "🤣": return "Laughing"
+        case "‼️": return "Emphasize"
+        case "❓": return "Question"
+        case "😂": return "Laugh"
+        case "❤️": return "Heart"
+        case "😍": return "Love it"
+        default: return reaction
+        }
     }
 }
 

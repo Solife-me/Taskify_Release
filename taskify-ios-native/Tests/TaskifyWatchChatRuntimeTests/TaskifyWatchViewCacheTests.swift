@@ -80,6 +80,34 @@ final class TaskifyWatchViewCacheTests: XCTestCase {
         XCTAssertTrue(TaskifyWatchChatIndex(snapshot: snapshot, identity: "me").threads.isEmpty)
     }
 
+    func testGroupAvatarMembersPrioritizeRecentSendersAndProfilePhotos() {
+        let snapshot = TaskifyWatchChatSnapshot(contacts: [
+            TaskifyWatchContact(
+                publicKey: "alice",
+                npub: "npub-alice",
+                displayName: "Alice",
+                avatarURL: URL(string: "https://profiles.example/alice.jpg")
+            ),
+            TaskifyWatchContact(
+                publicKey: "carol",
+                npub: "npub-carol",
+                displayName: "Carol",
+                avatarURL: URL(string: "https://profiles.example/carol.jpg")
+            ),
+        ])
+        let index = TaskifyWatchChatIndex(snapshot: snapshot, identity: "me")
+
+        let members = index.groupAvatarMembers(
+            memberPublicKeys: ["me", "alice", "bob", "carol", "dave"],
+            recentSenderPublicKeys: ["bob", "outside", "bob"]
+        )
+
+        XCTAssertEqual(members.map(\.publicKey), ["bob", "alice", "carol", "me"])
+        XCTAssertEqual(members.map(\.displayName), ["?", "Alice", "Carol", "You"])
+        XCTAssertNil(members[0].avatarURL)
+        XCTAssertNotNil(members[1].avatarURL)
+    }
+
     func testDeliveryExpiresWithoutRebuildingTheIndex() {
         let expiry = Date(timeIntervalSince1970: 2_000)
         let snapshot = TaskifyWatchChatSnapshot(messages: [message("outgoing", sender: "me", time: 10)], outbox: [
