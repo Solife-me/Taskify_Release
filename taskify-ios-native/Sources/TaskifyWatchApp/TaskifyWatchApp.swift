@@ -27,6 +27,7 @@ final class TaskifyWatchApplicationDelegate: NSObject, WKApplicationDelegate {
     func applicationDidEnterBackground() {
         // A scheduled task can be ignored if its date passed while the app was foregrounded.
         if let date = scheduledChatRefreshDate, date <= Date() { scheduledChatRefreshDate = nil }
+        model.flushPendingSnapshotPersist()
         scheduleChatRefreshIfNeeded()
         Task {
             await TaskifyWatchPhotoLoader.shared.clearMemory()

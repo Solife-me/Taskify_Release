@@ -1828,35 +1828,72 @@ final class TaskifyWatchAppModel: NSObject {
     }
 
     @ObservationIgnored private var snapshotPersistTask: Task<Void, Never>?
+    @ObservationIgnored private var hasPendingSnapshotWrite = false
 
-    /// Coalesces and offloads snapshot persistence. Relay refreshes and phone projections can
+    /// Coalesces the full-snapshot cache write. Relay refreshes and phone projections can
     /// land several snapshots in quick succession, and the encode is CPU work on the whole task
-    /// list; writing once per burst keeps the main actor free. A persist that doesn't survive
-    /// suspension self-heals: the next relay refresh or phone projection re-applies the state.
+    /// list; writing once per burst keeps the main actor free. The widget snapshot is saved
+    /// inline instead of at the end of the debounced task: watchOS suspends the app soon after
+    /// the wrist drops, a suspended task never reaches the end of the debounce window, and
+    /// WidgetKit would keep rendering the last snapshot it saw. A cache write lost to
+    /// suspension still self-heals via the next relay refresh or phone projection, and
+    /// `flushPendingSnapshotPersist` runs it at background time.
     private func persistSnapshot() {
+        persistWidgetSnapshot()
         snapshotPersistTask?.cancel()
+        hasPendingSnapshotWrite = true
         let encodedSnapshot = snapshot
         let url = cacheURL
         snapshotPersistTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            do {
-                try FileManager.default.createDirectory(
-                    at: url.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                let data = try await Task.detached(priority: .utility) {
-                    try TaskifyWatchTransfer.encode(encodedSnapshot)
-                }.value
-                try data.write(
-                    to: url,
-                    options: [.atomic, .completeFileProtection]
-                )
-                self?.persistWidgetSnapshot()
-            } catch {
-                self?.statusMessage = "Tasks are available, but the local cache could not be updated."
-            }
+            await self?.writeSnapshotCache(encodedSnapshot, url: url)
+            self?.hasPendingSnapshotWrite = false
         }
+    }
+
+    /// Encodes off-main and writes the resumable snapshot cache. A failure surfaces through
+    /// `statusMessage`; the widget snapshot above is independent of this write.
+    private func writeSnapshotCache(_ encodedSnapshot: TaskifyWatchSnapshot, url: URL) async {
+        let data = try? await Task.detached(priority: .utility) {
+            try TaskifyWatchTransfer.encode(encodedSnapshot)
+        }.value
+        guard let data else {
+            statusMessage = "Tasks are available, but the local cache could not be updated."
+            return
+        }
+        writeSnapshotCacheData(data, url: url)
+    }
+
+    private func writeSnapshotCacheData(_ data: Data, url: URL) {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(
+                to: url,
+                options: [.atomic, .completeFileProtection]
+            )
+        } catch {
+            statusMessage = "Tasks are available, but the local cache could not be updated."
+        }
+    }
+
+    /// Runs the debounced cache write now instead of letting suspension swallow it. Call
+    /// before the app backgrounds; without this the on-disk snapshot can lag a whole session
+    /// behind what the user just saw. Encodes synchronously — a deferred encode would hit the
+    /// same suspension this exists to avoid.
+    func flushPendingSnapshotPersist() {
+        guard hasPendingSnapshotWrite else { return }
+        hasPendingSnapshotWrite = false
+        snapshotPersistTask?.cancel()
+        snapshotPersistTask = nil
+        guard let data = try? TaskifyWatchTransfer.encode(snapshot) else {
+            statusMessage = "Tasks are available, but the local cache could not be updated."
+            return
+        }
+        writeSnapshotCacheData(data, url: cacheURL)
     }
 
     private func persistWidgetSnapshot() {
