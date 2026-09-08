@@ -2185,7 +2185,13 @@ private struct ChatComposerTextView: UIViewRepresentable {
         view.tintColor = UIColor(TaskifyTheme.accent)
         view.textContainerInset = UIEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
         view.textContainer.lineFragmentPadding = 0
-        view.isScrollEnabled = false
+        // Scrolling stays enabled for the composer's whole life: toggling it as the text
+        // grows resets contentOffset and corrupts contentSize/caret geometry, which left
+        // the caret stranded below the fold. While the text fits the (externally sized)
+        // frame nothing scrolls; once SwiftUI caps the height the same view pans and
+        // tracks the caret natively.
+        view.isScrollEnabled = true
+        view.alwaysBounceVertical = false
         view.returnKeyType = .send
         view.keyboardDismissMode = .interactive
         view.pasteConfiguration = UIPasteConfiguration(
@@ -2227,18 +2233,8 @@ private struct ChatComposerTextView: UIViewRepresentable {
         )
         let lineHeight = uiView.font?.lineHeight ?? 20
         let insetHeight = uiView.textContainerInset.top + uiView.textContainerInset.bottom
-        let maximumHeight = lineHeight * 5 + insetHeight
+        let maximumHeight = lineHeight * 15 + insetHeight
         let height = min(max(fitting.height, 42), maximumHeight)
-        // Re-assigning isScrollEnabled resets contentOffset to the top, so only touch it
-        // when the value actually changes; otherwise manual scrolling and caret position
-        // would be wiped on every layout pass once the text overflows.
-        let shouldScroll = fitting.height > maximumHeight
-        if uiView.isScrollEnabled != shouldScroll {
-            uiView.isScrollEnabled = shouldScroll
-            if shouldScroll {
-                context.coordinator.scrollCaretIntoView(uiView)
-            }
-        }
         return CGSize(width: width, height: height)
     }
 
@@ -2263,13 +2259,12 @@ private struct ChatComposerTextView: UIViewRepresentable {
             scrollCaretIntoView(textView)
         }
 
-        /// Once the composer is taller than its cap and scrolls internally, keep the
-        /// caret on screen as new lines are typed (mirrors the Messages composer).
-        /// scrollRangeToVisible is a no-op while the caret is already visible, so a user
-        /// scrolling back through the draft is only re-anchored on the next keystroke.
+        /// Once the draft exceeds the composer's height cap, keep the caret on screen as
+        /// new lines are typed (mirrors the Messages composer). scrollRangeToVisible is a
+        /// no-op while the caret is already visible, so a user scrolling back through the
+        /// draft is only re-anchored on the next keystroke.
         func scrollCaretIntoView(_ textView: UITextView) {
-            guard textView.isScrollEnabled,
-                  textView.isFirstResponder,
+            guard textView.isFirstResponder,
                   !textView.isTracking,
                   !textView.isDecelerating else { return }
             DispatchQueue.main.async { [weak textView] in

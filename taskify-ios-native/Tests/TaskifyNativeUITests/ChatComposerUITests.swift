@@ -24,22 +24,25 @@ final class ChatComposerUITests: XCTestCase {
         XCTAssertTrue(selfRow.waitForExistence(timeout: 5), "Message Yourself row should be offered")
         selfRow.tap()
 
-        // Type enough text to wrap well past the composer's line cap. Newlines are
-        // remapped to send, so rely on word wrap alone.
+        // Type enough text to wrap well past the composer's 15-line cap. Newlines are
+        // remapped to send, so rely on word wrap alone. Distinct markers at each end make
+        // the screenshots prove which part of the draft is on screen.
         let composer = app.textViews.firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5), "Composer text view should exist")
         composer.tap()
-        let longMessage = Array(repeating: "wrap check line", count: 26).joined(separator: " ")
+        let longMessage = "STARTMARKER "
+            + Array(repeating: "wrap check line", count: 34).joined(separator: " ")
+            + " ENDMARKER"
         composer.typeText(longMessage)
 
         attach(app, name: "composer-long-text-after-typing")
 
-        // The composer must not keep growing with the text (capped near 5 lines), and the
+        // The composer must not keep growing with the text (capped near 15 lines), and the
         // full draft must remain in the text view.
         let height = composer.frame.height
-        XCTAssertLessThanOrEqual(height, 160, "Composer should cap its height for long text")
+        XCTAssertLessThanOrEqual(height, 360, "Composer should cap its height for long text")
         let value = (composer.value as? String) ?? ""
-        XCTAssertTrue(value.hasSuffix("line"), "Draft should end with the typed text")
+        XCTAssertTrue(value.hasSuffix("ENDMARKER"), "Draft should end with the typed text")
 
         // Manual scroll inside the composer must reveal the beginning of the draft.
         let start = composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
