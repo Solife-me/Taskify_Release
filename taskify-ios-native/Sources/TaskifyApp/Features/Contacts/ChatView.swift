@@ -2679,7 +2679,9 @@ private struct DirectMessageConversationView: View {
                 }
             }
             .coordinateSpace(name: "conversationViewport")
-            .scrollDismissesKeyboard(.interactively)
+            // Reading back through the conversation must not fight the keyboard: dismiss
+            // only by explicit gestures (drag inside the composer) or sending.
+            .scrollDismissesKeyboard(.never)
             .conversationBottomInitialAnchor()
             .overlay(alignment: .bottom) {
                 if isScrolledAwayFromBottom, !currentTimeline.isEmpty {
@@ -3207,24 +3209,25 @@ private struct DirectMessageConversationView: View {
 
             HStack(alignment: .bottom, spacing: 9) {
                 Menu {
-                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                        Button {
-                            showingCamera = true
-                        } label: {
-                            Label("Camera", systemImage: "camera")
-                        }
+                    // Compile-time simulator exclusion, not a runtime availability check:
+                    // device users always get the entries, and the Simulator (no camera)
+                    // never does.
+                    #if !targetEnvironment(simulator)
+                    Button {
+                        showingCamera = true
+                    } label: {
+                        Label("Camera", systemImage: "camera")
                     }
+                    Button {
+                        showingDocumentScanner = true
+                    } label: {
+                        Label("Scan Document", systemImage: "doc.text.viewfinder")
+                    }
+                    #endif
                     Button {
                         showingPhotoPicker = true
                     } label: {
                         Label("Photo or Video", systemImage: "photo.on.rectangle")
-                    }
-                    if VNDocumentCameraViewController.isSupported {
-                        Button {
-                            showingDocumentScanner = true
-                        } label: {
-                            Label("Scan Document", systemImage: "doc.text.viewfinder")
-                        }
                     }
                     Button {
                         showingFileImporter = true
@@ -3640,14 +3643,14 @@ private struct DirectMessageConversationView: View {
     ) -> ClipboardAttachmentSource? {
         for provider in providers {
             let types = provider.registeredTypeIdentifiers.compactMap(UTType.init)
-            let namedFile = provider.suggestedName.map {
-                !URL(fileURLWithPath: $0).pathExtension.isEmpty
-            } ?? false
+            // Text-like and URL clipboards must never become attachments: text has to
+            // paste as text. Only media and genuinely non-text data qualify; copied
+            // files still arrive via the file-URL fallback below.
             let contentType = types.first {
                 $0.conforms(to: .image) || $0.conforms(to: .movie) || $0.conforms(to: .audio)
             } ?? types.first {
                 $0.conforms(to: .data) &&
-                    (namedFile || !$0.conforms(to: .text)) &&
+                    !$0.conforms(to: .text) &&
                     !$0.conforms(to: .url)
             }
             if let contentType { return ClipboardAttachmentSource(provider: provider, contentType: contentType) }

@@ -101,6 +101,47 @@ final class ChatComposerUITests: XCTestCase {
         UIPasteboard.general.items = []
     }
 
+    func testPasteTextStaysTextNotAttachment() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "force"
+        app.launch()
+
+        onboard(app)
+
+        XCTAssertTrue(app.buttons["Chat"].waitForExistence(timeout: 5))
+        app.buttons["Chat"].tap()
+        XCTAssertTrue(app.buttons["New message"].waitForExistence(timeout: 5))
+        app.buttons["New message"].tap()
+        let selfRow = app.staticTexts["Message Yourself"].firstMatch
+        XCTAssertTrue(selfRow.waitForExistence(timeout: 5), "Message Yourself row should be offered")
+        selfRow.tap()
+
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5), "Composer text view should exist")
+        composer.tap()
+
+        UIPasteboard.general.string = "hello pasted text"
+        composer.press(forDuration: 1.5)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+
+        // Text must land in the composer as text, with no attachment draft staged.
+        let containsText = NSPredicate(format: "value CONTAINS %@", "hello pasted text")
+        expectation(for: containsText, evaluatedWith: composer)
+        waitForExpectations(timeout: 5)
+        let remove = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Remove ")
+        ).firstMatch
+        XCTAssertFalse(
+            remove.exists,
+            "Pasting text must not stage an attachment draft"
+        )
+        attach(app, name: "composer-pasted-text")
+
+        UIPasteboard.general.items = []
+    }
+
     private func onboard(_ app: XCUIApplication) {
         XCTAssertTrue(
             app.staticTexts["Choose how you want to get started."].waitForExistence(timeout: 10)
