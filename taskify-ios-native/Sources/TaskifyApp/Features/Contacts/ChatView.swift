@@ -2221,7 +2221,7 @@ private struct ChatComposerTextView: UIViewRepresentable {
         uiView: ChatPasteTextView,
         context: Context
     ) -> CGSize? {
-        guard let width = proposal.width else { return nil }
+        guard let width = proposal.width, width.isFinite else { return nil }
         let fitting = uiView.sizeThatFits(
             CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         )
@@ -2229,7 +2229,16 @@ private struct ChatComposerTextView: UIViewRepresentable {
         let insetHeight = uiView.textContainerInset.top + uiView.textContainerInset.bottom
         let maximumHeight = lineHeight * 5 + insetHeight
         let height = min(max(fitting.height, 42), maximumHeight)
-        uiView.isScrollEnabled = fitting.height > maximumHeight
+        // Re-assigning isScrollEnabled resets contentOffset to the top, so only touch it
+        // when the value actually changes; otherwise manual scrolling and caret position
+        // would be wiped on every layout pass once the text overflows.
+        let shouldScroll = fitting.height > maximumHeight
+        if uiView.isScrollEnabled != shouldScroll {
+            uiView.isScrollEnabled = shouldScroll
+            if shouldScroll {
+                context.coordinator.scrollCaretIntoView(uiView)
+            }
+        }
         return CGSize(width: width, height: height)
     }
 
@@ -2251,6 +2260,52 @@ private struct ChatComposerTextView: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
             textView.invalidateIntrinsicContentSize()
+            scrollCaretIntoView(textView)
+        }
+
+        /// Once the composer is taller than its cap and scrolls internally, keep the
+        /// caret on screen as new lines are typed (mirrors the Messages composer).
+        /// scrollRangeToVisible is a no-op while the caret is already visible, so a user
+        /// scrolling back through the draft is only re-anchored on the next keystroke.
+        func scrollCaretIntoView(_ textView: UITextView) {
+            guard textView.isScrollEnabled,
+                  textView.isFirstResponder,
+                  !textView.isTracking,
+                  !textView.isDecelerating else { return }
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, textView.window != nil else { return }
+                // The text may have changed again since this was scheduled; settle layout
+                // so contentSize and the caret geometry are current before scrolling.
+                textView.layoutIfNeeded()
+                let range = textView.selectedRange
+                guard range.location != NSNotFound else { return }
+                // An empty range at end-of-document produces no rect under TextKit 2;
+                // scroll to the last character instead so the caret comes into view.
+                if range.length == 0, range.location > 0 {
+                    textView.scrollRangeToVisible(
+                        NSRange(location: range.location - 1, length: 1)
+                    )
+                } else {
+                    textView.scrollRangeToVisible(range)
+                }
+                // Fallback: if the caret still isn't visible after that, scroll it in by
+                // offset directly.
+                if let end = textView.selectedTextRange?.end {
+                    let caretRect = textView.caretRect(for: end)
+                    if caretRect.height > 0, !textView.bounds.contains(caretRect) {
+                        let target = max(
+                            0,
+                            caretRect.maxY - textView.bounds.height
+                                + textView.textContainerInset.bottom
+                        )
+                        if target > textView.contentOffset.y {
+                            textView.setContentOffset(
+                                CGPoint(x: 0, y: target), animated: false
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
