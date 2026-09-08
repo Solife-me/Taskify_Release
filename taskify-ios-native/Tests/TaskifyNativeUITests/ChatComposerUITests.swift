@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Runtime verification for the chat composer's growth-and-scroll behavior. A long message
 /// must cap the composer at its maximum height and keep the caret (the end of the text)
@@ -50,6 +51,54 @@ final class ChatComposerUITests: XCTestCase {
         start.press(forDuration: 0.05, thenDragTo: end)
 
         attach(app, name: "composer-long-text-after-scroll-up")
+    }
+
+    func testPasteImageFromClipboardStagesAttachment() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "force"
+        app.launch()
+
+        onboard(app)
+
+        XCTAssertTrue(app.buttons["Chat"].waitForExistence(timeout: 5))
+        app.buttons["Chat"].tap()
+        XCTAssertTrue(app.buttons["New message"].waitForExistence(timeout: 5))
+        app.buttons["New message"].tap()
+        let selfRow = app.staticTexts["Message Yourself"].firstMatch
+        XCTAssertTrue(selfRow.waitForExistence(timeout: 5), "Message Yourself row should be offered")
+        selfRow.tap()
+
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5), "Composer text view should exist")
+        composer.tap()
+
+        // Place an image on the shared simulator pasteboard, as a copied screenshot
+        // would be, then long-press the composer to bring up the edit menu.
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 80)).image { context in
+            UIColor.systemRed.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 80))
+        }
+        UIPasteboard.general.image = image
+
+        composer.press(forDuration: 1.5)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(
+            paste.waitForExistence(timeout: 3),
+            "Paste must be offered in the edit menu for an image clipboard"
+        )
+        paste.tap()
+
+        // The staged attachment shows the draft preview with its Remove button.
+        let remove = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Remove ")
+        ).firstMatch
+        XCTAssertTrue(
+            remove.waitForExistence(timeout: 10),
+            "Pasting an image should stage an attachment draft"
+        )
+        attach(app, name: "composer-pasted-attachment")
+
+        UIPasteboard.general.items = []
     }
 
     private func onboard(_ app: XCUIApplication) {

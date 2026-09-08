@@ -6,6 +6,7 @@ import TaskifyCore
 import TaskifyWatchShared
 import UIKit
 import UniformTypeIdentifiers
+import VisionKit
 
 private struct ChatConversationRoute: Hashable {
     let peerPublicKey: String
@@ -2162,6 +2163,19 @@ private final class ChatPasteTextView: UITextView {
         if pasteAttachment?(UIPasteboard.general.itemProviders) == true { return }
         super.paste(sender)
     }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        // An image/file-only clipboard is attachable but not pasteable text, and UIKit
+        // would otherwise hide the Paste item entirely. Keep it offered so the paste
+        // override can stage the clipboard contents as an attachment. The has* family is
+        // metadata-only, so building the menu never reads pasteboard contents (which
+        // would trigger the system paste-permission prompt).
+        if action == #selector(paste(_:)),
+           UIPasteboard.general.hasImages || UIPasteboard.general.hasURLs {
+            return true
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
 }
 
 private struct ChatComposerTextView: UIViewRepresentable {
@@ -2345,6 +2359,8 @@ private struct DirectMessageConversationView: View {
     @State private var replyingTo: NostrDirectMessage?
     @State private var showingPhotoPicker = false
     @State private var photoSelection: PhotosPickerItem?
+    @State private var showingCamera = false
+    @State private var showingDocumentScanner = false
     @State private var showingFileImporter = false
     @State private var showingContactSharePicker = false
     @State private var showingGroupDetails = false
@@ -3191,10 +3207,24 @@ private struct DirectMessageConversationView: View {
 
             HStack(alignment: .bottom, spacing: 9) {
                 Menu {
+                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                        Button {
+                            showingCamera = true
+                        } label: {
+                            Label("Camera", systemImage: "camera")
+                        }
+                    }
                     Button {
                         showingPhotoPicker = true
                     } label: {
                         Label("Photo or Video", systemImage: "photo.on.rectangle")
+                    }
+                    if VNDocumentCameraViewController.isSupported {
+                        Button {
+                            showingDocumentScanner = true
+                        } label: {
+                            Label("Scan Document", systemImage: "doc.text.viewfinder")
+                        }
                     }
                     Button {
                         showingFileImporter = true
@@ -3310,6 +3340,33 @@ private struct DirectMessageConversationView: View {
             Rectangle()
                 .fill(Color.white.opacity(0.08))
                 .frame(height: 0.5)
+        }
+        .fullScreenCover(isPresented: $showingCamera) {
+            TaskAttachmentCameraPicker(
+                onCapture: { image in
+                    showingCamera = false
+                    attachmentPreparationTask?.cancel()
+                    attachmentPreparationTask = Task { await stageCapturedPhoto(image) }
+                },
+                onCancel: { showingCamera = false }
+            )
+            .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showingDocumentScanner) {
+            TaskAttachmentDocumentScanner(
+                onScan: { pages in
+                    showingDocumentScanner = false
+                    attachmentPreparationTask?.cancel()
+                    attachmentPreparationTask = Task { await stageScannedDocument(pages) }
+                },
+                onCancel: { showingDocumentScanner = false },
+                onError: { error in
+                    showingDocumentScanner = false
+                    model.errorMessage = error.localizedDescription
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
+            )
+            .ignoresSafeArea()
         }
     }
 
@@ -3447,6 +3504,72 @@ private struct DirectMessageConversationView: View {
         attachmentPreparationTask?.cancel()
         attachmentPreparationTask = Task { await stageClipboardAttachment(providers) }
         return true
+    }
+
+    @MainActor
+    private func stageCapturedPhoto(_ image: UIImage) async {
+        guard !isSending, !isSendingAttachment else { return }
+        isSendingAttachment = true
+        defer { isSendingAttachment = false }
+        var staged: URL?
+        do {
+            guard let jpegData = image.jpegData(compressionQuality: 0.88) else {
+                throw AttachmentFileError.invalidFile
+            }
+            let url = try await AttachmentFiles.work { try AttachmentFiles.write(jpegData) }
+            staged = url
+            try Task.checkCancellation()
+            let size = try AttachmentFiles.size(url)
+            let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
+            attachmentDraft = ChatAttachmentDraft(
+                fileURL: url,
+                name: "photo-\(timestamp).jpg",
+                mimeType: "image/jpeg",
+                size: size
+            )
+            attachmentSendError = nil
+            staged = nil
+            composerFocused = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            if let staged { try? FileManager.default.removeItem(at: staged) }
+            guard !Task.isCancelled else { return }
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    @MainActor
+    private func stageScannedDocument(_ pages: [UIImage]) async {
+        guard !isSending, !isSendingAttachment, !pages.isEmpty else { return }
+        isSendingAttachment = true
+        defer { isSendingAttachment = false }
+        var staged: URL?
+        do {
+            let pdfData = try await AttachmentFiles.work {
+                try TaskAttachmentPDFRenderer.pdfData(from: pages)
+            }
+            let url = try await AttachmentFiles.work { try AttachmentFiles.write(pdfData) }
+            staged = url
+            try Task.checkCancellation()
+            let size = try AttachmentFiles.size(url)
+            let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
+            attachmentDraft = ChatAttachmentDraft(
+                fileURL: url,
+                name: "scan-\(timestamp).pdf",
+                mimeType: "application/pdf",
+                size: size
+            )
+            attachmentSendError = nil
+            staged = nil
+            composerFocused = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            if let staged { try? FileManager.default.removeItem(at: staged) }
+            guard !Task.isCancelled else { return }
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
     }
 
     @MainActor
