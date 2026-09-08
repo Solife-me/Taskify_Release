@@ -2679,9 +2679,10 @@ private struct DirectMessageConversationView: View {
                 }
             }
             .coordinateSpace(name: "conversationViewport")
-            // Reading back through the conversation must not fight the keyboard: dismiss
-            // only by explicit gestures (drag inside the composer) or sending.
+            // Reading back through the conversation must not fight the keyboard: scrolling
+            // never dismisses it, but a deliberate tap anywhere on the timeline does.
             .scrollDismissesKeyboard(.never)
+            .onTapGesture { dismissComposerKeyboard() }
             .conversationBottomInitialAnchor()
             .overlay(alignment: .bottom) {
                 if isScrolledAwayFromBottom, !currentTimeline.isEmpty {
@@ -3179,6 +3180,7 @@ private struct DirectMessageConversationView: View {
     }
 
     private var composer: some View {
+        TaskifyGlassControlGroup(spacing: 8) {
         VStack(spacing: 6) {
             if let replyingTo {
                 HStack(spacing: 10) {
@@ -3332,18 +3334,15 @@ private struct DirectMessageConversationView: View {
                     }
                 }
                 .padding(3)
-                .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 24))
+                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 21, style: .continuous))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 5)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(height: 0.5)
-        }
+        // Floating liquid-glass bar: no opaque material strip behind it, so the
+        // conversation shows through while the composer grows with the draft.
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
+        .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .fullScreenCover(isPresented: $showingCamera) {
             TaskAttachmentCameraPicker(
                 onCapture: { image in
@@ -3371,6 +3370,17 @@ private struct DirectMessageConversationView: View {
             )
             .ignoresSafeArea()
         }
+        }
+    }
+
+    /// Tapping the timeline while the keyboard is open closes it. The FocusState alone
+    /// can't resign a UITextView, so drop first responder explicitly too.
+    @MainActor
+    private func dismissComposerKeyboard() {
+        composerFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
+        )
     }
 
     private func send() {
@@ -3641,11 +3651,18 @@ private struct DirectMessageConversationView: View {
     private static func clipboardAttachmentSource(
         in providers: [NSItemProvider]
     ) -> ClipboardAttachmentSource? {
+        // If the clipboard can paste as text at all, text wins: plain or styled text
+        // copies must never stage as a file attachment, no matter what companion types
+        // the source app registers. Media with no text representation (a copied
+        // screenshot, video, or file) still stages as an attachment below.
+        let hasTextRepresentation = UIPasteboard.general.hasStrings || providers.contains { provider in
+            provider.registeredTypeIdentifiers.compactMap(UTType.init).contains {
+                $0.conforms(to: .text)
+            }
+        }
+        if hasTextRepresentation { return nil }
         for provider in providers {
             let types = provider.registeredTypeIdentifiers.compactMap(UTType.init)
-            // Text-like and URL clipboards must never become attachments: text has to
-            // paste as text. Only media and genuinely non-text data qualify; copied
-            // files still arrive via the file-URL fallback below.
             let contentType = types.first {
                 $0.conforms(to: .image) || $0.conforms(to: .movie) || $0.conforms(to: .audio)
             } ?? types.first {
