@@ -2514,6 +2514,7 @@ private struct DirectMessageConversationView: View {
     @State private var protectsInitialScrollTarget = false
     @State private var isAddingContact = false
     @State private var confirmingConversationDeletion = false
+    @State private var botCommands: [BotCommand] = []
     let peerPublicKey: String
     let initialTimelineItemID: String?
 
@@ -2890,6 +2891,18 @@ private struct DirectMessageConversationView: View {
             }
         }
         .background(TaskifyAppBackground())
+        .task(id: peerPublicKey) {
+            // Bot commands: seed from the persisted cache instantly, then
+            // reconcile with the peer's relays in the background. 1:1 chats
+            // only — the published NIP-51 list is the bot signal.
+            guard group == nil, !isSelfConversation else {
+                botCommands = []
+                return
+            }
+            botCommands = model.botCommands(publicKey: peerPublicKey) ?? []
+            await model.refreshBotCommands(publicKey: peerPublicKey)
+            botCommands = model.botCommands(publicKey: peerPublicKey) ?? []
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             conversationHeader
         }
@@ -3319,9 +3332,56 @@ private struct DirectMessageConversationView: View {
             !isSending && !isSendingAttachment
     }
 
+    /// Commands matching the typed "/" prefix, shown in the Telegram-style
+    /// menu. Hidden once the draft stops matching (e.g. after inserting
+    /// "/name " the trailing space matches nothing).
+    private var visibleBotCommands: [BotCommand]? {
+        guard group == nil,
+              !isSearchingConversation,
+              draft.hasPrefix("/"),
+              !botCommands.isEmpty else { return nil }
+        let query = String(draft.dropFirst()).lowercased()
+        let matched = botCommands.filter { $0.name.hasPrefix(query) }
+        return matched.isEmpty ? nil : matched
+    }
+
+    private func botCommandMenu(_ commands: [BotCommand]) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(commands) { command in
+                    Button {
+                        draft = "/\(command.name) "
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("/\(command.name)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.accent)
+                            Spacer(minLength: 0)
+                            Text(command.description)
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Insert command \(command.name)")
+                }
+            }
+        }
+        .frame(maxHeight: 224)
+        .padding(.horizontal, 9)
+    }
+
     private var composer: some View {
         TaskifyGlassControlGroup(spacing: 8) {
         VStack(spacing: 6) {
+            if let botMenuCommands = visibleBotCommands {
+                botCommandMenu(botMenuCommands)
+            }
             if let replyingTo {
                 HStack(spacing: 10) {
                     RoundedRectangle(cornerRadius: 2)

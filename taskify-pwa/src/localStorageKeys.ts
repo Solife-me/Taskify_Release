@@ -20,6 +20,7 @@ export const LS_PROFILE_EVENT_IDS = "taskify_profile_event_ids_v1";
 export const LS_PROFILE_METADATA_CACHE = "taskify_profile_metadata_cache_v1";
 export const LS_CONTACT_PROFILE_CACHE = "taskify_contact_profile_cache_v1";
 export const LS_RELAY_INFO_CACHE = "taskify_relay_info_cache_v1";
+export const LS_BOT_COMMANDS_CACHE = "taskify_bot_commands_cache_v1";
 export const LS_GROUP_CHATS = "taskify_group_chats_v1";
 export const LS_GROUP_MUTED = "taskify_group_muted_v1";
 export const LS_GROUP_LEFT = "taskify_group_left_v1";

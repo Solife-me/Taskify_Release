@@ -9325,6 +9325,78 @@ html.light .chat-bubble--in .chat-bubble__contact-avatar {
   width: 100%;
 }
 
+/* ── Bot commands "/" menu (Telegram-style, above the composer) ── */
+.chat-command-menu {
+  display: flex;
+  flex-direction: column;
+  max-height: 14rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 0.55rem;
+  border-radius: 1rem;
+  background: rgba(12, 14, 22, 0.85);
+  backdrop-filter: blur(26px);
+  -webkit-backdrop-filter: blur(26px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.chat-command-menu__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.55rem 0.85rem;
+  background: transparent;
+  text-align: left;
+  border: none;
+  flex-shrink: 0;
+}
+
+.chat-command-menu__item:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chat-command-menu__name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.chat-command-menu__description {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+html.light .chat-command-menu {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.18);
+}
+
+html.light .chat-command-menu__item:active {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+/* ── BOT badge on a bot's contact detail page ── */
+.contact-bot-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  flex-shrink: 0;
+}
+
 html.light .chat-compose {
   background: linear-gradient(0deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.4));
   border-top-color: rgba(15, 23, 42, 0.08);
