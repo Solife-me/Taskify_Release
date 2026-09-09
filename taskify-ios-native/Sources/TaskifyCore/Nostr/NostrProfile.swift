@@ -65,15 +65,15 @@ public enum NostrProfileContract {
         }
         // A cleared editor field removes the key and its alternate spellings.
         func assign(_ key: String, _ value: String?, alternateKeys: [String] = []) {
-            if let value {
+            for alternate in alternateKeys { object.removeValue(forKey: alternate) }
+            if let value = value?.trimmedNilIfEmpty {
                 object[key] = value
             } else {
                 object.removeValue(forKey: key)
-                for alternate in alternateKeys { object.removeValue(forKey: alternate) }
             }
         }
-        assign("name", draft.username, alternateKeys: [])
-        assign("display_name", draft.displayName)
+        assign("name", draft.username, alternateKeys: ["username"])
+        assign("display_name", draft.displayName, alternateKeys: ["displayName"])
         assign("about", draft.about, alternateKeys: [])
         assign("picture", draft.picture, alternateKeys: ["image", "avatar"])
         assign("lud16", draft.lud16, alternateKeys: ["lightning_address"])

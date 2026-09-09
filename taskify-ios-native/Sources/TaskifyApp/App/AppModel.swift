@@ -3403,32 +3403,47 @@ final class AppModel {
     /// directory entry when one exists, otherwise the locally-known profile.
     var ownContactRepresentation: NostrContact? {
         guard !identityPublicKey.isEmpty else { return nil }
-        if let stored = nostrContact(publicKey: identityPublicKey) { return stored }
+        if var stored = nostrContact(publicKey: identityPublicKey) {
+            if let ownProfile { stored.profile = ownProfile }
+            return stored
+        }
         return NostrContact(publicKeyValue: identityPublicKey, profile: ownProfile)
     }
 
     func loadOwnProfileIfNeeded() {
-        guard !isLoadingOwnProfile else { return }
-        ownProfileLoadTask?.cancel()
-        ownProfileLoadTask = Task { [weak self] in
-            await self?.loadOwnProfile()
-        }
+        Task { await loadOwnProfile() }
     }
 
     func loadOwnProfile() async {
-        guard !identityPublicKey.isEmpty, !isLoadingOwnProfile else { return }
+        if let task = ownProfileLoadTask {
+            await task.value
+            return
+        }
+        let account = identityPublicKey
+        guard !account.isEmpty else { return }
         let relays = TaskifyRelayURL.normalizedList(contactsSyncRelayURLs + appRelayURLs)
         guard !relays.isEmpty else { return }
+        let previousEventID = ownProfileEventID
         isLoadingOwnProfile = true
-        defer { isLoadingOwnProfile = false }
-        guard let event = await NostrContactFinder.latestProfileEvent(
-            publicKey: identityPublicKey,
-            relayURLs: relays
-        ) else { return }
-        guard let profile = NostrContactProfile.decode(event: event) else { return }
-        ownProfile = profile
-        ownProfileEventID = event.id
-        ownProfileEventContent = event.content
+        let task = Task { @MainActor in
+            defer {
+                if identityPublicKey == account {
+                    isLoadingOwnProfile = false
+                    ownProfileLoadTask = nil
+                }
+            }
+            guard let event = await NostrContactFinder.latestProfileEvent(
+                publicKey: account,
+                relayURLs: relays
+            ), !Task.isCancelled, identityPublicKey == account,
+               ownProfileEventID == previousEventID,
+               let profile = NostrContactProfile.decode(event: event) else { return }
+            ownProfile = profile
+            ownProfileEventID = event.id
+            ownProfileEventContent = event.content
+        }
+        ownProfileLoadTask = task
+        await task.value
     }
 
     /// Publishes the edited profile as a NIP-01 kind:0 event and deletes the superseded profile
@@ -3450,8 +3465,11 @@ final class AppModel {
         if ownProfileEventID == nil {
             await loadOwnProfile()
         }
+        guard identityPublicKey == identity.publicKeyHex, !Task.isCancelled else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
         let previousEventID = ownProfileEventID
-        let createdAt = nextNostrTimestamp()
+        let createdAt = max(nextNostrTimestamp(), (ownProfile?.eventCreatedAt ?? 0) + 1)
         let event = try NostrProfileContract.event(
             draft: draft,
             previousContent: ownProfileEventContent,
@@ -3470,6 +3488,9 @@ final class AppModel {
             outboxScope: Self.profileOutboxScope,
             recordID: "kind-0"
         )
+        guard identityPublicKey == identity.publicKeyHex else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
         ownProfileEventID = event.id
         ownProfileEventContent = event.content
         ownProfile = NostrContactProfile(
@@ -5419,6 +5440,15 @@ final class AppModel {
 #endif
 
     private func applyIdentity(_ identity: NostrIdentity) {
+        if identityPublicKey != identity.publicKeyHex {
+            ownProfileLoadTask?.cancel()
+            ownProfileLoadTask = nil
+            ownProfile = nil
+            ownProfileEventID = nil
+            ownProfileEventContent = nil
+            isLoadingOwnProfile = false
+            profilePublishMessage = nil
+        }
         cachedIdentity = identity
         identityPublicKey = identity.publicKeyHex
         identityNpub = identity.npub

@@ -77,6 +77,22 @@ final class NostrProfileTests: XCTestCase {
         XCTAssertNil(object["lightning_address"])
     }
 
+    func testEditingAndClearingProfileRemovesStaleAliases() throws {
+        let previous = #"{"name":"old","username":"stale","displayName":"Old","image":"https://example.com/old.jpg","avatar":"https://example.com/older.jpg"}"#
+        let updated = try NostrProfileContract.contentJSON(
+            previousContent: previous,
+            draft: NostrProfileDraft(username: "new", displayName: "New", picture: "https://example.com/new.jpg")
+        )
+        let decoded = try XCTUnwrap(NostrContactProfile.decode(content: updated))
+        XCTAssertEqual(NostrProfileDraft(profile: decoded).username, "new")
+        let cleared = try NostrProfileContract.contentJSON(previousContent: updated, draft: NostrProfileDraft())
+        let clearedProfile = try XCTUnwrap(NostrContactProfile.decode(content: cleared))
+        XCTAssertNil(clearedProfile.name)
+        XCTAssertNil(clearedProfile.username)
+        XCTAssertNil(clearedProfile.displayName)
+        XCTAssertNil(clearedProfile.picture)
+    }
+
     func testProfileDraftSeedsUsernameFromNameAttribute() {
         let profile = NostrContactProfile(
             name: "oldname",

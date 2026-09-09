@@ -212,6 +212,10 @@ struct NostrProfileEditorSheet: View {
                     }
                 }
             }
+            .disabled(!didLoadDraft || isSaving)
+            .overlay {
+                if !didLoadDraft { ProgressView("Loading profile…") }
+            }
             .navigationTitle("Edit My Card")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -225,13 +229,13 @@ struct NostrProfileEditorSheet: View {
                     } label: {
                         if isSaving { ProgressView() } else { Text("Save & Publish") }
                     }
-                    .disabled(isSaving)
+                    .disabled(isSaving || !didLoadDraft)
                 }
             }
-            .onAppear {
+            .task {
                 guard !didLoadDraft else { return }
-                didLoadDraft = true
-                model.loadOwnProfileIfNeeded()
+                await model.loadOwnProfile()
+                guard !Task.isCancelled else { return }
                 let draft = NostrProfileDraft(profile: model.ownProfile)
                 username = draft.username ?? ""
                 displayName = draft.displayName ?? ""
@@ -239,6 +243,7 @@ struct NostrProfileEditorSheet: View {
                 nip05 = draft.nip05 ?? ""
                 about = draft.about ?? ""
                 pictureURL = draft.picture
+                didLoadDraft = true
             }
             .onChange(of: pendingPhotoItem) { _, item in
                 guard let item else { return }
@@ -279,6 +284,7 @@ struct NostrProfileEditorSheet: View {
             errorMessage = "That photo could not be loaded."
             return
         }
+        guard pendingPhotoItem == item else { return }
         pendingPhotoImage = image
     }
 
