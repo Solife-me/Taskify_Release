@@ -1,6 +1,6 @@
-import type { Event as NostrEvent } from "nostr-tools";
+import { verifyEvent, type Event as NostrEvent } from "nostr-tools";
 
-import { SessionPool } from "../nostr/SessionPool";
+import type { SessionPool } from "../nostr/SessionPool";
 import { LS_BOT_COMMANDS_CACHE } from "../localStorageKeys";
 
 /**
@@ -94,7 +94,9 @@ export async function fetchBotCommands(
     authors: [pubkey],
     "#d": [BOT_COMMANDS_D_TAG],
   });
-  if (!event) return { event: null, commands: [] };
+  if (!event || event.pubkey !== pubkey.toLowerCase() || !verifyEvent(event)) {
+    return { event: null, commands: [] };
+  }
   const commands = parseBotCommands(event);
   if (!commands) return { event: null, commands: [] };
   return { event, commands };
@@ -125,6 +127,9 @@ function persistCacheMap(map: BotCommandsCacheMap) {
 export function loadCachedBotCommands(peerHex: string): BotCommand[] | null {
   const entry = loadCacheMap()[peerHex.toLowerCase()];
   if (!entry || !Array.isArray(entry.commands) || !entry.commands.length) return null;
+  if (!entry.commands.every((command) => command &&
+    typeof command.name === "string" && BOT_COMMAND_NAME_PATTERN.test(command.name) &&
+    typeof command.description === "string")) return null;
   return entry.commands;
 }
 

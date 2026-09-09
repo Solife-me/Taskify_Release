@@ -4914,7 +4914,7 @@ botCmd
 
     const inboxRelays = await fetchInboxRelays(pubkeyHex, config.relays);
     const publishRelays = Array.from(new Set([...config.relays, ...inboxRelays]));
-    console.log(chalk.dim(`  Publishing ${commands.length} command${commands.length === 1 ? "" : "s"} to ${publishRelays.length} relay${publishRelays.length === 1 ? "" : "s"}...`));
+    console.error(chalk.dim(`  Publishing ${commands.length} command${commands.length === 1 ? "" : "s"} to ${publishRelays.length} relay${publishRelays.length === 1 ? "" : "s"}...`));
 
     try {
       const { event } = await publishBotCommands(config.nsec, commands, publishRelays);
@@ -4957,11 +4957,15 @@ botCmd
 
     const inboxRelays = await fetchInboxRelays(peerHex, config.relays);
     const relays = Array.from(new Set([...config.relays, ...inboxRelays]));
-    console.log(chalk.dim("  Fetching bot commands from relays..."));
+    console.error(chalk.dim("  Fetching bot commands from relays..."));
     const { event, commands } = await fetchBotCommands(peerHex, relays);
 
     if (!event) {
-      console.log(chalk.yellow("No bot commands list found for this npub."));
+      if (opts.json) {
+        console.log(JSON.stringify({ npub: nip19.npubEncode(peerHex), eventId: null, commands: [] }));
+      } else {
+        console.log(chalk.yellow("No bot commands list found for this npub."));
+      }
       process.exit(0);
     }
 
