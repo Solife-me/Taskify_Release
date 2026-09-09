@@ -290,6 +290,11 @@ struct NostrContactDetailView: View {
                             messages: messages,
                             emptyDescription: "Photos shared in this conversation will appear here."
                         )
+                    case .files:
+                        ConversationFilesView(
+                            messages: messages,
+                            emptyDescription: "Files shared in this conversation will appear here."
+                        )
                     case .links:
                         ConversationLinksView(
                             messages: messages,

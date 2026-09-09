@@ -1,3 +1,4 @@
+import CryptoKit
 import ImageIO
 import PhotosUI
 import QuickLook
@@ -1373,6 +1374,7 @@ private struct ShareContactPickerSheet: View {
 enum ConversationDetailsTab: String, CaseIterable, Identifiable {
     case info = "Info"
     case photos = "Photos"
+    case files = "Files"
     case links = "Links"
 
     var id: String { rawValue }
@@ -1384,6 +1386,13 @@ private struct ConversationSharedPhoto: Identifiable {
     let attachment: NostrDirectMessageAttachment?
 }
 
+private struct ConversationSharedFile: Identifiable {
+    let id: String
+    let attachment: NostrDirectMessageAttachment
+    let senderPublicKey: String
+    let createdAt: Int
+}
+
 private struct ConversationSharedLink: Identifiable {
     let id: String
     let url: URL
@@ -1392,26 +1401,30 @@ private struct ConversationSharedLink: Identifiable {
 }
 
 private enum ConversationSharedContent {
-    static func photos(
-        in messages: [NostrDirectMessage],
-        includesNonPhotoAttachments: Bool
-    ) -> [ConversationSharedPhoto] {
+    static func photos(in messages: [NostrDirectMessage]) -> [ConversationSharedPhoto] {
         messages.flatMap { message in
             let attachmentURL = message.attachment.flatMap { URL(string: $0.url)?.absoluteString }
-            var URLs = NostrDirectMessageSharedContent.photoURLs(in: message)
-            if includesNonPhotoAttachments,
-               let attachmentURL,
-               let url = URL(string: attachmentURL),
-               !URLs.contains(where: { $0.absoluteString == attachmentURL }) {
-                URLs.insert(url, at: 0)
-            }
-            return URLs.enumerated().map { index, url in
+            return NostrDirectMessageSharedContent.photoURLs(in: message).enumerated().map { index, url in
                 ConversationSharedPhoto(
                     id: "\(message.rumorEventID)-photo-\(index)",
                     url: url,
                     attachment: url.absoluteString == attachmentURL ? message.attachment : nil
                 )
             }
+        }
+    }
+
+    /// Every attachment except photos — documents, videos, audio, archives, anything
+    /// else shared through the conversation's encrypted attachments.
+    static func files(in messages: [NostrDirectMessage]) -> [ConversationSharedFile] {
+        messages.compactMap { message in
+            guard let attachment = message.attachment, !attachment.isImage else { return nil }
+            return ConversationSharedFile(
+                id: "\(message.rumorEventID)-file",
+                attachment: attachment,
+                senderPublicKey: message.senderPublicKey,
+                createdAt: message.createdAt
+            )
         }
     }
 
@@ -1464,25 +1477,19 @@ struct ConversationPhotosView: View {
     let messages: [NostrDirectMessage]
     let emptyTitle: String
     let emptyDescription: String
-    let includesNonPhotoAttachments: Bool
 
     init(
         messages: [NostrDirectMessage],
         emptyTitle: String = "No Shared Photos",
-        emptyDescription: String,
-        includesNonPhotoAttachments: Bool = false
+        emptyDescription: String
     ) {
         self.messages = messages
         self.emptyTitle = emptyTitle
         self.emptyDescription = emptyDescription
-        self.includesNonPhotoAttachments = includesNonPhotoAttachments
     }
 
     private var photos: [ConversationSharedPhoto] {
-        ConversationSharedContent.photos(
-            in: messages,
-            includesNonPhotoAttachments: includesNonPhotoAttachments
-        )
+        ConversationSharedContent.photos(in: messages)
     }
 
     var body: some View {
@@ -1534,6 +1541,135 @@ struct ConversationPhotosView: View {
                     }
                 }
                 .padding(16)
+            }
+        }
+    }
+}
+
+struct ConversationFilesView: View {
+    let messages: [NostrDirectMessage]
+    let emptyDescription: String
+    let unknownSenderName: String
+
+    init(
+        messages: [NostrDirectMessage],
+        emptyDescription: String,
+        unknownSenderName: String = "Contact"
+    ) {
+        self.messages = messages
+        self.emptyDescription = emptyDescription
+        self.unknownSenderName = unknownSenderName
+    }
+
+    private var files: [ConversationSharedFile] {
+        ConversationSharedContent.files(in: messages)
+    }
+
+    var body: some View {
+        if files.isEmpty {
+            ContentUnavailableView(
+                "No Shared Files",
+                systemImage: "doc.on.doc",
+                description: Text(emptyDescription)
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            List(files) { file in
+                ConversationFileRow(file: file, unknownSenderName: unknownSenderName)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+    }
+}
+
+private struct ConversationFileRow: View {
+    @Environment(AppModel.self) private var model
+    let file: ConversationSharedFile
+    let unknownSenderName: String
+
+    @State private var isLoading = false
+    @State private var failed = false
+    @State private var previewURL: URL?
+
+    var body: some View {
+        Button(action: openFile) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(TaskifyTheme.accent.opacity(0.14))
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: file.attachment.detailIcon)
+                            .font(.headline)
+                            .foregroundStyle(TaskifyTheme.accent)
+                    }
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(file.attachment.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(2)
+                    HStack(spacing: 5) {
+                        Text(file.attachment.detailKindLabel)
+                        if let size = file.attachment.size {
+                            Text("·")
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    Text(metadata)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+
+                Spacer(minLength: 2)
+                Image(systemName: failed ? "arrow.clockwise" : "arrow.up.forward")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .quickLookPreview($previewURL)
+        .onChange(of: previewURL) { old, new in
+            if let old, old != new { try? FileManager.default.removeItem(at: old) }
+        }
+        .accessibilityLabel("Open \(file.attachment.displayName)")
+    }
+
+    private var metadata: String {
+        let sender = file.senderPublicKey == model.identityPublicKey
+            ? "You"
+            : model.nostrContact(publicKey: file.senderPublicKey)?.displayName ?? unknownSenderName
+        let date = Date(timeIntervalSince1970: TimeInterval(file.createdAt))
+            .formatted(date: .abbreviated, time: .shortened)
+        return "\(sender) · \(date)"
+    }
+
+    private func openFile() {
+        if failed {
+            failed = false
+        }
+        isLoading = true
+        Task { @MainActor in
+            defer { isLoading = false }
+            do {
+                let decrypted = try await DirectMessageAttachmentDataLoader.shared.file(for: file.attachment)
+                guard !Task.isCancelled else { return }
+                previewURL = try DirectMessageAttachmentDataLoader.previewFile(
+                    file: decrypted,
+                    attachment: file.attachment
+                )
+                failed = false
+            } catch {
+                failed = true
             }
         }
     }
@@ -1706,9 +1842,13 @@ private struct GroupConversationDetailsView: View {
         case .photos:
             ConversationPhotosView(
                 messages: messages,
-                emptyTitle: "No Shared Attachments",
-                emptyDescription: "Photos and files shared with this group will appear here.",
-                includesNonPhotoAttachments: true
+                emptyDescription: "Photos shared with this group will appear here."
+            )
+        case .files:
+            ConversationFilesView(
+                messages: messages,
+                emptyDescription: "Files shared with this group will appear here.",
+                unknownSenderName: "Group Member"
             )
         case .links:
             ConversationLinksView(
@@ -5399,19 +5539,9 @@ private struct DirectMessageAttachmentView: View {
         return min(250, max(140, 265 * CGFloat(height) / CGFloat(width)))
     }
 
-    private var attachmentIcon: String {
-        if attachment.isVideo { return "video.fill" }
-        if attachment.isAudio { return "waveform" }
-        if attachment.mimeType.lowercased().contains("pdf") { return "doc.richtext.fill" }
-        return "doc.fill"
-    }
+    private var attachmentIcon: String { attachment.detailIcon }
 
-    private var fileKind: String {
-        if attachment.isVideo { return "VIDEO" }
-        if attachment.isAudio { return "AUDIO" }
-        if attachment.mimeType.lowercased().contains("pdf") { return "PDF" }
-        return "FILE"
-    }
+    private var fileKind: String { attachment.detailKindLabel }
 
     @MainActor
     private func loadImage() async {
@@ -5465,20 +5595,30 @@ private actor DirectMessageAttachmentDataLoader {
 
     func file(for attachment: NostrDirectMessageAttachment) async throws -> URL {
         if let file = files[attachment.cacheKey], FileManager.default.fileExists(atPath: file.path) { return file }
+        if let cached = await DirectMessageAttachmentDiskCache.shared.file(forKey: attachment.cacheKey) {
+            remember(cached, forKey: attachment.cacheKey)
+            return cached
+        }
         guard let url = URL(string: attachment.url) else { throw ChatAttachmentError.invalidURL }
         let ciphertext = try await AttachmentDownload.file(from: url, limit: AttachmentFiles.maximumBytes + 16)
         defer { try? FileManager.default.removeItem(at: ciphertext) }
         let plaintext = try await AttachmentFiles.work {
             try AttachmentFileCrypto.decryptChat(ciphertext, attachment: attachment)
         }
-        if let old = files[attachment.cacheKey] { try? FileManager.default.removeItem(at: old) }
-        files[attachment.cacheKey] = plaintext
-        order.removeAll { $0 == attachment.cacheKey }
-        order.append(attachment.cacheKey)
+        // The disk cache owns stored files from here on; if storing fails, the
+        // plaintext temp file still works and is purged with other temporary files.
+        let stored = await DirectMessageAttachmentDiskCache.shared.store(plaintext, forKey: attachment.cacheKey)
+        remember(stored ?? plaintext, forKey: attachment.cacheKey)
+        return stored ?? plaintext
+    }
+
+    private func remember(_ file: URL, forKey key: String) {
+        files[key] = file
+        order.removeAll { $0 == key }
+        order.append(key)
         while order.count > 2 {
-            if let old = files.removeValue(forKey: order.removeFirst()) { try? FileManager.default.removeItem(at: old) }
+            files.removeValue(forKey: order.removeFirst())
         }
-        return plaintext
     }
 
     nonisolated static func previewFile(file: URL, attachment: NostrDirectMessageAttachment) throws -> URL {
@@ -5492,6 +5632,99 @@ private actor DirectMessageAttachmentDataLoader {
         try FileManager.default.copyItem(at: file, to: url)
         try AttachmentFiles.protect(url)
         return url
+    }
+}
+
+/// Persistently caches decrypted chat attachments so returning to a conversation or
+/// relaunching the app renders immediately instead of re-downloading and
+/// re-decrypting every image and file again. Entries live in the OS-managed caches
+/// directory, are keyed by the full attachment descriptor (URL + key + nonce — a
+/// key therefore maps to exactly one plaintext), and are evicted least-recently-used
+/// once the total size exceeds `byteLimit`. Files carry the same owner-only
+/// permissions and first-unlock protection as every other Taskify media file.
+private actor DirectMessageAttachmentDiskCache {
+    static let shared = DirectMessageAttachmentDiskCache()
+
+    /// Bounds total disk usage; decrypted attachments are already capped at 500 MB
+    /// individually by `AttachmentFiles.maximumBytes`.
+    private static let byteLimit = 256 * 1_024 * 1_024
+
+    private let directory: URL
+
+    init() {
+        // The system may empty the caches directory under storage pressure; that is
+        // acceptable for a cache — the loader just falls back to downloading again.
+        let fileManager = FileManager.default
+        let base = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        directory = base.appendingPathComponent("TaskifyChatAttachments", isDirectory: true)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                          attributes: [.posixPermissions: 0o700])
+        try? AttachmentFiles.protect(directory)
+    }
+
+    private func filename(forKey key: String) -> String {
+        Data(SHA256.hash(data: Data(key.utf8))).hexString
+    }
+
+    /// Returns the cached plaintext for `key`, refreshing its recency so eviction
+    /// is least-recently-used.
+    func file(forKey key: String) -> URL? {
+        let fileManager = FileManager.default
+        let url = directory.appendingPathComponent(filename(forKey: key))
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        touchRecency(of: url)
+        return url
+    }
+
+    /// Moves a freshly decrypted file into the cache, evicting least-recently-used
+    /// entries past the byte limit. Returns the cache URL, or nil if storing failed.
+    func store(_ file: URL, forKey key: String) -> URL? {
+        let fileManager = FileManager.default
+        let destination = directory.appendingPathComponent(filename(forKey: key))
+        if fileManager.fileExists(atPath: destination.path) {
+            try? fileManager.removeItem(at: file)
+            touchRecency(of: destination)
+            return destination
+        }
+        do {
+            try fileManager.moveItem(at: file, to: destination)
+        } catch {
+            return nil
+        }
+        try? AttachmentFiles.protect(destination)
+        trimToByteLimit()
+        return destination
+    }
+
+    private func touchRecency(of url: URL) {
+        var mutableURL = url
+        var values = URLResourceValues()
+        values.contentModificationDate = Date()
+        try? mutableURL.setResourceValues(values)
+    }
+
+    private func trimToByteLimit() {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: keys
+        ) else { return }
+        var candidates: [(url: URL, size: Int, date: Date)] = []
+        var total = 0
+        for entry in entries {
+            guard let values = try? entry.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  let size = values.fileSize else { continue }
+            total += size
+            candidates.append((entry, size, values.contentModificationDate ?? .distantPast))
+        }
+        guard total > Self.byteLimit else { return }
+        for entry in candidates.sorted(by: { $0.date < $1.date }) {
+            guard total > Self.byteLimit else { break }
+            if (try? FileManager.default.removeItem(at: entry.url)) != nil {
+                total -= entry.size
+            }
+        }
     }
 }
 
@@ -5553,6 +5786,20 @@ private actor DirectMessageAttachmentImageLoader {
 private extension NostrDirectMessageAttachment {
     var cacheKey: String {
         "\(url)::\(keyHex)::\(nonceHex)"
+    }
+
+    var detailIcon: String {
+        if isVideo { return "video.fill" }
+        if isAudio { return "waveform" }
+        if mimeType.lowercased().contains("pdf") { return "doc.richtext.fill" }
+        return "doc.fill"
+    }
+
+    var detailKindLabel: String {
+        if isVideo { return "VIDEO" }
+        if isAudio { return "AUDIO" }
+        if mimeType.lowercased().contains("pdf") { return "PDF" }
+        return "FILE"
     }
 }
 
