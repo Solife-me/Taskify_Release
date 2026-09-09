@@ -2351,14 +2351,16 @@ private struct DirectMessageConversationView: View {
     @State private var draft = ""
     @State private var isSending = false
     @State private var isSendingAttachment = false
-    @State private var attachmentDraft: ChatAttachmentDraft?
+    @State private var attachmentDrafts: [ChatAttachmentDraft] = []
     @State private var attachmentPreparationTask: Task<Void, Never>?
     @State private var attachmentSendTask: Task<Void, Never>?
     @State private var attachmentProgress: AttachmentTransferProgress?
     @State private var attachmentSendError: String?
+    @State private var attachmentUploadFileIndex = 0
+    @State private var attachmentUploadFileTotal = 0
     @State private var replyingTo: NostrDirectMessage?
     @State private var showingPhotoPicker = false
-    @State private var photoSelection: PhotosPickerItem?
+    @State private var photoSelections: [PhotosPickerItem] = []
     @State private var showingCamera = false
     @State private var showingDocumentScanner = false
     @State private var showingFileImporter = false
@@ -2811,24 +2813,27 @@ private struct DirectMessageConversationView: View {
         }
         .photosPicker(
             isPresented: $showingPhotoPicker,
-            selection: $photoSelection,
+            selection: $photoSelections,
+            maxSelectionCount: NostrDirectMessageAttachment.maximumBatchCount,
             matching: .any(of: [.images, .videos]),
             preferredItemEncoding: .automatic
         )
-        .onChange(of: photoSelection) { _, selection in
-            guard let selection else { return }
-            attachmentPreparationTask = Task { await stagePhotoSelection(selection) }
+        .onChange(of: photoSelections) { _, selections in
+            guard !selections.isEmpty else { return }
+            attachmentPreparationTask = Task { await stagePhotoSelections(selections) }
         }
         .fileImporter(
             isPresented: $showingFileImporter,
             allowedContentTypes: [.item],
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
-            guard case .success(let URLs) = result, let URL = URLs.first else {
+            guard case .success(let URLs) = result, !URLs.isEmpty else {
                 if case .failure(let error) = result { model.errorMessage = error.localizedDescription }
                 return
             }
-            attachmentPreparationTask = Task { await stageFile(URL) }
+            attachmentPreparationTask = Task {
+                for URL in URLs { await stageFile(URL) }
+            }
         }
         .onDisappear {
             attachmentPreparationTask?.cancel()
@@ -2844,7 +2849,7 @@ private struct DirectMessageConversationView: View {
         .onChange(of: model.identityPublicKey) { _, _ in
             renderCache.clear()
             attachmentPreparationTask?.cancel()
-            attachmentDraft = nil
+            attachmentDrafts.removeAll()
             draft = ""
             replyingTo = nil
         }
@@ -3175,8 +3180,35 @@ private struct DirectMessageConversationView: View {
     }
 
     private var canSend: Bool {
-        (attachmentDraft != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
+        (!attachmentDrafts.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
             !isSending && !isSendingAttachment
+    }
+
+    /// Caption for the upload progress area: "file i of N" once a batch grows
+    /// past a single file.
+    private var attachmentUploadProgressText: String {
+        let base = attachmentProgress?.message ?? "Preparing attachment…"
+        guard attachmentUploadFileTotal > 1, attachmentProgress != .sendingMessage else { return base }
+        return "Sending \(attachmentUploadFileIndex + 1) of \(attachmentUploadFileTotal) — \(base)"
+    }
+
+    /// Stages one more attachment, refusing past the batch cap. A refused
+    /// draft is never retained, so its deinit cleans up the temp file.
+    @MainActor
+    private func appendDraft(_ draft: ChatAttachmentDraft) -> Bool {
+        guard attachmentDrafts.count < NostrDirectMessageAttachment.maximumBatchCount else {
+            model.errorMessage = "You can attach up to \(NostrDirectMessageAttachment.maximumBatchCount) files per message."
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return false
+        }
+        attachmentDrafts.append(draft)
+        return true
+    }
+
+    @MainActor
+    private func removeDraft(_ id: UUID) {
+        attachmentDrafts.removeAll { $0.id == id }
+        if attachmentDrafts.isEmpty { attachmentSendError = nil }
     }
 
     private var composer: some View {
@@ -3261,18 +3293,23 @@ private struct DirectMessageConversationView: View {
                 .accessibilityLabel(isSendingAttachment ? "Preparing attachment" : "Add attachment")
 
                 VStack(alignment: .leading, spacing: 8) {
-                    if let attachmentDraft {
-                        TaskifyAttachmentDraftPreview(fileURL: attachmentDraft.fileURL,
-                            name: attachmentDraft.name, mimeType: attachmentDraft.mimeType,
-                            size: attachmentDraft.size, isBusy: isSending) {
-                                self.attachmentDraft = nil
-                                attachmentSendError = nil
+                    if !attachmentDrafts.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(attachmentDrafts) { attachmentDraft in
+                                    TaskifyAttachmentDraftPreview(fileURL: attachmentDraft.fileURL,
+                                        name: attachmentDraft.name, mimeType: attachmentDraft.mimeType,
+                                        size: attachmentDraft.size, isBusy: isSending) {
+                                            removeDraft(attachmentDraft.id)
+                                        }
+                                }
                             }
                             .padding(.horizontal, 9)
                             .padding(.top, 8)
+                        }
                         if isSending {
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(attachmentProgress?.message ?? "Preparing attachment…")
+                                Text(attachmentUploadProgressText)
                                     .font(.caption).foregroundStyle(.secondary)
                                 if let fraction = attachmentProgress?.fractionCompleted {
                                     ProgressView(value: fraction)
@@ -3292,7 +3329,7 @@ private struct DirectMessageConversationView: View {
                         Divider().padding(.horizontal, 9)
                     }
                     HStack(alignment: .bottom, spacing: 4) {
-                        let composerPrompt = attachmentDraft == nil ? "Message" : "Add comment or Send"
+                        let composerPrompt = attachmentDrafts.isEmpty ? "Message" : "Add comment or Send"
                         ZStack(alignment: .topLeading) {
                             if draft.isEmpty {
                                 Text(composerPrompt)
@@ -3330,7 +3367,7 @@ private struct DirectMessageConversationView: View {
                         .buttonStyle(.plain)
                         .opacity(canSend ? 1 : 0.45)
                         .disabled(!canSend)
-                        .accessibilityLabel(attachmentDraft == nil ? "Send message" : "Send attachment")
+                        .accessibilityLabel(attachmentDrafts.isEmpty ? "Send message" : "Send attachments")
                     }
                 }
                 .padding(3)
@@ -3387,47 +3424,68 @@ private struct DirectMessageConversationView: View {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
         let capturedReply = replyingTo
-        let capturedAttachment = attachmentDraft
+        let capturedAttachments = attachmentDrafts
         let account = model.identityPublicKey
         attachmentSendError = nil
-        attachmentProgress = capturedAttachment.map { .encrypting(completed: 0, total: $0.size) }
+        attachmentProgress = capturedAttachments.first.map { .encrypting(completed: 0, total: $0.size) }
+        attachmentUploadFileTotal = capturedAttachments.count
+        attachmentUploadFileIndex = 0
         isSending = true
         attachmentSendTask = Task {
+            // All-or-nothing: every file uploads before anything is sent, and a
+            // failed upload leaves the drafts staged so a retry reuses the
+            // per-draft cached uploads instead of re-uploading everything.
+            var uploadingName: String?
             do {
-                if let capturedAttachment {
-                    let attachmentID = capturedAttachment.id
-                    let attachment: NostrDirectMessageAttachment
-                    if let uploaded = capturedAttachment.uploadedAttachment { attachment = uploaded }
-                    else {
-                        attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
-                            fileURL: capturedAttachment.fileURL, name: capturedAttachment.name,
-                            mimeType: capturedAttachment.mimeType, progress: { progress in
-                                Task { @MainActor in
-                                    guard isSending, attachmentDraft?.id == attachmentID,
-                                          attachmentProgress != .sendingMessage else { return }
-                                    attachmentProgress = progress
-                                }
-                            })
-                        // If queueing fails, a retry can reuse the completed upload.
-                        capturedAttachment.uploadedAttachment = attachment
+                if !capturedAttachments.isEmpty {
+                    var uploaded: [NostrDirectMessageAttachment] = []
+                    uploaded.reserveCapacity(capturedAttachments.count)
+                    for (index, draftAttachment) in capturedAttachments.enumerated() {
+                        attachmentUploadFileIndex = index
+                        attachmentProgress = .encrypting(completed: 0, total: draftAttachment.size)
+                        uploadingName = draftAttachment.name
+                        let attachment: NostrDirectMessageAttachment
+                        if let uploadedCached = draftAttachment.uploadedAttachment {
+                            attachment = uploadedCached
+                        } else {
+                            attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
+                                fileURL: draftAttachment.fileURL, name: draftAttachment.name,
+                                mimeType: draftAttachment.mimeType, progress: { progress in
+                                    Task { @MainActor in
+                                        guard isSending, attachmentProgress != .sendingMessage else { return }
+                                        attachmentProgress = progress
+                                    }
+                                })
+                            // If queueing fails, a retry can reuse the completed upload.
+                            draftAttachment.uploadedAttachment = attachment
+                        }
+                        uploaded.append(attachment)
                     }
+                    uploadingName = nil
                     try Task.checkCancellation()
                     guard account == model.identityPublicKey else { throw NostrDirectMessageError.identityUnavailable }
                     attachmentProgress = .sendingMessage
-                    try await model.sendDirectMessageAttachment(to: peerPublicKey, attachment: attachment,
+                    try await model.sendDirectMessageAttachments(to: peerPublicKey, attachments: uploaded,
                         replyToEventID: capturedReply?.rumorEventID, comment: content)
                 } else {
                     try await model.sendDirectMessage(to: peerPublicKey, content: content,
                         replyToEventID: capturedReply?.rumorEventID)
                 }
-                attachmentDraft = nil
+                attachmentDrafts.removeAll()
                 draft = ""
                 replyingTo = nil
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } catch {
                 if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
-                    if capturedAttachment != nil { attachmentSendError = error.localizedDescription }
-                    else { model.errorMessage = error.localizedDescription }
+                    if !capturedAttachments.isEmpty {
+                        if let failedName = uploadingName {
+                            attachmentSendError = "\(failedName): \(error.localizedDescription)"
+                        } else {
+                            attachmentSendError = error.localizedDescription
+                        }
+                    } else {
+                        model.errorMessage = error.localizedDescription
+                    }
                     UINotificationFeedbackGenerator().notificationOccurred(.error)
                 }
             }
@@ -3454,31 +3512,34 @@ private struct DirectMessageConversationView: View {
     }
 
     @MainActor
-    private func stagePhotoSelection(_ selection: PhotosPickerItem) async {
-        guard !isSending, !isSendingAttachment else { photoSelection = nil; return }
+    private func stagePhotoSelections(_ selections: [PhotosPickerItem]) async {
+        guard !isSending, !isSendingAttachment else { photoSelections = []; return }
         isSendingAttachment = true
-        defer { photoSelection = nil; isSendingAttachment = false }
-        var imported: URL?
-        do {
-            guard let file = try await selection.loadTransferable(type: TaskifyPhotoFile.self) else {
-                throw ChatAttachmentError.unreadableFile
+        defer { photoSelections = []; isSendingAttachment = false }
+        for selection in selections {
+            var imported: URL?
+            do {
+                guard let file = try await selection.loadTransferable(type: TaskifyPhotoFile.self) else {
+                    throw ChatAttachmentError.unreadableFile
+                }
+                imported = file.url
+                try Task.checkCancellation()
+                let size = try AttachmentFiles.size(file.url)
+                guard size > 0 else { throw AttachmentFileError.empty }
+                let type = selection.supportedContentTypes.first ?? .data
+                let staged = ChatAttachmentDraft(fileURL: file.url,
+                    name: "\(type.conforms(to: .movie) ? "Video" : "Photo").\(type.preferredFilenameExtension ?? "bin")",
+                    mimeType: type.preferredMIMEType ?? "application/octet-stream", size: size)
+                imported = nil
+                guard appendDraft(staged) else { continue }
+                attachmentSendError = nil
+                composerFocused = true
+            } catch {
+                if let imported { try? FileManager.default.removeItem(at: imported) }
+                guard !Task.isCancelled else { return }
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
-            imported = file.url
-            try Task.checkCancellation()
-            let size = try AttachmentFiles.size(file.url)
-            guard size > 0 else { throw AttachmentFileError.empty }
-            let type = selection.supportedContentTypes.first ?? .data
-            attachmentDraft = ChatAttachmentDraft(fileURL: file.url,
-                name: "\(type.conforms(to: .movie) ? "Video" : "Photo").\(type.preferredFilenameExtension ?? "bin")",
-                mimeType: type.preferredMIMEType ?? "application/octet-stream", size: size)
-            attachmentSendError = nil
-            imported = nil
-            composerFocused = true
-        } catch {
-            if let imported { try? FileManager.default.removeItem(at: imported) }
-            guard !Task.isCancelled else { return }
-            model.errorMessage = error.localizedDescription
-            UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
 
@@ -3497,10 +3558,11 @@ private struct DirectMessageConversationView: View {
             try Task.checkCancellation()
             let size = try AttachmentFiles.size(url)
             guard size > 0 else { throw AttachmentFileError.empty }
-            attachmentDraft = ChatAttachmentDraft(fileURL: url, name: values.name ?? fileURL.lastPathComponent,
+            let staged = ChatAttachmentDraft(fileURL: url, name: values.name ?? fileURL.lastPathComponent,
                 mimeType: values.contentType?.preferredMIMEType ?? "application/octet-stream", size: size)
-            attachmentSendError = nil
             imported = nil
+            guard appendDraft(staged) else { return }
+            attachmentSendError = nil
             composerFocused = true
         } catch {
             if let imported { try? FileManager.default.removeItem(at: imported) }
@@ -3534,14 +3596,15 @@ private struct DirectMessageConversationView: View {
             try Task.checkCancellation()
             let size = try AttachmentFiles.size(url)
             let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
-            attachmentDraft = ChatAttachmentDraft(
+            let draftAttachment = ChatAttachmentDraft(
                 fileURL: url,
                 name: "photo-\(timestamp).jpg",
                 mimeType: "image/jpeg",
                 size: size
             )
-            attachmentSendError = nil
             staged = nil
+            guard appendDraft(draftAttachment) else { return }
+            attachmentSendError = nil
             composerFocused = true
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } catch {
@@ -3567,14 +3630,15 @@ private struct DirectMessageConversationView: View {
             try Task.checkCancellation()
             let size = try AttachmentFiles.size(url)
             let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
-            attachmentDraft = ChatAttachmentDraft(
+            let draftAttachment = ChatAttachmentDraft(
                 fileURL: url,
                 name: "scan-\(timestamp).pdf",
                 mimeType: "application/pdf",
                 size: size
             )
-            attachmentSendError = nil
             staged = nil
+            guard appendDraft(draftAttachment) else { return }
+            attachmentSendError = nil
             composerFocused = true
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } catch {
@@ -3625,14 +3689,15 @@ private struct DirectMessageConversationView: View {
             try Task.checkCancellation()
             let size = try AttachmentFiles.size(staged.url)
             guard size > 0 else { throw AttachmentFileError.empty }
-            attachmentDraft = ChatAttachmentDraft(
+            let draftAttachment = ChatAttachmentDraft(
                 fileURL: staged.url,
                 name: staged.name,
                 mimeType: staged.type?.preferredMIMEType ?? "application/octet-stream",
                 size: size
             )
-            attachmentSendError = nil
             imported = nil
+            guard appendDraft(draftAttachment) else { return }
+            attachmentSendError = nil
             composerFocused = true
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } catch {

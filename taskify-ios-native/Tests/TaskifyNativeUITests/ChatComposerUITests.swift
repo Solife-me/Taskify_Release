@@ -142,6 +142,61 @@ final class ChatComposerUITests: XCTestCase {
         UIPasteboard.general.items = []
     }
 
+    func testPastingSecondImageStagesSecondAttachment() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "force"
+        app.launch()
+
+        onboard(app)
+
+        XCTAssertTrue(app.buttons["Chat"].waitForExistence(timeout: 5))
+        app.buttons["Chat"].tap()
+        XCTAssertTrue(app.buttons["New message"].waitForExistence(timeout: 5))
+        app.buttons["New message"].tap()
+        let selfRow = app.staticTexts["Message Yourself"].firstMatch
+        XCTAssertTrue(selfRow.waitForExistence(timeout: 5))
+        selfRow.tap()
+
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5), "Composer text view should exist")
+        composer.tap()
+
+        // Each pasted image must append its own draft instead of replacing the
+        // previous one, so two pastes stage two independently removable files.
+        let removeButtons = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Remove ")
+        )
+        for pasteIndex in 0..<2 {
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 80)).image { context in
+                pasteIndex == 0 ? UIColor.systemRed.setFill() : UIColor.systemBlue.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 80, height: 80))
+            }
+            UIPasteboard.general.image = image
+            composer.press(forDuration: 1.5)
+            let paste = app.menuItems["Paste"]
+            XCTAssertTrue(
+                paste.waitForExistence(timeout: 3),
+                "Paste must be offered in the edit menu for an image clipboard"
+            )
+            paste.tap()
+            let staged = expectation(for: NSPredicate(format: "count == %d", pasteIndex + 1),
+                evaluatedWith: removeButtons)
+            wait(for: [staged], timeout: 10)
+        }
+
+        attach(app, name: "composer-two-pasted-attachments")
+
+        // Removing one staged draft leaves the other intact.
+        let first = removeButtons.element(boundBy: 0)
+        first.tap()
+        let remaining = expectation(for: NSPredicate(format: "count == 1"), evaluatedWith: removeButtons)
+        wait(for: [remaining], timeout: 5)
+
+        attach(app, name: "composer-one-attachment-after-remove")
+
+        UIPasteboard.general.items = []
+    }
+
     private func onboard(_ app: XCUIApplication) {
         XCTAssertTrue(
             app.staticTexts["Choose how you want to get started."].waitForExistence(timeout: 10)

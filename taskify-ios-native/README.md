@@ -303,6 +303,12 @@ message delivery and reconcile sent receipts into chat history. Each gift wrap i
 saved before publication so retries keep the same message identity. Files expire
 from the share queue after 48 hours; incomplete private previews expire after 24 hours.
 
+Chat accepts up to ten attachments per send from Photos, Files, pasted images,
+camera captures, or document scans. Previews can be removed independently.
+Every file uploads before the batch is queued; interrupted uploads retain the
+staged files and reuse completed uploads on retry. Each recipient's deliveries
+form an ordered chain, with an optional comment replying to the last file.
+
 Chat attachments stay in a removable preview until the sender presses Send. Both
 the chat composer and share extension accept an optional comment. Following
 [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md), the attachment is
