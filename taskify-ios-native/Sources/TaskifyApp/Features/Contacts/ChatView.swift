@@ -723,6 +723,8 @@ private struct DirectMessageThreadRow: View {
                                 ),
                                 in: Capsule()
                             )
+                            .accessibilityLabel("\(thread.unreadCount) unread messages")
+                            .accessibilityIdentifier("chatThreadUnreadBadge")
                     }
                     if thread.actionRequiredCount > 0 {
                         Label("\(thread.actionRequiredCount)", systemImage: "checklist")
@@ -2740,6 +2742,10 @@ private struct DirectMessageConversationView: View {
                     return
                 }
                 if isSearchingConversation, !searchQuery.isEmpty {
+                    // Still inside the thread, so arrivals during in-thread search count as
+                    // read too; the search overlay must not steal the scroll, but marking
+                    // must not be skipped.
+                    model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
                     selectNewestSearchResult(proxy: proxy)
                 } else {
                     markReadAndScroll(proxy: proxy, animated: true)
@@ -2831,6 +2837,13 @@ private struct DirectMessageConversationView: View {
             attachmentPreparationTask = Task { await stageFile(URL) }
         }
         .onDisappear {
+            // Leaving the thread reads it through. The reactive onChange mark handles messages
+            // seen arriving, but it can miss: arrivals during in-thread search take the search
+            // branch, and once the message store hits its 400-message cap a new arrival also
+            // drops the oldest, leaving the timeline count — the onChange signal — unchanged.
+            // Anything that reached the snapshot while this view was open was displayed in it,
+            // so the list must not badge the thread afterwards.
+            model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
             attachmentPreparationTask?.cancel()
             timelineScrollTask?.cancel()
             renderCache.clear()
