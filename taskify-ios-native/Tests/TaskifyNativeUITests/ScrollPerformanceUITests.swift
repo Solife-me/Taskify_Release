@@ -577,6 +577,38 @@ final class ScrollPerformanceUITests: XCTestCase {
             "Three relay copies must produce one message")
     }
 
+    /// Regression test: messages that arrive while the conversation is open are seen by the
+    /// user, so leaving the thread must not badge it as unread. The reactive onChange mark
+    /// handles arrivals the timeline-count signal catches; the onDisappear mark is the
+    /// guarantee for everything it misses (in-thread search, the 400-message ingest cap
+    /// keeping the count flat, or SwiftUI skipping a mid-scroll update).
+    func testLeavingThreadAfterLiveArrivalShowsNoUnreadBadge() throws {
+        let app = chatFixtureApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "100"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ARRIVALS"] = "1"
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5))
+        let incoming = app.staticTexts["Live fixture message 3"]
+        XCTAssertTrue(incoming.waitForExistence(timeout: 20), "Encrypted arrivals must reach the open conversation")
+
+        app.buttons["Back to chats"].tap()
+        XCTAssertTrue(contact.waitForExistence(timeout: 5))
+        // The arrivals really landed — the thread preview shows the newest one — so a missing
+        // badge means they were marked read, not that nothing arrived.
+        XCTAssertTrue(
+            app.staticTexts["Live fixture message 3"].waitForExistence(timeout: 3),
+            "The arrival should be the thread's latest message"
+        )
+        XCTAssertTrue(
+            app.staticTexts["chatThreadUnreadBadge"].waitForNonExistence(timeout: 3),
+            "Messages received while the thread was open must not badge it unread on exit"
+        )
+    }
+
     func testChatRemainsResponsiveAcrossBackgroundHandoffs() throws {
         let app = chatFixtureApplication()
         app.launch()
