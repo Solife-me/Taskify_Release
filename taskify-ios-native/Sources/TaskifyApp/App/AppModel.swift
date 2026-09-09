@@ -2792,6 +2792,13 @@ final class AppModel {
         )
     }
 
+    /// One rumor's payload before wrapping: its kind, content, and extra tags.
+    private struct DirectMessageRumorDraft: Sendable {
+        let kind: Int
+        let content: String
+        let additionalTags: [[String]]
+    }
+
     func sendDirectMessage(
         to recipientValue: String,
         content: String,
@@ -2799,62 +2806,73 @@ final class AppModel {
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
-        try await publishDirectMessageRumor(
+        try await publishDirectMessageRumorBatch(
             to: recipientValue,
-            kind: NIP17GiftWrap.rumorKind,
-            content: text,
-            additionalTags: [],
-            replyToEventID: replyToEventID
+            drafts: [DirectMessageRumorDraft(
+                kind: NIP17GiftWrap.rumorKind,
+                content: text,
+                additionalTags: []
+            )],
+            replyToEventID: replyToEventID,
+            attachmentComment: nil
         )
     }
 
-    func sendDirectMessageAttachment(
+    /// One file per kind 15 rumor (NIP-17 has no multi-file event), sent as a
+    /// single ordered batch with an optional caption kind 14 after the files.
+    func sendDirectMessageAttachments(
         to recipientValue: String,
-        attachment: NostrDirectMessageAttachment,
+        attachments: [NostrDirectMessageAttachment],
         replyToEventID: String? = nil,
         comment: String? = nil
     ) async throws {
-        guard let validated = NostrDirectMessageAttachment(
-            url: attachment.url,
-            mimeType: attachment.mimeType,
-            filename: attachment.filename,
-            size: attachment.size,
-            width: attachment.width,
-            height: attachment.height,
-            algorithm: attachment.algorithm,
-            keyHex: attachment.keyHex,
-            nonceHex: attachment.nonceHex,
-            sha256: attachment.sha256
-        ) else {
+        guard !attachments.isEmpty,
+              attachments.count <= NostrDirectMessageAttachment.maximumBatchCount else {
             throw NostrDirectMessageError.invalidAttachment
         }
-        try await publishDirectMessageRumor(
+        let drafts = try attachments.map { attachment in
+            guard let validated = NostrDirectMessageAttachment(
+                url: attachment.url,
+                mimeType: attachment.mimeType,
+                filename: attachment.filename,
+                size: attachment.size,
+                width: attachment.width,
+                height: attachment.height,
+                algorithm: attachment.algorithm,
+                keyHex: attachment.keyHex,
+                nonceHex: attachment.nonceHex,
+                sha256: attachment.sha256
+            ) else {
+                throw NostrDirectMessageError.invalidAttachment
+            }
+            return DirectMessageRumorDraft(
+                kind: NostrDirectMessageAttachment.rumorKind,
+                content: validated.url,
+                additionalTags: validated.rumorTags
+            )
+        }
+        try await publishDirectMessageRumorBatch(
             to: recipientValue,
-            kind: NostrDirectMessageAttachment.rumorKind,
-            content: validated.url,
-            additionalTags: validated.rumorTags,
+            drafts: drafts,
             replyToEventID: replyToEventID,
             attachmentComment: comment
         )
     }
 
-    private func publishDirectMessageRumor(
+    private func publishDirectMessageRumorBatch(
         to recipientValue: String,
-        kind: Int,
-        content: String,
-        additionalTags: [[String]],
+        drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
-        attachmentComment: String? = nil
+        attachmentComment: String?
     ) async throws {
+        guard !drafts.isEmpty else { throw NostrDirectMessageError.emptyMessage }
         if let group = snapshot.groupConversation(id: recipientValue) {
             guard !snapshot.hasLeftDirectMessageGroup(group.groupID) else {
                 throw NostrDirectMessageError.leftGroup
             }
-            try await publishGroupRumor(
+            try await publishGroupRumors(
                 group: group,
-                kind: kind,
-                content: content,
-                additionalTags: additionalTags,
+                drafts: drafts,
                 replyToEventID: replyToEventID,
                 attachmentComment: attachmentComment
             )
@@ -2902,28 +2920,26 @@ final class AppModel {
             fallbackRelays.count
         )
 
-        var rumorTags = [["p", recipientHex]] + additionalTags
-        if let replyID = replyToEventID?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased(),
-           replyID.count == 64,
-           (try? Data(hex: replyID)) != nil {
-            rumorTags.append(["e", replyID])
-        }
-
-        let createdAt = currentDirectMessageTimestamp()
+        // Strictly increasing timestamps keep a multi-file batch ordered on
+        // every client; a single draft keeps today's exact wire behavior.
+        let replyTag = validNostrEventID(replyToEventID).map { ["e", $0] }
+        let baseCreatedAt = currentDirectMessageTimestamp()
         let cryptoStartedAt = ProcessInfo.processInfo.systemUptime
         let batch = try await Task.detached(priority: .userInitiated) {
-            let rumor = try NIP17Rumor(
-                publicKey: identity.publicKeyHex,
-                createdAt: createdAt,
-                kind: kind,
-                tags: rumorTags,
-                content: content
-            )
+            let rumors = try drafts.enumerated().map { index, draft in
+                var rumorTags = [["p", recipientHex]] + draft.additionalTags
+                if let replyTag { rumorTags.append(replyTag) }
+                return try NIP17Rumor(
+                    publicKey: identity.publicKeyHex,
+                    createdAt: baseCreatedAt + index,
+                    kind: draft.kind,
+                    tags: rumorTags,
+                    content: draft.content
+                )
+            }
             var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
             routes[recipientHex] = deliveryPlan.recipientRelayURLs
-            return try NIP17OutgoingMessageBatch(rumor: rumor, attachmentComment: attachmentComment,
+            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
                 identity: identity, relayURLsByRecipient: routes)
         }.value
         os_signpost(
@@ -3065,30 +3081,32 @@ final class AppModel {
         }
     }
 
-    private func publishGroupRumor(
+    private func publishGroupRumors(
         group: NostrGroupConversation,
-        kind: Int,
-        content: String,
-        additionalTags: [[String]],
+        drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
-        attachmentComment: String? = nil
+        attachmentComment: String?
     ) async throws {
         let identity = try outboundIdentity()
         guard group.memberPublicKeys.contains(identity.publicKeyHex),
               group.memberPublicKeys.count <= NostrGroupConversation.maximumMemberCount else {
             throw NostrDirectMessageError.invalidGroup
         }
-        var tags = group.memberPublicKeys.map { ["p", $0] }
-        if !group.name.isEmpty { tags.append(["subject", group.name]) }
-        tags.append(contentsOf: additionalTags)
-        if let replyID = validNostrEventID(replyToEventID) { tags.append(["e", replyID]) }
-        let rumor = try NIP17Rumor(
-            publicKey: identity.publicKeyHex,
-            createdAt: currentDirectMessageTimestamp(),
-            kind: kind,
-            tags: tags,
-            content: content
-        )
+        let baseCreatedAt = currentDirectMessageTimestamp()
+        let replyTag = validNostrEventID(replyToEventID).map { ["e", $0] }
+        let rumors = try drafts.enumerated().map { index, draft in
+            var tags = group.memberPublicKeys.map { ["p", $0] }
+            if !group.name.isEmpty { tags.append(["subject", group.name]) }
+            tags.append(contentsOf: draft.additionalTags)
+            if let replyTag { tags.append(replyTag) }
+            return try NIP17Rumor(
+                publicKey: identity.publicKeyHex,
+                createdAt: baseCreatedAt + index,
+                kind: draft.kind,
+                tags: tags,
+                content: draft.content
+            )
+        }
         let relayMap = await groupDeliveryRelays(group: group, identity: identity)
         let recipientRelays = relayMap.values.flatMap { $0 }
         if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
@@ -3103,7 +3121,7 @@ final class AppModel {
         let batch = try await Task.detached(priority: .userInitiated) {
             var routes = relayMap
             routes[identity.publicKeyHex] = senderRelays
-            return try NIP17OutgoingMessageBatch(rumor: rumor, attachmentComment: attachmentComment,
+            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
                 identity: identity, relayURLsByRecipient: routes)
         }.value
         let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)

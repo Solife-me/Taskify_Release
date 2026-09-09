@@ -10,41 +10,58 @@ public struct NIP17OutgoingDelivery: Sendable {
     public let dependsOnEventID: String?
 }
 
-/// Constructs an attachment and its optional text reply together, so callers
-/// can persist the whole send before publishing either message.
+/// Constructs one or more attachments and their optional text reply together,
+/// so callers can persist the whole send before publishing either message.
+/// Multiple files stay one file per kind 15 rumor (NIP-17 has no multi-file
+/// event), wrapped in order so each recipient receives the batch as staged.
 public struct NIP17OutgoingMessageBatch: Sendable {
     public let localMessages: [NostrDirectMessage]
     public let deliveries: [NIP17OutgoingDelivery]
 
     public init(
-        rumor: NIP17Rumor,
+        rumors: [NIP17Rumor],
         attachmentComment: String? = nil,
         identity: NostrIdentity,
         relayURLsByRecipient: [String: [String]]
     ) throws {
-        guard rumor.publicKey == identity.publicKeyHex, rumor.verifyID() else {
+        guard let first = rumors.first else {
             throw NIP17GiftWrapError.invalidRumor
         }
-        let targets = Set(rumor.recipientPublicKeys + [identity.publicKeyHex])
-        guard !rumor.recipientPublicKeys.isEmpty,
+        for rumor in rumors {
+            guard rumor.publicKey == identity.publicKeyHex, rumor.verifyID() else {
+                throw NIP17GiftWrapError.invalidRumor
+            }
+        }
+        let targets = Set(first.recipientPublicKeys + [identity.publicKeyHex])
+        let recipientSet = Set(first.recipientPublicKeys)
+        guard !first.recipientPublicKeys.isEmpty,
               targets.count <= NostrGroupConversation.maximumMemberCount,
               targets == Set(relayURLsByRecipient.keys) else {
             throw NIP17GiftWrapError.wrongRecipient
         }
-        var rumors = [rumor]
+        for rumor in rumors.dropFirst() {
+            guard Set(rumor.recipientPublicKeys) == recipientSet else {
+                throw NIP17GiftWrapError.wrongRecipient
+            }
+        }
+        var wrappedRumors = rumors
         let comment = attachmentComment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !comment.isEmpty {
-            guard NostrDirectMessageAttachment(rumor: rumor) != nil else {
+            guard NostrDirectMessageAttachment(rumor: first) != nil else {
                 throw NIP17GiftWrapError.invalidRumor
             }
             // NIP-17 kind 15 content remains the file URL. The comment is a
-            // separate kind 14 whose e tag names the parent's canonical rumor,
-            // never its recipient-specific gift wrap. Only conversation tags
-            // carry over; file keys and the attachment's own reply target do not.
-            let tags = rumor.tags.filter { $0.first == "p" || $0.first == "subject" }
-                + [["e", rumor.id]]
-            rumors.append(try NIP17Rumor(publicKey: rumor.publicKey,
-                createdAt: rumor.createdAt, kind: NIP17GiftWrap.rumorKind,
+            // separate kind 14 whose e tag names the last file's canonical
+            // rumor, never its recipient-specific gift wrap. Only conversation
+            // tags carry over; file keys and the attachment's own reply target
+            // do not. Sharing the last file's createdAt keeps the single-file
+            // wire behavior unchanged, and the same-second parent is what the
+            // history reparenting uses to keep a caption after every file even
+            // when events arrive out of order.
+            let tags = first.tags.filter { $0.first == "p" || $0.first == "subject" }
+                + [["e", rumors.last!.id]]
+            wrappedRumors.append(try NIP17Rumor(publicKey: first.publicKey,
+                createdAt: rumors.last!.createdAt, kind: NIP17GiftWrap.rumorKind,
                 tags: tags, content: comment))
         }
 
@@ -52,7 +69,7 @@ public struct NIP17OutgoingMessageBatch: Sendable {
         var deliveries: [NIP17OutgoingDelivery] = []
         var previousWraps: [String: String] = [:]
         let allRelays = TaskifyRelayURL.normalizedList(relayURLsByRecipient.values.flatMap { $0 })
-        for item in rumors {
+        for item in wrappedRumors {
             for target in targets.sorted() {
                 guard let publicKey = NostrPublicKey.parse(target) else {
                     throw NIP17GiftWrapError.wrongRecipient
@@ -76,5 +93,15 @@ public struct NIP17OutgoingMessageBatch: Sendable {
         }
         self.localMessages = messages
         self.deliveries = deliveries
+    }
+
+    public init(
+        rumor: NIP17Rumor,
+        attachmentComment: String? = nil,
+        identity: NostrIdentity,
+        relayURLsByRecipient: [String: [String]]
+    ) throws {
+        try self.init(rumors: [rumor], attachmentComment: attachmentComment,
+            identity: identity, relayURLsByRecipient: relayURLsByRecipient)
     }
 }

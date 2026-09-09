@@ -4,6 +4,9 @@ import Foundation
 public struct NostrDirectMessageAttachment: Codable, Equatable, Sendable {
     public static let rumorKind = 15
     public static let algorithm = "aes-gcm"
+    /// One file rides per kind 15 rumor, so a multi-file send is a batch of
+    /// at most this many rumors (plus the caption's kind 14).
+    public static let maximumBatchCount = 10
 
     public var url: String
     public var mimeType: String
