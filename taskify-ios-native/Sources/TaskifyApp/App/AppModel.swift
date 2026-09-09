@@ -53,6 +53,16 @@ enum NostrContactDirectoryError: LocalizedError {
     }
 }
 
+enum ProfilePictureUploadError: LocalizedError {
+    case invalidServer
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidServer: "The configured file server URL is invalid."
+        }
+    }
+}
+
 enum SharedTaskSendError: LocalizedError {
     case taskUnavailable
     case identityUnavailable
@@ -397,6 +407,7 @@ final class AppModel {
         let memberPublicKey: String
         let discoveryRelayURLs: [String]
     }
+    private static let profileOutboxScope = "__taskify-profile__"
     private(set) var snapshot = TaskifySnapshot.empty {
         didSet {
             snapshotLookupCache.invalidate()
@@ -474,6 +485,10 @@ final class AppModel {
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
     private(set) var contactSyncStatus = "Preparing private contact sync"
+    private(set) var ownProfile: NostrContactProfile?
+    private(set) var isLoadingOwnProfile = false
+    private(set) var isPublishingProfile = false
+    private(set) var profilePublishMessage: String?
     private(set) var accountBackupMessage: String?
     private(set) var taskifyEventRSVPsByEventID: [String: [TaskifyEventRSVPResponse]] = [:]
     private(set) var refreshingTaskifyEventRSVPIDs: Set<String> = []
@@ -522,6 +537,9 @@ final class AppModel {
     // Keychain reads are slow syscalls; shared-inbox events arrive in bursts during initial
     // sync and each needs the identity to unwrap its gift wrap, so cache it in memory.
     @ObservationIgnored private var cachedIdentity: NostrIdentity?
+    @ObservationIgnored private var ownProfileEventID: String?
+    @ObservationIgnored private var ownProfileEventContent: String?
+    @ObservationIgnored private var ownProfileLoadTask: Task<Void, Never>?
 
     init(
         store: JSONTaskStore = JSONTaskStore(),
@@ -544,6 +562,7 @@ final class AppModel {
         accountBackupPublishTask?.cancel()
         contactRefreshTask?.cancel()
         sharedInboxProcessingTask?.cancel()
+        ownProfileLoadTask?.cancel()
         deferredStartupTask?.cancel()
     }
 
@@ -898,6 +917,51 @@ final class AppModel {
 
     func nostrContact(publicKey: String) -> NostrContact? {
         snapshotLookupCache.contact(publicKey: publicKey, snapshot: snapshot)
+    }
+
+    // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands). The
+    // published list itself is the signal that a peer is a bot: the chat
+    // composer shows its commands in a Telegram-style "/" menu. The cache is
+    // persisted (UserDefaults) so commands are available instantly at launch.
+    private let botCommandsCache = BotCommandsCache()
+    private var botCommandsInFlight: Set<String> = []
+    /// Bumped whenever a peer's cached commands change, so views reading
+    /// `botCommands(publicKey:)`/`isBot(publicKey:)` re-render.
+    private(set) var botCommandsVersion = 0
+
+    func botCommands(publicKey: String) -> [BotCommand]? {
+        // Touching the version var registers the observation dependency, so
+        // views re-render when a background refresh saves new commands.
+        _ = botCommandsVersion
+        return botCommandsCache.commands(for: publicKey)
+    }
+
+    /// True when the peer is known to be a bot (has a cached commands list).
+    func isBot(publicKey: String) -> Bool {
+        _ = botCommandsVersion
+        return botCommandsCache.commands(for: publicKey) != nil
+    }
+
+    func refreshBotCommands(publicKey: String) async {
+        let key = publicKey.lowercased()
+        guard !botCommandsInFlight.contains(key),
+              let parsed = NostrPublicKey.parse(publicKey)?.hexString,
+              botCommandsCache.shouldRefresh(publicKey: parsed) else { return }
+        botCommandsInFlight.insert(key)
+        defer { botCommandsInFlight.remove(key) }
+        // Resolve the peer's relays like NIP-17 delivery: kind-10050
+        // inbox relays with the app relays as fallback.
+        let relays = await NIP17InboxRelayResolver.resolve(
+            recipientPublicKey: parsed,
+            discoveryRelayURLs: appRelays
+        )
+        guard !relays.isEmpty else { return }
+        guard let commands = await BotCommandFinder.commands(
+            publicKey: parsed,
+            relayURLs: relays
+        ), !commands.isEmpty else { return }
+        botCommandsCache.save(commands, for: parsed)
+        botCommandsVersion += 1
     }
 
     func markDirectMessageThreadRead(peerPublicKey: String) {
@@ -2728,6 +2792,13 @@ final class AppModel {
         )
     }
 
+    /// One rumor's payload before wrapping: its kind, content, and extra tags.
+    private struct DirectMessageRumorDraft: Sendable {
+        let kind: Int
+        let content: String
+        let additionalTags: [[String]]
+    }
+
     func sendDirectMessage(
         to recipientValue: String,
         content: String,
@@ -2735,62 +2806,73 @@ final class AppModel {
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
-        try await publishDirectMessageRumor(
+        try await publishDirectMessageRumorBatch(
             to: recipientValue,
-            kind: NIP17GiftWrap.rumorKind,
-            content: text,
-            additionalTags: [],
-            replyToEventID: replyToEventID
+            drafts: [DirectMessageRumorDraft(
+                kind: NIP17GiftWrap.rumorKind,
+                content: text,
+                additionalTags: []
+            )],
+            replyToEventID: replyToEventID,
+            attachmentComment: nil
         )
     }
 
-    func sendDirectMessageAttachment(
+    /// One file per kind 15 rumor (NIP-17 has no multi-file event), sent as a
+    /// single ordered batch with an optional caption kind 14 after the files.
+    func sendDirectMessageAttachments(
         to recipientValue: String,
-        attachment: NostrDirectMessageAttachment,
+        attachments: [NostrDirectMessageAttachment],
         replyToEventID: String? = nil,
         comment: String? = nil
     ) async throws {
-        guard let validated = NostrDirectMessageAttachment(
-            url: attachment.url,
-            mimeType: attachment.mimeType,
-            filename: attachment.filename,
-            size: attachment.size,
-            width: attachment.width,
-            height: attachment.height,
-            algorithm: attachment.algorithm,
-            keyHex: attachment.keyHex,
-            nonceHex: attachment.nonceHex,
-            sha256: attachment.sha256
-        ) else {
+        guard !attachments.isEmpty,
+              attachments.count <= NostrDirectMessageAttachment.maximumBatchCount else {
             throw NostrDirectMessageError.invalidAttachment
         }
-        try await publishDirectMessageRumor(
+        let drafts = try attachments.map { attachment in
+            guard let validated = NostrDirectMessageAttachment(
+                url: attachment.url,
+                mimeType: attachment.mimeType,
+                filename: attachment.filename,
+                size: attachment.size,
+                width: attachment.width,
+                height: attachment.height,
+                algorithm: attachment.algorithm,
+                keyHex: attachment.keyHex,
+                nonceHex: attachment.nonceHex,
+                sha256: attachment.sha256
+            ) else {
+                throw NostrDirectMessageError.invalidAttachment
+            }
+            return DirectMessageRumorDraft(
+                kind: NostrDirectMessageAttachment.rumorKind,
+                content: validated.url,
+                additionalTags: validated.rumorTags
+            )
+        }
+        try await publishDirectMessageRumorBatch(
             to: recipientValue,
-            kind: NostrDirectMessageAttachment.rumorKind,
-            content: validated.url,
-            additionalTags: validated.rumorTags,
+            drafts: drafts,
             replyToEventID: replyToEventID,
             attachmentComment: comment
         )
     }
 
-    private func publishDirectMessageRumor(
+    private func publishDirectMessageRumorBatch(
         to recipientValue: String,
-        kind: Int,
-        content: String,
-        additionalTags: [[String]],
+        drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
-        attachmentComment: String? = nil
+        attachmentComment: String?
     ) async throws {
+        guard !drafts.isEmpty else { throw NostrDirectMessageError.emptyMessage }
         if let group = snapshot.groupConversation(id: recipientValue) {
             guard !snapshot.hasLeftDirectMessageGroup(group.groupID) else {
                 throw NostrDirectMessageError.leftGroup
             }
-            try await publishGroupRumor(
+            try await publishGroupRumors(
                 group: group,
-                kind: kind,
-                content: content,
-                additionalTags: additionalTags,
+                drafts: drafts,
                 replyToEventID: replyToEventID,
                 attachmentComment: attachmentComment
             )
@@ -2838,28 +2920,26 @@ final class AppModel {
             fallbackRelays.count
         )
 
-        var rumorTags = [["p", recipientHex]] + additionalTags
-        if let replyID = replyToEventID?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased(),
-           replyID.count == 64,
-           (try? Data(hex: replyID)) != nil {
-            rumorTags.append(["e", replyID])
-        }
-
-        let createdAt = currentDirectMessageTimestamp()
+        // Strictly increasing timestamps keep a multi-file batch ordered on
+        // every client; a single draft keeps today's exact wire behavior.
+        let replyTag = validNostrEventID(replyToEventID).map { ["e", $0] }
+        let baseCreatedAt = currentDirectMessageTimestamp()
         let cryptoStartedAt = ProcessInfo.processInfo.systemUptime
         let batch = try await Task.detached(priority: .userInitiated) {
-            let rumor = try NIP17Rumor(
-                publicKey: identity.publicKeyHex,
-                createdAt: createdAt,
-                kind: kind,
-                tags: rumorTags,
-                content: content
-            )
+            let rumors = try drafts.enumerated().map { index, draft in
+                var rumorTags = [["p", recipientHex]] + draft.additionalTags
+                if let replyTag { rumorTags.append(replyTag) }
+                return try NIP17Rumor(
+                    publicKey: identity.publicKeyHex,
+                    createdAt: baseCreatedAt + index,
+                    kind: draft.kind,
+                    tags: rumorTags,
+                    content: draft.content
+                )
+            }
             var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
             routes[recipientHex] = deliveryPlan.recipientRelayURLs
-            return try NIP17OutgoingMessageBatch(rumor: rumor, attachmentComment: attachmentComment,
+            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
                 identity: identity, relayURLsByRecipient: routes)
         }.value
         os_signpost(
@@ -3001,30 +3081,32 @@ final class AppModel {
         }
     }
 
-    private func publishGroupRumor(
+    private func publishGroupRumors(
         group: NostrGroupConversation,
-        kind: Int,
-        content: String,
-        additionalTags: [[String]],
+        drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
-        attachmentComment: String? = nil
+        attachmentComment: String?
     ) async throws {
         let identity = try outboundIdentity()
         guard group.memberPublicKeys.contains(identity.publicKeyHex),
               group.memberPublicKeys.count <= NostrGroupConversation.maximumMemberCount else {
             throw NostrDirectMessageError.invalidGroup
         }
-        var tags = group.memberPublicKeys.map { ["p", $0] }
-        if !group.name.isEmpty { tags.append(["subject", group.name]) }
-        tags.append(contentsOf: additionalTags)
-        if let replyID = validNostrEventID(replyToEventID) { tags.append(["e", replyID]) }
-        let rumor = try NIP17Rumor(
-            publicKey: identity.publicKeyHex,
-            createdAt: currentDirectMessageTimestamp(),
-            kind: kind,
-            tags: tags,
-            content: content
-        )
+        let baseCreatedAt = currentDirectMessageTimestamp()
+        let replyTag = validNostrEventID(replyToEventID).map { ["e", $0] }
+        let rumors = try drafts.enumerated().map { index, draft in
+            var tags = group.memberPublicKeys.map { ["p", $0] }
+            if !group.name.isEmpty { tags.append(["subject", group.name]) }
+            tags.append(contentsOf: draft.additionalTags)
+            if let replyTag { tags.append(replyTag) }
+            return try NIP17Rumor(
+                publicKey: identity.publicKeyHex,
+                createdAt: baseCreatedAt + index,
+                kind: draft.kind,
+                tags: tags,
+                content: draft.content
+            )
+        }
         let relayMap = await groupDeliveryRelays(group: group, identity: identity)
         let recipientRelays = relayMap.values.flatMap { $0 }
         if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
@@ -3039,7 +3121,7 @@ final class AppModel {
         let batch = try await Task.detached(priority: .userInitiated) {
             var routes = relayMap
             routes[identity.publicKeyHex] = senderRelays
-            return try NIP17OutgoingMessageBatch(rumor: rumor, attachmentComment: attachmentComment,
+            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
                 identity: identity, relayURLsByRecipient: routes)
         }.value
         let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
@@ -3331,6 +3413,154 @@ final class AppModel {
         scheduleSave()
         try await publishContacts(identity: identity, createdAt: timestamp)
         contactSyncStatus = "Contacts synced privately"
+    }
+
+    // MARK: - Own profile (My Card)
+
+    /// The user's own contact-style representation for avatars and the chat header: the saved
+    /// directory entry when one exists, otherwise the locally-known profile.
+    var ownContactRepresentation: NostrContact? {
+        guard !identityPublicKey.isEmpty else { return nil }
+        if var stored = nostrContact(publicKey: identityPublicKey) {
+            if let ownProfile { stored.profile = ownProfile }
+            return stored
+        }
+        return NostrContact(publicKeyValue: identityPublicKey, profile: ownProfile)
+    }
+
+    func loadOwnProfileIfNeeded() {
+        Task { await loadOwnProfile() }
+    }
+
+    func loadOwnProfile() async {
+        if let task = ownProfileLoadTask {
+            await task.value
+            return
+        }
+        let account = identityPublicKey
+        guard !account.isEmpty else { return }
+        let relays = TaskifyRelayURL.normalizedList(contactsSyncRelayURLs + appRelayURLs)
+        guard !relays.isEmpty else { return }
+        let previousEventID = ownProfileEventID
+        isLoadingOwnProfile = true
+        let task = Task { @MainActor in
+            defer {
+                if identityPublicKey == account {
+                    isLoadingOwnProfile = false
+                    ownProfileLoadTask = nil
+                }
+            }
+            guard let event = await NostrContactFinder.latestProfileEvent(
+                publicKey: account,
+                relayURLs: relays
+            ), !Task.isCancelled, identityPublicKey == account,
+               ownProfileEventID == previousEventID,
+               let profile = NostrContactProfile.decode(event: event) else { return }
+            ownProfile = profile
+            ownProfileEventID = event.id
+            ownProfileEventContent = event.content
+        }
+        ownProfileLoadTask = task
+        await task.value
+    }
+
+    /// Publishes the edited profile as a NIP-01 kind:0 event and deletes the superseded profile
+    /// event, mirroring the PWA's `publishProfileMetadata` (`taskify-pwa/src/nostr/ProfilePublisher.ts`).
+    func publishOwnProfile(_ draft: NostrProfileDraft) async throws {
+        guard let identity = try identityStore.load() else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
+        let relays = contactsSyncRelayURLs
+        guard !relays.isEmpty else { throw NostrContactDirectoryError.noRelays }
+
+        isPublishingProfile = true
+        profilePublishMessage = nil
+        defer { isPublishingProfile = false }
+
+        // Deleting the superseded event needs its id and content, so learn the current
+        // profile first; the content is merged into the new event so keys other clients
+        // wrote (banner, website, …) survive the edit.
+        if ownProfileEventID == nil {
+            await loadOwnProfile()
+        }
+        guard identityPublicKey == identity.publicKeyHex, !Task.isCancelled else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
+        let previousEventID = ownProfileEventID
+        let createdAt = max(nextNostrTimestamp(), (ownProfile?.eventCreatedAt ?? 0) + 1)
+        let event = try NostrProfileContract.event(
+            draft: draft,
+            previousContent: ownProfileEventContent,
+            identity: identity,
+            createdAt: createdAt
+        )
+        await syncEngine.configure(
+            boards: snapshot.boardsForSync,
+            auxiliaryRelayURLs: TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + contactsSyncRelayURLs),
+            inboxPublicKey: identity.publicKeyHex,
+            inboxRelayURLs: effectiveNIP17InboxRelayURLs
+        )
+        try await syncEngine.publish(
+            event,
+            relayURLs: relays,
+            outboxScope: Self.profileOutboxScope,
+            recordID: "kind-0"
+        )
+        guard identityPublicKey == identity.publicKeyHex else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
+        ownProfileEventID = event.id
+        ownProfileEventContent = event.content
+        ownProfile = NostrContactProfile(
+            name: draft.username,
+            displayName: draft.displayName,
+            username: draft.username,
+            about: draft.about,
+            picture: draft.picture,
+            lud16: draft.lud16,
+            nip05: draft.nip05,
+            eventCreatedAt: createdAt
+        )
+        profilePublishMessage = "Profile published"
+
+        if let previousEventID, previousEventID != event.id {
+            let deletion = try NostrProfileContract.deletionEvent(
+                previousEventID: previousEventID,
+                identity: identity,
+                createdAt: nextNostrTimestamp()
+            )
+            try? await syncEngine.publish(
+                deletion,
+                relayURLs: contactsSyncRelayURLs,
+                outboxScope: Self.profileOutboxScope,
+                recordID: "kind-5-\(previousEventID)"
+            )
+        }
+    }
+
+    /// Uploads a profile picture to the configured file server (plain, unencrypted — the URL
+    /// goes into the public kind:0 content). Mirrors the PWA's `uploadAvatar` NIP-96 path.
+    func uploadProfilePicture(_ imageData: Data, filename: String) async throws -> String {
+        guard let identity = try identityStore.load() else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
+        let entry = TaskifyMediaServerSettings.configuredEntry
+        guard let server = URL(string: entry.url) else {
+            throw ProfilePictureUploadError.invalidServer
+        }
+        if entry.type == .blossom {
+            return try await BlossomClient.upload(
+                imageData,
+                privateKey: identity.privateKey,
+                server: server
+            )
+        }
+        return try await Nip96Client.upload(
+            imageData,
+            filename: filename,
+            privateKey: identity.privateKey,
+            server: server
+        )
     }
 
     func prepareForBackground() async {
@@ -5228,6 +5458,15 @@ final class AppModel {
 #endif
 
     private func applyIdentity(_ identity: NostrIdentity) {
+        if identityPublicKey != identity.publicKeyHex {
+            ownProfileLoadTask?.cancel()
+            ownProfileLoadTask = nil
+            ownProfile = nil
+            ownProfileEventID = nil
+            ownProfileEventContent = nil
+            isLoadingOwnProfile = false
+            profilePublishMessage = nil
+        }
         cachedIdentity = identity
         identityPublicKey = identity.publicKeyHex
         identityNpub = identity.npub

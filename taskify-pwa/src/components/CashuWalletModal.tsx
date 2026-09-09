@@ -104,6 +104,13 @@ import { useWalletFormatters } from "../hooks/wallet/useWalletFormatters";
 import { useAmountKeypadHandlers } from "../hooks/wallet/useAmountKeypadHandlers";
 import { usePaymentRequestFlow } from "../hooks/wallet/usePaymentRequestFlow";
 import { useContactDetail } from "../hooks/wallet/useContactDetail";
+import {
+  fetchBotCommands,
+  loadCachedBotCommands,
+  saveCachedBotCommands,
+  shouldRefreshCachedBotCommands,
+  type BotCommand,
+} from "../lib/botCommands";
 import { useTokenHistoryActions } from "../hooks/wallet/useTokenHistoryActions";
 import { useDmThreadUtils } from "../hooks/wallet/useDmThreadUtils";
 import { useContactPaymentActions } from "../hooks/wallet/useContactPaymentActions";
@@ -1337,6 +1344,42 @@ export default function CashuWalletModal({
       });
     }
   }, [activeThread, activeThreadPendingMessages.length, chatView, isChatPage, open]);
+  // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands): seeded from
+  // the localStorage cache so the "/" menu is instantly available, then
+  // refreshed in the background. The published list itself is the signal
+  // that the peer is a bot (docs/bot-command-lists.md).
+  const [activeBotCommands, setActiveBotCommands] = useState<BotCommand[] | null>(null);
+  const activeBotCommandsPeerRef = useRef<string | null>(null);
+  const botCommandsFetchingRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const peerHex = activeThread && !activeThread.groupId && activeThread.peerPubkey
+      ? activeThread.peerPubkey.toLowerCase()
+      : null;
+    activeBotCommandsPeerRef.current = peerHex;
+    if (!open || !isChatPage || chatView !== "conversation" || !peerHex) {
+      setActiveBotCommands(null);
+      return;
+    }
+    setActiveBotCommands(loadCachedBotCommands(peerHex));
+    if (!shouldRefreshCachedBotCommands(peerHex)) return;
+    if (botCommandsFetchingRef.current.has(peerHex)) return;
+    botCommandsFetchingRef.current.add(peerHex);
+    void (async () => {
+      try {
+        const pool = ensureNostrPool();
+        const relays = await resolveNip17Relays(peerHex, defaultNostrRelays);
+        const { commands } = await fetchBotCommands(pool, relays, peerHex);
+        if (commands.length) {
+          saveCachedBotCommands(peerHex, commands);
+          if (activeBotCommandsPeerRef.current === peerHex) setActiveBotCommands(commands);
+        }
+      } catch {
+        // Offline or unreachable — cached commands (if any) still stand.
+      } finally {
+        botCommandsFetchingRef.current.delete(peerHex);
+      }
+    })();
+  }, [activeThread, chatView, defaultNostrRelays, ensureNostrPool, isChatPage, open, resolveNip17Relays]);
   useEffect(() => {
     if (!scrollToMessageId || chatView !== "conversation") return;
     scrollToMessageIdRef.current = scrollToMessageId;
@@ -7054,6 +7097,34 @@ export default function CashuWalletModal({
                 </div>
               ) : (
                 <div className="chat-compose-stack">
+                  {!activeThread.groupId && activeBotCommands && chatCompose.startsWith("/") && (() => {
+                    const query = chatCompose.slice(1).toLowerCase();
+                    const matched = activeBotCommands.filter((command) => command.name.startsWith(query));
+                    if (!matched.length) return null;
+                    return (
+                      <div className="chat-command-menu" role="listbox" aria-label="Bot commands">
+                        {matched.map((command) => (
+                          <button
+                            key={command.name}
+                            type="button"
+                            className="chat-command-menu__item pressable"
+                            role="option"
+                            aria-selected={false}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setChatCompose(`/${command.name} `);
+                              chatComposeInputRef.current?.focus();
+                            }}
+                          >
+                            <span className="chat-command-menu__name">/{command.name}</span>
+                            {command.description && (
+                              <span className="chat-command-menu__description">{command.description}</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   {replyToMessage && (
                     <div className="chat-reply-banner">
                       <div className="chat-reply-banner__bar" />
@@ -7969,6 +8040,14 @@ export default function CashuWalletModal({
                                   <div className="contact-name-lg" title={detailTitle}>
                                     {truncateContactName(detailTitle, 34)}
                                   </div>
+                                  {(() => {
+                                    const detailBotHex = detailTarget.npub
+                                      ? compressedToRawHex(normalizeNostrPubkey(detailTarget.npub) ?? detailTarget.npub).toLowerCase()
+                                      : "";
+                                    return detailBotHex && loadCachedBotCommands(detailBotHex) ? (
+                                      <span className="contact-bot-badge" title="This peer has published a bot commands list">BOT</span>
+                                    ) : null;
+                                  })()}
                                   {activeContactId === "profile" && profileCard.npub && (
                                     <button
                                       type="button"

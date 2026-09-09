@@ -273,6 +273,23 @@ public actor NostrRelayConnection {
         ])
     }
 
+    public func subscribeToBotCommands(
+        id: String,
+        authorPublicKey: String,
+        limit: Int = 5
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [BotCommandsContract.eventKind],
+                "authors": [authorPublicKey],
+                "#d": [BotCommandsContract.eventDTag],
+                "limit": min(max(1, limit), 20),
+            ] as [String: Any],
+        ])
+    }
+
     public func subscribeToProfiles(
         id: String,
         authorPublicKeys: [String],

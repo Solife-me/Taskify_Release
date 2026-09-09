@@ -31,8 +31,20 @@ public struct NostrContactProfile: Codable, Equatable, Sendable {
     }
 
     public static func decode(event: NostrEvent) -> NostrContactProfile? {
-        guard event.kind == 0, event.verify(),
-              let data = event.content.data(using: .utf8),
+        guard event.kind == 0, event.verify() else { return nil }
+        return decode(content: event.content).map { profile in
+            var decoded = profile
+            decoded.eventCreatedAt = event.createdAt
+            return decoded
+        }
+    }
+
+    /// Parses raw kind:0 content JSON. Accepts the alternate key spellings other clients write —
+    /// `lightning_address` for `lud16` and `image`/`avatar` for `picture` — matching the PWA's
+    /// `parseProfileContent` (`taskify-pwa/src/components/walletModalHelpers.tsx`).
+    public static func decode(content: String?) -> NostrContactProfile? {
+        guard let content,
+              let data = content.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
@@ -50,10 +62,10 @@ public struct NostrContactProfile: Codable, Equatable, Sendable {
             displayName: string("display_name", "displayName"),
             username: string("username"),
             about: string("about"),
-            picture: string("picture"),
-            lud16: string("lud16"),
+            picture: string("picture", "image", "avatar"),
+            lud16: string("lud16", "lightning_address"),
             nip05: string("nip05"),
-            eventCreatedAt: event.createdAt
+            eventCreatedAt: 0
         )
     }
 }
@@ -289,6 +301,35 @@ public enum NostrContactFinder {
             profiles[event.publicKey.lowercased()] = profile
         }
         return profiles
+    }
+
+    /// The author's newest verified kind:0 event, so a profile publish can delete the event it
+    /// replaces (the PWA keeps the same id in `LS_PROFILE_EVENT_IDS`).
+    public static func latestProfileEvent(
+        publicKey: String,
+        relayURLs: [String],
+        timeout: Duration = .seconds(4)
+    ) async -> NostrEvent? {
+        guard let key = NostrPublicKey.parse(publicKey)?.hexString else { return nil }
+        let relays = TaskifyRelayURL.normalizedList(relayURLs)
+        guard !relays.isEmpty else { return nil }
+        let events = await withTaskGroup(of: [NostrEvent].self) { group in
+            for relayURL in relays {
+                group.addTask {
+                    await fetchProfiles(
+                        publicKeys: [key],
+                        relayURL: relayURL,
+                        timeout: timeout
+                    )
+                }
+            }
+            var collected: [NostrEvent] = []
+            for await relayEvents in group { collected.append(contentsOf: relayEvents) }
+            return collected
+        }
+        return events
+            .filter { $0.publicKey.lowercased() == key && $0.verify() }
+            .max { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
 
     private static func fetchPrivateLists(
