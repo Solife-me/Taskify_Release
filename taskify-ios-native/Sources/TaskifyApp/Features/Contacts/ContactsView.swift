@@ -408,14 +408,34 @@ struct NostrContactDetailView: View {
                 nip05Status = .invalid
             }
         }
+        .task(id: contact?.publicKey) {
+            // Reconcile the cached bot commands list when the profile page
+            // opens so the BOT badge reflects the peer's latest publication.
+            guard let contact else { return }
+            await model.refreshBotCommands(publicKey: contact.publicKey)
+        }
     }
 
     private func contactHeader(_ contact: NostrContact) -> some View {
         VStack(spacing: 10) {
             NostrContactAvatar(contact: contact, size: 88)
             VStack(spacing: 5) {
-                Text(contact.displayName)
-                    .font(.title2.bold())
+                HStack(spacing: 8) {
+                    Text(contact.displayName)
+                        .font(.title2.bold())
+                    // A bot is a peer that published a NIP-51 commands list
+                    // (docs/bot-command-lists.md); the list itself is the signal.
+                    if model.isBot(publicKey: contact.publicKey) {
+                        Text("BOT")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(TaskifyTheme.accent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(TaskifyTheme.accent.opacity(0.14), in: Capsule())
+                            .overlay(Capsule().strokeBorder(TaskifyTheme.accent.opacity(0.35)))
+                            .accessibilityLabel("Bot")
+                    }
+                }
                 Text(contact.subtitle)
                     .font(.subheadline)
                     .foregroundStyle(TaskifyTheme.secondaryText)

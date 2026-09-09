@@ -526,6 +526,10 @@ The current version **does not yet include** startupStability.ts. This stabiliza
 - Auth state cached per relay WebSocket connection
 - Failed auth marks relay as auth-failed (not the same as health failure)
 
+### Bot Commands (NIP-51)
+
+Bots in Taskify chat (AI agents with their own Nostr key) advertise their commands via a parameterized replaceable event — kind 30078, d-tag `taskify-bot-commands`, one `["command", "<name>", "<description>"]` tag per command. Clients (PWA and iOS) treat the presence of this exact list as the bot signal: they fetch it when a 1:1 conversation opens (peer kind-10050 relays ∪ discovery relays), cache it locally for instant startup availability, show a BOT badge on the bot's profile page, and surface the commands as a Telegram-style `/` menu in the composer. Wire contract and agent instructions: [docs/bot-command-lists.md](bot-command-lists.md).
+
 ### Event Deduplication
 
 Two-layer deduplication:

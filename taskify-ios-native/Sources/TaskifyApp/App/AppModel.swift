@@ -919,6 +919,51 @@ final class AppModel {
         snapshotLookupCache.contact(publicKey: publicKey, snapshot: snapshot)
     }
 
+    // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands). The
+    // published list itself is the signal that a peer is a bot: the chat
+    // composer shows its commands in a Telegram-style "/" menu. The cache is
+    // persisted (UserDefaults) so commands are available instantly at launch.
+    private let botCommandsCache = BotCommandsCache()
+    private var botCommandsInFlight: Set<String> = []
+    /// Bumped whenever a peer's cached commands change, so views reading
+    /// `botCommands(publicKey:)`/`isBot(publicKey:)` re-render.
+    private(set) var botCommandsVersion = 0
+
+    func botCommands(publicKey: String) -> [BotCommand]? {
+        // Touching the version var registers the observation dependency, so
+        // views re-render when a background refresh saves new commands.
+        _ = botCommandsVersion
+        return botCommandsCache.commands(for: publicKey)
+    }
+
+    /// True when the peer is known to be a bot (has a cached commands list).
+    func isBot(publicKey: String) -> Bool {
+        _ = botCommandsVersion
+        return botCommandsCache.commands(for: publicKey) != nil
+    }
+
+    func refreshBotCommands(publicKey: String) async {
+        let key = publicKey.lowercased()
+        guard !botCommandsInFlight.contains(key),
+              let parsed = NostrPublicKey.parse(publicKey)?.hexString,
+              botCommandsCache.shouldRefresh(publicKey: parsed) else { return }
+        botCommandsInFlight.insert(key)
+        defer { botCommandsInFlight.remove(key) }
+        // Resolve the peer's relays like NIP-17 delivery: kind-10050
+        // inbox relays with the app relays as fallback.
+        let relays = await NIP17InboxRelayResolver.resolve(
+            recipientPublicKey: parsed,
+            discoveryRelayURLs: appRelays
+        )
+        guard !relays.isEmpty else { return }
+        guard let commands = await BotCommandFinder.commands(
+            publicKey: parsed,
+            relayURLs: relays
+        ), !commands.isEmpty else { return }
+        botCommandsCache.save(commands, for: parsed)
+        botCommandsVersion += 1
+    }
+
     func markDirectMessageThreadRead(peerPublicKey: String) {
         var updated = snapshot
         guard updated.markDirectMessageThreadRead(peerPublicKey: peerPublicKey) else { return }
