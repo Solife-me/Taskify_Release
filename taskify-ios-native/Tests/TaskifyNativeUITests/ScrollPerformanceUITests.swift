@@ -577,7 +577,7 @@ final class ScrollPerformanceUITests: XCTestCase {
             "Three relay copies must produce one message")
     }
 
-    func testVariableHeightArrivalsStayVisibleAtMessageLimit() throws {
+    func testVariableHeightArrivalsStayVisibleWithLongHistory() throws {
         let app = chatFixtureApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "400"
         app.launchEnvironment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] = "1"
@@ -597,7 +597,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertTrue(incoming.waitForExistence(timeout: 25))
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: incoming)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed,
-            "Arrivals must settle into view without a manual scroll at the 400-message limit")
+            "Arrivals must settle into view without a manual scroll in a long conversation")
         XCTAssertTrue(app.buttons["chatScrollToBottom"].waitForNonExistence(timeout: 3))
         attach(app, name: "variable-height-arrivals-with-long-draft")
 
@@ -665,8 +665,8 @@ final class ScrollPerformanceUITests: XCTestCase {
     /// Regression test: messages that arrive while the conversation is open are seen by the
     /// user, so leaving the thread must not badge it as unread. The reactive onChange mark
     /// handles arrivals the timeline-count signal catches; the onDisappear mark is the
-    /// guarantee for everything it misses (in-thread search, the 400-message ingest cap
-    /// keeping the count flat, or SwiftUI skipping a mid-scroll update).
+    /// guarantee for everything it misses (in-thread search or SwiftUI skipping a
+    /// transient update while the timeline is settling).
     func testLeavingThreadAfterLiveArrivalShowsNoUnreadBadge() throws {
         let app = chatFixtureApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "100"
@@ -782,9 +782,8 @@ final class ScrollPerformanceUITests: XCTestCase {
     /// is a downward drag (content moves down, history enters from the top). Regression test: a
     /// `simultaneousGesture(DragGesture)` attached to every message bubble races the scroll
     /// view's pan recognizer on each touch-down, making the thread sticky to the point of
-    /// immobility — 40 fast flicks covered fewer than 30 messages of a 300-message thread, while
-    /// without the recognizer 12 flicks covered ~230. The fixture is 300 messages deep so the
-    /// assertion cannot pass on travel alone; only freely gliding scroll reaches message 1.
+    /// immobility. This also verifies that reaching the top loads each earlier 100-message
+    /// page while preserving the reader's position until message 1 is reached.
     func testConversationScrollsFreelyWhenSwipingBackThroughHistory() throws {
         let app = chatFixtureApplication()
         app.launch()

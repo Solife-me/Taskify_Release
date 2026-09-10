@@ -1086,7 +1086,7 @@ public extension TaskifySnapshot {
     @discardableResult
     mutating func ingestDirectMessage(
         _ message: NostrDirectMessage,
-        maximumCount: Int = 400,
+        maximumCount: Int = .max,
         now: Int = Int(Date().timeIntervalSince1970)
     ) -> Bool {
         guard Self.normalizedConversationID(message.peerPublicKey) != nil,

@@ -2518,9 +2518,13 @@ private struct DirectMessageConversationView: View {
     @State private var selectedSearchResultID: String?
     @State private var searchSelectionTask: Task<Void, Never>?
     @State private var timelineScrollTask: Task<Void, Never>?
+    @State private var timelineHistoryLoadTask: Task<Void, Never>?
     @State private var isScrolledAwayFromBottom = false
     @State private var followsLatestMessage = true
     @State private var sentMessageScrollRequest = 0
+    @State private var loadedTimelineItemCount = 100
+    @State private var isLoadingEarlierTimelineItems = false
+    @State private var hasInteractedWithTimeline = false
     @State private var protectsInitialScrollTarget = false
     @State private var isAddingContact = false
     @State private var confirmingConversationDeletion = false
@@ -2588,6 +2592,16 @@ private struct DirectMessageConversationView: View {
 
     private var timeline: [ChatTimelineItem] { presentation.timeline }
     private var structuredSenderName: String? { presentation.structuredSenderName }
+
+    private func visibleTimeline(from completeTimeline: [ChatTimelineItem]) -> [ChatTimelineItem] {
+        guard !isSearchingConversation else { return completeTimeline }
+        var requestedCount = loadedTimelineItemCount
+        if let initialTimelineItemID,
+           let targetIndex = completeTimeline.firstIndex(where: { $0.id == initialTimelineItemID }) {
+            requestedCount = max(requestedCount, completeTimeline.count - targetIndex)
+        }
+        return Array(completeTimeline.suffix(min(requestedCount, completeTimeline.count)))
+    }
 
     private func makePresentation() -> ChatConversationPresentation {
         let sharedTasks = sharedTasks
@@ -2689,7 +2703,10 @@ private struct DirectMessageConversationView: View {
 
     var body: some View {
         let presentation = presentation
-        let currentTimeline = presentation.timeline
+        let completeTimeline = presentation.timeline
+        let currentTimeline = visibleTimeline(from: completeTimeline)
+        let hasEarlierTimelineItems = !isSearchingConversation
+            && currentTimeline.count < completeTimeline.count
         let currentSearchMatches = Set(searchResults.map(\.id))
 
         return ScrollViewReader { proxy in
@@ -2722,6 +2739,13 @@ private struct DirectMessageConversationView: View {
                         .padding(.horizontal, 30)
                         .padding(.top, 70)
                     } else {
+                        if hasEarlierTimelineItems {
+                            earlierTimelineLoader(
+                                completeTimeline: completeTimeline,
+                                currentTimeline: currentTimeline,
+                                proxy: proxy
+                            )
+                        }
                         ForEach(Array(currentTimeline.enumerated()), id: \.element.id) { index, item in
                             // One stable child per timeline item preserves lazy row creation.
                             // A conditional divider beside the bubble makes the child count
@@ -2839,7 +2863,18 @@ private struct DirectMessageConversationView: View {
                 followsLatest: $followsLatestMessage,
                 isAwayFromBottom: $isScrolledAwayFromBottom,
                 allowsFollowing: !isSearchingConversation && !protectsInitialScrollTarget,
-                onInteraction: { timelineScrollTask?.cancel() }
+                canLoadEarlier: hasEarlierTimelineItems,
+                onInteraction: {
+                    hasInteractedWithTimeline = true
+                    timelineScrollTask?.cancel()
+                },
+                onReachedTop: {
+                    loadEarlierTimelineItems(
+                        completeTimeline: completeTimeline,
+                        currentTimeline: currentTimeline,
+                        proxy: proxy
+                    )
+                }
             )
             .overlay(alignment: .bottom) {
                 if isScrolledAwayFromBottom, !currentTimeline.isEmpty {
@@ -2891,7 +2926,7 @@ private struct DirectMessageConversationView: View {
                     )
                 }
             }
-            // The history is capped: an arrival can replace a row without changing the count.
+            // Track the stable newest ID so earlier-page loads do not look like arrivals.
             .onChange(of: currentTimeline.last?.id) { _, _ in
                 if protectsInitialScrollTarget, let initialTimelineItemID {
                     markReadAndScroll(
@@ -2916,7 +2951,6 @@ private struct DirectMessageConversationView: View {
                         shouldSettleAtLatest = !isScrolledAwayFromBottom
                     }
                     if shouldSettleAtLatest {
-                        // The history cap can replace a row without changing the count, and
                         // LazyVStack can revise row heights after the size anchor runs. Settle
                         // the newest stable ID without an overlapping scroll animation.
                         markReadAndScroll(proxy: proxy, animated: false)
@@ -2932,6 +2966,14 @@ private struct DirectMessageConversationView: View {
                 if !followsLatestMessage || isScrolledAwayFromBottom {
                     markReadAndScroll(proxy: proxy, animated: false)
                 }
+            }
+            .onChange(of: completeTimeline.count) { oldCount, newCount in
+                guard newCount > oldCount,
+                      isScrolledAwayFromBottom || !followsLatestMessage else { return }
+                loadedTimelineItemCount = min(
+                    newCount,
+                    loadedTimelineItemCount + (newCount - oldCount)
+                )
             }
         }
         .background(TaskifyAppBackground())
@@ -3032,14 +3074,14 @@ private struct DirectMessageConversationView: View {
         }
         .onDisappear {
             // Leaving the thread reads it through. The reactive onChange mark handles messages
-            // seen arriving, but it can miss: arrivals during in-thread search take the search
-            // branch, and once the message store hits its 400-message cap a new arrival also
-            // drops the oldest, leaving the timeline count — the onChange signal — unchanged.
+            // seen arriving, but it can miss arrivals during in-thread search or a transient
+            // SwiftUI update while the timeline is settling.
             // Anything that reached the snapshot while this view was open was displayed in it,
             // so the list must not badge the thread afterwards.
             model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
             attachmentPreparationTask?.cancel()
             timelineScrollTask?.cancel()
+            timelineHistoryLoadTask?.cancel()
             renderCache.clear()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -3258,6 +3300,65 @@ private struct DirectMessageConversationView: View {
         }
     }
 
+    private func earlierTimelineLoader(
+        completeTimeline: [ChatTimelineItem],
+        currentTimeline: [ChatTimelineItem],
+        proxy: ScrollViewProxy
+    ) -> some View {
+        ZStack {
+            Color.clear
+            if isLoadingEarlierTimelineItems {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(TaskifyTheme.secondaryText)
+                    .accessibilityLabel("Loading earlier messages")
+            }
+        }
+        .frame(height: 24)
+        .id("earlier-messages-\(currentTimeline.first?.id ?? "empty")")
+        .onAppear {
+            if #unavailable(iOS 18.0), hasInteractedWithTimeline {
+                loadEarlierTimelineItems(
+                    completeTimeline: completeTimeline,
+                    currentTimeline: currentTimeline,
+                    proxy: proxy
+                )
+            }
+        }
+    }
+
+    private func loadEarlierTimelineItems(
+        completeTimeline: [ChatTimelineItem],
+        currentTimeline: [ChatTimelineItem],
+        proxy: ScrollViewProxy
+    ) {
+        guard hasInteractedWithTimeline,
+              !isSearchingConversation,
+              !isLoadingEarlierTimelineItems,
+              currentTimeline.count < completeTimeline.count,
+              let previousOldestID = currentTimeline.first?.id else { return }
+
+        isLoadingEarlierTimelineItems = true
+        timelineHistoryLoadTask?.cancel()
+        let nextCount = min(
+            completeTimeline.count,
+            max(loadedTimelineItemCount, currentTimeline.count) + 100
+        )
+        timelineHistoryLoadTask = Task { @MainActor in
+            await Task.yield()
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                loadedTimelineItemCount = nextCount
+            }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo(previousOldestID, anchor: .top)
+            isLoadingEarlierTimelineItems = false
+            timelineHistoryLoadTask = nil
+        }
+    }
+
     private func conversationSearchBar(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
@@ -3330,6 +3431,13 @@ private struct DirectMessageConversationView: View {
     private func closeConversationSearch() {
         searchSelectionTask?.cancel()
         searchSelectionTask = nil
+        if let selectedSearchResultID,
+           let selectedIndex = timeline.firstIndex(where: { $0.id == selectedSearchResultID }) {
+            loadedTimelineItemCount = max(
+                loadedTimelineItemCount,
+                timeline.count - selectedIndex
+            )
+        }
         isSearchingConversation = false
         followsLatestMessage = !isScrolledAwayFromBottom
         searchQuery = ""
@@ -6014,7 +6122,9 @@ private extension View {
         followsLatest: Binding<Bool>,
         isAwayFromBottom: Binding<Bool>,
         allowsFollowing: Bool,
-        onInteraction: @escaping () -> Void
+        canLoadEarlier: Bool,
+        onInteraction: @escaping () -> Void,
+        onReachedTop: @escaping () -> Void
     ) -> some View {
         if #available(iOS 18.0, *) {
             self
@@ -6030,6 +6140,9 @@ private extension View {
                     let isAway = geometry.conversationIsAwayFromBottom
                     if isAwayFromBottom.wrappedValue != isAway {
                         isAwayFromBottom.wrappedValue = isAway
+                    }
+                    if canLoadEarlier, geometry.conversationIsAtTop {
+                        onReachedTop()
                     }
                 }
                 .onScrollPhaseChange { previousPhase, phase, context in
@@ -6050,7 +6163,12 @@ private extension View {
                     }
                 }
         } else {
-            self
+            // iOS 17 has no scroll-phase callback. One recognizer on the scroll container
+            // records deliberate history navigation without adding a recognizer to every row.
+            self.simultaneousGesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { _ in onInteraction() }
+            )
         }
     }
 }
@@ -6061,5 +6179,9 @@ private extension ScrollGeometry {
         // visibleRect includes the content insets. Remove its bottom inset to find
         // the usable viewport edge above the composer, including during keyboard resizing.
         contentSize.height - (visibleRect.maxY - contentInsets.bottom) > 80
+    }
+
+    var conversationIsAtTop: Bool {
+        visibleRect.minY <= contentInsets.top + 24
     }
 }
