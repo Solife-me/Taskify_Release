@@ -2806,6 +2806,23 @@ final class AppModel {
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
+#if DEBUG
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1",
+           ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
+            // Exercise local insertion before composer clearing without publishing test data.
+            let eventID = UUID().uuidString
+            if snapshot.ingestDirectMessage(NostrDirectMessage(
+                rumorEventID: eventID, wrapEventID: eventID,
+                peerPublicKey: recipientValue, senderPublicKey: identityPublicKey,
+                content: text, createdAt: currentDirectMessageTimestamp(), isIncoming: false,
+                replyToEventID: replyToEventID
+            )) {
+                scheduleSave()
+            }
+            await Task.yield()
+            return
+        }
+#endif
         try await publishDirectMessageRumorBatch(
             to: recipientValue,
             drafts: [DirectMessageRumorDraft(
@@ -5435,9 +5452,19 @@ final class AppModel {
     /// model redundant relays; no fixture message is published or sent to an external service.
     private func receiveChatUITestMessagesIfRequested(peer: String) async {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_ARRIVALS"] == "1",
-              let identity = cachedIdentity,
               !snapshot.directMessageHistory.contains(where: { $0.content == "Live fixture message 3" }) else { return }
         do {
+            // Conversation setup and identity restoration race during repeated UI-test launches.
+            // Wait briefly instead of silently skipping the requested arrival fixture.
+            var restoredIdentity = cachedIdentity
+            for _ in 0..<50 where restoredIdentity == nil {
+                try await Task.sleep(for: .milliseconds(100))
+                restoredIdentity = cachedIdentity
+            }
+            guard let identity = restoredIdentity else {
+                errorMessage = "Could not prepare incoming chat test messages."
+                return
+            }
             let delay = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_ARRIVAL_DELAY"]
                 .flatMap(Double.init) ?? 3
             let variableHeights = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] == "1"
