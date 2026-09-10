@@ -7,8 +7,11 @@ import {
   genericWatchDMPayload,
 } from '../src/apns.js'
 
-test('APNs payload is a generic alert without Nostr metadata', () => {
-  const payload = genericDMPayload()
+const previewURL = `https://push.solife.me/v1/previews/${'A'.repeat(43)}`
+const topics = { topic: 'solife.me.Taskify.Native', watchTopic: 'solife.me.Taskify.Native.watchkitapp' }
+
+test('iPhone APNs payload is a generic alert carrying only an opaque preview URL', () => {
+  const payload = genericDMPayload(previewURL)
   assert.deepEqual(payload, {
     aps: {
       alert: {
@@ -17,8 +20,9 @@ test('APNs payload is a generic alert without Nostr metadata', () => {
       },
       sound: 'default',
       'content-available': 1,
+      'mutable-content': 1,
     },
-    taskify: { type: 'dm-preview' },
+    taskify: { type: 'dm-preview', previewURL },
   })
   const encoded = JSON.stringify(payload)
   for (const forbidden of ['payment', 'pubkey', 'sender', 'recipient', 'event', 'ciphertext']) {
@@ -26,21 +30,33 @@ test('APNs payload is a generic alert without Nostr metadata', () => {
   }
 })
 
-test('Watch and iPhone APNs payloads are identical metadata-free alerts', () => {
-  const payload = genericWatchDMPayload()
-  assert.deepEqual(payload, genericDMPayload())
-  const encoded = JSON.stringify(payload)
-  assert.doesNotMatch(encoded, /previewURL|sender|recipient|pubkey|ciphertext|groupID/i)
+test('iPhone APNs payload without a preview token is the plain generic alert', () => {
+  assert.deepEqual(genericDMPayload(), genericWatchDMPayload())
+  assert.deepEqual(genericDMPayload(null), genericWatchDMPayload())
+})
+
+test('Watch APNs payload is a metadata-free generic alert', () => {
+  const encoded = JSON.stringify(genericWatchDMPayload())
+  assert.doesNotMatch(encoded, /previewURL|mutable-content|sender|recipient|pubkey|ciphertext|groupID/i)
   assert.doesNotMatch(encoded, /https?:\/\//i)
 })
 
-test('Watch APNs delivery uses its own topic with alert priority', () => {
-  const profile = apnsDeliveryProfile(
-    { platform: 'watchos' },
-    { topic: 'solife.me.Taskify.Native', watchTopic: 'solife.me.Taskify.Native.watchkitapp' },
+test('iPhone APNs delivery carries the preview URL for the notification service extension', () => {
+  assert.deepEqual(apnsDeliveryProfile({ platform: 'ios' }, { ...topics, previewURL }), {
+    payload: genericDMPayload(previewURL),
+    topic: 'solife.me.Taskify.Native',
+    pushType: 'alert',
+    priority: '10',
+  })
+  assert.deepEqual(
+    apnsDeliveryProfile({}, { ...topics, previewURL }).payload,
+    genericDMPayload(previewURL),
   )
-  assert.deepEqual(profile, {
-    payload: genericDMPayload(),
+})
+
+test('Watch APNs delivery uses its own topic and never carries a preview URL', () => {
+  assert.deepEqual(apnsDeliveryProfile({ platform: 'watchos' }, { ...topics, previewURL }), {
+    payload: genericWatchDMPayload(),
     topic: 'solife.me.Taskify.Native.watchkitapp',
     pushType: 'alert',
     priority: '10',

@@ -78,24 +78,31 @@ public enum DMPushNotificationPresentation: Equatable, Sendable {
 }
 
 /// Converts an already decrypted NIP-17 rumor into notification text. The relay and APNs never
-/// receive this result. It remains available for a future notification service extension and for
-/// on-device activity presentation.
+/// receive this result. The Notification Service Extension uses it to rewrite the generic APNs
+/// alert; `nil` means the extension leaves that generic alert unchanged. Blocked senders and muted
+/// or left group conversations never get a preview, because the extension cannot hide their alert.
 public enum DMPushNotificationPreviewPolicy {
     public static func presentation(
         for decrypted: NIP17DecryptedRumor,
         identityPublicKey: String,
-        contacts: [NostrContact],
+        snapshot: TaskifySnapshot,
         selection: DMPushNotificationSelection
     ) -> DMPushNotificationPresentation? {
         guard selection.allows(.message) else { return nil }
         let rumor = decrypted.rumor
         let identity = identityPublicKey.lowercased()
-        guard rumor.publicKey.lowercased() != identity else { return nil }
+        guard rumor.publicKey.lowercased() != identity,
+              !snapshot.isDirectMessagePeerBlocked(rumor.publicKey) else { return nil }
+        if let group = NostrGroupConversation(rumor: rumor, identityPublicKey: identity),
+           snapshot.isDirectMessageGroupMuted(group.groupID)
+            || snapshot.hasLeftDirectMessageGroup(group.groupID) {
+            return nil
+        }
         guard CashuPaymentRequestContract.extractReceivableToken(from: rumor.content) == nil else {
             return nil
         }
 
-        let sender = senderLabel(publicKey: rumor.publicKey, contacts: contacts)
+        let sender = senderLabel(publicKey: rumor.publicKey, contacts: snapshot.contacts ?? [])
         let body: String
         if let envelope = TaskifyShareEnvelope.decode(content: rumor.content) {
             body = shareDescription(envelope.item)

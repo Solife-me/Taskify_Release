@@ -57,7 +57,7 @@ The implementation requires NIP-42. Taskify answers the relay challenge, retries
 - Every request carries a signed NIP-98 kind-27235 event bound to the exact URL, HTTP method, and SHA-256 payload hash. Events are fresh and one-use.
 - Tokens are namespaced by authenticated Nostr public key and installation ID. Moving an installation or token removes its stale association.
 - Registrations are bounded to 10 installations per account and 100,000 total so authenticated key generation cannot grow the service state without limit.
-- APNs uses token authentication with ES256, `apns-push-type: alert`, priority `10`, `mutable-content: 1`, and `content-available: 1`. Each delivery has its own preview token and is not collapsed with a different encrypted event.
+- APNs uses token authentication with ES256, `apns-push-type: alert`, priority `10`, and `content-available: 1`. iPhone deliveries add `mutable-content: 1` and their own preview URL and are not collapsed with a different encrypted event. Watch deliveries carry neither, because watchOS has no service extension to use them.
 - Invalid APNs tokens are removed. Temporary APNs failures are persisted and retried with bounded exponential backoff.
 - The service extension creates rich message/activity previews locally after decryption. It supports ordinary messages, attachments, reactions, task assignments and shares, contact shares, calendar invitations, assignment responses, board invitations, and group subject changes. Cached contacts use their display name; an uncached contact appears as `Unknown sender` with a shortened npub.
 - Message previews show the first three non-empty lines, bounded to 240 characters. The normal title is `New Message`; activity-specific titles include forms such as `Reacted 👍`, `New task assignment`, and `New invitation`.
@@ -66,7 +66,9 @@ The implementation requires NIP-42. Taskify answers the relay challenge, retries
 
 The generic APNs alert can be replaced by the service extension without launching the main app. Payment redemption still depends on best-effort background app execution; if iOS withholds it, Taskify finishes redemption the next time the app runs. A force-quit app is not relaunched in the background. The generic fallback reveals no encrypted-event category.
 
-Suppressing decrypted but unselected categories and suppressing an unverified payment alert use Apple's Notification Filtering entitlement (`com.apple.developer.usernotifications.filtering`) on the Notification Service Extension. Apple must approve that managed capability for the extension App ID before an App Store or TestFlight signing profile can include it. App Groups and the shared Keychain Access Group must also be enabled for both the app and extension provisioning setup.
+The Notification Service Extension ships without Apple's managed Notification Filtering entitlement (`com.apple.developer.usernotifications.filtering`). Hiding a remote notification requires that entitlement, so the extension never hands back empty content: payment gift wraps, categories the user did not select, blocked senders, muted or left group conversations, and events it cannot fetch or decrypt within the extension's time limit keep the unchanged generic alert. Payments therefore show the generic alert followed by the verified `Payment Received` notification. App Groups and the shared Keychain Access Group must be enabled for both the app and extension provisioning setup.
+
+When Apple approves the entitlement for `solife.me.Taskify.Native.NotificationService`, add it to `TaskifyNotificationService.entitlements` and make the extension hand back empty `UNNotificationContent` for those arrivals instead of the generic alert. The push relay must send `apns-push-type: alert` for suppression to work.
 
 ## Multi-device and replaceable-event safety
 

@@ -7,7 +7,7 @@ metadata-free generic APNs alert when a new recipient copy arrives.
 The independent Apple Watch client uses the same encrypted inbox through a narrow NIP-98 HTTPS
 gateway. The Watch creates and signs every event, retrieves public kind `10050` preferences
 through HTTPS, verifies them locally, and supplies the exact relay targets. The gateway performs
-bounded public lookups but never selects or adds delivery targets. watchOS receives the same metadata-free generic alert as iOS plus a
+bounded public lookups but never selects or adds delivery targets. watchOS receives a metadata-free generic alert plus a
 background refresh opportunity, then decrypts the inbox locally.
 
 For task and board sync, the Watch sends a short-lived, board-key-signed access proof for each
@@ -18,9 +18,11 @@ rest of any upstream relay. The Watch verifies signatures and decrypts all board
 locally. If this gateway is unavailable, the Watch retries through `https://taskify.solife.me`.
 
 The relay cannot decrypt the gift wrap. It sends only a generic alert; the app fetches and unwraps
-the message locally. Rich notification previews remain deferred until a notification extension is
-shipped, so encrypted category and per-conversation mute choices cannot suppress the generic remote
-arrival alert. Payment notifications are created only after the app successfully redeems the Cashu token,
+the message locally. iPhone alerts also carry `mutable-content` and a random, 15-minute preview URL
+so the iOS Notification Service Extension can fetch the encrypted gift wrap, decrypt it on the
+device, and replace the generic text with a rich preview. The extension does not use Apple's
+Notification Filtering entitlement, so encrypted category, block, and per-conversation mute choices
+cannot suppress the remote arrival alert; they leave it generic instead. Payment notifications are created only after the app successfully redeems the Cashu token,
 so `Payment Received` never reflects an unverified claimed amount. Device registration
 uses a NIP-98 request signed by the user's Nostr identity. Gift-wrap reads and writes require
 NIP-42 authentication; kind `10050` inbox preferences remain publicly discoverable as NIP-17
@@ -121,6 +123,7 @@ Never commit an APNs `.p8` key. On StartOS, use the **Configure Apple Push** act
 entered by pasting the complete `.p8` contents into the masked field. It is stored mode `0600` in
 the encrypted service volume and included in StartOS backups.
 
-The iOS Notification Service Extension needs Apple's managed Notification Filtering entitlement
-to suppress decrypted categories the user did not select and to hide payment gift wraps until
-redemption succeeds.
+The iOS Notification Service Extension ships without Apple's managed Notification Filtering
+entitlement, so decrypted categories the user did not select and payment gift wraps keep the
+generic alert. Adding the entitlement later lets the extension hide them instead; suppression
+requires the `apns-push-type: alert` header this relay already sends.
