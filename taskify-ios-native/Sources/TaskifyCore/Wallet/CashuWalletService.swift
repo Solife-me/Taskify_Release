@@ -698,8 +698,18 @@ public struct CashuLightningReceiveQuote: Identifiable, Codable, Equatable, Send
         return expiresAt <= date
     }
 
+    /// How long an unpaid quote whose mint never reported an expiry stays eligible for the
+    /// receive monitor. Lightning invoices effectively always expire; without this bound such
+    /// a quote pinned the wallet's polling loop for the whole foreground session.
+    private static let unpaidWithoutExpiryRetention: TimeInterval = 24 * 60 * 60
+
     public func isOutstanding(at date: Date = Date()) -> Bool {
-        state != .issued && state != .expired && !isExpired(at: date)
+        guard state != .issued, state != .expired else { return false }
+        if state == .unpaid, expiresAt == nil,
+           date.timeIntervalSince(createdAt) > Self.unpaidWithoutExpiryRetention {
+            return false
+        }
+        return !isExpired(at: date)
     }
 }
 

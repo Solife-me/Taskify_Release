@@ -1,10 +1,10 @@
 import { IMPOSSIBLE, VersionInfo } from '@start9labs/start-sdk'
 
 export const current = VersionInfo.of({
-  version: '0.4.1:2',
+  version: '0.4.1:9',
   releaseNotes: {
     en_US:
-      'Adds privacy-preserving rich notification previews. Taskify decrypts messages and activity on the iPhone, while verified ecash receipts show their redeemed amount and open Wallet.',
+      'Speeds up Watch chat delivery: the gateway now resolves recipient inbox-relay preferences for the Watch, can respond before all relay forwards complete while continuing them in the background, and no longer delays publishes with a fixed authentication grace period.',
   },
   migrations: {
     up: async () => {},

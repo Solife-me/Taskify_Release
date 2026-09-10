@@ -78,7 +78,20 @@ taskify upcoming [--days <n>] [--board <name>]
 taskify board list
 taskify board columns [<board>]
 taskify agent add <natural-language description>   # forwards text to configured AI backend
+taskify bot publish-commands <commands.json>   # publish your NIP-51 chat command list
+taskify bot show-commands [npub]               # verify a published command list
 ```
+
+### Bot commands list (Taskify chat)
+
+Publish the NIP-51 commands list so Taskify chat users see your commands in a Telegram-style `/` menu (full contract: [docs/bot-command-lists.md](../../../docs/bot-command-lists.md)):
+
+```bash
+# commands.json = [{"name":"start","description":"Begin setup"}, ...]
+taskify bot publish-commands commands.json    # publish/replace your list
+```
+
+Rules: names are 1–32 chars of `[a-z0-9_]` (no leading slash), descriptions one line ≤ 100 chars, max 100 commands, and the list must contain no user data or secrets — it is a public event.
 
 ## Key behaviours
 

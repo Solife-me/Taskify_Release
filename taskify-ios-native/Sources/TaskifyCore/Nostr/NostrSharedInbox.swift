@@ -347,8 +347,16 @@ public struct SharedContactInboxItem: Identifiable, Codable, Equatable, Sendable
     public var sender: SharedInboxSender
     public var contact: SharedContactDelivery
     public var receivedAt: Date
+    /// Present for contact cards authored by this account. Incoming cards from older and current
+    /// snapshots omit it, so the optional also keeps persisted snapshots backward compatible.
+    public var recipientPublicKey: String?
     public var status: SharedInboxItemStatus
     public var respondedAt: Date?
+
+    public var isIncoming: Bool { recipientPublicKey == nil }
+    public var conversationPublicKey: String {
+        recipientPublicKey ?? sender.publicKey.lowercased()
+    }
 
     public init(
         wrapEventID: String,
@@ -356,6 +364,7 @@ public struct SharedContactInboxItem: Identifiable, Codable, Equatable, Sendable
         sender: SharedInboxSender,
         contact: SharedContactDelivery,
         receivedAt: Date,
+        recipientPublicKey: String? = nil,
         status: SharedInboxItemStatus = .pending,
         respondedAt: Date? = nil
     ) {
@@ -364,6 +373,10 @@ public struct SharedContactInboxItem: Identifiable, Codable, Equatable, Sendable
         self.sender = sender
         self.contact = contact
         self.receivedAt = receivedAt
+        let recipient = recipientPublicKey?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self.recipientPublicKey = recipient?.isEmpty == false ? recipient : nil
         self.status = status
         self.respondedAt = respondedAt
     }
@@ -871,10 +884,26 @@ public struct TaskifyEvent: Identifiable, Codable, Equatable, Sendable {
     }
 
     static func isoDate(_ value: String) -> Date? {
+        TaskifyEventDateParser.shared.parse(value)
+    }
+}
+
+/// Event dates are read repeatedly while Upcoming filters and renders its rows.
+/// Reuse formatters without changing their options or sharing them concurrently.
+private final class TaskifyEventDateParser: @unchecked Sendable {
+    static let shared = TaskifyEventDateParser()
+    private let lock = NSLock()
+    private let seconds = ISO8601DateFormatter()
+    private let fractionalSeconds: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: value) { return date }
         formatter.formatOptions.insert(.withFractionalSeconds)
-        return formatter.date(from: value)
+        return formatter
+    }()
+
+    func parse(_ value: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return seconds.date(from: value) ?? fractionalSeconds.date(from: value)
     }
 }
 
@@ -2035,7 +2064,7 @@ public enum NIP17GiftWrap {
             publicKey: wrapPublicKey
         )
         guard let seal = try? JSONDecoder().decode(NostrEvent.self, from: sealData),
-              seal.kind == sealKind,
+              seal.kind == sealKind, seal.tags.isEmpty,
               seal.verify(),
               let senderPublicKey = try? Data(hex: seal.publicKey) else {
             throw NIP17GiftWrapError.invalidSeal
@@ -2045,7 +2074,9 @@ public enum NIP17GiftWrap {
             privateKey: recipient.privateKey,
             publicKey: senderPublicKey
         )
-        guard let rumor = try? JSONDecoder().decode(NIP17Rumor.self, from: rumorData),
+        guard let rumorObject = try? JSONSerialization.jsonObject(with: rumorData) as? [String: Any],
+              rumorObject["sig"] == nil,
+              let rumor = try? JSONDecoder().decode(NIP17Rumor.self, from: rumorData),
               rumor.publicKey.lowercased() == seal.publicKey.lowercased(),
               rumor.verifyID() else {
             throw NIP17GiftWrapError.invalidRumor

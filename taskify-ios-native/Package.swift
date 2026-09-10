@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "TaskifyWatchShared", targets: ["TaskifyWatchShared"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/krzyzanowskim/CryptoSwift.git", exact: "1.10.0"),
         .package(
             url: "https://github.com/21-DOT-DEV/swift-secp256k1.git",
             exact: "0.23.2"
@@ -28,10 +29,12 @@ let package = Package(
         ),
     ],
     targets: [
+        .target(name: "TaskifyFileCipher", dependencies: [.product(name: "CryptoSwift", package: "CryptoSwift")]),
         .target(
             name: "TaskifyCore",
             dependencies: [
                 "TaskifyWatchShared",
+                "TaskifyFileCipher",
                 .product(name: "P256K", package: "swift-secp256k1"),
                 .product(name: "Cdk", package: "cdk-swift"),
                 .product(name: "URKit", package: "URKit"),
@@ -49,6 +52,25 @@ let package = Package(
             name: "TaskifyCoreTests",
             dependencies: ["TaskifyCore", "TaskifyWatchShared"],
             path: "Tests/TaskifyCoreTests"
+        ),
+        // Compile the Watch transport, store, and image cache for deterministic runtime
+        // tests without requiring a paired Watch or changing the Xcode app target.
+        .target(
+            name: "TaskifyWatchChatRuntime",
+            dependencies: ["TaskifyWatchShared"],
+            path: "Sources/TaskifyWatchApp",
+            exclude: [
+                "Info.plist", "TaskifyWatchApp.swift", "TaskifyWatchAppModel.swift",
+                "TaskifyWatchRootView.swift", "TaskifyWatchChatView.swift",
+                "TaskifyWatchIndependentClient.swift",
+            ],
+            sources: ["TaskifyWatchChatClient.swift", "TaskifyWatchChatStore.swift", "TaskifyWatchAvatarLoader.swift",
+                      "TaskifyWatchPhotoLoader.swift", "TaskifyWatchViewCache.swift", "TaskifyWatchMarkdownCache.swift"]
+        ),
+        .testTarget(
+            name: "TaskifyWatchChatRuntimeTests",
+            dependencies: ["TaskifyWatchChatRuntime", "TaskifyWatchShared"],
+            path: "Tests/TaskifyWatchChatRuntimeTests"
         ),
     ]
 )

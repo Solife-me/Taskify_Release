@@ -113,6 +113,18 @@ The CLI never silently picks among multiple boards or lists. Compound boards can
 
 Task creation and updates retain the richer Taskify fields used by the apps, including subtasks, recurrence, reminders, assignees, encrypted attachments, due time/time zone, and hidden-until time. Run `taskify <command> --help` for the complete option list.
 
+### Bot commands (Taskify chat)
+
+An agent that chats with users over Taskify DMs can advertise its commands so the mobile/web apps show a Telegram-style `/` menu. Publish the NIP-51 list with:
+
+```bash
+taskify bot publish-commands commands.json   # array of {"name","description"} objects
+taskify bot show-commands                    # verify your published list
+taskify bot show-commands npub1...           # inspect another bot's list
+```
+
+Command names are 1–32 chars of `[a-z0-9_]` (no leading slash), descriptions are one line up to 100 chars, and at most 100 commands are allowed. The published event is public — it must contain only command names and descriptions, never user data or secrets. See [docs/bot-command-lists.md](../docs/bot-command-lists.md) for the full wire contract.
+
 ## JSON contract
 
 Successful core commands write exactly one JSON object to stdout:

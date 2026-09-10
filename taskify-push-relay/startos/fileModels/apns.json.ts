@@ -6,6 +6,7 @@ const shape = z.object({
   keyID: z.string(),
   privateKey: z.string(),
   topic: z.string(),
+  watchTopic: z.string().optional(),
 })
 
 export type APNsConfiguration = z.infer<typeof shape>

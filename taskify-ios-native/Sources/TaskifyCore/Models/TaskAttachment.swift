@@ -137,7 +137,7 @@ public enum TaskAttachmentCrypto {
 }
 
 public enum TaskDocumentContract {
-    public static let maximumUploadBytes = 50 * 1_024 * 1_024
+    public static let maximumUploadBytes = AttachmentFiles.maximumBytes
 
     private static let extensionKinds: [String: String] = [
         "pdf": "pdf",
@@ -153,6 +153,8 @@ public enum TaskDocumentContract {
         "jpeg": "jpeg",
         "webp": "webp",
         "gif": "gif",
+        "heic": "heic",
+        "heif": "heif",
         "mp3": "mp3",
         "aac": "aac",
         "m4a": "m4a",
@@ -178,6 +180,8 @@ public enum TaskDocumentContract {
         "image/jpg": "jpg",
         "image/webp": "webp",
         "image/gif": "gif",
+        "image/heic": "heic",
+        "image/heif": "heif",
         "audio/mpeg": "mp3",
         "audio/mp3": "mp3",
         "audio/aac": "aac",
@@ -206,6 +210,8 @@ public enum TaskDocumentContract {
         "jpeg": "image/jpeg",
         "webp": "image/webp",
         "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
         "mp3": "audio/mpeg",
         "aac": "audio/aac",
         "m4a": "audio/mp4",

@@ -1,10 +1,13 @@
+import CryptoKit
 import ImageIO
 import PhotosUI
 import QuickLook
 import SwiftUI
 import TaskifyCore
+import TaskifyWatchShared
 import UIKit
 import UniformTypeIdentifiers
+import VisionKit
 
 private struct ChatConversationRoute: Hashable {
     let peerPublicKey: String
@@ -44,7 +47,9 @@ struct ContactsView: View {
 
     private var ownContact: NostrContact? {
         guard !model.identityPublicKey.isEmpty else { return nil }
-        return model.nostrContact(publicKey: model.identityPublicKey)
+        // Falls back to the published profile so the header avatar shows your picture and name
+        // even before you appear in your own contact directory.
+        return model.nostrContact(publicKey: model.identityPublicKey) ?? model.ownContactRepresentation
     }
 
     private var activeThreads: [NostrDirectMessageThread] {
@@ -161,6 +166,10 @@ struct ContactsView: View {
         )
         let messageSearchResults = messageSearchResults(in: activeThreads)
         let strangerUnreadCount = strangerUnreadCount(in: strangerThreads)
+        let chatRows = NostrChatListItem.rows(
+            threads: filteredThreads,
+            strangerThreads: searchText.isEmpty && !showingStrangers ? strangerThreads : []
+        )
 
         return NavigationStack(path: $navigationPath) {
             VStack(alignment: .leading, spacing: 0) {
@@ -193,21 +202,6 @@ struct ContactsView: View {
                     }
                 } else {
                     List {
-                        if searchText.isEmpty, !showingStrangers, !strangerThreads.isEmpty {
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.2)) { showingStrangers = true }
-                            } label: {
-                                StrangerInboxRow(
-                                    threads: strangerThreads,
-                                    unreadCount: strangerUnreadCount
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
-                        }
-
                         if !messageSearchResults.isEmpty {
                             Section {
                                 ForEach(messageSearchResults) { result in
@@ -231,50 +225,66 @@ struct ContactsView: View {
                             }
                         }
 
-                        ForEach(filteredThreads) { thread in
-                            NavigationLink(value: ChatConversationRoute(
-                                peerPublicKey: thread.peerPublicKey
-                            )) {
-                                DirectMessageThreadRow(
-                                    thread: thread,
-                                    contact: thread.peerPublicKey == model.identityPublicKey
-                                        ? ownContact
-                                        : model.nostrContact(publicKey: thread.peerPublicKey),
-                                    group: model.groupConversation(id: thread.peerPublicKey),
-                                    isSelf: thread.peerPublicKey == model.identityPublicKey,
-                                    isMuted: model.isDirectMessageGroupMuted(thread.peerPublicKey),
-                                    isBlocked: model.isDirectMessagePeerBlocked(thread.peerPublicKey)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
-                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        ForEach(chatRows) { row in
+                            switch row {
+                            case .strangers:
                                 Button {
-                                    archive(thread)
+                                    withAnimation(.easeInOut(duration: 0.2)) { showingStrangers = true }
                                 } label: {
-                                    Label("Archive", systemImage: "archivebox")
+                                    StrangerInboxRow(
+                                        threads: strangerThreads,
+                                        unreadCount: strangerUnreadCount
+                                    )
                                 }
-                                .tint(.indigo)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
-                                    threadPendingDeletion = thread
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                                .buttonStyle(.plain)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                            case .thread(let thread):
+                                NavigationLink(value: ChatConversationRoute(
+                                    peerPublicKey: thread.peerPublicKey
+                                )) {
+                                    DirectMessageThreadRow(
+                                        thread: thread,
+                                        contact: thread.peerPublicKey == model.identityPublicKey
+                                            ? ownContact
+                                            : model.nostrContact(publicKey: thread.peerPublicKey),
+                                        group: model.groupConversation(id: thread.peerPublicKey),
+                                        isSelf: thread.peerPublicKey == model.identityPublicKey,
+                                        isMuted: model.isDirectMessageGroupMuted(thread.peerPublicKey),
+                                        isBlocked: model.isDirectMessagePeerBlocked(thread.peerPublicKey)
+                                    )
                                 }
-                            }
-                            .contextMenu {
-                                Button {
-                                    archive(thread)
-                                } label: {
-                                    Label("Archive Conversation", systemImage: "archivebox")
+                                .buttonStyle(.plain)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                    Button {
+                                        archive(thread)
+                                    } label: {
+                                        Label("Archive", systemImage: "archivebox")
+                                    }
+                                    .tint(.indigo)
                                 }
-                                Button(role: .destructive) {
-                                    threadPendingDeletion = thread
-                                } label: {
-                                    Label("Delete Conversation", systemImage: "trash")
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        threadPendingDeletion = thread
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                                .contextMenu {
+                                    Button {
+                                        archive(thread)
+                                    } label: {
+                                        Label("Archive Conversation", systemImage: "archivebox")
+                                    }
+                                    Button(role: .destructive) {
+                                        threadPendingDeletion = thread
+                                    } label: {
+                                        Label("Delete Conversation", systemImage: "trash")
+                                    }
                                 }
                             }
                         }
@@ -499,7 +509,9 @@ private struct StrangerInboxRow: View {
         }
         if Int(thread.latestSharedContact?.receivedAt.timeIntervalSince1970 ?? 0) == thread.latestActivityTimestamp,
            let contact = thread.latestSharedContact {
-            return "Shared contact: \(contact.contact.primaryName)"
+            return contact.isIncoming
+                ? "Shared contact: \(contact.contact.primaryName)"
+                : "You shared: \(contact.contact.primaryName)"
         }
         if Int(thread.latestSharedTask?.receivedAt.timeIntervalSince1970 ?? 0) == thread.latestActivityTimestamp,
            let task = thread.latestSharedTask {
@@ -613,10 +625,14 @@ private struct DirectMessageThreadRow: View {
         }
         if let item = thread.latestSharedContact {
             candidates.append(ThreadStructuredPreview(
-                text: item.contact.primaryName,
+                text: item.isIncoming
+                    ? item.contact.primaryName
+                    : "You: \(item.contact.primaryName)",
                 systemImage: "person.crop.circle.badge.plus",
                 timestamp: Int(item.receivedAt.timeIntervalSince1970),
-                senderName: item.sender.displayName
+                senderName: item.isIncoming
+                    ? item.sender.displayName
+                    : (contact?.displayName ?? shortPublicKey)
             ))
         }
         if let item = thread.latestCalendarInvite {
@@ -648,7 +664,8 @@ private struct DirectMessageThreadRow: View {
             ChatPeerAvatar(
                 contact: contact,
                 publicKey: thread.peerPublicKey,
-                isGroup: group != nil
+                group: group,
+                recentMessages: thread.messages
             )
 
             VStack(alignment: .leading, spacing: 4) {
@@ -709,6 +726,8 @@ private struct DirectMessageThreadRow: View {
                                 ),
                                 in: Capsule()
                             )
+                            .accessibilityLabel("\(thread.unreadCount) unread messages")
+                            .accessibilityIdentifier("chatThreadUnreadBadge")
                     }
                     if thread.actionRequiredCount > 0 {
                         Label("\(thread.actionRequiredCount)", systemImage: "checklist")
@@ -820,19 +839,17 @@ private struct ChatPeerAvatar: View {
     let contact: NostrContact?
     let publicKey: String
     var size: CGFloat = 46
-    var isGroup = false
+    var group: NostrGroupConversation? = nil
+    var recentMessages: [NostrDirectMessage] = []
 
     var body: some View {
         Group {
-            if isGroup {
-                ZStack {
-                    Circle().fill(TaskifyTheme.accent.opacity(0.22))
-                    Image(systemName: "person.3.fill")
-                        .font(.system(size: size * 0.36))
-                        .foregroundStyle(TaskifyTheme.primaryText)
-                }
-                .frame(width: size, height: size)
-                .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+            if let group {
+                ChatGroupAvatar(
+                    group: group,
+                    recentMessages: recentMessages,
+                    size: size
+                )
             } else if let contact {
                 NostrContactAvatar(contact: contact, size: size)
             } else {
@@ -847,6 +864,126 @@ private struct ChatPeerAvatar: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+private struct ChatGroupAvatarMember: Identifiable {
+    let id: String
+    let contact: NostrContact?
+    let isCurrentUser: Bool
+
+    var initials: String {
+        if let contact { return contact.initials }
+        return isCurrentUser ? "Y" : "?"
+    }
+}
+
+private struct ChatGroupAvatar: View {
+    @Environment(AppModel.self) private var model
+    let group: NostrGroupConversation
+    let recentMessages: [NostrDirectMessage]
+    let size: CGFloat
+
+    private var members: [ChatGroupAvatarMember] {
+        let memberKeys = group.memberPublicKeys.map { $0.lowercased() }
+        let memberKeySet = Set(memberKeys)
+        var recentKeys: [String] = []
+        var seen = Set<String>()
+
+        for message in recentMessages.reversed() {
+            let key = message.senderPublicKey.lowercased()
+            guard memberKeySet.contains(key), seen.insert(key).inserted else { continue }
+            recentKeys.append(key)
+            if recentKeys.count == 4 { break }
+        }
+
+        let remainingKeys = memberKeys
+            .filter { !seen.contains($0) }
+            .enumerated()
+            .sorted { left, right in
+                let leftHasPhoto = model.nostrContact(publicKey: left.element)?.pictureURL != nil
+                let rightHasPhoto = model.nostrContact(publicKey: right.element)?.pictureURL != nil
+                if leftHasPhoto != rightHasPhoto { return leftHasPhoto && !rightHasPhoto }
+                return left.offset < right.offset
+            }
+            .map(\.element)
+
+        return (recentKeys + remainingKeys).prefix(4).map { key in
+            ChatGroupAvatarMember(
+                id: key,
+                contact: model.nostrContact(publicKey: key),
+                isCurrentUser: key == model.identityPublicKey.lowercased()
+            )
+        }
+    }
+
+    var body: some View {
+        let members = members
+        ZStack {
+            Circle().fill(TaskifyTheme.accent.opacity(0.14))
+            ForEach(Array(members.enumerated()), id: \.element.id) { index, member in
+                let layout = Self.layout(for: members.count, index: index)
+                memberAvatar(member, diameter: size * layout.diameter)
+                    .position(x: size * layout.x, y: size * layout.y)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(TaskifyTheme.border, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func memberAvatar(_ member: ChatGroupAvatarMember, diameter: CGFloat) -> some View {
+        Group {
+            if let contact = member.contact {
+                NostrContactAvatar(contact: contact, size: diameter)
+            } else {
+                ZStack {
+                    LinearGradient(
+                        colors: [Color(red: 0.43, green: 0.36, blue: 0.61),
+                                 Color(red: 0.31, green: 0.27, blue: 0.49)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    Text(member.initials)
+                        .font(.system(size: diameter * 0.38, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Color.black.opacity(0.28), lineWidth: 1))
+            }
+        }
+        .frame(width: diameter, height: diameter)
+    }
+
+    private struct MemberLayout {
+        let x: CGFloat
+        let y: CGFloat
+        let diameter: CGFloat
+    }
+
+    private static func layout(for count: Int, index: Int) -> MemberLayout {
+        let layouts: [[MemberLayout]] = [
+            [MemberLayout(x: 0.50, y: 0.50, diameter: 0.64)],
+            [
+                MemberLayout(x: 0.37, y: 0.41, diameter: 0.58),
+                MemberLayout(x: 0.67, y: 0.65, diameter: 0.50),
+            ],
+            [
+                MemberLayout(x: 0.34, y: 0.47, diameter: 0.54),
+                MemberLayout(x: 0.73, y: 0.27, diameter: 0.37),
+                MemberLayout(x: 0.73, y: 0.70, diameter: 0.41),
+            ],
+            [
+                MemberLayout(x: 0.28, y: 0.28, diameter: 0.40),
+                MemberLayout(x: 0.75, y: 0.25, diameter: 0.34),
+                MemberLayout(x: 0.24, y: 0.73, diameter: 0.34),
+                MemberLayout(x: 0.72, y: 0.71, diameter: 0.43),
+            ],
+        ]
+        let safeCount = min(max(count, 1), 4)
+        return layouts[safeCount - 1][min(index, safeCount - 1)]
     }
 }
 
@@ -1238,43 +1375,68 @@ private struct ShareContactPickerSheet: View {
     }
 }
 
-private enum GroupConversationDetailsTab: String, CaseIterable, Identifiable {
+enum ConversationDetailsTab: String, CaseIterable, Identifiable {
     case info = "Info"
     case photos = "Photos"
+    case files = "Files"
     case links = "Links"
 
     var id: String { rawValue }
 }
 
-private struct GroupConversationLink: Identifiable {
+private struct ConversationSharedPhoto: Identifiable {
+    let id: String
+    let url: URL
+    let attachment: NostrDirectMessageAttachment?
+}
+
+private struct ConversationSharedFile: Identifiable {
+    let id: String
+    let attachment: NostrDirectMessageAttachment
+    let senderPublicKey: String
+    let createdAt: Int
+}
+
+private struct ConversationSharedLink: Identifiable {
     let id: String
     let url: URL
     let senderPublicKey: String
     let createdAt: Int
 }
 
-private struct GroupConversationDetailsView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
-    @State private var draftName = ""
-    @State private var isEditingName = false
-    @State private var isSaving = false
-    @State private var statusMessage: String?
-    @State private var errorMessage: String?
-    @State private var selectedTab = GroupConversationDetailsTab.info
-    let groupID: String
-
-    private var group: NostrGroupConversation? { model.groupConversation(id: groupID) }
-    private var messages: [NostrDirectMessage] { model.directMessages(with: groupID) }
-    private var attachmentMessages: [NostrDirectMessage] {
-        messages.filter { $0.attachment != nil }
-    }
-    private var links: [GroupConversationLink] {
+private enum ConversationSharedContent {
+    static func photos(in messages: [NostrDirectMessage]) -> [ConversationSharedPhoto] {
         messages.flatMap { message in
-            TaskContentLinks.allURLs(in: message.content).enumerated().map { index, url in
-                GroupConversationLink(
-                    id: "\(message.rumorEventID)-\(index)",
+            let attachmentURL = message.attachment.flatMap { URL(string: $0.url)?.absoluteString }
+            return NostrDirectMessageSharedContent.photoURLs(in: message).enumerated().map { index, url in
+                ConversationSharedPhoto(
+                    id: "\(message.rumorEventID)-photo-\(index)",
+                    url: url,
+                    attachment: url.absoluteString == attachmentURL ? message.attachment : nil
+                )
+            }
+        }
+    }
+
+    /// Every attachment except photos — documents, videos, audio, archives, anything
+    /// else shared through the conversation's encrypted attachments.
+    static func files(in messages: [NostrDirectMessage]) -> [ConversationSharedFile] {
+        messages.compactMap { message in
+            guard let attachment = message.attachment, !attachment.isImage else { return nil }
+            return ConversationSharedFile(
+                id: "\(message.rumorEventID)-file",
+                attachment: attachment,
+                senderPublicKey: message.senderPublicKey,
+                createdAt: message.createdAt
+            )
+        }
+    }
+
+    static func links(in messages: [NostrDirectMessage]) -> [ConversationSharedLink] {
+        messages.flatMap { message in
+            NostrDirectMessageSharedContent.linkURLs(in: message).enumerated().map { index, url in
+                ConversationSharedLink(
+                    id: "\(message.rumorEventID)-link-\(index)",
                     url: url,
                     senderPublicKey: message.senderPublicKey,
                     createdAt: message.createdAt
@@ -1282,6 +1444,348 @@ private struct GroupConversationDetailsView: View {
             }
         }
     }
+}
+
+struct ConversationDetailsTabBar: View {
+    @Binding var selection: ConversationDetailsTab
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(ConversationDetailsTab.allCases) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { selection = tab }
+                } label: {
+                    VStack(spacing: 8) {
+                        Text(tab.rawValue)
+                            .font(.subheadline.weight(selection == tab ? .bold : .semibold))
+                            .foregroundStyle(
+                                selection == tab ? TaskifyTheme.primaryText : TaskifyTheme.secondaryText
+                            )
+                        Capsule()
+                            .fill(selection == tab ? TaskifyTheme.accent : Color.clear)
+                            .frame(height: 3)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selection == tab ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 8)
+    }
+}
+
+struct ConversationPhotosView: View {
+    @Environment(\.openURL) private var openURL
+    let messages: [NostrDirectMessage]
+    let emptyTitle: String
+    let emptyDescription: String
+
+    init(
+        messages: [NostrDirectMessage],
+        emptyTitle: String = "No Shared Photos",
+        emptyDescription: String
+    ) {
+        self.messages = messages
+        self.emptyTitle = emptyTitle
+        self.emptyDescription = emptyDescription
+    }
+
+    private var photos: [ConversationSharedPhoto] {
+        ConversationSharedContent.photos(in: messages)
+    }
+
+    var body: some View {
+        if photos.isEmpty {
+            ContentUnavailableView(
+                emptyTitle,
+                systemImage: "photo.on.rectangle.angled",
+                description: Text(emptyDescription)
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 140), spacing: 12)],
+                    spacing: 12
+                ) {
+                    ForEach(photos) { photo in
+                        if let attachment = photo.attachment {
+                            DirectMessageAttachmentView(attachment: attachment, compact: true)
+                        } else {
+                            Button {
+                                openURL(photo.url)
+                            } label: {
+                                AsyncImage(url: photo.url) { phase in
+                                    if let image = phase.image {
+                                        image
+                                            .resizable()
+                                            .scaledToFill()
+                                    } else if phase.error != nil {
+                                        Image(systemName: "photo.badge.exclamationmark")
+                                            .font(.title2)
+                                            .foregroundStyle(TaskifyTheme.secondaryText)
+                                    } else {
+                                        ProgressView()
+                                    }
+                                }
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 150)
+                                .background(Color.black.opacity(0.2))
+                                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                        .stroke(TaskifyTheme.border, lineWidth: 0.8)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Open shared photo")
+                        }
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+}
+
+struct ConversationFilesView: View {
+    let messages: [NostrDirectMessage]
+    let emptyDescription: String
+    let unknownSenderName: String
+
+    init(
+        messages: [NostrDirectMessage],
+        emptyDescription: String,
+        unknownSenderName: String = "Contact"
+    ) {
+        self.messages = messages
+        self.emptyDescription = emptyDescription
+        self.unknownSenderName = unknownSenderName
+    }
+
+    private var files: [ConversationSharedFile] {
+        ConversationSharedContent.files(in: messages)
+    }
+
+    var body: some View {
+        if files.isEmpty {
+            ContentUnavailableView(
+                "No Shared Files",
+                systemImage: "doc.on.doc",
+                description: Text(emptyDescription)
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            List(files) { file in
+                ConversationFileRow(file: file, unknownSenderName: unknownSenderName)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+    }
+}
+
+private struct ConversationFileRow: View {
+    @Environment(AppModel.self) private var model
+    let file: ConversationSharedFile
+    let unknownSenderName: String
+
+    @State private var isLoading = false
+    @State private var failed = false
+    @State private var previewURL: URL?
+
+    var body: some View {
+        Button(action: openFile) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(TaskifyTheme.accent.opacity(0.14))
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: file.attachment.detailIcon)
+                            .font(.headline)
+                            .foregroundStyle(TaskifyTheme.accent)
+                    }
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(file.attachment.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(2)
+                    HStack(spacing: 5) {
+                        Text(file.attachment.detailKindLabel)
+                        if let size = file.attachment.size {
+                            Text("·")
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    Text(metadata)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.tertiaryText)
+                }
+
+                Spacer(minLength: 2)
+                Image(systemName: failed ? "arrow.clockwise" : "arrow.up.forward")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .quickLookPreview($previewURL)
+        .onChange(of: previewURL) { old, new in
+            if let old, old != new { try? FileManager.default.removeItem(at: old) }
+        }
+        .accessibilityLabel("Open \(file.attachment.displayName)")
+    }
+
+    private var metadata: String {
+        let sender = file.senderPublicKey == model.identityPublicKey
+            ? "You"
+            : model.nostrContact(publicKey: file.senderPublicKey)?.displayName ?? unknownSenderName
+        let date = Date(timeIntervalSince1970: TimeInterval(file.createdAt))
+            .formatted(date: .abbreviated, time: .shortened)
+        return "\(sender) · \(date)"
+    }
+
+    private func openFile() {
+        if failed {
+            failed = false
+        }
+        isLoading = true
+        Task { @MainActor in
+            defer { isLoading = false }
+            do {
+                let decrypted = try await DirectMessageAttachmentDataLoader.shared.file(for: file.attachment)
+                guard !Task.isCancelled else { return }
+                previewURL = try DirectMessageAttachmentDataLoader.previewFile(
+                    file: decrypted,
+                    attachment: file.attachment
+                )
+                failed = false
+            } catch {
+                failed = true
+            }
+        }
+    }
+}
+
+struct ConversationLinksView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
+    let messages: [NostrDirectMessage]
+    let emptyDescription: String
+    let unknownSenderName: String
+
+    init(
+        messages: [NostrDirectMessage],
+        emptyDescription: String,
+        unknownSenderName: String = "Contact"
+    ) {
+        self.messages = messages
+        self.emptyDescription = emptyDescription
+        self.unknownSenderName = unknownSenderName
+    }
+
+    private var links: [ConversationSharedLink] {
+        ConversationSharedContent.links(in: messages)
+    }
+
+    var body: some View {
+        if links.isEmpty {
+            ContentUnavailableView(
+                "No Shared Links",
+                systemImage: "link",
+                description: Text(emptyDescription)
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            List(links) { link in
+                Button {
+                    openURL(link.url)
+                } label: {
+                    HStack(spacing: 12) {
+                        Group {
+                            if let faviconURL = TaskContentLinks.faviconURL(for: link.url) {
+                                AsyncImage(url: faviconURL) { phase in
+                                    if case let .success(image) = phase {
+                                        image
+                                            .resizable()
+                                            .scaledToFit()
+                                            .padding(9)
+                                    } else {
+                                        Image(systemName: "link")
+                                            .font(.headline)
+                                    }
+                                }
+                            } else {
+                                Image(systemName: "link")
+                                    .font(.headline)
+                            }
+                        }
+                        .foregroundStyle(TaskifyTheme.accent)
+                        .frame(width: 42, height: 42)
+                        .background(TaskifyTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(TaskContentLinks.fallbackTitle(for: link.url))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.primaryText)
+                                .lineLimit(2)
+                            Text(link.url.absoluteString)
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .lineLimit(1)
+                            Text(metadata(for: link))
+                                .font(.caption2)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                        }
+
+                        Spacer(minLength: 2)
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .scrollContentBackground(.hidden)
+        }
+    }
+
+    private func metadata(for link: ConversationSharedLink) -> String {
+        let sender = link.senderPublicKey == model.identityPublicKey
+            ? "You"
+            : model.nostrContact(publicKey: link.senderPublicKey)?.displayName ?? unknownSenderName
+        let date = Date(timeIntervalSince1970: TimeInterval(link.createdAt))
+            .formatted(date: .abbreviated, time: .shortened)
+        return "\(sender) · \(date)"
+    }
+}
+
+private struct GroupConversationDetailsView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var draftName = ""
+    @State private var isEditingName = false
+    @State private var isSaving = false
+    @State private var statusMessage: String?
+    @State private var errorMessage: String?
+    @State private var selectedTab = ConversationDetailsTab.info
+    let groupID: String
+
+    private var group: NostrGroupConversation? { model.groupConversation(id: groupID) }
+    private var messages: [NostrDirectMessage] { model.directMessages(with: groupID) }
 
     var body: some View {
         NavigationStack {
@@ -1293,7 +1797,8 @@ private struct GroupConversationDetailsView: View {
                                 contact: nil,
                                 publicKey: group.groupID,
                                 size: 72,
-                                isGroup: true
+                                group: group,
+                                recentMessages: messages
                             )
                             Text(group.displayName)
                                 .font(.title2.bold())
@@ -1305,7 +1810,7 @@ private struct GroupConversationDetailsView: View {
                         .padding(.top, 12)
                         .padding(.bottom, 14)
 
-                        groupDetailsTabs
+                        ConversationDetailsTabBar(selection: $selectedTab)
 
                         tabContent(group)
                     }
@@ -1333,40 +1838,28 @@ private struct GroupConversationDetailsView: View {
         }
     }
 
-    private var groupDetailsTabs: some View {
-        HStack(spacing: 0) {
-            ForEach(GroupConversationDetailsTab.allCases) { tab in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tab }
-                } label: {
-                    VStack(spacing: 8) {
-                        Text(tab.rawValue)
-                            .font(.subheadline.weight(selectedTab == tab ? .bold : .semibold))
-                            .foregroundStyle(
-                                selectedTab == tab ? TaskifyTheme.primaryText : TaskifyTheme.secondaryText
-                            )
-                        Capsule()
-                            .fill(selectedTab == tab ? TaskifyTheme.accent : Color.clear)
-                            .frame(height: 3)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.bottom, 8)
-    }
-
     @ViewBuilder
     private func tabContent(_ group: NostrGroupConversation) -> some View {
         switch selectedTab {
         case .info:
             infoContent(group)
         case .photos:
-            attachmentContent
+            ConversationPhotosView(
+                messages: messages,
+                emptyDescription: "Photos shared with this group will appear here."
+            )
+        case .files:
+            ConversationFilesView(
+                messages: messages,
+                emptyDescription: "Files shared with this group will appear here.",
+                unknownSenderName: "Group Member"
+            )
         case .links:
-            linkContent
+            ConversationLinksView(
+                messages: messages,
+                emptyDescription: "Web links shared in group messages will appear here.",
+                unknownSenderName: "Group Member"
+            )
         }
     }
 
@@ -1519,106 +2012,6 @@ private struct GroupConversationDetailsView: View {
     }
 
     @ViewBuilder
-    private var attachmentContent: some View {
-        if attachmentMessages.isEmpty {
-            ContentUnavailableView(
-                "No Shared Attachments",
-                systemImage: "photo.on.rectangle.angled",
-                description: Text("Photos and files shared with this group will appear here.")
-            )
-            .frame(maxHeight: .infinity)
-        } else {
-            ScrollView {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 140), spacing: 12)],
-                    spacing: 12
-                ) {
-                    ForEach(attachmentMessages) { message in
-                        if let attachment = message.attachment {
-                            DirectMessageAttachmentView(attachment: attachment, compact: true)
-                        }
-                    }
-                }
-                .padding(16)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var linkContent: some View {
-        if links.isEmpty {
-            ContentUnavailableView(
-                "No Shared Links",
-                systemImage: "link",
-                description: Text("Web links shared in group messages will appear here.")
-            )
-            .frame(maxHeight: .infinity)
-        } else {
-            List(links) { link in
-                Button {
-                    openURL(link.url)
-                } label: {
-                    HStack(spacing: 12) {
-                        Group {
-                            if let faviconURL = TaskContentLinks.faviconURL(for: link.url) {
-                                AsyncImage(url: faviconURL) { phase in
-                                    if case let .success(image) = phase {
-                                        image
-                                            .resizable()
-                                            .scaledToFit()
-                                            .padding(9)
-                                    } else {
-                                        Image(systemName: "link")
-                                            .font(.headline)
-                                    }
-                                }
-                            } else {
-                                Image(systemName: "link")
-                                    .font(.headline)
-                            }
-                        }
-                        .foregroundStyle(TaskifyTheme.accent)
-                        .frame(width: 42, height: 42)
-                        .background(TaskifyTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11))
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(TaskContentLinks.fallbackTitle(for: link.url))
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(TaskifyTheme.primaryText)
-                                .lineLimit(2)
-                            Text(link.url.absoluteString)
-                                .font(.caption)
-                                .foregroundStyle(TaskifyTheme.secondaryText)
-                                .lineLimit(1)
-                            Text(linkMetadata(link))
-                                .font(.caption2)
-                                .foregroundStyle(TaskifyTheme.tertiaryText)
-                        }
-
-                        Spacer(minLength: 2)
-                        Image(systemName: "arrow.up.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(TaskifyTheme.secondaryText)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            .scrollContentBackground(.hidden)
-        }
-    }
-
-    private func linkMetadata(_ link: GroupConversationLink) -> String {
-        let sender = participantName(
-            link.senderPublicKey,
-            contact: model.nostrContact(publicKey: link.senderPublicKey)
-        )
-        let date = Date(timeIntervalSince1970: TimeInterval(link.createdAt))
-            .formatted(date: .abbreviated, time: .shortened)
-        return "\(sender) · \(date)"
-    }
-
-    @ViewBuilder
     private func participantRow(_ publicKey: String) -> some View {
         let contact = model.nostrContact(publicKey: publicKey)
         HStack(spacing: 12) {
@@ -1756,27 +2149,381 @@ private enum ChatTimelineItem: Identifiable, Equatable {
     }
 }
 
+private struct ChatConversationPresentation {
+    let timeline: [ChatTimelineItem]
+    let lastSentItemID: String?
+    let messageLookup: [String: NostrDirectMessage]
+    let reactionLookup: [String: [NostrDirectMessageReaction]]
+    let senderContacts: [String: NostrContact]
+    let senderNames: [String: String]
+    let structuredSenderName: String?
+}
+
+/// A conversation owns only its current snapshot projection and a bounded amount of parsed
+/// syntax. Composer edits and upload progress must not sort the history or reparse visible
+/// messages. Nothing is persisted; the owner clears this cache when leaving or backgrounding.
+@MainActor
+private final class ChatConversationRenderCache: Equatable {
+    private struct Key: Equatable {
+        let revision: Int
+        let identity: String
+        let peer: String
+    }
+
+    private final class DocumentBox: NSObject {
+        let value: NostrChatMarkdownDocument
+        init(_ value: NostrChatMarkdownDocument) { self.value = value }
+    }
+
+    private final class InlineBox: NSObject {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
+    private var key: Key?
+    private var currentPresentation: ChatConversationPresentation?
+    private var searchQuery: String?
+    private var currentSearchResults: [ChatTimelineItem] = []
+    private let documents = NSCache<NSString, DocumentBox>()
+    private let inlines = NSCache<NSString, InlineBox>()
+
+    init() {
+        documents.countLimit = 128
+        documents.totalCostLimit = 1_024 * 1_024
+        inlines.countLimit = 512
+        inlines.totalCostLimit = 1_024 * 1_024
+    }
+
+    nonisolated static func == (lhs: ChatConversationRenderCache, rhs: ChatConversationRenderCache) -> Bool {
+        lhs === rhs
+    }
+
+    func presentation(
+        revision: Int,
+        identity: String,
+        peer: String,
+        build: () -> ChatConversationPresentation
+    ) -> ChatConversationPresentation {
+        let nextKey = Key(revision: revision, identity: identity, peer: peer)
+        if key == nextKey, let currentPresentation { return currentPresentation }
+        if let key, key.identity != identity || key.peer != peer { clear() }
+        let value = build()
+        key = nextKey
+        currentPresentation = value
+        searchQuery = nil
+        currentSearchResults = []
+        return value
+    }
+
+    func searchResults(query: String, build: () -> [ChatTimelineItem]) -> [ChatTimelineItem] {
+        if searchQuery == query { return currentSearchResults }
+        let value = query.isEmpty ? [] : build()
+        searchQuery = query
+        currentSearchResults = value
+        return value
+    }
+
+    func document(_ text: String) -> NostrChatMarkdownDocument {
+        if let cached = documents.object(forKey: text as NSString) { return cached.value }
+        let value = NostrChatMarkdown.document(text)
+        let cost = text.utf8.count
+        if cost <= 128 * 1_024 {
+            documents.setObject(DocumentBox(value), forKey: text as NSString, cost: cost * 4)
+        }
+        return value
+    }
+
+    func inline(_ text: String) -> AttributedString {
+        if let cached = inlines.object(forKey: text as NSString) { return cached.value }
+        let value = NostrChatMarkdown.inlineAttributedString(text)
+        let cost = text.utf8.count
+        if cost <= 128 * 1_024 {
+            inlines.setObject(InlineBox(value), forKey: text as NSString, cost: cost * 4)
+        }
+        return value
+    }
+
+    func clear() {
+        key = nil
+        currentPresentation = nil
+        searchQuery = nil
+        currentSearchResults = []
+        documents.removeAllObjects()
+        inlines.removeAllObjects()
+    }
+}
+
+/// Owns the staged plaintext until the user removes it or the send is queued.
+private final class ChatAttachmentDraft: Identifiable {
+    let id = UUID()
+    let fileURL: URL
+    let name: String
+    let mimeType: String
+    let size: Int
+    var uploadedAttachment: NostrDirectMessageAttachment?
+
+    init(fileURL: URL, name: String, mimeType: String, size: Int) {
+        self.fileURL = fileURL; self.name = name; self.mimeType = mimeType; self.size = size
+    }
+
+    deinit { try? FileManager.default.removeItem(at: fileURL) }
+}
+
+private final class ChatPasteTextView: UITextView {
+    var pasteAttachment: (([NSItemProvider]) -> Bool)?
+    private var shouldFocusWhenAttached = false
+
+    @discardableResult
+    func requestFocus() -> Bool {
+        shouldFocusWhenAttached = true
+        guard window != nil, isEditable, isUserInteractionEnabled else { return false }
+        return isFirstResponder || becomeFirstResponder()
+    }
+
+    func dismissFocus() {
+        shouldFocusWhenAttached = false
+        if isFirstResponder { resignFirstResponder() }
+    }
+
+    func markFocusEnded() {
+        shouldFocusWhenAttached = false
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil, shouldFocusWhenAttached else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, self.shouldFocusWhenAttached else { return }
+            self.requestFocus()
+        }
+    }
+
+    override func paste(itemProviders: [NSItemProvider]) {
+        if pasteAttachment?(itemProviders) == true { return }
+        super.paste(itemProviders: itemProviders)
+    }
+
+    override func paste(_ sender: Any?) {
+        if pasteAttachment?(UIPasteboard.general.itemProviders) == true { return }
+        super.paste(sender)
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        // An image/file-only clipboard is attachable but not pasteable text, and UIKit
+        // would otherwise hide the Paste item entirely. Keep it offered so the paste
+        // override can stage the clipboard contents as an attachment. The has* family is
+        // metadata-only, so building the menu never reads pasteboard contents (which
+        // would trigger the system paste-permission prompt).
+        if action == #selector(paste(_:)),
+           UIPasteboard.general.hasImages || UIPasteboard.general.hasURLs {
+            return true
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+}
+
+private struct ChatComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let isFocused: FocusState<Bool>.Binding
+    let isEnabled: Bool
+    let dismissKeyboard: Bool
+    let accessibilityLabel: String
+    let onSubmit: () -> Void
+    let pasteAttachment: ([NSItemProvider]) -> Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> ChatPasteTextView {
+        let view = ChatPasteTextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.font = .preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.textColor = UIColor(TaskifyTheme.primaryText)
+        view.tintColor = UIColor(TaskifyTheme.accent)
+        view.textContainerInset = UIEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
+        view.textContainer.lineFragmentPadding = 0
+        // Scrolling stays enabled for the composer's whole life: toggling it as the text
+        // grows resets contentOffset and corrupts contentSize/caret geometry, which left
+        // the caret stranded below the fold. While the text fits the (externally sized)
+        // frame nothing scrolls; once SwiftUI caps the height the same view pans and
+        // tracks the caret natively.
+        view.isScrollEnabled = true
+        view.alwaysBounceVertical = false
+        view.returnKeyType = .send
+        // Draft scrolling belongs to the editor, including downward drags near
+        // the keyboard. Only a drag that starts in the conversation dismisses it.
+        view.keyboardDismissMode = .none
+        view.pasteConfiguration = UIPasteConfiguration(
+            acceptableTypeIdentifiers: [UTType.item.identifier]
+        )
+        view.accessibilityLabel = accessibilityLabel
+        view.pasteAttachment = pasteAttachment
+        let tapRecognizer = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.focusComposer(_:))
+        )
+        tapRecognizer.cancelsTouchesInView = false
+        view.addGestureRecognizer(tapRecognizer)
+        return view
+    }
+
+    func updateUIView(_ view: ChatPasteTextView, context: Context) {
+        context.coordinator.parent = self
+        if view.text != text { view.text = text }
+        view.isEditable = isEnabled
+        view.accessibilityLabel = accessibilityLabel
+        view.pasteAttachment = pasteAttachment
+
+        if dismissKeyboard {
+            view.dismissFocus()
+        } else if isFocused.wrappedValue {
+            view.requestFocus()
+        }
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView: ChatPasteTextView,
+        context: Context
+    ) -> CGSize? {
+        guard let width = proposal.width, width.isFinite else { return nil }
+        let fitting = uiView.sizeThatFits(
+            CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        )
+        let lineHeight = uiView.font?.lineHeight ?? 20
+        let insetHeight = uiView.textContainerInset.top + uiView.textContainerInset.bottom
+        let maximumHeight = lineHeight * 15 + insetHeight
+        let height = min(max(fitting.height, 42), maximumHeight)
+        return CGSize(width: width, height: height)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ChatComposerTextView
+
+        init(parent: ChatComposerTextView) { self.parent = parent }
+
+        @objc func focusComposer(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended,
+                  parent.isEnabled,
+                  let textView = recognizer.view as? ChatPasteTextView else { return }
+            textView.requestFocus()
+            if !parent.isFocused.wrappedValue {
+                parent.isFocused.wrappedValue = true
+            }
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            textView.invalidateIntrinsicContentSize()
+            scrollCaretIntoView(textView)
+        }
+
+        /// Once the draft exceeds the composer's height cap, keep the caret on screen as
+        /// new lines are typed (mirrors the Messages composer). scrollRangeToVisible is a
+        /// no-op while the caret is already visible, so a user scrolling back through the
+        /// draft is only re-anchored on the next keystroke.
+        func scrollCaretIntoView(_ textView: UITextView) {
+            guard textView.isFirstResponder,
+                  !textView.isTracking,
+                  !textView.isDecelerating else { return }
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, textView.window != nil else { return }
+                // The text may have changed again since this was scheduled; settle layout
+                // so contentSize and the caret geometry are current before scrolling.
+                textView.layoutIfNeeded()
+                let range = textView.selectedRange
+                guard range.location != NSNotFound else { return }
+                // An empty range at end-of-document produces no rect under TextKit 2;
+                // scroll to the last character instead so the caret comes into view.
+                if range.length == 0, range.location > 0 {
+                    textView.scrollRangeToVisible(
+                        NSRange(location: range.location - 1, length: 1)
+                    )
+                } else {
+                    textView.scrollRangeToVisible(range)
+                }
+                // Fallback: if the caret still isn't visible after that, scroll it in by
+                // offset directly.
+                if let end = textView.selectedTextRange?.end {
+                    let caretRect = textView.caretRect(for: end)
+                    if caretRect.height > 0, !textView.bounds.contains(caretRect) {
+                        let target = max(
+                            0,
+                            caretRect.maxY - textView.bounds.height
+                                + textView.textContainerInset.bottom
+                        )
+                        if target > textView.contentOffset.y {
+                            textView.setContentOffset(
+                                CGPoint(x: 0, y: target), animated: false
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            guard !parent.isFocused.wrappedValue else { return }
+            DispatchQueue.main.async { self.parent.isFocused.wrappedValue = true }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            (textView as? ChatPasteTextView)?.markFocusEnded()
+            guard parent.isFocused.wrappedValue else { return }
+            DispatchQueue.main.async { self.parent.isFocused.wrappedValue = false }
+        }
+
+        func textView(
+            _ textView: UITextView,
+            shouldChangeTextIn range: NSRange,
+            replacementText text: String
+        ) -> Bool {
+            guard text == "\n" else { return true }
+            parent.onSubmit()
+            return false
+        }
+    }
+}
+
 private struct DirectMessageConversationView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var renderCache = ChatConversationRenderCache()
     @FocusState private var composerFocused: Bool
     @FocusState private var searchFocused: Bool
     @State private var draft = ""
     @State private var isSending = false
     @State private var isSendingAttachment = false
+    @State private var attachmentDrafts: [ChatAttachmentDraft] = []
+    @State private var attachmentPreparationTask: Task<Void, Never>?
+    @State private var attachmentSendTask: Task<Void, Never>?
+    @State private var attachmentProgress: AttachmentTransferProgress?
+    @State private var attachmentSendError: String?
+    @State private var attachmentUploadFileIndex = 0
+    @State private var attachmentUploadFileTotal = 0
     @State private var replyingTo: NostrDirectMessage?
     @State private var showingPhotoPicker = false
-    @State private var photoSelection: PhotosPickerItem?
+    @State private var photoSelections: [PhotosPickerItem] = []
+    @State private var showingCamera = false
+    @State private var showingDocumentScanner = false
     @State private var showingFileImporter = false
     @State private var showingContactSharePicker = false
     @State private var showingGroupDetails = false
+    @State private var showingContactDetails = false
     @State private var isSearchingConversation = false
     @State private var searchQuery = ""
     @State private var selectedSearchResultID: String?
     @State private var searchSelectionTask: Task<Void, Never>?
+    @State private var timelineScrollTask: Task<Void, Never>?
+    @State private var isScrolledAwayFromBottom = false
     @State private var protectsInitialScrollTarget = false
     @State private var isAddingContact = false
     @State private var confirmingConversationDeletion = false
+    @State private var botCommands: [BotCommand] = []
+    @State private var botCommandMenuHeight: CGFloat = 0
     let peerPublicKey: String
     let initialTimelineItemID: String?
 
@@ -1799,7 +2546,7 @@ private struct DirectMessageConversationView: View {
         model.sharedContactInboxItems
             .filter {
                 $0.status != .deleted &&
-                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+                    $0.conversationPublicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
             }
             .sorted {
                 if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
@@ -1828,7 +2575,23 @@ private struct DirectMessageConversationView: View {
                 return $0.id < $1.id
             }
     }
-    private var timeline: [ChatTimelineItem] {
+    private var presentation: ChatConversationPresentation {
+        renderCache.presentation(
+            revision: model.snapshotRevision,
+            identity: model.identityPublicKey,
+            peer: peerPublicKey,
+            build: makePresentation
+        )
+    }
+
+    private var timeline: [ChatTimelineItem] { presentation.timeline }
+    private var structuredSenderName: String? { presentation.structuredSenderName }
+
+    private func makePresentation() -> ChatConversationPresentation {
+        let sharedTasks = sharedTasks
+        let sharedContacts = sharedContacts
+        let calendarInvites = calendarInvites
+        let sharedBoards = sharedBoards
         let items =
             messages.map(ChatTimelineItem.message)
                 + sharedTasks.map(ChatTimelineItem.sharedTask)
@@ -1839,7 +2602,7 @@ private struct DirectMessageConversationView: View {
         // `created_at` has one-second precision. Keep the order established by the message store
         // for ties; an event-ID tiebreaker is effectively random and can flip a just-sent message
         // behind the response that followed it.
-        return items.enumerated()
+        let timeline = items.enumerated()
             .sorted {
                 if $0.element.timestamp != $1.element.timestamp {
                     return $0.element.timestamp < $1.element.timestamp
@@ -1847,13 +2610,51 @@ private struct DirectMessageConversationView: View {
                 return $0.offset < $1.offset
             }
             .map(\.element)
-    }
-    private var structuredSenderName: String? {
         var values: [(Date, String)] = sharedTasks.map { ($0.receivedAt, $0.sender.displayName) }
-        values += sharedContacts.map { ($0.receivedAt, $0.sender.displayName) }
+        values += sharedContacts.compactMap {
+            $0.isIncoming ? ($0.receivedAt, $0.sender.displayName) : nil
+        }
         values += calendarInvites.map { ($0.receivedAt, $0.sender.displayName) }
         values += sharedBoards.map { ($0.receivedAt, $0.sender.displayName) }
-        return values.max { $0.0 < $1.0 }?.1
+
+        let lastSentItemID = timeline.last { item in
+            switch item {
+            case let .message(message):
+                !message.isIncoming && message.deliveryState == .sent
+            case let .sharedContact(contact):
+                !contact.isIncoming
+            default:
+                false
+            }
+        }?.id
+        let currentMessages = timeline.compactMap { item -> NostrDirectMessage? in
+            guard case let .message(message) = item else { return nil }
+            return message
+        }
+        var messageLookup: [String: NostrDirectMessage] = [:]
+        messageLookup.reserveCapacity(currentMessages.count * 2)
+        for message in currentMessages {
+            messageLookup[message.rumorEventID] = message
+            messageLookup[message.wrapEventID] = message
+        }
+        let senderContacts = Dictionary(
+            model.nostrContacts.map { ($0.publicKey, $0) },
+            uniquingKeysWith: { _, newest in newest }
+        )
+        let senderNames = Dictionary(
+            uniqueKeysWithValues: Set(currentMessages.map(\.senderPublicKey)).map {
+                ($0, senderName(for: $0))
+            }
+        )
+        return ChatConversationPresentation(
+            timeline: timeline,
+            lastSentItemID: lastSentItemID,
+            messageLookup: messageLookup,
+            reactionLookup: model.directMessageReactionLookup(peerPublicKey: peerPublicKey),
+            senderContacts: senderContacts,
+            senderNames: senderNames,
+            structuredSenderName: values.max { $0.0 < $1.0 }?.1
+        )
     }
     private var isStranger: Bool {
         group == nil && contact == nil && peerPublicKey != model.identityPublicKey
@@ -1864,9 +2665,19 @@ private struct DirectMessageConversationView: View {
         group?.displayName ?? contact?.displayName ?? (isSelfConversation ? "You" : nil)
             ?? structuredSenderName ?? "Message"
     }
+    private var canShowContactDetails: Bool {
+        group == nil && NostrPublicKey.parse(peerPublicKey) != nil
+    }
+    private var contactDetailFallbackName: String? {
+        guard contact == nil else { return nil }
+        return isSelfConversation ? "You" : structuredSenderName
+    }
     private var searchResults: [ChatTimelineItem] {
-        timeline.filter {
-            $0.matchesSearch(searchQuery, senderName: senderName(for:))
+        let currentTimeline = timeline
+        return renderCache.searchResults(query: searchQuery) {
+            currentTimeline.filter {
+                $0.matchesSearch(searchQuery, senderName: senderName(for:))
+            }
         }
     }
     private var selectedSearchResultIndex: Int? {
@@ -1875,39 +2686,9 @@ private struct DirectMessageConversationView: View {
     }
 
     var body: some View {
-        // Computed once per body evaluation instead of read as plain computed properties from
-        // inside the per-row closure below. The timeline, reply lookup, reactions, sender
-        // metadata, and search matches all scan model-wide collections; rebuilding any of them
-        // from each visible row makes a short scroll perform dozens of full-history passes.
-        let currentTimeline = timeline
-        let currentMessages = currentTimeline.compactMap { item -> NostrDirectMessage? in
-            guard case let .message(message) = item else { return nil }
-            return message
-        }
-        var messageLookup: [String: NostrDirectMessage] = [:]
-        messageLookup.reserveCapacity(currentMessages.count * 2)
-        for message in currentMessages {
-            messageLookup[message.rumorEventID] = message
-            messageLookup[message.wrapEventID] = message
-        }
-        let reactionLookup = model.directMessageReactionLookup(peerPublicKey: peerPublicKey)
-        let currentSearchMatches = Set(
-            currentTimeline.lazy
-                .filter {
-                    !searchQuery.isEmpty &&
-                        $0.matchesSearch(searchQuery, senderName: senderName(for:))
-                }
-                .map(\.id)
-        )
-        let senderContacts = Dictionary(
-            model.nostrContacts.map { ($0.publicKey, $0) },
-            uniquingKeysWith: { _, newest in newest }
-        )
-        let senderNames = Dictionary(
-            uniqueKeysWithValues: Set(currentMessages.map(\.senderPublicKey)).map {
-                ($0, senderName(for: $0))
-            }
-        )
+        let presentation = presentation
+        let currentTimeline = presentation.timeline
+        let currentSearchMatches = Set(searchResults.map(\.id))
 
         return ScrollViewReader { proxy in
             ScrollView {
@@ -1918,7 +2699,8 @@ private struct DirectMessageConversationView: View {
                                 contact: contact,
                                 publicKey: peerPublicKey,
                                 size: 72,
-                                isGroup: group != nil
+                                group: group,
+                                recentMessages: messages
                             )
                             Text(
                                 group?.displayName ?? contact?.displayName
@@ -1939,99 +2721,137 @@ private struct DirectMessageConversationView: View {
                         .padding(.top, 70)
                     } else {
                         ForEach(Array(currentTimeline.enumerated()), id: \.element.id) { index, item in
-                            if shouldShowDayDivider(at: index, in: currentTimeline) {
-                                ChatDayDivider(timestamp: item.timestamp)
-                            }
-
-                            switch item {
-                            case let .message(message):
-                                let groupedWithPrevious = isMessageGrouped(at: index, with: index - 1, in: currentTimeline)
-                                let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
-                                let reactions = (reactionLookup[message.rumorEventID] ?? [])
-                                    + (message.wrapEventID == message.rumorEventID
-                                        ? []
-                                        : reactionLookup[message.wrapEventID] ?? [])
-                                DirectMessageBubble(
-                                    message: message,
-                                    repliedMessage: message.replyToEventID.flatMap {
-                                        messageLookup[$0]
-                                    },
-                                    reactions: reactions,
-                                    senderName: group != nil && message.isIncoming && !groupedWithPrevious
-                                        ? senderNames[message.senderPublicKey] : nil,
-                                    senderContact: group != nil && message.isIncoming
-                                        ? senderContacts[message.senderPublicKey] : nil,
-                                    showsSenderAvatar: group != nil && message.isIncoming,
-                                    isGroupedWithPrevious: groupedWithPrevious,
-                                    isGroupedWithNext: groupedWithNext,
-                                    isSearchMatch: currentSearchMatches.contains(item.id),
-                                    isSelectedSearchResult: selectedSearchResultID == item.id
-                                )
-                                .contextMenu {
-                                    Label(
-                                        "Sent \(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(date: .abbreviated, time: .shortened))",
-                                        systemImage: "clock"
-                                    )
-                                    Menu("React", systemImage: "face.smiling") {
-                                        ForEach(["❤️", "👍", "👎", "😂", "😮", "😢"], id: \.self) { emoji in
-                                            Button(emoji) { react(to: message, with: emoji) }
-                                        }
-                                    }
-                                    if reactions.contains(where: {
-                                        $0.senderPublicKey == model.identityPublicKey
-                                    }) {
-                                        Button("Remove Reaction", systemImage: "minus.circle") {
-                                            react(to: message, with: "-")
-                                        }
-                                    }
-                                    Button("Reply", systemImage: "arrowshape.turn.up.left") {
-                                        replyingTo = message
-                                        composerFocused = true
-                                    }
-                                    if message.attachment == nil {
-                                        Button("Copy", systemImage: "doc.on.doc") {
-                                            UIPasteboard.general.string = message.content
-                                        }
-                                    }
+                            // One stable child per timeline item preserves lazy row creation.
+                            // A conditional divider beside the bubble makes the child count
+                            // depend on evaluating off-screen messages.
+                            VStack(spacing: 0) {
+                                if shouldShowDayDivider(at: index, in: currentTimeline) {
+                                    ChatDayDivider(timestamp: item.timestamp)
                                 }
-                                .id(item.id)
-                            case let .sharedTask(sharedTask):
-                                SharedTaskChatCard(
-                                    item: sharedTask,
-                                    isSearchMatch: currentSearchMatches.contains(item.id),
-                                    isSelectedSearchResult: selectedSearchResultID == item.id
-                                )
-                                .id(item.id)
-                            case let .sharedContact(sharedContact):
-                                SharedContactChatCard(
-                                    item: sharedContact,
-                                    isSearchMatch: currentSearchMatches.contains(item.id),
-                                    isSelectedSearchResult: selectedSearchResultID == item.id
-                                )
-                                .id(item.id)
-                            case let .calendarInvite(invite):
-                                SharedCalendarInviteChatCard(
-                                    item: invite,
-                                    isSearchMatch: currentSearchMatches.contains(item.id),
-                                    isSelectedSearchResult: selectedSearchResultID == item.id
-                                )
-                                .id(item.id)
-                            case let .sharedBoard(sharedBoard):
-                                SharedBoardChatCard(
-                                    item: sharedBoard,
-                                    isSearchMatch: currentSearchMatches.contains(item.id),
-                                    isSelectedSearchResult: selectedSearchResultID == item.id
-                                )
-                                .id(item.id)
+
+                                switch item {
+                                case let .message(message):
+                                    let groupedWithPrevious = isMessageGrouped(at: index, with: index - 1, in: currentTimeline)
+                                    let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
+                                    let reactions = (presentation.reactionLookup[message.rumorEventID] ?? [])
+                                        + (message.wrapEventID == message.rumorEventID
+                                            ? []
+                                            : presentation.reactionLookup[message.wrapEventID] ?? [])
+                                    DirectMessageBubble(
+                                        renderCache: renderCache,
+                                        message: message,
+                                        repliedMessage: message.replyToEventID.flatMap {
+                                            presentation.messageLookup[$0]
+                                        },
+                                        reactions: reactions,
+                                        senderName: group != nil && message.isIncoming && !groupedWithPrevious
+                                            ? presentation.senderNames[message.senderPublicKey] : nil,
+                                        senderContact: group != nil && message.isIncoming
+                                            ? presentation.senderContacts[message.senderPublicKey] : nil,
+                                        showsSenderAvatar: group != nil && message.isIncoming,
+                                        isGroupedWithPrevious: groupedWithPrevious,
+                                        isGroupedWithNext: groupedWithNext,
+                                        showsSentStatus: item.id == presentation.lastSentItemID,
+                                        isSearchMatch: currentSearchMatches.contains(item.id),
+                                        isSelectedSearchResult: selectedSearchResultID == item.id
+                                    )
+                                    .equatable()
+                                    .contextMenu {
+                                        Label(
+                                            "Sent \(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(date: .abbreviated, time: .shortened))",
+                                            systemImage: "clock"
+                                        )
+                                        Menu("React", systemImage: "face.smiling") {
+                                            ForEach(["❤️", "👍", "👎", "😂", "😮", "😢"], id: \.self) { emoji in
+                                                Button(emoji) { react(to: message, with: emoji) }
+                                            }
+                                        }
+                                        if reactions.contains(where: {
+                                            $0.senderPublicKey == model.identityPublicKey
+                                        }) {
+                                            Button("Remove Reaction", systemImage: "minus.circle") {
+                                                react(to: message, with: "-")
+                                            }
+                                        }
+                                        Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                                            replyingTo = message
+                                            composerFocused = true
+                                        }
+                                        if message.attachment == nil {
+                                            Button("Copy", systemImage: "doc.on.doc") {
+                                                UIPasteboard.general.string = message.content
+                                            }
+                                        }
+                                    }
+                                case let .sharedTask(sharedTask):
+                                    SharedTaskChatCard(
+                                        item: sharedTask,
+                                        isSearchMatch: currentSearchMatches.contains(item.id),
+                                        isSelectedSearchResult: selectedSearchResultID == item.id
+                                    )
+                                case let .sharedContact(sharedContact):
+                                    SharedContactChatCard(
+                                        item: sharedContact,
+                                        showsSentStatus: item.id == presentation.lastSentItemID,
+                                        isSearchMatch: currentSearchMatches.contains(item.id),
+                                        isSelectedSearchResult: selectedSearchResultID == item.id
+                                    )
+                                case let .calendarInvite(invite):
+                                    SharedCalendarInviteChatCard(
+                                        item: invite,
+                                        isSearchMatch: currentSearchMatches.contains(item.id),
+                                        isSelectedSearchResult: selectedSearchResultID == item.id
+                                    )
+                                case let .sharedBoard(sharedBoard):
+                                    SharedBoardChatCard(
+                                        item: sharedBoard,
+                                        isSearchMatch: currentSearchMatches.contains(item.id),
+                                        isSelectedSearchResult: selectedSearchResultID == item.id
+                                    )
+                                }
                             }
+                            .id(item.id)
                         }
                     }
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
+                .onGeometryChange(for: CGFloat.self) { geometry in
+                    let space = NamedCoordinateSpace.named("conversationViewport")
+                    guard let viewport = geometry.bounds(of: space) else { return 0 }
+                    return geometry.size.height - viewport.maxY
+                } action: { distanceFromBottom in
+                    // Only update view state at threshold crossings, keeping scrolling smooth.
+                    let isAwayFromBottom = distanceFromBottom > 80
+                    if isScrolledAwayFromBottom != isAwayFromBottom {
+                        isScrolledAwayFromBottom = isAwayFromBottom
+                    }
+                }
             }
+            .coordinateSpace(name: "conversationViewport")
+            // Scope interactive dismissal to the timeline, outside the composer.
             .scrollDismissesKeyboard(.interactively)
+            .onTapGesture { dismissComposerKeyboard() }
             .conversationBottomInitialAnchor()
+            .overlay(alignment: .bottom) {
+                if isScrolledAwayFromBottom, !currentTimeline.isEmpty {
+                    Button {
+                        markReadAndScroll(proxy: proxy, animated: !reduceMotion)
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .frame(width: 32, height: 32)
+                            .taskifyGlassControl(in: Circle())
+                            .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Scroll to latest message")
+                    .accessibilityIdentifier("chatScrollToBottom")
+                    .padding(.bottom, 12)
+                }
+            }
             .safeAreaInset(edge: .top, spacing: 6) {
                 VStack(spacing: 7) {
                     if isStranger {
@@ -2069,6 +2889,10 @@ private struct DirectMessageConversationView: View {
                     return
                 }
                 if isSearchingConversation, !searchQuery.isEmpty {
+                    // Still inside the thread, so arrivals during in-thread search count as
+                    // read too; the search overlay must not steal the scroll, but marking
+                    // must not be skipped.
+                    model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
                     selectNewestSearchResult(proxy: proxy)
                 } else {
                     markReadAndScroll(proxy: proxy, animated: true)
@@ -2079,6 +2903,18 @@ private struct DirectMessageConversationView: View {
             }
         }
         .background(TaskifyAppBackground())
+        .task(id: peerPublicKey) {
+            // Bot commands: seed from the persisted cache instantly, then
+            // reconcile with the peer's relays in the background. 1:1 chats
+            // only — the published NIP-51 list is the bot signal.
+            guard group == nil, !isSelfConversation else {
+                botCommands = []
+                return
+            }
+            botCommands = model.botCommands(publicKey: peerPublicKey) ?? []
+            await model.refreshBotCommands(publicKey: peerPublicKey)
+            botCommands = model.botCommands(publicKey: peerPublicKey) ?? []
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             conversationHeader
         }
@@ -2116,6 +2952,22 @@ private struct DirectMessageConversationView: View {
             GroupConversationDetailsView(groupID: peerPublicKey)
                 .environment(model)
         }
+        .sheet(isPresented: $showingContactDetails) {
+            NavigationStack {
+                NostrContactDetailView(
+                    contactPublicKey: peerPublicKey,
+                    fallbackDisplayName: contactDetailFallbackName
+                )
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingContactDetails = false }
+                    }
+                }
+            }
+            .environment(model)
+            .preferredColorScheme(.dark)
+            .tint(TaskifyTheme.accent)
+        }
         .sheet(isPresented: $showingContactSharePicker) {
             ShareContactPickerSheet { contact in
                 await shareContact(contact)
@@ -2124,24 +2976,52 @@ private struct DirectMessageConversationView: View {
         }
         .photosPicker(
             isPresented: $showingPhotoPicker,
-            selection: $photoSelection,
+            selection: $photoSelections,
+            maxSelectionCount: NostrDirectMessageAttachment.maximumBatchCount,
             matching: .any(of: [.images, .videos]),
             preferredItemEncoding: .automatic
         )
-        .onChange(of: photoSelection) { _, selection in
-            guard let selection else { return }
-            Task { await sendPhotoSelection(selection) }
+        .onChange(of: photoSelections) { _, selections in
+            guard !selections.isEmpty else { return }
+            attachmentPreparationTask = Task { await stagePhotoSelections(selections) }
         }
         .fileImporter(
             isPresented: $showingFileImporter,
             allowedContentTypes: [.item],
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
-            guard case .success(let URLs) = result, let URL = URLs.first else {
+            guard case .success(let URLs) = result, !URLs.isEmpty else {
                 if case .failure(let error) = result { model.errorMessage = error.localizedDescription }
                 return
             }
-            Task { await sendFile(URL) }
+            attachmentPreparationTask = Task {
+                for URL in URLs { await stageFile(URL) }
+            }
+        }
+        .onDisappear {
+            // Leaving the thread reads it through. The reactive onChange mark handles messages
+            // seen arriving, but it can miss: arrivals during in-thread search take the search
+            // branch, and once the message store hits its 400-message cap a new arrival also
+            // drops the oldest, leaving the timeline count — the onChange signal — unchanged.
+            // Anything that reached the snapshot while this view was open was displayed in it,
+            // so the list must not badge the thread afterwards.
+            model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
+            attachmentPreparationTask?.cancel()
+            timelineScrollTask?.cancel()
+            renderCache.clear()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { renderCache.clear() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            renderCache.clear()
+        }
+        .onChange(of: model.identityPublicKey) { _, _ in
+            renderCache.clear()
+            attachmentPreparationTask?.cancel()
+            attachmentDrafts.removeAll()
+            draft = ""
+            replyingTo = nil
         }
         .task(id: peerPublicKey) {
             await model.prepareDirectMessageRecipient(peerPublicKey)
@@ -2164,14 +3044,19 @@ private struct DirectMessageConversationView: View {
     private var conversationHeader: some View {
         ZStack {
             Button {
-                if group != nil { showingGroupDetails = true }
+                if group != nil {
+                    showingGroupDetails = true
+                } else if canShowContactDetails {
+                    showingContactDetails = true
+                }
             } label: {
                 VStack(spacing: 2) {
                     ChatPeerAvatar(
                         contact: contact,
                         publicKey: peerPublicKey,
                         size: 42,
-                        isGroup: group != nil
+                        group: group,
+                        recentMessages: messages
                     )
                     Text(conversationTitle)
                         .font(.system(size: 14, weight: .bold))
@@ -2186,7 +3071,8 @@ private struct DirectMessageConversationView: View {
                 .frame(maxWidth: 220)
             }
             .buttonStyle(.plain)
-            .disabled(group == nil)
+            .disabled(group == nil && !canShowContactDetails)
+            .accessibilityLabel(group == nil ? "Open contact details" : "Open group details")
 
             HStack {
                 HeaderIconButton(systemName: "chevron.left", accessibilityLabel: "Back to chats") {
@@ -2209,6 +3095,12 @@ private struct DirectMessageConversationView: View {
                             showingGroupDetails = true
                         } label: {
                             Label("Group Details", systemImage: "person.3")
+                        }
+                    } else if canShowContactDetails {
+                        Button {
+                            showingContactDetails = true
+                        } label: {
+                            Label("Contact Details", systemImage: "person.crop.circle")
                         }
                     }
                     Button {
@@ -2458,12 +3350,95 @@ private struct DirectMessageConversationView: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (!attachmentDrafts.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
             !isSending && !isSendingAttachment
     }
 
+    /// Commands matching the typed "/" prefix, shown in the Telegram-style
+    /// menu. Hidden once the draft stops matching (e.g. after inserting
+    /// "/name " the trailing space matches nothing).
+    private var visibleBotCommands: [BotCommand]? {
+        guard group == nil,
+              !isSearchingConversation,
+              draft.hasPrefix("/"),
+              !botCommands.isEmpty else { return nil }
+        let query = String(draft.dropFirst()).lowercased()
+        let matched = botCommands.filter { $0.name.hasPrefix(query) }
+        return matched.isEmpty ? nil : matched
+    }
+
+    private func botCommandMenu(_ commands: [BotCommand]) -> some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(commands) { command in
+                    Button {
+                        draft = "/\(command.name) "
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("/\(command.name)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(TaskifyTheme.accent)
+                            Spacer(minLength: 0)
+                            Text(command.description)
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Insert command \(command.name)")
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                min(geometry.size.height, 224)
+            } action: { height in
+                botCommandMenuHeight = height
+            }
+        }
+        .frame(height: botCommandMenuHeight)
+        .padding(.horizontal, 9)
+    }
+
+    /// Caption for the upload progress area: "file i of N" once a batch grows
+    /// past a single file.
+    private var attachmentUploadProgressText: String {
+        let base = attachmentProgress?.message ?? "Preparing attachment…"
+        guard attachmentUploadFileTotal > 1, attachmentProgress != .sendingMessage else { return base }
+        return "Sending \(attachmentUploadFileIndex + 1) of \(attachmentUploadFileTotal) — \(base)"
+    }
+
+    /// Stages one more attachment, refusing past the batch cap. A refused
+    /// draft is never retained, so its deinit cleans up the temp file.
+    @MainActor
+    private func appendDraft(_ draft: ChatAttachmentDraft) -> Bool {
+        guard attachmentDrafts.count < NostrDirectMessageAttachment.maximumBatchCount else {
+            model.errorMessage = "You can attach up to \(NostrDirectMessageAttachment.maximumBatchCount) files per message."
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return false
+        }
+        attachmentDrafts.append(draft)
+        return true
+    }
+
+    @MainActor
+    private func removeDraft(_ id: UUID) {
+        attachmentDrafts.removeAll { $0.id == id }
+        if attachmentDrafts.isEmpty { attachmentSendError = nil }
+    }
+
     private var composer: some View {
+        TaskifyGlassControlGroup(spacing: 4) {
         VStack(spacing: 6) {
+            if let botMenuCommands = visibleBotCommands {
+                botCommandMenu(botMenuCommands)
+                    .padding(.vertical, 4)
+                    .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+            }
             if let replyingTo {
                 HStack(spacing: 10) {
                     RoundedRectangle(cornerRadius: 2)
@@ -2486,12 +3461,30 @@ private struct DirectMessageConversationView: View {
                             .foregroundStyle(TaskifyTheme.secondaryText)
                     }
                     .buttonStyle(.plain)
+                    .disabled(isSending)
                 }
                 .padding(.horizontal, 9)
+                .padding(.vertical, 8)
+                .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
 
             HStack(alignment: .bottom, spacing: 9) {
                 Menu {
+                    // Compile-time simulator exclusion, not a runtime availability check:
+                    // device users always get the entries, and the Simulator (no camera)
+                    // never does.
+                    #if !targetEnvironment(simulator)
+                    Button {
+                        showingCamera = true
+                    } label: {
+                        Label("Camera", systemImage: "camera")
+                    }
+                    Button {
+                        showingDocumentScanner = true
+                    } label: {
+                        Label("Scan Document", systemImage: "doc.text.viewfinder")
+                    }
+                    #endif
                     Button {
                         showingPhotoPicker = true
                     } label: {
@@ -2524,75 +3517,207 @@ private struct DirectMessageConversationView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isSending || isSendingAttachment)
-                .accessibilityLabel(isSendingAttachment ? "Sending attachment" : "Add attachment")
+                .accessibilityLabel(isSendingAttachment ? "Preparing attachment" : "Add attachment")
 
-                TextField("Message", text: $draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .focused($composerFocused)
-                    .submitLabel(.send)
-                    .onSubmit { send() }
-                    .padding(.horizontal, 15)
-                    .padding(.vertical, 11)
-                    .taskifyGlassControl(in: Capsule())
-
-                Button {
-                    send()
-                } label: {
-                    Group {
-                        if isSending {
-                            ProgressView().tint(.white)
-                        } else {
-                            Image(systemName: "paperplane.fill")
-                                .font(.system(size: 16, weight: .bold))
+                VStack(alignment: .leading, spacing: 8) {
+                    if !attachmentDrafts.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(attachmentDrafts) { attachmentDraft in
+                                    TaskifyAttachmentDraftPreview(fileURL: attachmentDraft.fileURL,
+                                        name: attachmentDraft.name, mimeType: attachmentDraft.mimeType,
+                                        size: attachmentDraft.size, isBusy: isSending) {
+                                            removeDraft(attachmentDraft.id)
+                                        }
+                                }
+                            }
+                            .padding(.horizontal, 9)
+                            .padding(.top, 8)
                         }
+                        if isSending {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(attachmentUploadProgressText)
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if let fraction = attachmentProgress?.fractionCompleted {
+                                    ProgressView(value: fraction)
+                                }
+                                if attachmentProgress != .sendingMessage {
+                                    Button("Cancel upload") { attachmentSendTask?.cancel() }
+                                        .font(.caption).buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 9)
+                        }
+                        if let attachmentSendError {
+                            Text(attachmentSendError).font(.caption).foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 9)
+                        }
+                        Divider().padding(.horizontal, 9)
                     }
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .taskifyGlassControl(
-                        in: Circle(),
-                        tint: TaskifyTheme.accent.opacity(0.72),
-                        fallbackFill: TaskifyTheme.accent
-                    )
+                    HStack(alignment: .bottom, spacing: 4) {
+                        let composerPrompt = attachmentDrafts.isEmpty ? "Message" : "Add comment or Send"
+                        ZStack(alignment: .topLeading) {
+                            if draft.isEmpty {
+                                Text(composerPrompt)
+                                    .font(.body)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                    .padding(.top, 10)
+                                    .allowsHitTesting(false)
+                            }
+                            ChatComposerTextView(
+                                text: $draft,
+                                isFocused: $composerFocused,
+                                isEnabled: !isSending,
+                                dismissKeyboard: isSearchingConversation,
+                                accessibilityLabel: composerPrompt,
+                                onSubmit: send,
+                                pasteAttachment: pasteAttachmentProviders
+                            )
+                        }
+                        .padding(.leading, 15)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button(action: send) {
+                            Group {
+                                if isSending { ProgressView().tint(.white) }
+                                else {
+                                    Image(systemName: "arrow.up")
+                                        .font(.system(size: 17, weight: .bold))
+                                }
+                            }
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .taskifyGlassControl(in: Circle(), tint: TaskifyTheme.accent.opacity(0.72),
+                                fallbackFill: TaskifyTheme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .opacity(canSend ? 1 : 0.45)
+                        .disabled(!canSend)
+                        .accessibilityLabel(attachmentDrafts.isEmpty ? "Send message" : "Send attachments")
+                    }
                 }
-                .buttonStyle(.plain)
-                .opacity(canSend ? 1 : 0.45)
-                .disabled(!canSend)
-                .accessibilityLabel("Send message")
+                .padding(3)
+                .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 21, style: .continuous))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 5)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(height: 0.5)
+        // Each control floats on its own glass surface; the spacing between them
+        // stays transparent so the conversation remains visible underneath.
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
+        .fullScreenCover(isPresented: $showingCamera) {
+            TaskAttachmentCameraPicker(
+                onCapture: { image in
+                    showingCamera = false
+                    attachmentPreparationTask?.cancel()
+                    attachmentPreparationTask = Task { await stageCapturedPhoto(image) }
+                },
+                onCancel: { showingCamera = false }
+            )
+            .ignoresSafeArea()
         }
+        .fullScreenCover(isPresented: $showingDocumentScanner) {
+            TaskAttachmentDocumentScanner(
+                onScan: { pages in
+                    showingDocumentScanner = false
+                    attachmentPreparationTask?.cancel()
+                    attachmentPreparationTask = Task { await stageScannedDocument(pages) }
+                },
+                onCancel: { showingDocumentScanner = false },
+                onError: { error in
+                    showingDocumentScanner = false
+                    model.errorMessage = error.localizedDescription
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
+            )
+            .ignoresSafeArea()
+        }
+        }
+    }
+
+    /// Tapping the timeline while the keyboard is open closes it. The FocusState alone
+    /// can't resign a UITextView, so drop first responder explicitly too.
+    @MainActor
+    private func dismissComposerKeyboard() {
+        composerFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
+        )
     }
 
     private func send() {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, !isSending else { return }
+        guard canSend else { return }
         let capturedReply = replyingTo
-        draft = ""
-        replyingTo = nil
+        let capturedAttachments = attachmentDrafts
+        let account = model.identityPublicKey
+        attachmentSendError = nil
+        attachmentProgress = capturedAttachments.first.map { .encrypting(completed: 0, total: $0.size) }
+        attachmentUploadFileTotal = capturedAttachments.count
+        attachmentUploadFileIndex = 0
         isSending = true
-        Task {
+        attachmentSendTask = Task {
+            // All-or-nothing: every file uploads before anything is sent, and a
+            // failed upload leaves the drafts staged so a retry reuses the
+            // per-draft cached uploads instead of re-uploading everything.
+            var uploadingName: String?
             do {
-                try await model.sendDirectMessage(
-                    to: peerPublicKey,
-                    content: content,
-                    replyToEventID: capturedReply?.rumorEventID
-                )
+                if !capturedAttachments.isEmpty {
+                    var uploaded: [NostrDirectMessageAttachment] = []
+                    uploaded.reserveCapacity(capturedAttachments.count)
+                    for (index, draftAttachment) in capturedAttachments.enumerated() {
+                        attachmentUploadFileIndex = index
+                        attachmentProgress = .encrypting(completed: 0, total: draftAttachment.size)
+                        uploadingName = draftAttachment.name
+                        let attachment: NostrDirectMessageAttachment
+                        if let uploadedCached = draftAttachment.uploadedAttachment {
+                            attachment = uploadedCached
+                        } else {
+                            attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
+                                fileURL: draftAttachment.fileURL, name: draftAttachment.name,
+                                mimeType: draftAttachment.mimeType, progress: { progress in
+                                    Task { @MainActor in
+                                        guard isSending, attachmentProgress != .sendingMessage else { return }
+                                        attachmentProgress = progress
+                                    }
+                                })
+                            // If queueing fails, a retry can reuse the completed upload.
+                            draftAttachment.uploadedAttachment = attachment
+                        }
+                        uploaded.append(attachment)
+                    }
+                    uploadingName = nil
+                    try Task.checkCancellation()
+                    guard account == model.identityPublicKey else { throw NostrDirectMessageError.identityUnavailable }
+                    attachmentProgress = .sendingMessage
+                    try await model.sendDirectMessageAttachments(to: peerPublicKey, attachments: uploaded,
+                        replyToEventID: capturedReply?.rumorEventID, comment: content)
+                } else {
+                    try await model.sendDirectMessage(to: peerPublicKey, content: content,
+                        replyToEventID: capturedReply?.rumorEventID)
+                }
+                attachmentDrafts.removeAll()
+                draft = ""
+                replyingTo = nil
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } catch {
-                draft = content
-                replyingTo = capturedReply
-                model.errorMessage = error.localizedDescription
-                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
+                    if !capturedAttachments.isEmpty {
+                        if let failedName = uploadingName {
+                            attachmentSendError = "\(failedName): \(error.localizedDescription)"
+                        } else {
+                            attachmentSendError = error.localizedDescription
+                        }
+                    } else {
+                        model.errorMessage = error.localizedDescription
+                    }
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
             }
             isSending = false
+            attachmentProgress = nil
+            attachmentSendTask = nil
             composerFocused = true
         }
     }
@@ -2613,87 +3738,287 @@ private struct DirectMessageConversationView: View {
     }
 
     @MainActor
-    private func sendPhotoSelection(_ selection: PhotosPickerItem) async {
-        defer { photoSelection = nil }
-        do {
-            guard let data = try await selection.loadTransferable(type: Data.self), !data.isEmpty else {
-                throw ChatAttachmentError.unreadableFile
+    private func stagePhotoSelections(_ selections: [PhotosPickerItem]) async {
+        guard !isSending, !isSendingAttachment else { photoSelections = []; return }
+        isSendingAttachment = true
+        defer { photoSelections = []; isSendingAttachment = false }
+        for selection in selections {
+            var imported: URL?
+            do {
+                guard let file = try await selection.loadTransferable(type: TaskifyPhotoFile.self) else {
+                    throw ChatAttachmentError.unreadableFile
+                }
+                imported = file.url
+                try Task.checkCancellation()
+                let size = try AttachmentFiles.size(file.url)
+                guard size > 0 else { throw AttachmentFileError.empty }
+                let type = selection.supportedContentTypes.first ?? .data
+                let staged = ChatAttachmentDraft(fileURL: file.url,
+                    name: "\(type.conforms(to: .movie) ? "Video" : "Photo").\(type.preferredFilenameExtension ?? "bin")",
+                    mimeType: type.preferredMIMEType ?? "application/octet-stream", size: size)
+                imported = nil
+                guard appendDraft(staged) else { continue }
+                attachmentSendError = nil
+                composerFocused = true
+            } catch {
+                if let imported { try? FileManager.default.removeItem(at: imported) }
+                guard !Task.isCancelled else { return }
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
-            let contentType = selection.supportedContentTypes.first ?? .data
-            let mimeType = contentType.preferredMIMEType ?? "application/octet-stream"
-            let prefix = contentType.conforms(to: .movie) ? "Video" : "Photo"
-            let name = "\(prefix).\(contentType.preferredFilenameExtension ?? "bin")"
-            let dimensions = contentType.conforms(to: .image)
-                ? await DirectMessageAttachmentImageLoader.dimensions(data: data)
-                : nil
-            try await sendAttachment(
-                data: data,
-                name: name,
-                mimeType: mimeType,
-                width: dimensions?.width,
-                height: dimensions?.height
-            )
-        } catch {
-            model.errorMessage = error.localizedDescription
-            UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
 
     @MainActor
-    private func sendFile(_ fileURL: URL) async {
-        let accessing = fileURL.startAccessingSecurityScopedResource()
-        defer {
-            if accessing { fileURL.stopAccessingSecurityScopedResource() }
-        }
-        do {
-            let values = try fileURL.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey, .nameKey])
-            if let size = values.fileSize, size > TaskDocumentContract.maximumUploadBytes {
-                throw TaskAttachmentUploadError.fileTooLarge
-            }
-            let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
-            let type = values.contentType
-            let dimensions = type?.conforms(to: .image) == true
-                ? await DirectMessageAttachmentImageLoader.dimensions(data: data)
-                : nil
-            try await sendAttachment(
-                data: data,
-                name: values.name ?? fileURL.lastPathComponent,
-                mimeType: type?.preferredMIMEType ?? "application/octet-stream",
-                width: dimensions?.width,
-                height: dimensions?.height
-            )
-        } catch {
-            model.errorMessage = error.localizedDescription
-            UINotificationFeedbackGenerator().notificationOccurred(.error)
-        }
-    }
-
-    @MainActor
-    private func sendAttachment(
-        data: Data,
-        name: String,
-        mimeType: String,
-        width: Int?,
-        height: Int?
-    ) async throws {
+    private func stageFile(_ fileURL: URL) async {
         guard !isSending, !isSendingAttachment else { return }
-        let capturedReply = replyingTo
         isSendingAttachment = true
         defer { isSendingAttachment = false }
-        let attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
-            data: data,
-            name: name,
-            mimeType: mimeType,
-            width: width,
-            height: height
-        )
-        try await model.sendDirectMessageAttachment(
-            to: peerPublicKey,
-            attachment: attachment,
-            replyToEventID: capturedReply?.rumorEventID
-        )
-        replyingTo = nil
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        let accessing = fileURL.startAccessingSecurityScopedResource()
+        defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
+        var imported: URL?
+        do {
+            let values = try fileURL.resourceValues(forKeys: [.contentTypeKey, .nameKey])
+            let url = try await AttachmentFiles.work { try AttachmentFiles.importFile(fileURL) }
+            imported = url
+            try Task.checkCancellation()
+            let size = try AttachmentFiles.size(url)
+            guard size > 0 else { throw AttachmentFileError.empty }
+            let staged = ChatAttachmentDraft(fileURL: url, name: values.name ?? fileURL.lastPathComponent,
+                mimeType: values.contentType?.preferredMIMEType ?? "application/octet-stream", size: size)
+            imported = nil
+            guard appendDraft(staged) else { return }
+            attachmentSendError = nil
+            composerFocused = true
+        } catch {
+            if let imported { try? FileManager.default.removeItem(at: imported) }
+            guard !Task.isCancelled else { return }
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    @MainActor
+    private func pasteAttachmentProviders(_ providers: [NSItemProvider]) -> Bool {
+        guard Self.clipboardAttachmentSource(in: providers) != nil else { return false }
+        guard !isSending, !isSendingAttachment else { return true }
+        attachmentPreparationTask?.cancel()
+        attachmentPreparationTask = Task { await stageClipboardAttachment(providers) }
+        return true
+    }
+
+    @MainActor
+    private func stageCapturedPhoto(_ image: UIImage) async {
+        guard !isSending, !isSendingAttachment else { return }
+        isSendingAttachment = true
+        defer { isSendingAttachment = false }
+        var staged: URL?
+        do {
+            guard let jpegData = image.jpegData(compressionQuality: 0.88) else {
+                throw AttachmentFileError.invalidFile
+            }
+            let url = try await AttachmentFiles.work { try AttachmentFiles.write(jpegData) }
+            staged = url
+            try Task.checkCancellation()
+            let size = try AttachmentFiles.size(url)
+            let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
+            let draftAttachment = ChatAttachmentDraft(
+                fileURL: url,
+                name: "photo-\(timestamp).jpg",
+                mimeType: "image/jpeg",
+                size: size
+            )
+            staged = nil
+            guard appendDraft(draftAttachment) else { return }
+            attachmentSendError = nil
+            composerFocused = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            if let staged { try? FileManager.default.removeItem(at: staged) }
+            guard !Task.isCancelled else { return }
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    @MainActor
+    private func stageScannedDocument(_ pages: [UIImage]) async {
+        guard !isSending, !isSendingAttachment, !pages.isEmpty else { return }
+        isSendingAttachment = true
+        defer { isSendingAttachment = false }
+        var staged: URL?
+        do {
+            let pdfData = try await AttachmentFiles.work {
+                try TaskAttachmentPDFRenderer.pdfData(from: pages)
+            }
+            let url = try await AttachmentFiles.work { try AttachmentFiles.write(pdfData) }
+            staged = url
+            try Task.checkCancellation()
+            let size = try AttachmentFiles.size(url)
+            let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
+            let draftAttachment = ChatAttachmentDraft(
+                fileURL: url,
+                name: "scan-\(timestamp).pdf",
+                mimeType: "application/pdf",
+                size: size
+            )
+            staged = nil
+            guard appendDraft(draftAttachment) else { return }
+            attachmentSendError = nil
+            composerFocused = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            if let staged { try? FileManager.default.removeItem(at: staged) }
+            guard !Task.isCancelled else { return }
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    @MainActor
+    private func stageClipboardAttachment(_ providers: [NSItemProvider]) async {
+        guard !isSending, !isSendingAttachment,
+              let source = Self.clipboardAttachmentSource(in: providers) else { return }
+        isSendingAttachment = true
+        defer { isSendingAttachment = false }
+        var imported: URL?
+        do {
+            let staged: (url: URL, name: String, type: UTType?)
+            if let type = source.contentType {
+                let url = try await Self.importClipboardRepresentation(
+                    from: source.provider,
+                    contentType: type
+                )
+                let baseName = source.provider.suggestedName?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallbackName: String
+                if type.conforms(to: .image) { fallbackName = "Pasted Image" }
+                else if type.conforms(to: .movie) { fallbackName = "Pasted Video" }
+                else if type.conforms(to: .audio) { fallbackName = "Pasted Audio" }
+                else { fallbackName = "Pasted File" }
+                let suppliedName = baseName.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackName
+                let name = URL(fileURLWithPath: suppliedName).pathExtension.isEmpty
+                    ? "\(suppliedName).\(type.preferredFilenameExtension ?? "bin")"
+                    : suppliedName
+                staged = (url, name, type)
+            } else {
+                let fileURL = try await Self.clipboardFileURL(from: source.provider)
+                let values = try fileURL.resourceValues(forKeys: [.contentTypeKey, .nameKey])
+                let url = try await AttachmentFiles.work { try AttachmentFiles.importFile(fileURL) }
+                staged = (
+                    url,
+                    values.name ?? fileURL.lastPathComponent,
+                    values.contentType ?? UTType(filenameExtension: fileURL.pathExtension)
+                )
+            }
+            imported = staged.url
+            try Task.checkCancellation()
+            let size = try AttachmentFiles.size(staged.url)
+            guard size > 0 else { throw AttachmentFileError.empty }
+            let draftAttachment = ChatAttachmentDraft(
+                fileURL: staged.url,
+                name: staged.name,
+                mimeType: staged.type?.preferredMIMEType ?? "application/octet-stream",
+                size: size
+            )
+            imported = nil
+            guard appendDraft(draftAttachment) else { return }
+            attachmentSendError = nil
+            composerFocused = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            if let imported { try? FileManager.default.removeItem(at: imported) }
+            guard !Task.isCancelled else { return }
+            model.errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    private struct ClipboardAttachmentSource {
+        let provider: NSItemProvider
+        let contentType: UTType?
+    }
+
+    private static func clipboardAttachmentSource(
+        in providers: [NSItemProvider]
+    ) -> ClipboardAttachmentSource? {
+        // If the clipboard can paste as text at all, text wins: plain or styled text
+        // copies must never stage as a file attachment, no matter what companion types
+        // the source app registers. Media with no text representation (a copied
+        // screenshot, video, or file) still stages as an attachment below.
+        let hasTextRepresentation = UIPasteboard.general.hasStrings || providers.contains { provider in
+            provider.registeredTypeIdentifiers.compactMap(UTType.init).contains {
+                $0.conforms(to: .text)
+            }
+        }
+        if hasTextRepresentation { return nil }
+        for provider in providers {
+            let types = provider.registeredTypeIdentifiers.compactMap(UTType.init)
+            let contentType = types.first {
+                $0.conforms(to: .image) || $0.conforms(to: .movie) || $0.conforms(to: .audio)
+            } ?? types.first {
+                $0.conforms(to: .data) &&
+                    !$0.conforms(to: .text) &&
+                    !$0.conforms(to: .url)
+            }
+            if let contentType { return ClipboardAttachmentSource(provider: provider, contentType: contentType) }
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                return ClipboardAttachmentSource(provider: provider, contentType: nil)
+            }
+        }
+        return nil
+    }
+
+    private static func importClipboardRepresentation(
+        from provider: NSItemProvider,
+        contentType: UTType
+    ) async throws -> URL {
+        do {
+            return try await withCheckedThrowingContinuation { continuation in
+                provider.loadFileRepresentation(forTypeIdentifier: contentType.identifier) { url, error in
+                    do {
+                        if let error { throw error }
+                        guard let url else { throw AttachmentFileError.invalidFile }
+                        // The provider owns this URL only for the duration of its callback.
+                        continuation.resume(returning: try AttachmentFiles.importFile(url))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } catch {
+            return try await withCheckedThrowingContinuation { continuation in
+                provider.loadDataRepresentation(forTypeIdentifier: contentType.identifier) { data, fallbackError in
+                    do {
+                        if let fallbackError { throw fallbackError }
+                        guard let data else { throw AttachmentFileError.invalidFile }
+                        continuation.resume(returning: try AttachmentFiles.write(data))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func clipboardFileURL(from provider: NSItemProvider) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadItem(
+                forTypeIdentifier: UTType.fileURL.identifier,
+                options: nil
+            ) { value, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let url = value as? URL {
+                    continuation.resume(returning: url)
+                } else if let data = value as? Data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(throwing: AttachmentFileError.invalidFile)
+                }
+            }
+        }
     }
 
     private func shouldShowDayDivider(at index: Int, in currentTimeline: [ChatTimelineItem]) -> Bool {
@@ -2753,9 +4078,11 @@ private struct DirectMessageConversationView: View {
         animated: Bool
     ) {
         model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
+        timelineScrollTask?.cancel()
         guard let timelineItemID = targetID ?? timeline.last?.id else { return }
-        Task { @MainActor in
+        timelineScrollTask = Task { @MainActor in
             await Task.yield()
+            guard !Task.isCancelled else { return }
             if animated {
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(timelineItemID, anchor: targetID == nil ? .bottom : .center)
@@ -3028,6 +4355,7 @@ private struct SharedContactChatCard: View {
     @Environment(AppModel.self) private var model
     @State private var isSaving = false
     let item: SharedContactInboxItem
+    let showsSentStatus: Bool
     let isSearchMatch: Bool
     let isSelectedSearchResult: Bool
 
@@ -3038,7 +4366,13 @@ private struct SharedContactChatCard: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            sharedContactAvatar
+            if !item.isIncoming {
+                Spacer(minLength: 28)
+            }
+
+            if item.isIncoming {
+                sharedContactAvatar
+            }
 
             VStack(alignment: .leading, spacing: 11) {
                 HStack {
@@ -3080,41 +4414,47 @@ private struct SharedContactChatCard: View {
                         .lineLimit(1)
                 }
 
-                if item.status == .pending {
-                    HStack(spacing: 8) {
-                        Button {
-                            withAnimation(.snappy) {
-                                model.dismissSharedContactInboxItem(item.id)
+                if item.isIncoming {
+                    if item.status == .pending {
+                        HStack(spacing: 8) {
+                            Button {
+                                withAnimation(.snappy) {
+                                    model.dismissSharedContactInboxItem(item.id)
+                                }
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            } label: {
+                                Text("Dismiss")
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 36)
                             }
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        } label: {
-                            Text("Dismiss")
+                            .buttonStyle(.bordered)
+
+                            Button { saveContact() } label: {
+                                Group {
+                                    if isSaving {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Text(isInContacts ? "Confirm" : "Add Contact")
+                                    }
+                                }
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 36)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button { saveContact() } label: {
-                            Group {
-                                if isSaving {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Text(isInContacts ? "Confirm" : "Add Contact")
-                                }
                             }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 36)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isSaving)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isSaving)
+                    } else {
+                        Label(
+                            item.status == .accepted ? "In Contacts" : "Dismissed",
+                            systemImage: item.status == .accepted ? "person.crop.circle.badge.checkmark" : "xmark.circle"
+                        )
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(item.status == .accepted ? Color.green : TaskifyTheme.secondaryText)
                     }
-                } else {
-                    Label(
-                        item.status == .accepted ? "In Contacts" : "Dismissed",
-                        systemImage: item.status == .accepted ? "person.crop.circle.badge.checkmark" : "xmark.circle"
-                    )
+                } else if showsSentStatus {
+                    Label("Sent", systemImage: "checkmark")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(item.status == .accepted ? Color.green : TaskifyTheme.secondaryText)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
                 }
             }
             .padding(14)
@@ -3122,9 +4462,11 @@ private struct SharedContactChatCard: View {
             .taskifyGlass(cornerRadius: 20)
             .overlay(searchBorder)
 
-            Spacer(minLength: 28)
+            if item.isIncoming {
+                Spacer(minLength: 28)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: item.isIncoming ? .leading : .trailing)
     }
 
     private var sharedContactAvatar: some View {
@@ -3458,7 +4800,210 @@ private struct SharedCalendarInviteChatCard: View {
     }
 }
 
-private struct DirectMessageBubble: View {
+private struct DirectMessageMarkdownText: View {
+    private let renderCache: ChatConversationRenderCache
+    private let document: NostrChatMarkdownDocument
+    private let isIncoming: Bool
+    @State private var copiedCode: String?
+
+    init(markdown: String, isIncoming: Bool, renderCache: ChatConversationRenderCache) {
+        self.renderCache = renderCache
+        document = renderCache.document(markdown)
+        self.isIncoming = isIncoming
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(document.blocks.enumerated()), id: \.offset) { index, block in
+                blockView(block)
+                    .padding(.top, topPadding(for: block, at: index))
+            }
+        }
+        .textSelection(.enabled)
+        .tint(isIncoming ? TaskifyTheme.accent : Color.white)
+        .environment(\.openURL, OpenURLAction { url in
+            guard let code = NostrChatMarkdown.copiedCode(from: url) else {
+                return .systemAction
+            }
+            copy(code)
+            return .handled
+        })
+        .overlay(alignment: .topTrailing) {
+            if copiedCode != nil {
+                Label("Copied", systemImage: "checkmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.black.opacity(0.78), in: Capsule())
+                    .offset(y: -29)
+                    .transition(.scale.combined(with: .opacity))
+                    .allowsHitTesting(false)
+            }
+        }
+        .task(id: copiedCode) {
+            guard copiedCode != nil else { return }
+            do {
+                try await Task.sleep(for: .seconds(1.25))
+            } catch {
+                return
+            }
+            withAnimation(.easeOut(duration: 0.18)) {
+                copiedCode = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: NostrChatMarkdownBlock) -> some View {
+        switch block {
+        case .paragraph(let content):
+            inlineText(content, font: .system(size: 16))
+        case let .heading(level, content):
+            inlineText(content, font: headingFont(level: level))
+        case let .unorderedListItem(depth, content):
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("•")
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(width: 12, alignment: .trailing)
+                inlineText(content, font: .system(size: 16))
+            }
+            .padding(.leading, CGFloat(depth) * 15)
+        case let .orderedListItem(depth, number, content):
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("\(number).")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(minWidth: 18, alignment: .trailing)
+                inlineText(content, font: .system(size: 16))
+            }
+            .padding(.leading, CGFloat(depth) * 15)
+        case let .blockQuote(depth, content):
+            HStack(alignment: .top, spacing: 8) {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(foregroundColor.opacity(0.38))
+                    .frame(width: 3)
+                inlineText(content, font: .system(size: 16).italic())
+                    .foregroundStyle(foregroundColor.opacity(0.88))
+            }
+            .padding(.leading, CGFloat(max(0, depth - 1)) * 12)
+        case let .codeBlock(language, content):
+            VStack(alignment: .leading, spacing: 5) {
+                if let language {
+                    Text(language.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(foregroundColor.opacity(0.62))
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(content)
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundStyle(foregroundColor)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .padding(10)
+            .background(codeBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .onTapGesture { copy(content) }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Copies code")
+        case .thematicBreak:
+            Rectangle()
+                .fill(foregroundColor.opacity(0.24))
+                .frame(minWidth: 120, maxWidth: .infinity, minHeight: 1, maxHeight: 1)
+        }
+    }
+
+    private func inlineText(_ markdown: String, font: Font) -> some View {
+        Text(styledInlineMarkdown(markdown))
+            .font(font)
+            .foregroundStyle(foregroundColor)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func styledInlineMarkdown(_ markdown: String) -> AttributedString {
+        var attributed = renderCache.inline(markdown)
+        let runs = attributed.runs.map { run in
+            (
+                range: run.range,
+                intent: run.inlinePresentationIntent,
+                link: run.link
+            )
+        }
+        for run in runs {
+            if run.intent?.contains(.code) == true {
+                let code = String(attributed[run.range].characters)
+                attributed[run.range].font = .system(
+                    size: 14.5,
+                    weight: .medium,
+                    design: .monospaced
+                )
+                attributed[run.range].foregroundColor = foregroundColor
+                attributed[run.range].backgroundColor = codeBackground
+                attributed[run.range].link = NostrChatMarkdown.copyURL(for: code)
+                continue
+            }
+            if let link = run.link, !isSafeExternalLink(link) {
+                attributed[run.range].link = nil
+            }
+        }
+        return attributed
+    }
+
+    private var foregroundColor: Color {
+        isIncoming ? TaskifyTheme.primaryText : .white
+    }
+
+    private var codeBackground: Color {
+        isIncoming ? Color.white.opacity(0.12) : Color.black.opacity(0.2)
+    }
+
+    private func headingFont(level: Int) -> Font {
+        switch level {
+        case 1: .system(size: 22, weight: .bold)
+        case 2: .system(size: 20, weight: .bold)
+        case 3: .system(size: 18, weight: .bold)
+        default: .system(size: 16, weight: .semibold)
+        }
+    }
+
+    private func topPadding(for block: NostrChatMarkdownBlock, at index: Int) -> CGFloat {
+        guard index > 0 else { return 0 }
+        let previous = document.blocks[index - 1]
+        if isListItem(block), isListItem(previous) { return 4 }
+        if isBlockQuote(block), isBlockQuote(previous) { return 4 }
+        return 10
+    }
+
+    private func isListItem(_ block: NostrChatMarkdownBlock) -> Bool {
+        switch block {
+        case .unorderedListItem, .orderedListItem: true
+        default: false
+        }
+    }
+
+    private func isBlockQuote(_ block: NostrChatMarkdownBlock) -> Bool {
+        if case .blockQuote = block { return true }
+        return false
+    }
+
+    private func isSafeExternalLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "https" || scheme == "http" || scheme == "mailto"
+    }
+
+    private func copy(_ code: String) {
+        guard !code.isEmpty else { return }
+        UIPasteboard.general.string = code
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
+            copiedCode = code
+        }
+    }
+}
+
+private struct DirectMessageBubble: View, Equatable {
+    let renderCache: ChatConversationRenderCache
     let message: NostrDirectMessage
     let repliedMessage: NostrDirectMessage?
     let reactions: [NostrDirectMessageReaction]
@@ -3467,6 +5012,7 @@ private struct DirectMessageBubble: View {
     let showsSenderAvatar: Bool
     let isGroupedWithPrevious: Bool
     let isGroupedWithNext: Bool
+    let showsSentStatus: Bool
     let isSearchMatch: Bool
     let isSelectedSearchResult: Bool
 
@@ -3490,6 +5036,7 @@ private struct DirectMessageBubble: View {
         VStack(spacing: repliedMessage == nil ? 0 : 2) {
             if let repliedMessage {
                 DirectMessageReplyContext(
+                    renderCache: renderCache,
                     message: repliedMessage,
                     responseIsIncoming: message.isIncoming,
                     responseHasAvatar: showsSenderAvatar
@@ -3527,10 +5074,11 @@ private struct DirectMessageBubble: View {
                         } else if let detectedPaymentToken {
                             DirectMessagePaymentCard(token: detectedPaymentToken)
                         } else {
-                            Text(message.content)
-                                .font(.system(size: 16))
-                                .foregroundStyle(message.isIncoming ? TaskifyTheme.primaryText : Color.white)
-                                .textSelection(.enabled)
+                            DirectMessageMarkdownText(
+                                markdown: message.content,
+                                isIncoming: message.isIncoming,
+                                renderCache: renderCache
+                            )
 
                             ForEach(links, id: \.absoluteString) { url in
                                 DirectMessageLinkCard(url: url, isIncoming: message.isIncoming)
@@ -3558,7 +5106,8 @@ private struct DirectMessageBubble: View {
                     }
                     .padding(.top, reactions.isEmpty ? 0 : 30)
 
-                    if !message.isIncoming, let deliveryState = message.deliveryState {
+                    if !message.isIncoming, let deliveryState = message.deliveryState,
+                       deliveryState != .sent || showsSentStatus {
                         HStack(spacing: 3) {
                             Image(systemName: deliveryStateSymbol(deliveryState))
                             Text(deliveryStateLabel(deliveryState))
@@ -3616,6 +5165,7 @@ private struct DirectMessageBubble: View {
 }
 
 private struct DirectMessageReplyContext: View {
+    let renderCache: ChatConversationRenderCache
     let message: NostrDirectMessage
     let responseIsIncoming: Bool
     let responseHasAvatar: Bool
@@ -3640,7 +5190,7 @@ private struct DirectMessageReplyContext: View {
             HStack(spacing: 0) {
                 if !message.isIncoming { Spacer(minLength: 68) }
 
-                Text(message.displayContent)
+                Text(renderCache.inline(message.displayContent))
                     .font(.caption)
                     .foregroundStyle(textColor)
                     .lineLimit(2)
@@ -4000,6 +5550,9 @@ private struct DirectMessageAttachmentView: View {
             await loadImage()
         }
         .quickLookPreview($previewURL)
+        .onChange(of: previewURL) { old, new in
+            if let old, old != new { try? FileManager.default.removeItem(at: old) }
+        }
         .accessibilityLabel("Open \(attachment.displayName)")
     }
 
@@ -4137,29 +5690,19 @@ private struct DirectMessageAttachmentView: View {
         return min(250, max(140, 265 * CGFloat(height) / CGFloat(width)))
     }
 
-    private var attachmentIcon: String {
-        if attachment.isVideo { return "video.fill" }
-        if attachment.isAudio { return "waveform" }
-        if attachment.mimeType.lowercased().contains("pdf") { return "doc.richtext.fill" }
-        return "doc.fill"
-    }
+    private var attachmentIcon: String { attachment.detailIcon }
 
-    private var fileKind: String {
-        if attachment.isVideo { return "VIDEO" }
-        if attachment.isAudio { return "AUDIO" }
-        if attachment.mimeType.lowercased().contains("pdf") { return "PDF" }
-        return "FILE"
-    }
+    private var fileKind: String { attachment.detailKindLabel }
 
     @MainActor
     private func loadImage() async {
         isLoading = true
         defer { isLoading = false }
         do {
-            let data = try await DirectMessageAttachmentDataLoader.shared.data(for: attachment)
+            let file = try await DirectMessageAttachmentDataLoader.shared.file(for: attachment)
             guard !Task.isCancelled else { return }
             guard let decoded = await DirectMessageAttachmentImageLoader.shared.image(
-                data: data,
+                fileURL: file,
                 cacheKey: attachment.cacheKey,
                 maximumPixelSize: 1_080
             ) else {
@@ -4183,9 +5726,9 @@ private struct DirectMessageAttachmentView: View {
         Task { @MainActor in
             defer { isLoading = false }
             do {
-                let data = try await DirectMessageAttachmentDataLoader.shared.data(for: attachment)
+                let file = try await DirectMessageAttachmentDataLoader.shared.file(for: attachment)
                 previewURL = try DirectMessageAttachmentDataLoader.previewFile(
-                    data: data,
+                    file: file,
                     attachment: attachment
                 )
                 failed = false
@@ -4198,58 +5741,141 @@ private struct DirectMessageAttachmentView: View {
 
 private actor DirectMessageAttachmentDataLoader {
     static let shared = DirectMessageAttachmentDataLoader()
-    private let cache: NSCache<NSString, NSData> = {
-        let cache = NSCache<NSString, NSData>()
-        cache.totalCostLimit = 64 * 1_024 * 1_024
-        return cache
-    }()
+    private var files: [String: URL] = [:]
+    private var order: [String] = []
 
-    func data(for attachment: NostrDirectMessageAttachment) async throws -> Data {
-        let cacheKey = attachment.cacheKey as NSString
-        if let cached = cache.object(forKey: cacheKey) { return cached as Data }
-        guard let URL = URL(string: attachment.url) else { throw ChatAttachmentError.invalidURL }
-        let (ciphertext, response) = try await URLSession.shared.data(from: URL)
-        if let response = response as? HTTPURLResponse,
-           !(200..<300).contains(response.statusCode) {
-            throw ChatAttachmentError.downloadFailed(response.statusCode)
+    func file(for attachment: NostrDirectMessageAttachment) async throws -> URL {
+        if let file = files[attachment.cacheKey], FileManager.default.fileExists(atPath: file.path) { return file }
+        if let cached = await DirectMessageAttachmentDiskCache.shared.file(forKey: attachment.cacheKey) {
+            remember(cached, forKey: attachment.cacheKey)
+            return cached
         }
-        guard ciphertext.count <= TaskDocumentContract.maximumUploadBytes + 16 else {
-            throw TaskAttachmentUploadError.fileTooLarge
+        guard let url = URL(string: attachment.url) else { throw ChatAttachmentError.invalidURL }
+        let ciphertext = try await AttachmentDownload.file(from: url, limit: AttachmentFiles.maximumBytes + 16)
+        defer { try? FileManager.default.removeItem(at: ciphertext) }
+        let plaintext = try await AttachmentFiles.work {
+            try AttachmentFileCrypto.decryptChat(ciphertext, attachment: attachment)
         }
-        let plaintext = try NostrDirectMessageAttachmentCrypto.decrypt(
-            ciphertext,
-            attachment: attachment
-        )
-        guard plaintext.count <= TaskDocumentContract.maximumUploadBytes else {
-            throw TaskAttachmentUploadError.fileTooLarge
-        }
-        cache.setObject(plaintext as NSData, forKey: cacheKey, cost: plaintext.count)
-        return plaintext
+        // The disk cache owns stored files from here on; if storing fails, the
+        // plaintext temp file still works and is purged with other temporary files.
+        let stored = await DirectMessageAttachmentDiskCache.shared.store(plaintext, forKey: attachment.cacheKey)
+        remember(stored ?? plaintext, forKey: attachment.cacheKey)
+        return stored ?? plaintext
     }
 
-    nonisolated static func previewFile(
-        data: Data,
-        attachment: NostrDirectMessageAttachment
-    ) throws -> URL {
-        let safeName = safeFilename(attachment.displayName, mimeType: attachment.mimeType)
-        let identifier = attachment.sha256 ?? String(attachment.keyHex.prefix(16))
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("TaskifyChatPreviews", isDirectory: true)
-            .appendingPathComponent(identifier, isDirectory: true)
+    private func remember(_ file: URL, forKey key: String) {
+        files[key] = file
+        order.removeAll { $0 == key }
+        order.append(key)
+        while order.count > 2 {
+            files.removeValue(forKey: order.removeFirst())
+        }
+    }
+
+    nonisolated static func previewFile(file: URL, attachment: NostrDirectMessageAttachment) throws -> URL {
+        let directory = try AttachmentFiles.directory().appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let URL = directory.appendingPathComponent(safeName, isDirectory: false)
-        try data.write(to: URL, options: .atomic)
-        return URL
+        try AttachmentFiles.protect(directory)
+        let cleaned = attachment.displayName.replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-").trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = cleaned.isEmpty || cleaned == "." || cleaned == ".." ? "Attachment" : String(cleaned.prefix(160))
+        let url = directory.appendingPathComponent(name)
+        try FileManager.default.copyItem(at: file, to: url)
+        try AttachmentFiles.protect(url)
+        return url
+    }
+}
+
+/// Persistently caches decrypted chat attachments so returning to a conversation or
+/// relaunching the app renders immediately instead of re-downloading and
+/// re-decrypting every image and file again. Entries live in the OS-managed caches
+/// directory, are keyed by the full attachment descriptor (URL + key + nonce — a
+/// key therefore maps to exactly one plaintext), and are evicted least-recently-used
+/// once the total size exceeds `byteLimit`. Files carry the same owner-only
+/// permissions and first-unlock protection as every other Taskify media file.
+private actor DirectMessageAttachmentDiskCache {
+    static let shared = DirectMessageAttachmentDiskCache()
+
+    /// Bounds total disk usage; decrypted attachments are already capped at 500 MB
+    /// individually by `AttachmentFiles.maximumBytes`.
+    private static let byteLimit = 256 * 1_024 * 1_024
+
+    private let directory: URL
+
+    init() {
+        // The system may empty the caches directory under storage pressure; that is
+        // acceptable for a cache — the loader just falls back to downloading again.
+        let fileManager = FileManager.default
+        let base = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        directory = base.appendingPathComponent("TaskifyChatAttachments", isDirectory: true)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                          attributes: [.posixPermissions: 0o700])
+        try? AttachmentFiles.protect(directory)
     }
 
-    nonisolated private static func safeFilename(_ value: String, mimeType: String) -> String {
-        let cleaned = value
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.contains(".") { return String(cleaned.prefix(180)) }
-        let type = UTType(mimeType: mimeType)
-        return "\(String(cleaned.prefix(160)))\(type?.preferredFilenameExtension.map { ".\($0)" } ?? "")"
+    private func filename(forKey key: String) -> String {
+        Data(SHA256.hash(data: Data(key.utf8))).hexString
+    }
+
+    /// Returns the cached plaintext for `key`, refreshing its recency so eviction
+    /// is least-recently-used.
+    func file(forKey key: String) -> URL? {
+        let fileManager = FileManager.default
+        let url = directory.appendingPathComponent(filename(forKey: key))
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        touchRecency(of: url)
+        return url
+    }
+
+    /// Moves a freshly decrypted file into the cache, evicting least-recently-used
+    /// entries past the byte limit. Returns the cache URL, or nil if storing failed.
+    func store(_ file: URL, forKey key: String) -> URL? {
+        let fileManager = FileManager.default
+        let destination = directory.appendingPathComponent(filename(forKey: key))
+        if fileManager.fileExists(atPath: destination.path) {
+            try? fileManager.removeItem(at: file)
+            touchRecency(of: destination)
+            return destination
+        }
+        do {
+            try fileManager.moveItem(at: file, to: destination)
+        } catch {
+            return nil
+        }
+        try? AttachmentFiles.protect(destination)
+        trimToByteLimit()
+        return destination
+    }
+
+    private func touchRecency(of url: URL) {
+        var mutableURL = url
+        var values = URLResourceValues()
+        values.contentModificationDate = Date()
+        try? mutableURL.setResourceValues(values)
+    }
+
+    private func trimToByteLimit() {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: keys
+        ) else { return }
+        var candidates: [(url: URL, size: Int, date: Date)] = []
+        var total = 0
+        for entry in entries {
+            guard let values = try? entry.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  let size = values.fileSize else { continue }
+            total += size
+            candidates.append((entry, size, values.contentModificationDate ?? .distantPast))
+        }
+        guard total > Self.byteLimit else { return }
+        for entry in candidates.sorted(by: { $0.date < $1.date }) {
+            guard total > Self.byteLimit else { break }
+            if (try? FileManager.default.removeItem(at: entry.url)) != nil {
+                total -= entry.size
+            }
+        }
     }
 }
 
@@ -4263,14 +5889,14 @@ private actor DirectMessageAttachmentImageLoader {
     }()
 
     func image(
-        data: Data,
+        fileURL: URL,
         cacheKey: String,
         maximumPixelSize: CGFloat
     ) async -> UIImage? {
         let key = "\(Int(maximumPixelSize))::\(cacheKey)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
         let image = await Task.detached(priority: .userInitiated) {
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
                 return nil as UIImage?
             }
             let options: [CFString: Any] = [
@@ -4311,6 +5937,20 @@ private actor DirectMessageAttachmentImageLoader {
 private extension NostrDirectMessageAttachment {
     var cacheKey: String {
         "\(url)::\(keyHex)::\(nonceHex)"
+    }
+
+    var detailIcon: String {
+        if isVideo { return "video.fill" }
+        if isAudio { return "waveform" }
+        if mimeType.lowercased().contains("pdf") { return "doc.richtext.fill" }
+        return "doc.fill"
+    }
+
+    var detailKindLabel: String {
+        if isVideo { return "VIDEO" }
+        if isAudio { return "AUDIO" }
+        if mimeType.lowercased().contains("pdf") { return "PDF" }
+        return "FILE"
     }
 }
 

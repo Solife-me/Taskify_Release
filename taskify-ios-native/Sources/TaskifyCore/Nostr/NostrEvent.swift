@@ -51,6 +51,12 @@ public struct NostrEvent: Codable, Equatable, Hashable, Sendable {
         self.signature = signature
     }
 
+    /// Different replaceable records can share wall time. Only successive versions of
+    /// the same record need a strictly increasing clock.
+    public static func nextTimestamp(after previous: Int?, now: Int = Int(Date().timeIntervalSince1970)) -> Int {
+        max(now, min(previous ?? 0, Int.max - 1) + 1)
+    }
+
     public static func signed(
         privateKey: Data,
         createdAt: Int,
@@ -81,7 +87,17 @@ public struct NostrEvent: Codable, Equatable, Hashable, Sendable {
         )
     }
 
+    public func verifyID() -> Bool {
+        (try? Self.calculateID(publicKey: publicKey, createdAt: createdAt, kind: kind, tags: tags, content: content)) == id
+    }
+
     public func verify() -> Bool {
+        func isHex(_ value: String, length: Int) -> Bool {
+            value.utf8.count == length && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        }
+        guard (0...65_535).contains(kind), createdAt >= 0,
+              isHex(id, length: 64), isHex(publicKey, length: 64),
+              isHex(signature, length: 128), tags.allSatisfy({ !$0.isEmpty }) else { return false }
         guard let calculatedID = try? Self.calculateID(
             publicKey: publicKey,
             createdAt: createdAt,

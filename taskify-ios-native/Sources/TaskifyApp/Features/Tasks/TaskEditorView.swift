@@ -860,21 +860,16 @@ struct TaskEditorView: View {
         do {
             for (index, item) in items.enumerated() {
                 attachmentStatus = "Preparing photo \(index + 1) of \(items.count)…"
-                guard let sourceData = try await item.loadTransferable(type: Data.self),
-                      sourceData.count <= TaskDocumentContract.maximumUploadBytes,
-                      let image = UIImage(data: sourceData),
-                      let jpegData = image.jpegData(compressionQuality: 0.88) else {
+                guard let file = try await item.loadTransferable(type: TaskifyPhotoFile.self) else {
                     throw TaskAttachmentUploadError.unsupportedFile
                 }
+                defer { try? FileManager.default.removeItem(at: file.url) }
+                let type = item.supportedContentTypes.first ?? .image
                 let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
-                let name = "task-photo-\(timestamp)-\(index + 1).jpg"
+                let name = "task-photo-\(timestamp)-\(index + 1).\(type.preferredFilenameExtension ?? "jpg")"
                 attachmentStatus = "Encrypting and uploading photo \(index + 1) of \(items.count)…"
                 let document = try await TaskAttachmentUploadService.shared.uploadDocument(
-                    data: jpegData,
-                    name: name,
-                    mimeType: "image/jpeg",
-                    boardID: boardID
-                )
+                    fileURL: file.url, name: name, mimeType: type.preferredMIMEType ?? "image/jpeg", boardID: boardID)
                 documents.append(document)
             }
         } catch {

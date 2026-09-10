@@ -10,7 +10,7 @@ const english = {
   6: 'App Bundle ID',
   7: 'The APNs topic. It must match the signed Taskify app bundle identifier.',
   8: 'Configure Apple Push',
-  9: 'Store the APNs provider credentials used for content-free wake delivery.',
+  9: 'Store the APNs provider credentials used for metadata-free alert delivery.',
   10: 'The pasted private key is sensitive. Keep your StartOS account and backups secure.',
   11: 'Configure Apple Push credentials before starting the relay',
   12: 'NIP-17 Push Relay',
@@ -19,6 +19,8 @@ const english = {
   15: 'Push Relay',
   16: 'Taskify Push Relay is listening',
   17: 'Waiting for Taskify Push Relay',
+  18: 'Watch App Bundle ID',
+  19: 'The Watch APNs topic. It must match the signed Taskify Watch app bundle identifier.',
 } satisfies LangDict
 
 export default {

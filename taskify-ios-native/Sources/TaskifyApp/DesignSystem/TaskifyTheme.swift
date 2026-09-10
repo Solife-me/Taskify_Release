@@ -280,6 +280,44 @@ enum TaskifyTheme {
             blue: TaskifyBrand.accentOnBlue
         )
     }
+
+    static var watchAccent: TaskifyWatchAccent {
+        let accentRGB: TaskifyRGBColor
+        switch TaskifyAppearanceSettings.accentChoice {
+        case .blue:
+            accentRGB = TaskifyRGBColor(
+                red: UInt8((TaskifyBrand.accentRed * 255).rounded()),
+                green: UInt8((TaskifyBrand.accentGreen * 255).rounded()),
+                blue: UInt8((TaskifyBrand.accentBlue * 255).rounded())
+            )
+        case .green:
+            accentRGB = TaskifyRGBColor(red: 52, green: 199, blue: 89)
+        case .background:
+            accentRGB = TaskifyAppearanceSettings.selectedBackgroundAccent
+                ?? TaskifyRGBColor(
+                    red: UInt8((TaskifyBrand.accentRed * 255).rounded()),
+                    green: UInt8((TaskifyBrand.accentGreen * 255).rounded()),
+                    blue: UInt8((TaskifyBrand.accentBlue * 255).rounded())
+                )
+        }
+        let usesLightForeground = TaskifyAppearanceSettings.accentChoice == .background
+            && !accentRGB.prefersDarkForeground
+        let foreground = usesLightForeground
+            ? TaskifyRGBColor(red: 245, green: 250, blue: 255)
+            : TaskifyRGBColor(
+                red: UInt8((TaskifyBrand.accentOnRed * 255).rounded()),
+                green: UInt8((TaskifyBrand.accentOnGreen * 255).rounded()),
+                blue: UInt8((TaskifyBrand.accentOnBlue * 255).rounded())
+            )
+        return TaskifyWatchAccent(
+            red: accentRGB.red,
+            green: accentRGB.green,
+            blue: accentRGB.blue,
+            foregroundRed: foreground.red,
+            foregroundGreen: foreground.green,
+            foregroundBlue: foreground.blue
+        )
+    }
     /// Translucent accent wash for rings and halos — the PWA's `--accent-soft`.
     static var accentSoft: Color { accent.opacity(0.2) }
     static let backgroundTop = Color(red: 0.10, green: 0.20, blue: 0.33)

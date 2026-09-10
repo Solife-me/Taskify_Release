@@ -55,6 +55,8 @@ struct TaskifyNativeApp: App {
     }
 
     init() {
+        AttachmentFiles.purgeExpiredTemporaryFiles()
+        ShareTransferStore.purgeOrphanedFiles()
         let model = AppModel()
         let wallet = WalletViewModel()
         model.registerWalletPaymentReceiver(wallet)
@@ -82,6 +84,7 @@ struct TaskifyNativeApp: App {
                 )
                 .task(id: model.isLoading) {
                     guard !model.isLoading else { return }
+                    await model.refreshShareState(retry: true)
                     // Cashu recovery is important but unrelated to drawing the Boards tab.
                     // Let the populated board accept its first gestures before starting the
                     // wallet's database/recovery work on launch.
@@ -96,6 +99,7 @@ struct TaskifyNativeApp: App {
                     case .active:
                         TaskifyBackgroundSyncCoordinator.shared.appDidBecomeActive()
                         model.reloadIfChangedExternally()
+                        Task { await model.refreshShareState(retry: true) }
                         model.refreshNotificationStatus()
                         model.refreshSyncIfNeeded()
                         model.refreshFullWeekRecurrencesIfNeeded()
@@ -112,6 +116,12 @@ struct TaskifyNativeApp: App {
                     }
                 }
                 .onChange(of: model.snapshotRevision) { _, _ in
+                    TaskifyWatchBridge.shared.scheduleSnapshot(from: model)
+                }
+                .onChange(of: model.directMessageRevision) { _, _ in
+                    model.scheduleShareRefresh()
+                }
+                .onChange(of: appearanceRevision) { _, _ in
                     TaskifyWatchBridge.shared.scheduleSnapshot(from: model)
                 }
         }

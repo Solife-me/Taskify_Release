@@ -15,6 +15,12 @@ export async function loadConfig(environment = process.env) {
     keyID: required(environment.APNS_KEY_ID ?? fileConfig.keyID, 'APNS_KEY_ID'),
     privateKey: required(environment.APNS_PRIVATE_KEY ?? fileConfig.privateKey, 'APNS_PRIVATE_KEY'),
     topic: required(environment.APNS_TOPIC ?? fileConfig.topic ?? 'solife.me.Taskify.Native', 'APNS_TOPIC'),
+    watchTopic: required(
+      environment.APNS_WATCH_TOPIC
+        ?? fileConfig.watchTopic
+        ?? 'solife.me.Taskify.Native.watchkitapp',
+      'APNS_WATCH_TOPIC',
+    ),
   }
   if (!/^[A-Z0-9]{10}$/.test(apns.teamID)) throw new Error('APNS_TEAM_ID must be a 10-character Apple Team ID')
   if (!/^[A-Z0-9]{10}$/.test(apns.keyID)) throw new Error('APNS_KEY_ID must be a 10-character Apple Key ID')

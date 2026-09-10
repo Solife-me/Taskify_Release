@@ -82,7 +82,7 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   assert.equal(relayInfoResponse.status, 200)
   assert.match(relayInfoResponse.headers.get('content-type'), /^application\/nostr\+json/)
   const relayInfo = await relayInfoResponse.json()
-  assert.deepEqual(relayInfo.supported_nips, [1, 9, 11, 17, 42, 59, 98])
+  assert.deepEqual(relayInfo.supported_nips, [1, 11, 17, 42, 59, 98])
 
   const senderKey = generateSecretKey()
   const recipientKey = generateSecretKey()
@@ -136,4 +136,96 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   const closed = await nextFrame(senderSocket, (frame) => frame[0] === 'CLOSED' && frame[1] === 'forbidden-inbox')
   assert.match(closed[2], /recipient/i)
   assert.notEqual(senderPubkey, recipientPubkey)
+})
+
+test('APNs provider-token rejection invalidates the cache and preserves the job for retry', async () => {
+  let now = 1_700_000_000
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory, now: () => now })
+  await store.load()
+  const recipientKey = generateSecretKey()
+  const recipientPubkey = getPublicKey(recipientKey)
+  await store.putRegistration(recipientPubkey, 'watch-1', {
+    deviceToken: '12'.repeat(32),
+    environment: 'production',
+    platform: 'watchos',
+  })
+  const giftWrap = finalizeEvent({
+    kind: 1059,
+    created_at: now,
+    tags: [['p', recipientPubkey]],
+    content: 'opaque-encrypted-gift-wrap',
+  }, generateSecretKey())
+  await store.putGiftWrap(giftWrap, { notify: true })
+
+  let sends = 0
+  let invalidations = 0
+  const warnings = []
+  const server = createTaskifyPushServer({
+    config: {
+      port: 0,
+      publicBaseURL: 'https://push.solife.me',
+      publicRelayURL: 'wss://push.solife.me',
+    },
+    store,
+    apnsClient: {
+      async send() {
+        sends += 1
+        return sends === 1
+          ? { status: 403, reason: 'ExpiredProviderToken' }
+          : { status: 200, reason: null }
+      },
+      invalidateProviderToken() { invalidations += 1 },
+    },
+    logger: {
+      info() {},
+      warn(message, details) { warnings.push({ message, details }) },
+    },
+  })
+
+  await server.processPushJobs()
+  assert.equal(invalidations, 1)
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 1)
+  assert.equal(warnings[0].details.reason, 'ExpiredProviderToken')
+  assert.equal('deviceToken' in warnings[0].details, false)
+
+  now += 5
+  await server.processPushJobs()
+  assert.equal(sends, 2)
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 0)
+})
+
+test('history honors per-filter limits, newest-first ordering, and ignores limits for live events', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-sync-audit-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store, apnsClient: { async send() { return { status: 200 } } }, logger: { info() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+  const key = generateSecretKey()
+  const recipient = getPublicKey(key)
+  const now = Math.floor(Date.now() / 1000)
+  const events = [now - 3, now - 2, now - 1, now - 1].map((created_at, index) => finalizeEvent({
+    kind: 1059, created_at, tags: [['p', recipient]], content: `opaque-${index}`,
+  }, generateSecretKey()))
+  for (const event of events) await store.putGiftWrap(event, { notify: false })
+  const socket = await connectAndAuthenticate(address.port, key)
+  t.after(() => socket.close())
+  const received = []
+  socket.on('message', (data) => { const frame = JSON.parse(data); if (frame[0] === 'EVENT' && frame[1] === 'audit') received.push(frame[2]) })
+  const eose = nextFrame(socket, (frame) => frame[0] === 'EOSE' && frame[1] === 'audit')
+  socket.send(JSON.stringify(['REQ', 'audit',
+    { kinds: [1059], '#p': [recipient], limit: 1 },
+    { kinds: [1059], '#p': [recipient], until: now - 2, limit: 1 },
+  ]))
+  await eose
+  const winner = events.slice(2).sort((a, b) => a.id.localeCompare(b.id))[0]
+  assert.deepEqual(received.map((event) => event.id), [winner.id, events[1].id])
+  const live = finalizeEvent({ kind: 1059, created_at: now, tags: [['p', recipient]], content: 'live' }, generateSecretKey())
+  const incoming = nextFrame(socket, (frame) => frame[0] === 'EVENT' && frame[2]?.id === live.id)
+  socket.send(JSON.stringify(['EVENT', live]))
+  assert.equal((await incoming)[2].id, live.id)
 })

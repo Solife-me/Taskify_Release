@@ -33,6 +33,9 @@ struct SettingsView: View {
     @State private var fileServerMessage: String?
     @State private var newAppRelayURL = ""
     @State private var appRelayMessage: String?
+    @State private var newInboxRelayURL = ""
+    @State private var inboxRelayMessage: String?
+    @State private var syncRelayMessage: String?
     @State private var showingClearChatHistoryConfirmation = false
     @State private var localBackupExportDocument: LocalBackupDocument?
     @State private var showingLocalBackupExporter = false
@@ -497,7 +500,9 @@ struct SettingsView: View {
             } else {
                 VStack(spacing: 8) {
                     ForEach(model.relayStatuses) { relay in
-                        RelayStatusRow(relay: relay)
+                        RelayStatusRow(relay: relay) {
+                            removeSyncRelay(relay.relayURL)
+                        }
                     }
                 }
             }
@@ -532,10 +537,164 @@ struct SettingsView: View {
             Divider()
 
             appRelaysSection
+
+            Divider()
+
+            nip17InboxRelaysSection
+
+            if !model.excludedSyncRelayURLs.isEmpty {
+                Divider()
+
+                removedSyncRelaysSection
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .taskifyGlass(cornerRadius: 24)
+    }
+
+    private var nip17InboxRelaysSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Inbox relays")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            if model.nip17InboxRelayURLs.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Resolving your inbox relay list…")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            } else {
+                ForEach(model.nip17InboxRelayURLs, id: \.self) { relayURL in
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(URL(string: relayURL)?.host ?? relayURL)
+                                    .font(.subheadline)
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                    .lineLimit(1)
+
+                                if isDMPushRelay(relayURL) {
+                                    Text("Push")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(TaskifyTheme.accent)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            TaskifyTheme.accent.opacity(0.12),
+                                            in: Capsule()
+                                        )
+                                }
+                            }
+
+                            Text(relayURL)
+                                .font(.caption2)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Button {
+                            removeInboxRelay(relayURL)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(model.nip17InboxRelayURLs.count <= 1 || isDMPushRelay(relayURL))
+                        .accessibilityIdentifier("remove-inbox-relay-\(URL(string: relayURL)?.host ?? relayURL)")
+                        .accessibilityLabel("Remove \(URL(string: relayURL)?.host ?? relayURL)")
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                TextField("wss://relay.example", text: $newInboxRelayURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.subheadline)
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(
+                        TaskifyTheme.raisedFill,
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .accessibilityIdentifier("inbox-relay-input")
+                    .onSubmit { addInboxRelay() }
+
+                Button("Add") { addInboxRelay() }
+                    .buttonStyle(.bordered)
+                    .disabled(newInboxRelayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            settingsRelayMessage(inboxRelayMessage)
+
+            Text("This is the relay list your account publishes for direct messages (NIP-17). Other Taskify and Nostr clients read it to know where to reach you. Your DM push relay appears here automatically while push is on.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+        .task { await model.resolveNIP17InboxRelayPreferenceIfNeeded() }
+    }
+
+    private var removedSyncRelaysSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Removed relays")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.primaryText)
+
+            ForEach(model.excludedSyncRelayURLs.sorted(), id: \.self) { relayURL in
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(URL(string: relayURL)?.host ?? relayURL)
+                            .font(.subheadline)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .lineLimit(1)
+                        Text(relayURL)
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        model.restoreSyncRelay(relayURL)
+                        syncRelayMessage = "Relay restored. Sync will reconnect to it."
+                    } label: {
+                        Image(systemName: "plus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("restore-sync-relay-\(URL(string: relayURL)?.host ?? relayURL)")
+                    .accessibilityLabel("Restore \(URL(string: relayURL)?.host ?? relayURL)")
+                }
+            }
+
+            settingsRelayMessage(syncRelayMessage)
+
+            Text("The app will not try these relays, and no longer waits for them to accept queued changes. Board relay lists are unchanged — other devices still use them.")
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+        }
+    }
+
+    private func settingsRelayMessage(_ message: String?) -> some View {
+        Group {
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(
+                        message.hasPrefix("Enter") || message.hasPrefix("That")
+                            || message.hasPrefix("Keep")
+                            ? Color.orange
+                            : TaskifyTheme.secondaryText
+                    )
+            }
+        }
     }
 
     private var watchCard: some View {
@@ -568,7 +727,7 @@ struct SettingsView: View {
             .buttonStyle(.borderedProminent)
             .disabled(watchBridge.state == .activating || watchBridge.state == .provisioning)
 
-            Text("Open Taskify on an unlocked, passcode-protected Watch, then enable sync here. Watch task additions and completions are delivered immediately or safely queued for the iPhone. Quick Add offers native Watch text input or Taskify Dictation with a task review before saving. Direct Watch-to-relay updates are the next Watch milestone. Removing the Watch passcode deletes its stored identity.")
+            Text("Open Taskify on an unlocked, passcode-protected Watch, then enable sync here. Tasks and the current chat-thread index sync locally from iPhone, while the Watch can independently send and receive encrypted direct and group messages over Wi-Fi or cellular. Removing the Watch passcode deletes its stored identity.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
@@ -676,6 +835,70 @@ struct SettingsView: View {
         }
     }
 
+    /// The status rows show every relay the sync engine is configured with. App relays are
+    /// edited through their published list; every other source (boards, contacts, backups) is
+    /// excluded device-locally.
+    private func removeSyncRelay(_ relayURL: String) {
+        if model.appRelayURLs.contains(relayURL) {
+            applyAppRelayChange(model.removeAppRelay(relayURL), relayURL: relayURL)
+            return
+        }
+        switch model.excludeSyncRelay(relayURL) {
+        case .changed:
+            syncRelayMessage = "Relay removed. The app will no longer connect to it, and queued changes no longer wait for it."
+        case .invalidURL:
+            syncRelayMessage = "Enter a valid ws:// or wss:// relay address."
+        case .pushRelayLocked:
+            syncRelayMessage = "That relay delivers your DM push notifications. Turn off DM push in Notifications settings to remove it."
+        }
+    }
+
+    private func addInboxRelay() {
+        let entry = newInboxRelayURL
+        Task {
+            switch await model.addNIP17InboxRelay(entry) {
+            case .changed:
+                newInboxRelayURL = ""
+                inboxRelayMessage = "Inbox relays updated. Other clients will see your new list."
+            case .invalidURL:
+                inboxRelayMessage = "Enter a valid ws:// or wss:// relay address."
+            case .duplicate:
+                inboxRelayMessage = "That relay is already in your inbox list."
+            case .lastRelay:
+                inboxRelayMessage = "Keep at least one inbox relay."
+            case .pushRelayLocked:
+                inboxRelayMessage = "That relay delivers your DM push notifications. Turn off DM push in Notifications settings to remove it."
+            case .failed(let message):
+                inboxRelayMessage = message
+            }
+        }
+    }
+
+    private func removeInboxRelay(_ relayURL: String) {
+        Task {
+            switch await model.removeNIP17InboxRelay(relayURL) {
+            case .changed:
+                inboxRelayMessage = "Inbox relays updated. Other clients will see your new list."
+            case .invalidURL:
+                inboxRelayMessage = "Enter a valid ws:// or wss:// relay address."
+            case .duplicate:
+                inboxRelayMessage = "That relay is not in your inbox list."
+            case .lastRelay:
+                inboxRelayMessage = "Keep at least one inbox relay."
+            case .pushRelayLocked:
+                inboxRelayMessage = "That relay delivers your DM push notifications. Turn off DM push in Notifications settings to remove it."
+            case .failed(let message):
+                inboxRelayMessage = message
+            }
+        }
+    }
+
+    private func isDMPushRelay(_ relayURL: String) -> Bool {
+        guard model.dmPushEnabled else { return false }
+        let pushRelayURL = TaskifyRelayURL.normalize(model.dmPushRelayURL) ?? model.dmPushRelayURL
+        return relayURL == pushRelayURL
+    }
+
     private var storageCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -738,7 +961,7 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
             }
 
-            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works, but many public Blossom servers reject opaque encrypted uploads. NIP-96 servers use discovery and authenticated NIP-98 uploads. Attachments remain limited to 50 MB because Taskify's PWA-compatible AES-GCM attachment format must encrypt and validate each complete file before upload.")
+            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works, but many public Blossom servers reject opaque encrypted uploads. NIP-96 servers use discovery and authenticated NIP-98 uploads. Attachments can be up to 500 MB. Taskify encrypts files before uploading and verifies them before opening. Your selected server may have a lower limit.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }
@@ -1998,7 +2221,7 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                 }
 
-                Text("The push server sends a generic alert with a short-lived opaque link. Taskify decrypts the standard NIP-17 gift wrap on this iPhone to show the sender and a rich message or activity preview. Payment amounts appear only after the wallet successfully redeems them. Apple and the relay do not receive the category, sender, amount, or message text.")
+                Text("The push server sends the same generic New Message alert to iPhone and Apple Watch, then Taskify fetches and decrypts the NIP-17 gift wrap on-device. The category choice controls decrypted follow-up handling; the generic arrival alert cannot be categorized until the notification extension ships. Payment amounts appear only after the wallet successfully redeems them. Apple and the relay do not receive the category, sender, amount, or message text.")
                     .font(.caption)
                     .foregroundStyle(TaskifyTheme.secondaryText)
             }
@@ -3217,6 +3440,7 @@ private struct LocalBackupDocument: FileDocument {
 
 private struct RelayStatusRow: View {
     let relay: TaskRelayStatus
+    var onRemove: (() -> Void)? = nil
 
     private var color: Color {
         switch relay.phase {
@@ -3264,6 +3488,15 @@ private struct RelayStatusRow: View {
             Text(label)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(color)
+
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("remove-sync-relay-\(relayName)")
+                .accessibilityLabel("Remove \(relayName) from the sync list")
+            }
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 42)

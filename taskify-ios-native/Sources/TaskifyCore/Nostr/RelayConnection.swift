@@ -102,7 +102,9 @@ public actor NostrRelayConnection {
         self.relayURL = relayURL
         let pair = AsyncStream.makeStream(
             of: NostrRelayMessage.self,
-            bufferingPolicy: .bufferingNewest(512)
+            // The consumer may briefly await publication/backoff. Never evict received
+            // EVENT frames: doing so silently loses a live DM until another replay.
+            bufferingPolicy: .unbounded
         )
         messageStream = pair.stream
         messageContinuation = pair.continuation
@@ -166,12 +168,21 @@ public actor NostrRelayConnection {
         id: String,
         kinds: [Int],
         boardTag: String,
-        limit: Int = 2_000
+        limit: Int = 2_000,
+        since: Int? = nil
     ) async throws {
+        var filter: [String: Any] = [
+            "kinds": kinds,
+            "#b": [boardTag],
+            "limit": limit,
+        ]
+        if let since {
+            filter["since"] = max(0, since)
+        }
         try await send([
             "REQ",
             id,
-            ["kinds": kinds, "#b": [boardTag], "limit": limit] as [String: Any],
+            filter,
         ])
     }
 
@@ -257,6 +268,23 @@ public actor NostrRelayConnection {
                 "kinds": [NIP51ContactListContract.eventKind],
                 "authors": [authorPublicKey],
                 "#d": [NIP51ContactListContract.eventDTag],
+                "limit": min(max(1, limit), 20),
+            ] as [String: Any],
+        ])
+    }
+
+    public func subscribeToBotCommands(
+        id: String,
+        authorPublicKey: String,
+        limit: Int = 5
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [BotCommandsContract.eventKind],
+                "authors": [authorPublicKey],
+                "#d": [BotCommandsContract.eventDTag],
                 "limit": min(max(1, limit), 20),
             ] as [String: Any],
         ])
@@ -349,7 +377,7 @@ public actor NostrRelayConnection {
                 case .string(let text): data = Data(text.utf8)
                 @unknown default: continue
                 }
-                if let decoded = try NostrRelayMessage.decode(data) {
+                if let decoded = try? NostrRelayMessage.decode(data) {
                     messageContinuation.yield(decoded)
                 }
             } catch {

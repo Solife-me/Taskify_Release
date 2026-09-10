@@ -10,7 +10,7 @@ const dict = {
   'App Bundle ID': 6,
   'The APNs topic. It must match the signed Taskify app bundle identifier.': 7,
   'Configure Apple Push': 8,
-  'Store the APNs provider credentials used for content-free wake delivery.': 9,
+  'Store the APNs provider credentials used for metadata-free alert delivery.': 9,
   'The pasted private key is sensitive. Keep your StartOS account and backups secure.': 10,
   'Configure Apple Push credentials before starting the relay': 11,
   'NIP-17 Push Relay': 12,
@@ -19,6 +19,8 @@ const dict = {
   'Push Relay': 15,
   'Taskify Push Relay is listening': 16,
   'Waiting for Taskify Push Relay': 17,
+  'Watch App Bundle ID': 18,
+  'The Watch APNs topic. It must match the signed Taskify Watch app bundle identifier.': 19,
 } as const
 
 export type I18nKey = keyof typeof dict

@@ -29,17 +29,19 @@ enum TaskifyWatchIndependentError: LocalizedError {
 struct TaskifyWatchIndependentClient: Sendable {
     static let defaultBaseURL = URL(string: "https://taskify.solife.me")!
 
-    private let baseURL: URL
+    private let fallbackBaseURL: URL
     private let session: URLSession
 
     init(baseURL: URL = Self.defaultBaseURL, session: URLSession = .shared) {
-        self.baseURL = baseURL
+        self.fallbackBaseURL = baseURL
         self.session = session
     }
 
     func publish(
         _ event: TaskifyWatchNostrEvent,
         relayURLs: [String],
+        boardID: String,
+        gatewayBaseURL: URL?,
         profile: TaskifyWatchIndependentProfile,
         privateKey: Data
     ) async throws {
@@ -47,6 +49,23 @@ struct TaskifyWatchIndependentClient: Sendable {
             let relays: [String]
             let event: TaskifyWatchNostrEvent
         }
+        if let gatewayBaseURL {
+            do {
+                try await publishThroughGateway(
+                    event,
+                    relayURLs: relayURLs,
+                    boardID: boardID,
+                    gatewayBaseURL: gatewayBaseURL,
+                    privateKey: privateKey
+                )
+                return
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                // Preserve the existing Taskify Watch bridge as a failover. The immutable signed
+                // event is safe to retry because both the bridge and Nostr relays deduplicate IDs.
+            }
+        }
+
         struct Reply: Decodable { let accepted: Int }
         let reply: Reply = try await authenticatedPost(
             path: "api/watch/nostr/publish",
@@ -59,13 +78,22 @@ struct TaskifyWatchIndependentClient: Sendable {
 
     func fetchTasks(
         boards: [TaskifyWatchBoard],
+        gatewayBaseURL: URL?,
         profile: TaskifyWatchIndependentProfile,
         privateKey: Data
     ) async throws -> [TaskifyWatchNostrEvent] {
         struct Filter: Encodable {
             let kinds: [Int]
             let authors: [String]
+            let boardTags: [String]
             let limit: Int
+
+            enum CodingKeys: String, CodingKey {
+                case kinds
+                case authors
+                case boardTags = "#b"
+                case limit
+            }
         }
         struct Body: Encodable {
             let relays: [String]
@@ -73,28 +101,200 @@ struct TaskifyWatchIndependentClient: Sendable {
         }
         struct Reply: Decodable { let events: [TaskifyWatchNostrEvent] }
 
-        let usableBoards = boards.compactMap { board -> (String, [String])? in
+        let usableBoards = boards.compactMap {
+            board -> (boardID: String, author: String, boardTag: String, relays: [String])? in
             guard let boardID = board.nostrBoardID,
                   let author = try? TaskifyWatchNostrCrypto.boardPublicKeyHex(for: boardID) else {
                 return nil
             }
-            return (author, board.relayURLs ?? [])
+            return (
+                boardID,
+                author,
+                TaskifyWatchNostrCrypto.boardTag(for: boardID),
+                board.relayURLs ?? []
+            )
         }
-        let authors = Array(Set(usableBoards.map(\.0))).sorted()
-        let relays = normalizedRelays(usableBoards.flatMap(\.1) + profile.relayURLs)
+        let authors = Array(Set(usableBoards.map(\.author))).sorted()
+        let boardTags = Array(Set(usableBoards.map(\.boardTag))).sorted()
+        let relays = normalizedRelays(usableBoards.flatMap(\.relays) + profile.relayURLs)
         guard !authors.isEmpty, !relays.isEmpty else {
             throw TaskifyWatchIndependentError.accountUnavailable
+        }
+        if let gatewayBaseURL {
+            do {
+                return try await fetchCachedTasks(
+                    boards: usableBoards,
+                    relayURLs: relays,
+                    gatewayBaseURL: gatewayBaseURL,
+                    profile: profile,
+                    privateKey: privateKey
+                )
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                // The existing taskify.solife.me service remains the explicit failover whenever
+                // the self-hosted or hosted push relay cannot refresh its bounded ciphertext cache.
+            }
         }
         let reply: Reply = try await authenticatedPost(
             path: "api/watch/nostr/query",
             body: Body(
                 relays: relays,
-                filter: Filter(kinds: [TaskifyWatchNostrCrypto.taskEventKind], authors: authors, limit: 1_000)
+                filter: Filter(
+                    kinds: [
+                        TaskifyWatchNostrCrypto.boardEventKind,
+                        TaskifyWatchNostrCrypto.taskEventKind,
+                    ],
+                    authors: authors,
+                    boardTags: boardTags,
+                    limit: 1_000
+                )
             ),
             profile: profile,
             privateKey: privateKey
         )
         return reply.events
+    }
+
+    private func fetchCachedTasks(
+        boards: [(boardID: String, author: String, boardTag: String, relays: [String])],
+        relayURLs: [String],
+        gatewayBaseURL: URL,
+        profile: TaskifyWatchIndependentProfile,
+        privateKey: Data
+    ) async throws -> [TaskifyWatchNostrEvent] {
+        struct Source: Encodable {
+            let author: String
+            let boardTag: String
+            let proof: TaskifyWatchNostrEvent
+        }
+        struct Body: Encodable {
+            let relays: [String]
+            let sources: [Source]
+            let limit: Int
+        }
+        struct Reply: Decodable {
+            let events: [TaskifyWatchNostrEvent]
+            let refreshed: Bool
+            let cacheHit: Bool
+        }
+        let endpoint = gatewayBaseURL.appendingPathComponent("v1/watch/tasks/query")
+        let createdAt = Int(Date().timeIntervalSince1970)
+        let uniqueBoards = Dictionary(grouping: boards, by: \.author).compactMap {
+            $0.value.first
+        }.sorted { $0.author < $1.author }
+        let sources = try uniqueBoards.map { board in
+            Source(
+                author: board.author,
+                boardTag: board.boardTag,
+                proof: try TaskifyWatchNostrCrypto.taskCacheAccessProof(
+                    boardID: board.boardID,
+                    accountPublicKey: profile.publicKeyHex,
+                    url: endpoint,
+                    createdAt: createdAt
+                )
+            )
+        }
+        let reply: Reply = try await nip98Post(
+            url: endpoint,
+            body: Body(relays: relayURLs, sources: sources, limit: 1_000),
+            privateKey: privateKey
+        )
+        guard reply.refreshed || reply.cacheHit else {
+            throw TaskifyWatchIndependentError.relayUnavailable
+        }
+        return reply.events
+    }
+
+    private func publishThroughGateway(
+        _ event: TaskifyWatchNostrEvent,
+        relayURLs: [String],
+        boardID: String,
+        gatewayBaseURL: URL,
+        privateKey: Data
+    ) async throws {
+        struct Body: Encodable {
+            let event: TaskifyWatchNostrEvent
+            let relays: [String]
+        }
+        struct RelayResult: Decodable {
+            let relay: String
+            let status: String
+            let session: String?
+            let challenge: String?
+        }
+        struct Reply: Decodable {
+            let accepted: Int
+            let results: [RelayResult]
+        }
+        struct AuthorizationBody: Encodable { let event: TaskifyWatchNostrEvent }
+        struct AuthorizationReply: Decodable {
+            struct Result: Decodable { let status: String }
+            let result: Result
+        }
+
+        let endpoint = gatewayBaseURL.appendingPathComponent("v1/watch/task-events/publish")
+        let reply: Reply = try await nip98Post(
+            url: endpoint,
+            body: Body(event: event, relays: relayURLs),
+            privateKey: privateKey,
+            acceptedStatuses: 200...202
+        )
+        var accepted = reply.accepted
+        for result in reply.results where result.status == "auth-required" {
+            guard let sessionID = result.session,
+                  let challenge = result.challenge else { continue }
+            let authorization = try TaskifyWatchNostrCrypto.nip42BoardAuthorizationEvent(
+                boardID: boardID,
+                relayURL: result.relay,
+                challenge: challenge
+            )
+            let authorizationURL = gatewayBaseURL.appendingPathComponent(
+                "v1/watch/outbox/\(sessionID)/authorize"
+            )
+            if let authorized: AuthorizationReply = try? await nip98Post(
+                url: authorizationURL,
+                body: AuthorizationBody(event: authorization),
+                privateKey: privateKey
+            ), authorized.result.status == "accepted" {
+                accepted += 1
+            }
+        }
+        guard accepted > 0 else { throw TaskifyWatchIndependentError.relayUnavailable }
+    }
+
+    private func nip98Post<Body: Encodable, Reply: Decodable>(
+        url: URL,
+        body: Body,
+        privateKey: Data,
+        acceptedStatuses: ClosedRange<Int> = 200...299
+    ) async throws -> Reply {
+        guard url.scheme?.lowercased() == "https", url.host != nil else {
+            throw TaskifyWatchIndependentError.serviceUnavailable
+        }
+        let data = try encoded(body)
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.httpBody = data
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            try TaskifyWatchNostrCrypto.nip98AuthorizationHeader(
+                privateKey: privateKey,
+                url: url,
+                method: "POST",
+                body: data
+            ),
+            forHTTPHeaderField: "Authorization"
+        )
+        let (responseData, rawResponse) = try await session.data(for: request)
+        guard let response = rawResponse as? HTTPURLResponse,
+              acceptedStatuses.contains(response.statusCode) else {
+            throw TaskifyWatchIndependentError.serviceUnavailable
+        }
+        guard let reply = try? JSONDecoder().decode(Reply.self, from: responseData) else {
+            throw TaskifyWatchIndependentError.invalidResponse
+        }
+        return reply
     }
 
     func interpretVoice(
@@ -232,7 +432,7 @@ struct TaskifyWatchIndependentClient: Sendable {
             publicKeyHex: profile.publicKeyHex,
             body: data
         )
-        var request = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: 15)
+        var request = URLRequest(url: fallbackBaseURL.appendingPathComponent(path), timeoutInterval: 15)
         request.httpMethod = "POST"
         request.httpBody = data
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

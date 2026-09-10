@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 import Security
 import TaskifyWatchShared
 import WatchConnectivity
@@ -37,6 +38,19 @@ private struct TaskifyWatchDirectMutation {
     let event: TaskifyWatchNostrEvent
     let task: TaskifyWatchTask?
     let relayURLs: [String]
+    let boardNostrID: String
+}
+
+private struct TaskifyWatchBoardRelayPayload: Decodable {
+    let name: String?
+    let kind: String?
+    let columns: [TaskifyWatchBoardColumn]?
+}
+
+struct TaskifyWatchChatWakeResult: Equatable {
+    let receivedData: Bool
+    let shouldNotify: Bool
+    let failed: Bool
 }
 
 /// Stores the Nostr private key only in the Watch's system Keychain. This protection class does
@@ -113,23 +127,60 @@ struct TaskifyWatchIdentityStore {
 @Observable
 @MainActor
 final class TaskifyWatchAppModel: NSObject {
-    private(set) var snapshot = TaskifyWatchSnapshot()
+    private(set) var snapshot = TaskifyWatchSnapshot() {
+        didSet {
+            if snapshot.tasks != oldValue.tasks || snapshot.boards != oldValue.boards { cachedTaskIndex = nil }
+        }
+    }
     private(set) var isProvisioned = false
     private(set) var statusMessage = "Open Taskify on your iPhone to authorize this Watch."
-    private(set) var pendingCompletionIDs: Set<String> = []
+    private(set) var pendingCompletionIDs: Set<String> = [] {
+        didSet { if pendingCompletionIDs != oldValue { cachedTaskIndex = nil } }
+    }
     private(set) var activeQuickAddBoardID: String?
+    private(set) var chatSnapshot = TaskifyWatchChatSnapshot() {
+        didSet { if chatSnapshot != oldValue { cachedChatIndex = nil } }
+    }
+    private(set) var avatarRefreshRevision = 0
+    private(set) var viewClock = Date()
+    @ObservationIgnored private var cachedChatIndex: TaskifyWatchChatIndex?
+    @ObservationIgnored private var cachedTaskIndex: TaskifyWatchTaskIndex?
+    private(set) var chatStatusMessage = "Chat is ready"
+    private(set) var isRefreshingChat = false
 
     @ObservationIgnored private let identityStore = TaskifyWatchIdentityStore()
     @ObservationIgnored private let cacheURL: URL
     @ObservationIgnored private let commandCacheURL: URL
     @ObservationIgnored private let profileCacheURL: URL
+    @ObservationIgnored private let chatContextCacheURL: URL
+    @ObservationIgnored private let chatCoordinator: TaskifyWatchChatCoordinator
     @ObservationIgnored private let independentClient = TaskifyWatchIndependentClient()
     @ObservationIgnored private var pendingCommands: [TaskifyWatchCommand] = []
     @ObservationIgnored private var immediateCommandIDs: Set<String> = []
     @ObservationIgnored private var directSyncCommandIDs: Set<String> = []
-    @ObservationIgnored private var independentProfile: TaskifyWatchIndependentProfile?
+    @ObservationIgnored private var chatOutboxRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var chatRefreshWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var chatAccountRevision = 0
+    @ObservationIgnored private var preparedChatAccountRevision: Int?
+    private static let chatSyncLogger = Logger(subsystem: "solife.me.Taskify.Native.watchkitapp", category: "ChatBackgroundSync")
+    @ObservationIgnored private var independentProfile: TaskifyWatchIndependentProfile? {
+        didSet { cachedChatIndex = nil }
+    }
+    @ObservationIgnored private var chatContext: TaskifyWatchChatProvisioningContext?
     @ObservationIgnored private var requestedInitialSetupNavigation = false
     @ObservationIgnored private var latestPhoneSnapshotGeneratedAt = Date.distantPast
+    @ObservationIgnored private var phoneSnapshotApplicationRevision = 0
+    /// Highest read-through already sent to the iPhone per conversation. The phone answers a
+    /// read update with a fresh snapshot, and applying that reply re-renders this model, so
+    /// without this guard an unchanged position would re-send forever.
+    @ObservationIgnored private var lastSentChatReadThrough: [String: Int] = [:]
+    /// On-demand chat directory sync bookkeeping. Display metadata (contact names, avatars,
+    /// group titles, tombstones) arrives only when the Watch asks for it, so a pending flag
+    /// retries once reachability returns and a timestamp bounds repeat requests.
+    @ObservationIgnored private var needsChatDirectorySync = false
+    @ObservationIgnored private var lastChatDirectoryRequestAt: Date?
+
+    private static let chatDirectoryRequestInterval: TimeInterval = 12 * 60 * 60
 
     override init() {
         let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -137,12 +188,38 @@ final class TaskifyWatchAppModel: NSObject {
         cacheURL = supportURL.appendingPathComponent("taskify-watch-snapshot-v1.json")
         commandCacheURL = supportURL.appendingPathComponent("taskify-watch-commands-v1.json")
         profileCacheURL = supportURL.appendingPathComponent("taskify-watch-independent-profile-v1.json")
+        chatContextCacheURL = supportURL.appendingPathComponent("taskify-watch-chat-context-v1.json")
+        chatCoordinator = TaskifyWatchChatCoordinator(
+            fileURL: supportURL.appendingPathComponent("taskify-watch-chat-v1.json")
+        )
         super.init()
         isProvisioned = identityStore.containsIdentity()
         loadIndependentProfile()
+        loadChatContext()
         loadCachedSnapshot()
         loadPendingCommands()
         activateConnectivity()
+        if let chatContext {
+            let revision = chatAccountRevision
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let configured = try await self.chatCoordinator.configure(chatContext)
+                    guard revision == self.chatAccountRevision else { return }
+                    self.chatSnapshot = configured
+                } catch {
+                    guard revision == self.chatAccountRevision else { return }
+                    self.chatSnapshot = await self.chatCoordinator.snapshot()
+                }
+                // Cold background launches only restore the cache. Inbox enrollment and
+                // outbox retries run from foreground refresh, not alongside a push wake.
+            }
+        } else {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.chatSnapshot = await self.chatCoordinator.snapshot()
+            }
+        }
         if isProvisioned {
             statusMessage = independentProfile == nil
                 ? "Open Taskify on iPhone once to upgrade independent sync."
@@ -151,27 +228,560 @@ final class TaskifyWatchAppModel: NSObject {
     }
 
     var todayTasks: [TaskifyWatchTask] {
-        visible(snapshot.todayTasks())
+        _ = viewClock
+        return currentTaskIndex.dayLists().today
     }
 
     var upcomingTasks: [TaskifyWatchTask] {
-        visible(snapshot.upcomingTasks())
+        _ = viewClock
+        return currentTaskIndex.dayLists().upcoming
     }
 
     func tasks(for boardID: String) -> [TaskifyWatchTask] {
-        visible(snapshot.tasks(for: boardID))
+        currentTaskIndex.tasksByBoard[boardID] ?? []
     }
 
     func openTaskCount(for boardID: String) -> Int {
-        guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { return 0 }
-        let pendingCount = snapshot.tasks.lazy.filter {
-            $0.boardID == boardID && self.pendingCompletionIDs.contains($0.id)
-        }.count
-        return max(0, board.openTaskCount - pendingCount)
+        currentTaskIndex.openCounts[boardID] ?? 0
     }
 
     var quickAddBoardID: String? {
         activeQuickAddBoardID ?? snapshot.selectedBoardID ?? snapshot.boards.first?.id
+    }
+
+    var chatThreads: [TaskifyWatchChatThread] { currentChatIndex.threads }
+    var chatUnreadCount: Int { currentChatIndex.unreadCount }
+
+    var leftChatGroups: [TaskifyWatchGroupConversation] {
+        chatSnapshot.groups.filter(\.isLeft).sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    var chatIdentityPublicKey: String? { independentProfile?.publicKeyHex.lowercased() }
+
+    var isChatConfigured: Bool { chatContext != nil }
+
+    func restoreProtectedStateAfterUnlock() {
+        // A push can cold-launch the process while protected files/Keychain are unavailable.
+        // Re-read them on activation instead of keeping the empty launch-time placeholders.
+        guard identityStore.containsIdentity() else { return }
+        isProvisioned = true
+        if independentProfile == nil { loadIndependentProfile() }
+        if chatContext == nil { loadChatContext() }
+    }
+
+    func chatMessages(conversationID: String) -> [TaskifyWatchChatMessage] {
+        _ = viewClock
+        return currentChatIndex.messages(conversationID: conversationID)
+    }
+
+    func chatContact(publicKey: String) -> TaskifyWatchContact? {
+        currentChatIndex.contacts[publicKey.lowercased()]
+    }
+
+    func chatGroupAvatarMembers(
+        memberPublicKeys: [String],
+        recentSenderPublicKeys: [String]
+    ) -> [TaskifyWatchGroupAvatarMember] {
+        currentChatIndex.groupAvatarMembers(
+            memberPublicKeys: memberPublicKeys,
+            recentSenderPublicKeys: recentSenderPublicKeys
+        )
+    }
+
+    private var currentChatIndex: TaskifyWatchChatIndex {
+        // Read observed input even on cache hits so SwiftUI keeps tracking updates.
+        _ = chatSnapshot
+        if let cachedChatIndex { return cachedChatIndex }
+        let index = TaskifyWatchChatIndex(snapshot: chatSnapshot, identity: chatIdentityPublicKey ?? "")
+        cachedChatIndex = index
+        return index
+    }
+
+    private var currentTaskIndex: TaskifyWatchTaskIndex {
+        _ = snapshot
+        _ = pendingCompletionIDs
+        if let cachedTaskIndex { return cachedTaskIndex }
+        let index = TaskifyWatchTaskIndex(snapshot: snapshot, pendingCompletions: pendingCompletionIDs)
+        cachedTaskIndex = index
+        return index
+    }
+
+    func refreshViewClock() { viewClock = Date() }
+
+    var nextViewClockDelay: TimeInterval {
+        let now = Date()
+        let midnight = Calendar.current.date(byAdding: .day, value: 1,
+                                             to: Calendar.current.startOfDay(for: now)) ?? now.addingTimeInterval(60)
+        let expiry = chatSnapshot.outbox.map(\.expiresAt).filter { $0 > now }.min() ?? midnight
+        return max(0.1, min(60, min(midnight, expiry).timeIntervalSince(now)))
+    }
+
+    func beginAvatarRefresh() async {
+        await TaskifyWatchAvatarLoader.shared.beginSession()
+        avatarRefreshRevision += 1
+    }
+
+    @discardableResult
+    func refreshChat(backgroundDeadline: ContinuousClock.Instant? = nil) async -> Bool {
+        guard isProvisioned else {
+            Self.chatSyncLogger.info("Chat refresh deferred: provisioning or protected state unavailable")
+            return false
+        }
+        if isRefreshingChat {
+            // A notification must not wait on an unbounded foreground sync. The existing
+            // refresh owns the cache; scheduled/foreground refresh will catch up afterward.
+            if backgroundDeadline != nil {
+                Self.chatSyncLogger.info("Background refresh deferred: sync already running")
+                return true
+            }
+            await withCheckedContinuation { continuation in
+                chatRefreshWaiters.append(continuation)
+            }
+            return true
+        }
+        guard let chatContext else { return false }
+        guard let privateKey = try? identityStore.load() else {
+            Self.chatSyncLogger.info("Chat refresh deferred: protected key unavailable")
+            return false
+        }
+        let revision = chatAccountRevision
+        isRefreshingChat = true
+        var succeeded = false
+        do {
+            _ = try await chatCoordinator.configure(chatContext)
+            let refreshed = try await chatCoordinator.refreshInbox(
+                privateKey: privateKey, backgroundDeadline: backgroundDeadline
+            )
+            if revision == chatAccountRevision {
+                chatSnapshot = refreshed
+                succeeded = true
+                chatStatusMessage = "Chat up to date"
+                // Message content comes from the Watch's own relay pulls; display metadata does
+                // not. If a pulled conversation has no summary and no contact, only the phone's
+                // directory can name it.
+                if backgroundDeadline == nil, chatDirectorySyncNeeded(refreshed) {
+                    requestChatDirectoryFromPhone()
+                }
+            }
+        } catch {
+            // Never log an error description: server responses can contain account metadata.
+            let nsError = error as NSError
+            let category = error is CancellationError ? "cancelled"
+                : nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut ? "timeout"
+                : nsError.domain == NSCocoaErrorDomain ? "storage"
+                : "transport-or-processing"
+            Self.chatSyncLogger.error("Chat refresh failed: \(category, privacy: .public)")
+            if revision == chatAccountRevision {
+                chatSnapshot = await chatCoordinator.snapshot()
+                chatStatusMessage = "Showing saved messages"
+            }
+        }
+        isRefreshingChat = false
+        let waiters = chatRefreshWaiters
+        chatRefreshWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if backgroundDeadline == nil { scheduleChatOutboxRetry() }
+        return succeeded
+    }
+
+    /// Pulls and decrypts a privacy-preserving push wakeup. The caller can use the return value
+    /// to schedule a generic local notification; no sender, group, or message metadata needs to
+    /// pass through APNs.
+    func handleChatPushWake() async -> TaskifyWatchChatWakeResult {
+        Self.chatSyncLogger.info("Background chat refresh started")
+        guard !isRefreshingChat else {
+            Self.chatSyncLogger.info("Background refresh deferred: sync already running")
+            return TaskifyWatchChatWakeResult(receivedData: false, shouldNotify: false, failed: false)
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(18))
+        let revision = chatAccountRevision
+        // The UI snapshot is restored asynchronously on cold launch. Compare with the durable
+        // store so already-cached messages are not mistaken for new arrivals.
+        let before = await chatCoordinator.snapshot()
+        let existingRumorIDs = Set(before.messages.map(\.rumorID))
+        let succeeded = await refreshChat(backgroundDeadline: deadline)
+        let after = await chatCoordinator.snapshot()
+        guard revision == chatAccountRevision else {
+            return TaskifyWatchChatWakeResult(receivedData: false, shouldNotify: false, failed: true)
+        }
+        let identity = chatIdentityPublicKey ?? ""
+        let groups = after.groups.reduce(into: [String: TaskifyWatchGroupConversation]()) {
+            $0[$1.groupID] = $1
+        }
+        let newMessages = after.messages.filter {
+            !existingRumorIDs.contains($0.rumorID) && $0.senderPublicKey != identity
+        }
+        let shouldNotify = newMessages.contains { message in
+            if let group = groups[message.conversationID] {
+                return !group.isMuted && !group.isLeft
+            }
+            return true
+        }
+        let receivedData = after.cursor != before.cursor || !newMessages.isEmpty
+        Self.chatSyncLogger.info("Background chat refresh finished: changed=\(receivedData), succeeded=\(succeeded)")
+        return TaskifyWatchChatWakeResult(receivedData: receivedData, shouldNotify: shouldNotify, failed: !succeeded)
+    }
+
+    @discardableResult
+    func sendChat(
+        _ text: String,
+        memberPublicKeys: [String],
+        subject: String? = nil,
+        replyToRumorID: String? = nil,
+        reactionToRumorID: String? = nil
+    ) async -> Bool {
+        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let revision = chatAccountRevision
+        guard !content.isEmpty else { return false }
+        guard let chatContext else {
+            chatStatusMessage = TaskifyWatchChatCoordinatorError.notConfigured.localizedDescription
+            return false
+        }
+        let privateKey: Data
+        do {
+            privateKey = try identityStore.load()
+        } catch {
+            chatStatusMessage = error.localizedDescription
+            return false
+        }
+        do {
+            let previousOutboxIDs = Set(chatSnapshot.outbox.map(\.rumorID))
+            // `chatContext` is restored synchronously, while actor configuration happens in a
+            // launch task. Ensuring it here prevents an immediate post-launch send from racing
+            // that task and incorrectly reporting that Watch chat is not configured.
+            _ = try await chatCoordinator.configure(chatContext)
+            let queued = try await chatCoordinator.send(
+                content: content,
+                memberPublicKeys: memberPublicKeys,
+                subject: subject,
+                replyToRumorID: replyToRumorID,
+                reactionToRumorID: reactionToRumorID,
+                privateKey: privateKey
+            )
+            guard revision == chatAccountRevision else { return false }
+            chatSnapshot = queued
+            let newEntry = chatSnapshot.outbox.first {
+                !previousOutboxIDs.contains($0.rumorID)
+            }
+            // Never describe a locally persisted bubble as sent until at least one relay has
+            // acknowledged every real recipient copy. Durable retry is still success from the
+            // composer's perspective, but its status remains explicit while delivery is pending.
+            chatStatusMessage = newEntry?.areRecipientCopiesDelivered == true
+                ? "Message sent"
+                : "Message queued — retrying"
+            scheduleChatOutboxRetry()
+            return true
+        } catch {
+            guard revision == chatAccountRevision else { return false }
+            chatSnapshot = await chatCoordinator.snapshot()
+            chatStatusMessage = error.localizedDescription
+            scheduleChatOutboxRetry()
+            return false
+        }
+    }
+
+    /// Keeps durable sends moving while the app remains active. watchOS may suspend this task in
+    /// the background, but the encrypted outbox survives and foreground refresh resumes it.
+    private func scheduleChatOutboxRetry(minimumDelayMilliseconds: Int64 = 0) {
+        chatOutboxRetryTask?.cancel()
+        let now = Date()
+        let nextAttempt = chatSnapshot.outbox
+            .filter { $0.expiresAt > now }
+            .flatMap { entry -> [Date] in
+                let eligibleWraps = entry.areRecipientCopiesDelivered
+                    ? entry.wraps
+                    : entry.wraps.filter { $0.recipientPublicKey != entry.senderPublicKey }
+                return eligibleWraps
+                    .filter { !$0.isFullyReplicated }
+                    .map(\.nextAttemptAt)
+            }
+            .min()
+        guard let nextAttempt else { return }
+        let delayMilliseconds = Int64(
+            max(
+                Double(minimumDelayMilliseconds),
+                min(15 * 60 * 1_000, nextAttempt.timeIntervalSinceNow * 1_000)
+            )
+        )
+        chatOutboxRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(delayMilliseconds))
+            guard !Task.isCancelled, let self, let chatContext = self.chatContext else { return }
+            let revision = self.chatAccountRevision
+            do {
+                let privateKey = try self.identityStore.load()
+                do {
+                    _ = try await self.chatCoordinator.configure(chatContext)
+                    let delivered = try await self.chatCoordinator.retryOutbox(
+                        privateKey: privateKey
+                    )
+                    guard !Task.isCancelled, revision == self.chatAccountRevision else { return }
+                    self.chatSnapshot = delivered
+                    self.chatStatusMessage = self.chatSnapshot.outbox.contains {
+                        !$0.areRecipientCopiesDelivered && $0.expiresAt > Date()
+                    } ? "Message queued — retrying" : "Message sent"
+                } catch {
+                    guard !Task.isCancelled, revision == self.chatAccountRevision else { return }
+                    self.chatSnapshot = await self.chatCoordinator.snapshot()
+                    self.chatStatusMessage = "Message queued — retrying"
+                    // Configuration/storage errors may leave an already-due entry unchanged.
+                    // Keep immediate first sends without spinning on that same failed entry.
+                    self.scheduleChatOutboxRetry(minimumDelayMilliseconds: 5_000)
+                    return
+                }
+                self.scheduleChatOutboxRetry()
+            } catch {
+                guard !Task.isCancelled, revision == self.chatAccountRevision else { return }
+                // The identity key is only readable while the Watch is unlocked. This chain
+                // previously died here (a wrist-down, passcode-locked watch) and left the
+                // outbox stranded until the next foreground refresh; re-arm so delivery
+                // resumes shortly after unlock.
+                self.chatOutboxRetryTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(60))
+                    guard !Task.isCancelled, self?.chatAccountRevision == revision else { return }
+                    self?.scheduleChatOutboxRetry()
+                }
+            }
+        }
+    }
+
+    func markChatRead(_ conversationID: String) {
+        let normalized = conversationID.lowercased()
+        let identity = chatIdentityPublicKey ?? ""
+        let localTimestamp = chatSnapshot.messages.lazy
+            .filter({
+                $0.conversationID == normalized && $0.senderPublicKey != identity
+            })
+            .map(\.createdAt)
+            .max()
+        let projectedTimestamp = chatSnapshot.threadSummaries?
+            .first { $0.conversationID == normalized }?
+            .latestActivityAt
+        guard let timestamp = [localTimestamp, projectedTimestamp].compactMap({ $0 }).max() else {
+            return
+        }
+        // An already-read thread with no displayed unread count has nothing to mark. Touching
+        // the store again would bump its generatedAt, re-trigger this method through the
+        // conversation view's onChange, and restart read-sync with the phone.
+        let alreadyRead = (chatSnapshot.readAt[normalized] ?? 0) >= timestamp
+        let summaryUnread = chatSnapshot.threadSummaries?
+            .first { $0.conversationID == normalized }?
+            .unreadCount ?? 0
+        guard !alreadyRead || summaryUnread > 0 else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.chatSnapshot = (try? await self.chatCoordinator.markRead(
+                conversationID: normalized,
+                through: timestamp
+            )) ?? self.chatSnapshot
+            self.syncChatReadWithPhone(conversationID: normalized, through: timestamp)
+        }
+    }
+
+    private func syncChatReadWithPhone(conversationID: String, through timestamp: Int) {
+        let normalized = conversationID.lowercased()
+        // One message per advancement. Re-marking an unchanged position re-rendered the thread
+        // and re-sent the same read forever, so only a strictly newer position is transmitted.
+        if let sent = lastSentChatReadThrough[normalized], timestamp <= sent {
+            return
+        }
+        lastSentChatReadThrough[normalized] = timestamp
+        guard WCSession.isSupported(),
+              let update = TaskifyWatchTransfer.chatReadUpdate(
+                conversationID: conversationID,
+                through: timestamp
+              ) else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated else { return }
+        if session.isReachable {
+            session.sendMessage(update) { [weak self] reply in
+                Task { @MainActor in self?.apply(applicationContext: reply) }
+            } errorHandler: { _ in
+                session.transferUserInfo(update)
+            }
+        } else {
+            let alreadyQueued = session.outstandingUserInfoTransfers.contains { transfer in
+                guard let queued = TaskifyWatchTransfer.chatReadUpdate(from: transfer.userInfo) else {
+                    return false
+                }
+                return queued.conversationID == conversationID && queued.timestamp >= timestamp
+            }
+            if !alreadyQueued { session.transferUserInfo(update) }
+        }
+    }
+
+    /// True when the cache holds conversations the Watch cannot render usefully on its own: no
+    /// summaries at all while messages exist, or a message whose conversation has no summary
+    /// and whose sender is not a known contact.
+    private func chatDirectorySyncNeeded(_ snapshot: TaskifyWatchChatSnapshot) -> Bool {
+        if (snapshot.threadSummaries ?? []).isEmpty, !snapshot.messages.isEmpty { return true }
+        let summaries = Set((snapshot.threadSummaries ?? []).map(\.id))
+        let contacts = Set(snapshot.contacts.map(\.publicKey))
+        return snapshot.messages.contains { message in
+            !summaries.contains(message.conversationID)
+                && !contacts.contains(message.senderPublicKey)
+        }
+    }
+
+    /// Asks the paired iPhone for the chat directory: the contact list, thread display
+    /// metadata, relay routing, and phone-side tombstones, in one bounded transfer. This is the
+    /// only WatchConnectivity chat traffic besides read badges — the Watch's own relay pulls
+    /// carry message content, and the reply's empty task payload is deliberately ignored.
+    func requestChatDirectoryFromPhone() {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        // `isPaired`/`isWatchAppInstalled` are iPhone-side properties; a watchOS session is
+        // paired by definition once it reports activated.
+        guard session.activationState == .activated else { return }
+        guard session.isReachable else {
+            needsChatDirectorySync = true
+            return
+        }
+        // A pending flag (unreachable request, failed request, or an unknown conversation seen
+        // during a relay pull) retries immediately; otherwise requests are bounded to one per
+        // interval so routine activations stay silent.
+        if !needsChatDirectorySync,
+           let last = lastChatDirectoryRequestAt,
+           Date().timeIntervalSince(last) < Self.chatDirectoryRequestInterval {
+            return
+        }
+        lastChatDirectoryRequestAt = Date()
+        needsChatDirectorySync = false
+        session.sendMessage(TaskifyWatchTransfer.chatDirectoryRequest) { [weak self] reply in
+            Task { @MainActor in self?.applyChatDirectoryReply(reply) }
+        } errorHandler: { [weak self] _ in
+            Task { @MainActor in self?.needsChatDirectorySync = true }
+        }
+    }
+
+    func setGroupMuted(_ groupID: String, muted: Bool) {
+        guard var group = chatSnapshot.groups.first(where: { $0.groupID == groupID }) else { return }
+        group.isMuted = muted
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.chatSnapshot = (try? await self.chatCoordinator.setGroup(group)) ?? self.chatSnapshot
+        }
+    }
+
+    func setGroupLeft(_ groupID: String, left: Bool) {
+        guard var group = chatSnapshot.groups.first(where: { $0.groupID == groupID }) else { return }
+        group.isLeft = left
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.chatSnapshot = (try? await self.chatCoordinator.setGroup(group)) ?? self.chatSnapshot
+        }
+    }
+
+    func renameGroup(_ groupID: String, name: String) {
+        guard var group = chatSnapshot.groups.first(where: { $0.groupID == groupID }) else { return }
+        group.name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        group.nameUpdatedAt = Int(Date().timeIntervalSince1970)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.chatSnapshot = (try? await self.chatCoordinator.setGroup(group)) ?? self.chatSnapshot
+        }
+    }
+
+    func blockChatSender(_ publicKey: String) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.chatSnapshot = (try? await self.chatCoordinator.block(publicKey: publicKey))
+                ?? self.chatSnapshot
+            await TaskifyWatchPhotoLoader.shared.clear()
+            TaskifyWatchMarkdownCache.shared.clear()
+        }
+    }
+
+    func deleteChatConversation(_ conversationID: String) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.chatSnapshot = (try? await self.chatCoordinator.deleteConversation(conversationID))
+                ?? self.chatSnapshot
+            await TaskifyWatchPhotoLoader.shared.clear()
+            TaskifyWatchMarkdownCache.shared.clear()
+        }
+    }
+
+    func clearChatData() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.chatSnapshot = (try? await self.chatCoordinator.clearMessages())
+                ?? self.chatSnapshot
+            await TaskifyWatchPhotoLoader.shared.clear()
+            TaskifyWatchMarkdownCache.shared.clear()
+            await TaskifyWatchAvatarLoader.shared.clear()
+        }
+    }
+
+    func retryChatMessage(_ rumorID: String) {
+        guard let chatContext, let privateKey = try? identityStore.load() else { return }
+        let revision = chatAccountRevision
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.chatCoordinator.configure(chatContext)
+                let retried = try await self.chatCoordinator.retryMessage(
+                    rumorID: rumorID,
+                    privateKey: privateKey
+                )
+                guard revision == self.chatAccountRevision else { return }
+                self.chatSnapshot = retried
+                self.chatStatusMessage = retried.outbox.first {
+                    $0.rumorID == rumorID.lowercased()
+                }?.areRecipientCopiesDelivered == true
+                    ? "Message sent"
+                    : "Message queued — retrying"
+                self.scheduleChatOutboxRetry()
+            } catch {
+                guard revision == self.chatAccountRevision else { return }
+                self.chatSnapshot = await self.chatCoordinator.snapshot()
+                self.chatStatusMessage = "Message retry failed"
+            }
+        }
+    }
+
+    func registerWatchPushToken(_ deviceToken: Data) async {
+        guard let chatContext, let privateKey = try? identityStore.load() else { return }
+        let revision = chatAccountRevision
+        do {
+            // APNs can return the token before the launch-time coordinator task finishes. Ensure
+            // the gateway is configured here so that race cannot silently lose registration until
+            // the next app launch.
+            _ = try await chatCoordinator.configure(chatContext)
+            let registration = try await chatCoordinator.registerWatch(
+                deviceToken: deviceToken,
+                installationID: watchInstallationID,
+                environment: Self.watchAPNsEnvironment,
+                privateKey: privateKey
+            )
+            guard revision == chatAccountRevision else { return }
+            self.chatContext = registration.context
+            try persistChatContext()
+            chatSnapshot = registration.snapshot
+            chatStatusMessage = "Watch notifications ready"
+        } catch {
+            guard revision == chatAccountRevision else { return }
+            chatStatusMessage = "Watch notifications need attention"
+        }
+    }
+
+    private static var watchAPNsEnvironment: String {
+        #if DEBUG
+        "sandbox"
+        #else
+        "production"
+        #endif
+    }
+
+    private var watchInstallationID: String {
+        let key = "taskify.watch.chat.installation-id.v1"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+            return existing
+        }
+        let value = UUID().uuidString
+        UserDefaults.standard.set(value, forKey: key)
+        return value
     }
 
     func boardName(for boardID: String?) -> String {
@@ -323,13 +933,34 @@ final class TaskifyWatchAppModel: NSObject {
     /// Refreshes encrypted Taskify task records through the Watch HTTPS transport. This works
     /// over the Watch's own Wi-Fi/cellular route and does not require a reachable iPhone.
     func refreshLatestData(forceComplicationReload: Bool = false) async {
+        // Inbox catch-up must not wait behind phone reachability and task-board downloads.
+        async let chatRefresh: Void = refreshForegroundChat()
         // Apply the phone projection first, then let the relay's latest replaceable events win.
         // Running these concurrently can allow a delayed phone reply to overwrite a newer edit
         // fetched directly from a web client.
         await requestLatestSnapshotFromPhone()
         await refreshFromRelays()
+        await chatRefresh
         if forceComplicationReload {
             reloadComplicationTimelines()
+        }
+    }
+
+    private func refreshForegroundChat() async {
+        await refreshChat()
+        guard !Task.isCancelled, isProvisioned,
+              preparedChatAccountRevision != chatAccountRevision,
+              let chatContext, let privateKey = try? identityStore.load() else { return }
+        let revision = chatAccountRevision
+        do {
+            _ = try await chatCoordinator.configure(chatContext)
+            let prepared = try await chatCoordinator.prepareIndependentInbox(privateKey: privateKey)
+            guard revision == chatAccountRevision else { return }
+            self.chatContext = prepared
+            try persistChatContext()
+            preparedChatAccountRevision = revision
+        } catch {
+            // Keep the cached inbox usable and retry enrollment on a later foreground refresh.
         }
     }
 
@@ -345,10 +976,11 @@ final class TaskifyWatchAppModel: NSObject {
         do {
             let events = try await independentClient.fetchTasks(
                 boards: snapshot.boards,
+                gatewayBaseURL: chatContext?.pushRelayHTTPSURL,
                 profile: profile,
                 privateKey: privateKey
             )
-            mergeRelayEvents(events)
+            await mergeRelayEvents(events)
             statusMessage = pendingCommands.isEmpty ? "Independent sync up to date" : "Watch changes waiting for iPhone"
         } catch {
             // Cached tasks and the phone transport remain fully usable when the independent
@@ -386,6 +1018,8 @@ final class TaskifyWatchAppModel: NSObject {
                 try await independentClient.publish(
                     mutation.event,
                     relayURLs: mutation.relayURLs,
+                    boardID: mutation.boardNostrID,
+                    gatewayBaseURL: chatContext?.pushRelayHTTPSURL,
                     profile: profile,
                     privateKey: privateKey
                 )
@@ -435,7 +1069,8 @@ final class TaskifyWatchAppModel: NSObject {
             return [TaskifyWatchDirectMutation(
                 event: event,
                 task: nil,
-                relayURLs: normalizedRelays(task.relayURLs ?? board.relayURLs ?? profile.relayURLs)
+                relayURLs: normalizedRelays(task.relayURLs ?? board.relayURLs ?? profile.relayURLs),
+                boardNostrID: boardNostrID
             )]
 
         case .createTask:
@@ -472,10 +1107,10 @@ final class TaskifyWatchAppModel: NSObject {
             let stableTaskID = "watch-\(command.id)-\(index)"
             if snapshot.tasks.contains(where: { $0.id == stableTaskID }) { return nil }
 
-            let parsedDueDate = draft.dueISO.flatMap(taskifyParseISODate)
+            let parsedDueDate = draft.dueISO.flatMap(Self.taskifyParseISODate)
             let dueDate = board.kind == "week" ? (parsedDueDate ?? Date()) : parsedDueDate
             let columnID = board.kind == "week"
-                ? taskifyWeekdayID(for: dueDate ?? Date())
+                ? Self.taskifyWeekdayID(for: dueDate ?? Date())
                 : board.defaultColumnID
             let created = Date()
             let order = (snapshot.tasks
@@ -503,7 +1138,7 @@ final class TaskifyWatchAppModel: NSObject {
                 title: title,
                 boardID: board.id,
                 boardName: board.name,
-                columnName: board.kind == "week" ? taskifyWeekdayName(for: dueDate ?? created) : nil,
+                columnName: board.kind == "week" ? Self.taskifyWeekdayName(for: dueDate ?? created) : nil,
                 dueDate: dueDate,
                 dueTimeEnabled: false,
                 priority: draft.priority,
@@ -514,7 +1149,12 @@ final class TaskifyWatchAppModel: NSObject {
                 syncPayload: payload,
                 nostrUpdatedAt: eventCreatedAt
             )
-            return TaskifyWatchDirectMutation(event: event, task: task, relayURLs: relays)
+            return TaskifyWatchDirectMutation(
+                event: event,
+                task: task,
+                relayURLs: relays,
+                boardNostrID: boardNostrID
+            )
         }
     }
 
@@ -563,46 +1203,149 @@ final class TaskifyWatchAppModel: NSObject {
         replaceSnapshot(tasks: tasks, generatedAt: Date())
     }
 
-    private func mergeRelayEvents(_ events: [TaskifyWatchNostrEvent]) {
-        let boardPairs: [(String, TaskifyWatchBoard)] = snapshot.boards.compactMap { board in
+    private func mergeRelayEvents(_ events: [TaskifyWatchNostrEvent]) async {
+        var boards = snapshot.boards
+        let boardPairs: [(String, TaskifyWatchBoard)] = boards.compactMap { board in
             guard let boardID = board.nostrBoardID,
                   let author = try? TaskifyWatchNostrCrypto.boardPublicKeyHex(for: boardID) else {
                 return nil
             }
             return (author, board)
         }
-        let boardByAuthor = Dictionary(uniqueKeysWithValues: boardPairs)
+        var boardByAuthor = Dictionary(uniqueKeysWithValues: boardPairs)
+
+        let latestBoardEvents = events
+            .filter { $0.kind == TaskifyWatchNostrCrypto.boardEventKind }
+            .reduce(into: [String: TaskifyWatchNostrEvent]()) { latest, event in
+                let author = event.publicKey.lowercased()
+                guard boardByAuthor[author] != nil else { return }
+                if let current = latest[author],
+                   current.createdAt > event.createdAt
+                    || (current.createdAt == event.createdAt && current.id <= event.id) {
+                    return
+                }
+                latest[author] = event
+            }
+        for (author, event) in latestBoardEvents {
+            guard let current = boardByAuthor[author],
+                  event.createdAt > (current.nostrUpdatedAt ?? 0),
+                  let updated = Self.decodeRelayBoard(event, existing: current),
+                  let index = boards.firstIndex(where: { $0.id == current.id }) else { continue }
+            boards[index] = updated
+            boardByAuthor[author] = updated
+        }
+
         var latestByTaskID: [String: (TaskifyWatchNostrEvent, TaskifyWatchBoard)] = [:]
-        for event in events {
+        for event in events where event.kind == TaskifyWatchNostrCrypto.taskEventKind {
             guard let taskID = event.firstTagValue(named: "d"),
                   let board = boardByAuthor[event.publicKey.lowercased()] else { continue }
-            if let current = latestByTaskID[taskID], current.0.createdAt >= event.createdAt { continue }
+            if let current = latestByTaskID[taskID],
+               current.0.createdAt > event.createdAt
+                || (current.0.createdAt == event.createdAt && current.0.id <= event.id) {
+                continue
+            }
             latestByTaskID[taskID] = (event, board)
         }
 
         var tasks = snapshot.tasks
-        for (taskID, pair) in latestByTaskID {
-            let event = pair.0
-            let board = pair.1
-            let existingIndex = tasks.firstIndex { $0.id == taskID }
-            if let existingIndex,
-               (tasks[existingIndex].nostrUpdatedAt ?? 0) > event.createdAt {
-                continue
+        var taskIndexByID = Dictionary(
+            tasks.indices.map { (tasks[$0].id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var removedTaskIDs = Set<String>()
+
+        // A fresh fetch carries an event for every task on the relay, so the decode below runs
+        // one decryption per unique task. Do that CPU work off the main actor and apply the
+        // results here; everything it touches is a Sendable value.
+        let decodeInputs: [(String, TaskifyWatchNostrEvent, TaskifyWatchBoard, TaskifyWatchTask?)] = latestByTaskID
+            .compactMap { taskID, pair in
+                guard let existingIndex = taskIndexByID[taskID] else {
+                    return (taskID, pair.0, pair.1, nil)
+                }
+                if (tasks[existingIndex].nostrUpdatedAt ?? 0) > pair.0.createdAt { return nil }
+                return (taskID, pair.0, pair.1, tasks[existingIndex])
             }
-            let status = event.firstTagValue(named: "status")
-            if status == "done" || status == "deleted" {
-                if let existingIndex { tasks.remove(at: existingIndex) }
-                continue
+        let decodedTasks = await Task.detached(priority: .userInitiated) { [decodeInputs] () -> [String: TaskifyWatchTask] in
+            var decoded: [String: TaskifyWatchTask] = [:]
+            decoded.reserveCapacity(decodeInputs.count)
+            for (taskID, event, board, existing) in decodeInputs {
+                let status = event.firstTagValue(named: "status")
+                if status == "done" || status == "deleted" { continue }
+                guard let task = Self.decodeRelayTask(event, board: board, existing: existing) else {
+                    continue
+                }
+                decoded[taskID] = task
             }
-            guard let decoded = decodeRelayTask(event, board: board, existing: existingIndex.map { tasks[$0] }) else {
-                continue
+            return decoded
+        }.value
+
+        for (taskID, decoded) in decodedTasks {
+            if let index = taskIndexByID[taskID] {
+                tasks[index] = decoded
+            } else {
+                taskIndexByID[taskID] = tasks.count
+                tasks.append(decoded)
             }
-            if let existingIndex { tasks[existingIndex] = decoded } else { tasks.append(decoded) }
         }
-        replaceSnapshot(tasks: tasks, generatedAt: Date())
+        for (taskID, pair) in latestByTaskID {
+            let status = pair.0.firstTagValue(named: "status")
+            guard status == "done" || status == "deleted" else { continue }
+            // Mirror the staleness gate the upsert path uses: a tombstone older than the stored
+            // task does not remove it.
+            if let existingIndex = taskIndexByID[taskID],
+               (tasks[existingIndex].nostrUpdatedAt ?? 0) <= pair.0.createdAt {
+                removedTaskIDs.insert(taskID)
+            }
+        }
+        if !removedTaskIDs.isEmpty {
+            tasks.removeAll { removedTaskIDs.contains($0.id) }
+        }
+        replaceSnapshot(tasks: tasks, boards: boards, generatedAt: Date())
     }
 
-    private func decodeRelayTask(
+    private nonisolated static func decodeRelayBoard(
+        _ event: TaskifyWatchNostrEvent,
+        existing board: TaskifyWatchBoard
+    ) -> TaskifyWatchBoard? {
+        guard let boardID = board.nostrBoardID,
+              let plaintext = try? TaskifyWatchNostrCrypto.decryptBoardPayload(
+                event,
+                boardID: boardID
+              ),
+              let payload = try? JSONDecoder().decode(
+                TaskifyWatchBoardRelayPayload.self,
+                from: plaintext
+              ) else { return nil }
+        let payloadName = payload.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let taggedName = event.firstTagValue(named: "name")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = payloadName?.isEmpty == false
+            ? payloadName!
+            : (taggedName?.isEmpty == false ? taggedName! : board.name)
+        let kind = payload.kind
+            ?? event.firstTagValue(named: "k")
+            ?? board.kind
+        let columns = (payload.columns ?? board.columns)?.sorted {
+            if $0.order != $1.order { return $0.order < $1.order }
+            return $0.id < $1.id
+        }
+        let defaultColumnID = kind == "week"
+            ? taskifyWeekdayID(for: Date())
+            : columns?.first?.id ?? board.defaultColumnID
+        return TaskifyWatchBoard(
+            id: board.id,
+            name: name,
+            openTaskCount: board.openTaskCount,
+            kind: kind,
+            nostrBoardID: board.nostrBoardID,
+            relayURLs: board.relayURLs,
+            defaultColumnID: defaultColumnID,
+            columns: columns,
+            nostrUpdatedAt: event.createdAt
+        )
+    }
+
+    private nonisolated static func decodeRelayTask(
         _ event: TaskifyWatchNostrEvent,
         board: TaskifyWatchBoard,
         existing: TaskifyWatchTask?
@@ -623,7 +1366,9 @@ final class TaskifyWatchAppModel: NSObject {
             title: title,
             boardID: board.id,
             boardName: board.name,
-            columnName: board.kind == "week" ? taskifyWeekdayName(for: dueDate ?? Date()) : existing?.columnName,
+            columnName: board.kind == "week"
+                ? taskifyWeekdayName(for: dueDate ?? Date())
+                : board.columns?.first(where: { $0.id == columnID })?.name ?? existing?.columnName,
             dueDate: (object["dueDateEnabled"] as? Bool) == false ? nil : dueDate,
             dueTimeEnabled: object["dueTimeEnabled"] as? Bool ?? false,
             priority: number?.intValue,
@@ -636,16 +1381,27 @@ final class TaskifyWatchAppModel: NSObject {
         )
     }
 
-    private func replaceSnapshot(tasks: [TaskifyWatchTask], generatedAt: Date) {
-        let boards = snapshot.boards.map { board in
+    private func replaceSnapshot(
+        tasks: [TaskifyWatchTask],
+        boards sourceBoards: [TaskifyWatchBoard]? = nil,
+        generatedAt: Date
+    ) {
+        // One counting pass instead of a full task scan per board.
+        var openCounts: [String: Int] = [:]
+        for task in tasks {
+            openCounts[task.boardID, default: 0] += 1
+        }
+        let boards = (sourceBoards ?? snapshot.boards).map { board in
             TaskifyWatchBoard(
                 id: board.id,
                 name: board.name,
-                openTaskCount: tasks.lazy.filter { $0.boardID == board.id }.count,
+                openTaskCount: openCounts[board.id] ?? 0,
                 kind: board.kind,
                 nostrBoardID: board.nostrBoardID,
                 relayURLs: board.relayURLs,
-                defaultColumnID: board.defaultColumnID
+                defaultColumnID: board.defaultColumnID,
+                columns: board.columns,
+                nostrUpdatedAt: board.nostrUpdatedAt
             )
         }
         snapshot = TaskifyWatchSnapshot(
@@ -653,7 +1409,9 @@ final class TaskifyWatchAppModel: NSObject {
             boards: boards,
             selectedBoardID: snapshot.selectedBoardID,
             generatedAt: generatedAt,
-            acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs
+            acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs,
+            chatProjection: snapshot.chatProjection,
+            accent: snapshot.accent
         )
         persistSnapshot()
     }
@@ -674,14 +1432,14 @@ final class TaskifyWatchAppModel: NSObject {
         return formatter.string(from: date)
     }
 
-    private func taskifyParseISODate(_ value: String) -> Date? {
+    private nonisolated static func taskifyParseISODate(_ value: String) -> Date? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = fractional.date(from: value) { return date }
         return ISO8601DateFormatter().date(from: value)
     }
 
-    private func taskifyWeekdayID(for date: Date) -> String {
+    private nonisolated static func taskifyWeekdayID(for date: Date) -> String {
         switch Calendar.current.component(.weekday, from: date) {
         case 1: "sunday"
         case 2: "monday"
@@ -693,7 +1451,7 @@ final class TaskifyWatchAppModel: NSObject {
         }
     }
 
-    private func taskifyWeekdayName(for date: Date) -> String {
+    private nonisolated static func taskifyWeekdayName(for date: Date) -> String {
         switch Calendar.current.component(.weekday, from: date) {
         case 1: "Sun"
         case 2: "Mon"
@@ -703,10 +1461,6 @@ final class TaskifyWatchAppModel: NSObject {
         case 6: "Fri"
         default: "Sat"
         }
-    }
-
-    private func visible(_ tasks: [TaskifyWatchTask]) -> [TaskifyWatchTask] {
-        tasks.filter { !pendingCompletionIDs.contains($0.id) }
     }
 
     private func activateConnectivity() {
@@ -813,6 +1567,9 @@ final class TaskifyWatchAppModel: NSObject {
 
     private func acceptProvisioning(_ data: Data) throws -> Data {
         let payload = try TaskifyWatchTransfer.decodeProvisioningPayload(data)
+        let previousPublicKey = independentProfile?.publicKeyHex.lowercased()
+        let isAccountReplacement = previousPublicKey != nil
+            && previousPublicKey != payload.publicKeyHex.lowercased()
         // Reject a malformed/mismatched envelope before it can replace the device-only key.
         _ = try TaskifyWatchNostrCrypto.requestAuthentication(
             privateKey: payload.privateKey,
@@ -820,6 +1577,20 @@ final class TaskifyWatchAppModel: NSObject {
             body: Data(),
             timestamp: 0
         )
+        chatAccountRevision += 1
+        let provisioningRevision = chatAccountRevision
+        if isAccountReplacement {
+            chatOutboxRetryTask?.cancel()
+            chatOutboxRetryTask = nil
+            latestPhoneSnapshotGeneratedAt = .distantPast
+            phoneSnapshotApplicationRevision += 1
+            if payload.chatContext == nil {
+                chatContext = nil
+                if FileManager.default.fileExists(atPath: chatContextCacheURL.path) {
+                    try FileManager.default.removeItem(at: chatContextCacheURL)
+                }
+            }
+        }
         // The only durable write of private material is this Keychain call. The decoded envelope
         // goes out of scope immediately after the receipt is produced.
         try identityStore.save(payload.privateKey)
@@ -830,6 +1601,60 @@ final class TaskifyWatchAppModel: NSObject {
             relayURLs: payload.relayURLs
         )
         try persistIndependentProfile()
+        if let provisionedChatContext = payload.chatContext {
+            chatContext = provisionedChatContext
+            try persistChatContext()
+            if isAccountReplacement {
+                chatSnapshot = TaskifyWatchChatSnapshot()
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    if isAccountReplacement {
+                        self.chatSnapshot = try await self.chatCoordinator.clear()
+                        await TaskifyWatchPhotoLoader.shared.clear()
+                        TaskifyWatchMarkdownCache.shared.clear()
+                        await TaskifyWatchAvatarLoader.shared.clear()
+                    }
+                    guard provisioningRevision == self.chatAccountRevision else { return }
+                    let configured = try await self.chatCoordinator.configure(
+                        provisionedChatContext
+                    )
+                    guard provisioningRevision == self.chatAccountRevision else { return }
+                    self.chatSnapshot = configured
+                    let privateKey = try self.identityStore.load()
+                    let prepared = try await self.chatCoordinator.prepareIndependentInbox(
+                        privateKey: privateKey
+                    )
+                    guard provisioningRevision == self.chatAccountRevision else { return }
+                    self.chatContext = prepared
+                    try self.persistChatContext()
+                    await self.refreshChat()
+                    // The provisioning payload carries a projection, but a tight payload trims
+                    // it (contacts drop first); one throttled directory request converges the
+                    // directory without waiting for the next natural trigger.
+                    self.requestChatDirectoryFromPhone()
+                } catch {
+                    guard provisioningRevision == self.chatAccountRevision else { return }
+                    self.chatSnapshot = await self.chatCoordinator.snapshot()
+                    self.chatStatusMessage = "Open Taskify on iPhone to finish chat setup"
+                }
+            }
+        } else if isAccountReplacement {
+            chatSnapshot = TaskifyWatchChatSnapshot()
+            lastSentChatReadThrough.removeAll()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let cleared = (try? await self.chatCoordinator.clear())
+                    ?? TaskifyWatchChatSnapshot()
+                guard provisioningRevision == self.chatAccountRevision else { return }
+                self.chatSnapshot = cleared
+                await TaskifyWatchPhotoLoader.shared.clear()
+                TaskifyWatchMarkdownCache.shared.clear()
+                await TaskifyWatchAvatarLoader.shared.clear()
+                self.chatStatusMessage = "Open Taskify on iPhone to finish chat setup"
+            }
+        }
         isProvisioned = true
         sessionSetupTransfers().forEach { $0.cancel() }
         apply(snapshot: payload.snapshot)
@@ -854,7 +1679,12 @@ final class TaskifyWatchAppModel: NSObject {
         // from rolling back a newer phone projection.
         guard received.generatedAt >= latestPhoneSnapshotGeneratedAt else { return }
         latestPhoneSnapshotGeneratedAt = received.generatedAt
+        phoneSnapshotApplicationRevision += 1
+        let applicationRevision = phoneSnapshotApplicationRevision
         snapshot = received
+        if let projection = received.chatProjection {
+            applyChatProjection(projection, applicationRevision: applicationRevision)
+        }
         let acknowledged = Set(received.acknowledgedCommandIDs ?? [])
         if !acknowledged.isEmpty {
             let acknowledgedKinds = Set(
@@ -876,6 +1706,48 @@ final class TaskifyWatchAppModel: NSObject {
         persistSnapshot()
     }
 
+    /// Applies a phone chat projection through the store's merge path. Ongoing snapshots no
+    /// longer carry projections; this now serves the on-demand chat directory reply (contacts,
+    /// display metadata, routing, and phone-side tombstones).
+    private func applyChatProjection(
+        _ projection: TaskifyWatchChatProjection,
+        applicationRevision: Int
+    ) {
+        guard projection.accountPublicKey == nil
+            || projection.accountPublicKey == chatIdentityPublicKey else { return }
+        let accountRevision = chatAccountRevision
+        let savedContext = chatContext
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if let savedContext {
+                    _ = try await self.chatCoordinator.configure(savedContext)
+                }
+                let applied = try await self.chatCoordinator.applyProjection(projection)
+                guard accountRevision == self.chatAccountRevision,
+                      applicationRevision == self.phoneSnapshotApplicationRevision else { return }
+                self.chatSnapshot = applied.snapshot
+                if let updatedContext = applied.context,
+                   updatedContext != self.chatContext {
+                    self.chatContext = updatedContext
+                    try self.persistChatContext()
+                }
+            } catch {
+                // Retain the last durable Watch state; a later directory sync retries.
+            }
+        }
+    }
+
+    /// Applies a chat directory reply. The reply's snapshot carries tasks intentionally empty,
+    /// so only its projection is consumed — applying the whole payload would blank the Watch's
+    /// cached task list until the next task sync.
+    private func applyChatDirectoryReply(_ reply: [String: Any]) {
+        guard let data = reply[TaskifyWatchTransfer.snapshotDataKey] as? Data,
+              let received = try? TaskifyWatchTransfer.decodeConnectivitySnapshot(data),
+              let projection = received.chatProjection else { return }
+        applyChatProjection(projection, applicationRevision: phoneSnapshotApplicationRevision)
+    }
+
     private func loadIndependentProfile() {
         guard let data = try? Data(contentsOf: profileCacheURL),
               let profile = try? JSONDecoder().decode(TaskifyWatchIndependentProfile.self, from: data),
@@ -891,6 +1763,28 @@ final class TaskifyWatchAppModel: NSObject {
         )
         try JSONEncoder().encode(independentProfile).write(
             to: profileCacheURL,
+            options: [.atomic, .completeFileProtection]
+        )
+    }
+
+    private func loadChatContext() {
+        guard let data = try? Data(contentsOf: chatContextCacheURL),
+              let context = try? JSONDecoder().decode(
+                TaskifyWatchChatProvisioningContext.self,
+                from: data
+              ),
+              context.pushRelayHTTPSURL.scheme?.lowercased() == "https" else { return }
+        chatContext = context
+    }
+
+    private func persistChatContext() throws {
+        guard let chatContext else { return }
+        try FileManager.default.createDirectory(
+            at: chatContextCacheURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(chatContext).write(
+            to: chatContextCacheURL,
             options: [.atomic, .completeFileProtection]
         )
     }
@@ -933,20 +1827,73 @@ final class TaskifyWatchAppModel: NSObject {
         }
     }
 
+    @ObservationIgnored private var snapshotPersistTask: Task<Void, Never>?
+    @ObservationIgnored private var hasPendingSnapshotWrite = false
+
+    /// Coalesces the full-snapshot cache write. Relay refreshes and phone projections can
+    /// land several snapshots in quick succession, and the encode is CPU work on the whole task
+    /// list; writing once per burst keeps the main actor free. The widget snapshot is saved
+    /// inline instead of at the end of the debounced task: watchOS suspends the app soon after
+    /// the wrist drops, a suspended task never reaches the end of the debounce window, and
+    /// WidgetKit would keep rendering the last snapshot it saw. A cache write lost to
+    /// suspension still self-heals via the next relay refresh or phone projection, and
+    /// `flushPendingSnapshotPersist` runs it at background time.
     private func persistSnapshot() {
+        persistWidgetSnapshot()
+        snapshotPersistTask?.cancel()
+        hasPendingSnapshotWrite = true
+        let encodedSnapshot = snapshot
+        let url = cacheURL
+        snapshotPersistTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await self?.writeSnapshotCache(encodedSnapshot, url: url)
+            self?.hasPendingSnapshotWrite = false
+        }
+    }
+
+    /// Encodes off-main and writes the resumable snapshot cache. A failure surfaces through
+    /// `statusMessage`; the widget snapshot above is independent of this write.
+    private func writeSnapshotCache(_ encodedSnapshot: TaskifyWatchSnapshot, url: URL) async {
+        let data = try? await Task.detached(priority: .utility) {
+            try TaskifyWatchTransfer.encode(encodedSnapshot)
+        }.value
+        guard let data else {
+            statusMessage = "Tasks are available, but the local cache could not be updated."
+            return
+        }
+        writeSnapshotCacheData(data, url: url)
+    }
+
+    private func writeSnapshotCacheData(_ data: Data, url: URL) {
         do {
             try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(),
+                at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try TaskifyWatchTransfer.encode(snapshot).write(
-                to: cacheURL,
+            try data.write(
+                to: url,
                 options: [.atomic, .completeFileProtection]
             )
-            persistWidgetSnapshot()
         } catch {
             statusMessage = "Tasks are available, but the local cache could not be updated."
         }
+    }
+
+    /// Runs the debounced cache write now instead of letting suspension swallow it. Call
+    /// before the app backgrounds; without this the on-disk snapshot can lag a whole session
+    /// behind what the user just saw. Encodes synchronously — a deferred encode would hit the
+    /// same suspension this exists to avoid.
+    func flushPendingSnapshotPersist() {
+        guard hasPendingSnapshotWrite else { return }
+        hasPendingSnapshotWrite = false
+        snapshotPersistTask?.cancel()
+        snapshotPersistTask = nil
+        guard let data = try? TaskifyWatchTransfer.encode(snapshot) else {
+            statusMessage = "Tasks are available, but the local cache could not be updated."
+            return
+        }
+        writeSnapshotCacheData(data, url: cacheURL)
     }
 
     private func persistWidgetSnapshot() {
@@ -985,6 +1932,7 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
                 self?.requestInitialSetupNavigation()
                 self?.retryPendingCommands()
                 await self?.requestLatestSnapshotFromPhone()
+                self?.requestChatDirectoryFromPhone()
             }
         }
     }
@@ -995,6 +1943,7 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
             self?.requestInitialSetupNavigation()
             self?.retryPendingCommands()
             await self?.requestLatestSnapshotFromPhone()
+            self?.requestChatDirectoryFromPhone()
         }
     }
 
@@ -1009,9 +1958,68 @@ extension TaskifyWatchAppModel: WCSessionDelegate {
                 replyHandler(try self.acceptProvisioning(messageData))
             } catch {
                 self.statusMessage = error.localizedDescription
-                replyHandler(Data())
+                let receipt = TaskifyWatchProvisioningReceipt(
+                    publicKeyHex: "",
+                    errorMessage: error.localizedDescription
+                )
+                replyHandler((try? TaskifyWatchTransfer.encode(receipt)) ?? Data())
             }
         }
+    }
+
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveMessage message: [String: Any],
+        replyHandler: @escaping ([String: Any]) -> Void
+    ) {
+        if let readUpdate = TaskifyWatchTransfer.chatReadUpdate(from: message) {
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    replyHandler([:])
+                    return
+                }
+                await self.applyChatReadFromPhone(readUpdate)
+                replyHandler([:])
+            }
+            return
+        }
+        guard TaskifyWatchTransfer.isProvisioningStatusRequest(message) else {
+            replyHandler([:])
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.isProvisioned,
+                  let privateKey = try? self.identityStore.load(),
+                  let publicKey = try? TaskifyWatchNostrCrypto.publicKeyHex(for: privateKey) else {
+                replyHandler([:])
+                return
+            }
+            replyHandler(TaskifyWatchTransfer.provisioningStatusResponse(publicKeyHex: publicKey))
+        }
+    }
+
+    /// Read updates queued while the Watch was unreachable arrive here after activation.
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveUserInfo userInfo: [String: Any] = [:]
+    ) {
+        guard let readUpdate = TaskifyWatchTransfer.chatReadUpdate(from: userInfo) else { return }
+        Task { @MainActor [weak self] in
+            await self?.applyChatReadFromPhone(readUpdate)
+        }
+    }
+
+    /// Applies a read position the iPhone user set. Recording it as already-sent keeps the
+    /// Watch from echoing the phone's own read back through its outbound read sync.
+    @MainActor
+    private func applyChatReadFromPhone(_ readUpdate: (conversationID: String, timestamp: Int)) async {
+        let existing = lastSentChatReadThrough[readUpdate.conversationID] ?? 0
+        lastSentChatReadThrough[readUpdate.conversationID] = max(existing, readUpdate.timestamp)
+        chatSnapshot = (try? await chatCoordinator.markRead(
+            conversationID: readUpdate.conversationID,
+            through: readUpdate.timestamp
+        )) ?? chatSnapshot
     }
 
     nonisolated func session(

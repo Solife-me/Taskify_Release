@@ -7,10 +7,12 @@
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.solife.me.Taskify</string>
+		<string>group.solife.me.Taskify.Share</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)solife.me.Taskify.shared</string>
+		<string>$(AppIdentifierPrefix)solife.me.Taskify.share</string>
 	</array>
 </dict>
 </plist>

@@ -445,7 +445,7 @@ public enum NostrAccountBackupFinder {
             }
             return candidatesByID.values.sorted {
                 if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
-                return $0.id > $1.id
+                return $0.id < $1.id
             }
         }
     }

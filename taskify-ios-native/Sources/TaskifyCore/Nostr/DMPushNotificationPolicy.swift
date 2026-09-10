@@ -47,7 +47,7 @@ public enum DMPushNotificationSharedSettings {
 }
 
 /// Classification intentionally runs only after NIP-17 decryption on the recipient device. The
-/// push relay and APNs receive the same content-free wake for every gift wrap, so neither learns
+/// push relay and APNs receive the same generic alert marker for every gift wrap, so neither learns
 /// whether the event is a conversation or an ecash payment.
 public enum DMPushNotificationPolicy {
     public static func category(forIncomingContent content: String) -> DMPushNotificationCategory {
@@ -78,7 +78,8 @@ public enum DMPushNotificationPresentation: Equatable, Sendable {
 }
 
 /// Converts an already decrypted NIP-17 rumor into notification text. The relay and APNs never
-/// receive this result; it is produced only in Taskify's notification service extension.
+/// receive this result. It remains available for a future notification service extension and for
+/// on-device activity presentation.
 public enum DMPushNotificationPreviewPolicy {
     public static func presentation(
         for decrypted: NIP17DecryptedRumor,

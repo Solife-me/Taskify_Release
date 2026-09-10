@@ -4,6 +4,9 @@ import Foundation
 public struct NostrDirectMessageAttachment: Codable, Equatable, Sendable {
     public static let rumorKind = 15
     public static let algorithm = "aes-gcm"
+    /// One file rides per kind 15 rumor, so a multi-file send is a batch of
+    /// at most this many rumors (plus the caption's kind 14).
+    public static let maximumBatchCount = 10
 
     public var url: String
     public var mimeType: String
@@ -120,6 +123,42 @@ public struct NostrDirectMessageAttachment: Codable, Equatable, Sendable {
         if isVideo { return "🎬 \(displayName)" }
         if isAudio { return "🎵 \(displayName)" }
         return "📎 \(displayName)"
+    }
+}
+
+/// Classifies the URLs a direct message contributes to a conversation's shared Photos and Links
+/// collections. Attachment URLs point at encrypted payloads rather than web pages, so they must
+/// never leak into the Links collection. Plain image URLs are treated as photos as well.
+public enum NostrDirectMessageSharedContent {
+    private static let photoPathExtensions: Set<String> = [
+        "avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp",
+    ]
+
+    public static func photoURLs(in message: NostrDirectMessage) -> [URL] {
+        var URLs: [URL] = []
+        if let attachment = message.attachment,
+           attachment.isImage,
+           let attachmentURL = URL(string: attachment.url) {
+            URLs.append(attachmentURL)
+        }
+        URLs += TaskContentLinks.allURLs(in: message.content).filter(isPhotoURL)
+        return unique(URLs)
+    }
+
+    public static func linkURLs(in message: NostrDirectMessage) -> [URL] {
+        let attachmentURL = message.attachment.flatMap { URL(string: $0.url)?.absoluteString }
+        return unique(TaskContentLinks.allURLs(in: message.content)).filter { url in
+            url.absoluteString != attachmentURL && !isPhotoURL(url)
+        }
+    }
+
+    public static func isPhotoURL(_ url: URL) -> Bool {
+        photoPathExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    private static func unique(_ URLs: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return URLs.filter { seen.insert($0.absoluteString).inserted }
     }
 }
 
@@ -687,7 +726,7 @@ public extension TaskifySnapshot {
         )
         let groupedContacts = Dictionary(
             grouping: (sharedContactInboxItems ?? []).filter { $0.status != .deleted },
-            by: { $0.sender.publicKey.lowercased() }
+            by: \.conversationPublicKey
         )
         let groupedCalendarInvites = Dictionary(
             grouping: (sharedCalendarInviteItems ?? []).filter { $0.status != .deleted },
@@ -737,7 +776,7 @@ public extension TaskifySnapshot {
                         $0.createdAt < (mutedAt ?? .max)
                 }.count,
                 actionRequiredCount: sharedTasks.filter { $0.status == .pending }.count
-                    + sharedContacts.filter { $0.status == .pending }.count
+                    + sharedContacts.filter { $0.isIncoming && $0.status == .pending }.count
                     + calendarInvites.filter { $0.status == .pending }.count
                     + sharedBoards.filter { $0.status == .pending }.count
             )
@@ -785,7 +824,7 @@ public extension TaskifySnapshot {
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestSharedContact = (sharedContactInboxItems ?? [])
-            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .filter { $0.status != .deleted && $0.conversationPublicKey == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestCalendarInvite = (sharedCalendarInviteItems ?? [])
@@ -818,7 +857,7 @@ public extension TaskifySnapshot {
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestSharedContact = (sharedContactInboxItems ?? [])
-            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .filter { $0.status != .deleted && $0.conversationPublicKey == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestCalendarInvite = (sharedCalendarInviteItems ?? [])
@@ -872,7 +911,7 @@ public extension TaskifySnapshot {
             $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
         }
         let removedSharedContacts = (sharedContactInboxItems ?? []).filter {
-            $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
+            $0.status != .deleted && $0.conversationPublicKey == peer
         }
         let removedCalendarInvites = (sharedCalendarInviteItems ?? []).filter {
             $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
@@ -898,6 +937,22 @@ public extension TaskifySnapshot {
             suppressed = Dictionary(uniqueKeysWithValues: newest.map { ($0.key, $0.value) })
         }
         directMessageDeletedEventIDs = suppressed.nilIfEmpty
+        // Durable conversation-level tombstone for the paired Watch cache, bounded like the
+        // event-suppression map it complements: entries expire once the relay replay lookback
+        // can no longer resurrect the thread, and old deletions make room for newer ones.
+        var deletedThreads = (directMessageDeletedThreadAt ?? [:]).filter {
+            $0.value + max(0, suppressionDuration) > timestamp
+        }
+        deletedThreads[peer] = timestamp
+        if deletedThreads.count > 200 {
+            deletedThreads = Dictionary(
+                uniqueKeysWithValues: deletedThreads
+                    .sorted { $0.value > $1.value }
+                    .prefix(200)
+                    .map { ($0.key, $0.value) }
+            )
+        }
+        directMessageDeletedThreadAt = deletedThreads.nilIfEmpty
         directMessages = (directMessages ?? []).filter { $0.peerPublicKey != peer }.nilIfEmpty
         directMessageReactions = (directMessageReactions ?? []).filter { $0.peerPublicKey != peer }.nilIfEmpty
         if !removedSharedTasks.isEmpty {
@@ -916,7 +971,7 @@ public extension TaskifySnapshot {
             let respondedAt = Date(timeIntervalSince1970: TimeInterval(timestamp))
             for index in items.indices where
                 items[index].status != .deleted &&
-                items[index].sender.publicKey.lowercased() == peer {
+                items[index].conversationPublicKey == peer {
                 items[index].status = .deleted
                 items[index].respondedAt = respondedAt
             }
@@ -1143,13 +1198,33 @@ public extension TaskifySnapshot {
         return true
     }
 
+    /// Merges a read position observed on the paired Watch without treating messages the Watch
+    /// has not displayed as read. A small future-time clamp tolerates normal Nostr clock skew while
+    /// preventing a malformed timestamp from suppressing future unread messages indefinitely.
+    @discardableResult
+    mutating func mergeCompanionDirectMessageRead(
+        peerPublicKey: String,
+        through timestamp: Int,
+        now: Int = Int(Date().timeIntervalSince1970)
+    ) -> Bool {
+        guard let peer = Self.normalizedConversationID(peerPublicKey), timestamp > 0 else {
+            return false
+        }
+        let target = min(timestamp, now + 5 * 60)
+        guard target > (directMessageReadAt?[peer] ?? 0) else { return false }
+        var states = directMessageReadAt ?? [:]
+        states[peer] = target
+        directMessageReadAt = states
+        return true
+    }
+
     /// Nostr timestamps have one-second precision, so event IDs are not a meaningful tiebreaker
-    /// for chat chronology. Preserve the stored/observed order when timestamps match instead of
-    /// letting unrelated event hashes randomly reverse a prompt and its response.
+    /// for chat chronology. Preserve observed order for ties, except that a reply
+    /// must follow its parent even when relay history arrives in reverse order.
     private static func sortedDirectMessages(
         _ messages: [NostrDirectMessage]
     ) -> [NostrDirectMessage] {
-        messages.enumerated()
+        let chronological = messages.enumerated()
             .sorted { lhs, rhs in
                 if lhs.element.createdAt != rhs.element.createdAt {
                     return lhs.element.createdAt < rhs.element.createdAt
@@ -1157,6 +1232,25 @@ public extension TaskifySnapshot {
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
+        guard chronological.contains(where: { $0.replyToEventID != nil }) else { return chronological }
+        let indices = Dictionary(chronological.enumerated().map { ($0.element.rumorEventID, $0.offset) },
+            uniquingKeysWith: { first, _ in first })
+        var visiting: Set<Int> = []
+        var emitted: Set<Int> = []
+        var result: [NostrDirectMessage] = []
+        func append(_ index: Int) {
+            guard !emitted.contains(index), visiting.insert(index).inserted else { return }
+            let message = chronological[index]
+            if let parentID = message.replyToEventID, let parent = indices[parentID],
+               chronological[parent].createdAt == message.createdAt,
+               chronological[parent].peerPublicKey == message.peerPublicKey {
+                append(parent)
+            }
+            visiting.remove(index)
+            if emitted.insert(index).inserted { result.append(message) }
+        }
+        for index in chronological.indices { append(index) }
+        return result
     }
 
     private static func normalizedConversationID(_ value: String) -> String? {

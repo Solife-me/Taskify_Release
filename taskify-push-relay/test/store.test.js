@@ -29,6 +29,30 @@ function giftWrap(id, recipient, createdAt = 1_700_000_000) {
   }
 }
 
+function taskEvent(id, author, taskID, createdAt) {
+  return {
+    id,
+    pubkey: author,
+    created_at: createdAt,
+    kind: 30_301,
+    tags: [['d', taskID], ['b', 'f'.repeat(64)], ['col', 'inbox'], ['status', 'open']],
+    content: 'opaque-board-ciphertext',
+    sig: 'e'.repeat(128),
+  }
+}
+
+function preferenceEvent(id, author, createdAt, relay) {
+  return {
+    id,
+    pubkey: author,
+    created_at: createdAt,
+    kind: 10_050,
+    tags: [['relay', relay]],
+    content: '',
+    sig: 'f'.repeat(128),
+  }
+}
+
 test('registrations are namespaced by the authenticated Nostr pubkey', async () => {
   const { store } = await storeForTest()
   await store.putRegistration(alice, 'phone-1', { deviceToken: '12'.repeat(32), environment: 'production' })
@@ -118,6 +142,20 @@ test('each device gets a short-lived opaque preview token for the encrypted gift
   assert.equal(store.previewForToken(job.previewToken), null)
 })
 
+test('Watch wake jobs do not allocate unnecessary preview tokens', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(bob, 'watch-1', {
+    deviceToken: '12'.repeat(32),
+    environment: 'production',
+    platform: 'watchos',
+  })
+  await store.putGiftWrap(giftWrap('9'.repeat(64), bob), { notify: true })
+
+  const [job] = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.equal(job.previewToken, undefined)
+  assert.equal(store.state.previews.length, 0)
+})
+
 test('loading an older pending push job creates a usable preview token', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-store-'))
   const event = giftWrap('8'.repeat(64), bob, 1_700_000_000)
@@ -165,6 +203,18 @@ test('sender copies remain retrievable without generating push jobs', async () =
   assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 0)
 })
 
+test('replaceable inbox preferences use the NIP-01 event-id tie break', async () => {
+  const { store } = await storeForTest()
+  const timestamp = 1_700_000_000
+  const higherID = preferenceEvent('f'.repeat(64), alice, timestamp, 'wss://old.example.com')
+  const lowerID = preferenceEvent('0'.repeat(64), alice, timestamp, 'wss://new.example.com')
+
+  assert.equal(await store.putPreference(higherID), true)
+  assert.equal(await store.putPreference(lowerID), true)
+  assert.deepEqual(store.preferencesFor([alice]), [lowerID])
+  assert.equal(await store.putPreference(higherID), false)
+})
+
 test('events expire and per-recipient storage is bounded', async () => {
   let now = 2_000_000_000
   const { store } = await storeForTest({ eventTTLSeconds: 100, maxEventsPerRecipient: 2, now: () => now })
@@ -196,4 +246,29 @@ test('global event eviction also removes orphaned APNs jobs', async () => {
 
   assert.deepEqual(store.duePushJobs().map((job) => job.eventID), [second.id])
   assert.deepEqual(store.eventsFor(bob).map((event) => event.id), [second.id])
+})
+
+test('task cache keeps only the latest replaceable ciphertext without account metadata', async () => {
+  let now = 1_800_000_000
+  const { directory, store } = await storeForTest({
+    taskEventTTLSeconds: 100,
+    now: () => now,
+  })
+  const older = taskEvent('8'.repeat(64), alice, 'task-1', now - 2)
+  const newer = taskEvent('7'.repeat(64), alice, 'task-1', now - 1)
+  const other = taskEvent('6'.repeat(64), alice, 'task-2', now)
+
+  assert.equal(await store.putTaskEvents([older, newer, other]), true)
+  assert.deepEqual(store.taskEventsFor([alice]).map((event) => event.id), [newer.id, other.id])
+  assert.deepEqual(store.taskEventsFor([bob]), [])
+
+  const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
+  assert.equal(onDisk.version, 3)
+  assert.deepEqual(
+    Object.keys(onDisk.taskEvents[0]).sort(),
+    ['coordinate', 'event', 'lastSeenAt'],
+  )
+
+  now += 101
+  assert.deepEqual(store.taskEventsFor([alice]), [])
 })

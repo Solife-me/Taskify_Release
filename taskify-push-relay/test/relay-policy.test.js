@@ -32,3 +32,11 @@ test('sender copies are stored but do not trigger APNs', () => {
   assert.equal(shouldNotifyRecipient({ authenticatedPubkey: alice, recipientPubkey: alice }), false)
   assert.equal(shouldNotifyRecipient({ authenticatedPubkey: alice, recipientPubkey: bob }), true)
 })
+
+test('NIP-01 IDs and authors require exact values rather than prefixes', async () => {
+  const { matchesFilter } = await import('../src/relay-policy.js')
+  const event = { id: alice, pubkey: bob, kind: 1059, tags: [], created_at: 100 }
+  assert.equal(matchesFilter(event, { ids: [alice] }), true)
+  assert.equal(matchesFilter(event, { ids: [alice.slice(0, 8)] }), false)
+  assert.equal(matchesFilter(event, { authors: [bob.slice(0, 8)] }), false)
+})

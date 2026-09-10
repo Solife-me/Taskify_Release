@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB07C0DE0000000000000001 /* ChatComposerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB07C0DE0000000000000002 /* ChatComposerUITests.swift */; };
 		0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */; };
 		0B64CE2D2E8DC2C381D5DFA2 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */; };
 		0F0D02A663DD9FC10DEA44B1 /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE60E2576148EFF86B5FB8E /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift */; };
@@ -36,6 +37,7 @@
 		B00000000000000000000116 /* Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000216 /* Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift */; };
 		B00000000000000000000117 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000218 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift */; };
 		B00000000000000000000118 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */; };
+		B00000000000000000000810 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000811 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift */; };
 		B00000000000000000000119 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */; };
 		B0000000000000000000D02 /* DeviceItemsReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000D01 /* DeviceItemsReader.swift */; };
 		B0000000000000000000W18 /* TaskifyWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000W15 /* TaskifyWidgetBundle.swift */; };
@@ -59,6 +61,11 @@
 		A10000000000000000000202 /* TaskifyWatchAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000102 /* TaskifyWatchAppModel.swift */; };
 		A10000000000000000000203 /* TaskifyWatchRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000103 /* TaskifyWatchRootView.swift */; };
 		A10000000000000000000207 /* TaskifyWatchIndependentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000105 /* TaskifyWatchIndependentClient.swift */; };
+		A10000000000000000000208 /* TaskifyWatchChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000106 /* TaskifyWatchChatClient.swift */; };
+		A10000000000000000000209 /* TaskifyWatchChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000107 /* TaskifyWatchChatStore.swift */; };
+		A10000000000000000000210 /* TaskifyWatchPhotoLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000108 /* TaskifyWatchPhotoLoader.swift */; };
+		A10000000000000000000211 /* TaskifyWatchChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000109 /* TaskifyWatchChatView.swift */; };
+		A10000000000000000000212 /* TaskifyWatchAvatarLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000110 /* TaskifyWatchAvatarLoader.swift */; };
 		A10000000000000000000204 /* Sources/TaskifyApp/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000212 /* Sources/TaskifyApp/Resources/Assets.xcassets */; };
 		A10000000000000000000205 /* TaskifyWatchShared in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000401 /* TaskifyWatchShared */; };
 		A10000000000000000000206 /* TaskifyWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* TaskifyWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -73,6 +80,17 @@
 		E5E7AD72EBBDFE980998BBE4 /* Sources/TaskifyApp/App/OnboardingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF90D06B99BC2A3790D9DC41 /* Sources/TaskifyApp/App/OnboardingSettings.swift */; };
 		F4C17FA9D5F24554A5CFF5AC /* Sources/TaskifyApp/App/ScriptureMemorySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B511EBD86443B28B6EF5F8 /* Sources/TaskifyApp/App/ScriptureMemorySettings.swift */; };
 		FF5C3B1D78B447EAB70D819E /* Sources/TaskifyApp/App/TaskStreakSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A62BC5630844B0DB46DFD5B /* Sources/TaskifyApp/App/TaskStreakSettings.swift */; };
+		A10000000000000000000213 /* TaskifyWatchViewCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000111 /* TaskifyWatchViewCache.swift */; };
+		A10000000000000000000214 /* TaskifyWatchMarkdownCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000112 /* TaskifyWatchMarkdownCache.swift */; };
+		67DF407096EEB8D0283BC0DC /* Sources/Shared/TaskifyShareRuntime.swift app */ = { isa = PBXBuildFile; fileRef = F49F509179ED19C0CDCAF9D6; };
+		5DC0231CB60E48A95A0B24CF /* Sources/Shared/TaskifyShareRuntime.swift ext */ = { isa = PBXBuildFile; fileRef = F49F509179ED19C0CDCAF9D6; };
+		F2D419080A494F22849E8B01 /* TaskifyAttachmentDraftPreview.swift app */ = {isa = PBXBuildFile; fileRef = F2D419080A494F22849E8B03; };
+		F2D419080A494F22849E8B02 /* TaskifyAttachmentDraftPreview.swift ext */ = {isa = PBXBuildFile; fileRef = F2D419080A494F22849E8B03; };
+		1182A06BA4349F491DC22CB0 /* Sources/TaskifyShareExtension/ShareViewController.swift ext */ = { isa = PBXBuildFile; fileRef = F69DC2482D6B0180F9045EA7; };
+		C2A5E8AA6F55967225644E0D /* Sources/TaskifyApp/Features/Tasks/TaskifyPhotoFile.swift app */ = { isa = PBXBuildFile; fileRef = 41F7374394EF535EDDCF5923; };
+		7F25A594E7354A9F9F7DA94B /* Share TaskifyCore Framework */ = { isa = PBXBuildFile; productRef = 3FB8C1B3F2C50B01217E2C6A; };
+		CAAE24AA05C5D82DE8ACA71C /* Share Embed */ = { isa = PBXBuildFile; fileRef = DE65B8396C47D9F682A045D2; settings = { ATTRIBUTES = ( RemoveHeadersOnCopy, ); }; };
+		6B082B3AA9D859EE3EC6F0A8 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = C9EA85AA65C9D15DB82B6FF7; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -104,9 +122,11 @@
 			remoteGlobalIDString = C10000000000000000000000;
 			remoteInfo = TaskifyWatchWidgets;
 		};
+		EB9382B73BBC0969F2481189 /* Share Container Proxy */ = { isa = PBXContainerItemProxy; containerPortal = B00000000000000000000500; proxyType = 1; remoteGlobalIDString = 3632AB71852D0FAF4C209B87; remoteInfo = TaskifyShareExtension; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		BB07C0DE0000000000000002 /* ChatComposerUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatComposerUITests.swift; sourceTree = "<group>"; };
 		12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScrollPerformanceUITests.swift; sourceTree = "<group>"; };
 		18EC57FC792E425B9E02B191 /* BibleTrackerUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BibleTrackerUITests.swift; sourceTree = "<group>"; };
 		1A62BC5630844B0DB46DFD5B /* Sources/TaskifyApp/App/TaskStreakSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskStreakSettings.swift; sourceTree = SOURCE_ROOT; };
@@ -141,6 +161,7 @@
 		B00000000000000000000217 /* Sources/TaskifyApp/Resources/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Sources/TaskifyApp/Resources/Info.plist; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000218 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ContactsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000811 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ProfileView.swift; sourceTree = SOURCE_ROOT; };
 		B0000000000000000000W01 /* TaskifyWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TaskifyWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B0000000000000000000D01 /* DeviceItemsReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyWidgets/DeviceItemsReader.swift; sourceTree = SOURCE_ROOT; };
 		B0000000000000000000W15 /* TaskifyWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyWidgets/TaskifyWidgetBundle.swift; sourceTree = SOURCE_ROOT; };
@@ -171,11 +192,24 @@
 		A10000000000000000000103 /* TaskifyWatchRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchRootView.swift; sourceTree = "<group>"; };
 		A10000000000000000000104 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000105 /* TaskifyWatchIndependentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchIndependentClient.swift; sourceTree = "<group>"; };
+		A10000000000000000000106 /* TaskifyWatchChatClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchChatClient.swift; sourceTree = "<group>"; };
+		A10000000000000000000107 /* TaskifyWatchChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchChatStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000108 /* TaskifyWatchPhotoLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchPhotoLoader.swift; sourceTree = "<group>"; };
+		A10000000000000000000109 /* TaskifyWatchChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchChatView.swift; sourceTree = "<group>"; };
+		A10000000000000000000110 /* TaskifyWatchAvatarLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchAvatarLoader.swift; sourceTree = "<group>"; };
 		C10000000000000000000001 /* TaskifyWatchWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TaskifyWatchWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C10000000000000000000101 /* TaskifyWatchWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchWidgetBundle.swift; sourceTree = "<group>"; };
 		C10000000000000000000102 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C10000000000000000000103 /* TaskifyWatchWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TaskifyWatchWidgets.entitlements; sourceTree = SOURCE_ROOT; };
 		C10000000000000000000104 /* TaskifyWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TaskifyWatch.entitlements; sourceTree = SOURCE_ROOT; };
+		A10000000000000000000111 /* TaskifyWatchViewCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchViewCache.swift; sourceTree = "<group>"; };
+		A10000000000000000000112 /* TaskifyWatchMarkdownCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchMarkdownCache.swift; sourceTree = "<group>"; };
+		F49F509179ED19C0CDCAF9D6 /* Sources/Shared/TaskifyShareRuntime.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Shared/TaskifyShareRuntime.swift; sourceTree = SOURCE_ROOT; };
+		F2D419080A494F22849E8B03 /* TaskifyAttachmentDraftPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Shared/TaskifyAttachmentDraftPreview.swift; sourceTree = SOURCE_ROOT; };
+		F69DC2482D6B0180F9045EA7 /* Sources/TaskifyShareExtension/ShareViewController.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyShareExtension/ShareViewController.swift; sourceTree = SOURCE_ROOT; };
+		41F7374394EF535EDDCF5923 /* Sources/TaskifyApp/Features/Tasks/TaskifyPhotoFile.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskifyPhotoFile.swift; sourceTree = SOURCE_ROOT; };
+		DE65B8396C47D9F682A045D2 /* TaskifyShareExtension.appex */ = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TaskifyShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C9EA85AA65C9D15DB82B6FF7 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sources/TaskifyApp/Resources/ThirdPartyNotices.txt; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -228,6 +262,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				B0000000000000000000W22 /* TaskifyWidgets.appex in Embed Foundation Extensions */,
+				CAAE24AA05C5D82DE8ACA71C,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -256,6 +291,7 @@
 		};
 /* End PBXCopyFilesBuildPhase section */
 
+		80FD7707747EBD2855258D18 /* Share Frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = ( 7F25A594E7354A9F9F7DA94B, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -277,6 +313,10 @@
 				B00000000000000000000403 /* Products */,
 				3B4DD68B85E5E6A65369A742 /* Frameworks */,
 				EC13A37E76EA16E524FD21D0 /* TaskifyNativeUITests */,
+				F49F509179ED19C0CDCAF9D6,
+				F2D419080A494F22849E8B03,
+				F69DC2482D6B0180F9045EA7,
+				41F7374394EF535EDDCF5923,
 			);
 			sourceTree = "<group>";
 		};
@@ -323,6 +363,7 @@
 				B00000000000000000000218 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift */,
 				B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */,
 				B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */,
+				B00000000000000000000811 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift */,
 				B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */,
 			);
 			name = "App Sources";
@@ -336,6 +377,7 @@
 				C10000000000000000000001 /* TaskifyWatchWidgets.appex */,
 				B0000000000000000000W01 /* TaskifyWidgets.appex */,
 				69AB7FE65898EA9D39EC4DAE /* TaskifyNativeUITests.xctest */,
+				DE65B8396C47D9F682A045D2,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -357,6 +399,7 @@
 				DF2D5621648AA754EA642832 /* FirstRunOnboardingUITests.swift */,
 				58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */,
 				B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */,
+				BB07C0DE0000000000000002 /* ChatComposerUITests.swift */,
 			);
 			name = TaskifyNativeUITests;
 			path = Tests/TaskifyNativeUITests;
@@ -369,6 +412,13 @@
 				A10000000000000000000102 /* TaskifyWatchAppModel.swift */,
 				A10000000000000000000103 /* TaskifyWatchRootView.swift */,
 				A10000000000000000000105 /* TaskifyWatchIndependentClient.swift */,
+				A10000000000000000000106 /* TaskifyWatchChatClient.swift */,
+				A10000000000000000000107 /* TaskifyWatchChatStore.swift */,
+				A10000000000000000000108 /* TaskifyWatchPhotoLoader.swift */,
+				A10000000000000000000109 /* TaskifyWatchChatView.swift */,
+				A10000000000000000000110 /* TaskifyWatchAvatarLoader.swift */,
+				A10000000000000000000112 /* TaskifyWatchMarkdownCache.swift */,
+				A10000000000000000000111 /* TaskifyWatchViewCache.swift */,
 				A10000000000000000000104 /* Info.plist */,
 				C10000000000000000000104 /* TaskifyWatch.entitlements */,
 			);
@@ -424,6 +474,7 @@
 			dependencies = (
 				B0000000000000000000W11 /* PBXTargetDependency */,
 				A10000000000000000000602 /* PBXTargetDependency */,
+				2F80A47214CE3E2C62B460D4,
 			);
 			name = TaskifyNative;
 			packageProductDependencies = (
@@ -495,6 +546,7 @@
 			productReference = C10000000000000000000001 /* TaskifyWatchWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		3632AB71852D0FAF4C209B87 /* TaskifyShareExtension */ = { isa = PBXNativeTarget; buildConfigurationList = DEBEDEAC0C71D5D515C53320; buildPhases = ( 2A140EC7AFF84A19C0550531, 80FD7707747EBD2855258D18, 8E7BCD585EB4654682959BAA, ); buildRules = ( ); dependencies = ( ); name = TaskifyShareExtension; packageProductDependencies = ( 3FB8C1B3F2C50B01217E2C6A, ); productName = TaskifyShareExtension; productReference = DE65B8396C47D9F682A045D2; productType = "com.apple.product-type.app-extension"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -542,6 +594,7 @@
 				C10000000000000000000000 /* TaskifyWatchWidgets */,
 				B0000000000000000000W00 /* TaskifyWidgets */,
 				1FD53C360FA145FA69A4DD58 /* TaskifyNativeUITests */,
+				3632AB71852D0FAF4C209B87,
 			);
 		};
 /* End PBXProject section */
@@ -559,6 +612,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B00000000000000000000112 /* Sources/TaskifyApp/Resources/Assets.xcassets in Resources */,
+				6B082B3AA9D859EE3EC6F0A8 /* ThirdPartyNotices.txt */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -577,6 +631,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		8E7BCD585EB4654682959BAA /* Share Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -613,6 +668,7 @@
 				9731A21014C92A8CB3F1A5EB /* FirstRunOnboardingUITests.swift in Sources */,
 				0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */,
 				BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */,
+				BB07C0DE0000000000000001 /* ChatComposerUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -658,7 +714,11 @@
 				B00000000000000000000117 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift in Sources */,
 				B00000000000000000000118 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift in Sources */,
 				B00000000000000000000119 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift in Sources */,
+				B00000000000000000000810 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift in Sources */,
 				B00000000000000000000121 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift in Sources */,
+				67DF407096EEB8D0283BC0DC,
+				F2D419080A494F22849E8B01,
+				C2A5E8AA6F55967225644E0D,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -682,6 +742,13 @@
 				A10000000000000000000202 /* TaskifyWatchAppModel.swift in Sources */,
 				A10000000000000000000203 /* TaskifyWatchRootView.swift in Sources */,
 				A10000000000000000000207 /* TaskifyWatchIndependentClient.swift in Sources */,
+				A10000000000000000000208 /* TaskifyWatchChatClient.swift in Sources */,
+				A10000000000000000000209 /* TaskifyWatchChatStore.swift in Sources */,
+				A10000000000000000000210 /* TaskifyWatchPhotoLoader.swift in Sources */,
+				A10000000000000000000211 /* TaskifyWatchChatView.swift in Sources */,
+				A10000000000000000000212 /* TaskifyWatchAvatarLoader.swift in Sources */,
+				A10000000000000000000214 /* TaskifyWatchMarkdownCache.swift in Sources */,
+				A10000000000000000000213 /* TaskifyWatchViewCache.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -693,6 +760,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2A140EC7AFF84A19C0550531 /* Share Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( 5DC0231CB60E48A95A0B24CF, 1182A06BA4349F491DC22CB0, F2D419080A494F22849E8B02, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -717,12 +785,14 @@
 			target = C10000000000000000000000 /* TaskifyWatchWidgets */;
 			targetProxy = C10000000000000000000601 /* PBXContainerItemProxy */;
 		};
+		2F80A47214CE3E2C62B460D4 /* Share Dependency */ = { isa = PBXTargetDependency; target = 3632AB71852D0FAF4C209B87; targetProxy = EB9382B73BBC0969F2481189; };
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A10000000000000000000501 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -754,6 +824,7 @@
 		A10000000000000000000502 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -1024,6 +1095,164 @@
 			};
 			name = Release;
 		};
+		310F1F8FFEED769065395003 /* Share Debug */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 37; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
+		6C89F5E3190431CFA3653B92 /* Share Release */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 37; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
+		2FCBC48C20CEC7C5076104BB /* Local */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TEST_TARGET_NAME = TaskifyNative;
+			};
+			name = Local;
+		};
+		CEF28A2A6A4AE63F205FF62D /* Local */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TaskifyWidgets.entitlements;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+			};
+			name = Local;
+		};
+		27D4632E92974BC790D1BEB2 /* Local */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/TaskifyWatchApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp;
+				PRODUCT_NAME = TaskifyWatch;
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Local;
+		};
+		756E28F9D8058B71150C3350 /* Local */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 37; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Local; };
+		5A14D1304D553942E03601B3 /* Local */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = JUH98962T7;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Local;
+		};
+		9DEF166D810548C66B2F4240 /* Local */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				APS_ENVIRONMENT = development;
+				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Local;
+		};
+		58C0F02D814D11B12BA42DB2 /* Local */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Local;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1031,6 +1260,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A10000000000000000000501 /* Debug */,
+				27D4632E92974BC790D1BEB2 /* Local */,
 				A10000000000000000000502 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1040,6 +1270,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				B00000000000000000000710 /* Debug */,
+				5A14D1304D553942E03601B3 /* Local */,
 				B00000000000000000000711 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1049,6 +1280,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				B00000000000000000000700 /* Debug */,
+				9DEF166D810548C66B2F4240 /* Local */,
 				B00000000000000000000701 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1059,6 +1291,7 @@
 			buildConfigurations = (
 				8FC80D8F07D96C4654F0175F /* Release */,
 				9B6C4DA4F1D91494FB08171C /* Debug */,
+				2FCBC48C20CEC7C5076104BB /* Local */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1067,6 +1300,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				B0000000000000000000W09 /* Debug */,
+				CEF28A2A6A4AE63F205FF62D /* Local */,
 				B0000000000000000000W10 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1076,11 +1310,13 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				C10000000000000000000501 /* Debug */,
+				58C0F02D814D11B12BA42DB2 /* Local */,
 				C10000000000000000000502 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		DEBEDEAC0C71D5D515C53320 /* Share Configurations */ = { isa = XCConfigurationList; buildConfigurations = ( 310F1F8FFEED769065395003, 756E28F9D8058B71150C3350 /* Local */, 6C89F5E3190431CFA3653B92, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -1116,6 +1352,7 @@
 			package = B00000000000000000000600 /* XCLocalSwiftPackageReference "" */;
 			productName = TaskifyCore;
 		};
+		3FB8C1B3F2C50B01217E2C6A /* Share TaskifyCore */ = { isa = XCSwiftPackageProductDependency; productName = TaskifyCore; };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B00000000000000000000500 /* Project object */;

@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import TaskifyWatchShared
 @testable import TaskifyCore
 
 final class NostrDirectMessageTests: XCTestCase {
@@ -181,6 +182,49 @@ final class NostrDirectMessageTests: XCTestCase {
             from: JSONEncoder().encode(snapshot)
         )
         XCTAssertEqual(roundTrip.directMessageHistory.first?.deliveryState, .sent)
+    }
+
+    func testCompanionReadReceiptDoesNotMarkNewerPhoneMessagesRead() throws {
+        let sender = try identity(senderPrivateKey)
+        var snapshot = TaskifySnapshot.empty
+        XCTAssertTrue(snapshot.ingestDirectMessage(message(
+            rumorID: String(repeating: "a", count: 64),
+            wrapID: String(repeating: "b", count: 64),
+            peer: sender.publicKeyHex,
+            sender: sender.publicKeyHex,
+            content: "Visible on Watch",
+            createdAt: 100,
+            incoming: true
+        )))
+        XCTAssertTrue(snapshot.ingestDirectMessage(message(
+            rumorID: String(repeating: "c", count: 64),
+            wrapID: String(repeating: "d", count: 64),
+            peer: sender.publicKeyHex,
+            sender: sender.publicKeyHex,
+            content: "Newer on iPhone",
+            createdAt: 200,
+            incoming: true
+        )))
+
+        XCTAssertTrue(snapshot.mergeCompanionDirectMessageRead(
+            peerPublicKey: sender.publicKeyHex,
+            through: 100,
+            now: 300
+        ))
+        XCTAssertEqual(snapshot.directMessageReadAt?[sender.publicKeyHex], 100)
+        XCTAssertEqual(snapshot.directMessageThreads().first?.unreadCount, 1)
+        XCTAssertFalse(snapshot.mergeCompanionDirectMessageRead(
+            peerPublicKey: sender.publicKeyHex,
+            through: 100,
+            now: 300
+        ))
+
+        XCTAssertTrue(snapshot.mergeCompanionDirectMessageRead(
+            peerPublicKey: sender.publicKeyHex,
+            through: 10_000,
+            now: 300
+        ))
+        XCTAssertEqual(snapshot.directMessageReadAt?[sender.publicKeyHex], 600)
     }
 
     func testMessagesSentInTheSameSecondPreserveObservedConversationOrder() throws {
@@ -529,6 +573,88 @@ final class NostrDirectMessageTests: XCTestCase {
         )
     }
 
+    func testSharedConversationContentSeparatesPhotosFromWebLinks() throws {
+        let encrypted = try NostrDirectMessageAttachmentCrypto.encrypt(Data("photo".utf8))
+        let attachment = try XCTUnwrap(NostrDirectMessageAttachment(
+            url: "https://media.example.com/encrypted/photo-blob",
+            mimeType: "image/jpeg",
+            filename: "Sunset.jpg",
+            keyHex: encrypted.keyHex,
+            nonceHex: encrypted.nonceHex,
+            sha256: encrypted.sha256
+        ))
+        let directPhotoURL = try XCTUnwrap(URL(
+            string: "https://cdn.example.com/album/portrait.PNG?download=1"
+        ))
+        let articleURL = try XCTUnwrap(URL(string: "https://example.com/trip-notes"))
+        let message = NostrDirectMessage(
+            rumorEventID: String(repeating: "1", count: 64),
+            wrapEventID: String(repeating: "2", count: 64),
+            peerPublicKey: try identity(senderPrivateKey).publicKeyHex,
+            senderPublicKey: try identity(senderPrivateKey).publicKeyHex,
+            content: "\(attachment.url) \(directPhotoURL.absoluteString) \(articleURL.absoluteString)",
+            createdAt: 300,
+            isIncoming: true,
+            attachment: attachment
+        )
+
+        XCTAssertEqual(
+            NostrDirectMessageSharedContent.photoURLs(in: message),
+            [try XCTUnwrap(URL(string: attachment.url)), directPhotoURL]
+        )
+        XCTAssertEqual(
+            NostrDirectMessageSharedContent.linkURLs(in: message),
+            [articleURL]
+        )
+    }
+
+    func testChatMarkdownParsesBlocksAndCreatesCopyableInlineCodeLinks() throws {
+        let source = """
+        Intro with **bold text** and `groups.py`.
+
+        ## Release
+        - First item
+        - Second item with *emphasis*
+        1. Verify it
+
+        > One honest limitation.
+
+        ```python
+        print("ready")
+        ```
+        """
+
+        XCTAssertEqual(NostrChatMarkdown.document(source).blocks, [
+            .paragraph("Intro with **bold text** and `groups.py`."),
+            .heading(level: 2, content: "Release"),
+            .unorderedListItem(depth: 0, content: "First item"),
+            .unorderedListItem(depth: 0, content: "Second item with *emphasis*"),
+            .orderedListItem(depth: 0, number: 1, content: "Verify it"),
+            .blockQuote(depth: 1, content: "One honest limitation."),
+            .codeBlock(language: "python", content: "print(\"ready\")"),
+        ])
+
+        let attributed = NostrChatMarkdown.inlineAttributedString(
+            "Restart `~/apply-nostr-config.sh`, then **verify**."
+        )
+        let snippets = attributed.runs.compactMap { run -> String? in
+            guard run.inlinePresentationIntent?.contains(.code) == true else { return nil }
+            return String(attributed[run.range].characters)
+        }
+        XCTAssertEqual(snippets, ["~/apply-nostr-config.sh"])
+
+        let copyURL = try XCTUnwrap(NostrChatMarkdown.copyURL(
+            for: "~/apply-nostr-config.sh"
+        ))
+        XCTAssertEqual(
+            NostrChatMarkdown.copiedCode(from: copyURL),
+            "~/apply-nostr-config.sh"
+        )
+        XCTAssertNil(NostrChatMarkdown.copiedCode(
+            from: try XCTUnwrap(URL(string: "https://example.com"))
+        ))
+    }
+
     func testKindFifteenAttachmentRejectsMissingCryptoMetadata() throws {
         let sender = try identity(senderPrivateKey)
         let recipient = try identity(recipientPrivateKey)
@@ -781,6 +907,39 @@ final class NostrDirectMessageTests: XCTestCase {
         XCTAssertEqual(snapshot.sharedContactInboxItems?.first?.status, .deleted)
         XCTAssertEqual(snapshot.sharedCalendarInviteItems?.first?.status, .deleted)
         XCTAssertEqual(snapshot.sharedBoardInboxItems?.first?.status, .deleted)
+    }
+
+    func testOutgoingSharedContactJoinsRecipientConversationWithoutRequiringAction() throws {
+        let sender = try identity(senderPrivateKey)
+        let recipient = try identity(recipientPrivateKey)
+        let sharedNpub = try XCTUnwrap(NostrPublicKey.npub(
+            from: try XCTUnwrap(NostrPublicKey.parse(sender.publicKeyHex))
+        ))
+        let item = SharedContactInboxItem(
+            wrapEventID: "outgoing-contact-wrap",
+            rumorEventID: "outgoing-contact-rumor",
+            sender: SharedInboxSender(publicKey: sender.publicKeyHex, name: "You"),
+            contact: SharedContactDelivery(npub: sharedNpub, displayName: "Hermes"),
+            receivedAt: Date(timeIntervalSince1970: 100),
+            recipientPublicKey: recipient.publicKeyHex
+        )
+        var snapshot = TaskifySnapshot.empty
+
+        XCTAssertFalse(item.isIncoming)
+        XCTAssertEqual(item.conversationPublicKey, recipient.publicKeyHex)
+        XCTAssertTrue(snapshot.ingestSharedContactInboxItem(item))
+
+        let thread = try XCTUnwrap(snapshot.directMessageThreads().first)
+        XCTAssertEqual(thread.peerPublicKey, recipient.publicKeyHex)
+        XCTAssertEqual(thread.sharedContacts.map(\.id), [item.id])
+        XCTAssertEqual(thread.actionRequiredCount, 0)
+
+        XCTAssertTrue(snapshot.deleteDirectMessageThread(
+            peerPublicKey: recipient.publicKeyHex,
+            at: 110
+        ))
+        XCTAssertTrue(snapshot.directMessageThreads().isEmpty)
+        XCTAssertEqual(snapshot.sharedContactInboxItems?.first?.status, .deleted)
     }
 
     func testMutedAndLeftGroupPreferencesAffectUnreadAndPersist() throws {

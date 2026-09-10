@@ -3,6 +3,24 @@ import XCTest
 @testable import TaskifyCore
 
 final class TaskifyEventBoardOrganizerTests: XCTestCase {
+    func testEventTimestampParsingPreservesOffsetsAndFractionalSeconds() throws {
+        let date = try XCTUnwrap(TaskifyEvent.isoDate("2026-09-03T12:30:45Z"))
+        XCTAssertEqual(TaskifyEvent.isoDate("2026-09-03T07:30:45-05:00"), date)
+        let fractional = try XCTUnwrap(TaskifyEvent.isoDate("2026-09-03T12:30:45.125Z"))
+        XCTAssertEqual(fractional.timeIntervalSince(date), 0.125, accuracy: 0.0001)
+        XCTAssertNil(TaskifyEvent.isoDate("not-a-date"))
+        XCTAssertEqual(TaskifyEvent.isoDate("2026-09-03T12:30:45Z"), date)
+    }
+
+    func testEventTimestampParserSupportsConcurrentReaders() throws {
+        let base = try XCTUnwrap(TaskifyEvent.isoDate("2026-09-03T12:30:45Z"))
+        DispatchQueue.concurrentPerform(iterations: 500) { index in
+            let fractional = index.isMultiple(of: 2)
+            let text = fractional ? "2026-09-03T07:30:45.125-05:00" : "2026-09-03T12:30:45Z"
+            XCTAssertEqual(TaskifyEvent.isoDate(text), base.addingTimeInterval(fractional ? 0.125 : 0))
+        }
+    }
+
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

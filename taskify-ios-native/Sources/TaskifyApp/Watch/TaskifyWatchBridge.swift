@@ -11,6 +11,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     static let shared = TaskifyWatchBridge()
     private static let acknowledgedCommandIDsKey = "taskify.watch.acknowledged-command-ids.v1"
     private static let pendingSetupNavigationRequestKey = "taskify.watch.pending-setup-navigation-request.v1"
+    private static let provisionedPublicKeyKey = "taskify.watch.provisioned-public-key.v1"
     private static let acknowledgedCommandLimit = 100
 
     enum State: Equatable {
@@ -27,7 +28,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             case .activating: "Checking Apple Watch…"
             case .ready: "Open Taskify on your Watch to finish secure setup."
             case .provisioning: "Sending account securely…"
-            case .provisioned: "The Nostr account is stored securely on the Watch."
+            case .provisioned: "Watch sync and independent chat are enabled."
             case .failed(let reason): reason
             }
         }
@@ -50,6 +51,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     @MainActor
     func activate(model: AppModel) {
         self.model = model
+        restoreProvisionedState(for: model)
         guard WCSession.isSupported() else {
             state = .unavailable("Apple Watch connectivity is unavailable on this device.")
             return
@@ -83,23 +85,36 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             session.sendMessageData(data) { [weak self] replyData in
                 do {
                     let receipt = try TaskifyWatchTransfer.decodeProvisioningReceipt(replyData)
+                    if let message = receipt.errorMessage, !message.isEmpty {
+                        throw TaskifyWatchBridgeError.watchRejected(message)
+                    }
                     guard receipt.publicKeyHex == payload.publicKeyHex else {
                         throw TaskifyWatchBridgeError.receiptMismatch
                     }
                     DispatchQueue.main.async {
                         self?.hasProvisionedCurrentWatch = true
+                        UserDefaults.standard.set(
+                            receipt.publicKeyHex,
+                            forKey: Self.provisionedPublicKeyKey
+                        )
                         self?.clearPendingSetupNavigationRequest()
                         self?.state = .provisioned
                         self?.sendSnapshot(payload.snapshot)
                     }
                 } catch {
                     DispatchQueue.main.async {
-                        self?.state = .failed("The Watch could not confirm secure setup.")
+                        guard let self else { return }
+                        self.state = self.hasProvisionedCurrentWatch
+                            ? .provisioned
+                            : .failed(error.localizedDescription)
                     }
                 }
-            } errorHandler: { [weak self] _ in
+            } errorHandler: { [weak self] error in
                 DispatchQueue.main.async {
-                    self?.state = .failed("Secure setup failed. Keep Taskify open on the Watch and try again.")
+                    guard let self else { return }
+                    self.state = self.hasProvisionedCurrentWatch
+                        ? .provisioned
+                        : .failed("Secure setup failed: \(error.localizedDescription)")
                 }
             }
         } catch {
@@ -123,29 +138,71 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
         }
     }
 
-    /// Coalesces rapid model revisions and builds the constrained Watch projection away from
+    /// Pushes a read position the iPhone user set to the paired Watch so both devices' unread
+    /// badges converge. This is the phone's entire outbound chat traffic: no message history,
+    /// previews, or directory state. When the Watch is unreachable, the update is queued via
+    /// userInfo (one per advancement) and applies on the Watch's next activation.
+    func pushChatReadUpdate(conversationID: String, through timestamp: Int) {
+        guard WCSession.isSupported(),
+              let update = TaskifyWatchTransfer.chatReadUpdate(
+                conversationID: conversationID,
+                through: timestamp
+              ) else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated,
+              session.isPaired,
+              session.isWatchAppInstalled else { return }
+        if session.isReachable {
+            session.sendMessage(update, replyHandler: nil)
+        } else {
+            // Queue at most one pending transfer per conversation; a newer position replaces
+            // the need to deliver an older one.
+            let alreadyQueued = session.outstandingUserInfoTransfers.contains { transfer in
+                guard let queued = TaskifyWatchTransfer.chatReadUpdate(from: transfer.userInfo) else {
+                    return false
+                }
+                return queued.conversationID == conversationID && queued.timestamp >= timestamp
+            }
+            if !alreadyQueued { session.transferUserInfo(update) }
+        }
+    }
+
+    /// Coalesces rapid model revisions and builds the tasks-only Watch snapshot away from
     /// MainActor. Initial relay replay can update the local snapshot several times; generating
     /// and JSON-encoding up to 500 Watch tasks for every revision used to steal frames from the
     /// Boards scroller even when WatchConnectivity only needed the final application context.
     @MainActor
     func scheduleSnapshot(from model: AppModel) {
+        restoreProvisionedState(for: model)
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
         guard session.activationState == .activated,
               session.isPaired,
               session.isWatchAppInstalled else { return }
 
-        let source = model.snapshot
-        let calendar = model.watchDataCalendar
         snapshotDeliveryTask?.cancel()
-        snapshotDeliveryTask = Task { [weak self] in
+        snapshotDeliveryTask = Task { [weak self, weak model] in
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let self, let model else { return }
+            // Capture only after the debounce. Building the task snapshot before the sleep
+            // still scans the full board history for revisions whose transfer is cancelled.
+            let source = model.snapshot
+            let calendar = model.watchDataCalendar
+            let accent = TaskifyTheme.watchAccent
             let watchSnapshot = await Task.detached(priority: .utility) {
-                source.watchData(calendar: calendar)
+                let taskSnapshot = source.watchData(calendar: calendar)
+                return TaskifyWatchSnapshot(
+                    schemaVersion: taskSnapshot.schemaVersion,
+                    tasks: taskSnapshot.tasks,
+                    boards: taskSnapshot.boards,
+                    selectedBoardID: taskSnapshot.selectedBoardID,
+                    generatedAt: taskSnapshot.generatedAt,
+                    acknowledgedCommandIDs: taskSnapshot.acknowledgedCommandIDs,
+                    accent: accent
+                )
             }.value
             guard !Task.isCancelled else { return }
-            self?.sendSnapshot(watchSnapshot)
+            self.sendSnapshot(watchSnapshot)
         }
     }
 
@@ -163,9 +220,11 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
 
     private func recordSetupNavigationRequest() {
         DispatchQueue.main.async { [weak self] in
-            guard let self,
-                  !self.hasProvisionedCurrentWatch,
-                  self.pendingSetupNavigationRequestID == nil else { return }
+            guard let self else { return }
+            self.hasProvisionedCurrentWatch = false
+            UserDefaults.standard.removeObject(forKey: Self.provisionedPublicKeyKey)
+            if self.state == .provisioned { self.state = .ready }
+            guard self.pendingSetupNavigationRequestID == nil else { return }
             let requestID = UUID()
             self.pendingSetupNavigationRequestID = requestID
             UserDefaults.standard.set(
@@ -339,7 +398,9 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             boards: snapshot.boards,
             selectedBoardID: snapshot.selectedBoardID,
             generatedAt: snapshot.generatedAt,
-            acknowledgedCommandIDs: acknowledgedCommandIDs()
+            acknowledgedCommandIDs: acknowledgedCommandIDs(),
+            chatProjection: snapshot.chatProjection,
+            accent: snapshot.accent
         )
     }
 
@@ -350,6 +411,8 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             } else if !session.isPaired {
                 self?.state = .unavailable("No Apple Watch is paired with this iPhone.")
             } else if !session.isWatchAppInstalled {
+                self?.hasProvisionedCurrentWatch = false
+                UserDefaults.standard.removeObject(forKey: Self.provisionedPublicKeyKey)
                 self?.state = .unavailable("Install Taskify on the paired Apple Watch first.")
             } else if self?.hasProvisionedCurrentWatch == true {
                 self?.state = .provisioned
@@ -358,7 +421,33 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             }
             if error == nil, let self, let model = self.model {
                 self.scheduleSnapshot(from: model)
+                self.requestProvisioningStatus(from: session)
             }
+        }
+    }
+
+    @MainActor
+    private func restoreProvisionedState(for model: AppModel) {
+        let identity = model.identityPublicKey.lowercased()
+        let stored = UserDefaults.standard.string(forKey: Self.provisionedPublicKeyKey)?.lowercased()
+        hasProvisionedCurrentWatch = identity.count == 64 && stored == identity
+        if !hasProvisionedCurrentWatch, state == .provisioned { state = .ready }
+    }
+
+    private func requestProvisioningStatus(from session: WCSession) {
+        guard session.activationState == .activated, session.isReachable else { return }
+        session.sendMessage(TaskifyWatchTransfer.provisioningStatusRequest) { [weak self] reply in
+            guard let publicKey = TaskifyWatchTransfer.provisioningStatusPublicKey(reply) else { return }
+            DispatchQueue.main.async {
+                guard let self, let model = self.model,
+                      publicKey == model.identityPublicKey.lowercased() else { return }
+                self.hasProvisionedCurrentWatch = true
+                UserDefaults.standard.set(publicKey, forKey: Self.provisionedPublicKeyKey)
+                self.clearPendingSetupNavigationRequest()
+                self.state = .provisioned
+            }
+        } errorHandler: { _ in
+            // Cached state remains authoritative until a reachable Watch answers the status ping.
         }
     }
 }
@@ -387,6 +476,7 @@ extension TaskifyWatchBridge: WCSessionDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self, let model = self.model else { return }
             self.scheduleSnapshot(from: model)
+            self.requestProvisioningStatus(from: session)
         }
     }
 
@@ -432,6 +522,46 @@ extension TaskifyWatchBridge: WCSessionDelegate {
         didReceiveMessage message: [String: Any],
         replyHandler: @escaping ([String: Any]) -> Void
     ) {
+        if let readUpdate = TaskifyWatchTransfer.chatReadUpdate(from: message) {
+            Task { @MainActor [weak self] in
+                guard let self, let model = self.model else {
+                    replyHandler([:])
+                    return
+                }
+                // Chat display state lives in the Watch cache; a read position that moved the
+                // phone's state needs no snapshot reply. Replying with one made every read
+                // update rebuild and encode the full snapshot twice (reply + application
+                // context), burning CPU and Bluetooth while both chat screens sat idle.
+                model.markDirectMessageThreadRead(
+                    peerPublicKey: readUpdate.conversationID,
+                    through: readUpdate.timestamp
+                )
+                replyHandler([:])
+            }
+            return
+        }
+        if TaskifyWatchTransfer.isChatDirectoryRequest(message) {
+            Task { @MainActor [weak self] in
+                guard let self, let model = self.model else {
+                    replyHandler([:])
+                    return
+                }
+                // One full chat projection, built only when the Watch asks for it: contacts,
+                // thread display metadata, routing, and phone-side tombstones. Tasks are left
+                // empty so the transfer budget goes entirely to the chat directory.
+                let snapshot = TaskifyWatchSnapshot(
+                    generatedAt: Date(),
+                    chatProjection: model.watchChatProjection()
+                )
+                do {
+                    let data = try TaskifyWatchTransfer.encodeConnectivitySnapshot(snapshot)
+                    replyHandler([TaskifyWatchTransfer.snapshotDataKey: data])
+                } catch {
+                    replyHandler([:])
+                }
+            }
+            return
+        }
         if TaskifyWatchTransfer.isSnapshotRequest(message) {
             Task { @MainActor [weak self] in
                 guard let self, let model = self.model else {
@@ -460,6 +590,18 @@ extension TaskifyWatchBridge: WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        if let readUpdate = TaskifyWatchTransfer.chatReadUpdate(from: userInfo) {
+            Task { @MainActor [weak self] in
+                guard let self, let model = self.model else { return }
+                // Queued (unreachable) read updates still converge the phone's badge; the
+                // Watch's durable cache needs no follow-up snapshot.
+                model.markDirectMessageThreadRead(
+                    peerPublicKey: readUpdate.conversationID,
+                    through: readUpdate.timestamp
+                )
+            }
+            return
+        }
         if TaskifyWatchTransfer.isSetupNavigationRequest(userInfo) {
             recordSetupNavigationRequest()
             return
@@ -472,9 +614,20 @@ extension TaskifyWatchBridge: WCSessionDelegate {
     }
 }
 
-private enum TaskifyWatchBridgeError: Error {
+private enum TaskifyWatchBridgeError: LocalizedError {
     case receiptMismatch
     case modelUnavailable
     case commandAlreadyProcessing
     case invalidCommand
+    case watchRejected(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .receiptMismatch: "The Watch confirmed a different Taskify account."
+        case .modelUnavailable: "Taskify is not ready to sync with Apple Watch."
+        case .commandAlreadyProcessing: "That Watch request is already being processed."
+        case .invalidCommand: "The Watch request is incomplete."
+        case .watchRejected(let message): message
+        }
+    }
 }

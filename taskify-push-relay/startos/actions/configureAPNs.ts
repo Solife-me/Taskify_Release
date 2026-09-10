@@ -59,6 +59,20 @@ const inputSpec = InputSpec.of({
       },
     ],
   }),
+  watchTopic: Value.text({
+    name: i18n('Watch App Bundle ID'),
+    description: i18n(
+      'The Watch APNs topic. It must match the signed Taskify Watch app bundle identifier.',
+    ),
+    default: 'solife.me.Taskify.Native.watchkitapp',
+    required: true,
+    patterns: [
+      {
+        regex: '^[A-Za-z0-9.-]+$',
+        description: 'Must be a valid Apple bundle identifier.',
+      },
+    ],
+  }),
 })
 
 export const configureAPNs = sdk.Action.withInput(
@@ -66,7 +80,7 @@ export const configureAPNs = sdk.Action.withInput(
   {
     name: i18n('Configure Apple Push'),
     description: i18n(
-      'Store the APNs provider credentials used for content-free wake delivery.',
+      'Store the APNs provider credentials used for metadata-free alert delivery.',
     ),
     warning: i18n(
       'The pasted private key is sensitive. Keep your StartOS account and backups secure.',
@@ -78,20 +92,33 @@ export const configureAPNs = sdk.Action.withInput(
   inputSpec,
   async () => {
     const current = await apnsConfigJson.read().once()
-    if (!current) return { topic: 'solife.me.Taskify.Native' }
+    if (!current) {
+      return {
+        topic: 'solife.me.Taskify.Native',
+        watchTopic: 'solife.me.Taskify.Native.watchkitapp',
+      }
+    }
     return {
       teamID: current.teamID,
       keyID: current.keyID,
       topic: current.topic,
+      watchTopic: current.watchTopic ?? 'solife.me.Taskify.Native.watchkitapp',
     }
   },
   async ({ effects, input }) => {
     const teamID = input.teamID.trim().toUpperCase()
     const keyID = input.keyID.trim().toUpperCase()
     const topic = input.topic.trim()
+    const watchTopic = input.watchTopic.trim()
     const privateKey = normalizePrivateKey(input.privateKey)
     createPrivateKey(privateKey)
-    await apnsConfigJson.write(effects, { teamID, keyID, privateKey, topic })
+    await apnsConfigJson.write(effects, {
+      teamID,
+      keyID,
+      privateKey,
+      topic,
+      watchTopic,
+    })
     await chmod(apnsConfigJson.path, 0o600)
   },
 )

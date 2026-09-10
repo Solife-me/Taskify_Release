@@ -28,6 +28,151 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertFalse(TaskifyWatchTransfer.isSnapshotRequest([:]))
     }
 
+    func testProvisioningStatusRoundTripsOnlyAValidPublicKey() {
+        let publicKey = String(repeating: "a", count: 64)
+        XCTAssertTrue(
+            TaskifyWatchTransfer.isProvisioningStatusRequest(
+                TaskifyWatchTransfer.provisioningStatusRequest
+            )
+        )
+        XCTAssertEqual(
+            TaskifyWatchTransfer.provisioningStatusPublicKey(
+                TaskifyWatchTransfer.provisioningStatusResponse(publicKeyHex: publicKey.uppercased())
+            ),
+            publicKey
+        )
+        XCTAssertNil(
+            TaskifyWatchTransfer.provisioningStatusPublicKey([
+                TaskifyWatchTransfer.provisioningStatusPublicKeyKey: "not-a-key",
+            ])
+        )
+    }
+
+    func testChatReadUpdateValidatesAndNormalizesItsConversation() throws {
+        let conversationID = String(repeating: "A", count: 64)
+        let update = try XCTUnwrap(TaskifyWatchTransfer.chatReadUpdate(
+            conversationID: conversationID,
+            through: 1_786_000_000
+        ))
+        let decoded = try XCTUnwrap(TaskifyWatchTransfer.chatReadUpdate(from: update))
+
+        XCTAssertEqual(decoded.conversationID, conversationID.lowercased())
+        XCTAssertEqual(decoded.timestamp, 1_786_000_000)
+        XCTAssertNil(TaskifyWatchTransfer.chatReadUpdate(
+            conversationID: "not-a-conversation",
+            through: 1_786_000_000
+        ))
+        XCTAssertNil(TaskifyWatchTransfer.chatReadUpdate(from: [
+            TaskifyWatchTransfer.chatReadConversationIDKey: conversationID,
+            TaskifyWatchTransfer.chatReadThroughKey: 0,
+        ]))
+    }
+
+    func testChatDirectoryRequestHasAnExplicitTypedMarker() {
+        XCTAssertTrue(
+            TaskifyWatchTransfer.isChatDirectoryRequest(TaskifyWatchTransfer.chatDirectoryRequest)
+        )
+        XCTAssertFalse(TaskifyWatchTransfer.isChatDirectoryRequest([
+            TaskifyWatchTransfer.chatDirectoryRequestKey: false,
+        ]))
+        XCTAssertFalse(TaskifyWatchTransfer.isChatDirectoryRequest([:]))
+    }
+
+    func testConnectivitySnapshotCarriesADirectoryProjectionWithTombstones() throws {
+        let account = String(repeating: "a", count: 64)
+        let summaries = (0..<TaskifyWatchChatProjection.maximumThreadCount).map { index in
+            TaskifyWatchChatThreadSummary(
+                conversationID: String(format: "%064x", 10_000 + index),
+                memberPublicKeys: [account, String(format: "%064x", index + 1)],
+                displayName: "Conversation \(index)",
+                latestPreview: "Preview \(index)",
+                latestActivityAt: 2_000 + index,
+                readThrough: 1_900 + index,
+                unreadCount: index % 4,
+                isRequest: false
+            )!
+        }
+        let contacts = (0..<TaskifyWatchChatProjection.maximumContactCount).map { index in
+            TaskifyWatchContact(
+                publicKey: String(format: "%064x", 20_000 + index),
+                npub: "",
+                displayName: "Contact \(index)"
+            )
+        }
+        let deleted = (0..<200).map { String(format: "%064x", 30_000 + $0) }
+        let blocked = (0..<50).map { String(format: "%064x", 40_000 + $0) }
+        let projection = TaskifyWatchChatProjection(
+            threads: summaries,
+            accountPublicKey: account,
+            contacts: contacts,
+            deletedConversationIDs: deleted,
+            blockedPublicKeys: blocked,
+            generatedAt: now
+        )
+        // A directory reply carries no task payload, so the whole transport budget is chat.
+        let snapshot = TaskifyWatchSnapshot(
+            boards: [TaskifyWatchBoard(id: "work", name: "Work", openTaskCount: 0)],
+            selectedBoardID: "work",
+            generatedAt: now,
+            chatProjection: projection
+        )
+
+        let data = try TaskifyWatchTransfer.encodeConnectivitySnapshot(snapshot)
+        let decoded = try TaskifyWatchTransfer.decodeConnectivitySnapshot(data)
+
+        XCTAssertLessThanOrEqual(data.count, 48 * 1_024)
+        XCTAssertTrue(decoded.tasks.isEmpty)
+        XCTAssertEqual(decoded.chatProjection?.threads, projection.threads)
+        XCTAssertEqual(decoded.chatProjection?.contacts, projection.contacts)
+        XCTAssertEqual(decoded.chatProjection?.deletedConversationIDs, deleted)
+        XCTAssertEqual(decoded.chatProjection?.blockedPublicKeys, blocked)
+
+        // Even when a tight budget forces thread trimming, tombstones survive: they are the
+        // only path phone-side deletions and blocks have to the Watch cache.
+        let trimmedData = try TaskifyWatchTransfer.encodeConnectivitySnapshot(
+            snapshot, maximumBytes: 6_000
+        )
+        let trimmed = try TaskifyWatchTransfer.decodeConnectivitySnapshot(trimmedData)
+        XCTAssertLessThanOrEqual(trimmedData.count, 6_000)
+        XCTAssertEqual(trimmed.chatProjection?.deletedConversationIDs, deleted)
+        XCTAssertEqual(trimmed.chatProjection?.blockedPublicKeys, blocked)
+    }
+
+    func testChatProjectionDecodesPayloadsWrittenBeforeTombstoneFields() throws {
+        let account = String(repeating: "a", count: 64)
+        let peer = String(repeating: "c", count: 64)
+        let summary = TaskifyWatchChatThreadSummary(
+            conversationID: peer,
+            memberPublicKeys: [account, peer],
+            displayName: "Peer",
+            latestPreview: "From phone",
+            latestActivityAt: 2_000,
+            unreadCount: 1,
+            isRequest: false
+        )!
+        let projection = TaskifyWatchChatProjection(
+            threads: [summary],
+            accountPublicKey: account,
+            deletedConversationIDs: [peer],
+            blockedPublicKeys: [peer],
+            generatedAt: now
+        )
+        var payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(projection))
+                as? [String: Any]
+        )
+        payload.removeValue(forKey: "deletedConversationIDs")
+        payload.removeValue(forKey: "blockedPublicKeys")
+        let legacy = try JSONSerialization.data(withJSONObject: payload)
+
+        let decoded = try JSONDecoder().decode(TaskifyWatchChatProjection.self, from: legacy)
+
+        XCTAssertNil(decoded.deletedConversationIDs)
+        XCTAssertNil(decoded.blockedPublicKeys)
+        XCTAssertEqual(decoded.threads.first?.conversationID, peer)
+        XCTAssertEqual(decoded.accountPublicKey, account)
+    }
+
     private let now = Date(timeIntervalSince1970: 1_785_945_600) // 2026-08-06 12:00 UTC
 
     private var calendar: Calendar {
@@ -192,6 +337,14 @@ final class TaskifyWatchDataTests: XCTestCase {
     }
 
     func testConnectivitySnapshotCompressionRoundTripsAndReadsLegacyPayloads() throws {
+        let accent = TaskifyWatchAccent(
+            red: 201,
+            green: 111,
+            blue: 92,
+            foregroundRed: 6,
+            foregroundGreen: 20,
+            foregroundBlue: 40
+        )
         let snapshot = TaskifyWatchSnapshot(
             tasks: [
                 TaskifyWatchTask(
@@ -210,13 +363,18 @@ final class TaskifyWatchDataTests: XCTestCase {
             boards: [TaskifyWatchBoard(id: "work", name: "Work", openTaskCount: 1)],
             selectedBoardID: "work",
             generatedAt: now,
-            acknowledgedCommandIDs: ["command"]
+            acknowledgedCommandIDs: ["command"],
+            accent: accent
         )
 
         let connectivityData = try TaskifyWatchTransfer.encodeConnectivitySnapshot(snapshot)
         XCTAssertEqual(
             try TaskifyWatchTransfer.decodeConnectivitySnapshot(connectivityData),
             snapshot
+        )
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeConnectivitySnapshot(connectivityData).accent,
+            accent
         )
 
         let legacyData = try TaskifyWatchTransfer.encode(snapshot)
@@ -257,6 +415,74 @@ final class TaskifyWatchDataTests: XCTestCase {
         XCTAssertLessThan(decoded.tasks.count, tasks.count)
         XCTAssertEqual(decoded.tasks, Array(tasks.prefix(decoded.tasks.count)))
         XCTAssertEqual(decoded.boards, [board])
+    }
+
+    func testConnectivitySnapshotRetainsNewestChatThreadsWithinTransportBudget() throws {
+        let account = String(repeating: "a", count: 64)
+        let summaries = (0..<100).map { index in
+            TaskifyWatchChatThreadSummary(
+                conversationID: String(format: "%064x", 10_000 + index),
+                memberPublicKeys: [account, String(format: "%064x", index + 1)],
+                displayName: "Conversation \(index)",
+                latestPreview: deterministicPayload(
+                    seed: UInt64(index + 100),
+                    count: 180
+                ).base64EncodedString(),
+                latestActivityAt: 2_000 + index,
+                readThrough: 1_900 + index,
+                unreadCount: index % 4,
+                isRequest: false
+            )!
+        }
+        let contacts = (0..<TaskifyWatchChatProjection.maximumContactCount).map { index in
+            TaskifyWatchContact(
+                publicKey: String(format: "%064x", 20_000 + index),
+                npub: deterministicPayload(
+                    seed: UInt64(index + 500),
+                    count: 48
+                ).base64EncodedString(),
+                displayName: "Contact \(index)",
+                discoveryRelayURLs: ["wss://relay\(index).example.com"]
+            )
+        }
+        let projection = TaskifyWatchChatProjection(
+            threads: summaries,
+            accountPublicKey: account,
+            contacts: contacts,
+            discoveryRelayURLs: ["wss://relay.example.com"],
+            pushRelayHTTPSURL: URL(string: "https://push.example.com"),
+            pushRelayWSSURL: "wss://push.example.com",
+            generatedAt: now
+        )
+        let snapshot = TaskifyWatchSnapshot(
+            boards: [TaskifyWatchBoard(id: "work", name: "Work", openTaskCount: 0)],
+            selectedBoardID: "work",
+            generatedAt: now,
+            chatProjection: projection
+        )
+
+        let data = try TaskifyWatchTransfer.encodeConnectivitySnapshot(
+            snapshot,
+            maximumBytes: 4_000
+        )
+        let decoded = try TaskifyWatchTransfer.decodeConnectivitySnapshot(data)
+        let retained = try XCTUnwrap(decoded.chatProjection?.threads)
+
+        XCTAssertLessThanOrEqual(data.count, 4_000)
+        XCTAssertFalse(retained.isEmpty)
+        XCTAssertLessThan(retained.count, projection.threads.count)
+        XCTAssertEqual(retained, Array(projection.threads.prefix(retained.count)))
+        XCTAssertNil(decoded.chatProjection?.contacts)
+        XCTAssertEqual(decoded.chatProjection?.accountPublicKey, account)
+        XCTAssertEqual(
+            decoded.chatProjection?.discoveryRelayURLs,
+            ["wss://relay.example.com"]
+        )
+        XCTAssertEqual(
+            decoded.chatProjection?.pushRelayHTTPSURL,
+            URL(string: "https://push.example.com")
+        )
+        XCTAssertEqual(decoded.chatProjection?.pushRelayWSSURL, "wss://push.example.com")
     }
 
     func testWatchWidgetSnapshotContainsOnlyGlanceableComplicationData() {
@@ -496,6 +722,92 @@ final class TaskifyWatchDataTests: XCTestCase {
             try TaskifyWatchTransfer.decodeProvisioningPayload(TaskifyWatchTransfer.encode(payload)),
             payload
         )
+
+        let legacyEncoder = JSONEncoder()
+        legacyEncoder.dateEncodingStrategy = .millisecondsSince1970
+        XCTAssertEqual(
+            try TaskifyWatchTransfer.decodeProvisioningPayload(legacyEncoder.encode(payload)),
+            payload
+        )
+    }
+
+    func testLargeProvisioningPayloadIsBoundedAndKeepsRoutingForRetainedThreads() throws {
+        let privateKey = Data(repeating: 7, count: 32)
+        let identity = try NostrIdentity(privateKey: privateKey)
+        let contacts = (0..<100).map { index in
+            TaskifyWatchContact(
+                publicKey: String(format: "%064x", index + 1),
+                npub: "npub-\(index)",
+                displayName: deterministicPayload(
+                    seed: UInt64(index + 1_000),
+                    count: 900
+                ).base64EncodedString(),
+                discoveryRelayURLs: ["wss://relay.example"]
+            )
+        }
+        let summaries = contacts.enumerated().map { index, contact in
+            TaskifyWatchChatThreadSummary(
+                conversationID: String(format: "%064x", 20_000 + index),
+                memberPublicKeys: [identity.publicKeyHex, contact.publicKey],
+                displayName: "Contact \(index)",
+                latestPreview: "Latest private preview \(index)",
+                latestActivityAt: 3_000 + index,
+                unreadCount: index % 3,
+                isRequest: false
+            )!
+        }
+        let tasks = (0..<80).map { index in
+            TaskifyWatchTask(
+                id: "task-\(index)",
+                title: "Task \(index)",
+                boardID: "work",
+                boardName: "Work",
+                columnName: "Inbox",
+                dueDate: now,
+                dueTimeEnabled: true,
+                priority: nil,
+                order: index,
+                syncPayload: deterministicPayload(seed: UInt64(index + 1), count: 1_024)
+            )
+        }
+        let payload = try TaskifyWatchProvisioningPayload(
+            privateKey: privateKey,
+            publicKeyHex: identity.publicKeyHex,
+            relayURLs: ["wss://relay.example"],
+            snapshot: TaskifyWatchSnapshot(
+                tasks: tasks,
+                boards: [TaskifyWatchBoard(id: "work", name: "Work", openTaskCount: tasks.count)],
+                selectedBoardID: "work",
+                generatedAt: now
+            ),
+            chatContext: TaskifyWatchChatProvisioningContext(
+                contacts: contacts,
+                threadSummaries: summaries,
+                discoveryRelayURLs: ["wss://relay.example"],
+                pushRelayHTTPSURL: URL(string: "https://push.example")!,
+                pushRelayWSSURL: "wss://push.example"
+            )
+        )
+
+        let data = try TaskifyWatchTransfer.encode(payload, maximumBytes: 12_000)
+        let decoded = try TaskifyWatchTransfer.decodeProvisioningPayload(data)
+        let retainedThreads = try XCTUnwrap(decoded.chatContext?.threadSummaries)
+        let retainedContactKeys = Set(decoded.chatContext?.contacts.map(\.publicKey) ?? [])
+
+        XCTAssertLessThanOrEqual(data.count, 12_000)
+        XCTAssertEqual(decoded.privateKey, privateKey)
+        XCTAssertEqual(decoded.publicKeyHex, identity.publicKeyHex)
+        XCTAssertEqual(decoded.chatContext?.pushRelayWSSURL, "wss://push.example")
+        XCTAssertTrue(decoded.snapshot.tasks.isEmpty)
+        XCTAssertFalse(retainedThreads.isEmpty)
+        XCTAssertLessThan(retainedThreads.count, summaries.count)
+        for thread in retainedThreads {
+            XCTAssertTrue(
+                Set(thread.memberPublicKeys)
+                    .subtracting([identity.publicKeyHex])
+                    .isSubset(of: retainedContactKeys)
+            )
+        }
     }
 
     func testWatchNostrTaskEventIsNativeCodecCompatible() throws {
@@ -568,6 +880,74 @@ final class TaskifyWatchDataTests: XCTestCase {
                 timestamp: 1_786_000_000
             )
         )
+    }
+
+    func testWatchDecryptsNativeBoardEventsOnlyOnDevice() throws {
+        let board = Board(
+            id: "local-board",
+            name: "Private Work",
+            kind: .list,
+            columns: [
+                BoardColumn(id: "inbox", name: "Inbox", order: 0),
+                BoardColumn(id: "later", name: "Later", order: 1),
+            ],
+            nostrBoardID: "private-board-secret",
+            relayURLs: ["wss://relay.example"]
+        )
+        let native = try TaskEventCodec.boardEvent(board: board, createdAt: 1_786_000_010)
+        let watch = TaskifyWatchNostrEvent(
+            id: native.id,
+            publicKey: native.publicKey,
+            createdAt: native.createdAt,
+            kind: native.kind,
+            tags: native.tags,
+            content: native.content,
+            signature: native.signature
+        )
+
+        let plaintext = try TaskifyWatchNostrCrypto.decryptBoardPayload(
+            watch,
+            boardID: board.effectiveNostrBoardID
+        )
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: plaintext) as? [String: Any]
+        )
+        let columns = try XCTUnwrap(payload["columns"] as? [[String: Any]])
+
+        XCTAssertTrue(TaskifyWatchNostrCrypto.verify(watch))
+        XCTAssertEqual(columns.compactMap { $0["id"] as? String }, ["inbox", "later"])
+        XCTAssertThrowsError(
+            try TaskifyWatchNostrCrypto.decryptBoardPayload(
+                watch,
+                boardID: "a-different-board-secret"
+            )
+        )
+    }
+
+    func testTaskCacheProofBindsOneBoardSubscriptionToTheWatchAccount() throws {
+        let privateKey = Data(repeating: 7, count: 32)
+        let identity = try NostrIdentity(privateKey: privateKey)
+        let boardID = "private-board-secret"
+        let url = try XCTUnwrap(URL(string: "https://push.solife.me/v1/watch/tasks/query"))
+        let proof = try TaskifyWatchNostrCrypto.taskCacheAccessProof(
+            boardID: boardID,
+            accountPublicKey: identity.publicKeyHex,
+            url: url,
+            createdAt: 1_786_000_020
+        )
+
+        XCTAssertEqual(proof.kind, TaskifyWatchNostrCrypto.taskCacheAccessKind)
+        XCTAssertEqual(
+            proof.publicKey,
+            try TaskifyWatchNostrCrypto.boardPublicKeyHex(for: boardID)
+        )
+        XCTAssertEqual(proof.firstTagValue(named: "account"), identity.publicKeyHex)
+        XCTAssertEqual(
+            proof.firstTagValue(named: "b"),
+            TaskifyWatchNostrCrypto.boardTag(for: boardID)
+        )
+        XCTAssertEqual(proof.firstTagValue(named: "u"), url.absoluteString)
+        XCTAssertTrue(TaskifyWatchNostrCrypto.verify(proof))
     }
 
     func testNativeVoiceAuthenticationMatchesWatchRequestProtocol() throws {
