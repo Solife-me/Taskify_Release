@@ -577,6 +577,36 @@ final class ScrollPerformanceUITests: XCTestCase {
             "Three relay copies must produce one message")
     }
 
+    func testVariableHeightArrivalsStayVisibleAtMessageLimit() throws {
+        let app = chatFixtureApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "400"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ARRIVALS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ARRIVAL_DELAY"] = "12"
+        app.launch()
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5))
+
+        let composer = app.textViews.firstMatch
+        composer.tap()
+        let draft = Array(repeating: "Long unsent draft", count: 28).joined(separator: " ")
+        composer.typeText(draft)
+        let incoming = app.staticTexts["Live fixture message 3"]
+        XCTAssertTrue(incoming.waitForExistence(timeout: 25))
+        XCTAssertTrue(incoming.isHittable,
+            "Arrivals must remain visible when replacing messages at the 400-message limit")
+        attach(app, name: "variable-height-arrivals-with-long-draft")
+
+        composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.count))
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertTrue(incoming.isHittable,
+            "Shrinking the composer must not leave the timeline beyond its content")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        attach(app, name: "variable-height-arrivals-after-composer-shrinks")
+    }
+
     /// Regression test: messages that arrive while the conversation is open are seen by the
     /// user, so leaving the thread must not badge it as unread. The reactive onChange mark
     /// handles arrivals the timeline-count signal catches; the onDisappear mark is the

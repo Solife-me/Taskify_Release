@@ -5347,6 +5347,7 @@ final class AppModel {
         // show up while rows are still being realized mid-drag.
         let requestedCount = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_COUNT"].flatMap(Int.init) ?? 300
         let fixtureMessageCount = min(1_000, max(40, requestedCount))
+        let variableHeights = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] == "1"
         let fixtureStart = Int(Date().timeIntervalSince1970) - fixtureMessageCount - 60
         snapshot.directMessages = (1...fixtureMessageCount).map { index in
             let content: String
@@ -5366,7 +5367,12 @@ final class AppModel {
             case fixtureMessageCount:
                 content = "Newest fixture message"
             default:
-                content = "Fixture conversation message \(index)"
+                content = variableHeights && index.isMultiple(of: 3)
+                    ? "Fixture conversation message \(index)\n\n" + Array(
+                        repeating: "A longer message with **formatted text**, several sentences, and enough wrapping to change the timeline's estimated row heights.",
+                        count: 3 + index % 11
+                    ).joined(separator: "\n\n")
+                    : "Fixture conversation message \(index)"
             }
             let incoming = index.isMultiple(of: 2)
             return NostrDirectMessage(
@@ -5432,7 +5438,10 @@ final class AppModel {
               let identity = cachedIdentity,
               !snapshot.directMessageHistory.contains(where: { $0.content == "Live fixture message 3" }) else { return }
         do {
-            try await Task.sleep(for: .seconds(3))
+            let delay = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_ARRIVAL_DELAY"]
+                .flatMap(Double.init) ?? 3
+            let variableHeights = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] == "1"
+            try await Task.sleep(for: .seconds(min(30, max(0, delay))))
             let events = try await Task.detached(priority: .userInitiated) {
                 let sender = try NostrIdentity(privateKey: Data(repeating: 1, count: 32))
                 guard sender.publicKeyHex == peer else { return [NostrEvent]() }
@@ -5440,7 +5449,12 @@ final class AppModel {
                     let rumor = try NIP17Rumor(publicKey: sender.publicKeyHex,
                         createdAt: Int(Date().timeIntervalSince1970) + index,
                         kind: NIP17GiftWrap.rumorKind, tags: [["p", identity.publicKeyHex]],
-                        content: "Live fixture message \(index)")
+                        content: variableHeights && index < 3
+                            ? "Live fixture message \(index)\n\n" + Array(
+                                repeating: "A long incoming message changes the scroll layout while the composer and keyboard occupy the bottom of the screen.",
+                                count: index * 8
+                            ).joined(separator: "\n\n")
+                            : "Live fixture message \(index)")
                     return try NIP17GiftWrap.wrap(rumor: rumor, sender: sender, recipientPublicKey: identity.publicKey)
                 }
             }.value

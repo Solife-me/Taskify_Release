@@ -50,7 +50,40 @@ final class ChatComposerUITests: XCTestCase {
         let end = composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
         start.press(forDuration: 0.05, thenDragTo: end)
 
+        XCTAssertTrue(app.keyboards.firstMatch.exists,
+            "Scrolling a long draft must keep the keyboard open")
+        XCTAssertEqual(composer.value as? String, longMessage)
         attach(app, name: "composer-long-text-after-scroll-up")
+    }
+
+    func testDraggingConversationDownDismissesKeyboardAndPreservesDraft() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_INITIAL_TAB"] = "chat"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("Unsent draft")
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: composer.frame.midX, dy: composer.frame.minY - 70))
+        let end = origin.withOffset(CGVector(dx: composer.frame.midX, dy: keyboard.frame.maxY - 30))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5),
+            "Dragging down from the conversation must dismiss the keyboard")
+        XCTAssertEqual(composer.value as? String, "Unsent draft")
+        composer.tap()
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5),
+            "The draft must remain editable after interactive dismissal")
     }
 
     func testPasteImageFromClipboardStagesAttachment() throws {

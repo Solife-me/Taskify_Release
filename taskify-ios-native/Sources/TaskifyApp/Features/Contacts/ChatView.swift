@@ -2351,7 +2351,9 @@ private struct ChatComposerTextView: UIViewRepresentable {
         view.isScrollEnabled = true
         view.alwaysBounceVertical = false
         view.returnKeyType = .send
-        view.keyboardDismissMode = .interactive
+        // Draft scrolling belongs to the editor, including downward drags near
+        // the keyboard. Only a drag that starts in the conversation dismisses it.
+        view.keyboardDismissMode = .none
         view.pasteConfiguration = UIPasteConfiguration(
             acceptableTypeIdentifiers: [UTType.item.identifier]
         )
@@ -2521,6 +2523,7 @@ private struct DirectMessageConversationView: View {
     @State private var isAddingContact = false
     @State private var confirmingConversationDeletion = false
     @State private var botCommands: [BotCommand] = []
+    @State private var botCommandMenuHeight: CGFloat = 0
     let peerPublicKey: String
     let initialTimelineItemID: String?
 
@@ -2826,9 +2829,8 @@ private struct DirectMessageConversationView: View {
                 }
             }
             .coordinateSpace(name: "conversationViewport")
-            // Reading back through the conversation must not fight the keyboard: scrolling
-            // never dismisses it, but a deliberate tap anywhere on the timeline does.
-            .scrollDismissesKeyboard(.never)
+            // Scope interactive dismissal to the timeline, outside the composer.
+            .scrollDismissesKeyboard(.interactively)
             .onTapGesture { dismissComposerKeyboard() }
             .conversationBottomInitialAnchor()
             .overlay(alignment: .bottom) {
@@ -3367,7 +3369,7 @@ private struct DirectMessageConversationView: View {
 
     private func botCommandMenu(_ commands: [BotCommand]) -> some View {
         ScrollView {
-            LazyVStack(spacing: 0) {
+            VStack(spacing: 0) {
                 ForEach(commands) { command in
                     Button {
                         draft = "/\(command.name) "
@@ -3391,8 +3393,14 @@ private struct DirectMessageConversationView: View {
                     .accessibilityLabel("Insert command \(command.name)")
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                min(geometry.size.height, 224)
+            } action: { height in
+                botCommandMenuHeight = height
+            }
         }
-        .frame(maxHeight: 224)
+        .frame(height: botCommandMenuHeight)
         .padding(.horizontal, 9)
     }
 
@@ -3424,10 +3432,12 @@ private struct DirectMessageConversationView: View {
     }
 
     private var composer: some View {
-        TaskifyGlassControlGroup(spacing: 8) {
+        TaskifyGlassControlGroup(spacing: 4) {
         VStack(spacing: 6) {
             if let botMenuCommands = visibleBotCommands {
                 botCommandMenu(botMenuCommands)
+                    .padding(.vertical, 4)
+                    .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 21, style: .continuous))
             }
             if let replyingTo {
                 HStack(spacing: 10) {
@@ -3454,6 +3464,8 @@ private struct DirectMessageConversationView: View {
                     .disabled(isSending)
                 }
                 .padding(.horizontal, 9)
+                .padding(.vertical, 8)
+                .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
 
             HStack(alignment: .bottom, spacing: 9) {
@@ -3586,15 +3598,14 @@ private struct DirectMessageConversationView: View {
                     }
                 }
                 .padding(3)
-                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+                .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 21, style: .continuous))
             }
         }
-        // Floating liquid-glass bar: no opaque material strip behind it, so the
-        // conversation shows through while the composer grows with the draft.
+        // Each control floats on its own glass surface; the spacing between them
+        // stays transparent so the conversation remains visible underneath.
         .padding(.horizontal, 10)
         .padding(.top, 6)
         .padding(.bottom, 6)
-        .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .fullScreenCover(isPresented: $showingCamera) {
             TaskAttachmentCameraPicker(
                 onCapture: { image in
