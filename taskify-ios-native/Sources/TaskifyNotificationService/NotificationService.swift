@@ -1,4 +1,5 @@
 import Foundation
+import os
 import TaskifyCore
 import UserNotifications
 
@@ -6,6 +7,13 @@ final class NotificationService: UNNotificationServiceExtension {
     private struct PreviewResponse: Decodable {
         let event: NostrEvent
     }
+
+    /// Records why a notification kept the generic alert or went out without Reply, never the
+    /// message itself, so intermittent cases can be diagnosed in Console with the iPhone connected.
+    private static let logger = Logger(
+        subsystem: "solife.me.Taskify.Native.NotificationService",
+        category: "Preview"
+    )
 
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var genericAlert: UNNotificationContent?
@@ -25,6 +33,7 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
+        Self.logger.error("Time expired before the preview was ready; delivering the generic alert")
         workTask?.cancel()
         finish(with: nil)
     }
@@ -44,6 +53,7 @@ final class NotificationService: UNNotificationServiceExtension {
                 snapshot: snapshot,
                 selection: DMPushNotificationSharedSettings.selection
             ) else {
+                Self.logger.info("No preview for this event; delivering the generic alert")
                 finish(with: nil)
                 return
             }
@@ -61,12 +71,21 @@ final class NotificationService: UNNotificationServiceExtension {
                 for: decrypted,
                 identityPublicKey: identity.publicKeyHex
             ) {
+                // The system shows Reply only if the category is registered when the notification
+                // is presented; the app may not have run since this build was installed.
+                await TaskifyNotificationCategories.registerIfNeeded()
                 content.categoryIdentifier = TaskifyNotificationContract.directMessageCategoryIdentifier
                 for (key, value) in replyTarget.userInfo { userInfo[key] = value }
+            } else {
+                Self.logger.notice("Preview has no reply target; delivering it without Reply")
             }
             content.userInfo = userInfo
             finish(with: content)
         } catch {
+            let nsError = error as NSError
+            Self.logger.error(
+                "Preview failed (\(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)); delivering the generic alert"
+            )
             finish(with: nil)
         }
     }

@@ -64,39 +64,7 @@ actor TaskNotificationCoordinator {
         self.center = center
         self.defaults = defaults
         center.delegate = presentationDelegate
-        center.setNotificationCategories([Self.taskCategory, Self.directMessageCategory])
-    }
-
-    private static var taskCategory: UNNotificationCategory {
-        let complete = UNNotificationAction(
-            identifier: TaskifyNotificationContract.completeTaskActionIdentifier,
-            title: "Mark Complete",
-            options: []
-        )
-        return UNNotificationCategory(
-            identifier: TaskifyNotificationContract.taskCategoryIdentifier,
-            actions: [complete],
-            intentIdentifiers: [],
-            options: []
-        )
-    }
-
-    /// Lets a decrypted message preview be answered from the expanded notification. Without the
-    /// `.foreground` option iOS delivers the typed text to Taskify in the background.
-    private static var directMessageCategory: UNNotificationCategory {
-        let reply = UNTextInputNotificationAction(
-            identifier: TaskifyNotificationContract.replyDirectMessageActionIdentifier,
-            title: "Reply",
-            options: [],
-            textInputButtonTitle: "Send",
-            textInputPlaceholder: "Message"
-        )
-        return UNNotificationCategory(
-            identifier: TaskifyNotificationContract.directMessageCategoryIdentifier,
-            actions: [reply],
-            intentIdentifiers: [],
-            options: []
-        )
+        Task { await TaskifyNotificationCategories.registerIfNeeded(center: center) }
     }
 
     func reschedule(
