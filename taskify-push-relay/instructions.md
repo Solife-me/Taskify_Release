@@ -57,12 +57,13 @@ fetched lists, and it does not log lookup details. The Watch checks signatures a
 own routing cache. Message contents and private keys are never included in these lookups.
 
 The service stores only encrypted NIP-17 gift wraps. It never sends Apple message text, sender
-identity, payment data, group metadata, or the selected category. iPhone and Watch receive the same
-generic **New Message** alert with a background refresh opportunity, allowing Apple to select the
-best destination. Each app fetches and decrypts the inbox locally; rich previews remain deferred
-until a notification extension is shipped. Because conversation and mute metadata remains
-encrypted, the generic remote alert cannot honor per-conversation mute or category choices before
-that on-device extension runs; those choices still govern decrypted follow-up handling.
+identity, payment data, group metadata, or the selected category. iPhone and Watch receive a
+generic **New Message** alert with a background refresh opportunity. The iPhone alert also carries
+a random preview link that expires after 15 minutes: Taskify's notification extension uses it to
+fetch the encrypted message, decrypts it on the iPhone, and replaces the generic text with the
+sender and a short preview. The Watch decrypts its inbox locally. Because conversation and mute
+metadata remains encrypted, the service cannot honor block, mute, or category choices; on the
+iPhone those arrivals keep the generic alert instead of showing a preview.
 
 Task and board cache entries are also opaque signed ciphertext. The service never receives board
 secrets, board names, task text, decrypted state, or a durable account-to-board subscription map.
