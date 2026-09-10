@@ -127,6 +127,29 @@ public enum DMPushNotificationPreviewPolicy {
         return .activity(title: sender.title, subtitle: sender.subtitle, body: body)
     }
 
+    /// The conversation an inline notification reply goes to: the sender of a one-to-one rumor, or
+    /// the deterministic group ID when the rumor addresses several members. `nil` when this
+    /// account authored the rumor or is not one of its recipients.
+    public static func replyTarget(
+        for decrypted: NIP17DecryptedRumor,
+        identityPublicKey: String
+    ) -> TaskifyNotificationContract.ReplyTarget? {
+        let rumor = decrypted.rumor
+        let identity = identityPublicKey.lowercased()
+        let recipients = Set(rumor.recipientPublicKeys)
+        guard rumor.publicKey.lowercased() != identity, recipients.contains(identity) else {
+            return nil
+        }
+        if recipients.count >= 2 {
+            return NostrGroupConversation(rumor: rumor, identityPublicKey: identity).map {
+                .init(conversationID: $0.groupID, isGroup: true)
+            }
+        }
+        return NostrPublicKey.parse(rumor.publicKey).map {
+            .init(conversationID: $0.hexString, isGroup: false)
+        }
+    }
+
     public static func messagePreview(_ content: String, maximumLines: Int = 3, maximumCharacters: Int = 240) -> String {
         let lines = content
             .replacingOccurrences(of: "\r\n", with: "\n")

@@ -219,4 +219,63 @@ actor TaskifyDMPushLocalNotifier {
         )
         try? await UNUserNotificationCenter.current().add(request)
     }
+
+    func notifyReplyFailed(text: String) async {
+        let content = UNMutableNotificationContent()
+        content.title = "Reply Not Sent"
+        content.body = "Open Taskify to send it again: \(DMPushNotificationPreviewPolicy.messagePreview(text, maximumLines: 1, maximumCharacters: 120))"
+        content.sound = .default
+        content.threadIdentifier = "taskify-direct-messages"
+        content.userInfo = [
+            TaskifyNotificationContract.destinationKey:
+                TaskifyNotificationContract.Destination.chat.rawValue,
+        ]
+        let request = UNNotificationRequest(
+            identifier: "taskify.dm-push.reply-failed.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+}
+
+extension AppModel {
+    /// Sends the text typed into a message notification's Reply action through the normal durable
+    /// DM path. iOS may launch Taskify in the background just to deliver the response, so wait
+    /// briefly for the snapshot load, and keep a background task alive while the queued gift wraps
+    /// are published. A failure is reported with a local notification because no UI is visible.
+    func replyToDirectMessageFromNotification(
+        to target: TaskifyNotificationContract.ReplyTarget,
+        text: String
+    ) async {
+        let loadDeadline = Date().addingTimeInterval(15)
+        while isLoading, Date() < loadDeadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        // The first message of a new group can be answered before the push wake has ingested it.
+        // Sending to a group ID the snapshot does not know would treat the hash as a public key,
+        // so pull the inbox and give the ingest a moment first.
+        if !isLoading, target.isGroup, groupConversation(id: target.conversationID) == nil {
+            _ = await handleDMPushWake(notifyMessages: false)
+            let ingestDeadline = Date().addingTimeInterval(8)
+            while groupConversation(id: target.conversationID) == nil,
+                  Date() < ingestDeadline,
+                  !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+        do {
+            guard !isLoading,
+                  !target.isGroup || groupConversation(id: target.conversationID) != nil else {
+                throw NostrDirectMessageError.invalidGroup
+            }
+            try await sendDirectMessage(to: target.conversationID, content: text)
+            markDirectMessageThreadRead(peerPublicKey: target.conversationID)
+        } catch {
+            await TaskifyDMPushLocalNotifier.shared.notifyReplyFailed(text: text)
+        }
+        if UIApplication.shared.applicationState != .active {
+            TaskifyBackgroundSyncCoordinator.shared.startSyncHandoff()
+        }
+    }
 }

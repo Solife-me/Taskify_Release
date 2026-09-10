@@ -42,6 +42,12 @@ final class TaskifyBackgroundSyncCoordinator {
 
     func appDidEnterBackground() {
         scheduleNextRefresh()
+        startSyncHandoff()
+    }
+
+    /// Holds a background task while queued publishes are flushed. Used when Taskify moves to the
+    /// background, and when a notification action queues a message while Taskify is not active.
+    func startSyncHandoff() {
         guard let model else { return }
 
         handoffOperation?.cancel()

@@ -10,24 +10,67 @@ public enum TaskifyNotificationContract {
     public static let taskIDKey = "taskID"
     public static let boardIDKey = "boardID"
     public static let destinationKey = "taskifyDestination"
+    public static let directMessageCategoryIdentifier = "me.solife.taskify.notification.direct-message"
+    public static let replyDirectMessageActionIdentifier = "me.solife.taskify.notification.reply-direct-message"
+    /// Added by the Notification Service Extension after decryption. Like the destination, these
+    /// stay on the device and are never sent through APNs or the push relay.
+    public static let conversationIDKey = "taskifyConversationID"
+    public static let conversationKindKey = "taskifyConversationKind"
 
     public enum Destination: String, Equatable, Sendable {
         case chat
         case wallet
     }
 
-    public enum Action: Equatable, Sendable {
-        case completeTask(taskID: String)
+    /// Where an inline notification reply is sent. A group ID is a 64-character hash just like a
+    /// public key, so the kind travels with the ID instead of being guessed from its value.
+    public struct ReplyTarget: Equatable, Sendable {
+        public let conversationID: String
+        public let isGroup: Bool
+
+        public init(conversationID: String, isGroup: Bool) {
+            self.conversationID = conversationID.lowercased()
+            self.isGroup = isGroup
+        }
+
+        public var userInfo: [String: String] {
+            [
+                TaskifyNotificationContract.conversationIDKey: conversationID,
+                TaskifyNotificationContract.conversationKindKey: isGroup ? "group" : "direct",
+            ]
+        }
     }
 
+    public enum Action: Equatable, Sendable {
+        case completeTask(taskID: String)
+        case reply(to: ReplyTarget, text: String)
+    }
+
+    /// `responseText` is the text the user typed into a text-input action, when there is one.
     public static func action(
         for identifier: String,
-        userInfo: [String: String]
+        userInfo: [String: String],
+        responseText: String? = nil
     ) -> Action? {
-        guard identifier == completeTaskActionIdentifier,
-              let taskID = userInfo[taskIDKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !taskID.isEmpty else { return nil }
-        return .completeTask(taskID: taskID)
+        switch identifier {
+        case completeTaskActionIdentifier:
+            guard let taskID = userInfo[taskIDKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !taskID.isEmpty else { return nil }
+            return .completeTask(taskID: taskID)
+        case replyDirectMessageActionIdentifier:
+            guard let conversationID = userInfo[conversationIDKey]?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  (try? Data(hex: conversationID))?.count == 32,
+                  let kind = userInfo[conversationKindKey], kind == "group" || kind == "direct",
+                  let text = responseText?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else { return nil }
+            return .reply(
+                to: ReplyTarget(conversationID: conversationID, isGroup: kind == "group"),
+                text: text
+            )
+        default:
+            return nil
+        }
     }
 
     public static func destination(userInfo: [String: String]) -> Destination? {

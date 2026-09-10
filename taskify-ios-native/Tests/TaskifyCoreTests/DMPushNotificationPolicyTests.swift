@@ -166,6 +166,47 @@ final class DMPushNotificationPolicyTests: XCTestCase {
         XCTAssertNil(preview())
     }
 
+    func testReplyTargetsTheSenderOfAOneToOneMessage() throws {
+        XCTAssertEqual(
+            DMPushNotificationPreviewPolicy.replyTarget(
+                for: try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "Hello"),
+                identityPublicKey: recipient.publicKeyHex
+            ),
+            .init(conversationID: sender.publicKeyHex, isGroup: false)
+        )
+    }
+
+    func testReplyTargetsTheGroupForAMultiMemberRumor() throws {
+        let rumor = try incomingRumor(
+            kind: NIP17GiftWrap.rumorKind,
+            content: "Group hello",
+            extraTags: [["p", groupMember.publicKeyHex]]
+        )
+        let group = try XCTUnwrap(NostrGroupConversation(
+            rumor: rumor.rumor,
+            identityPublicKey: recipient.publicKeyHex
+        ))
+        XCTAssertEqual(
+            DMPushNotificationPreviewPolicy.replyTarget(
+                for: rumor,
+                identityPublicKey: recipient.publicKeyHex
+            ),
+            .init(conversationID: group.groupID, isGroup: true)
+        )
+    }
+
+    func testReplyTargetRequiresAnIncomingRumorAddressedToThisAccount() throws {
+        let rumor = try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "Hello")
+        XCTAssertNil(DMPushNotificationPreviewPolicy.replyTarget(
+            for: rumor,
+            identityPublicKey: sender.publicKeyHex
+        ))
+        XCTAssertNil(DMPushNotificationPreviewPolicy.replyTarget(
+            for: rumor,
+            identityPublicKey: groupMember.publicKeyHex
+        ))
+    }
+
     private func snapshot(contacts: [NostrContact] = []) -> TaskifySnapshot {
         var snapshot = TaskifySnapshot(boards: [], tasks: [], selectedBoardID: "")
         snapshot.contacts = contacts

@@ -57,6 +57,13 @@ final class NotificationService: UNNotificationServiceExtension {
             var userInfo = content.userInfo
             userInfo[TaskifyNotificationContract.destinationKey] =
                 TaskifyNotificationContract.Destination.chat.rawValue
+            if let replyTarget = DMPushNotificationPreviewPolicy.replyTarget(
+                for: decrypted,
+                identityPublicKey: identity.publicKeyHex
+            ) {
+                content.categoryIdentifier = TaskifyNotificationContract.directMessageCategoryIdentifier
+                for (key, value) in replyTarget.userInfo { userInfo[key] = value }
+            }
             content.userInfo = userInfo
             finish(with: content)
         } catch {

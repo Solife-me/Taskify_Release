@@ -64,7 +64,7 @@ actor TaskNotificationCoordinator {
         self.center = center
         self.defaults = defaults
         center.delegate = presentationDelegate
-        center.setNotificationCategories([Self.taskCategory])
+        center.setNotificationCategories([Self.taskCategory, Self.directMessageCategory])
     }
 
     private static var taskCategory: UNNotificationCategory {
@@ -76,6 +76,24 @@ actor TaskNotificationCoordinator {
         return UNNotificationCategory(
             identifier: TaskifyNotificationContract.taskCategoryIdentifier,
             actions: [complete],
+            intentIdentifiers: [],
+            options: []
+        )
+    }
+
+    /// Lets a decrypted message preview be answered from the expanded notification. Without the
+    /// `.foreground` option iOS delivers the typed text to Taskify in the background.
+    private static var directMessageCategory: UNNotificationCategory {
+        let reply = UNTextInputNotificationAction(
+            identifier: TaskifyNotificationContract.replyDirectMessageActionIdentifier,
+            title: "Reply",
+            options: [],
+            textInputButtonTitle: "Send",
+            textInputPlaceholder: "Message"
+        )
+        return UNNotificationCategory(
+            identifier: TaskifyNotificationContract.directMessageCategoryIdentifier,
+            actions: [reply],
             intentIdentifiers: [],
             options: []
         )
@@ -597,7 +615,8 @@ private final class NotificationPresentationDelegate: NSObject, UNUserNotificati
         }
         guard let action = TaskifyNotificationContract.action(
             for: response.actionIdentifier,
-            userInfo: userInfo
+            userInfo: userInfo,
+            responseText: (response as? UNTextInputNotificationResponse)?.userText
         ) else {
             completionHandler()
             return
@@ -665,6 +684,8 @@ final class TaskNotificationActionRouter {
         switch action {
         case .completeTask(let taskID):
             await model.completeTaskFromNotification(taskID)
+        case .reply(let target, let text):
+            await model.replyToDirectMessageFromNotification(to: target, text: text)
         }
     }
 }
