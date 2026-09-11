@@ -205,7 +205,9 @@ struct ContactsView: View {
                         if !messageSearchResults.isEmpty {
                             Section {
                                 ForEach(messageSearchResults) { result in
-                                    NavigationLink(value: result.route) {
+                                    Button {
+                                        navigationPath.append(result.route)
+                                    } label: {
                                         ChatMessageSearchResultRow(result: result)
                                     }
                                     .buttonStyle(.plain)
@@ -241,9 +243,11 @@ struct ContactsView: View {
                                 .listRowSeparator(.hidden)
                                 .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                             case .thread(let thread):
-                                NavigationLink(value: ChatConversationRoute(
-                                    peerPublicKey: thread.peerPublicKey
-                                )) {
+                                Button {
+                                    navigationPath.append(ChatConversationRoute(
+                                        peerPublicKey: thread.peerPublicKey
+                                    ))
+                                } label: {
                                     DirectMessageThreadRow(
                                         thread: thread,
                                         contact: thread.peerPublicKey == model.identityPublicKey
@@ -740,8 +744,14 @@ private struct DirectMessageThreadRow: View {
                     }
                 }
             }
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(TaskifyTheme.tertiaryText)
+                .accessibilityHidden(true)
         }
         .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .taskifyGlass(cornerRadius: 18)
         .contentShape(Rectangle())
     }
@@ -817,6 +827,7 @@ private struct ChatMessageSearchResultRow: View {
                 .padding(.top, 10)
         }
         .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .taskifyGlass(cornerRadius: 18)
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
@@ -2528,7 +2539,9 @@ private struct DirectMessageConversationView: View {
     @State private var protectsInitialScrollTarget = false
     @State private var isAddingContact = false
     @State private var confirmingConversationDeletion = false
-    @State private var botCommands: [BotCommand] = []
+    private var botCommands: [BotCommand] {
+        model.botCommands(publicKey: peerPublicKey) ?? []
+    }
     @State private var botCommandMenuHeight: CGFloat = 0
     let peerPublicKey: String
     let initialTimelineItemID: String?
@@ -2977,17 +2990,11 @@ private struct DirectMessageConversationView: View {
             }
         }
         .background(TaskifyAppBackground())
-        .task(id: peerPublicKey) {
-            // Bot commands: seed from the persisted cache instantly, then
-            // reconcile with the peer's relays in the background. 1:1 chats
-            // only — the published NIP-51 list is the bot signal.
-            guard group == nil, !isSelfConversation else {
-                botCommands = []
-                return
-            }
-            botCommands = model.botCommands(publicKey: peerPublicKey) ?? []
-            await model.refreshBotCommands(publicKey: peerPublicKey)
-            botCommands = model.botCommands(publicKey: peerPublicKey) ?? []
+        .task(id: "\(peerPublicKey):\(scenePhase == .active)") {
+            // Keep cached commands visible while revalidating on chat open and foreground.
+            // Read the observed model directly so concurrent refreshes also update the menu.
+            guard scenePhase == .active, group == nil, !isSelfConversation else { return }
+            await model.refreshBotCommands(publicKey: peerPublicKey, force: true)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             conversationHeader
@@ -3502,6 +3509,7 @@ private struct DirectMessageConversationView: View {
     /// "/name " the trailing space matches nothing).
     private var visibleBotCommands: [BotCommand]? {
         guard group == nil,
+              !isSelfConversation,
               !isSearchingConversation,
               draft.hasPrefix("/"),
               !botCommands.isEmpty else { return nil }

@@ -942,15 +942,14 @@ final class AppModel {
         return botCommandsCache.commands(for: publicKey) != nil
     }
 
-    func refreshBotCommands(publicKey: String) async {
+    func refreshBotCommands(publicKey: String, force: Bool = false) async {
         let key = publicKey.lowercased()
         guard !botCommandsInFlight.contains(key),
               let parsed = NostrPublicKey.parse(publicKey)?.hexString,
-              botCommandsCache.shouldRefresh(publicKey: parsed) else { return }
+              botCommandsCache.shouldRefresh(publicKey: parsed, force: force) else { return }
         botCommandsInFlight.insert(key)
         defer { botCommandsInFlight.remove(key) }
-        // Resolve the peer's relays like NIP-17 delivery: kind-10050
-        // inbox relays with the app relays as fallback.
+        // Public command lists may be updated on either inbox or discovery relays.
         let relays = await NIP17InboxRelayResolver.resolve(
             recipientPublicKey: parsed,
             discoveryRelayURLs: appRelays
@@ -958,7 +957,7 @@ final class AppModel {
         guard !relays.isEmpty else { return }
         guard let commands = await BotCommandFinder.commands(
             publicKey: parsed,
-            relayURLs: relays
+            relayURLs: TaskifyRelayURL.normalizedList(relays + appRelays)
         ), !commands.isEmpty else { return }
         botCommandsCache.save(commands, for: parsed)
         botCommandsVersion += 1
@@ -2692,7 +2691,11 @@ final class AppModel {
         contactPublicKey: String,
         to recipientValue: String
     ) async throws {
-        guard let contact = snapshot.contact(publicKeyValue: contactPublicKey) else {
+        let sharedPublicKey = NostrPublicKey.parse(contactPublicKey)?.hexString
+        let sharedContact = sharedPublicKey == identityPublicKey
+            ? ownContactRepresentation
+            : snapshot.contact(publicKeyValue: contactPublicKey)
+        guard let contact = sharedContact else {
             throw StructuredShareSendError.contactUnavailable
         }
         guard let recipientPublicKey = NostrPublicKey.parse(recipientValue) else {

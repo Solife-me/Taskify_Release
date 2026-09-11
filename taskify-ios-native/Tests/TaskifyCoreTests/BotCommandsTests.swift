@@ -150,6 +150,24 @@ struct BotCommandsTests {
 
     // MARK: - Cache
 
+    @Test("opening a chat revalidates persisted commands without clearing the offline list")
+    func visibleChatRefreshesPersistedCommands() throws {
+        let suiteName = "BotCommandsTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let original = [BotCommand(name: "start", description: "Begin setup")]
+        BotCommandsCache(defaults: defaults).save(original, for: identity.publicKeyHex)
+
+        let reopenedCache = BotCommandsCache(defaults: defaults)
+        #expect(!reopenedCache.shouldRefresh(publicKey: identity.publicKeyHex))
+        #expect(reopenedCache.shouldRefresh(publicKey: identity.publicKeyHex, force: true))
+        #expect(reopenedCache.commands(for: identity.publicKeyHex) == original)
+
+        let updated = [BotCommand(name: "help", description: "Show commands")]
+        reopenedCache.save(updated, for: identity.publicKeyHex)
+        #expect(BotCommandsCache(defaults: defaults).commands(for: identity.publicKeyHex) == updated)
+    }
+
     @Test("cache persists commands per peer and keys are case-insensitive")
     func cachePersistsCommands() throws {
         let suiteName = "BotCommandsTests-\(UUID().uuidString)"

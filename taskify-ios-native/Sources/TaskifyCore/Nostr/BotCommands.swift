@@ -219,8 +219,9 @@ public struct BotCommandsCache {
         entries()[publicKey.lowercased()]?.commands
     }
 
-    /// True when the peer has no cached entry or the entry is older than the refresh interval.
-    public func shouldRefresh(publicKey: String) -> Bool {
+    /// Visible chats revalidate even a fresh persisted entry; passive lookups use the TTL.
+    public func shouldRefresh(publicKey: String, force: Bool = false) -> Bool {
+        if force { return true }
         guard let entry = entries()[publicKey.lowercased()] else { return true }
         return Date().timeIntervalSince(entry.fetchedAt) > Self.refreshInterval
     }
