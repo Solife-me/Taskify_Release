@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
+import { inboxReadRelays, recoverRelayHistory } from "taskify-runtime-nostr";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { NostrSession } from "../../nostr/NostrSession";
 import { isImageMime, isVideoMime, isAudioMime } from "../../lib/messengerAttachmentCrypto";
@@ -51,10 +52,10 @@ export function useDmSubscription({
   ensureNostrIdentity,
   defaultNostrRelays,
   handlePaymentRequestEventRef,
-  DM_SYNC_LOOKBACK_SECONDS,
   persistDmPeerProfileCache,
   contactDisplayLabel,
 }) {
+  const syncGenerationRef = useRef(0);
   const ensurePeerProfile = useCallback(
     async (pubkey: string) => {
       const normalized = normalizeNostrPubkey(pubkey);
@@ -185,7 +186,7 @@ export function useDmSubscription({
   );
 
   const handleDmEvent = useCallback(
-    async (event: NostrEvent) => {
+    async (event: NostrEvent, options: { syncOnly?: boolean } = {}) => {
       if (!event?.id) return;
       if (dmProcessedEventsRef.current.has(event.id)) return;
       if (dmDeletedEventsRef.current.has(event.id)) {
@@ -207,10 +208,8 @@ export function useDmSubscription({
       const identity = ensureNostrIdentity();
       if (!identity) return;
       const decrypted = await decryptNostrPaymentMessage(event, identity.pubkey, identity.secret);
-      if (!decrypted) {
-        dmProcessedEventsRef.current.add(event.id);
-        return;
-      }
+      if (!decrypted) return;
+      if (ensureNostrIdentity()?.pubkey !== identity.pubkey) return;
       const tempDeletedRumorExpiresAt = decrypted.rumorId
         ? dmTempDeletedEventsRef.current.get(decrypted.rumorId) ?? 0
         : 0;
@@ -413,7 +412,7 @@ export function useDmSubscription({
       const normalizedIdentity = normalizeNostrPubkey(identity.pubkey) ?? identity.pubkey;
       const isIncoming =
         normalizedSender != null ? normalizedSender !== normalizedIdentity : event.pubkey !== identity.pubkey;
-      if (isIncoming && attachment?.type === "payment") {
+      if (!options.syncOnly && isIncoming && attachment?.type === "payment") {
         const handler = handlePaymentRequestEventRef.current;
         if (handler) {
           void handler(event, { updateClock: true });
@@ -487,7 +486,7 @@ export function useDmSubscription({
 
       dmProcessedEventsRef.current.add(event.id);
       setDmMessages((prev) => {
-        const existingIndex = prev.findIndex((m) => m.eventId === event.id);
+        const existingIndex = prev.findIndex((m) => m.eventId === event.id || (decrypted.rumorId && m.rumorEventId === decrypted.rumorId));
         const next =
           existingIndex >= 0
             ? prev.map((entry, index) =>
@@ -495,7 +494,6 @@ export function useDmSubscription({
               )
             : [...prev, message];
         next.sort((a, b) => a.createdAt - b.createdAt);
-        if (next.length > 400) next.shift();
         return next;
       });
     },
@@ -515,48 +513,63 @@ export function useDmSubscription({
     stopDmSubscription();
     const identity = ensureNostrIdentity();
     if (!identity) return;
-    const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
-    if (!relays.length) return;
-    const now = Math.floor(Date.now() / 1000);
-    const lastCompletedSyncAt = Math.floor(dmLastSyncRef.current / 1000);
-    // NIP-17 giftwraps use random past timestamps (up to 2 days back per spec).
-    // Look back 3 days before last sync to ensure all events with jittered timestamps are caught.
-    const incrementalSince = lastCompletedSyncAt > 0 ? Math.max(0, lastCompletedSyncAt - 3 * 24 * 60 * 60) : 0;
-    const since = incrementalSince > 0 ? incrementalSince : Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
+    const generation = ++syncGenerationRef.current;
+    const controller = new AbortController();
+    const releases: Array<() => void> = [];
+    dmSubscriptionCloseRef.current = () => {
+      controller.abort();
+      releases.forEach(release => release());
+    };
+    const isCurrent = () => !controller.signal.aborted && syncGenerationRef.current === generation
+      && ensureNostrIdentity()?.pubkey === identity.pubkey;
+    const fallback = defaultNostrRelays.map(url => typeof url === "string" ? url.trim() : "").filter(Boolean);
+    if (!fallback.length) return;
+    let queue = Promise.resolve();
+    const apply = (event: NostrEvent) => {
+      const next = queue.then(async () => { if (isCurrent()) await handleDmEvent(event, { syncOnly: true }); });
+      queue = next.catch(() => {});
+      return next;
+    };
     try {
-      const session = await NostrSession.init(relays);
+      const session = await NostrSession.init(fallback);
+      let preferences: NostrEvent[] = [];
+      try { preferences = await session.fetchEvents([{ kinds: [10050], authors: [identity.pubkey] }], fallback); }
+      catch { /* Historical default relays remain usable when discovery fails. */ }
+      if (!isCurrent()) return;
+      const relays = inboxReadRelays(preferences, identity.pubkey, fallback);
       const filters = [
-        { kinds: [4, 1059], "#p": [identity.pubkey], since },
-        { kinds: [4, 1059], authors: [identity.pubkey], since },
+        { kinds: [4, 1059], "#p": [identity.pubkey], since: 0 },
+        // Gift wraps use ephemeral authors; NIP-17 sent history is in self-addressed copies.
+        { kinds: [4], authors: [identity.pubkey], since: 0 },
       ];
       const managed = await session.subscribe(filters, {
-        relayUrls: relays,
-        onEvent: (ev) => {
-          void handleDmEvent(ev as NostrEvent);
-        },
+        relayUrls: relays, skipSince: true,
+        onEvent: event => { void apply(event).catch(error => console.warn("Failed to apply DM", error)); },
       });
-      dmSubscriptionCloseRef.current = () => {
-        try {
-          managed.release();
-        } catch {
-          // ignore
+      if (!isCurrent()) { managed.release(); return; }
+      releases.push(managed.release);
+      let complete = true;
+      for (const relay of relays) {
+        for (const filter of filters) {
+          if (!isCurrent()) return;
+          try {
+            await recoverRelayHistory(session, filter, relay, apply, { signal: controller.signal });
+          } catch (error) {
+            complete = false;
+            if (isCurrent()) console.warn("DM history recovery incomplete", error);
+          }
         }
-      };
-
-      const history = await session.fetchEvents(filters, relays);
-      const ordered = history
-        .filter((ev) => ev && (ev.kind === 4 || ev.kind === 1059))
-        .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-      for (const ev of ordered) {
-        await handleDmEvent(ev as NostrEvent);
       }
-      const completedAt = Date.now();
-      dmLastSyncRef.current = completedAt;
-      persistDmSyncMeta({ lastCompletedSyncAt: completedAt });
+      await queue;
+      if (complete && isCurrent()) {
+        const completedAt = Date.now();
+        dmLastSyncRef.current = completedAt;
+        persistDmSyncMeta({ lastCompletedSyncAt: completedAt });
+      }
     } catch (err) {
-      console.warn("Failed to sync DMs", err);
+      if (isCurrent()) console.warn("Failed to sync DMs", err);
     }
-  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, persistDmSyncMeta, stopDmSubscription]);
+  }, [defaultNostrRelays, ensureNostrIdentity, handleDmEvent, persistDmSyncMeta, stopDmSubscription]);
 
   return {
     ensurePeerProfile,

@@ -170,6 +170,7 @@ npx wrangler dev
 
 | Test File | Domain | What It Covers |
 |---|---|---|
+| `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/pwa-client-history-sync-2026-09-11.md` |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
