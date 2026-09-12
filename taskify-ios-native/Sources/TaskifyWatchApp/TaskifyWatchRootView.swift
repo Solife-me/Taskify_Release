@@ -353,7 +353,7 @@ private struct TaskifyWatchQuickAddSheet: View {
                             .padding(.vertical, 8)
                         } else if let voicePreview {
                             ForEach(voicePreview.tasks) { task in
-                                TaskifyWatchVoiceDraftRow(task: task)
+                                TaskifyWatchVoiceDraftRow(task: task, defaultBoardID: effectiveBoardID)
                             }
                         } else if let dictationError {
                             Label(dictationError, systemImage: "exclamationmark.triangle.fill")
@@ -483,70 +483,56 @@ private struct QuickAddChoiceLabel: View {
 private struct TaskifyWatchVoiceDraftRow: View {
     @Environment(TaskifyWatchAppModel.self) private var model
     let task: TaskifyWatchVoiceDraft
+    let defaultBoardID: String?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(model.taskifyAccentColor)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(task.title)
-                    .font(.body.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                if let dueDate {
-                    Label(
-                        dueDate.formatted(.dateTime.month(.abbreviated).day().hour().minute()),
-                        systemImage: "calendar"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        if let fallback = model.snapshot.boards.first(where: { $0.id == defaultBoardID }) {
+            let board = task.destinationBoard(in: model.snapshot.boards, fallback: fallback)
+            TaskifyWatchTaskCard(task: task.taskPreview(board: board))
+        }
+    }
+}
+
+private struct TaskifyWatchTaskCard: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
+    let task: TaskifyWatchTask
+    var onComplete: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            if let onComplete {
+                Button(action: onComplete) { completionIcon }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Complete \(task.title)")
+            } else {
+                completionIcon.accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(task.title).font(.body.weight(.semibold))
+                HStack(spacing: 4) {
+                    Text(task.boardName)
+                    if let columnName = task.columnName { Text("·"); Text(columnName) }
                 }
-                if let recurrenceText = recurrenceText {
-                    Label("Repeats \(recurrenceText)", systemImage: "repeat")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                if let notes = task.notes, !notes.isEmpty {
-                    Label(notes, systemImage: "note.text")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                if let subtasks = task.subtasks, !subtasks.isEmpty {
-                    Label(
-                        "\(subtasks.count) subtask\(subtasks.count == 1 ? "" : "s")",
-                        systemImage: "checklist"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .font(.caption2).foregroundStyle(.secondary)
+                if let dueDate = task.dueDate {
+                    Label {
+                        if task.dueTimeEnabled {
+                            Text(dueDate, format: .dateTime.month(.abbreviated).day().hour().minute())
+                        } else {
+                            Text(dueDate, format: .dateTime.month(.abbreviated).day())
+                        }
+                    } icon: { Image(systemName: "calendar") }
+                    .font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
         .padding(.vertical, 2)
     }
 
-    private var recurrenceText: String? {
-        guard let recurrence = task.recurrence, recurrence != .none else { return nil }
-        switch recurrence {
-        case .none: return nil
-        case .daily: return "daily"
-        case .weekly(let days) where days.count == 7: return "daily"
-        case .weekly(let days) where days == [1, 2, 3, 4, 5]: return "weekdays"
-        case .weekly(let days):
-            let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-            return days.sorted().compactMap { names.indices.contains($0) ? names[$0] : nil }
-                .joined(separator: ", ")
-        case .every(let count, let unit):
-            return "every \(count) \(unit)\(count == 1 ? "" : "s")"
-        case .monthlyDay(let day, let interval):
-            return interval == nil || interval == 1 ? "monthly on the \(day)" : "every \(interval ?? 1) months on the \(day)"
-        }
-    }
-
-    private var dueDate: Date? {
-        guard let dueISO = task.dueISO else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: dueISO) ?? ISO8601DateFormatter().date(from: dueISO)
+    private var completionIcon: some View {
+        Image(systemName: "circle").font(.title3)
+            .foregroundStyle(model.taskifyAccentColor)
+            .frame(width: 40, height: 40).contentShape(Circle())
     }
 }
 
@@ -608,51 +594,10 @@ private struct TaskifyWatchTaskList: View {
                 )
             } else {
                 ForEach(tasks) { task in
-                    HStack(alignment: .top, spacing: 9) {
-                        Button {
-                            WKInterfaceDevice.current().play(.success)
-                            withAnimation(.snappy(duration: 0.2)) {
-                                model.completeTask(task.id)
-                            }
-                        } label: {
-                            Image(systemName: "circle")
-                                .font(.title3)
-                                .foregroundStyle(model.taskifyAccentColor)
-                                .frame(width: 40, height: 40)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Complete \(task.title)")
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(task.title)
-                                .font(.body.weight(.semibold))
-                            HStack(spacing: 4) {
-                                Text(task.boardName)
-                                if let columnName = task.columnName {
-                                    Text("·")
-                                    Text(columnName)
-                                }
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                            if let dueDate = task.dueDate {
-                                Label {
-                                    if task.dueTimeEnabled {
-                                        Text(dueDate, format: .dateTime.month(.abbreviated).day().hour().minute())
-                                    } else {
-                                        Text(dueDate, format: .dateTime.month(.abbreviated).day())
-                                    }
-                                } icon: {
-                                    Image(systemName: "calendar")
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            }
-                        }
+                    TaskifyWatchTaskCard(task: task) {
+                        WKInterfaceDevice.current().play(.success)
+                        withAnimation(.snappy(duration: 0.2)) { model.completeTask(task.id) }
                     }
-                    .padding(.vertical, 2)
                 }
             }
         }

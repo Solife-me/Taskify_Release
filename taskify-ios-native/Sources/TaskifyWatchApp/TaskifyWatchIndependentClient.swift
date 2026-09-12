@@ -305,6 +305,8 @@ struct TaskifyWatchIndependentClient: Sendable {
         privateKey: Data
     ) async throws -> TaskifyWatchVoicePreview {
         let requestID = UUID().uuidString
+        let referenceDate = Date()
+        let referenceTimeZone = TimeZone.current
         let candidateTasks = try await extractVoice(
             transcript: transcript,
             profile: profile,
@@ -315,7 +317,9 @@ struct TaskifyWatchIndependentClient: Sendable {
             boardID: boardID,
             boards: boards,
             profile: profile,
-            privateKey: privateKey
+            privateKey: privateKey,
+            now: referenceDate,
+            timeZone: referenceTimeZone
         )
         let final = tasks.isEmpty
             ? [VoiceFinalWire(title: transcript, dueISO: nil, notes: nil, subtasks: nil, priority: nil)]
@@ -393,7 +397,9 @@ struct TaskifyWatchIndependentClient: Sendable {
         boardID: String,
         boards: [TaskifyWatchVoiceBoardContext],
         profile: TaskifyWatchIndependentProfile,
-        privateKey: Data
+        privateKey: Data,
+        now: Date,
+        timeZone: TimeZone
     ) async -> [VoiceFinalWire] {
         struct Body: Encodable {
             let npub: String
@@ -405,8 +411,6 @@ struct TaskifyWatchIndependentClient: Sendable {
             let referenceOffsetMinutes: Int
         }
         struct Reply: Decodable { let tasks: [VoiceFinalWire]? }
-        let now = Date()
-        let timeZone = TimeZone.current
         let body = Body(
             npub: profile.publicKeyNpub,
             candidates: candidates,
@@ -444,7 +448,9 @@ struct TaskifyWatchIndependentClient: Sendable {
             publicKeyHex: profile.publicKeyHex,
             body: data
         )
-        var request = URLRequest(url: fallbackBaseURL.appendingPathComponent(path), timeoutInterval: 15)
+        // Voice can try several providers; allow the Worker's bounded fallback chain to finish.
+        let timeout: TimeInterval = path.hasPrefix("api/voice/") ? 60 : 15
+        var request = URLRequest(url: fallbackBaseURL.appendingPathComponent(path), timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.httpBody = data
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -275,6 +275,20 @@ final class VoiceSessionTests: XCTestCase {
 }
 
 final class VoiceDictationClientParsingTests: XCTestCase {
+    func testNetworkErrorsExplainTimeoutAndRetainedTranscript() {
+        let timeout = VoiceDictationClient.message(for: URLError(.timedOut))
+        XCTAssertTrue(timeout.contains("too long"))
+        XCTAssertTrue(timeout.contains("Retry"))
+        XCTAssertFalse(timeout.contains("Check your connection"))
+        let offline = VoiceDictationClient.message(for: URLError(.notConnectedToInternet))
+        XCTAssertTrue(offline.contains("reconnect"))
+        XCTAssertTrue(offline.contains("transcript"))
+        XCTAssertEqual(
+            VoiceDictationClient.message(for: VoiceDictationError.unavailable(status: 503)),
+            VoiceDictationError.unavailable(status: 503).errorDescription
+        )
+    }
+
     func testParseOperationsDecodesEachOperationKind() {
         let json = """
         {"operations":[

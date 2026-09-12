@@ -18,10 +18,19 @@ struct VoiceDictationSheet: View {
     @State private var didExtractForCurrentSpeech = false
     @State private var listeningStartedAt = Date()
     @State private var isSaving = false
+    @State private var canRetryExtraction = false
+    @State private var extractionDurationSeconds: Int?
+
+    @State private var approvals: [VoiceTaskApproval] = []
+    @State private var selectedApprovalIDs: Set<String> = []
+    @State private var pendingCandidates: [VoiceTaskCandidate]?
+    @State private var referenceDate = Date()
+    @State private var defaultBoardID: String?
+    @State private var didAutoStart = false
 
     private let client = VoiceDictationClient()
 
-    private var confirmedCount: Int { session.confirmedCandidates.count }
+    private var confirmedCount: Int { approvals.filter { selectedApprovalIDs.contains($0.id) }.count }
 
     private var saveLabel: String {
         switch confirmedCount {
@@ -58,7 +67,11 @@ struct VoiceDictationSheet: View {
         .interactiveDismissDisabled(recognizer.isListening || isSaving)
         .task {
             wireRecognizer()
+            defaultBoardID = model.selectedBoardID
             await recognizer.requestAuthorization()
+            guard !Task.isCancelled, !didAutoStart else { return }
+            didAutoStart = true
+            if recognizer.isAvailable { toggleListening() }
         }
         .onDisappear {
             recognizer.stop()
@@ -124,95 +137,39 @@ struct VoiceDictationSheet: View {
 
     @ViewBuilder
     private var candidateList: some View {
-        let visible = session.visibleCandidates
-        if !visible.isEmpty {
+        if session.isProcessing {
+            ProgressView().controlSize(.large).tint(TaskifyTheme.accent)
+                .frame(maxWidth: .infinity).padding(.top, 24)
+        } else if !approvals.isEmpty {
             ScrollView {
                 VStack(spacing: 10) {
-                    ForEach(visible) { candidate in
-                        candidateCard(candidate)
+                    ForEach(approvals) { approval in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Button {
+                                    if !selectedApprovalIDs.insert(approval.id).inserted {
+                                        selectedApprovalIDs.remove(approval.id)
+                                    }
+                                } label: {
+                                    Label(selectedApprovalIDs.contains(approval.id) ? "Include task" : "Exclude task",
+                                          systemImage: selectedApprovalIDs.contains(approval.id) ? "checkmark.circle.fill" : "circle")
+                                }
+                                .buttonStyle(.plain)
+                                Spacer()
+                                if let board = model.board(withID: approval.task.boardID) {
+                                    Text(board.name).foregroundStyle(TaskifyTheme.secondaryText)
+                                }
+                            }
+                            .font(.caption)
+                            // The actual board card, populated by the same creation routine as Save.
+                            TaskCardView(task: approval.task)
+                                .allowsHitTesting(false)
+                        }
+                        .opacity(selectedApprovalIDs.contains(approval.id) ? 1 : 0.55)
                     }
                 }
             }
-        } else if session.isProcessing {
-            ProgressView()
-                .controlSize(.large)
-                .tint(TaskifyTheme.accent)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 24)
         }
-    }
-
-    /// Resolves a model-routed board id for display; only shown when it differs
-    /// from the board the sheet was opened on.
-    private func boardName(for boardId: String?) -> String? {
-        guard let boardId, boardId != model.selectedBoardID,
-              let board = model.board(withID: boardId) else { return nil }
-        return board.name
-    }
-
-    private func candidateCard(_ candidate: VoiceTaskCandidate) -> some View {
-        let isConfirmed = candidate.status == .confirmed
-
-        return HStack(alignment: .top, spacing: 12) {
-            Button {
-                toggle(candidate)
-            } label: {
-                Image(systemName: isConfirmed ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isConfirmed ? TaskifyTheme.accent : TaskifyTheme.tertiaryText)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isConfirmed ? "Deselect \(candidate.title)" : "Select \(candidate.title)")
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(candidate.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                if let dueText = candidate.dueText, !dueText.isEmpty {
-                    Label(dueText, systemImage: "calendar")
-                        .font(.caption)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                }
-                if let recurrenceText = candidate.recurrenceText, !recurrenceText.isEmpty {
-                    Label("Repeats \(recurrenceText)", systemImage: "repeat")
-                        .font(.caption)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                }
-                if let notes = candidate.notes, !notes.isEmpty {
-                    Label(notes, systemImage: "note.text")
-                        .font(.caption)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                        .lineLimit(2)
-                }
-                if let boardName = boardName(for: candidate.boardId) {
-                    Label("Board: \(boardName)", systemImage: "square.grid.2x2")
-                        .font(.caption)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                }
-                if let subtasks = candidate.subtasks, !subtasks.isEmpty {
-                    ForEach(Array(subtasks.enumerated()), id: \.offset) { _, subtask in
-                        Label(subtask, systemImage: "circle.fill")
-                            .font(.caption2)
-                            .labelStyle(SubtaskBulletLabelStyle())
-                            .foregroundStyle(TaskifyTheme.secondaryText)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button {
-                dismissCandidate(candidate)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(TaskifyTheme.tertiaryText)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(candidate.title)")
-        }
-        .padding(16)
-        .taskifyGlass(cornerRadius: 20)
-        .opacity(isConfirmed ? 1 : 0.55)
     }
 
     private var footer: some View {
@@ -222,6 +179,13 @@ struct VoiceDictationSheet: View {
                     .font(.caption)
                     .foregroundStyle(TaskifyTheme.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if canRetryExtraction && !recognizer.isListening && !session.isProcessing {
+                Button("Retry finding tasks") {
+                    Task { await extractIfNeeded() }
+                }
+                .accessibilityIdentifier("voice.retryExtraction")
             }
 
             HStack(spacing: 14) {
@@ -239,7 +203,7 @@ struct VoiceDictationSheet: View {
                         .symbolEffect(.pulse, isActive: recognizer.isListening)
                 }
                 .buttonStyle(.plain)
-                .disabled(!recognizer.isAvailable || isSaving)
+                .disabled(!recognizer.isAvailable || isSaving || session.isProcessing)
                 .accessibilityLabel(recognizer.isListening ? "Stop recording" : "Start recording")
 
                 if recognizer.isListening {
@@ -293,20 +257,14 @@ struct VoiceDictationSheet: View {
             statusMessage = nil
             session.quotaExhausted = false
             didExtractForCurrentSpeech = false
+            canRetryExtraction = false
+            pendingCandidates = nil
+            approvals = []
+            selectedApprovalIDs = []
+            if session.combinedTranscript().isEmpty { referenceDate = Date() }
+            extractionDurationSeconds = nil
             listeningStartedAt = Date()
             recognizer.start()
-        }
-    }
-
-    private func toggle(_ candidate: VoiceTaskCandidate) {
-        guard let index = session.candidates.firstIndex(where: { $0.id == candidate.id }) else { return }
-        session.candidates[index].status = candidate.status == .confirmed ? .draft : .confirmed
-    }
-
-    private func dismissCandidate(_ candidate: VoiceTaskCandidate) {
-        guard let index = session.candidates.firstIndex(where: { $0.id == candidate.id }) else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
-            session.candidates[index].status = .dismissed
         }
     }
 
@@ -323,49 +281,60 @@ struct VoiceDictationSheet: View {
         }
 
         didExtractForCurrentSpeech = true
+        canRetryExtraction = false
+        statusMessage = nil
+        if extractionDurationSeconds == nil {
+            extractionDurationSeconds = max(0, Int(Date().timeIntervalSince(listeningStartedAt).rounded()))
+        }
         session.isProcessing = true
         defer { session.isProcessing = false }
 
         do {
-            let result = try await client.extract(
-                identity: identity,
-                transcript: transcript,
-                candidates: session.candidates,
-                sessionDurationSeconds: Int(Date().timeIntervalSince(listeningStartedAt).rounded())
-            )
-            session.quotaExhausted = result.quotaExhausted
-            session.apply(result.operations)
-
-            if session.visibleCandidates.isEmpty && !result.quotaExhausted {
-                statusMessage = "Couldn't find any tasks in that. Try again with something like \"remind me to call Ana tomorrow\"."
+            let candidates: [VoiceTaskCandidate]
+            if let pendingCandidates {
+                candidates = pendingCandidates
             } else {
-                statusMessage = nil
+                let result = try await client.extract(
+                    identity: identity, transcript: transcript, candidates: session.candidates,
+                    sessionDurationSeconds: extractionDurationSeconds ?? 0
+                )
+                session.quotaExhausted = result.quotaExhausted
+                // Extraction describes the full transcript, so rebuild rather than duplicating earlier tasks.
+                session.candidates = []
+                session.apply(result.operations)
+                candidates = session.confirmedCandidates
+                pendingCandidates = candidates
             }
+            guard !candidates.isEmpty else {
+                statusMessage = session.quotaExhausted ? nil : "Couldn't find any tasks. Try recording a little more detail."
+                return
+            }
+            let finalTasks = try await client.finalizeForPreview(
+                identity: identity, candidates: candidates, boardID: defaultBoardID,
+                boards: model.voiceBoardContexts(), now: referenceDate
+            )
+            approvals = finalTasks.compactMap { finalTask in
+                guard let task = model.previewVoiceTasks([finalTask], defaultBoardID: defaultBoardID, referenceDate: referenceDate).first else { return nil }
+                return VoiceTaskApproval(id: task.id, finalTask: finalTask, task: task)
+            }
+            selectedApprovalIDs = Set(approvals.map(\.id))
+            statusMessage = approvals.count == finalTasks.count ? nil : "Some tasks couldn't be placed on an available board."
         } catch {
             // Let the user retry rather than losing the transcript they just dictated.
             didExtractForCurrentSpeech = false
+            canRetryExtraction = true
             statusMessage = VoiceDictationClient.message(for: error)
         }
     }
 
     private func save() async {
-        let confirmed = session.confirmedCandidates
+        let confirmed = approvals.filter { selectedApprovalIDs.contains($0.id) }
         guard !confirmed.isEmpty else { return }
-
         isSaving = true
         defer { isSaving = false }
-
-        guard let identity = try? KeychainIdentityStore().load() else {
-            statusMessage = "Set up your Taskify identity in Settings before using voice."
-            return
-        }
-        let finalTasks = await client.finalize(
-            identity: identity,
-            candidates: confirmed,
-            boardID: model.selectedBoardID,
-            boards: model.voiceBoardContexts()
+        let created = model.addTasksFromVoice(
+            confirmed.map(\.finalTask), defaultBoardID: defaultBoardID, referenceDate: referenceDate
         )
-        let created = model.addTasksFromVoice(finalTasks)
 
         guard created > 0 else {
             statusMessage = "Couldn't add those to this board. Try a week or list board."
@@ -376,22 +345,9 @@ struct VoiceDictationSheet: View {
     }
 }
 
-/// Small filled dot instead of SF Symbols' default sizing, so subtask bullets stay visually quiet.
-private struct SubtaskBulletLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 6) {
-            configuration.icon
-                .font(.system(size: 4))
-            configuration.title
-        }
-    }
-}
-
-extension VoiceDictationClient {
-    static func message(for error: Error) -> String {
-        if let voiceError = error as? VoiceDictationError, let description = voiceError.errorDescription {
-            return description
-        }
-        return "Couldn't reach Taskify to find tasks. Check your connection and try again."
-    }
+/// Cached finalized values are both rendered for approval and submitted unchanged.
+private struct VoiceTaskApproval: Identifiable {
+    let id: String
+    let finalTask: VoiceFinalTask
+    let task: TaskItem
 }

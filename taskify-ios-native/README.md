@@ -27,6 +27,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Independently selectable Apple Reminders integration in both Upcoming views with due-day dots, dated list sections, list colors, priority/notes display, search, and completion writes back to Apple Reminders
 - Per-item local alerts for Apple Calendar events and Apple Reminders, with persisted lead-time selections that survive calendar navigation and omit deleted events or completed reminders
 - Voice task creation with notes, recurrence, multiple reminders, and named board/list routing on iPhone and Watch, including independent Watch saves
+- iPhone voice capture starts when the sheet opens after permission is granted. Approval uses the same cards and task-building code as saved tasks, with final dates resolved before review; saving uses those cached values. Failed extraction/finalization can be retried without recording again.
 - PWA-familiar Add Board flow directly from the board selector, with weekly/list/compound creation, paste-or-scan joining, selection, synced rename, local archive/restore, and guarded deletion with task and compound-reference cleanup
 - Native compound-board creation and management with ordered child list boards, aggregated task columns, optional child-board labels, and PWA-compatible linked-board sync
 - Atomic JSON persistence in Application Support
