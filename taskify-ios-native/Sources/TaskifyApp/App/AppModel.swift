@@ -1353,7 +1353,10 @@ final class AppModel {
     /// Creates the tasks a dictation session produced, resolving each one onto the same board the
     /// quick-add bar would use. Tasks the model dated land on that date (so a week board files them
     /// under the right weekday); undated ones fall back to today, since every week-board task needs
-    /// a column to live in.
+    /// a column to live in. When the finalizer routed a task to a named board or list (the client
+    /// supplies board context at finalize time), that placement wins as long as it resolves to a
+    /// visible week/list board; notes, priority, recurrence, reminders, and due-time detection all
+    /// carry through, matching what the task editor supports.
     ///
     /// Returns how many were actually created -- the caller reports this back to the user, and a
     /// partial result is possible when a board rejects a task (for example a list board with no
@@ -1373,13 +1376,13 @@ final class AppModel {
         taskIDPrefix: String? = nil
     ) -> Int {
         guard let requestedBoard = defaultBoardID.flatMap({ board(withID: $0) }) else { return 0 }
-        let board: Board
+        let defaultBoard: Board
         switch requestedBoard.kind {
         case .week, .list:
-            board = requestedBoard
+            defaultBoard = requestedBoard
         case .compound:
             guard let child = snapshot.compoundChildBoards(for: requestedBoard.id).first else { return 0 }
-            board = child
+            defaultBoard = child
         case .bible:
             return 0
         }
@@ -1403,14 +1406,42 @@ final class AppModel {
             let dueDate = voiceTask.dueISO.flatMap { raw in
                 isoFormatter.date(from: raw) ?? plainISOFormatter.date(from: raw)
             }
+            // The Worker emits "YYYY-MM-DD" for a spoken date with no clock time and
+            // a full ISO datetime otherwise, so the string shape tells us whether the
+            // user explicitly gave a time.
+            let hasExplicitTime = dueDate != nil
+                && !(voiceTask.dueISO?.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) != nil)
             let effectiveDate = dueDate ?? Date()
+
+            // Model-routed placement wins when it resolves to a usable board;
+            // otherwise the task lands on the session's default board.
+            let routedBoard = voiceTask.boardId.flatMap { board(withID: $0) }
+            let board: Board
+            if let routed = routedBoard {
+                switch routed.kind {
+                case .week, .list:
+                    board = routed
+                case .compound:
+                    board = snapshot.compoundChildBoards(for: routed.id).first ?? defaultBoard
+                case .bible:
+                    board = defaultBoard
+                }
+            } else {
+                board = defaultBoard
+            }
 
             let columnID: String?
             switch board.kind {
             case .week:
                 columnID = WeekdayColumn.containing(effectiveDate).rawValue
             case .list:
-                columnID = board.columns.sorted { $0.order < $1.order }.first?.id
+                let orderedColumns = board.columns.sorted { $0.order < $1.order }
+                if let requestedColumn = voiceTask.columnId,
+                   orderedColumns.contains(where: { $0.id == requestedColumn }) {
+                    columnID = requestedColumn
+                } else {
+                    columnID = orderedColumns.first?.id
+                }
             case .compound, .bible:
                 columnID = nil
             }
@@ -1432,23 +1463,29 @@ final class AppModel {
             let subtasks = (voiceTask.subtasks ?? [])
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-            if !subtasks.isEmpty {
-                snapshot.updateTask(
-                    taskID: task.id,
-                    title: task.title,
-                    note: task.note,
-                    dueDate: task.dueDate,
-                    dueDateEnabled: task.dueDate != nil,
-                    dueTimeEnabled: task.dueTimeEnabled,
-                    dueTimeZone: task.dueTimeZone,
-                    priority: task.priority,
-                    columnID: task.columnID,
-                    subtasks: subtasks.map { TaskSubtask(title: $0) },
-                    editorPublicKey: identityPublicKey.nilIfEmpty,
-                    calendar: weekCalendar,
-                    weekStartsOn: weekStart
-                )
-            }
+            let reminders = Self.voiceReminders(
+                minutes: voiceTask.reminderMinutesBeforeDue,
+                dateOnly: !hasExplicitTime
+            )
+            let recurrence = voiceTask.recurrence?.taskRecurrence
+            snapshot.updateTask(
+                taskID: task.id,
+                title: task.title,
+                note: task.note,
+                dueDate: task.dueDate,
+                dueDateEnabled: task.dueDate != nil,
+                dueTimeEnabled: hasExplicitTime,
+                dueTimeZone: hasExplicitTime ? TimeZone.current.identifier : nil,
+                priority: task.priority,
+                columnID: task.columnID,
+                subtasks: subtasks.map { TaskSubtask(title: $0) },
+                recurrence: recurrence,
+                reminders: reminders,
+                reminderTime: hasExplicitTime ? nil : voiceTask.reminderTime,
+                editorPublicKey: identityPublicKey.nilIfEmpty,
+                calendar: weekCalendar,
+                weekStartsOn: weekStart
+            )
 
             createdTaskIDs.append(task.id)
             created += 1
@@ -1459,6 +1496,41 @@ final class AppModel {
             refreshNotifications(requestPermission: false)
         }
         return created
+    }
+
+    /// Maps Worker reminder offsets (minutes before due) to the app's reminder
+    /// presets, deduplicating while preserving the order the user spoke them.
+    static func voiceReminders(minutes: [Int]?, dateOnly: Bool) -> [TaskReminder] {
+        guard let minutes, !minutes.isEmpty else { return [] }
+        var seen = Set<String>()
+        var reminders: [TaskReminder] = []
+        for value in minutes where value >= 0 {
+            let reminder = TaskReminder(minutesBefore: value, dateOnly: dateOnly)
+            if seen.insert(reminder.rawValue).inserted {
+                reminders.append(reminder)
+            }
+        }
+        return reminders
+    }
+
+    /// Board/list context for the voice finalizer: visible week and list boards
+    /// with their columns, so the model can route spoken tasks to a named board
+    /// ("add this to my Errands board") exactly like the PWA does.
+    func voiceBoardContexts() -> [VoiceBoardContext] {
+        snapshot.boards
+            .filter { $0.isVisible && ($0.kind == .week || $0.kind == .list) }
+            .map { board in
+                VoiceBoardContext(
+                    id: board.id,
+                    name: board.name,
+                    kind: board.kind == .week ? "week" : "lists",
+                    columns: board.kind == .list && !board.columns.isEmpty
+                        ? board.columns
+                            .sorted { $0.order < $1.order }
+                            .map { VoiceBoardContext.Column(id: $0.id, name: $0.name) }
+                        : nil
+                )
+            }
     }
 
     @discardableResult

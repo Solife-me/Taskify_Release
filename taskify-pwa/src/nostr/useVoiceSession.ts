@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useReducer } from "react";
 import { signTaskifyRequestHeaders } from "../lib/taskifyRequestAuth";
+import type { Recurrence } from "../domains/tasks/taskTypes";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared types (mirrored from worker)
@@ -18,6 +19,8 @@ export type TaskCandidate = {
   title: string;
   dueText?: string;
   reminderText?: string;
+  notes?: string;
+  recurrenceText?: string;
   boardId?: string;
   subtasks?: string[];
   status: "draft" | "confirmed" | "dismissed";
@@ -28,20 +31,34 @@ export type TaskOperation = {
   title?: string;
   dueText?: string;
   reminderText?: string;
+  notes?: string;
+  recurrenceText?: string;
   subtasks?: string[];
   targetRef?: string;
-  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "reminderText" | "boardId" | "subtasks">>;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "reminderText" | "boardId" | "subtasks" | "notes" | "recurrenceText">>;
 };
 
 export type FinalTask = {
   title: string;
   dueISO?: string;
   boardId?: string;
+  columnId?: string;
   notes?: string;
   subtasks?: string[];
   priority?: 1 | 2 | 3;
   reminderMinutesBeforeDue?: number[];
   reminderTime?: string;
+  recurrence?: Recurrence;
+};
+
+// Board context sent to /api/voice/finalize so the model can route tasks to a
+// named board/list when the user asks for one. Mirrors the worker's
+// VoiceBoardContext wire format.
+export type VoiceBoardContext = {
+  id: string;
+  name: string;
+  kind: string;
+  columns?: { id: string; name: string }[];
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +117,8 @@ function applyOperation(candidates: TaskCandidate[], op: TaskOperation): TaskCan
         title: op.title ?? "",
         dueText: op.dueText,
         reminderText: op.reminderText,
+        notes: op.notes ?? op.changes?.notes,
+        recurrenceText: op.recurrenceText ?? op.changes?.recurrenceText,
         subtasks: op.subtasks,
         boardId: op.changes?.boardId,
         status: "confirmed",
@@ -120,10 +139,14 @@ function applyOperation(candidates: TaskCandidate[], op: TaskOperation): TaskCan
           ...(op.changes?.reminderText !== undefined ? { reminderText: op.changes.reminderText } : {}),
           ...(op.changes?.boardId !== undefined ? { boardId: op.changes.boardId } : {}),
           ...(op.changes?.subtasks !== undefined ? { subtasks: op.changes.subtasks } : {}),
+          ...(op.changes?.notes !== undefined ? { notes: op.changes.notes } : {}),
+          ...(op.changes?.recurrenceText !== undefined ? { recurrenceText: op.changes.recurrenceText } : {}),
           // top-level title/dueText/subtasks fields on the op also apply
           ...(op.title !== undefined ? { title: op.title } : {}),
           ...(op.dueText !== undefined ? { dueText: op.dueText } : {}),
           ...(op.reminderText !== undefined ? { reminderText: op.reminderText } : {}),
+          ...(op.notes !== undefined ? { notes: op.notes } : {}),
+          ...(op.recurrenceText !== undefined ? { recurrenceText: op.recurrenceText } : {}),
           ...(op.subtasks !== undefined ? { subtasks: op.subtasks } : {}),
         };
       });
@@ -309,6 +332,7 @@ export type UseVoiceSessionOptions = {
   npub: string;
   privateKeyHex: string;
   defaultBoardId?: string;
+  boards?: VoiceBoardContext[];
   onSave: (tasks: FinalTask[]) => void;
 };
 
@@ -329,7 +353,7 @@ export type UseVoiceSessionResult = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessionResult {
-  const { workerBaseUrl, npub, privateKeyHex, defaultBoardId, onSave } = options;
+  const { workerBaseUrl, npub, privateKeyHex, defaultBoardId, boards, onSave } = options;
   const [session, dispatch] = useReducer(voiceSessionReducer, INITIAL_VOICE_SESSION);
 
   const recRef = useRef<SpeechRecognition | null>(null);
@@ -492,6 +516,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
         npub,
         candidates: confirmed,
         boardId: defaultBoardId,
+        ...(boards?.length ? { boards } : {}),
         referenceDate: new Date().toISOString(),
         referenceTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         referenceOffsetMinutes: new Date().getTimezoneOffset(),
@@ -507,6 +532,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
         const fallback: FinalTask[] = confirmed.map((c) => ({
           title: c.title,
           boardId: c.boardId ?? defaultBoardId,
+          notes: c.notes,
           subtasks: c.subtasks,
         }));
         onSave(fallback);
@@ -519,13 +545,14 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
       const fallback: FinalTask[] = confirmed.map((c) => ({
         title: c.title,
         boardId: c.boardId ?? defaultBoardId,
+        notes: c.notes,
         subtasks: c.subtasks,
       }));
       onSave(fallback);
     } finally {
       dispatch({ type: "SET_PROCESSING", value: false });
     }
-  }, [workerBaseUrl, npub, privateKeyHex, defaultBoardId, onSave]);
+  }, [workerBaseUrl, npub, privateKeyHex, defaultBoardId, boards, onSave]);
 
   const reset = useCallback(() => {
     stopListening();

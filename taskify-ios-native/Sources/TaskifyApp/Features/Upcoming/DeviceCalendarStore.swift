@@ -1,5 +1,7 @@
 import EventKit
 import Foundation
+import TaskifyCore
+import UserNotifications
 import UIKit
 
 struct DeviceCalendarEvent: Identifiable {
@@ -70,6 +72,7 @@ final class DeviceCalendarStore: ObservableObject {
     @Published private(set) var completingReminderIDs = Set<String>()
     @Published private(set) var calendarErrorMessage: String?
     @Published private(set) var reminderErrorMessage: String?
+    @Published private(set) var notificationSelection: [String: Int]
 
     private let eventStore: EKEventStore
     private var fetchScope = FetchScope.month(Date())
@@ -83,6 +86,7 @@ final class DeviceCalendarStore: ObservableObject {
 
     init(eventStore: EKEventStore = EKEventStore()) {
         self.eventStore = eventStore
+        notificationSelection = DeviceNotificationSelection.loadMinutes()
         authorizationStatus = EKEventStore.authorizationStatus(for: .event)
         reminderAuthorizationStatus = EKEventStore.authorizationStatus(for: .reminder)
         storeChangeObserver = NotificationCenter.default.addObserver(
@@ -210,6 +214,67 @@ final class DeviceCalendarStore: ObservableObject {
         }
     }
 
+    // MARK: - Per-item notification reminders
+
+    func eventNotificationMinutes(_ event: DeviceCalendarEvent) -> Int? {
+        notificationSelection[DeviceNotificationSelection.eventKey(event.id)]
+    }
+
+    func reminderNotificationMinutes(_ reminder: DeviceReminder) -> Int? {
+        notificationSelection[DeviceNotificationSelection.reminderKey(reminder.id)]
+    }
+
+    /// `reminder` uses Taskify's standard reminder presets (`TaskReminder.timedPresets`).
+    /// Passing `nil` removes the notification for the item.
+    func setEventNotification(_ event: DeviceCalendarEvent, reminder: TaskReminder?) {
+        setNotificationSelection(DeviceNotificationSelection.eventKey(event.id), reminder: reminder)
+    }
+
+    func setReminderNotification(_ reminder: DeviceReminder, lead: TaskReminder?) {
+        setNotificationSelection(DeviceNotificationSelection.reminderKey(reminder.id), reminder: lead)
+    }
+
+    private func setNotificationSelection(_ key: String, reminder: TaskReminder?) {
+        let wasEnabled = notificationSelection[key] != nil
+        if let minutes = reminder?.minutesBefore {
+            notificationSelection[key] = minutes
+        } else {
+            notificationSelection.removeValue(forKey: key)
+        }
+        DeviceNotificationSelection.saveMinutes(notificationSelection)
+        scheduleSelectedNotifications(requestPermission: !wasEnabled)
+    }
+
+    /// Resolve selected items directly from EventKit, independently of the visible month.
+    private func scheduleSelectedNotifications(requestPermission: Bool = false) {
+        let selected = DeviceNotificationSelection.resolve(
+            notificationSelection,
+            event: { (id, occurrence) -> DeviceCalendarEvent? in
+                guard self.hasFullAccess else { return nil }
+                let predicate = self.eventStore.predicateForEvents(
+                    withStart: occurrence,
+                    end: occurrence.addingTimeInterval(1),
+                    calendars: nil
+                )
+                return self.eventStore.events(matching: predicate)
+                    .map(DeviceCalendarEvent.init(event:))
+                    .first { $0.id == id }
+            },
+            reminder: { id -> DeviceReminder? in
+                guard self.hasReminderFullAccess,
+                      let item = self.eventStore.calendarItem(withIdentifier: id) as? EKReminder,
+                      !item.isCompleted else { return nil }
+                return DeviceReminder(reminder: item)
+            }
+        )
+        DeviceNotificationScheduler.shared.reschedule(
+            events: selected.events,
+            reminders: selected.reminders,
+            selection: notificationSelection,
+            requestPermission: requestPermission
+        )
+    }
+
     func events(on date: Date, calendar: Calendar = .current) -> [DeviceCalendarEvent] {
         let start = calendar.startOfDay(for: date)
         guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
@@ -310,6 +375,7 @@ final class DeviceCalendarStore: ObservableObject {
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
         calendarErrorMessage = nil
+        scheduleSelectedNotifications()
     }
 
     private func refreshReminders() {
@@ -336,8 +402,147 @@ final class DeviceCalendarStore: ObservableObject {
                         return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                     }
                 reminderErrorMessage = nil
+                scheduleSelectedNotifications()
             }
         }
+    }
+}
+
+
+/// Schedules local notifications for Apple Calendar events and Apple Reminders that the
+/// user picked in the Upcoming view. Each notification fires at the event start or the
+/// reminder due time. The caller resolves all selected items independently of the UI's
+/// date range; missing events and completed reminders no longer produce requests.
+@MainActor
+private final class DeviceNotificationScheduler {
+    static let shared = DeviceNotificationScheduler()
+
+    private static let eventIdentifierPrefix = "taskify.apple.event."
+    private static let reminderIdentifierPrefix = "taskify.apple.reminder."
+    private static let maxScheduledNotifications = 60
+
+    private let center = UNUserNotificationCenter.current()
+    private var rescheduleTask: Task<Void, Never>?
+
+    func reschedule(
+        events: [DeviceCalendarEvent],
+        reminders: [DeviceReminder],
+        selection: [String: Int],
+        requestPermission: Bool
+    ) {
+        rescheduleTask?.cancel()
+        let eventSnapshot = events
+        let reminderSnapshot = reminders
+        rescheduleTask = Task { [center] in
+            let settings = await center.notificationSettings()
+            var authorizationStatus = settings.authorizationStatus
+            if requestPermission, authorizationStatus == .notDetermined {
+                let granted = (try? await center.requestAuthorization(
+                    options: [.alert, .badge, .sound]
+                )) ?? false
+                authorizationStatus = granted ? .authorized : .denied
+            }
+            guard authorizationStatus == .authorized || authorizationStatus == .provisional,
+                  !Task.isCancelled else { return }
+
+            let pending = await center.pendingNotificationRequests()
+            guard !Task.isCancelled else { return }
+            let existingIDs = pending
+                .map(\.identifier)
+                .filter {
+                    $0.hasPrefix(Self.eventIdentifierPrefix)
+                        || $0.hasPrefix(Self.reminderIdentifierPrefix)
+                }
+            if !existingIDs.isEmpty {
+                center.removePendingNotificationRequests(withIdentifiers: existingIDs)
+            }
+
+            let now = Date()
+            var requests: [UNNotificationRequest] = []
+            for event in eventSnapshot {
+                guard let minutes = selection[DeviceNotificationSelection.eventKey(event.id)] else { continue }
+                if let request = Self.notificationRequest(
+                    identifier: Self.eventIdentifierPrefix + event.id,
+                    title: event.title,
+                    body: event.isAllDay
+                        ? "All-day event \u{2022} \(event.calendarTitle)"
+                        : event.calendarTitle,
+                    fireDate: Self.eventFireDate(for: event, minutesBefore: minutes),
+                    now: now
+                ) {
+                    requests.append(request)
+                }
+            }
+            for reminder in reminderSnapshot {
+                guard let minutes = selection[DeviceNotificationSelection.reminderKey(reminder.id)] else { continue }
+                if let request = Self.notificationRequest(
+                    identifier: Self.reminderIdentifierPrefix + reminder.id,
+                    title: reminder.title,
+                    body: "Apple Reminder",
+                    fireDate: reminder.dueDate.addingTimeInterval(-Double(minutes) * 60),
+                    now: now
+                ) {
+                    requests.append(request)
+                }
+            }
+
+            // Prefer the earliest alerts across events and reminders, not fetch order.
+            let availableSlots = max(0, Self.maxScheduledNotifications - (pending.count - existingIDs.count))
+            requests.sort {
+                let lhs = ($0.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate() ?? .distantFuture
+                let rhs = ($1.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate() ?? .distantFuture
+                return lhs == rhs ? $0.identifier < $1.identifier : lhs < rhs
+            }
+            for request in requests.prefix(availableSlots) {
+                guard !Task.isCancelled else { return }
+                try? await center.add(request)
+            }
+        }
+    }
+
+    /// All-day events start at local midnight, which makes naive lead times land in the
+    /// previous evening. For the "1 day before" preset, anchor instead to 9:00 AM local
+    /// time on the day before the event. Other presets keep the standard offset.
+    private static func eventFireDate(
+        for event: DeviceCalendarEvent,
+        minutesBefore minutes: Int
+    ) -> Date {
+        guard event.isAllDay, minutes == 1_440 else {
+            return event.startDate.addingTimeInterval(-Double(minutes) * 60)
+        }
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        guard let dayBefore = calendar.date(byAdding: .day, value: -1, to: event.startDate),
+              let anchor = calendar.date(
+                bySettingHour: 9,
+                minute: 0,
+                second: 0,
+                of: dayBefore
+              ) else {
+            return event.startDate.addingTimeInterval(-Double(minutes) * 60)
+        }
+        return anchor
+    }
+
+    private static func notificationRequest(
+        identifier: String,
+        title: String,
+        body: String,
+        fireDate: Date,
+        now: Date
+    ) -> UNNotificationRequest? {
+        guard fireDate > now.addingTimeInterval(1) else { return nil }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        var components = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: fireDate
+        )
+        components.timeZone = Calendar.current.timeZone
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        return UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
     }
 }
 

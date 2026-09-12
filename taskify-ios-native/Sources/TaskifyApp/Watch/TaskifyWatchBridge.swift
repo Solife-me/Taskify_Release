@@ -273,9 +273,14 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                 VoiceFinalTask(
                     title: $0.title,
                     dueISO: $0.dueISO,
+                    boardId: $0.boardId,
+                    columnId: $0.columnId,
                     notes: $0.notes,
                     subtasks: $0.subtasks,
-                    priority: $0.priority
+                    priority: $0.priority,
+                    reminderMinutesBeforeDue: $0.reminderMinutesBeforeDue,
+                    reminderTime: $0.reminderTime,
+                    recurrence: $0.recurrence
                 )
             }
             guard model.addTasksFromVoice(
@@ -334,9 +339,14 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                     id: "\(request.id)-\(index)",
                     title: task.title,
                     dueISO: task.dueISO,
+                    boardId: task.boardId,
                     notes: task.notes,
                     subtasks: task.subtasks,
-                    priority: task.priority
+                    priority: task.priority,
+                    reminderMinutesBeforeDue: task.reminderMinutesBeforeDue,
+                    reminderTime: task.reminderTime,
+                    columnId: task.columnId,
+                    recurrence: task.recurrence
                 )
             }
         )
@@ -371,7 +381,8 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
         return await client.finalize(
             identity: identity,
             candidates: candidates,
-            boardID: boardID
+            boardID: boardID,
+            boards: model.voiceBoardContexts()
         )
     }
 

@@ -1,4 +1,29 @@
 import Foundation
+import TaskifyWatchShared
+
+/// Maps the shared recurrence wire type onto the native `TaskRecurrence` used by
+/// snapshot writes. Invalid payloads (empty weekday lists, out-of-range counts)
+/// collapse to `nil` so the task saves without a repeat rule rather than failing.
+public extension VoiceRecurrence {
+    var taskRecurrence: TaskRecurrence? {
+        switch self {
+        case .none:
+            return nil
+        case .daily:
+            return .daily()
+        case .weekly(let days):
+            let validDays = days.filter { (0...6).contains($0) }
+            guard !validDays.isEmpty else { return nil }
+            return .weekly(days: validDays)
+        case .every(let count, let unit):
+            guard count >= 1, count <= 999 else { return nil }
+            return .every(count, TaskRecurrenceUnit(rawValue: unit) ?? .day)
+        case .monthlyDay(let day, let interval):
+            guard (1...31).contains(day) else { return nil }
+            return .monthlyDay(day: day, interval: interval.flatMap { $0 > 1 ? $0 : nil })
+        }
+    }
+}
 
 /// A task the extraction model pulled out of the spoken transcript, pending the user's review.
 ///
@@ -16,6 +41,8 @@ public struct VoiceTaskCandidate: Identifiable, Codable, Hashable, Sendable {
     public var title: String
     public var dueText: String?
     public var reminderText: String?
+    public var notes: String?
+    public var recurrenceText: String?
     public var boardId: String?
     public var subtasks: [String]?
     public var status: Status
@@ -25,6 +52,8 @@ public struct VoiceTaskCandidate: Identifiable, Codable, Hashable, Sendable {
         title: String,
         dueText: String? = nil,
         reminderText: String? = nil,
+        notes: String? = nil,
+        recurrenceText: String? = nil,
         boardId: String? = nil,
         subtasks: [String]? = nil,
         status: Status = .confirmed
@@ -33,6 +62,8 @@ public struct VoiceTaskCandidate: Identifiable, Codable, Hashable, Sendable {
         self.title = title
         self.dueText = dueText
         self.reminderText = reminderText
+        self.notes = notes
+        self.recurrenceText = recurrenceText
         self.boardId = boardId
         self.subtasks = subtasks
         self.status = status
@@ -56,6 +87,8 @@ public struct VoiceTaskOperation: Codable, Hashable, Sendable {
         public var title: String?
         public var dueText: String?
         public var reminderText: String?
+        public var notes: String?
+        public var recurrenceText: String?
         public var boardId: String?
         public var subtasks: [String]?
     }
@@ -64,6 +97,8 @@ public struct VoiceTaskOperation: Codable, Hashable, Sendable {
     public var title: String?
     public var dueText: String?
     public var reminderText: String?
+    public var notes: String?
+    public var recurrenceText: String?
     public var subtasks: [String]?
     public var targetRef: String?
     public var changes: Changes?
@@ -73,6 +108,8 @@ public struct VoiceTaskOperation: Codable, Hashable, Sendable {
         title: String? = nil,
         dueText: String? = nil,
         reminderText: String? = nil,
+        notes: String? = nil,
+        recurrenceText: String? = nil,
         subtasks: [String]? = nil,
         targetRef: String? = nil,
         changes: Changes? = nil
@@ -81,6 +118,8 @@ public struct VoiceTaskOperation: Codable, Hashable, Sendable {
         self.title = title
         self.dueText = dueText
         self.reminderText = reminderText
+        self.notes = notes
+        self.recurrenceText = recurrenceText
         self.subtasks = subtasks
         self.targetRef = targetRef
         self.changes = changes
@@ -93,24 +132,36 @@ public struct VoiceFinalTask: Codable, Hashable, Sendable {
     public var title: String
     public var dueISO: String?
     public var boardId: String?
+    public var columnId: String?
     public var notes: String?
     public var subtasks: [String]?
     public var priority: Int?
+    public var reminderMinutesBeforeDue: [Int]?
+    public var reminderTime: String?
+    public var recurrence: VoiceRecurrence?
 
     public init(
         title: String,
         dueISO: String? = nil,
         boardId: String? = nil,
+        columnId: String? = nil,
         notes: String? = nil,
         subtasks: [String]? = nil,
-        priority: Int? = nil
+        priority: Int? = nil,
+        reminderMinutesBeforeDue: [Int]? = nil,
+        reminderTime: String? = nil,
+        recurrence: VoiceRecurrence? = nil
     ) {
         self.title = title
         self.dueISO = dueISO
         self.boardId = boardId
+        self.columnId = columnId
         self.notes = notes
         self.subtasks = subtasks
         self.priority = priority
+        self.reminderMinutesBeforeDue = reminderMinutesBeforeDue
+        self.reminderTime = reminderTime
+        self.recurrence = recurrence
     }
 }
 
@@ -165,6 +216,8 @@ public struct VoiceSessionState: Equatable, Sendable {
                     title: operation.title ?? "",
                     dueText: operation.dueText,
                     reminderText: operation.reminderText,
+                    notes: operation.notes ?? operation.changes?.notes,
+                    recurrenceText: operation.recurrenceText ?? operation.changes?.recurrenceText,
                     boardId: operation.changes?.boardId,
                     subtasks: operation.subtasks,
                     status: .confirmed
@@ -177,12 +230,16 @@ public struct VoiceSessionState: Equatable, Sendable {
             if let value = operation.changes?.title { candidate.title = value }
             if let value = operation.changes?.dueText { candidate.dueText = value }
             if let value = operation.changes?.reminderText { candidate.reminderText = value }
+            if let value = operation.changes?.notes { candidate.notes = value }
+            if let value = operation.changes?.recurrenceText { candidate.recurrenceText = value }
             if let value = operation.changes?.boardId { candidate.boardId = value }
             if let value = operation.changes?.subtasks { candidate.subtasks = value }
             // Top-level fields win over `changes`, matching the PWA's spread ordering.
             if let value = operation.title { candidate.title = value }
             if let value = operation.dueText { candidate.dueText = value }
             if let value = operation.reminderText { candidate.reminderText = value }
+            if let value = operation.notes { candidate.notes = value }
+            if let value = operation.recurrenceText { candidate.recurrenceText = value }
             if let value = operation.subtasks { candidate.subtasks = value }
             candidates[index] = candidate
 

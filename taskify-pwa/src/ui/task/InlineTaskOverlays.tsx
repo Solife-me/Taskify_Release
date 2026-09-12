@@ -1,11 +1,13 @@
 import { nip19 } from "nostr-tools";
 import { ActionSheet } from "../../components/ActionSheet";
 import { kvStorage } from "../../storage/kvStorage";
-import type { FinalTask } from "../../nostr/useVoiceSession";
+import type { FinalTask, VoiceBoardContext } from "../../nostr/useVoiceSession";
 import { VoiceDictationModal } from "../../components/VoiceDictationModal";
+import type { Board } from "../../domains/tasks/taskTypes";
 
 type InlineTaskOverlaysProps = {
   addMenuKey: string | null;
+  boards: Board[];
   currentBoardId?: string;
   handleVoiceSave: (key: string, finalTasks: FinalTask[]) => void;
   nostrPK: string;
@@ -19,6 +21,7 @@ type InlineTaskOverlaysProps = {
 
 export function InlineTaskOverlays({
   addMenuKey,
+  boards,
   currentBoardId,
   handleVoiceSave,
   nostrPK,
@@ -29,6 +32,24 @@ export function InlineTaskOverlays({
   voiceDictationKey,
   workerBaseUrl,
 }: InlineTaskOverlaysProps) {
+  // Boards the dictation model may route tasks to (mirrors EditModal's
+  // availability filter; compound/bible boards are excluded).
+  const voiceBoards: VoiceBoardContext[] = boards
+    .filter(
+      (board) =>
+        !board.archived &&
+        !board.hidden &&
+        (board.kind === "week" || board.kind === "lists"),
+    )
+    .map((board) => ({
+      id: board.id,
+      name: board.name,
+      kind: board.kind,
+      ...(board.kind === "lists" && board.columns.length
+        ? { columns: board.columns.map((c) => ({ id: c.id, name: c.name })) }
+        : {}),
+    }));
+
   const npub = nostrPK ? (() => {
     try {
       return typeof (nip19 as any).npubEncode === "function"
@@ -89,6 +110,7 @@ export function InlineTaskOverlays({
           privateKeyHex={nostrSkHex}
           testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
           defaultBoardId={currentBoardId}
+          boards={voiceBoards}
         />
       )}
     </>

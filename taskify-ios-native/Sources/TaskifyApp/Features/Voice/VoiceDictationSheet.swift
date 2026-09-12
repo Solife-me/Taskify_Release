@@ -142,6 +142,14 @@ struct VoiceDictationSheet: View {
         }
     }
 
+    /// Resolves a model-routed board id for display; only shown when it differs
+    /// from the board the sheet was opened on.
+    private func boardName(for boardId: String?) -> String? {
+        guard let boardId, boardId != model.selectedBoardID,
+              let board = model.board(withID: boardId) else { return nil }
+        return board.name
+    }
+
     private func candidateCard(_ candidate: VoiceTaskCandidate) -> some View {
         let isConfirmed = candidate.status == .confirmed
 
@@ -162,6 +170,22 @@ struct VoiceDictationSheet: View {
                     .foregroundStyle(TaskifyTheme.primaryText)
                 if let dueText = candidate.dueText, !dueText.isEmpty {
                     Label(dueText, systemImage: "calendar")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                if let recurrenceText = candidate.recurrenceText, !recurrenceText.isEmpty {
+                    Label("Repeats \(recurrenceText)", systemImage: "repeat")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                if let notes = candidate.notes, !notes.isEmpty {
+                    Label(notes, systemImage: "note.text")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(2)
+                }
+                if let boardName = boardName(for: candidate.boardId) {
+                    Label("Board: \(boardName)", systemImage: "square.grid.2x2")
                         .font(.caption)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }
@@ -338,7 +362,8 @@ struct VoiceDictationSheet: View {
         let finalTasks = await client.finalize(
             identity: identity,
             candidates: confirmed,
-            boardID: model.selectedBoardID
+            boardID: model.selectedBoardID,
+            boards: model.voiceBoardContexts()
         )
         let created = model.addTasksFromVoice(finalTasks)
 

@@ -366,28 +366,147 @@ public struct TaskifyWatchProvisioningReceipt: Codable, Equatable, Sendable {
     }
 }
 
+/// Recurrence on a finalized voice task, in the Worker's wire format (see
+/// `worker/src/voice.ts` `VoiceRecurrence`). Lives in TaskifyWatchShared so the
+/// Watch's independent dictation client and the phone's voice pipeline share one
+/// wire shape; TaskifyCore maps it onto the native `TaskRecurrence`.
+public enum VoiceRecurrence: Hashable, Sendable {
+    case none
+    case daily
+    case weekly(days: [Int])
+    case every(count: Int, unit: String)
+    case monthlyDay(day: Int, interval: Int?)
+}
+
+extension VoiceRecurrence: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case type, days, n, unit, day, interval
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "none":
+            self = .none
+        case "daily":
+            self = .daily
+        case "weekly":
+            self = .weekly(days: try container.decodeIfPresent([Int].self, forKey: .days) ?? [])
+        case "every":
+            let count = try container.decodeIfPresent(Int.self, forKey: .n) ?? 0
+            let unit = try container.decodeIfPresent(String.self, forKey: .unit) ?? "day"
+            self = .every(count: count, unit: unit)
+        case "monthlyDay":
+            self = .monthlyDay(
+                day: try container.decodeIfPresent(Int.self, forKey: .day) ?? 0,
+                interval: try container.decodeIfPresent(Int.self, forKey: .interval)
+            )
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "Unknown recurrence type"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .none:
+            try container.encode("none", forKey: .type)
+        case .daily:
+            try container.encode("daily", forKey: .type)
+        case .weekly(let days):
+            try container.encode("weekly", forKey: .type)
+            try container.encode(days, forKey: .days)
+        case .every(let count, let unit):
+            try container.encode("every", forKey: .type)
+            try container.encode(count, forKey: .n)
+            try container.encode(unit, forKey: .unit)
+        case .monthlyDay(let day, let interval):
+            try container.encode("monthlyDay", forKey: .type)
+            try container.encode(day, forKey: .day)
+            try container.encodeIfPresent(interval, forKey: .interval)
+        }
+    }
+}
+
+/// Board/list context the Watch sends with `/api/voice/finalize` so the model can
+/// route spoken tasks to a named board. Mirrors the Worker's `VoiceBoardContext`
+/// wire format.
+public struct TaskifyWatchVoiceBoardContext: Codable, Equatable, Sendable {
+    public struct Column: Codable, Equatable, Sendable {
+        public let id: String
+        public let name: String
+
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    public let id: String
+    public let name: String
+    public let kind: String
+    public let columns: [Column]?
+
+    public init(id: String, name: String, kind: String, columns: [Column]? = nil) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.columns = columns
+    }
+}
+
 public struct TaskifyWatchVoiceDraft: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let dueISO: String?
+    public let boardId: String?
     public let notes: String?
     public let subtasks: [String]?
     public let priority: Int?
+    /// Optional recurrence/reminders/list placement so Watch-dictated tasks carry
+    /// the same detail the phone sheet saves. Older peers decode payloads without
+    /// these keys, so they remain optional and backwards compatible.
+    public let reminderMinutesBeforeDue: [Int]?
+    public let reminderTime: String?
+    public let columnId: String?
+    public let recurrence: VoiceRecurrence?
 
     public init(
         id: String = UUID().uuidString,
         title: String,
         dueISO: String? = nil,
+        boardId: String? = nil,
         notes: String? = nil,
         subtasks: [String]? = nil,
-        priority: Int? = nil
+        priority: Int? = nil,
+        reminderMinutesBeforeDue: [Int]? = nil,
+        reminderTime: String? = nil,
+        columnId: String? = nil,
+        recurrence: VoiceRecurrence? = nil
     ) {
         self.id = id
         self.title = title
         self.dueISO = dueISO
+        self.boardId = boardId
         self.notes = notes
         self.subtasks = subtasks
         self.priority = priority
+        self.reminderMinutesBeforeDue = reminderMinutesBeforeDue
+        self.reminderTime = reminderTime
+        self.columnId = columnId
+        self.recurrence = recurrence
+    }
+
+    /// Resolve each draft independently; old peers omit boardId and keep the session board.
+    public func destinationBoard(in boards: [TaskifyWatchBoard], fallback: TaskifyWatchBoard) -> TaskifyWatchBoard {
+        guard let boardId,
+              let board = boards.first(where: { $0.id == boardId }),
+              board.kind == "week" || board.kind == "lists" else { return fallback }
+        return board
     }
 }
 

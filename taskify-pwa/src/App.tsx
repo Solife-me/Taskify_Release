@@ -8641,11 +8641,9 @@ export default function App() {
 
     let targetBoardId = currentBoard.id;
     let dueISOBase = isoForToday();
-    let column: Task["column"] | undefined;
     let columnId: string | undefined;
 
     if (currentBoard.kind === "week") {
-      column = "day";
       dueISOBase = isoForWeekday(Number(key) as Weekday, { weekStart: settings.weekStart });
     } else {
       const placement = resolveListPlacement(key);
@@ -8706,9 +8704,24 @@ export default function App() {
       }
       const parsedPriority = normalizeTaskPriority((ft as any).priority);
       if (parsedPriority) task.priority = parsedPriority;
-      if (column) task.column = column;
-      if (columnId) task.columnId = columnId;
-      applyHiddenForFuture(task, settings.weekStart, currentBoard.kind);
+      if (typeof ft.notes === "string" && ft.notes.trim()) task.note = ft.notes.trim();
+      if (isVoiceRecurrence(ft.recurrence) && ft.recurrence.type !== "none") task.recurrence = ft.recurrence;
+      // Voice may route the task to a named board/list; resolve placement from
+      // the actual target board, falling back to the add-menu placement.
+      const targetBoard = boards.find((b) => b.id === task.boardId) ?? currentBoard;
+      if (targetBoard?.kind === "week") {
+        task.column = "day";
+        task.columnId = undefined;
+      } else if (targetBoard?.kind === "lists") {
+        const requestedColumnId =
+          typeof ft.columnId === "string" && targetBoard.columns.some((c) => c.id === ft.columnId)
+            ? ft.columnId
+            : undefined;
+        task.columnId = requestedColumnId
+          ?? (targetBoard.id === currentBoard.id ? columnId : undefined)
+          ?? targetBoard.columns[0]?.id;
+      }
+      applyHiddenForFuture(task, settings.weekStart, targetBoard?.kind ?? currentBoard.kind);
       newTasks.push(task);
     }
 
@@ -13309,6 +13322,7 @@ export default function App() {
 
       <InlineTaskOverlays
         addMenuKey={addMenuKey}
+        boards={boards}
         currentBoardId={currentBoard?.id}
         handleVoiceSave={handleVoiceSave}
         nostrPK={nostrPK}
@@ -13323,6 +13337,24 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function isVoiceRecurrence(value: unknown): value is NonNullable<Task["recurrence"]> {
+  if (!value || typeof value !== "object") return false;
+  const r = value as any;
+  switch (r.type) {
+    case "daily":
+    case "none":
+      return true;
+    case "weekly":
+      return Array.isArray(r.days) && r.days.length > 0 && r.days.every((d: number) => Number.isInteger(d) && d >= 0 && d <= 6);
+    case "every":
+      return Number.isInteger(r.n) && r.n >= 1 && ["hour", "day", "week"].includes(r.unit);
+    case "monthlyDay":
+      return Number.isInteger(r.day) && r.day >= 1 && r.day <= 31;
+    default:
+      return false;
+  }
 }
 
 function hiddenUntilForBoard(dueISO: string, boardKind: Board["kind"], weekStart: Weekday): string | undefined {

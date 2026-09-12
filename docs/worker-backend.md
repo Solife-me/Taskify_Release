@@ -71,6 +71,8 @@ Use this table before changing handler logic so caller contracts stay aligned.
 | `POST /api/reminders/poll` | `{ endpoint }` or authenticated `{ deviceId, subscriptionId }`; optional acknowledgement IDs | `PendingReminder[]` | `taskify-pwa/public/sw.js` | `worker/src/reminders.ts` (`handlePollReminders`) |
 | `POST /api/watch/nostr/publish` | signed request; `{ relays, event }` where `event` is a valid kind-30301 Nostr event | `{ accepted, attempted, results }` | independent watchOS client | `worker/src/nostr-bridge.ts` |
 | `POST /api/watch/nostr/query` | signed request; `{ relays, filter: { authors, limit } }` | `{ events }` containing valid kind-30301 events | independent watchOS client | `worker/src/nostr-bridge.ts` |
+| `POST /api/voice/extract` | signed request; `{ npub, transcript, candidates?, sessionDurationSeconds }` | `{ operations: TaskOperation[] }` where tasks carry `title/dueText/reminderText/notes/recurrenceText/subtasks`; `429` quota body may still include rule-based operations | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceExtract`) |
+| `POST /api/voice/finalize` | signed request; `{ npub, candidates, boardId?, boards?[{id,name,kind,columns}], referenceDate, referenceTimeZone, referenceOffsetMinutes }` | `{ tasks: FinalTask[] }` with `title/dueISO/boardId/columnId/notes/subtasks/priority/reminderMinutesBeforeDue[]/reminderTime/recurrence`; model-chosen boards/columns are validated against the supplied `boards` list | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceFinalize`) |
 
 ### Independent Watch privacy boundary
 

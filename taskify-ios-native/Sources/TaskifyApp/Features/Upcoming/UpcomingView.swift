@@ -589,7 +589,9 @@ struct UpcomingView: View {
                                 ForEach(group.reminders) { reminder in
                                     DeviceReminderCard(
                                         reminder: reminder,
-                                        isCompleting: deviceCalendar.completingReminderIDs.contains(reminder.id)
+                                        isCompleting: deviceCalendar.completingReminderIDs.contains(reminder.id),
+                                        notificationMinutes: deviceCalendar.reminderNotificationMinutes(reminder),
+                                        onSetNotification: { deviceCalendar.setReminderNotification(reminder, lead: $0) }
                                     ) {
                                         completeReminder(reminder)
                                     }
@@ -608,7 +610,11 @@ struct UpcomingView: View {
                         if !group.appleEvents.isEmpty {
                             VStack(spacing: 10) {
                                 ForEach(group.appleEvents) { event in
-                                    DeviceCalendarEventCard(event: event)
+                                    DeviceCalendarEventCard(
+                                        event: event,
+                                        notificationMinutes: deviceCalendar.eventNotificationMinutes(event),
+                                        onSetNotification: { deviceCalendar.setEventNotification(event, reminder: $0) }
+                                    )
                                 }
                             }
                         }
@@ -697,7 +703,9 @@ struct UpcomingView: View {
                             ForEach(selectedDayReminders) { reminder in
                                 DeviceReminderCard(
                                     reminder: reminder,
-                                    isCompleting: deviceCalendar.completingReminderIDs.contains(reminder.id)
+                                    isCompleting: deviceCalendar.completingReminderIDs.contains(reminder.id),
+                                    notificationMinutes: deviceCalendar.reminderNotificationMinutes(reminder),
+                                    onSetNotification: { deviceCalendar.setReminderNotification(reminder, lead: $0) }
                                 ) {
                                     completeReminder(reminder)
                                 }
@@ -708,7 +716,11 @@ struct UpcomingView: View {
                     if !selectedDayCalendarEvents.isEmpty {
                         VStack(spacing: 10) {
                             ForEach(selectedDayCalendarEvents) { event in
-                                DeviceCalendarEventCard(event: event)
+                                DeviceCalendarEventCard(
+                                    event: event,
+                                    notificationMinutes: deviceCalendar.eventNotificationMinutes(event),
+                                    onSetNotification: { deviceCalendar.setEventNotification(event, reminder: $0) }
+                                )
                             }
                         }
                     }
@@ -1582,6 +1594,8 @@ private struct UpcomingGroup: Identifiable {
 private struct DeviceReminderCard: View {
     let reminder: DeviceReminder
     let isCompleting: Bool
+    var notificationMinutes: Int? = nil
+    var onSetNotification: ((TaskReminder?) -> Void)? = nil
     let onComplete: () -> Void
 
     var body: some View {
@@ -1613,6 +1627,13 @@ private struct DeviceReminderCard: View {
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
+                    if notificationMinutes != nil {
+                        Image(systemName: "bell.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Notification reminder scheduled")
+                    }
+
                     if reminder.priority > 0, reminder.priority <= 4 {
                         Image(systemName: "exclamationmark")
                             .font(.caption.weight(.bold))
@@ -1640,6 +1661,10 @@ private struct DeviceReminderCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .taskifyGlass(cornerRadius: 20)
+        .notificationReminderContextMenu(
+            currentMinutes: notificationMinutes,
+            onSet: onSetNotification
+        )
     }
 
     private var dueText: String {
@@ -1715,10 +1740,12 @@ struct TaskifyEventCard: View {
                 .background(Color.green.opacity(0.16), in: Circle())
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(event.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(event.title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 Text(timeText)
                     .font(.subheadline)
@@ -1820,6 +1847,8 @@ struct TaskifyEventCard: View {
 
 private struct DeviceCalendarEventCard: View {
     let event: DeviceCalendarEvent
+    var notificationMinutes: Int? = nil
+    var onSetNotification: ((TaskReminder?) -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -1830,10 +1859,19 @@ private struct DeviceCalendarEventCard: View {
                 .background(Color(uiColor: event.color).opacity(0.16), in: Circle())
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(event.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(event.title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if notificationMinutes != nil {
+                        Image(systemName: "bell.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Notification reminder scheduled")
+                    }
+                }
 
                 Text(timeText)
                     .font(.subheadline)
@@ -1855,6 +1893,10 @@ private struct DeviceCalendarEventCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .taskifyGlass(cornerRadius: 20)
         .accessibilityElement(children: .combine)
+        .notificationReminderContextMenu(
+            currentMinutes: notificationMinutes,
+            onSet: onSetNotification
+        )
     }
 
     private var timeText: String {
@@ -3339,4 +3381,60 @@ private func taskifyRebasedWallClock(_ date: Date, from oldZoneID: String, to ne
     var newCalendar = Calendar(identifier: .gregorian)
     newCalendar.timeZone = newZone
     return newCalendar.date(from: components) ?? date
+}
+
+
+private struct NotificationReminderContextMenu: ViewModifier {
+    let currentMinutes: Int?
+    let onSet: ((TaskReminder?) -> Void)?
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            if let onSet {
+                Menu {
+                    ForEach(TaskReminder.timedPresets) { preset in
+                        Button {
+                            onSet(preset)
+                        } label: {
+                            if preset.minutesBefore == currentMinutes {
+                                Label(preset.reminderMenuLabel, systemImage: "checkmark")
+                            } else {
+                                Text(preset.reminderMenuLabel)
+                            }
+                        }
+                    }
+                    if currentMinutes != nil {
+                        Divider()
+                        Button(role: .destructive) {
+                            onSet(nil)
+                        } label: {
+                            Label("Remove reminder", systemImage: "bell.slash")
+                        }
+                    }
+                } label: {
+                    Label(currentMinutes == nil ? "Remind me" : "Remind me…", systemImage: "bell")
+                }
+            }
+        }
+    }
+}
+
+private extension TaskReminder {
+    /// Menu labels for Apple Calendar / Apple Reminder items: the item itself is the anchor,
+    /// so use the event-style labels ("At start time") and rename the due-style fallback.
+    var reminderMenuLabel: String {
+        switch rawValue {
+        case "0h": return "At start/due time"
+        default: return eventLabel
+        }
+    }
+}
+
+private extension View {
+    func notificationReminderContextMenu(
+        currentMinutes: Int?,
+        onSet: ((TaskReminder?) -> Void)?
+    ) -> some View {
+        modifier(NotificationReminderContextMenu(currentMinutes: currentMinutes, onSet: onSet))
+    }
 }

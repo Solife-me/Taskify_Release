@@ -15,9 +15,9 @@ import { normalizeNostrPublicKey, verifyTaskifyAuth } from "./nostr-auth.ts";
 const VOICE_MAX_SESSIONS_PER_DAY = 10;
 const VOICE_MAX_SECONDS_PER_DAY = 300;
 
-const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash-lite";
-const GEMINI_MODEL_FALLBACK_1 = "gemini-3-flash-preview";
-const GEMINI_MODEL_FALLBACK_2 = "gemini-2.5-flash";
+const GEMINI_MODEL_PRIMARY = "gemini-3.5-flash-lite";
+const GEMINI_MODEL_FALLBACK_1 = "gemini-3.7-flash";
+const GEMINI_MODEL_FALLBACK_2 = "gemini-3.6-flash";
 
 // ---- Types ----
 
@@ -26,9 +26,30 @@ type TaskCandidate = {
   title: string;
   dueText?: string;
   reminderText?: string;
+  notes?: string;
+  recurrenceText?: string;
   boardId?: string;
   subtasks?: string[];
   status: "draft" | "confirmed" | "dismissed";
+};
+
+// Wire format for recurrence on finalized voice tasks. Mirrors the PWA's
+// taskify-core Recurrence shape (minus untilISO) so the client can assign it
+// directly to Task.recurrence.
+type VoiceRecurrence =
+  | { type: "none" }
+  | { type: "daily" }
+  | { type: "weekly"; days: number[] }
+  | { type: "every"; n: number; unit: "hour" | "day" | "week" }
+  | { type: "monthlyDay"; day: number; interval?: number };
+
+// Optional board context supplied by the client so the model can route tasks
+// to a named board/list when the user asks for one.
+type VoiceBoardContext = {
+  id: string;
+  name: string;
+  kind: string;
+  columns?: { id: string; name: string }[];
 };
 
 type TaskOperation = {
@@ -36,20 +57,24 @@ type TaskOperation = {
   title?: string;
   dueText?: string;
   reminderText?: string;
+  notes?: string;
+  recurrenceText?: string;
   subtasks?: string[];
   targetRef?: string;
-  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "reminderText" | "boardId" | "subtasks">>;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "reminderText" | "boardId" | "subtasks" | "notes" | "recurrenceText">>;
 };
 
 type FinalTask = {
   title: string;
   dueISO?: string;
   boardId?: string;
+  columnId?: string;
   notes?: string;
   subtasks?: string[];
   priority?: 1 | 2 | 3;
   reminderMinutesBeforeDue?: number[];
   reminderTime?: string;
+  recurrence?: VoiceRecurrence;
 };
 
 type VoiceQuotaRow = {
@@ -208,6 +233,8 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
 
     let dueText = typeof t?.dueText === "string" && t.dueText.trim() ? t.dueText.trim() : undefined;
     const reminderText = normalizeReminderText(t?.reminderText);
+    const notes = typeof t?.notes === "string" && t.notes.trim() ? t.notes.trim() : undefined;
+    const recurrenceText = typeof t?.recurrenceText === "string" && t.recurrenceText.trim() ? t.recurrenceText.trim() : undefined;
     let subtasks = normalizeSubtasks(t?.subtasks);
 
     const groceryContext = /grocery|groceries|store|shopping|supermarket/i.test(`${title} ${dueText ?? ""}`);
@@ -251,10 +278,40 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
     }
 
     if (isGarbageTaskTitle(title)) continue;
-    operations.push({ type: "create_task", title, dueText, reminderText, subtasks });
+    operations.push({ type: "create_task", title, dueText, reminderText, notes, recurrenceText, subtasks });
   }
 
   return operations;
+}
+
+function normalizeRecurrence(value: unknown): VoiceRecurrence | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const r = value as any;
+  const type = typeof r.type === "string" ? r.type : "";
+  if (type === "daily") return { type: "daily" };
+  if (type === "weekly") {
+    if (!Array.isArray(r.days)) return undefined;
+    const days = [...new Set(
+      r.days
+        .map((d: unknown) => (typeof d === "number" ? Math.round(d) : Number(d)))
+        .filter((d: number) => Number.isInteger(d) && d >= 0 && d <= 6),
+    )] as number[];
+    return days.length ? { type: "weekly", days } : undefined;
+  }
+  if (type === "every") {
+    const n = Math.round(Number(r.n));
+    if (!Number.isFinite(n) || n < 1 || n > 999) return undefined;
+    if (r.unit !== "hour" && r.unit !== "day" && r.unit !== "week") return undefined;
+    return { type: "every", n, unit: r.unit };
+  }
+  if (type === "monthlyDay") {
+    const day = Math.round(Number(r.day));
+    if (!Number.isFinite(day) || day < 1 || day > 31) return undefined;
+    const intervalRaw = Math.round(Number(r.interval));
+    const interval = Number.isFinite(intervalRaw) && intervalRaw > 1 ? intervalRaw : undefined;
+    return interval ? { type: "monthlyDay", day, interval } : { type: "monthlyDay", day };
+  }
+  return undefined;
 }
 
 function parseTaskPriority(value: unknown): 1 | 2 | 3 | undefined {
@@ -352,7 +409,7 @@ async function incrementVoiceQuota(db: D1Database, npub: string, date: string, a
 }
 
 /**
- * Call Gemini 2.0 Flash and parse the JSON embedded in the first candidate's
+ * Call the configured Gemini Flash models and parse the JSON embedded in the first candidate's
  * text part. Returns null on any error (network, parse, unexpected shape).
  */
 function parseJsonStringSafely(text: unknown): unknown | null {
@@ -379,8 +436,10 @@ async function callGemini(apiKey: string, prompt: string): Promise<unknown | nul
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 1024,
+              // Gemini 3 recommends the default temperature (1.0); lower values
+              // can cause reasoning loops on the 3.x series.
+              temperature: 1.0,
+              maxOutputTokens: 2048,
               responseMimeType: "application/json",
             },
           }),
@@ -414,7 +473,7 @@ async function callCloudflareGlmFallback(env: Env, prompt: string): Promise<unkn
   let response: Response;
   try {
     response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/zai-org/glm-4.7-flash`,
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/zai-org/glm-5.3-flash`,
       {
         method: "POST",
         headers: {
@@ -510,7 +569,7 @@ Transcript: "${transcript}"
 Return ONLY JSON in this exact shape:
 {
   "tasks": [
-    { "title": string, "dueText": string|null, "reminderText": string|null, "subtasks": string[] }
+    { "title": string, "dueText": string|null, "reminderText": string|null, "notes": string|null, "recurrenceText": string|null, "subtasks": string[] }
   ]
 }
 
@@ -523,7 +582,10 @@ Rules:
 - reminderText defaults to null. Set reminderText ONLY when the user explicitly asks for a reminder/alert/notification/nudge, such as "remind me", "set a reminder", "alert me", or "notify me".
 - If the user says "remind me" without a reminder offset, set reminderText to "at due time".
 - If the user gives reminder timing, keep it in reminderText (e.g. "15 minutes before", "1 hour before", "tomorrow at 9 AM").
+- If the user requests several reminders for one task (e.g. "remind me 15 minutes before and 1 hour before"), include every requested offset in reminderText.
 - Do not infer reminderText from dueText alone.
+- notes defaults to null. Set notes ONLY when the user explicitly asks to attach details or a note to a task ("note that ...", "add a note ...", "with the details ...", "put in the notes ..."). Keep the note content verbatim, minus the command wording. Never move task title or due info into notes.
+- recurrenceText defaults to null. Set it ONLY when the user says a task repeats (e.g. "every Monday", "every Monday and Thursday", "daily", "weekdays", "every 3 days", "every 2 weeks", "monthly on the 15th", "every other week"). Keep the phrase verbatim; do not set it for one-off tasks.
 - Apply in-sentence corrections: if user says "actually change X to Y", update the earlier task for X.
 - Keep title nouns concise and board-ready.
 - Good title examples: "Go to the grocery store", "Birthday party for Ashley", "Play date", "Dinner after church", "Get dogs from Gran Gran's".
@@ -575,6 +637,31 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
     typeof body?.referenceOffsetMinutes === "number" && Number.isFinite(body.referenceOffsetMinutes)
       ? body.referenceOffsetMinutes
       : 0;
+  const boards: VoiceBoardContext[] = Array.isArray(body?.boards)
+    ? (body.boards as unknown[])
+      .map((b) => {
+        if (!b || typeof b !== "object") return null;
+        const board = b as any;
+        if (typeof board.id !== "string" || !board.id.trim()) return null;
+        if (typeof board.name !== "string" || !board.name.trim()) return null;
+        const columns = Array.isArray(board.columns)
+          ? (board.columns as unknown[])
+            .map((c: any) => (
+              c && typeof c === "object" && typeof c.id === "string" && c.id.trim() && typeof c.name === "string" && c.name.trim()
+                ? { id: c.id.trim(), name: c.name.trim() }
+                : null
+            ))
+            .filter((c): c is { id: string; name: string } => !!c)
+          : undefined;
+        return {
+          id: board.id.trim(),
+          name: board.name.trim(),
+          kind: typeof board.kind === "string" ? board.kind : "week",
+          ...(columns?.length ? { columns } : {}),
+        } satisfies VoiceBoardContext;
+      })
+      .filter((b): b is VoiceBoardContext => !!b)
+    : [];
 
   if (!npub) return jsonResponse({ error: "npub is required" }, 400);
   if (normalizeNostrPublicKey(npub) !== auth.npub) {
@@ -600,6 +687,9 @@ Reference date (user local now): ${referenceDate}
 User time zone: ${referenceTimeZone}
 User UTC offset minutes (Date.getTimezoneOffset): ${referenceOffsetMinutes}
 
+Available boards (id, name, kind, optional columns) — empty array means only the current board:
+${JSON.stringify(boards)}
+
 Candidates:
 ${JSON.stringify(
     confirmed.map((c) => ({
@@ -607,6 +697,8 @@ ${JSON.stringify(
       title: c.title,
       dueText: c.dueText ?? null,
       reminderText: c.reminderText ?? null,
+      notes: c.notes ?? null,
+      recurrenceText: c.recurrenceText ?? null,
       subtasks: c.subtasks ?? [],
       boardId: c.boardId ?? boardId ?? null,
     })),
@@ -622,6 +714,8 @@ Return ONLY JSON with exact shape:
       "subtasks": string[],
       "notes": string | null,
       "boardId": string | null,
+      "columnId": string | null,
+      "recurrence": { "type": "daily" } | { "type": "weekly", "days": number[] } | { "type": "every", "n": number, "unit": "hour" | "day" | "week" } | { "type": "monthlyDay", "day": number, "interval"?: number } | null,
       "priority": 1 | 2 | 3 | null,
       "reminderMinutesBeforeDue": number[] | null,
       "reminderTime": string | null
@@ -635,14 +729,23 @@ Rules:
 - If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
 - If dueText contains a date but no task due/start clock time, dueISO MAY be a YYYY-MM-DD date string.
 - Use dueISO null only when there is truly no parseable date/time intent.
-- Priority defaults to null.
-- Only set priority to 1/2/3 when the user language clearly implies urgency/importance.
-- Do NOT infer priority from normal planning language.
+- Priority defaults to null. Only set priority when the user explicitly states it: "high priority", "urgent", "ASAP", "important" => 3; "medium priority" => 2; "low priority" => 1. Do NOT infer priority from normal planning language.
 - reminderMinutesBeforeDue defaults to null. Set it ONLY when reminderText is non-null or the candidate/title explicitly asks for a reminder/alert/notification.
 - If a reminder was requested without a lead time, use [0].
-- If reminderText says "15 minutes before", use [15]; "1 hour before" => [60]; "1 day before" => [1440]; "1 week before" => [10080].
+- reminderMinutesBeforeDue is an array and MUST include EVERY distinct offset the user requested, in the order given: "15 minutes before" => [15]; "1 hour before" => [60]; "1 day before" => [1440]; "1 week before" => [10080]; "15 minutes before and 1 hour before" => [15, 60].
 - If the user requested a date-only reminder at a specific clock time, set reminderMinutesBeforeDue to [0] and reminderTime to "HH:MM"; otherwise reminderTime is null.
 - Do not infer reminders from dueText alone.
+- notes: preserve the candidate's notes text verbatim as the notes string; use null only when the candidate has no notes.
+- recurrence defaults to null. Set it ONLY when recurrenceText (or the candidate title) clearly states a repeat pattern:
+  - "daily" => {"type":"daily"}
+  - "weekdays" => {"type":"weekly","days":[1,2,3,4,5]}
+  - "every Monday" / "every Monday and Thursday" => {"type":"weekly","days":[...]} (0=Sunday ... 6=Saturday)
+  - "every 3 days" => {"type":"every","n":3,"unit":"day"}
+  - "every 2 weeks" => {"type":"every","n":2,"unit":"week"}
+  - "every 4 hours" => {"type":"every","n":4,"unit":"hour"}
+  - "monthly on the 15th" => {"type":"monthlyDay","day":15}
+  - "every other month on the 1st" => {"type":"monthlyDay","day":1,"interval":2}
+- Board routing: only when the user explicitly names a board from the available boards list, set boardId to that board's exact id; otherwise null (the client keeps the current board). When the target board's kind is "lists" and the user names a list/column, set columnId to that column's exact id; otherwise columnId null. Never guess board/column ids that are not in the list.
 - Keep title clean and action-oriented.
 - Preserve checklist-like nouns as subtasks.
 - No markdown, no prose.`;
@@ -686,6 +789,19 @@ Rules:
     }
     priority = parseTaskPriority(fromBatch?.priority);
     subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
+    const recurrence = normalizeRecurrence(fromBatch?.recurrence);
+    // Guard against hallucinated board ids: only accept a model-chosen board
+    // when the client supplied a boards list and the id exists in it.
+    if (boards.length && fromBatch && typeof fromBatch.boardId === "string" && fromBatch.boardId.trim()) {
+      if (!boards.some((b) => b.id === fromBatch.boardId.trim())) {
+        normalizedBoardId = candidate.boardId ?? boardId;
+      }
+    }
+    const matchedBoard = boards.find((b) => b.id === normalizedBoardId);
+    const requestedColumnId = typeof fromBatch?.columnId === "string" ? fromBatch.columnId.trim() : "";
+    const columnId = matchedBoard?.kind === "lists" && matchedBoard.columns?.some((c) => c.id === requestedColumnId)
+      ? requestedColumnId
+      : undefined;
     const reminderRequested = hasExplicitReminderRequest(candidate);
     if (reminderRequested) {
       reminderMinutesBeforeDue = normalizeReminderMinutes(fromBatch?.reminderMinutesBeforeDue);
@@ -699,11 +815,13 @@ Rules:
       title: normalizedTitle,
       dueISO,
       boardId: normalizedBoardId,
+      columnId,
       notes,
       subtasks,
       priority,
       reminderMinutesBeforeDue,
       reminderTime,
+      recurrence,
     });
   }
 
