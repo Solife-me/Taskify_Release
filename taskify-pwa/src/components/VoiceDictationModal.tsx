@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useVoiceSession, isSpeechRecognitionSupported } from "../nostr/useVoiceSession";
-import type { FinalTask, TaskCandidate } from "../nostr/useVoiceSession";
+import type { FinalTask, TaskCandidate, VoiceBoardContext } from "../nostr/useVoiceSession";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -14,6 +14,7 @@ export type VoiceDictationModalProps = {
   npub: string;
   privateKeyHex: string;
   defaultBoardId?: string;
+  boards?: VoiceBoardContext[];
   testingMode?: boolean;
 };
 
@@ -57,9 +58,11 @@ function MicButton({
 
 function CandidateCard({
   candidate,
+  boardName,
   onDismiss,
 }: {
   candidate: TaskCandidate;
+  boardName?: string;
   onDismiss: (id: string) => void;
 }) {
   const isDismissed = candidate.status === "dismissed";
@@ -84,6 +87,15 @@ function CandidateCard({
           </div>
           {candidate.dueText && !isDismissed && (
             <div className="task-card__meta mt-0.5">Scheduled {candidate.dueText}</div>
+          )}
+          {candidate.recurrenceText && !isDismissed && (
+            <div className="task-card__meta mt-0.5">Repeats {candidate.recurrenceText}</div>
+          )}
+          {candidate.notes && !isDismissed && (
+            <div className="mt-0.5 text-xs text-secondary truncate">📝 {candidate.notes}</div>
+          )}
+          {boardName && !isDismissed && (
+            <div className="task-card__meta mt-0.5">Board: {boardName}</div>
           )}
           {!!candidate.subtasks?.length && !isDismissed && (
             <ul className="mt-1 space-y-0.5 text-xs text-secondary">
@@ -139,6 +151,7 @@ export function VoiceDictationModal({
   npub,
   privateKeyHex,
   defaultBoardId,
+  boards,
   testingMode = false,
 }: VoiceDictationModalProps) {
   const supported = isSpeechRecognitionSupported();
@@ -152,7 +165,10 @@ export function VoiceDictationModal({
   const [testingText, setTestingText] = useState("");
 
   const { session, startListening, stopListening, dismissCandidate, confirmCandidate, extractFromText, save, reset } =
-    useVoiceSession({ workerBaseUrl, npub, privateKeyHex, defaultBoardId, onSave: handleSave });
+    useVoiceSession({ workerBaseUrl, npub, privateKeyHex, defaultBoardId, boards, onSave: handleSave });
+
+  const boardNameFor = (boardId?: string) =>
+    boardId ? boards?.find((b) => b.id === boardId)?.name : undefined;
 
   // Auto-scroll transcript area when text grows
   useEffect(() => {
@@ -303,6 +319,11 @@ export function VoiceDictationModal({
                 <CandidateCard
                   key={candidate.id}
                   candidate={candidate}
+                  boardName={
+                    candidate.boardId && candidate.boardId !== defaultBoardId
+                      ? boardNameFor(candidate.boardId)
+                      : undefined
+                  }
                   onDismiss={dismissCandidate}
                 />
               ))}

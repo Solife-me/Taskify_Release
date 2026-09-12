@@ -1056,7 +1056,7 @@ test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fa
     if (u.includes("generativelanguage.googleapis.com")) {
       return new Response("gemini down", { status: 503 });
     }
-    if (u.includes("/ai/run/@cf/zai-org/glm-4.7-flash")) {
+    if (u.includes("/ai/run/@cf/zai-org/glm-5.3-flash")) {
       return new Response(
         JSON.stringify({
           result: {
@@ -1310,6 +1310,154 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
   }
 });
 
+test("POST /api/voice/extract carries notes and recurrence text into operations", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [{
+            content: {
+              parts: [{
+                text: JSON.stringify({
+                  tasks: [
+                    {
+                      title: "Take out the trash",
+                      dueText: "Monday evening",
+                      notes: "Recycling and compost bins too",
+                      recurrenceText: "every Monday",
+                      subtasks: [],
+                    },
+                  ],
+                }),
+              }],
+            },
+          }],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "remind me to take out the trash every Monday evening, note recycling and compost bins too",
+        candidates: [],
+        sessionDurationSeconds: 12,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.equal(body.operations[0].title, "Take out the trash");
+    assert.equal(body.operations[0].notes, "Recycling and compost bins too");
+    assert.equal(body.operations[0].recurrenceText, "every Monday");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("POST /api/voice/finalize normalizes recurrence and validates model-chosen boards and columns", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [{
+            content: {
+              parts: [{
+                text: JSON.stringify({
+                  tasks: [
+                    {
+                      id: "c1",
+                      title: "Trash night",
+                      dueISO: "2026-08-03T21:00:00.000Z",
+                      notes: "Recycling too",
+                      subtasks: [],
+                      boardId: "board-lists",
+                      columnId: "col-2",
+                      recurrence: { type: "weekly", days: [1, 4, 9] },
+                      priority: 3,
+                      reminderMinutesBeforeDue: [15, 60],
+                      reminderTime: null,
+                    },
+                    {
+                      id: "c2",
+                      title: "Groceries",
+                      dueISO: null,
+                      notes: null,
+                      subtasks: [],
+                      boardId: "board-hallucinated",
+                      columnId: "col-9",
+                      recurrence: { type: "monthlyDay", day: 40 },
+                      priority: null,
+                      reminderMinutesBeforeDue: null,
+                      reminderTime: null,
+                    },
+                  ],
+                }),
+              }],
+            },
+          }],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [
+          { id: "c1", title: "trash night", reminderText: "15 minutes before and 1 hour before", status: "confirmed" },
+          { id: "c2", title: "groceries", status: "confirmed" },
+        ],
+        boardId: "board-default",
+        referenceDate: "2026-08-01T18:00:00.000Z",
+        boards: [
+          { id: "board-weekly", name: "Weekly", kind: "week" },
+          { id: "board-lists", name: "Errands", kind: "lists", columns: [{ id: "col-1", name: "To buy" }, { id: "col-2", name: "Later" }] },
+        ],
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.equal(body.tasks.length, 2);
+
+    // c1: valid board + valid column, recurrence days sanitized, multi-reminder array kept
+    assert.equal(body.tasks[0].boardId, "board-lists");
+    assert.equal(body.tasks[0].columnId, "col-2");
+    assert.deepEqual(body.tasks[0].recurrence, { type: "weekly", days: [1, 4] });
+    assert.deepEqual(body.tasks[0].reminderMinutesBeforeDue, [15, 60]);
+    assert.equal(body.tasks[0].notes, "Recycling too");
+    assert.equal(body.tasks[0].priority, 3);
+
+    // c2: hallucinated board falls back to the request's default board, invalid
+    // recurrence and unmatched column are dropped
+    assert.equal(body.tasks[1].boardId, "board-default");
+    assert.equal(body.tasks[1].columnId, undefined);
+    assert.equal(body.tasks[1].recurrence, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("POST /api/voice/finalize only returns reminders for explicit reminder requests", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
@@ -1396,7 +1544,7 @@ test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini f
     if (u.includes("generativelanguage.googleapis.com")) {
       return new Response("error", { status: 503 });
     }
-    if (u.includes("/ai/run/@cf/zai-org/glm-4.7-flash")) {
+    if (u.includes("/ai/run/@cf/zai-org/glm-5.3-flash")) {
       return new Response(
         JSON.stringify({
           result: {

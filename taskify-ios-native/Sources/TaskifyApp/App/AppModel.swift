@@ -942,15 +942,14 @@ final class AppModel {
         return botCommandsCache.commands(for: publicKey) != nil
     }
 
-    func refreshBotCommands(publicKey: String) async {
+    func refreshBotCommands(publicKey: String, force: Bool = false) async {
         let key = publicKey.lowercased()
         guard !botCommandsInFlight.contains(key),
               let parsed = NostrPublicKey.parse(publicKey)?.hexString,
-              botCommandsCache.shouldRefresh(publicKey: parsed) else { return }
+              botCommandsCache.shouldRefresh(publicKey: parsed, force: force) else { return }
         botCommandsInFlight.insert(key)
         defer { botCommandsInFlight.remove(key) }
-        // Resolve the peer's relays like NIP-17 delivery: kind-10050
-        // inbox relays with the app relays as fallback.
+        // Public command lists may be updated on either inbox or discovery relays.
         let relays = await NIP17InboxRelayResolver.resolve(
             recipientPublicKey: parsed,
             discoveryRelayURLs: appRelays
@@ -958,7 +957,7 @@ final class AppModel {
         guard !relays.isEmpty else { return }
         guard let commands = await BotCommandFinder.commands(
             publicKey: parsed,
-            relayURLs: relays
+            relayURLs: TaskifyRelayURL.normalizedList(relays + appRelays)
         ), !commands.isEmpty else { return }
         botCommandsCache.save(commands, for: parsed)
         botCommandsVersion += 1
@@ -1354,7 +1353,10 @@ final class AppModel {
     /// Creates the tasks a dictation session produced, resolving each one onto the same board the
     /// quick-add bar would use. Tasks the model dated land on that date (so a week board files them
     /// under the right weekday); undated ones fall back to today, since every week-board task needs
-    /// a column to live in.
+    /// a column to live in. When the finalizer routed a task to a named board or list (the client
+    /// supplies board context at finalize time), that placement wins as long as it resolves to a
+    /// visible week/list board; notes, priority, recurrence, reminders, and due-time detection all
+    /// carry through, matching what the task editor supports.
     ///
     /// Returns how many were actually created -- the caller reports this back to the user, and a
     /// partial result is possible when a board rejects a task (for example a list board with no
@@ -1374,13 +1376,13 @@ final class AppModel {
         taskIDPrefix: String? = nil
     ) -> Int {
         guard let requestedBoard = defaultBoardID.flatMap({ board(withID: $0) }) else { return 0 }
-        let board: Board
+        let defaultBoard: Board
         switch requestedBoard.kind {
         case .week, .list:
-            board = requestedBoard
+            defaultBoard = requestedBoard
         case .compound:
             guard let child = snapshot.compoundChildBoards(for: requestedBoard.id).first else { return 0 }
-            board = child
+            defaultBoard = child
         case .bible:
             return 0
         }
@@ -1404,14 +1406,42 @@ final class AppModel {
             let dueDate = voiceTask.dueISO.flatMap { raw in
                 isoFormatter.date(from: raw) ?? plainISOFormatter.date(from: raw)
             }
+            // The Worker emits "YYYY-MM-DD" for a spoken date with no clock time and
+            // a full ISO datetime otherwise, so the string shape tells us whether the
+            // user explicitly gave a time.
+            let hasExplicitTime = dueDate != nil
+                && !(voiceTask.dueISO?.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) != nil)
             let effectiveDate = dueDate ?? Date()
+
+            // Model-routed placement wins when it resolves to a usable board;
+            // otherwise the task lands on the session's default board.
+            let routedBoard = voiceTask.boardId.flatMap { board(withID: $0) }
+            let board: Board
+            if let routed = routedBoard {
+                switch routed.kind {
+                case .week, .list:
+                    board = routed
+                case .compound:
+                    board = snapshot.compoundChildBoards(for: routed.id).first ?? defaultBoard
+                case .bible:
+                    board = defaultBoard
+                }
+            } else {
+                board = defaultBoard
+            }
 
             let columnID: String?
             switch board.kind {
             case .week:
                 columnID = WeekdayColumn.containing(effectiveDate).rawValue
             case .list:
-                columnID = board.columns.sorted { $0.order < $1.order }.first?.id
+                let orderedColumns = board.columns.sorted { $0.order < $1.order }
+                if let requestedColumn = voiceTask.columnId,
+                   orderedColumns.contains(where: { $0.id == requestedColumn }) {
+                    columnID = requestedColumn
+                } else {
+                    columnID = orderedColumns.first?.id
+                }
             case .compound, .bible:
                 columnID = nil
             }
@@ -1433,23 +1463,29 @@ final class AppModel {
             let subtasks = (voiceTask.subtasks ?? [])
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-            if !subtasks.isEmpty {
-                snapshot.updateTask(
-                    taskID: task.id,
-                    title: task.title,
-                    note: task.note,
-                    dueDate: task.dueDate,
-                    dueDateEnabled: task.dueDate != nil,
-                    dueTimeEnabled: task.dueTimeEnabled,
-                    dueTimeZone: task.dueTimeZone,
-                    priority: task.priority,
-                    columnID: task.columnID,
-                    subtasks: subtasks.map { TaskSubtask(title: $0) },
-                    editorPublicKey: identityPublicKey.nilIfEmpty,
-                    calendar: weekCalendar,
-                    weekStartsOn: weekStart
-                )
-            }
+            let reminders = Self.voiceReminders(
+                minutes: voiceTask.reminderMinutesBeforeDue,
+                dateOnly: !hasExplicitTime
+            )
+            let recurrence = voiceTask.recurrence?.taskRecurrence
+            snapshot.updateTask(
+                taskID: task.id,
+                title: task.title,
+                note: task.note,
+                dueDate: task.dueDate,
+                dueDateEnabled: task.dueDate != nil,
+                dueTimeEnabled: hasExplicitTime,
+                dueTimeZone: hasExplicitTime ? TimeZone.current.identifier : nil,
+                priority: task.priority,
+                columnID: task.columnID,
+                subtasks: subtasks.map { TaskSubtask(title: $0) },
+                recurrence: recurrence,
+                reminders: reminders,
+                reminderTime: hasExplicitTime ? nil : voiceTask.reminderTime,
+                editorPublicKey: identityPublicKey.nilIfEmpty,
+                calendar: weekCalendar,
+                weekStartsOn: weekStart
+            )
 
             createdTaskIDs.append(task.id)
             created += 1
@@ -1460,6 +1496,41 @@ final class AppModel {
             refreshNotifications(requestPermission: false)
         }
         return created
+    }
+
+    /// Maps Worker reminder offsets (minutes before due) to the app's reminder
+    /// presets, deduplicating while preserving the order the user spoke them.
+    static func voiceReminders(minutes: [Int]?, dateOnly: Bool) -> [TaskReminder] {
+        guard let minutes, !minutes.isEmpty else { return [] }
+        var seen = Set<String>()
+        var reminders: [TaskReminder] = []
+        for value in minutes where value >= 0 {
+            let reminder = TaskReminder(minutesBefore: value, dateOnly: dateOnly)
+            if seen.insert(reminder.rawValue).inserted {
+                reminders.append(reminder)
+            }
+        }
+        return reminders
+    }
+
+    /// Board/list context for the voice finalizer: visible week and list boards
+    /// with their columns, so the model can route spoken tasks to a named board
+    /// ("add this to my Errands board") exactly like the PWA does.
+    func voiceBoardContexts() -> [VoiceBoardContext] {
+        snapshot.boards
+            .filter { $0.isVisible && ($0.kind == .week || $0.kind == .list) }
+            .map { board in
+                VoiceBoardContext(
+                    id: board.id,
+                    name: board.name,
+                    kind: board.kind == .week ? "week" : "lists",
+                    columns: board.kind == .list && !board.columns.isEmpty
+                        ? board.columns
+                            .sorted { $0.order < $1.order }
+                            .map { VoiceBoardContext.Column(id: $0.id, name: $0.name) }
+                        : nil
+                )
+            }
     }
 
     @discardableResult
@@ -2692,7 +2763,11 @@ final class AppModel {
         contactPublicKey: String,
         to recipientValue: String
     ) async throws {
-        guard let contact = snapshot.contact(publicKeyValue: contactPublicKey) else {
+        let sharedPublicKey = NostrPublicKey.parse(contactPublicKey)?.hexString
+        let sharedContact = sharedPublicKey == identityPublicKey
+            ? ownContactRepresentation
+            : snapshot.contact(publicKeyValue: contactPublicKey)
+        guard let contact = sharedContact else {
             throw StructuredShareSendError.contactUnavailable
         }
         guard let recipientPublicKey = NostrPublicKey.parse(recipientValue) else {
@@ -2806,6 +2881,23 @@ final class AppModel {
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
+#if DEBUG
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1",
+           ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
+            // Exercise local insertion before composer clearing without publishing test data.
+            let eventID = UUID().uuidString
+            if snapshot.ingestDirectMessage(NostrDirectMessage(
+                rumorEventID: eventID, wrapEventID: eventID,
+                peerPublicKey: recipientValue, senderPublicKey: identityPublicKey,
+                content: text, createdAt: currentDirectMessageTimestamp(), isIncoming: false,
+                replyToEventID: replyToEventID
+            )) {
+                scheduleSave()
+            }
+            await Task.yield()
+            return
+        }
+#endif
         try await publishDirectMessageRumorBatch(
             to: recipientValue,
             drafts: [DirectMessageRumorDraft(
@@ -5435,9 +5527,19 @@ final class AppModel {
     /// model redundant relays; no fixture message is published or sent to an external service.
     private func receiveChatUITestMessagesIfRequested(peer: String) async {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_ARRIVALS"] == "1",
-              let identity = cachedIdentity,
               !snapshot.directMessageHistory.contains(where: { $0.content == "Live fixture message 3" }) else { return }
         do {
+            // Conversation setup and identity restoration race during repeated UI-test launches.
+            // Wait briefly instead of silently skipping the requested arrival fixture.
+            var restoredIdentity = cachedIdentity
+            for _ in 0..<50 where restoredIdentity == nil {
+                try await Task.sleep(for: .milliseconds(100))
+                restoredIdentity = cachedIdentity
+            }
+            guard let identity = restoredIdentity else {
+                errorMessage = "Could not prepare incoming chat test messages."
+                return
+            }
             let delay = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_ARRIVAL_DELAY"]
                 .flatMap(Double.init) ?? 3
             let variableHeights = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] == "1"

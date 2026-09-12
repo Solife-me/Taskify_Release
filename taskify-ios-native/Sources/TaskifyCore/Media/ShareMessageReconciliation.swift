@@ -15,8 +15,8 @@ public extension TaskifySnapshot {
                 _ = updated.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .sent)
             }
         }
-        // An old receipt can be inserted and immediately evicted by the history
-        // limit. Compare the resulting collections rather than the ingest flag.
+        // Callers may opt into a bounded history. Compare the resulting collections
+        // rather than trusting the ingest flag when reconciling their receipts.
         guard updated.directMessages != directMessages ||
               updated.directMessageDeletedEventIDs != directMessageDeletedEventIDs else { return nil }
         return updated

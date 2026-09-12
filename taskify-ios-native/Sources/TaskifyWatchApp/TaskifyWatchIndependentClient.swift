@@ -300,6 +300,7 @@ struct TaskifyWatchIndependentClient: Sendable {
     func interpretVoice(
         transcript: String,
         boardID: String,
+        boards: [TaskifyWatchVoiceBoardContext],
         profile: TaskifyWatchIndependentProfile,
         privateKey: Data
     ) async throws -> TaskifyWatchVoicePreview {
@@ -312,6 +313,7 @@ struct TaskifyWatchIndependentClient: Sendable {
         let tasks = await finalizeVoice(
             candidates: candidateTasks,
             boardID: boardID,
+            boards: boards,
             profile: profile,
             privateKey: privateKey
         )
@@ -326,9 +328,14 @@ struct TaskifyWatchIndependentClient: Sendable {
                     id: "\(requestID)-\(index)",
                     title: task.title,
                     dueISO: task.dueISO,
+                    boardId: task.boardId,
                     notes: task.notes,
                     subtasks: task.subtasks,
-                    priority: task.priority
+                    priority: task.priority,
+                    reminderMinutesBeforeDue: task.reminderMinutesBeforeDue,
+                    reminderTime: task.reminderTime,
+                    columnId: task.columnId,
+                    recurrence: task.recurrence
                 )
             }
         )
@@ -369,6 +376,8 @@ struct TaskifyWatchIndependentClient: Sendable {
                 title: title,
                 dueText: operation.dueText,
                 reminderText: operation.reminderText,
+                notes: operation.notes,
+                recurrenceText: operation.recurrenceText,
                 boardId: operation.boardId,
                 subtasks: operation.subtasks,
                 status: "confirmed"
@@ -382,6 +391,7 @@ struct TaskifyWatchIndependentClient: Sendable {
     private func finalizeVoice(
         candidates: [VoiceCandidateWire],
         boardID: String,
+        boards: [TaskifyWatchVoiceBoardContext],
         profile: TaskifyWatchIndependentProfile,
         privateKey: Data
     ) async -> [VoiceFinalWire] {
@@ -389,6 +399,7 @@ struct TaskifyWatchIndependentClient: Sendable {
             let npub: String
             let candidates: [VoiceCandidateWire]
             let boardId: String
+            let boards: [TaskifyWatchVoiceBoardContext]
             let referenceDate: String
             let referenceTimeZone: String
             let referenceOffsetMinutes: Int
@@ -400,6 +411,7 @@ struct TaskifyWatchIndependentClient: Sendable {
             npub: profile.publicKeyNpub,
             candidates: candidates,
             boardId: boardID,
+            boards: boards,
             referenceDate: ISO8601DateFormatter().string(from: now),
             referenceTimeZone: timeZone.identifier,
             referenceOffsetMinutes: -timeZone.secondsFromGMT(for: now) / 60
@@ -480,6 +492,8 @@ private struct VoiceCandidateWire: Codable, Sendable {
     let title: String
     let dueText: String?
     let reminderText: String?
+    let notes: String?
+    let recurrenceText: String?
     let boardId: String?
     let subtasks: [String]?
     let status: String
@@ -489,6 +503,8 @@ private struct VoiceCandidateWire: Codable, Sendable {
         title: String,
         dueText: String? = nil,
         reminderText: String? = nil,
+        notes: String? = nil,
+        recurrenceText: String? = nil,
         boardId: String? = nil,
         subtasks: [String]? = nil,
         status: String
@@ -497,6 +513,8 @@ private struct VoiceCandidateWire: Codable, Sendable {
         self.title = title
         self.dueText = dueText
         self.reminderText = reminderText
+        self.notes = notes
+        self.recurrenceText = recurrenceText
         self.boardId = boardId
         self.subtasks = subtasks
         self.status = status
@@ -508,6 +526,8 @@ private struct VoiceOperationWire: Decodable, Sendable {
     let title: String?
     let dueText: String?
     let reminderText: String?
+    let notes: String?
+    let recurrenceText: String?
     let boardId: String?
     let subtasks: [String]?
 }
@@ -515,7 +535,36 @@ private struct VoiceOperationWire: Decodable, Sendable {
 private struct VoiceFinalWire: Codable, Sendable {
     let title: String
     let dueISO: String?
+    let boardId: String?
+    let columnId: String?
     let notes: String?
     let subtasks: [String]?
     let priority: Int?
+    let reminderMinutesBeforeDue: [Int]?
+    let reminderTime: String?
+    let recurrence: VoiceRecurrence?
+
+    init(
+        title: String,
+        dueISO: String? = nil,
+        boardId: String? = nil,
+        columnId: String? = nil,
+        notes: String? = nil,
+        subtasks: [String]? = nil,
+        priority: Int? = nil,
+        reminderMinutesBeforeDue: [Int]? = nil,
+        reminderTime: String? = nil,
+        recurrence: VoiceRecurrence? = nil
+    ) {
+        self.title = title
+        self.dueISO = dueISO
+        self.boardId = boardId
+        self.columnId = columnId
+        self.notes = notes
+        self.subtasks = subtasks
+        self.priority = priority
+        self.reminderMinutesBeforeDue = reminderMinutesBeforeDue
+        self.reminderTime = reminderTime
+        self.recurrence = recurrence
+    }
 }

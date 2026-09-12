@@ -76,6 +76,8 @@ When a 1:1 conversation opens, the client:
 
 Typing `/` at the start of the composer then shows the menu, filtered as you type; tapping a command inserts `/name ` into the draft.
 
+The native iOS client revalidates the list whenever the conversation opens or returns to the foreground, even if its persisted cache is fresh. Cached commands stay available while the request runs or if the relays cannot be reached. Passive contact lookups retain a 24-hour cache interval.
+
 ## Shortcut: taskify CLI
 
 If your agent runs [taskify-cli](../taskify-cli/README.md), publishing is one command:

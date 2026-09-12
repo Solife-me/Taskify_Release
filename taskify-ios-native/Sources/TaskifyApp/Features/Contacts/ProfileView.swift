@@ -40,67 +40,74 @@ struct ContactQRCodeView: View {
     }
 }
 
-/// Profile detail matching the PWA's My Card detail view: portrait, name, QR of your npub and
-/// the saved fields, with "Edit My Card" opening the editor.
+/// QR-first profile card with copyable identity fields and direct contact sharing.
 struct NostrProfileDetailView: View {
     @Environment(AppModel.self) private var model
     @State private var showingEditor = false
+    @State private var showingSharePicker = false
+    @State private var feedback: String?
 
-    private var contact: NostrContact? {
-        model.ownContactRepresentation
-    }
+    private var contact: NostrContact? { model.ownContactRepresentation }
 
     var body: some View {
         ScrollView {
             if let contact {
-                VStack(spacing: 18) {
-                    VStack(spacing: 10) {
-                        NostrContactAvatar(contact: contact, size: 96)
-                        VStack(spacing: 4) {
-                            Text(contact.displayName)
-                                .font(.title2.bold())
-                                .foregroundStyle(TaskifyTheme.primaryText)
-                            Text(contact.subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(TaskifyTheme.secondaryText)
+                VStack(spacing: 12) {
+                    VStack(spacing: 0) {
+                        Button {
+                            copy(contact.npub, label: "Nostr pubkey")
+                        } label: {
+                            ContactQRCodeView(value: contact.npub)
+                                .aspectRatio(1, contentMode: .fit)
+                                .padding(16)
+                                .background(Color.white)
                         }
-                    }
-                    .padding(.top, 6)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Copy Nostr pubkey from QR code")
+                        .padding(16)
 
-                    VStack(spacing: 12) {
-                        ContactQRCodeView(value: contact.npub)
-                            .frame(width: 200, height: 200)
-                            .padding(14)
-                            .background(Color.white, in: RoundedRectangle(cornerRadius: 18))
-                        Text("Scan to add me as a contact")
-                            .font(.caption)
-                            .foregroundStyle(TaskifyTheme.secondaryText)
+                        HStack(spacing: 14) {
+                            NostrContactAvatar(contact: contact, size: 72)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(contact.displayName)
+                                    .font(.title2.bold())
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                Text(profileSubtitle(contact))
+                                    .font(.subheadline)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Button {
+                                showingSharePicker = true
+                            } label: {
+                                Image(systemName: "square.and.arrow.up")
+                                    .frame(width: 44, height: 44)
+                                    .taskifyGlass(cornerRadius: 22)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Send my contact card to a contact")
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.bottom, 22)
                     }
-                    .padding(18)
-                    .taskifyGlass(cornerRadius: 24)
+                    .taskifyGlass(cornerRadius: 28)
 
-                    VStack(alignment: .leading, spacing: 14) {
-                        if let nip05 = contact.profile?.nip05 {
-                            ProfileDetailField(label: "NIP-05", value: nip05, icon: "seal")
-                        }
-                        if let lud16 = contact.profile?.lud16 {
-                            ProfileDetailField(label: "Lightning", value: lud16, icon: "bolt")
-                        }
-                        if let about = contact.profile?.about {
-                            ProfileDetailField(label: "About", value: about, icon: "person.text.rectangle")
-                        }
-                        ProfileDetailField(label: "Your npub", value: contact.npub, icon: "key")
+                    if let lightning = contact.profile?.lud16, !lightning.isEmpty {
+                        copyField("Lightning", value: lightning)
                     }
-                    .padding(18)
-                    .taskifyGlass(cornerRadius: 24)
-
-                    Button {
-                        showingEditor = true
-                    } label: {
-                        Label("Edit My Card", systemImage: "pencil")
-                            .frame(maxWidth: .infinity)
+                    copyField("Nostr pubkey", value: contact.npub)
+                    if let nip05 = contact.profile?.nip05, !nip05.isEmpty {
+                        copyField("NIP-05", value: nip05)
                     }
-                    .buttonStyle(.borderedProminent)
+                    if let about = contact.profile?.about, !about.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("ABOUT").font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
+                            Text(about).font(.subheadline).textSelection(.enabled)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(18)
+                        .taskifyGlass(cornerRadius: 20)
+                    }
                 }
                 .padding(18)
             } else {
@@ -109,19 +116,178 @@ struct NostrProfileDetailView: View {
                     systemImage: "person.crop.circle.badge.exclamationmark",
                     description: Text("Your Nostr identity is not available.")
                 )
-                .foregroundStyle(TaskifyTheme.secondaryText)
                 .padding(.top, 80)
             }
         }
         .background(TaskifyTheme.background.ignoresSafeArea())
         .navigationTitle("My Card")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            model.loadOwnProfileIfNeeded()
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingEditor = true } label: {
+                    Image(systemName: "pencil")
+                        .frame(width: 44, height: 44)
+                        .foregroundStyle(.white)
+                        .background(TaskifyTheme.accent, in: Circle())
+                }
+                .accessibilityLabel("Edit My Card")
+                .disabled(contact == nil)
+            }
         }
+        .onAppear { model.loadOwnProfileIfNeeded() }
         .sheet(isPresented: $showingEditor) {
-            NostrProfileEditorSheet()
-                .environment(model)
+            NostrProfileEditorSheet().environment(model)
+        }
+        .sheet(isPresented: $showingSharePicker) {
+            MyCardRecipientSheet { recipient in
+                feedback = "Contact card sent to \(recipient.displayName)"
+            }
+            .environment(model)
+        }
+        .overlay(alignment: .bottom) {
+            if let feedback {
+                Text(feedback)
+                    .font(.subheadline)
+                    .padding(12)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding()
+                    .allowsHitTesting(false)
+            }
+        }
+        .task(id: feedback) {
+            guard feedback != nil else { return }
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            feedback = nil
+        }
+    }
+
+    private func profileSubtitle(_ contact: NostrContact) -> String {
+        if let username = contact.profile?.username ?? contact.profile?.name, !username.isEmpty {
+            return "@" + username.trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        }
+        return contact.subtitle
+    }
+
+    private func copyField(_ label: String, value: String) -> some View {
+        Button { copy(value, label: label) } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(label.uppercased())
+                    .font(.caption)
+                    .tracking(1)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                Text(value)
+                    .font(.body)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
+            .taskifyGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy \(label): \(value)")
+    }
+
+    private func copy(_ value: String, label: String) {
+        UIPasteboard.general.string = value
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        feedback = "\(label) copied"
+        UIAccessibility.post(notification: .announcement, argument: feedback)
+    }
+}
+
+private struct MyCardRecipientSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    @State private var sendingID: String?
+    @State private var errorMessage: String?
+    let onSent: (NostrContact) -> Void
+
+    private var recipients: [NostrContact] {
+        model.nostrContacts.filter { $0.publicKey != model.identityPublicKey }
+    }
+
+    private var filteredRecipients: [NostrContact] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return recipients.filter {
+            query.isEmpty || $0.displayName.localizedCaseInsensitiveContains(query) ||
+                $0.subtitle.localizedCaseInsensitiveContains(query) ||
+                $0.npub.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(filteredRecipients) { recipient in
+                Button {
+                    guard sendingID == nil else { return }
+                    sendingID = recipient.id
+                    Task { await send(to: recipient) }
+                } label: {
+                    HStack(spacing: 12) {
+                        NostrContactAvatar(contact: recipient, size: 42)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(recipient.displayName).foregroundStyle(TaskifyTheme.primaryText)
+                            Text(recipient.subtitle).font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
+                        }
+                        Spacer()
+                        if sendingID == recipient.id {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "paperplane").foregroundStyle(TaskifyTheme.accent)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .disabled(sendingID != nil)
+                .listRowBackground(Color.clear)
+                .accessibilityLabel("Send my card to \(recipient.displayName)")
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(TaskifyTheme.background)
+            .overlay {
+                if recipients.isEmpty {
+                    ContentUnavailableView("No Contacts", systemImage: "person.crop.circle.badge.plus",
+                                           description: Text("Add or sync contacts to send your card."))
+                } else if filteredRecipients.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                }
+            }
+            .navigationTitle("Send My Card")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search contacts")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(sendingID != nil)
+                }
+            }
+            .alert("Couldn’t Send Card", isPresented: Binding(
+                get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "Please try again.")
+            }
+        }
+        .interactiveDismissDisabled(sendingID != nil)
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+
+    @MainActor
+    private func send(to recipient: NostrContact) async {
+        defer { sendingID = nil }
+        do {
+            try await model.sendSharedContact(contactPublicKey: model.identityPublicKey, to: recipient.publicKey)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            onSent(recipient)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
 }
@@ -348,30 +514,6 @@ struct NostrProfileEditorSheet: View {
             throw ProfilePictureUploadError.invalidServer
         }
         return fallback
-    }
-}
-
-private struct ProfileDetailField: View {
-    let label: String
-    let value: String
-    let icon: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(TaskifyTheme.accent)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-                Text(value)
-                    .font(.subheadline)
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .textSelection(.enabled)
-            }
-            Spacer()
-        }
     }
 }
 

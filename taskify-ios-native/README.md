@@ -25,6 +25,8 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Taskify event scheduling compatible with the PWA, including per-event time zones, reminder metadata and local notifications, native event cards inside week/list/compound board columns, mixed task-and-event bulk selection/move/delete, board/list placement with replay-safe cross-board moves, contact-based attendee selection, stable per-attendee invite tokens, encrypted outbound invitations, authenticated organizer-side RSVP summaries with latest-response reconciliation, and lossless recurrence/series preservation across native edits
 - Native recurring Taskify events with PWA-compatible deterministic instance IDs, bounded rolling future windows, DST-safe generation, repeat presets/end dates, scoped single/future deletion, and logical-ID deduplication for newly published or previously saved events
 - Independently selectable Apple Reminders integration in both Upcoming views with due-day dots, dated list sections, list colors, priority/notes display, search, and completion writes back to Apple Reminders
+- Per-item local alerts for Apple Calendar events and Apple Reminders, with persisted lead-time selections that survive calendar navigation and omit deleted events or completed reminders
+- Voice task creation with notes, recurrence, multiple reminders, and named board/list routing on iPhone and Watch, including independent Watch saves
 - PWA-familiar Add Board flow directly from the board selector, with weekly/list/compound creation, paste-or-scan joining, selection, synced rename, local archive/restore, and guarded deletion with task and compound-reference cleanup
 - Native compound-board creation and management with ordered child list boards, aggregated task columns, optional child-board labels, and PWA-compatible linked-board sync
 - Atomic JSON persistence in Application Support
@@ -57,7 +59,7 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 - Native Nostr contact directory with encrypted PWA-compatible NIP-51 private-list sync, signed kind-0 profile names/photos, automatic inbox-relay discovery, add/edit/delete controls, and contact selection for task shares and assignments
 - Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, delivery to usable kind-10050 relays with fallback delivery when no usable list is resolved, a signed native kind-10050 preference publisher, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, tappable contact headers, shared Photos/Files/Links contact tabs with photo URLs excluded from Links and non-photo attachments in Files, Markdown-formatted encrypted message bubbles, and tap-to-copy inline or fenced code
 - Privacy-isolated NIP-17 relay sessions that may connect to recipient relays for outbound publishing but send the user's `#p` inbox subscription only to the user's own advertised inbox relays
-- Opt-in native DM push through `push.solife.me`: NIP-98-authenticated APNs token registration, automatic signed kind-10050 inbox updates, NIP-42 relay authentication, generic-alert APNs delivery with background-wake enrichment, and verified redeemed-amount payment notifications with separate message/payment/both controls (rich decrypted previews are deferred until the Notification Service Extension ships)
+- Opt-in native DM push through `push.solife.me`: NIP-98-authenticated APNs token registration, automatic signed kind-10050 inbox updates, NIP-42 relay authentication, opaque short-lived preview URLs, on-device NIP-17 decryption, rich message/activity previews with an inline Reply action that sends from the expanded notification without opening the app, and verified redeemed-amount payment notifications with separate message/payment/both controls
 - Interoperable Chat replies and emoji reactions with canonical rumor references, PWA-style kind-7 reaction rumors, long-press actions, quoted reply previews, optimistic offline delivery, replacement/removal ordering, and out-of-order reaction recovery
 - PWA-compatible encrypted group conversations with deterministic member-derived threads, synced group names, participant details, media/file/link tabs, encrypted photo/document attachments, newest-message opening, global individual-message results, and searchable conversation history with stable result navigation
 - PWA-familiar Chat organization and presentation with a separate unknown-sender inbox, add/block safety actions, native archive/delete gestures, replay-safe local deletion, configurable local history retention and clearing, group mute/leave/rejoin controls, day and sender message grouping, compact link cards, and Liquid Glass composer/search controls
@@ -100,14 +102,16 @@ The migration bundle identifier is `solife.me.Taskify.Native`, which allows the 
 The native target includes an App Store-ready app-icon catalog based on the release app's Taskify artwork.
 
 DM push requires the Push Notifications capability on the `solife.me.Taskify.Native` App ID and
-signing profile. Install the StartOS package from `taskify-push-relay/`, configure its APNs Team ID,
+signing profile. The Notification Service Extension App ID (`solife.me.Taskify.Native.NotificationService`)
+also requires App Groups and shared Keychain access. Install the StartOS package from `taskify-push-relay/`, configure its APNs Team ID,
 Key ID, and `.p8` provider key, expose its interface as `https://push.solife.me` /
 `wss://push.solife.me`, then enable the desired categories under Taskify Settings (first-run
-onboarding's "Enable notifications" also opts in with the default categories). Until the
-Notification Service Extension ships, APNs shows a generic alert and the app enriches it after the
-background wake (local message notifications and verified redeemed-amount payment notifications).
-Payment redemption is a best-effort background operation and completes on the next app run if iOS
-withholds background time.
+onboarding's "Enable notifications" also opts in with the default categories). Message and
+activity previews are decrypted in the extension without opening the app. The extension does not
+use Apple's managed Notification Filtering entitlement, so it cannot hide a notification: payments,
+categories the user did not select, blocked senders, muted or left group conversations, and events
+it cannot fetch or decrypt keep the generic `New Message` alert. Payment redemption is a best-effort background operation and completes on the
+next app run if iOS withholds background time.
 
 The native target and its Swift package tests are validated with Xcode 27 beta, the iOS 27 SDK, and an iOS 26.4 simulator runtime.
 

@@ -152,6 +152,38 @@ final class NostrDirectMessageTests: XCTestCase {
         XCTAssertEqual(roundTrip.directMessageReadAt, snapshot.directMessageReadAt)
     }
 
+    func testMessageIngestRetainsCompleteHistoryUnlessCallerSetsLimit() throws {
+        let peer = try identity(senderPrivateKey).publicKeyHex
+        var completeSnapshot = TaskifySnapshot.empty
+        for index in 1...450 {
+            XCTAssertTrue(completeSnapshot.ingestDirectMessage(message(
+                rumorID: String(format: "%064x", index),
+                wrapID: String(format: "%064x", index + 1_000),
+                peer: peer,
+                sender: peer,
+                content: "Message \(index)",
+                createdAt: index,
+                incoming: true
+            )))
+        }
+        XCTAssertEqual(completeSnapshot.directMessageHistory.count, 450)
+
+        var cappedSnapshot = TaskifySnapshot.empty
+        for index in 1...101 {
+            XCTAssertTrue(cappedSnapshot.ingestDirectMessage(message(
+                rumorID: String(format: "%064x", index),
+                wrapID: String(format: "%064x", index + 1_000),
+                peer: peer,
+                sender: peer,
+                content: "Message \(index)",
+                createdAt: index,
+                incoming: true
+            ), maximumCount: 100))
+        }
+        XCTAssertEqual(cappedSnapshot.directMessageHistory.count, 100)
+        XCTAssertEqual(cappedSnapshot.directMessageHistory.first?.content, "Message 2")
+    }
+
     func testOutgoingMessageDeliveryStatePersistsAndCanAdvance() throws {
         let peer = try identity(recipientPrivateKey).publicKeyHex
         var snapshot = TaskifySnapshot.empty

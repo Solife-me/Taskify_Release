@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { recoverRelayHistory } from "taskify-runtime-nostr";
+import { NostrSession } from "./NostrSession";
+import { useSyncResume } from "./useSyncResume";
 import { boardTag } from "../boardCrypto";
 import type { Board, Task } from "../domains/tasks/taskTypes";
 import { dedupeRecurringInstances } from "../domains/tasks/taskUtils";
@@ -132,6 +135,7 @@ export function useBoardSync({
   applyCalendarEvent,
   fullHistorySyncNonce = 0,
 }: UseBoardSyncParams): void {
+  const resumeEpoch = useSyncResume();
   const nostrBoardsKey = useMemo(() => {
     const items = boards
       .filter((board) => board.nostr?.boardId)
@@ -215,6 +219,7 @@ export function useBoardSync({
         boardRelays,
         [{ kinds: [30301], "#b": [bTag], "#d": unseenIds }],
         (ev, evRelay) => {
+          if (disposed) return;
           ev.__relay = evRelay;
           enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
         },
@@ -242,6 +247,7 @@ export function useBoardSync({
   );
 
   useEffect(() => {
+    let disposed = false;
     let parsed: Array<{ id: string; relays: string }> = [];
     try {
       parsed = JSON.parse(nostrBoardsKey || "[]") as Array<{ id: string; relays: string }>;
@@ -254,7 +260,9 @@ export function useBoardSync({
       handledFullHistorySyncNonceRef.current = fullHistorySyncNonce;
     }
     const pendingRelaysByBoard = pendingRelaysByBoardRef.current;
+    const relayBatches = relayBatchRef.current;
     const unsubs: Array<() => void> = [];
+    const recovery = new AbortController();
     const syncTimeoutByBoard = new Map<string, number>();
     const clearSyncTimeout = (bTag: string) => {
       const timeoutId = syncTimeoutByBoard.get(bTag);
@@ -270,12 +278,13 @@ export function useBoardSync({
       }
     };
     const completeBoardSync = (bTag: string, relayList: string[]) => {
+      if (disposed) return;
       clearSyncTimeout(bTag);
       pendingRelaysByBoard.delete(bTag);
       completedNostrInitialSyncRef.current.add(bTag);
       markNostrBoardInitialSyncComplete(bTag);
       persistCursors();
-      window.setTimeout(() => verifyUnseenTasks(bTag, relayList), 500);
+      window.setTimeout(() => { if (!disposed) verifyUnseenTasks(bTag, relayList); }, 500);
     };
 
     setPendingNostrInitialSyncByBoardTag((prev) => {
@@ -297,13 +306,15 @@ export function useBoardSync({
 
       const timeoutId = window.setTimeout(() => {
         clearSyncTimeout(item.id);
-        const boardBatch = relayBatchRef.current.get(item.id);
-        if (boardBatch?.size) {
-          const combined = mergeRelayBatches(boardBatch, true);
-          flushRelayBatch(item.id, combined);
-          relayBatchRef.current.delete(item.id);
-        }
-        completeBoardSync(item.id, relayList);
+        void enqueueForBoard(item.id, async () => {
+          if (disposed) return;
+          const boardBatch = relayBatchRef.current.get(item.id);
+          if (boardBatch?.size) {
+            flushRelayBatch(item.id, mergeRelayBatches(boardBatch, true));
+            relayBatchRef.current.delete(item.id);
+          }
+          completeBoardSync(item.id, relayList);
+        });
       }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
       syncTimeoutByBoard.set(item.id, timeoutId);
 
@@ -318,6 +329,7 @@ export function useBoardSync({
         relayList,
         filters,
         (ev, evRelay) => {
+          if (disposed) return;
           ev.__relay = evRelay;
           if (ev.kind === 30300) enqueueForBoard(item.id, () => applyBoardEvent(ev)).catch(() => {});
           else if (ev.kind === 30301) {
@@ -334,47 +346,67 @@ export function useBoardSync({
           }
         },
         (eoseRelay) => {
-          if (!eoseRelay) {
+          // Decryption is asynchronous. Keep the relay pending until every
+          // earlier event has entered its batch, then read and flush that batch.
+          void enqueueForBoard(item.id, async () => {
+            if (disposed) return;
             const boardBatch = relayBatchRef.current.get(item.id);
-            if (boardBatch?.size) {
-              const combined = mergeRelayBatches(boardBatch, false);
+            if (!eoseRelay) {
+              if (boardBatch?.size) flushRelayBatch(item.id, mergeRelayBatches(boardBatch, false));
               relayBatchRef.current.delete(item.id);
-              (boardEventQueuesRef.current.get(item.id)?.promise ?? Promise.resolve())
-                .catch(() => {})
-                .then(() => {
-                  if (combined.size) flushRelayBatch(item.id, combined);
-                });
+              completeBoardSync(item.id, relayList);
+              return;
             }
-            completeBoardSync(item.id, relayList);
-            return;
-          }
-
-          pendingRelaysByBoard.get(item.id)?.delete(eoseRelay);
-
-          const boardBatch = relayBatchRef.current.get(item.id);
-          const relayBatch = boardBatch?.get(eoseRelay);
-          if (relayBatch?.size) {
-            boardBatch!.delete(eoseRelay);
-            (boardEventQueuesRef.current.get(item.id)?.promise ?? Promise.resolve())
-              .catch(() => {})
-              .then(() => {
-                flushRelayBatch(item.id, relayBatch);
-              });
-          }
-
-          const pendingRelays = pendingRelaysByBoard.get(item.id);
-          if (!pendingRelays?.size) {
-            completeBoardSync(item.id, relayList);
-          }
+            const relayBatch = boardBatch?.get(eoseRelay);
+            if (relayBatch?.size) flushRelayBatch(item.id, relayBatch);
+            boardBatch?.delete(eoseRelay);
+            if (!boardBatch?.size) relayBatchRef.current.delete(item.id);
+            pendingRelaysByBoard.get(item.id)?.delete(eoseRelay);
+            if (!pendingRelaysByBoard.get(item.id)?.size) completeBoardSync(item.id, relayList);
+          });
         },
       );
       unsubs.push(unsub);
+      // Older versions checkpointed newest-first partial history. Reconcile
+      // retained records independently of those cursors, one page per relay.
+      void (async () => {
+        const session = await NostrSession.init(relayList);
+        for (const relay of relayList) {
+          if (recovery.signal.aborted) return;
+          try {
+            await recoverRelayHistory(session, { kinds: [30300, 30301, TASKIFY_CALENDAR_EVENT_KIND], "#b": [item.id] }, relay, async (event) => {
+              if (recovery.signal.aborted) return;
+              await enqueueForBoard(item.id, async () => {
+                if (recovery.signal.aborted) return;
+                // Recovery delivers directly; it is independent of live EOSE batches.
+                if (event.kind === 30300) await applyBoardEvent(event);
+                else if (event.kind === 30301) await applyTaskEvent(event);
+                else await applyCalendarEvent(event);
+              });
+            }, { signal: recovery.signal });
+          } catch (error) {
+            if (!recovery.signal.aborted) console.warn("[nostr] board history recovery incomplete", error);
+          }
+        }
+      })().catch(error => {
+        if (!recovery.signal.aborted) console.warn("[nostr] board history recovery failed", error);
+      });
     }
 
     return () => {
+      disposed = true;
+      recovery.abort();
       unsubs.forEach((unsub) => unsub());
       syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      for (const item of parsed) pendingRelaysByBoard.delete(item.id);
+      for (const item of parsed) {
+        pendingRelaysByBoard.delete(item.id);
+        // Drain work already decrypting before a replacement subscription begins.
+        void enqueueForBoard(item.id, async () => {
+          const batch = relayBatches.get(item.id);
+          if (batch?.size) flushRelayBatch(item.id, mergeRelayBatches(batch, false));
+          relayBatches.delete(item.id);
+        });
+      }
     };
   }, [
     applyBoardEvent,
@@ -387,6 +419,7 @@ export function useBoardSync({
     markNostrBoardInitialSyncComplete,
     nostrBoardsKey,
     fullHistorySyncNonce,
+    resumeEpoch,
     pendingRelaysByBoardRef,
     pool,
     relayBatchRef,

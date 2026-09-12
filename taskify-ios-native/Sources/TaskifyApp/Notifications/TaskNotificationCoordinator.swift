@@ -64,21 +64,7 @@ actor TaskNotificationCoordinator {
         self.center = center
         self.defaults = defaults
         center.delegate = presentationDelegate
-        center.setNotificationCategories([Self.taskCategory])
-    }
-
-    private static var taskCategory: UNNotificationCategory {
-        let complete = UNNotificationAction(
-            identifier: TaskifyNotificationContract.completeTaskActionIdentifier,
-            title: "Mark Complete",
-            options: []
-        )
-        return UNNotificationCategory(
-            identifier: TaskifyNotificationContract.taskCategoryIdentifier,
-            actions: [complete],
-            intentIdentifiers: [],
-            options: []
-        )
+        Task { await TaskifyNotificationCategories.registerIfNeeded(center: center) }
     }
 
     func reschedule(
@@ -597,7 +583,8 @@ private final class NotificationPresentationDelegate: NSObject, UNUserNotificati
         }
         guard let action = TaskifyNotificationContract.action(
             for: response.actionIdentifier,
-            userInfo: userInfo
+            userInfo: userInfo,
+            responseText: (response as? UNTextInputNotificationResponse)?.userText
         ) else {
             completionHandler()
             return
@@ -665,6 +652,8 @@ final class TaskNotificationActionRouter {
         switch action {
         case .completeTask(let taskID):
             await model.completeTaskFromNotification(taskID)
+        case .reply(let target, let text):
+            await model.replyToDirectMessageFromNotification(to: target, text: text)
         }
     }
 }

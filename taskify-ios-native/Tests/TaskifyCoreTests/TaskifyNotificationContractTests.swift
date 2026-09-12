@@ -102,6 +102,50 @@ final class TaskifyNotificationContractTests: XCTestCase {
         ))
     }
 
+    func testReplyActionReadsTheConversationAndTypedText() {
+        let conversationID = String(repeating: "ab", count: 32)
+        let group = TaskifyNotificationContract.ReplyTarget(
+            conversationID: conversationID.uppercased(),
+            isGroup: true
+        )
+        XCTAssertEqual(group.userInfo, [
+            TaskifyNotificationContract.conversationIDKey: conversationID,
+            TaskifyNotificationContract.conversationKindKey: "group",
+        ])
+        XCTAssertEqual(
+            TaskifyNotificationContract.action(
+                for: TaskifyNotificationContract.replyDirectMessageActionIdentifier,
+                userInfo: group.userInfo,
+                responseText: "  On my way  \n"
+            ),
+            .reply(to: .init(conversationID: conversationID, isGroup: true), text: "On my way")
+        )
+    }
+
+    func testReplyActionRejectsBlankTextOrIncompleteConversation() {
+        let conversationID = String(repeating: "ab", count: 32)
+        let userInfo = TaskifyNotificationContract.ReplyTarget(
+            conversationID: conversationID,
+            isGroup: false
+        ).userInfo
+        let reply = TaskifyNotificationContract.replyDirectMessageActionIdentifier
+        XCTAssertNil(TaskifyNotificationContract.action(for: reply, userInfo: userInfo, responseText: " \n "))
+        XCTAssertNil(TaskifyNotificationContract.action(for: reply, userInfo: userInfo))
+        XCTAssertNil(TaskifyNotificationContract.action(
+            for: reply,
+            userInfo: [TaskifyNotificationContract.conversationIDKey: conversationID],
+            responseText: "Hello"
+        ))
+        XCTAssertNil(TaskifyNotificationContract.action(
+            for: reply,
+            userInfo: [
+                TaskifyNotificationContract.conversationIDKey: "npub-or-garbage",
+                TaskifyNotificationContract.conversationKindKey: "direct",
+            ],
+            responseText: "Hello"
+        ))
+    }
+
     func testNotificationTapDestinationsUseStableDeviceLocalValues() {
         XCTAssertEqual(
             TaskifyNotificationContract.destination(userInfo: [

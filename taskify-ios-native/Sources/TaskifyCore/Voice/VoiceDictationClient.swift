@@ -17,6 +17,33 @@ public enum VoiceDictationError: LocalizedError, Equatable {
     }
 }
 
+/// Board/list context sent to `/api/voice/finalize` so the model can route a
+/// task to a named board ("add this to my Errands board") the same way the PWA
+/// does. Mirrors the Worker's `VoiceBoardContext` wire format.
+public struct VoiceBoardContext: Codable, Hashable, Sendable {
+    public struct Column: Codable, Hashable, Sendable {
+        public var id: String
+        public var name: String
+
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    public var id: String
+    public var name: String
+    public var kind: String
+    public var columns: [Column]?
+
+    public init(id: String, name: String, kind: String, columns: [Column]? = nil) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.columns = columns
+    }
+}
+
 public struct VoiceExtractionResult: Equatable, Sendable {
     public var operations: [VoiceTaskOperation]
     /// Set when the worker refused on quota grounds. It can still return operations alongside a
@@ -93,11 +120,17 @@ public struct VoiceDictationClient: Sendable {
         identity: NostrIdentity,
         candidates: [VoiceTaskCandidate],
         boardID: String?,
+        boards: [VoiceBoardContext] = [],
         now: Date = Date(),
         timeZone: TimeZone = .current
     ) async -> [VoiceFinalTask] {
         let fallback = candidates.map {
-            VoiceFinalTask(title: $0.title, boardId: $0.boardId ?? boardID, subtasks: $0.subtasks)
+            VoiceFinalTask(
+                title: $0.title,
+                boardId: $0.boardId ?? boardID,
+                notes: $0.notes,
+                subtasks: $0.subtasks
+            )
         }
         guard !candidates.isEmpty else { return [] }
 
@@ -111,6 +144,7 @@ public struct VoiceDictationClient: Sendable {
                     npub: identity.npub,
                     candidates: candidates,
                     boardId: boardID,
+                    boards: boards,
                     referenceDate: ISO8601DateFormatter().string(from: now),
                     referenceTimeZone: timeZone.identifier,
                     referenceOffsetMinutes: -timeZone.secondsFromGMT(for: now) / 60
@@ -165,6 +199,7 @@ public struct VoiceDictationClient: Sendable {
         let npub: String
         let candidates: [VoiceTaskCandidate]
         let boardId: String?
+        let boards: [VoiceBoardContext]
         let referenceDate: String
         let referenceTimeZone: String
         let referenceOffsetMinutes: Int

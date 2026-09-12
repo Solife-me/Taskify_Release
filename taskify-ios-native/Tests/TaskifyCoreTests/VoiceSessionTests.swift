@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import TaskifyWatchShared
 @testable import TaskifyCore
 
 final class VoiceSessionTests: XCTestCase {
@@ -144,6 +145,28 @@ final class VoiceSessionTests: XCTestCase {
 
     // MARK: - update_task
 
+    func testCreateAndUpdateCarryNotesAndRecurrenceText() {
+        var state = VoiceSessionState()
+        state.apply([
+            .init(
+                type: .createTask,
+                title: "Buy milk",
+                notes: "2% and oat",
+                recurrenceText: "every Monday"
+            ),
+        ], idProvider: sequentialIDs())
+        state.apply([
+            .init(type: .updateTask, changes: .init(notes: "whole milk only", recurrenceText: "weekdays")),
+        ])
+
+        XCTAssertEqual(state.candidates[0].notes, "whole milk only")
+        XCTAssertEqual(state.candidates[0].recurrenceText, "weekdays")
+
+        // Top-level fields win over `changes`, matching the PWA reducer.
+        state.apply([.init(type: .updateTask, notes: "oat milk only")])
+        XCTAssertEqual(state.candidates[0].notes, "oat milk only")
+    }
+
     func testUpdateTaskWithoutTargetEditsTheMostRecentCandidate() {
         var state = session(withTitles: ["Call Ana", "Buy milk"])
         state.apply([.init(type: .updateTask, changes: .init(dueText: "Thursday"))])
@@ -255,8 +278,8 @@ final class VoiceDictationClientParsingTests: XCTestCase {
     func testParseOperationsDecodesEachOperationKind() {
         let json = """
         {"operations":[
-          {"type":"create_task","title":"Buy milk","dueText":"tomorrow","subtasks":["2%"]},
-          {"type":"update_task","targetRef":"milk","changes":{"dueText":"Friday"}},
+          {"type":"create_task","title":"Buy milk","dueText":"tomorrow","subtasks":["2%"],"notes":"2% and oat","recurrenceText":"every Monday"},
+          {"type":"update_task","targetRef":"milk","changes":{"dueText":"Friday","notes":"updated note","recurrenceText":"weekly"}},
           {"type":"delete_task","targetRef":"all"},
           {"type":"mark_uncertain","targetRef":"task:abc"}
         ]}
@@ -265,7 +288,11 @@ final class VoiceDictationClientParsingTests: XCTestCase {
 
         XCTAssertEqual(operations.map(\.type), [.createTask, .updateTask, .deleteTask, .markUncertain])
         XCTAssertEqual(operations[0].subtasks, ["2%"])
+        XCTAssertEqual(operations[0].notes, "2% and oat")
+        XCTAssertEqual(operations[0].recurrenceText, "every Monday")
         XCTAssertEqual(operations[1].changes?.dueText, "Friday")
+        XCTAssertEqual(operations[1].changes?.notes, "updated note")
+        XCTAssertEqual(operations[1].changes?.recurrenceText, "weekly")
         XCTAssertEqual(operations[2].targetRef, "all")
     }
 
@@ -290,6 +317,85 @@ final class VoiceDictationClientParsingTests: XCTestCase {
 
     /// A blank title would create an untitled, unrecoverable task, so those are dropped rather
     /// than surfaced.
+    func testParseFinalTasksDecodesRecurrenceRemindersAndPlacement() {
+        let json = """
+        {"tasks":[{
+          "title":"Trash night",
+          "dueISO":"2026-08-03T21:00:00Z",
+          "columnId":"col-2",
+          "notes":"Bins go out before 9",
+          "priority":3,
+          "reminderMinutesBeforeDue":[15,60],
+          "reminderTime":"09:00",
+          "recurrence":{"type":"weekly","days":[1,4]}
+        }]}
+        """
+        let tasks = VoiceDictationClient.parseFinalTasks(from: Data(json.utf8))
+
+        XCTAssertEqual(tasks.count, 1)
+        XCTAssertEqual(tasks[0].columnId, "col-2")
+        XCTAssertEqual(tasks[0].notes, "Bins go out before 9")
+        XCTAssertEqual(tasks[0].reminderMinutesBeforeDue, [15, 60])
+        XCTAssertEqual(tasks[0].reminderTime, "09:00")
+        XCTAssertEqual(tasks[0].recurrence, .weekly(days: [1, 4]))
+    }
+
+    func testWatchDraftPreservesBoardRoutingAndSupportsLegacyCommands() throws {
+        let fallback = TaskifyWatchBoard(id: "current", name: "Current", openTaskCount: 0, kind: "week")
+        let target = TaskifyWatchBoard(id: "errands", name: "Errands", openTaskCount: 0, kind: "lists")
+        let wire = #"{"id":"draft","title":"Buy milk","boardId":"errands","columnId":"shopping"}"#
+        let draft = try JSONDecoder().decode(TaskifyWatchVoiceDraft.self, from: Data(wire.utf8))
+        let command = TaskifyWatchCommand(kind: .createVoiceTasks, boardID: fallback.id, voiceTasks: [draft])
+        let restored = try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command))
+        let restoredDraft = try XCTUnwrap(restored.voiceTasks?.first)
+        XCTAssertEqual(restoredDraft.boardId, target.id)
+        XCTAssertEqual(restoredDraft.columnId, "shopping")
+        XCTAssertEqual(restoredDraft.destinationBoard(in: [fallback, target], fallback: fallback), target)
+        XCTAssertEqual(restoredDraft.destinationBoard(in: [fallback], fallback: fallback), fallback)
+
+        let legacy = try JSONDecoder().decode(TaskifyWatchVoiceDraft.self, from: Data(#"{"id":"old","title":"Legacy"}"#.utf8))
+        XCTAssertNil(legacy.boardId)
+        XCTAssertEqual(legacy.destinationBoard(in: [fallback, target], fallback: fallback), fallback)
+    }
+
+    func testVoiceRecurrenceWireShapeMatchesWorkerAndPWA() throws {
+        let json = #"{"type":"every","n":2,"unit":"week"}"#
+        let decoded = try JSONDecoder().decode(VoiceRecurrence.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded, .every(count: 2, unit: "week"))
+        XCTAssertEqual(decoded.taskRecurrence, .every(2, .week))
+
+        let encodedData = try JSONEncoder().encode(VoiceRecurrence.weekly(days: [1, 4]))
+        let encodedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encodedData) as? [String: Any])
+        XCTAssertEqual(encodedObject["type"] as? String, "weekly")
+        XCTAssertEqual(encodedObject["days"] as? [Int], [1, 4])
+    }
+
+    func testCandidatesEncodeNotesAndRecurrenceText() throws {
+        let candidate = VoiceTaskCandidate(
+            title: "Buy milk",
+            notes: "2% and oat",
+            recurrenceText: "every Monday"
+        )
+        let data = try JSONEncoder().encode(candidate)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(object["notes"] as? String, "2% and oat")
+        XCTAssertEqual(object["recurrenceText"] as? String, "every Monday")
+    }
+
+    /// Invalid model output must not crash the save; it simply produces no
+    /// recurrence rule so the task saves as a one-off.
+    func testVoiceRecurrenceMapsToTaskRecurrence() {
+        XCTAssertNil(VoiceRecurrence.none.taskRecurrence)
+        XCTAssertEqual(VoiceRecurrence.daily.taskRecurrence, .daily())
+        XCTAssertEqual(VoiceRecurrence.weekly(days: [1, 4, 9]).taskRecurrence, .weekly(days: [1, 4]))
+        XCTAssertNil(VoiceRecurrence.weekly(days: []).taskRecurrence)
+        XCTAssertEqual(VoiceRecurrence.every(count: 3, unit: "day").taskRecurrence, .every(3, .day))
+        XCTAssertNil(VoiceRecurrence.every(count: 0, unit: "day").taskRecurrence)
+        XCTAssertEqual(VoiceRecurrence.monthlyDay(day: 15, interval: 2).taskRecurrence, .monthlyDay(day: 15, interval: 2))
+        XCTAssertNil(VoiceRecurrence.monthlyDay(day: 0, interval: nil).taskRecurrence)
+    }
+
     func testParseFinalTasksDropsBlankTitles() {
         let json = #"{"tasks":[{"title":"  "},{"title":"Real task"}]}"#
         let tasks = VoiceDictationClient.parseFinalTasks(from: Data(json.utf8))

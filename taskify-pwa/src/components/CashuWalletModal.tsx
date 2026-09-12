@@ -3,6 +3,7 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
+import { useSyncResume } from "../nostr/useSyncResume";
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PaymentRequestTransportType,
@@ -607,7 +608,6 @@ export default function CashuWalletModal({
   const PAYMENT_REQUEST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60; // 72 hours
   const PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS = 45;
   const PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS = 14 * 24 * 60 * 60; // 14 days
-  const DM_SYNC_LOOKBACK_SECONDS = 30 * 24 * 60 * 60; // 30 days of NIP-17/DM history
 
   const [recvMsg, setRecvMsg] = useState("");
 
@@ -1106,7 +1106,6 @@ export default function CashuWalletModal({
     ensureNostrIdentity,
     defaultNostrRelays,
     handlePaymentRequestEventRef,
-    DM_SYNC_LOOKBACK_SECONDS,
     persistDmPeerProfileCache,
     contactDisplayLabel,
   });
@@ -2997,12 +2996,13 @@ export default function CashuWalletModal({
     };
   }, [closeNostrPool, stopPaymentRequestSubscription]);
 
+  const dmResumeEpoch = useSyncResume();
   useEffect(() => {
     void startDmSubscription();
     return () => {
       stopDmSubscription();
     };
-  }, [startDmSubscription, stopDmSubscription]);
+  }, [startDmSubscription, stopDmSubscription, dmResumeEpoch]);
 
   const {
     normalizedSendLockPubkey,

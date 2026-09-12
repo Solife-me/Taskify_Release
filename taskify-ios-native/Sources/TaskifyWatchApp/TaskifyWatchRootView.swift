@@ -500,6 +500,17 @@ private struct TaskifyWatchVoiceDraftRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 }
+                if let recurrenceText = recurrenceText {
+                    Label("Repeats \(recurrenceText)", systemImage: "repeat")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if let notes = task.notes, !notes.isEmpty {
+                    Label(notes, systemImage: "note.text")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 if let subtasks = task.subtasks, !subtasks.isEmpty {
                     Label(
                         "\(subtasks.count) subtask\(subtasks.count == 1 ? "" : "s")",
@@ -511,6 +522,24 @@ private struct TaskifyWatchVoiceDraftRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var recurrenceText: String? {
+        guard let recurrence = task.recurrence, recurrence != .none else { return nil }
+        switch recurrence {
+        case .none: return nil
+        case .daily: return "daily"
+        case .weekly(let days) where days.count == 7: return "daily"
+        case .weekly(let days) where days == [1, 2, 3, 4, 5]: return "weekdays"
+        case .weekly(let days):
+            let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            return days.sorted().compactMap { names.indices.contains($0) ? names[$0] : nil }
+                .joined(separator: ", ")
+        case .every(let count, let unit):
+            return "every \(count) \(unit)\(count == 1 ? "" : "s")"
+        case .monthlyDay(let day, let interval):
+            return interval == nil || interval == 1 ? "monthly on the \(day)" : "every \(interval ?? 1) months on the \(day)"
+        }
     }
 
     private var dueDate: Date? {

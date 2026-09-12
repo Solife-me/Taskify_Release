@@ -10,3 +10,6 @@ export * from "./RelayHealth.js";
 export * from "./RelayInfoCache.js";
 export * from "./RelayAuth.js";
 export * from "./runtimeRelays.js";
+
+export * from "./history.js";
+export * from "./inboxRelays.js";

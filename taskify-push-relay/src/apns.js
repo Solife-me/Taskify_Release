@@ -5,10 +5,23 @@ function base64url(value) {
   return Buffer.from(value).toString('base64url')
 }
 
-// Keep the phone and Watch payloads byte-for-byte equivalent (apart from their APNs topics).
-// Apple can then route one generic notification to the best available device. The encrypted
-// gift wrap remains on Taskify's relay and is decrypted only after the app refreshes locally.
-export function genericDMPayload() {
+// The iPhone alert adds `mutable-content` and a random, short-lived preview capability URL so the
+// Notification Service Extension can fetch the encrypted gift wrap, decrypt it on-device, and
+// rewrite the alert. The URL contains no event ID, public key, sender, or category. Without a
+// preview token the iPhone receives the same generic alert as the Watch.
+export function genericDMPayload(previewURL = null) {
+  const payload = genericWatchDMPayload()
+  if (!previewURL) return payload
+  payload.aps['mutable-content'] = 1
+  payload.taskify.previewURL = previewURL
+  return payload
+}
+
+// watchOS has no notification service extension, so the Watch keeps the metadata-free generic
+// alert. A generic alert is substantially more reliable than a background-only wake, while
+// content-available still gives watchOS an opportunity to refresh the encrypted inbox before the
+// user opens the app.
+export function genericWatchDMPayload() {
   return {
     aps: {
       alert: {
@@ -22,17 +35,10 @@ export function genericDMPayload() {
   }
 }
 
-// Retain a named Watch builder so callers and tests make the platform intent explicit. A generic
-// alert is substantially more reliable than a background-only wake, while content-available still
-// gives watchOS an opportunity to refresh the encrypted inbox before the user opens the app.
-export function genericWatchDMPayload() {
-  return genericDMPayload()
-}
-
-export function apnsDeliveryProfile(registration, { topic, watchTopic }) {
+export function apnsDeliveryProfile(registration, { topic, watchTopic, previewURL = null }) {
   const isWatch = registration.platform === 'watchos'
   return {
-    payload: isWatch ? genericWatchDMPayload() : genericDMPayload(),
+    payload: isWatch ? genericWatchDMPayload() : genericDMPayload(previewURL),
     topic: isWatch ? watchTopic : topic,
     pushType: 'alert',
     priority: '10',
@@ -80,13 +86,14 @@ export class APNsClient {
     this.cachedToken = null
   }
 
-  async send(registration) {
+  async send(registration, previewURL = null) {
     const authority = registration.environment === 'sandbox'
       ? 'https://api.sandbox.push.apple.com'
       : 'https://api.push.apple.com'
     const delivery = apnsDeliveryProfile(registration, {
       topic: this.topic,
       watchTopic: this.watchTopic,
+      previewURL,
     })
     const body = Buffer.from(JSON.stringify(delivery.payload))
     const client = http2.connect(authority)

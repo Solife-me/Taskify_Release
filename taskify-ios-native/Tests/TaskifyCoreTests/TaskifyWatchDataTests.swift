@@ -652,8 +652,10 @@ final class TaskifyWatchDataTests: XCTestCase {
             id: "draft",
             title: "Call Sam",
             dueISO: "2026-08-08T14:00:00Z",
+            boardId: "destination-board",
             subtasks: ["Confirm agenda"],
-            priority: 2
+            priority: 2,
+            columnId: "destination-column"
         )
         let createVoiceTasks = TaskifyWatchCommand(
             id: "create-voice",

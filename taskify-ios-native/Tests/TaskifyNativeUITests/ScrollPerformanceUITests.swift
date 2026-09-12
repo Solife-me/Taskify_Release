@@ -577,7 +577,7 @@ final class ScrollPerformanceUITests: XCTestCase {
             "Three relay copies must produce one message")
     }
 
-    func testVariableHeightArrivalsStayVisibleAtMessageLimit() throws {
+    func testVariableHeightArrivalsStayVisibleWithLongHistory() throws {
         let app = chatFixtureApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "400"
         app.launchEnvironment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] = "1"
@@ -595,8 +595,10 @@ final class ScrollPerformanceUITests: XCTestCase {
         composer.typeText(draft)
         let incoming = app.staticTexts["Live fixture message 3"]
         XCTAssertTrue(incoming.waitForExistence(timeout: 25))
-        XCTAssertTrue(incoming.isHittable,
-            "Arrivals must remain visible when replacing messages at the 400-message limit")
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: incoming)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed,
+            "Arrivals must settle into view without a manual scroll in a long conversation")
+        XCTAssertTrue(app.buttons["chatScrollToBottom"].waitForNonExistence(timeout: 3))
         attach(app, name: "variable-height-arrivals-with-long-draft")
 
         composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.count))
@@ -604,14 +606,67 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertTrue(incoming.isHittable,
             "Shrinking the composer must not leave the timeline beyond its content")
         XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.buttons["chatScrollToBottom"].waitForNonExistence(timeout: 3))
         attach(app, name: "variable-height-arrivals-after-composer-shrinks")
+    }
+
+    func testArrivalWhileReadingHistoryDoesNotPullConversationToBottom() throws {
+        let app = chatFixtureApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "400"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ARRIVALS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ARRIVAL_DELAY"] = "12"
+        app.launch()
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5))
+        app.swipeDown(velocity: .fast)
+        app.swipeDown(velocity: .fast)
+        let bottomButton = app.buttons["chatScrollToBottom"]
+        XCTAssertTrue(bottomButton.waitForExistence(timeout: 3))
+        // Allow the delayed burst to arrive while the reader is resting in history.
+        Thread.sleep(forTimeInterval: 13)
+        XCTAssertFalse(app.staticTexts["Live fixture message 3"].isHittable)
+        XCTAssertTrue(bottomButton.isHittable)
+        bottomButton.tap()
+        let incoming = app.staticTexts["Live fixture message 3"]
+        XCTAssertTrue(incoming.waitForExistence(timeout: 5))
+        XCTAssertTrue(incoming.isHittable, "The arrival must be reachable with the latest-message button")
+    }
+
+    func testSendingLongDraftFromHistoryRevealsMessageAfterComposerShrinks() throws {
+        let app = chatFixtureApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "400"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_VARIABLE_HEIGHTS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] = "1"
+        app.launch()
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        XCTAssertTrue(app.staticTexts["Newest fixture message"].waitForExistence(timeout: 5))
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(app.buttons["chatScrollToBottom"].waitForExistence(timeout: 3))
+        let composer = app.textViews.firstMatch
+        composer.tap()
+        let message = Array(repeating: "Long outgoing layout check", count: 24).joined(separator: " ")
+            + " SENTMARKER"
+        composer.typeText(message)
+        composer.typeText("\n")
+        let cleared = NSPredicate(format: "value == %@", "")
+        expectation(for: cleared, evaluatedWith: composer)
+        waitForExpectations(timeout: 5)
+        let sent = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "SENTMARKER")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5))
+        XCTAssertTrue(sent.isHittable, "Sending from history must reveal the sent message")
+        XCTAssertTrue(app.buttons["chatScrollToBottom"].waitForNonExistence(timeout: 5))
+        attach(app, name: "sent-long-draft-after-composer-shrinks")
     }
 
     /// Regression test: messages that arrive while the conversation is open are seen by the
     /// user, so leaving the thread must not badge it as unread. The reactive onChange mark
     /// handles arrivals the timeline-count signal catches; the onDisappear mark is the
-    /// guarantee for everything it misses (in-thread search, the 400-message ingest cap
-    /// keeping the count flat, or SwiftUI skipping a mid-scroll update).
+    /// guarantee for everything it misses (in-thread search or SwiftUI skipping a
+    /// transient update while the timeline is settling).
     func testLeavingThreadAfterLiveArrivalShowsNoUnreadBadge() throws {
         let app = chatFixtureApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "100"
@@ -727,9 +782,8 @@ final class ScrollPerformanceUITests: XCTestCase {
     /// is a downward drag (content moves down, history enters from the top). Regression test: a
     /// `simultaneousGesture(DragGesture)` attached to every message bubble races the scroll
     /// view's pan recognizer on each touch-down, making the thread sticky to the point of
-    /// immobility — 40 fast flicks covered fewer than 30 messages of a 300-message thread, while
-    /// without the recognizer 12 flicks covered ~230. The fixture is 300 messages deep so the
-    /// assertion cannot pass on travel alone; only freely gliding scroll reaches message 1.
+    /// immobility. This also verifies that reaching the top loads each earlier 100-message
+    /// page while preserving the reader's position until message 1 is reached.
     func testConversationScrollsFreelyWhenSwipingBackThroughHistory() throws {
         let app = chatFixtureApplication()
         app.launch()

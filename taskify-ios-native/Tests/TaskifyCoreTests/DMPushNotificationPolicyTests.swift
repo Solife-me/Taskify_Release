@@ -5,6 +5,7 @@ import XCTest
 final class DMPushNotificationPolicyTests: XCTestCase {
     private let sender = try! NostrIdentity(privateKey: Data(repeating: 0x11, count: 32))
     private let recipient = try! NostrIdentity(privateKey: Data(repeating: 0x22, count: 32))
+    private let groupMember = try! NostrIdentity(privateKey: Data(repeating: 0x33, count: 32))
 
     func testSelectionsAllowOnlyTheirConfiguredCategories() {
         XCTAssertTrue(DMPushNotificationSelection.messages.allows(.message))
@@ -38,7 +39,7 @@ final class DMPushNotificationPolicyTests: XCTestCase {
             DMPushNotificationPreviewPolicy.presentation(
                 for: try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "One\nTwo\nThree\nFour"),
                 identityPublicKey: recipient.publicKeyHex,
-                contacts: [contact],
+                snapshot: snapshot(contacts: [contact]),
                 selection: .both
             ),
             .activity(title: "Alice", subtitle: nil, body: "One\nTwo\nThree")
@@ -51,7 +52,7 @@ final class DMPushNotificationPolicyTests: XCTestCase {
             DMPushNotificationPreviewPolicy.presentation(
                 for: try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "Hello"),
                 identityPublicKey: recipient.publicKeyHex,
-                contacts: [],
+                snapshot: snapshot(),
                 selection: .messages
             ),
             .activity(
@@ -72,7 +73,7 @@ final class DMPushNotificationPolicyTests: XCTestCase {
             DMPushNotificationPreviewPolicy.presentation(
                 for: reaction,
                 identityPublicKey: recipient.publicKeyHex,
-                contacts: [],
+                snapshot: snapshot(),
                 selection: .both
             )?.body,
             "Reacted 👍"
@@ -92,7 +93,7 @@ final class DMPushNotificationPolicyTests: XCTestCase {
                     content: assignment.messageContent()
                 ),
                 identityPublicKey: recipient.publicKeyHex,
-                contacts: [],
+                snapshot: snapshot(),
                 selection: .messages
             )?.body,
             "New task assignment: Prepare release notes"
@@ -110,18 +111,106 @@ final class DMPushNotificationPolicyTests: XCTestCase {
         XCTAssertNil(DMPushNotificationPreviewPolicy.presentation(
             for: try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: payment),
             identityPublicKey: recipient.publicKeyHex,
-            contacts: [],
+            snapshot: snapshot(),
             selection: .both
         ))
     }
 
-    func testRichPreviewSuppressesMessageActivityWhenOnlyPaymentsAreEnabled() throws {
+    func testRichPreviewIsSkippedWhenOnlyPaymentsAreEnabled() throws {
         XCTAssertNil(DMPushNotificationPreviewPolicy.presentation(
             for: try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "Hello"),
             identityPublicKey: recipient.publicKeyHex,
-            contacts: [],
+            snapshot: snapshot(),
             selection: .payments
         ))
+    }
+
+    func testBlockedSenderGetsNoPreview() throws {
+        var state = snapshot()
+        XCTAssertTrue(state.setDirectMessagePeerBlocked(sender.publicKeyHex, blocked: true))
+        XCTAssertNil(DMPushNotificationPreviewPolicy.presentation(
+            for: try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "Hello"),
+            identityPublicKey: recipient.publicKeyHex,
+            snapshot: state,
+            selection: .both
+        ))
+    }
+
+    func testGroupPreviewIsSkippedForMutedAndLeftConversations() throws {
+        let rumor = try incomingRumor(
+            kind: NIP17GiftWrap.rumorKind,
+            content: "Group hello",
+            extraTags: [["p", groupMember.publicKeyHex]]
+        )
+        let group = try XCTUnwrap(NostrGroupConversation(
+            rumor: rumor.rumor,
+            identityPublicKey: recipient.publicKeyHex
+        ))
+        var state = snapshot()
+        state.nostrGroupConversations = [group]
+        func preview() -> DMPushNotificationPresentation? {
+            DMPushNotificationPreviewPolicy.presentation(
+                for: rumor,
+                identityPublicKey: recipient.publicKeyHex,
+                snapshot: state,
+                selection: .both
+            )
+        }
+        XCTAssertEqual(preview()?.body, "Group hello")
+
+        XCTAssertTrue(state.setDirectMessageGroupMuted(group.groupID, muted: true))
+        XCTAssertNil(preview())
+
+        XCTAssertTrue(state.setDirectMessageGroupMuted(group.groupID, muted: false))
+        XCTAssertTrue(state.setDirectMessageGroupLeft(group.groupID, left: true))
+        XCTAssertNil(preview())
+    }
+
+    func testReplyTargetsTheSenderOfAOneToOneMessage() throws {
+        XCTAssertEqual(
+            DMPushNotificationPreviewPolicy.replyTarget(
+                for: try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "Hello"),
+                identityPublicKey: recipient.publicKeyHex
+            ),
+            .init(conversationID: sender.publicKeyHex, isGroup: false)
+        )
+    }
+
+    func testReplyTargetsTheGroupForAMultiMemberRumor() throws {
+        let rumor = try incomingRumor(
+            kind: NIP17GiftWrap.rumorKind,
+            content: "Group hello",
+            extraTags: [["p", groupMember.publicKeyHex]]
+        )
+        let group = try XCTUnwrap(NostrGroupConversation(
+            rumor: rumor.rumor,
+            identityPublicKey: recipient.publicKeyHex
+        ))
+        XCTAssertEqual(
+            DMPushNotificationPreviewPolicy.replyTarget(
+                for: rumor,
+                identityPublicKey: recipient.publicKeyHex
+            ),
+            .init(conversationID: group.groupID, isGroup: true)
+        )
+    }
+
+    func testReplyTargetRequiresAnIncomingRumorAddressedToThisAccount() throws {
+        let rumor = try incomingRumor(kind: NIP17GiftWrap.rumorKind, content: "Hello")
+        XCTAssertNil(DMPushNotificationPreviewPolicy.replyTarget(
+            for: rumor,
+            identityPublicKey: sender.publicKeyHex
+        ))
+        XCTAssertNil(DMPushNotificationPreviewPolicy.replyTarget(
+            for: rumor,
+            identityPublicKey: groupMember.publicKeyHex
+        ))
+    }
+
+    private func snapshot(contacts: [NostrContact] = []) -> TaskifySnapshot {
+        var snapshot = TaskifySnapshot(boards: [], tasks: [], selectedBoardID: "")
+        snapshot.contacts = contacts
+        return snapshot
     }
 
     private func incomingRumor(

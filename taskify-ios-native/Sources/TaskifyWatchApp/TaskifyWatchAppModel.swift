@@ -879,6 +879,7 @@ final class TaskifyWatchAppModel: NSObject {
                 return try await independentClient.interpretVoice(
                     transcript: transcript,
                     boardID: boardID,
+                    boards: voiceBoardContexts(),
                     profile: profile,
                     privateKey: privateKey
                 )
@@ -911,6 +912,26 @@ final class TaskifyWatchAppModel: NSObject {
             } errorHandler: { _ in
                 continuation.resume(throwing: TaskifyWatchDictationError.phoneUnavailable)
             }
+        }
+    }
+
+    /// Board/list context for the independent voice finalizer: week and list
+    /// boards with their columns, so the model can route spoken tasks to a named
+    /// board ("add this to my Errands board"). Kind strings match the Worker's
+    /// wire format ("week"/"lists").
+    private func voiceBoardContexts() -> [TaskifyWatchVoiceBoardContext] {
+        snapshot.boards.compactMap { board -> TaskifyWatchVoiceBoardContext? in
+            guard let kind = board.kind, kind == "week" || kind == "lists" else { return nil }
+            return TaskifyWatchVoiceBoardContext(
+                id: board.id,
+                name: board.name,
+                kind: kind,
+                columns: kind == "lists"
+                    ? (board.columns ?? [])
+                        .sorted { $0.order < $1.order }
+                        .map { TaskifyWatchVoiceBoardContext.Column(id: $0.id, name: $0.name) }
+                    : nil
+            )
         }
     }
 
@@ -1095,13 +1116,14 @@ final class TaskifyWatchAppModel: NSObject {
         drafts: [TaskifyWatchVoiceDraft]
     ) throws -> [TaskifyWatchDirectMutation] {
         guard let boardID = command.boardID,
-              let board = snapshot.boards.first(where: { $0.id == boardID }),
-              let boardNostrID = board.nostrBoardID,
+              let defaultBoard = snapshot.boards.first(where: { $0.id == boardID }),
               let profile = independentProfile else { return [] }
-        let relays = normalizedRelays(board.relayURLs ?? profile.relayURLs)
-        guard !relays.isEmpty else { return [] }
 
         return try drafts.enumerated().compactMap { index, draft -> TaskifyWatchDirectMutation? in
+            let board = draft.destinationBoard(in: snapshot.boards, fallback: defaultBoard)
+            guard let boardNostrID = board.nostrBoardID else { return nil }
+            let relays = normalizedRelays(board.relayURLs ?? profile.relayURLs)
+            guard !relays.isEmpty else { return nil }
             let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { return nil }
             let stableTaskID = "watch-\(command.id)-\(index)"
@@ -1109,9 +1131,21 @@ final class TaskifyWatchAppModel: NSObject {
 
             let parsedDueDate = draft.dueISO.flatMap(Self.taskifyParseISODate)
             let dueDate = board.kind == "week" ? (parsedDueDate ?? Date()) : parsedDueDate
-            let columnID = board.kind == "week"
-                ? Self.taskifyWeekdayID(for: dueDate ?? Date())
-                : board.defaultColumnID
+            // The Worker emits "YYYY-MM-DD" for a spoken date with no clock time
+            // and a full ISO datetime otherwise, so the shape tells us whether the
+            // user explicitly gave a time.
+            let hasExplicitTime = draft.dueISO
+                .map { $0.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) == nil }
+                ?? false
+            let columnID: String?
+            if board.kind == "week" {
+                columnID = Self.taskifyWeekdayID(for: dueDate ?? Date())
+            } else if let requested = draft.columnId,
+                      (board.columns ?? []).contains(where: { $0.id == requested }) {
+                columnID = requested
+            } else {
+                columnID = board.defaultColumnID
+            }
             let created = Date()
             let order = (snapshot.tasks
                 .filter { $0.boardID == board.id && $0.columnID == columnID }
@@ -1121,6 +1155,7 @@ final class TaskifyWatchAppModel: NSObject {
                 id: stableTaskID,
                 draft: draft,
                 dueDate: dueDate,
+                hasExplicitTime: hasExplicitTime,
                 profile: profile,
                 createdAt: created
             )
@@ -1140,7 +1175,7 @@ final class TaskifyWatchAppModel: NSObject {
                 boardName: board.name,
                 columnName: board.kind == "week" ? Self.taskifyWeekdayName(for: dueDate ?? created) : nil,
                 dueDate: dueDate,
-                dueTimeEnabled: false,
+                dueTimeEnabled: hasExplicitTime,
                 priority: draft.priority,
                 order: order,
                 columnID: columnID,
@@ -1162,6 +1197,7 @@ final class TaskifyWatchAppModel: NSObject {
         id: String,
         draft: TaskifyWatchVoiceDraft,
         dueDate: Date?,
+        hasExplicitTime: Bool,
         profile: TaskifyWatchIndependentProfile,
         createdAt: Date
     ) throws -> Data {
@@ -1171,9 +1207,10 @@ final class TaskifyWatchAppModel: NSObject {
             "createdBy": profile.publicKeyHex,
             "lastEditedBy": profile.publicKeyHex,
             "dueDateEnabled": dueDate != nil,
-            "dueTimeEnabled": false,
+            "dueTimeEnabled": hasExplicitTime,
         ]
         if let dueDate { payload["dueISO"] = taskifyISODate(dueDate) }
+        if hasExplicitTime { payload["dueTimeZone"] = TimeZone.current.identifier }
         if let note = draft.notes, !note.isEmpty { payload["note"] = note }
         if let priority = draft.priority { payload["priority"] = priority }
         let subtasks = (draft.subtasks ?? []).enumerated().compactMap { index, raw -> [String: Any]? in
@@ -1182,7 +1219,58 @@ final class TaskifyWatchAppModel: NSObject {
             return ["id": "\(id)-subtask-\(index)", "title": title, "completed": false]
         }
         if !subtasks.isEmpty { payload["subtasks"] = subtasks }
+        if let recurrenceObject = try Self.voiceRecurrencePayload(draft.recurrence) {
+            payload["recurrence"] = recurrenceObject
+        }
+        if dueDate != nil {
+            let reminders = Self.voiceReminderPayload(
+                minutes: draft.reminderMinutesBeforeDue,
+                dateOnly: !hasExplicitTime
+            )
+            if !reminders.isEmpty { payload["reminders"] = reminders }
+            if !hasExplicitTime, let reminderTime = draft.reminderTime {
+                payload["reminderTime"] = reminderTime
+            }
+        }
         return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes])
+    }
+
+    /// Encodes the shared recurrence wire type into the task event payload's
+    /// `recurrence` object, matching the shape `TaskEventCodec` and the PWA both
+    /// decode ({type, days/n/unit/day/interval}).
+    private static func voiceRecurrencePayload(_ recurrence: VoiceRecurrence?) throws -> [String: Any]? {
+        guard let recurrence else { return nil }
+        let data = try JSONEncoder().encode(recurrence)
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// Maps Worker reminder offsets (minutes before due) onto the app's reminder
+    /// preset strings ("5m", "15m", "1h", "custom-N"...), deduplicating while
+    /// preserving the order the user spoke them.
+    private static func voiceReminderPayload(minutes: [Int]?, dateOnly: Bool) -> [String] {
+        guard let minutes else { return [] }
+        var seen = Set<String>()
+        var reminders: [String] = []
+        for value in minutes where value >= 0 {
+            let rawValue: String
+            if value == 0 {
+                rawValue = dateOnly ? "0d" : "0h"
+            } else {
+                switch value {
+                case 5: rawValue = "5m"
+                case 15: rawValue = "15m"
+                case 30: rawValue = "30m"
+                case 60: rawValue = "1h"
+                case 1_440: rawValue = "1d"
+                case 10_080: rawValue = "1w"
+                default: rawValue = "custom-\(value)"
+                }
+            }
+            if seen.insert(rawValue).inserted {
+                reminders.append(rawValue)
+            }
+        }
+        return reminders
     }
 
     private func updatingPayload(_ data: Data, values: [String: Any]) throws -> Data {
