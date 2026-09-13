@@ -230,7 +230,7 @@ changes invalidate their dependent caches; chat read receipts and board selectio
 indexes and board projections. Upcoming uses individual lazy timeline rows, including within a
 single crowded date. Calendar and date changes refresh date-sensitive projections on their next
 read, and task visibility keeps its existing minute boundary. See the
-[board performance implementation and validation](../docs/native-board-performance-2026-09-12.md).
+[board performance implementation and validation](../docs/audits/native-board-performance-2026-09-12.md).
 
 Idle chat checks in `ScrollPerformanceUITests` measure CPU and memory for 30 seconds each on
 the populated inbox and conversation, then verify navigation/search still respond. Relay retries
@@ -316,7 +316,7 @@ Wi-Fi without the phone, and cellular, including a slow secondary relay.
 
 ## Nostr sync audit
 
-The September 3, 2026 [pipeline audit](../docs/nostr-sync-audit-2026-09-03.md) covers native,
+The September 3, 2026 [pipeline audit](../docs/audits/nostr-sync-audit-2026-09-03.md) covers native,
 Watch, shared web runtime, and gateway behavior, including fixes, tests, and remaining limits.
 Taskify deliberately retains fallback DM delivery for recipients without a published inbox list,
 as requested by the user. The phone also listens on configured app relays while its own list is
@@ -329,7 +329,7 @@ within 200 ms and before reconnect cleanup; incomplete history does not advance 
 Repeated copies avoid decryption, and malformed frames do not tear down healthy sockets.
 Bulk task clocks advance per record instead of adding a second for each unrelated task.
 
-The [Solife performance audit](../docs/solife-performance-audit-2026-09-03.md) records physical-device
+The [Solife performance audit](../docs/audits/solife-performance-audit-2026-09-03.md) records physical-device
 CPU, memory, thermal-state and hang measurements across navigation. Upcoming's calendar event
 date parser now reuses synchronized formatters after repeated formatter construction appeared
 in the device CPU stacks.

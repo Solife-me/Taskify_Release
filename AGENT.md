@@ -24,6 +24,11 @@ Taskify_Release/
 │   ├── public/           # Static assets, service worker manifest
 │   └── package.json      # PWA dependencies (React 19, NDK, Cashu, nostr-tools)
 │
+├── taskify-core/         # Shared pure domain contracts and utilities
+├── taskify-runtime-nostr/ # Shared Nostr transport and orchestration
+├── taskify-cli/          # CLI consuming shared core/runtime packages
+│   └── src/commands/    # Bot/contact/trust/relay/cache/completion command registration; index.ts composes groups
+│
 ├── worker/               # Cloudflare Worker (backend)
 │   ├── src/
 │   │   └── index.ts      # Worker entry: push notifications, reminders, cron, backups
@@ -40,11 +45,10 @@ Taskify_Release/
 │   └── test/             # Protocol, persistence, APNs, and WebSocket integration tests
 │
 ├── docs/                 # Project documentation
-│   ├── agent-mode.md              # Agent Mode command reference
-│   ├── architecture-overview.md   # Runtime architecture and data flows
-│   ├── domains-layer-reference.md # Domain-by-domain map for src/domains/
-│   ├── functions-and-flows.md     # End-to-end runtime flows
-│   └── engineering-roadmap.md     # Documentation + testing roadmap
+│   ├── README.md              # Documentation index
+│   ├── reference/             # Architecture and operational guides
+│   ├── plans/                 # Implementation plans and roadmaps
+│   └── audits/                # Dated investigations
 │
 ├── scripts/              # Build helpers (install-worker-deps.mjs, etc.)
 ├── wrangler.toml         # Cloudflare Worker + asset config
@@ -97,7 +101,7 @@ Backups
 
 ### Cashu / Wallet Layer (`taskify-pwa/src/wallet/`, `src/mint/`)
 
-- Uses `@cashu/cashu-ts` v3 and `@cashu/crypto`
+- Uses `@cashu/cashu-ts` v4 and `@cashu/crypto`
 - Supports P2PK (NIP-61), NWC (NIP-47), lightning, seed-based key derivation
 - `SwapManager.ts` — atomic token swaps
 - `MintSession.ts` — per-mint connection lifecycle
@@ -143,14 +147,14 @@ your-feature-branch  (branch from New_Features_Fixes)
 cd taskify-pwa
 npm install
 npm run dev          # Vite dev server
-npm test             # Node test runner (no jest/vitest — native --test)
+npm test             # Vitest
 npm run lint         # ESLint
 ```
 
 **Worker (local):**
 ```sh
 # Requires Cloudflare account + wrangler auth
-cp .dev.vars.example .dev.vars  # fill in VAPID_PUBLIC_KEY, VAPID_SUBJECT
+# Create .dev.vars with the required local Worker secrets
 npx wrangler dev
 ```
 
@@ -158,7 +162,8 @@ npx wrangler dev
 
 - Test runners are package-specific: `taskify-core` uses Node's built-in `--test`, while
   `taskify-pwa` uses Vitest through `npm test`.
-- No monorepo build tool — each package (`taskify-pwa`, `worker`) is independent.
+- No monorepo build tool — each JavaScript package has its own manifest and lockfile.
+- Shared package builds clean and regenerate tracked `dist/` output; include regenerated files with source changes. See `README.md` for package test commands.
 - PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via `[assets]` binding.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
 
@@ -170,7 +175,12 @@ npx wrangler dev
 
 | Test File | Domain | What It Covers |
 |---|---|---|
-| `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/pwa-client-history-sync-2026-09-11.md` |
+| `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/audits/pwa-client-history-sync-2026-09-11.md` |
+| `src/theme/useAppAppearance.test.tsx` | Appearance settings | Font bounds, theme transitions, status-bar color, object-URL cleanup, and image fallback |
+| `taskify-cli/tests/completions-command.test.ts` | CLI completions | Explicit shells, environment detection, combined fallback output, and invalid-shell exits |
+| `src/storage/boardPrintJobs.test.ts` | Saved print jobs | Legacy defaults, malformed data, per-board preservation, and storage failures |
+| `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |
+| `taskify-cli/tests/command-registration.test.ts` | CLI command composition | Bundled help/arguments plus isolated contact persistence, profile selection, lookup, trust/relay mutations, cache status/clearing, and error exits |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
@@ -182,16 +192,13 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, and authenticated WebSocket delivery |
 
-Additional tests exist on feature branches and are being promoted into `New_Features_Fixes`:
+Additional PWA regression tests include `src/nostr/startupStability.test.ts` and
+`src/onboarding/onboardingGating.test.ts`; both are present in this checkout and
+are discovered by Vitest.
 
-| Test File | Domain | Status |
-|---|---|---|
-| `src/nostr/startupStability.test.ts` | Nostr startup | On `fix/startup-relay-stability` branch |
-| `src/onboarding/onboardingGating.test.ts` | Onboarding | On `fix/startup-relay-stability` branch |
+### Current Gaps (see `docs/plans/engineering-roadmap.md` for plan)
 
-### Current Gaps (see `docs/engineering-roadmap.md` for plan)
-
-- **No tests** for the legacy Web Push reminder Worker logic
+- Worker tests exist in `worker/src/*.test.ts`; reminder delivery coverage remains a separate area to assess
 - Native relay health and NIP-42 retry behavior still lack a live-relay integration test
 - **No E2E tests** — browser-level flows are untested
 - Coverage tooling not yet configured (no c8/nyc setup)
@@ -204,7 +211,7 @@ Additional tests exist on feature branches and are being promoted into `New_Feat
 
 | Change type | Doc update required |
 |---|---|
-| New agent command / op | `docs/agent-mode.md` |
+| New agent command / op | `docs/reference/agent-mode.md` |
 | New Nostr NIP usage | `AGENT.md` protocols table |
 | New domain / subsystem | `AGENT.md` structure map + architecture section |
 | New branch or deploy flow change | `AGENT.md` branch promotion |

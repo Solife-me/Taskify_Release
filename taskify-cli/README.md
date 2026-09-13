@@ -123,7 +123,7 @@ taskify bot show-commands                    # verify your published list
 taskify bot show-commands npub1...           # inspect another bot's list
 ```
 
-Command names are 1–32 chars of `[a-z0-9_]` (no leading slash), descriptions are one line up to 100 chars, and at most 100 commands are allowed. The published event is public — it must contain only command names and descriptions, never user data or secrets. See [docs/bot-command-lists.md](../docs/bot-command-lists.md) for the full wire contract.
+Command names are 1–32 chars of `[a-z0-9_]` (no leading slash), descriptions are one line up to 100 chars, and at most 100 commands are allowed. The published event is public — it must contain only command names and descriptions, never user data or secrets. See [docs/reference/bot-command-lists.md](../docs/reference/bot-command-lists.md) for the full wire contract.
 
 ## JSON contract
 

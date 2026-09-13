@@ -1346,7 +1346,7 @@ export default function CashuWalletModal({
   // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands): seeded from
   // the localStorage cache so the "/" menu is instantly available, then
   // refreshed in the background. The published list itself is the signal
-  // that the peer is a bot (docs/bot-command-lists.md).
+  // that the peer is a bot (docs/reference/bot-command-lists.md).
   const [activeBotCommands, setActiveBotCommands] = useState<BotCommand[] | null>(null);
   const activeBotCommandsPeerRef = useRef<string | null>(null);
   const botCommandsFetchingRef = useRef<Set<string>>(new Set());

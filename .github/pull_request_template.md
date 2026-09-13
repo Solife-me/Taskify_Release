@@ -19,7 +19,7 @@
 > **Required.** Every PR must address this section. If docs are not affected, state why explicitly.
 
 - [ ] `AGENT.md` updated (if project structure, architecture, protocols, or branch flow changed)
-- [ ] `docs/agent-mode.md` updated (if agent ops added, removed, or changed)
+- [ ] `docs/reference/agent-mode.md` updated (if agent ops added, removed, or changed)
 - [ ] Domain doc updated (if behavior of nostr, wallet, worker, or CLI changed)
 - [ ] `taskify-cli/README.md` updated (if CLI commands changed)
 - [ ] No docs update needed — reason: <!-- explain -->

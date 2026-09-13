@@ -1,7 +1,7 @@
 import Foundation
 
 /// One command advertised by a bot in its NIP-51 commands list.
-/// Contract: docs/bot-command-lists.md (mirrors taskify-pwa/src/lib/botCommands.ts).
+/// Contract: docs/reference/bot-command-lists.md (mirrors taskify-pwa/src/lib/botCommands.ts).
 public struct BotCommand: Codable, Equatable, Sendable, Identifiable {
     public var id: String { name }
     public let name: String

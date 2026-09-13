@@ -396,7 +396,7 @@ The first Watch release should not attempt rich decrypted notification previews.
 
 - Confirm the one-to-one/group scope, deterministic member-set semantics, 17-member cap, and explicit exclusions above.
 - Prove on physical Wi-Fi and cellular Watches that short-lived foreground `URLSessionWebSocketTask` sessions can query bounded discovery relays for kind-10050 without relying on the iPhone. Do not proceed on an assumption derived from simulator behavior.
-- Add the Watch metadata boundary and reset/revocation limitations to `docs/native-dm-push-relay.md`.
+- Add the Watch metadata boundary and reset/revocation limitations to `docs/reference/native-dm-push-relay.md`.
 - Define endpoint schemas, Watch-local routing outcome states, target-list contracts, exact-list/fallback rules, limits, cursors, auth, partial group delivery, and error contracts before implementation.
 - Add failing contract tests for replay, cross-account inbox reads, missing/unsafe supplied targets, gateway list enrichment, published-list substitution, false absence fallback, and unsupported kinds.
 

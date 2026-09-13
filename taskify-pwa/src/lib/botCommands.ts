@@ -4,7 +4,7 @@ import type { SessionPool } from "../nostr/SessionPool";
 import { LS_BOT_COMMANDS_CACHE } from "../localStorageKeys";
 
 /**
- * NIP-51 bot commands list (see docs/bot-command-lists.md).
+ * NIP-51 bot commands list (see docs/reference/bot-command-lists.md).
  *
  * A bot (an AI agent with its own Nostr key) publishes a parameterized
  * replaceable kind-30078 event advertising the chat commands it accepts.

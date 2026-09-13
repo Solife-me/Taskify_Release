@@ -24,7 +24,7 @@ Taskify is a privacy-first, local-first task manager with Nostr-based sync and a
 | **Contacts** | Nostr-based contact list (NIP-51) | `src/lib/contacts.ts`, `src/lib/nip51Contacts.ts` |
 | **Settings** | Relays, push notifications, theme, startup view, backups | `src/ui/settings/` |
 | **Onboarding** | Key generation/import, agent mode setup, hard navigation gating | `src/onboarding/` |
-| **Agent Mode** | JSON command API for AI/scripted task operations | `src/agent/`, `docs/agent-mode.md` |
+| **Agent Mode** | JSON command API for AI/scripted task operations | `src/agent/`, `docs/reference/agent-mode.md` |
 | **Bible Tracker** | Scripture reading progress and memory card tracking | `src/components/BibleTracker.tsx` |
 | **Reminders** | Push notification scheduling via Cloudflare Worker cron | `worker/src/index.ts`, `src/domains/push/` |
 
@@ -54,35 +54,37 @@ Taskify_Release/
 ├── taskify-cli/               # CLI surface built on shared core/runtime packages
 │
 ├── worker/                    # Cloudflare Worker (push, reminders, backups, static assets)
-│   ├── src/index.ts           # Worker entry — all backend logic in one file
+│   ├── src/index.ts           # Worker routing entry; handlers live alongside it
 │   └── migrations/            # D1 SQL migrations
 │
+├── taskify-ios-native/        # Native SwiftUI app and TaskifyCore Swift package
+├── taskify-push-relay/        # NIP-17 inbox relay and APNs bridge
+│
 ├── docs/                      # Project documentation
-│   ├── agent-mode.md             # Agent command reference with examples
-│   ├── architecture-overview.md  # Runtime architecture and data flows
-│   ├── domains-layer-reference.md# Domain-by-domain map for src/domains/
-│   ├── engineering-roadmap.md    # Testing and docs roadmap (March 2026)
-│   └── functions-and-flows.md    # End-to-end flow walkthroughs for agents/contributors
+│   ├── README.md             # Documentation index
+│   ├── reference/            # Architecture, protocols, and operational guides
+│   ├── plans/                # Implementation plans and roadmaps
+│   └── audits/               # Dated investigations and findings
 │
 ├── AGENT.md                   # Contributor onboarding guide (start here)
 ├── wrangler.toml              # Cloudflare Worker config (KV, R2, D1, cron, assets)
 └── scripts/                   # Build helpers (install-worker-deps.mjs)
 ```
 
-There is no monorepo build tool. Each package (`taskify-pwa`, `worker`) is managed independently. PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via the `[assets]` binding.
+There is no monorepo build tool. Each JavaScript package has its own manifest and lockfile; install dependencies in the package directory. PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via the `[assets]` binding.
 
 **Where to start:**
 - App logic: `taskify-pwa/src/App.tsx` (root component) and `src/domains/tasks/taskTypes.ts`
 - Nostr layer: `src/nostr/NostrSession.ts`
 - Wallet layer: `src/wallet/CashuManager.ts`
-- Agent operations: `src/agent/agentDispatcher.ts` + `docs/agent-mode.md`
+- Agent operations: `src/agent/agentDispatcher.ts` + `docs/reference/agent-mode.md`
 - Backend: `worker/src/index.ts`
 
 ---
 
 ## Local Development Setup
 
-**Prerequisites:** Node 18+, a Cloudflare account (for Worker dev), `wrangler` CLI.
+**Prerequisites:** Node 22.13+, a Cloudflare account (for Worker dev), `wrangler` CLI.
 
 ### PWA
 
@@ -92,7 +94,7 @@ npm install
 npm run dev          # Vite dev server at http://localhost:5173
 npm run build        # Production build → taskify-pwa/dist/
 npm run lint         # ESLint
-npm test             # Node --test runner (see Testing section)
+npm test             # Vitest runner (see Testing section)
 ```
 
 ### Worker (local)
@@ -107,7 +109,7 @@ npx wrangler dev     # Worker at http://localhost:8787
 | Command | What it does |
 |---------|-------------|
 | `cd taskify-pwa && npm run dev` | Start PWA dev server |
-| `cd taskify-pwa && npm test` | Run all tests (Node built-in runner) |
+| `cd taskify-pwa && npm test` | Run PWA tests (Vitest) |
 | `cd taskify-pwa && npm run lint` | ESLint check |
 | `cd taskify-pwa && npm run build` | Production PWA build |
 | `npx wrangler dev` | Start Worker locally (from repo root) |
@@ -117,32 +119,20 @@ npx wrangler dev     # Worker at http://localhost:8787
 
 ## Testing
 
-Tests use **Node's built-in `--test` runner** — not Jest, not Vitest. Do not add external test frameworks.
+Test runners are package-specific:
 
-```sh
-cd taskify-pwa
-npm test
-```
+| Package | Command | Runner |
+|---------|---------|--------|
+| `taskify-pwa` | `npm test` | Vitest |
+| `taskify-core` | `npm test` | Node test runner; builds first |
+| `taskify-runtime-nostr` | `npm test` | Node test runner; builds first |
+| `taskify-cli` | `npm test` | Node test runner; builds first |
+| `worker` | `npm test` | Node test runner |
+| `taskify-push-relay` | `npm test` | Node test runner |
 
-The `test` script (current, on `New_Features_Fixes` / `docs/*` branches) runs:
-```
-node --experimental-strip-types --experimental-specifier-resolution=node --test \
-  src/agent/agentDispatcher.test.ts
-```
+Run commands from the corresponding package directory. Add PWA tests as `*.test.ts` or `*.test.tsx`; Vitest discovers them automatically. See the [native iOS README](taskify-ios-native/README.md) for Swift test instructions.
 
-**Current test files:**
-
-| File | Domain | What it covers | Branch |
-|------|--------|---------------|--------|
-| `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes, trust classification | merged |
-| `src/nostr/startupStability.test.ts` | Nostr startup | Relay event flood prevention; startup stall guard | `fix/startup-relay-stability` |
-| `src/onboarding/onboardingGating.test.ts` | Onboarding | Nav gating state, snap-back logic, mutual exclusivity | `fix/onboarding-buttons-unlocked` |
-
-The startup stability and onboarding gating tests exist on feature branches and are pending promotion to `New_Features_Fixes`.
-
-Tests use `node:test` and `node:assert`. No real network calls — relay and storage behavior is stubbed in-process.
-
-**To add a test:** create `*.test.ts` in the relevant `src/` subdirectory and add its path to the `test` script in `taskify-pwa/package.json`.
+The shared TypeScript packages keep their `dist/` output in Git because consumers resolve their package entry points there. After changing shared source, run `npm run build` in that package and include the regenerated output. Builds clean `dist/` first to prevent obsolete files from surviving. Build `taskify-core` and `taskify-runtime-nostr` before building consumers after shared-source changes.
 
 ---
 
@@ -171,11 +161,11 @@ When you change behavior, update the docs. See `AGENT.md` for the full docs-upda
 
 | Change | Required update |
 |--------|----------------|
-| New agent op | `docs/agent-mode.md` |
+| New agent op | `docs/reference/agent-mode.md` |
 | New Nostr NIP usage | `AGENT.md` protocols table |
-| New domain or subsystem | `AGENT.md` + `docs/architecture-overview.md` |
+| New domain or subsystem | `AGENT.md` + `docs/reference/architecture-overview.md` |
 | New branch or deploy flow change | `AGENT.md` branch promotion section |
-| New test file or coverage change | `AGENT.md` testing table + `docs/engineering-roadmap.md` |
+| New test file or coverage change | `AGENT.md` testing table + `docs/plans/engineering-roadmap.md` |
 | New env var or Worker binding | `wrangler.toml` comment + `AGENT.md` |
 
 PRs that change behavior without updating relevant docs will be flagged in review.
@@ -184,9 +174,11 @@ PRs that change behavior without updating relevant docs will be flagged in revie
 
 ## Further Reading
 
+- [Documentation index](docs/README.md) — all references, plans, and audits
+
 - [`AGENT.md`](./AGENT.md) — full contributor guide: architecture, protocols, safe contribution rules
-- [`docs/agent-mode.md`](./docs/agent-mode.md) — agent command reference with copy-paste examples
-- [`docs/architecture-overview.md`](./docs/architecture-overview.md) — runtime architecture and data flows
-- [`docs/domains-layer-reference.md`](./docs/domains-layer-reference.md) — source-of-truth map for `src/domains/*`
-- [`docs/functions-and-flows.md`](./docs/functions-and-flows.md) — end-to-end flow walkthroughs with file references
-- [`docs/engineering-roadmap.md`](./docs/engineering-roadmap.md) — testing and documentation roadmap
+- [`docs/reference/agent-mode.md`](docs/reference/agent-mode.md) — agent command reference with copy-paste examples
+- [`docs/reference/architecture-overview.md`](docs/reference/architecture-overview.md) — runtime architecture and data flows
+- [`docs/reference/domains-layer-reference.md`](docs/reference/domains-layer-reference.md) — source-of-truth map for `src/domains/*`
+- [`docs/reference/functions-and-flows.md`](docs/reference/functions-and-flows.md) — end-to-end flow walkthroughs with file references
+- [`docs/plans/engineering-roadmap.md`](docs/plans/engineering-roadmap.md) — testing and documentation roadmap
