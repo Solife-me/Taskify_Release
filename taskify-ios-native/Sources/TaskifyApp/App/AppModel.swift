@@ -4713,6 +4713,8 @@ final class AppModel {
     func importIdentity(_ value: String) -> Bool {
         do {
             let imported = try NostrIdentity(importedValue: value)
+            // Persist successfully before clearing any state for the current account.
+            try identityStore.save(imported)
             ShareTransferStore.clearAccount()
             TaskifyShareIdentity.clear()
             TaskifyShareSuggestions.clear()
@@ -4720,7 +4722,6 @@ final class AppModel {
                 TaskifyShareUploadSession.cancel(job)
                 ShareTransferStore.remove(job.id)
             }
-            try identityStore.save(imported)
             applyIdentity(imported)
             accountBackupPublishTask?.cancel()
             accountBackupBaseline = nil

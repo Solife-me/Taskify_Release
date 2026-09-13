@@ -233,13 +233,14 @@ struct FirstRunOnboardingView: View {
             return
         }
         let succeeded = model.importIdentity(trimmed)
+        let importError = model.errorMessage
         // importIdentity's failure path also sets model.errorMessage, which drives RootTabView's
         // own .alert — presented from the same view this fullScreenCover is presented from.
         // SwiftUI can't show both at once and dismisses the cover to show the alert instead, so
         // clear it here and rely purely on the inline signInError below.
         model.errorMessage = nil
         guard succeeded else {
-            signInError = "That nsec looks invalid. Paste a valid nsec or 64-character secret key."
+            signInError = importError ?? "Could not import your identity. Please try again."
             return
         }
         page = .notifications
