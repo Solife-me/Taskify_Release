@@ -632,6 +632,8 @@ struct UpcomingView: View {
                         }
                     }
                 }
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, 18)
                 .padding(.bottom, 14)
             }
@@ -640,100 +642,127 @@ struct UpcomingView: View {
     }
 
     private var listView: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                UpcomingCompactCalendar(
-                    selection: $selectedDate,
-                    taskCountsByDate: taskCountsByDate,
-                    taskifyEventDates: taskifyEventDates,
-                    eventDates: calendarEventDates,
-                    reminderDates: appleReminderDates,
-                    holidayDates: usHolidayDates,
-                    todayRequest: calendarTodayRequest
-                ) { month in
-                    visibleCalendarMonth = month
-                    guard deviceCalendarEnabled || deviceRemindersEnabled else { return }
-                    deviceCalendar.refresh(monthContaining: month)
+        GeometryReader { geometry in
+            if geometry.size.width >= 760 {
+                HStack(alignment: .top, spacing: 24) {
+                    ScrollView {
+                        calendarPicker
+                    }
+                    .frame(width: min(400, geometry.size.width * 0.4))
+                    ScrollView {
+                        selectedDayAgenda
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 10)
-                .taskifyGlass(cornerRadius: 22)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 14)
+                .scrollIndicators(.hidden)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        calendarPicker
+                        selectedDayAgenda
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 14)
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+    }
 
-                Text(selectedDate.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                    .font(.headline)
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    private var calendarPicker: some View {
+        UpcomingCompactCalendar(
+            selection: $selectedDate,
+            taskCountsByDate: taskCountsByDate,
+            taskifyEventDates: taskifyEventDates,
+            eventDates: calendarEventDates,
+            reminderDates: appleReminderDates,
+            holidayDates: usHolidayDates,
+            todayRequest: calendarTodayRequest
+        ) { month in
+            visibleCalendarMonth = month
+            guard deviceCalendarEnabled || deviceRemindersEnabled else { return }
+            deviceCalendar.refresh(monthContaining: month)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .taskifyGlass(cornerRadius: 22)
+    }
 
-                calendarAccessView
-                reminderAccessView
+    private var selectedDayAgenda: some View {
+        LazyVStack(alignment: .leading, spacing: 14) {
+            Text(selectedDate.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                .font(.headline)
+                .foregroundStyle(TaskifyTheme.primaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                if selectedDayTasks.isEmpty,
-                   selectedDayTaskifyEvents.isEmpty,
-                   selectedDayCalendarEvents.isEmpty,
-                   selectedDayReminders.isEmpty,
-                   selectedDayUsHolidays.isEmpty {
-                    ContentUnavailableView(
-                        "Nothing scheduled",
-                        systemImage: "calendar.badge.checkmark",
-                        description: Text(filteredTasks.isEmpty
-                            ? "Tasks, Taskify events, Apple Calendar events, and reminders will appear here."
-                            : "Choose another day or add something for this date.")
-                    )
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-                    .frame(minHeight: 150)
-                } else {
-                    if !selectedDayUsHolidays.isEmpty {
-                        VStack(spacing: 10) {
-                            ForEach(selectedDayUsHolidays) { holiday in
-                                UsHolidayCard(holiday: holiday)
+            calendarAccessView
+            reminderAccessView
+
+            if selectedDayTasks.isEmpty,
+               selectedDayTaskifyEvents.isEmpty,
+               selectedDayCalendarEvents.isEmpty,
+               selectedDayReminders.isEmpty,
+               selectedDayUsHolidays.isEmpty {
+                ContentUnavailableView(
+                    "Nothing scheduled",
+                    systemImage: "calendar.badge.checkmark",
+                    description: Text(filteredTasks.isEmpty
+                        ? "Tasks, Taskify events, Apple Calendar events, and reminders will appear here."
+                        : "Choose another day or add something for this date.")
+                )
+                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(minHeight: 150)
+            } else {
+                if !selectedDayUsHolidays.isEmpty {
+                    VStack(spacing: 10) {
+                        ForEach(selectedDayUsHolidays) { holiday in
+                            UsHolidayCard(holiday: holiday)
+                        }
+                    }
+                }
+
+                if !selectedDayTaskifyEvents.isEmpty {
+                    VStack(spacing: 10) {
+                        ForEach(selectedDayTaskifyEvents) { event in
+                            TaskifyEventCard(event: event)
+                        }
+                    }
+                }
+
+                if !selectedDayReminders.isEmpty {
+                    VStack(spacing: 10) {
+                        ForEach(selectedDayReminders) { reminder in
+                            DeviceReminderCard(
+                                reminder: reminder,
+                                isCompleting: deviceCalendar.completingReminderIDs.contains(reminder.id),
+                                notificationMinutes: deviceCalendar.reminderNotificationMinutes(reminder),
+                                onSetNotification: { deviceCalendar.setReminderNotification(reminder, lead: $0) }
+                            ) {
+                                completeReminder(reminder)
                             }
                         }
                     }
+                }
 
-                    if !selectedDayTaskifyEvents.isEmpty {
-                        VStack(spacing: 10) {
-                            ForEach(selectedDayTaskifyEvents) { event in
-                                TaskifyEventCard(event: event)
-                            }
+                if !selectedDayCalendarEvents.isEmpty {
+                    VStack(spacing: 10) {
+                        ForEach(selectedDayCalendarEvents) { event in
+                            DeviceCalendarEventCard(
+                                event: event,
+                                notificationMinutes: deviceCalendar.eventNotificationMinutes(event),
+                                onSetNotification: { deviceCalendar.setEventNotification(event, reminder: $0) }
+                            )
                         }
                     }
+                }
 
-                    if !selectedDayReminders.isEmpty {
-                        VStack(spacing: 10) {
-                            ForEach(selectedDayReminders) { reminder in
-                                DeviceReminderCard(
-                                    reminder: reminder,
-                                    isCompleting: deviceCalendar.completingReminderIDs.contains(reminder.id),
-                                    notificationMinutes: deviceCalendar.reminderNotificationMinutes(reminder),
-                                    onSetNotification: { deviceCalendar.setReminderNotification(reminder, lead: $0) }
-                                ) {
-                                    completeReminder(reminder)
-                                }
-                            }
-                        }
-                    }
-
-                    if !selectedDayCalendarEvents.isEmpty {
-                        VStack(spacing: 10) {
-                            ForEach(selectedDayCalendarEvents) { event in
-                                DeviceCalendarEventCard(
-                                    event: event,
-                                    notificationMinutes: deviceCalendar.eventNotificationMinutes(event),
-                                    onSetNotification: { deviceCalendar.setEventNotification(event, reminder: $0) }
-                                )
-                            }
-                        }
-                    }
-
-                    if !selectedDayTasks.isEmpty {
-                        UpcomingTaskList(tasks: selectedDayTasks, boardGrouping: boardGrouping)
-                    }
+                if !selectedDayTasks.isEmpty {
+                    UpcomingTaskList(tasks: selectedDayTasks, boardGrouping: boardGrouping)
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.bottom, 14)
         }
-        .scrollIndicators(.hidden)
     }
 
     private var emptyDescription: String {

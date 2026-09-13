@@ -16,6 +16,7 @@ import UIKit
 /// common "I already used Taskify" case without new plumbing.
 struct FirstRunOnboardingView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private enum Page {
         case home
@@ -33,24 +34,64 @@ struct FirstRunOnboardingView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 20) {
-                Spacer(minLength: 8)
+            GeometryReader { geometry in
+                let showsPanel = geometry.size.width >= 600
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 28) {
+                        if showsPanel {
+                            VStack(spacing: 16) {
+                                Image(systemName: "checklist")
+                                    .font(.system(size: 44, weight: .medium))
+                                    .foregroundStyle(TaskifyTheme.accent)
+                                    .accessibilityHidden(true)
+                                Text("Welcome to Taskify")
+                                    .font(.largeTitle.bold())
+                                    .foregroundStyle(TaskifyTheme.primaryText)
+                                    .multilineTextAlignment(.center)
+                                    .accessibilityAddTraits(.isHeader)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
 
-                switch page {
-                case .home: homePage
-                case .signIn: signInPage
-                case .create: createPage
-                case .notifications: notificationsPage
+                        switch page {
+                        case .home: homePage
+                        case .signIn: signInPage
+                        case .create: createPage
+                        case .notifications: notificationsPage
+                        }
+                    }
+                    .padding(showsPanel ? 32 : 0)
+                    .frame(maxWidth: 540, alignment: .leading)
+                    .background {
+                        if showsPanel {
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .fill(TaskifyTheme.raisedFill)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                        .stroke(TaskifyTheme.border, lineWidth: 1)
+                                }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: max(0, geometry.size.height - 48))
+                    .padding(24)
                 }
-
-                Spacer()
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollDismissesKeyboard(.interactively)
+                .navigationTitle(showsPanel ? "" : "Welcome to Taskify")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar(showsPanel ? .hidden : .visible, for: .navigationBar)
             }
-            .padding(24)
             .background(TaskifyTheme.background.ignoresSafeArea())
-            .navigationTitle("Welcome to Taskify")
-            .navigationBarTitleDisplayMode(.inline)
         }
         .interactiveDismissDisabled()
+    }
+
+    /// Long localized labels and accessibility text sizes can stack without clipping.
+    private var actionLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(spacing: 12))
     }
 
     private var homePage: some View {
@@ -91,7 +132,8 @@ struct FirstRunOnboardingView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .padding(.horizontal, 16)
-                .frame(height: 50)
+                .padding(.vertical, 12)
+                .frame(minHeight: 50)
                 .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -104,7 +146,7 @@ struct FirstRunOnboardingView: View {
                     .foregroundStyle(.red)
             }
 
-            HStack(spacing: 12) {
+            actionLayout {
                 Button("Back") { page = .home }
                     .buttonStyle(.bordered)
 
@@ -133,7 +175,7 @@ struct FirstRunOnboardingView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-            HStack(spacing: 12) {
+            actionLayout {
                 Button {
                     UIPasteboard.general.setItems(
                         [[UTType.plainText.identifier: createdNsec]],
@@ -163,7 +205,7 @@ struct FirstRunOnboardingView: View {
                     .foregroundStyle(TaskifyTheme.secondaryText)
             }
 
-            HStack(spacing: 12) {
+            actionLayout {
                 Button("Back") { page = .home }
                     .buttonStyle(.bordered)
 
@@ -185,7 +227,7 @@ struct FirstRunOnboardingView: View {
                 .font(.subheadline)
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
-            HStack(spacing: 12) {
+            actionLayout {
                 Button("Not now") {
                     finish()
                 }

@@ -9,6 +9,52 @@ final class ChatComposerUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testIPadConversationStaysBesideListAndPreservesDraftOnRotation() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_INITIAL_TAB"] = "chat"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launch()
+        guard app.windows.firstMatch.frame.width >= 700 else {
+            throw XCTSkip("Run on an iPad simulator")
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 15))
+        contact.tap()
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["New message"].isHittable,
+                      "The conversation list must remain available beside the conversation")
+        composer.tap()
+        composer.typeText("iPad unsent draft")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "iPad unsent draft")
+        attach(app, name: "ipad-conversation-portrait")
+    }
+
+    func testIPadMainScreenLayouts() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        for tab in ["boards", "upcoming", "wallet", "settings"] {
+            app.launchEnvironment["TASKIFY_INITIAL_TAB"] = tab
+            app.launch()
+            guard app.windows.firstMatch.frame.width >= 700 else {
+                throw XCTSkip("Run on an iPad simulator")
+            }
+            XCTAssertTrue(app.buttons["Chat"].waitForExistence(timeout: 15),
+                          "App navigation must remain accessible from \(tab)")
+            XCTAssertTrue(app.otherElements["taskify-startup-loading"].waitForNonExistence(timeout: 15))
+            attach(app, name: "ipad-\(tab)-portrait")
+            app.terminate()
+        }
+    }
+
     func testLongMessageCapsComposerKeepsCaretVisibleAndScrolls() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "force"

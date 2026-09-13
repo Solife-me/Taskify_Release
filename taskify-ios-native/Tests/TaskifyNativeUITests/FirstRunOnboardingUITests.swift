@@ -1,10 +1,44 @@
 import XCTest
+import UIKit
 
 /// Runtime verification for first-run onboarding. A debug-only launch environment makes this
 /// deterministic without deleting or depending on the simulator's Keychain.
 final class FirstRunOnboardingUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
+    }
+
+    func testIPadOnboardingUsesCenteredPanelAndKeepsSignInReachable() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "force"
+        app.launch()
+        guard app.windows.firstMatch.frame.width >= 700 else {
+            throw XCTSkip("Run on an iPad simulator")
+        }
+        defer { XCUIDevice.shared.orientation = .portrait }
+
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            let signIn = app.buttons["Sign in with nsec"]
+            XCTAssertTrue(signIn.waitForExistence(timeout: 10))
+            XCTAssertLessThanOrEqual(signIn.frame.width, 500,
+                                     "Onboarding actions must not stretch across the iPad")
+            XCTAssertEqual(signIn.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 3)
+            XCTAssertTrue(app.buttons["Create new login"].isHittable)
+            attach(app, name: orientation == .portrait ? "ipad-onboarding-portrait" : "ipad-onboarding-landscape")
+        }
+
+        app.buttons["Sign in with nsec"].tap()
+        let field = app.secureTextFields["nsec1... or 64-character key"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(field.frame.width, 500)
+        field.tap()
+        field.typeText("invalid-test-key")
+        XCTAssertTrue(app.buttons["Continue"].isHittable,
+                      "The keyboard must not cover the sign-in actions")
+        app.buttons["Continue"].tap()
+        XCTAssertTrue(app.staticTexts["That nsec looks invalid. Paste a valid nsec or 64-character secret key."].waitForExistence(timeout: 5))
+        attach(app, name: "ipad-onboarding-signin-keyboard")
     }
 
     func testCreateNewLoginFlowCompletesOnboardingAndPersists() throws {

@@ -745,6 +745,7 @@ struct BoardsView: View {
                         selection.exit()
                     }
                 )
+                .frame(maxWidth: 720)
                 .padding(.horizontal, 18)
                 .padding(.bottom, 10)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -760,6 +761,7 @@ struct BoardsView: View {
                         showingVoiceDictation = true
                     }
                 )
+                .frame(maxWidth: 720)
                 .padding(.horizontal, 18)
                 .padding(.bottom, 10)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -3092,7 +3094,7 @@ private struct ListBoardView: View {
                 LazyHStack(spacing: 16) {
                     if board.indexCardEnabled {
                         IndexCardColumnView(groups: indexGroups, focusedPageID: $focusedPageID)
-                            .frame(width: min(330, proxy.size.width - 50))
+                            .frame(width: boardColumnWidth(in: proxy.size.width))
                             .id(indexCardPageID)
                     }
                     ForEach(columns) { column in
@@ -3103,7 +3105,7 @@ private struct ListBoardView: View {
                             sortDirection: sortDirection,
                             onAddList: onAddList
                         )
-                            .frame(width: min(330, proxy.size.width - 50))
+                            .frame(width: boardColumnWidth(in: proxy.size.width))
                             .id(column.id)
                     }
                 }
@@ -3187,7 +3189,7 @@ private struct CompoundBoardView: View {
                     LazyHStack(spacing: 16) {
                         if board.indexCardEnabled {
                             IndexCardColumnView(groups: indexGroups, focusedPageID: $focusedPageID)
-                                .frame(width: min(330, proxy.size.width - 50))
+                                .frame(width: boardColumnWidth(in: proxy.size.width))
                                 .id(indexCardPageID)
                         }
                         ForEach(columns) { reference in
@@ -3198,7 +3200,7 @@ private struct CompoundBoardView: View {
                                 sortMode: sortMode,
                                 sortDirection: sortDirection
                         )
-                            .frame(width: min(330, proxy.size.width - 50))
+                            .frame(width: boardColumnWidth(in: proxy.size.width))
                             .id(reference.id)
                         }
                     }
@@ -3576,7 +3578,7 @@ private struct WeekBoardView: View {
                             sortMode: sortMode,
                             sortDirection: sortDirection
                         )
-                            .frame(width: min(330, proxy.size.width - 50))
+                            .frame(width: boardColumnWidth(in: proxy.size.width))
                             .id(weekday.rawValue)
                     }
                 }
@@ -4200,4 +4202,12 @@ private extension TaskPriority {
         case .high: "High"
         }
     }
+}
+
+/// Fit whole, readable columns into wide windows while keeping the phone's next-column peek.
+private func boardColumnWidth(in width: CGFloat) -> CGFloat {
+    guard width >= 700 else { return max(1, min(330, width - 50)) }
+    let available = width - 36
+    let count = max(2, floor((available + 16) / 316))
+    return (available - (count - 1) * 16) / count
 }

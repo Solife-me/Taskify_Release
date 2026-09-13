@@ -27,6 +27,7 @@ enum AppTab: String, CaseIterable, Identifiable {
 
 struct RootTabView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var watchBridge = TaskifyWatchBridge.shared
     @State private var notificationNavigationRouter = TaskNotificationNavigationRouter.shared
@@ -140,6 +141,8 @@ struct RootTabView: View {
             if !model.isLoading {
                 if #available(iOS 26.0, *) {
                     nativeTabView
+                } else if horizontalSizeClass == .regular {
+                    tabletNavigation
                 } else {
                     legacyContent
                         .safeAreaInset(edge: .bottom, spacing: 8) {
@@ -212,6 +215,22 @@ struct RootTabView: View {
         }
     }
 
+    private var tabletNavigation: some View {
+        NavigationSplitView {
+            List(AppTab.allCases, selection: Binding<AppTab?>(
+                get: { selectedTab },
+                set: { if let tab = $0 { selectedTab = tab } }
+            )) { tab in
+                Label(tab.title, systemImage: tab.icon).tag(tab)
+            }
+            .navigationTitle("Taskify")
+            .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 280)
+        } detail: {
+            legacyContent
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
     @ViewBuilder
     private var legacyContent: some View {
         switch selectedTab {
@@ -234,44 +253,31 @@ struct RootTabView: View {
     @available(iOS 26.0, *)
     private var nativeTabView: some View {
         TabView(selection: $selectedTab) {
-            BoardsView(
-                focusQuickAdd: $pendingQuickAdd,
-                quickAddColumnID: $pendingQuickAddColumnID
-            )
+            Tab(AppTab.boards.title, systemImage: AppTab.boards.icon, value: .boards) {
+                BoardsView(
+                    focusQuickAdd: $pendingQuickAdd,
+                    quickAddColumnID: $pendingQuickAddColumnID
+                )
                 .taskifyTabBackdrop(isActive: selectedTab == .boards)
-                .tag(AppTab.boards)
-                .tabItem {
-                    Label(AppTab.boards.title, systemImage: AppTab.boards.icon)
-                }
-
-            UpcomingView()
-                .taskifyTabBackdrop(isActive: selectedTab == .upcoming)
-                .tag(AppTab.upcoming)
-                .tabItem {
-                    Label(AppTab.upcoming.title, systemImage: AppTab.upcoming.icon)
-                }
-
-            walletView
-                .taskifyTabBackdrop(isActive: selectedTab == .wallet)
-                .tag(AppTab.wallet)
-                .tabItem {
-                    Label(AppTab.wallet.title, systemImage: AppTab.wallet.icon)
-                }
-
-            ContactsView()
-                .taskifyTabBackdrop(isActive: selectedTab == .chat)
-                .tag(AppTab.chat)
-                .tabItem {
-                    Label(AppTab.chat.title, systemImage: AppTab.chat.icon)
-                }
-
-            SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
-                .taskifyTabBackdrop(isActive: selectedTab == .settings)
-                .tag(AppTab.settings)
-                .tabItem {
-                    Label(AppTab.settings.title, systemImage: AppTab.settings.icon)
-                }
+            }
+            Tab(AppTab.upcoming.title, systemImage: AppTab.upcoming.icon, value: .upcoming) {
+                UpcomingView()
+                    .taskifyTabBackdrop(isActive: selectedTab == .upcoming)
+            }
+            Tab(AppTab.wallet.title, systemImage: AppTab.wallet.icon, value: .wallet) {
+                walletView
+                    .taskifyTabBackdrop(isActive: selectedTab == .wallet)
+            }
+            Tab(AppTab.chat.title, systemImage: AppTab.chat.icon, value: .chat) {
+                ContactsView()
+                    .taskifyTabBackdrop(isActive: selectedTab == .chat)
+            }
+            Tab(AppTab.settings.title, systemImage: AppTab.settings.icon, value: .settings) {
+                SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
+                    .taskifyTabBackdrop(isActive: selectedTab == .settings)
+            }
         }
+        .tabViewStyle(.sidebarAdaptable)
     }
 
     private var walletView: some View {

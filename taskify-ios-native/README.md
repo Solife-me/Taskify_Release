@@ -2,6 +2,44 @@
 
 This is the clean native SwiftUI replacement for the current `taskify-ios/` WebView release app. The PWA is the behavior and visual reference. The WebView app remains untouched until the native parity gates are complete.
 
+## Native iPadOS layout
+
+The native app and its iOS extensions now target both iPhone and iPad. They share
+all feature implementations, persistence, sync, wallet and messaging services.
+iPad supports every orientation and resizable windows. On iOS 26+, the system tab
+bar can become a sidebar; older regular-width windows use a navigation sidebar.
+Boards fit readable columns to the window and cap the floating entry controls.
+Wide Chat windows show the conversation list beside the selected conversation;
+wide Upcoming calendar windows show the selected day's agenda beside the calendar.
+Wallet and Settings keep their content centered at a readable width.
+Onboarding uses a centered panel capped at 540 points in wide windows, with its
+welcome title and actions grouped together. All onboarding steps scroll when the
+keyboard or accessibility text needs more space; compact windows keep the phone layout.
+
+Compact windows use stacked navigation. Multiple independent app windows remain
+disabled, consistent with the existing single-scene model. Physical iPad checks
+for camera/scanning, Photos/Files, share extension, notifications, wallet flows,
+keyboard/trackpad and live account sync remain part of release QA.
+
+Validation on an iPad Pro 11-inch simulator: the Local build and the iPad UI
+checks in `ChatComposerUITests` pass, including side-by-side conversation access,
+draft retention across rotation, and launching Boards, Upcoming, Wallet and
+Settings. Calendar/agenda layout was also visually inspected. The existing chat keyboard-dismissal
+and draft-retention UI test also passes on an iPhone 18 Pro simulator. These are layout
+checks with synthetic data, not live service parity tests. The unsigned simulator
+build reports Keychain error -34018 when Wallet attempts identity storage;
+wallet/account validation requires a build with the proper signing entitlements.
+
+Run the iPad checks with an available iPad simulator destination:
+
+```sh
+xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
+  -configuration Local -destination 'platform=iOS Simulator,name=Taskify iPad QA' \
+  CODE_SIGNING_ALLOWED=NO \
+  -only-testing:TaskifyNativeUITests/ChatComposerUITests/testIPadMainScreenLayouts \
+  -only-testing:TaskifyNativeUITests/ChatComposerUITests/testIPadConversationStaysBesideListAndPreservesDraftOnRotation test
+```
+
 ## Current runnable slice
 
 - Native SwiftUI shell matching the PWA's dark glass appearance

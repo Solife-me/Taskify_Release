@@ -140,6 +140,8 @@ struct SettingsView: View {
                             migrationCard
                         }
                     }
+                    .frame(maxWidth: 820)
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, 18)
                     .padding(.bottom, 18)
                 }

@@ -1600,6 +1600,8 @@ struct WalletView: View {
                             alignment: .center
                         )
                     }
+                    .frame(maxWidth: 720)
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, 24)
                     .padding(.top, 12)
                     .padding(.bottom, 110)
