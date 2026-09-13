@@ -187,6 +187,13 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   build
 ```
 
+Board projections use `TaskifyCore.SnapshotLookupCache`. Task, board, event, contact, and messaging
+changes invalidate their dependent caches; chat read receipts and board selection preserve task
+indexes and board projections. Upcoming uses individual lazy timeline rows, including within a
+single crowded date. Calendar and date changes refresh date-sensitive projections on their next
+read, and task visibility keeps its existing minute boundary. See the
+[board performance implementation and validation](../docs/native-board-performance-2026-09-12.md).
+
 Idle chat checks in `ScrollPerformanceUITests` measure CPU and memory for 30 seconds each on
 the populated inbox and conversation, then verify navigation/search still respond. Relay retries
 back off until an actual response, and rejected subscriptions retry independently so healthy

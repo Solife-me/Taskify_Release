@@ -1564,36 +1564,34 @@ private struct BoardUpcomingView: View {
     @Environment(AppModel.self) private var model
     let board: Board
 
-    private var groups: [BoardUpcomingGroup] { model.boardUpcomingGroups(for: board) }
-
     var body: some View {
+        let rows = model.boardUpcomingRows(for: board)
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 9) {
                 Label("Upcoming", systemImage: "calendar")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(.bottom, 7)
 
-                if groups.isEmpty {
+                if rows.isEmpty {
                     Text("No upcoming items on this board.")
                         .font(.subheadline)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 6)
                 } else {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(groups) { group in
-                            VStack(alignment: .leading, spacing: 9) {
-                                Text(dayLabel(group.date).uppercased())
-                                    .font(.system(size: 12, weight: .bold))
-                                    .tracking(0.6)
-                                    .foregroundStyle(TaskifyTheme.tertiaryText)
-                                ForEach(group.events) { event in
-                                    TaskifyEventCard(event: event)
-                                }
-                                ForEach(group.tasks) { task in
-                                    TaskCardView(task: task)
-                                }
-                            }
+                    ForEach(rows) { row in
+                        switch row {
+                        case .header(let date):
+                            Text(dayLabel(date).uppercased())
+                                .font(.system(size: 12, weight: .bold))
+                                .tracking(0.6)
+                                .foregroundStyle(TaskifyTheme.tertiaryText)
+                                .padding(.top, row.id == rows.first?.id ? 0 : 9)
+                        case .event(_, let event):
+                            TaskifyEventCard(event: event)
+                        case .task(_, let task):
+                            TaskCardView(task: task)
                         }
                     }
                 }
@@ -1619,9 +1617,8 @@ private struct BoardCompletedView: View {
     let board: Board
     let onClear: () -> Void
 
-    private var tasks: [TaskItem] { model.boardCompletedTasks(for: board) }
-
     var body: some View {
+        let tasks = model.boardCompletedTasks(for: board)
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
@@ -3247,22 +3244,17 @@ private struct CompoundColumnView: View {
     let sortDirection: UpcomingSortDirection
 
     private var tasks: [TaskItem] {
-        let raw = model.tasks(
+        model.tasks(
             boardID: reference.board.id,
             columnID: reference.column.id,
-            includeCompleted: showCompleted
+            includeCompleted: showCompleted,
+            sortMode: sortMode,
+            sortDirection: sortDirection
         )
-        guard sortMode != .manual else { return raw }
-        return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
     }
 
     private var events: [TaskifyEvent] {
-        TaskifyEventBoardOrganizer.events(
-            model.taskifyEvents,
-            boardID: reference.board.id,
-            columnID: reference.column.id,
-            weekStartsOn: model.weekStart
-        )
+        model.boardEvents(boardID: reference.board.id, columnID: reference.column.id)
     }
 
     var body: some View {
@@ -3364,18 +3356,11 @@ private struct ListColumnView: View {
     @State private var showingDeleteConfirmation = false
 
     private var tasks: [TaskItem] {
-        let raw = model.tasks(forColumnID: column.id, includeCompleted: showCompleted)
-        guard sortMode != .manual else { return raw }
-        return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
+        model.tasks(forColumnID: column.id, includeCompleted: showCompleted, sortMode: sortMode, sortDirection: sortDirection)
     }
 
     private var events: [TaskifyEvent] {
-        TaskifyEventBoardOrganizer.events(
-            model.taskifyEvents,
-            boardID: model.selectedBoardID,
-            columnID: column.id,
-            weekStartsOn: model.weekStart
-        )
+        model.boardEvents(boardID: model.selectedBoardID, columnID: column.id)
     }
 
     private var allTasks: [TaskItem] {
@@ -3624,18 +3609,11 @@ private struct DayColumnView: View {
     let sortDirection: UpcomingSortDirection
 
     private var tasks: [TaskItem] {
-        let raw = model.tasks(for: weekday, includeCompleted: showCompleted)
-        guard sortMode != .manual else { return raw }
-        return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
+        model.tasks(for: weekday, includeCompleted: showCompleted, sortMode: sortMode, sortDirection: sortDirection)
     }
 
     private var events: [TaskifyEvent] {
-        TaskifyEventBoardOrganizer.events(
-            model.taskifyEvents,
-            boardID: model.selectedBoardID,
-            weekday: weekday,
-            weekStartsOn: model.weekStart
-        )
+        model.boardEvents(boardID: model.selectedBoardID, columnID: weekday.rawValue, weekday: weekday)
     }
 
     var body: some View {

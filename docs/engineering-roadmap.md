@@ -118,6 +118,15 @@ Current test count: 3 files. Target: expand to cover 6+ domains.
 
 ---
 
+## Native Board Performance Coverage (2026-09-12)
+
+`SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,
+including compound membership, event removal, custom ordering, calendar/timezone changes, flat
+Upcoming row identities, and repeated messaging writes against 5,000 additional tasks.
+`ScrollPerformanceUITests` adds dense Upcoming/Completed scrolling and switching measurements,
+using 500 future tasks on one date and 500 completed tasks. Device relay-traffic and thermal
+acceptance checks remain manual. See [native board performance](native-board-performance-2026-09-12.md).
+
 ## Definition of Done
 
 A milestone is complete when:

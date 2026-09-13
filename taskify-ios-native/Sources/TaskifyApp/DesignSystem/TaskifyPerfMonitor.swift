@@ -15,8 +15,8 @@ import QuartzCore
 /// What each number means:
 /// - **hitch** — a frame that took longer than two display intervals. This is what "sluggish"
 ///   actually feels like. `worst` is the longest single stall since the last reset.
-/// - **snap/s** — snapshot writes per second. Every one invalidates the lookup cache and bumps
-///   the revision counter each view memoizes against, so a high idle rate means the UI is being
+/// - **snap/s** — snapshot writes per second. Each write invalidates affected lookup domains and bumps
+///   the snapshot revision counter, so a high idle rate means the UI is being
 ///   told to rebuild constantly by sync traffic rather than by anything the user did.
 /// - **card** — task card body evaluations per second, the main render cost on a board.
 @MainActor
