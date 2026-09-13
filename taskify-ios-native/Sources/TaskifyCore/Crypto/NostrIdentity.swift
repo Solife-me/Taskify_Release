@@ -6,7 +6,7 @@ public enum NostrIdentityError: LocalizedError {
     case invalidPrivateKey
 
     public var errorDescription: String? {
-        "Enter a 64-character hexadecimal secret key or an nsec value."
+        "That nsec looks invalid. Paste a valid nsec or 64-character secret key."
     }
 }
 
@@ -26,14 +26,30 @@ public struct NostrIdentity: Equatable, Sendable {
     }
 
     public init(importedValue: String) throws {
-        let trimmed = importedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let keyData: Data
-        if trimmed.lowercased().hasPrefix("nsec1") {
-            keyData = try Bech32.decode(trimmed, expectedPrefix: "nsec")
-        } else {
-            keyData = try Data(hex: trimmed.lowercased())
+        // Clipboard text may contain line wrapping or invisible separators. Only remove
+        // formatting; preserve letter case so Bech32 still rejects mixed-case keys.
+        let formatting = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "\u{200B}\u{FEFF}"))
+        var value = importedValue.unicodeScalars.filter { !formatting.contains($0) }
+            .map(String.init).joined()
+        if value.lowercased().hasPrefix("nostr:") {
+            value = String(value.dropFirst(6))
         }
-        try self.init(privateKey: keyData)
+        do {
+            let keyData: Data
+            if value.lowercased().hasPrefix("nsec1") {
+                keyData = try Bech32.decode(value, expectedPrefix: "nsec")
+            } else {
+                guard value.count == 64,
+                      value.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
+                    throw NostrIdentityError.invalidPrivateKey
+                }
+                keyData = try Data(hex: value)
+            }
+            try self.init(privateKey: keyData)
+        } catch {
+            throw NostrIdentityError.invalidPrivateKey
+        }
     }
 
     public static func generate() throws -> NostrIdentity {

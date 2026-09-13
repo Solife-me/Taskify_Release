@@ -8,6 +8,7 @@
 
 import type { Env, D1Database } from "./lib.ts";
 import { requireDb, jsonResponse, parseJson } from "./lib.ts";
+import { normalizeVoiceDue, voiceLocalDates } from "./voice-dates.ts";
 import { normalizeNostrPublicKey, verifyTaskifyAuth } from "./nostr-auth.ts";
 
 // ---- Constants ----
@@ -422,46 +423,43 @@ function parseJsonStringSafely(text: unknown): unknown | null {
   }
 }
 
+// Bound the response body as well as headers. Four provider attempts fit within the
+// native clients' 60-second request window, leaving time for auth, quota, and transit.
+async function fetchVoiceJSON(url: string, init: RequestInit): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callGemini(apiKey: string, prompt: string): Promise<unknown | null> {
   const models = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK_1, GEMINI_MODEL_FALLBACK_2];
-
   for (const model of models) {
-    let response: Response;
-    try {
-      response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              // Gemini 3 recommends the default temperature (1.0); lower values
-              // can cause reasoning loops on the 3.x series.
-              temperature: 1.0,
-              maxOutputTokens: 2048,
-              responseMimeType: "application/json",
-            },
-          }),
-        },
-      );
-    } catch {
-      continue;
-    }
-
-    if (!response.ok) continue;
-
-    let json: unknown;
-    try {
-      json = await response.json();
-    } catch {
-      continue;
-    }
-    const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const json = await fetchVoiceJSON(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 1.0,
+            maxOutputTokens: 2048,
+            responseMimeType: "application/json",
+          },
+        }),
+      },
+    );
+    const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
     const parsed = parseJsonStringSafely(text);
     if (parsed) return parsed;
   }
-
   return null;
 }
 
@@ -469,43 +467,19 @@ async function callCloudflareGlmFallback(env: Env, prompt: string): Promise<unkn
   const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const apiToken = env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !apiToken) return null;
-
-  let response: Response;
-  try {
-    response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/zai-org/glm-5.3-flash`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiToken}`,
-        },
-        body: JSON.stringify({
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 1024,
-          temperature: 0.1,
-        }),
-      },
-    );
-  } catch {
-    return null;
-  }
-
-  if (!response.ok) return null;
-
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch {
-    return null;
-  }
-
-  // Workers AI chat responses may place text in result.response or result.output_text
-  const text = (json as any)?.result?.response
-    ?? (json as any)?.result?.output_text
-    ?? (json as any)?.response;
-
-  return parseJsonStringSafely(text);
+  const json = await fetchVoiceJSON(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/zai-org/glm-5.3-flash`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiToken}` },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 1024,
+        temperature: 0.1,
+      }),
+    },
+  );
+  return parseJsonStringSafely(json?.result?.response ?? json?.result?.output_text ?? json?.response);
 }
 
 async function callVoiceModelWithFallback(env: Env, prompt: string): Promise<unknown | null> {
@@ -579,6 +553,7 @@ Rules:
 - Never keep reminder-command wording in titles (drop/clean: "remind me to", "set a reminder to", "alert me to", "notify me to").
 - If user says grocery/shopping item lists, keep ONE parent task and put items in subtasks.
 - Keep relative date/time phrases in dueText (e.g. "tomorrow 2:00 PM", "Friday at noon", "today at 5 PM").
+- Preserve spoken time ranges in dueText with "from" (e.g. "tomorrow from 1-2"). Do not invent AM for an unqualified appointment range. Preserve explicit AM/PM and morning/night context.
 - reminderText defaults to null. Set reminderText ONLY when the user explicitly asks for a reminder/alert/notification/nudge, such as "remind me", "set a reminder", "alert me", or "notify me".
 - If the user says "remind me" without a reminder offset, set reminderText to "at due time".
 - If the user gives reminder timing, keep it in reminderText (e.g. "15 minutes before", "1 hour before", "tomorrow at 9 AM").
@@ -681,9 +656,13 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
 
   const tasks: FinalTask[] = [];
 
+  const localDates = voiceLocalDates(referenceDate, referenceTimeZone, referenceOffsetMinutes);
   const batchPrompt = `You are a Taskify task/event finalization assistant.
 
-Reference date (user local now): ${referenceDate}
+Reference instant (UTC, not the user's calendar date): ${referenceDate}
+User's local calendar date (today): ${localDates.today}
+Tomorrow in the user's time zone: ${localDates.tomorrow}
+Day after tomorrow in the user's time zone: ${localDates.dayAfterTomorrow}
 User time zone: ${referenceTimeZone}
 User UTC offset minutes (Date.getTimezoneOffset): ${referenceOffsetMinutes}
 
@@ -728,6 +707,8 @@ Rules:
 - Fill all fields for each item.
 - If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
 - If dueText contains a date but no task due/start clock time, dueISO MAY be a YYYY-MM-DD date string.
+- Resolve "today" and "tomorrow" using the explicit local calendar dates above, never the UTC date of the reference instant.
+- For time ranges, schedule the task at the start of the range. A daytime appointment "from 1-2" means 1 PM to 2 PM unless AM/morning/night is explicit. Preserve explicit AM/PM. "11 to 1 PM" starts at 11 AM.
 - Use dueISO null only when there is truly no parseable date/time intent.
 - Priority defaults to null. Only set priority when the user explicitly states it: "high priority", "urgent", "ASAP", "important" => 3; "medium priority" => 2; "low priority" => 1. Do NOT infer priority from normal planning language.
 - reminderMinutesBeforeDue defaults to null. Set it ONLY when reminderText is non-null or the candidate/title explicitly asks for a reminder/alert/notification.
@@ -787,6 +768,7 @@ Rules:
     if (fromBatch && typeof fromBatch.boardId === "string" && fromBatch.boardId.trim()) {
       normalizedBoardId = fromBatch.boardId.trim();
     }
+    dueISO = normalizeVoiceDue(dueISO, candidate.dueText, candidate.title, referenceDate, referenceTimeZone, referenceOffsetMinutes);
     priority = parseTaskPriority(fromBatch?.priority);
     subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
     const recurrence = normalizeRecurrence(fromBatch?.recurrence);

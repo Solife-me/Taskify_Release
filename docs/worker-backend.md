@@ -74,6 +74,10 @@ Use this table before changing handler logic so caller contracts stay aligned.
 | `POST /api/voice/extract` | signed request; `{ npub, transcript, candidates?, sessionDurationSeconds }` | `{ operations: TaskOperation[] }` where tasks carry `title/dueText/reminderText/notes/recurrenceText/subtasks`; `429` quota body may still include rule-based operations | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceExtract`) |
 | `POST /api/voice/finalize` | signed request; `{ npub, candidates, boardId?, boards?[{id,name,kind,columns}], referenceDate, referenceTimeZone, referenceOffsetMinutes }` | `{ tasks: FinalTask[] }` with `title/dueISO/boardId/columnId/notes/subtasks/priority/reminderMinutesBeforeDue[]/reminderTime/recurrence`; model-chosen boards/columns are validated against the supplied `boards` list | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceFinalize`) |
 
+Voice model attempts have a 10-second timeout covering response headers and body. Up to three Gemini attempts and one Cloudflare fallback fit within the native voice clients’ 60-second request timeout. The iPhone retains failed transcripts and exposes an explicit retry without adding waiting time to the reported recording duration.
+
+Relative voice dates use the reference instant converted to the supplied IANA time zone. The prompt supplies explicit local dates for today and tomorrow, and finalization anchors these relative dates deterministically. Unqualified daytime appointment ranges such as “from 1–2” start at 1 PM; explicit AM/morning wording remains authoritative. Native clients decode `YYYY-MM-DD` as a local calendar day.
+
 ### Independent Watch privacy boundary
 
 The Watch bridge is transport, not a custody or decryption service:

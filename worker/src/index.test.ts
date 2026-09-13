@@ -1646,3 +1646,80 @@ test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when 
     globalThis.fetch = originalFetch;
   }
 });
+
+for (const stall of ["headers", "body"] as const) {
+  test(`voice extraction times out stalled ${stall} and tries the next model`, async (t) => {
+    const env = await makeVoiceEnv(new MockD1WithVoice());
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const originalFetch = globalThis.fetch;
+    let attempts = 0;
+    let started!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    let firstSignal: AbortSignal | undefined;
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      attempts++;
+      if (attempts === 1) {
+        firstSignal = init?.signal ?? undefined;
+        assert.ok(firstSignal, "provider calls must have an abort signal");
+        const stalled = new Promise<never>((_resolve, reject) => {
+          firstSignal!.addEventListener("abort", () => reject(new DOMException("Timed out", "AbortError")), { once: true });
+        });
+        started();
+        return stall === "headers" ? stalled : { ok: true, json: () => stalled };
+      }
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ tasks: [{ title: "Team meeting", dueText: "tomorrow at 8 AM" }] }) }] } }] }));
+    }) as typeof fetch;
+    try {
+      const request = authenticatedVoiceRequest("https://taskify.solife.me/api/voice/extract", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ npub: "npub1abc", transcript: "Team meeting tomorrow at 8 AM", candidates: [], sessionDurationSeconds: 20 }),
+      });
+      const pending = worker.fetch(request, env);
+      await firstStarted;
+      // Let fetch/response.json attach their rejection handlers before expiring the timer.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      t.mock.timers.tick(10_000);
+      const response = await pending;
+      assert.equal(response.status, 200);
+      assert.equal(firstSignal?.aborted, true);
+      assert.equal(attempts, 2);
+      assert.equal(((await response.json()) as any).operations[0].title, "Team meeting");
+    } finally {
+      globalThis.fetch = originalFetch;
+      t.mock.timers.reset();
+    }
+  });
+}
+
+test('voice finalize anchors tomorrow locally and repairs an ambiguous appointment range', async () => {
+  const env = await makeVoiceEnv(new MockD1WithVoice());
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const prompt = JSON.parse(String(init?.body)).contents[0].parts[0].text;
+    assert.ok(prompt.includes("User's local calendar date (today): 2026-09-11"));
+    assert.ok(prompt.includes('Tomorrow in the user\'s time zone: 2026-09-12'));
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ tasks: [
+      { id: 'c1', title: "Meet the Spectrum guy at Gail's house", dueISO: '2026-09-13T06:00:00Z' },
+      { id: 'c2', title: 'Buy groceries', dueISO: '2026-09-13' },
+    ] }) }] } }] }));
+  }) as typeof fetch;
+  try {
+    const request = authenticatedVoiceRequest('https://taskify.solife.me/api/voice/finalize', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ npub: 'npub1abc', referenceDate: '2026-09-12T03:02:00Z', referenceTimeZone: 'America/Chicago', referenceOffsetMinutes: 300,
+        candidates: [
+          { id: 'c1', title: "Meet the Spectrum guy at Gail's house", dueText: 'tomorrow from 1-2', status: 'confirmed' },
+          { id: 'c2', title: 'Buy groceries', dueText: 'tomorrow', status: 'confirmed' },
+        ],
+      }),
+    });
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.tasks[0].dueISO, '2026-09-12T18:00:00.000Z');
+    assert.equal(body.tasks[1].dueISO, '2026-09-12');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

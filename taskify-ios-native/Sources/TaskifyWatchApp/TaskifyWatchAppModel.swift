@@ -1129,24 +1129,11 @@ final class TaskifyWatchAppModel: NSObject {
             let stableTaskID = "watch-\(command.id)-\(index)"
             if snapshot.tasks.contains(where: { $0.id == stableTaskID }) { return nil }
 
-            let parsedDueDate = draft.dueISO.flatMap(Self.taskifyParseISODate)
-            let dueDate = board.kind == "week" ? (parsedDueDate ?? Date()) : parsedDueDate
-            // The Worker emits "YYYY-MM-DD" for a spoken date with no clock time
-            // and a full ISO datetime otherwise, so the shape tells us whether the
-            // user explicitly gave a time.
-            let hasExplicitTime = draft.dueISO
-                .map { $0.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) == nil }
-                ?? false
-            let columnID: String?
-            if board.kind == "week" {
-                columnID = Self.taskifyWeekdayID(for: dueDate ?? Date())
-            } else if let requested = draft.columnId,
-                      (board.columns ?? []).contains(where: { $0.id == requested }) {
-                columnID = requested
-            } else {
-                columnID = board.defaultColumnID
-            }
             let created = Date()
+            let preview = draft.taskPreview(board: board, now: created)
+            let dueDate = preview.dueDate
+            let hasExplicitTime = preview.dueTimeEnabled
+            let columnID = preview.columnID
             let order = (snapshot.tasks
                 .filter { $0.boardID == board.id && $0.columnID == columnID }
                 .map(\.order)
@@ -1173,7 +1160,7 @@ final class TaskifyWatchAppModel: NSObject {
                 title: title,
                 boardID: board.id,
                 boardName: board.name,
-                columnName: board.kind == "week" ? Self.taskifyWeekdayName(for: dueDate ?? created) : nil,
+                columnName: preview.columnName,
                 dueDate: dueDate,
                 dueTimeEnabled: hasExplicitTime,
                 priority: draft.priority,
@@ -1521,10 +1508,7 @@ final class TaskifyWatchAppModel: NSObject {
     }
 
     private nonisolated static func taskifyParseISODate(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) { return date }
-        return ISO8601DateFormatter().date(from: value)
+        VoiceTaskDate.parse(value)
     }
 
     private nonisolated static func taskifyWeekdayID(for date: Date) -> String {

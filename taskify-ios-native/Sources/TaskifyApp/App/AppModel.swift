@@ -159,229 +159,6 @@ enum SyncExcludedRelaySettings {
     }
 }
 
-private final class AppSnapshotLookupCache {
-    private struct TaskGroupingKey: Hashable {
-        let boardID: String
-        let includeCompleted: Bool
-        let minute: Int
-        let weekStartsOn: WeekdayColumn
-    }
-
-    private struct TaskIndex {
-        var tasksByID: [String: TaskItem] = [:]
-        var activeTaskIDs: Set<String> = []
-        var tasksByBoardID: [String: [TaskItem]] = [:]
-        var completedTaskCountsByBoardID: [String: Int] = [:]
-        var taskCountsByBoardID: [String: Int] = [:]
-    }
-
-    private var boardsByID: [String: Board]?
-    private var taskIndex: TaskIndex?
-    private var groupedTasks: [TaskGroupingKey: [BoardTaskColumnKey: [TaskItem]]] = [:]
-    private var taskColumnMinute: Int?
-    private var contactsByPublicKey: [String: NostrContact]?
-    private var groupsByID: [String: NostrGroupConversation]?
-    private var cachedVisibleBoards: [Board]?
-    private var cachedAcceptedTaskifyEvents: [TaskifyEvent]?
-    private var cachedTaskifyEventIDs: Set<String>?
-    private var cachedDirectMessageThreads: [NostrDirectMessageThread]?
-    private var messagesByPeer: [String: [NostrDirectMessage]] = [:]
-
-    func invalidate() {
-        boardsByID = nil
-        taskIndex = nil
-        groupedTasks.removeAll(keepingCapacity: true)
-        taskColumnMinute = nil
-        contactsByPublicKey = nil
-        groupsByID = nil
-        cachedVisibleBoards = nil
-        cachedAcceptedTaskifyEvents = nil
-        cachedTaskifyEventIDs = nil
-        cachedDirectMessageThreads = nil
-        messagesByPeer.removeAll(keepingCapacity: true)
-    }
-
-    func directMessageThreads(snapshot: TaskifySnapshot) -> [NostrDirectMessageThread] {
-        if let cachedDirectMessageThreads { return cachedDirectMessageThreads }
-        let threads = snapshot.activeDirectMessageThreads()
-        cachedDirectMessageThreads = threads
-        return threads
-    }
-
-    func directMessages(with peerPublicKey: String, snapshot: TaskifySnapshot) -> [NostrDirectMessage] {
-        let peer = peerPublicKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let messages = messagesByPeer[peer] { return messages }
-        let messages = snapshot.directMessages(with: peerPublicKey)
-        messagesByPeer[peer] = messages
-        return messages
-    }
-
-    /// `TaskifySnapshot.acceptedTaskifyEvents` filters and sorts the whole event array on every
-    /// read, and each board column reads it while building its own day/column slice. Holding the
-    /// result for the life of a snapshot keeps a horizontal swipe from re-sorting the same array
-    /// once per column per render.
-    func acceptedTaskifyEvents(snapshot: TaskifySnapshot) -> [TaskifyEvent] {
-        if let cachedAcceptedTaskifyEvents { return cachedAcceptedTaskifyEvents }
-        let events = snapshot.acceptedTaskifyEvents
-        cachedAcceptedTaskifyEvents = events
-        return events
-    }
-
-    func taskifyEventIDs(snapshot: TaskifySnapshot) -> Set<String> {
-        if let cachedTaskifyEventIDs { return cachedTaskifyEventIDs }
-        let ids = Set(acceptedTaskifyEvents(snapshot: snapshot).map(\.id))
-        cachedTaskifyEventIDs = ids
-        return ids
-    }
-
-    func board(id: String, snapshot: TaskifySnapshot) -> Board? {
-        if boardsByID == nil {
-            boardsByID = Dictionary(
-                snapshot.boards.map { ($0.id, $0) },
-                uniquingKeysWith: { _, newest in newest }
-            )
-        }
-        return boardsByID?[id]
-    }
-
-    func task(id: String, snapshot: TaskifySnapshot) -> TaskItem? {
-        ensureTaskIndex(snapshot: snapshot)
-        return taskIndex?.tasksByID[id]
-    }
-
-    func activeTaskIDs(snapshot: TaskifySnapshot) -> Set<String> {
-        ensureTaskIndex(snapshot: snapshot)
-        return taskIndex?.activeTaskIDs ?? []
-    }
-
-    func tasks(
-        boardID: String,
-        columnID: String,
-        includeCompleted: Bool,
-        snapshot: TaskifySnapshot,
-        weekStartsOn: WeekdayColumn,
-        now: Date = Date(),
-        calendar: Calendar = .current
-    ) -> [TaskItem] {
-        let minute = Int(now.timeIntervalSince1970 / 60)
-        if taskColumnMinute != minute {
-            groupedTasks.removeAll(keepingCapacity: true)
-            taskColumnMinute = minute
-        }
-        let groupingKey = TaskGroupingKey(
-            boardID: boardID,
-            includeCompleted: includeCompleted,
-            minute: minute,
-            weekStartsOn: weekStartsOn
-        )
-        if groupedTasks[groupingKey] == nil {
-            ensureTaskIndex(snapshot: snapshot)
-            groupedTasks[groupingKey] = BoardTaskOrganizer.groupedTasks(
-                taskIndex?.tasksByBoardID[boardID] ?? [],
-                boards: snapshot.boards,
-                includedBoardIDs: [boardID],
-                includeCompleted: includeCompleted,
-                weekStartsOn: weekStartsOn,
-                now: now,
-                calendar: calendar
-            )
-        }
-        return groupedTasks[groupingKey]?[
-            BoardTaskColumnKey(boardID: boardID, columnID: columnID)
-        ] ?? []
-    }
-
-    func completedTaskCount(boardIDs: Set<String>, snapshot: TaskifySnapshot) -> Int {
-        ensureTaskIndex(snapshot: snapshot)
-        return boardIDs.reduce(0) {
-            $0 + (taskIndex?.completedTaskCountsByBoardID[$1] ?? 0)
-        }
-    }
-
-    func taskCount(boardID: String, snapshot: TaskifySnapshot) -> Int {
-        ensureTaskIndex(snapshot: snapshot)
-        return taskIndex?.taskCountsByBoardID[boardID] ?? 0
-    }
-
-    func prewarmBoardTasks(
-        boardIDs: [String],
-        includeCompleted: Bool,
-        snapshot: TaskifySnapshot,
-        weekStartsOn: WeekdayColumn,
-        now: Date = Date(),
-        calendar: Calendar = .current
-    ) {
-        ensureTaskIndex(snapshot: snapshot)
-        for boardID in boardIDs {
-            guard let board = board(id: boardID, snapshot: snapshot) else { continue }
-            let columnID = board.columns.first?.id
-                ?? (board.kind == .week ? WeekdayColumn.containing(now, calendar: calendar).rawValue : "")
-            _ = tasks(
-                boardID: boardID,
-                columnID: columnID,
-                includeCompleted: includeCompleted,
-                snapshot: snapshot,
-                weekStartsOn: weekStartsOn,
-                now: now,
-                calendar: calendar
-            )
-        }
-    }
-
-    private func ensureTaskIndex(snapshot: TaskifySnapshot) {
-        guard taskIndex == nil else { return }
-        var index = TaskIndex()
-        index.tasksByID.reserveCapacity(snapshot.tasks.count)
-        index.activeTaskIDs.reserveCapacity(snapshot.tasks.count)
-
-        for task in snapshot.tasks where !task.isDeleted {
-            index.tasksByID[task.id] = task
-            index.activeTaskIDs.insert(task.id)
-            index.tasksByBoardID[task.boardID, default: []].append(task)
-            index.taskCountsByBoardID[task.boardID, default: 0] += 1
-            if task.completed {
-                index.completedTaskCountsByBoardID[task.boardID, default: 0] += 1
-            }
-        }
-        taskIndex = index
-    }
-
-    func contact(publicKey: String, snapshot: TaskifySnapshot) -> NostrContact? {
-        if contactsByPublicKey == nil {
-            contactsByPublicKey = Dictionary(
-                (snapshot.contacts ?? []).map {
-                    ($0.publicKey.lowercased(), $0)
-                },
-                uniquingKeysWith: { _, newest in newest }
-            )
-        }
-        let normalized = publicKey.count == 64
-            ? publicKey.lowercased()
-            : NostrPublicKey.parse(publicKey)?.hexString
-        guard let normalized else { return nil }
-        return contactsByPublicKey?[normalized]
-    }
-
-    func group(id: String, snapshot: TaskifySnapshot) -> NostrGroupConversation? {
-        if groupsByID == nil {
-            groupsByID = Dictionary(
-                (snapshot.nostrGroupConversations ?? []).map {
-                    ($0.groupID, $0)
-                },
-                uniquingKeysWith: { _, newest in newest }
-            )
-        }
-        return groupsByID?[id.lowercased()]
-    }
-
-    func visibleBoards(snapshot: TaskifySnapshot) -> [Board] {
-        if let cachedVisibleBoards { return cachedVisibleBoards }
-        let boards = snapshot.boards.filter(\.isVisible)
-        cachedVisibleBoards = boards
-        return boards
-    }
-}
-
 // @Observable (vs. the old ObservableObject + @Published) makes SwiftUI track which of these
 // properties each view actually reads, so e.g. a relay-status tick no longer re-renders every
 // board and chat view in the app — with 26 frequently-churning properties and every screen
@@ -410,7 +187,7 @@ final class AppModel {
     private static let profileOutboxScope = "__taskify-profile__"
     private(set) var snapshot = TaskifySnapshot.empty {
         didSet {
-            snapshotLookupCache.invalidate()
+            snapshotLookupCache.invalidate(from: oldValue, to: snapshot)
             snapshotRevision &+= 1
             if snapshot.directMessages != oldValue.directMessages
                 || snapshot.directMessageReadAt != oldValue.directMessageReadAt
@@ -508,7 +285,7 @@ final class AppModel {
     @ObservationIgnored private let identityStore: KeychainIdentityStore
     @ObservationIgnored private let syncEngine: TaskSyncEngine
     @ObservationIgnored private let notificationCoordinator: TaskNotificationCoordinator
-    @ObservationIgnored private let snapshotLookupCache = AppSnapshotLookupCache()
+    @ObservationIgnored private let snapshotLookupCache = SnapshotLookupCache()
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var widgetReloadTask: Task<Void, Never>?
     @ObservationIgnored private var syncListenerTask: Task<Void, Never>?
@@ -1079,59 +856,75 @@ final class AppModel {
         return snapshotLookupCache.completedTaskCount(boardIDs: scopeIDs, snapshot: snapshot)
     }
 
-    func boardUpcomingGroups(for board: Board, now: Date = Date()) -> [BoardUpcomingGroup] {
-        var scopedBoardIDs: Set<String> = [board.id]
-        if board.kind == .compound {
-            scopedBoardIDs.formUnion(compoundChildBoards(for: board.id).map(\.id))
-        }
-        return BoardUpcomingOrganizer.groups(
-            tasks: snapshot.tasks,
-            events: taskifyEvents,
-            includedBoardIDs: scopedBoardIDs,
-            now: now
-        )
+    func boardUpcomingRows(for board: Board, now: Date = Date()) -> [BoardUpcomingRow] {
+        snapshotLookupCache.boardUpcomingRows(boardID: board.id, snapshot: snapshot, now: now)
     }
 
     func boardCompletedTasks(for board: Board) -> [TaskItem] {
-        var scopedBoardIDs: Set<String> = [board.id]
-        if board.kind == .compound {
-            scopedBoardIDs.formUnion(compoundChildBoards(for: board.id).map(\.id))
-        }
-        return BoardCompletedOrganizer.tasks(
-            snapshot.tasks,
-            includedBoardIDs: scopedBoardIDs
+        snapshotLookupCache.boardCompletedTasks(boardID: board.id, snapshot: snapshot)
+    }
+
+    func boardEvents(boardID: String, columnID: String, weekday: WeekdayColumn? = nil) -> [TaskifyEvent] {
+        snapshotLookupCache.boardEvents(
+            boardID: boardID,
+            columnID: columnID,
+            weekday: weekday,
+            snapshot: snapshot,
+            weekStartsOn: weekStart
         )
     }
 
-    func tasks(for weekday: WeekdayColumn, includeCompleted: Bool) -> [TaskItem] {
+    func tasks(
+        for weekday: WeekdayColumn,
+        includeCompleted: Bool,
+        sortMode: UpcomingSortMode = .manual,
+        sortDirection: UpcomingSortDirection = .ascending
+    ) -> [TaskItem] {
         guard let boardID = selectedBoard?.id else { return [] }
         return snapshotLookupCache.tasks(
             boardID: boardID,
             columnID: weekday.rawValue,
             includeCompleted: includeCompleted,
+            sortMode: sortMode,
+            sortDirection: sortDirection,
             snapshot: snapshot,
             weekStartsOn: weekStart,
             calendar: weekCalendar
         )
     }
 
-    func tasks(forColumnID columnID: String, includeCompleted: Bool) -> [TaskItem] {
+    func tasks(
+        forColumnID columnID: String,
+        includeCompleted: Bool,
+        sortMode: UpcomingSortMode = .manual,
+        sortDirection: UpcomingSortDirection = .ascending
+    ) -> [TaskItem] {
         guard let boardID = selectedBoard?.id else { return [] }
         return snapshotLookupCache.tasks(
             boardID: boardID,
             columnID: columnID,
             includeCompleted: includeCompleted,
+            sortMode: sortMode,
+            sortDirection: sortDirection,
             snapshot: snapshot,
             weekStartsOn: weekStart,
             calendar: weekCalendar
         )
     }
 
-    func tasks(boardID: String, columnID: String, includeCompleted: Bool) -> [TaskItem] {
+    func tasks(
+        boardID: String,
+        columnID: String,
+        includeCompleted: Bool,
+        sortMode: UpcomingSortMode = .manual,
+        sortDirection: UpcomingSortDirection = .ascending
+    ) -> [TaskItem] {
         snapshotLookupCache.tasks(
             boardID: boardID,
             columnID: columnID,
             includeCompleted: includeCompleted,
+            sortMode: sortMode,
+            sortDirection: sortDirection,
             snapshot: snapshot,
             weekStartsOn: weekStart,
             calendar: weekCalendar
@@ -1373,144 +1166,26 @@ final class AppModel {
     func addTasksFromVoice(
         _ tasks: [VoiceFinalTask],
         defaultBoardID: String?,
-        taskIDPrefix: String? = nil
+        taskIDPrefix: String? = nil,
+        referenceDate: Date = Date()
     ) -> Int {
-        guard let requestedBoard = defaultBoardID.flatMap({ board(withID: $0) }) else { return 0 }
-        let defaultBoard: Board
-        switch requestedBoard.kind {
-        case .week, .list:
-            defaultBoard = requestedBoard
-        case .compound:
-            guard let child = snapshot.compoundChildBoards(for: requestedBoard.id).first else { return 0 }
-            defaultBoard = child
-        case .bible:
-            return 0
-        }
-
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let plainISOFormatter = ISO8601DateFormatter()
-
-        var created = 0
-        var createdTaskIDs: [String] = []
-        for (taskIndex, voiceTask) in tasks.enumerated() {
-            let title = voiceTask.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !title.isEmpty else { continue }
-
-            let stableTaskID = taskIDPrefix.map { "\($0)-\(taskIndex)" }
-            if let stableTaskID, task(withID: stableTaskID) != nil {
-                created += 1
-                continue
-            }
-
-            let dueDate = voiceTask.dueISO.flatMap { raw in
-                isoFormatter.date(from: raw) ?? plainISOFormatter.date(from: raw)
-            }
-            // The Worker emits "YYYY-MM-DD" for a spoken date with no clock time and
-            // a full ISO datetime otherwise, so the string shape tells us whether the
-            // user explicitly gave a time.
-            let hasExplicitTime = dueDate != nil
-                && !(voiceTask.dueISO?.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) != nil)
-            let effectiveDate = dueDate ?? Date()
-
-            // Model-routed placement wins when it resolves to a usable board;
-            // otherwise the task lands on the session's default board.
-            let routedBoard = voiceTask.boardId.flatMap { board(withID: $0) }
-            let board: Board
-            if let routed = routedBoard {
-                switch routed.kind {
-                case .week, .list:
-                    board = routed
-                case .compound:
-                    board = snapshot.compoundChildBoards(for: routed.id).first ?? defaultBoard
-                case .bible:
-                    board = defaultBoard
-                }
-            } else {
-                board = defaultBoard
-            }
-
-            let columnID: String?
-            switch board.kind {
-            case .week:
-                columnID = WeekdayColumn.containing(effectiveDate).rawValue
-            case .list:
-                let orderedColumns = board.columns.sorted { $0.order < $1.order }
-                if let requestedColumn = voiceTask.columnId,
-                   orderedColumns.contains(where: { $0.id == requestedColumn }) {
-                    columnID = requestedColumn
-                } else {
-                    columnID = orderedColumns.first?.id
-                }
-            case .compound, .bible:
-                columnID = nil
-            }
-
-            guard let task = snapshot.addTask(
-                id: stableTaskID ?? UUID().uuidString,
-                title: title,
-                boardID: board.id,
-                columnID: columnID,
-                dueDate: board.kind == .week ? effectiveDate : dueDate,
-                note: voiceTask.notes ?? "",
-                priority: voiceTask.priority.flatMap(TaskPriority.init(rawValue:)),
-                authorPublicKey: identityPublicKey.nilIfEmpty,
-                newTaskPosition: newTaskPosition,
-                weekStartsOn: weekStart,
-                calendar: weekCalendar
-            ) else { continue }
-
-            let subtasks = (voiceTask.subtasks ?? [])
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            let reminders = Self.voiceReminders(
-                minutes: voiceTask.reminderMinutesBeforeDue,
-                dateOnly: !hasExplicitTime
-            )
-            let recurrence = voiceTask.recurrence?.taskRecurrence
-            snapshot.updateTask(
-                taskID: task.id,
-                title: task.title,
-                note: task.note,
-                dueDate: task.dueDate,
-                dueDateEnabled: task.dueDate != nil,
-                dueTimeEnabled: hasExplicitTime,
-                dueTimeZone: hasExplicitTime ? TimeZone.current.identifier : nil,
-                priority: task.priority,
-                columnID: task.columnID,
-                subtasks: subtasks.map { TaskSubtask(title: $0) },
-                recurrence: recurrence,
-                reminders: reminders,
-                reminderTime: hasExplicitTime ? nil : voiceTask.reminderTime,
-                editorPublicKey: identityPublicKey.nilIfEmpty,
-                calendar: weekCalendar,
-                weekStartsOn: weekStart
-            )
-
-            createdTaskIDs.append(task.id)
-            created += 1
-        }
-        synchronizeTasks(createdTaskIDs)
-
-        if created > 0 {
-            refreshNotifications(requestPermission: false)
-        }
-        return created
+        let created = snapshot.addVoiceTasks(
+            tasks, defaultBoardID: defaultBoardID, taskIDPrefix: taskIDPrefix,
+            authorPublicKey: identityPublicKey.nilIfEmpty, newTaskPosition: newTaskPosition,
+            weekStart: weekStart, calendar: weekCalendar, now: referenceDate
+        )
+        synchronizeTasks(created.map(\.id))
+        if !created.isEmpty { refreshNotifications(requestPermission: false) }
+        return created.count
     }
 
-    /// Maps Worker reminder offsets (minutes before due) to the app's reminder
-    /// presets, deduplicating while preserving the order the user spoke them.
-    static func voiceReminders(minutes: [Int]?, dateOnly: Bool) -> [TaskReminder] {
-        guard let minutes, !minutes.isEmpty else { return [] }
-        var seen = Set<String>()
-        var reminders: [TaskReminder] = []
-        for value in minutes where value >= 0 {
-            let reminder = TaskReminder(minutesBefore: value, dateOnly: dateOnly)
-            if seen.insert(reminder.rawValue).inserted {
-                reminders.append(reminder)
-            }
-        }
-        return reminders
+    func previewVoiceTasks(_ tasks: [VoiceFinalTask], defaultBoardID: String?, referenceDate: Date) -> [TaskItem] {
+        var preview = snapshot
+        return preview.addVoiceTasks(
+            tasks, defaultBoardID: defaultBoardID,
+            authorPublicKey: identityPublicKey.nilIfEmpty, newTaskPosition: newTaskPosition,
+            weekStart: weekStart, calendar: weekCalendar, now: referenceDate
+        )
     }
 
     /// Board/list context for the voice finalizer: visible week and list boards
@@ -5038,6 +4713,8 @@ final class AppModel {
     func importIdentity(_ value: String) -> Bool {
         do {
             let imported = try NostrIdentity(importedValue: value)
+            // Persist successfully before clearing any state for the current account.
+            try identityStore.save(imported)
             ShareTransferStore.clearAccount()
             TaskifyShareIdentity.clear()
             TaskifyShareSuggestions.clear()
@@ -5045,7 +4722,6 @@ final class AppModel {
                 TaskifyShareUploadSession.cancel(job)
                 ShareTransferStore.remove(job.id)
             }
-            try identityStore.save(imported)
             applyIdentity(imported)
             accountBackupPublishTask?.cancel()
             accountBackupBaseline = nil
@@ -5379,7 +5055,7 @@ final class AppModel {
 
         let board = Board.week(name: "Performance")
         let today = WeekdayColumn.containing(Date())
-        let tasks = (0..<140).map { index in
+        var tasks = (0..<140).map { index in
             let weekday = index < 70
                 ? today
                 : WeekdayColumn.allCases[index % WeekdayColumn.allCases.count]
@@ -5406,6 +5082,25 @@ final class AppModel {
                 order: index,
                 columnID: weekday.rawValue
             )
+        }
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_BOARD_SECONDARY_FIXTURE"] == "1" {
+            let now = Date()
+            let calendar = Calendar.current
+            let upcomingDate = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
+            tasks += (0..<500).map { index in
+                TaskItem(
+                    id: "dense-upcoming-\(index)", boardID: board.id,
+                    title: "Dense upcoming \(index)", dueDate: upcomingDate, dueDateEnabled: true,
+                    order: index, columnID: today.rawValue
+                )
+            }
+            tasks += (0..<500).map { index in
+                TaskItem(
+                    id: "dense-completed-\(index)", boardID: board.id,
+                    title: "Dense completed \(index)", order: index, columnID: today.rawValue,
+                    completed: true, completedAt: now.addingTimeInterval(TimeInterval(-index))
+                )
+            }
         }
         snapshot = TaskifySnapshot(
             boards: [board],

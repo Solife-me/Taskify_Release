@@ -83,7 +83,7 @@ public struct VoiceDictationClient: Sendable {
         candidates: [VoiceTaskCandidate],
         sessionDurationSeconds: Int
     ) async throws -> VoiceExtractionResult {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/voice/extract"), timeoutInterval: 30)
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/voice/extract"), timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -134,33 +134,61 @@ public struct VoiceDictationClient: Sendable {
         }
         guard !candidates.isEmpty else { return [] }
 
-        do {
-            var request = URLRequest(url: baseURL.appendingPathComponent("api/voice/finalize"), timeoutInterval: 30)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.httpBody = try JSONEncoder().encode(
-                FinalizeRequest(
-                    npub: identity.npub,
-                    candidates: candidates,
-                    boardId: boardID,
-                    boards: boards,
-                    referenceDate: ISO8601DateFormatter().string(from: now),
-                    referenceTimeZone: timeZone.identifier,
-                    referenceOffsetMinutes: -timeZone.secondsFromGMT(for: now) / 60
-                )
-            )
-            try authenticate(&request, identity: identity)
+        return (try? await finalizeForPreview(
+            identity: identity, candidates: candidates, boardID: boardID,
+            boards: boards, now: now, timeZone: timeZone
+        )) ?? fallback
+    }
 
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                return fallback
-            }
-            let tasks = Self.parseFinalTasks(from: data)
-            return tasks.isEmpty ? fallback : tasks
-        } catch {
-            return fallback
+    /// Finalize before approval; failures must remain retryable instead of silently dropping dates.
+    public func finalizeForPreview(
+        identity: NostrIdentity, candidates: [VoiceTaskCandidate], boardID: String?,
+        boards: [VoiceBoardContext] = [], now: Date = Date(), timeZone: TimeZone = .current
+    ) async throws -> [VoiceFinalTask] {
+        guard !candidates.isEmpty else { return [] }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/voice/finalize"), timeoutInterval: 60)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(
+            FinalizeRequest(
+                npub: identity.npub,
+                candidates: candidates,
+                boardId: boardID,
+                boards: boards,
+                referenceDate: ISO8601DateFormatter().string(from: now),
+                referenceTimeZone: timeZone.identifier,
+                referenceOffsetMinutes: -timeZone.secondsFromGMT(for: now) / 60
+            )
+        )
+        try authenticate(&request, identity: identity)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw VoiceDictationError.unavailable(status: (response as? HTTPURLResponse)?.statusCode ?? 0)
         }
+        let tasks = Self.parseFinalTasks(from: data)
+        guard tasks.count == candidates.count else { throw VoiceDictationError.unavailable(status: 502) }
+        return tasks
+    }
+
+    /// Keep timeouts distinct from offline errors so the user can retry retained speech.
+    public static func message(for error: Error) -> String {
+        if let voiceError = error as? VoiceDictationError, let description = voiceError.errorDescription {
+            return description
+        }
+        let failure = error as NSError
+        if failure.domain == NSURLErrorDomain {
+            switch failure.code {
+            case NSURLErrorTimedOut:
+                return "Taskify took too long to find tasks. Your transcript is saved here—tap Retry."
+            case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost:
+                return "The connection was interrupted. Your transcript is saved here—reconnect and tap Retry."
+            default:
+                return "Couldn't connect to Taskify (network error \(failure.code)). Your transcript is saved here—tap Retry."
+            }
+        }
+        return "Couldn't process this dictation. Your transcript is saved here—tap Retry."
     }
 
     // MARK: - Parsing (pure, unit-testable without a network)

@@ -37,6 +37,7 @@ private struct ChatMessageSearchHit: Identifiable {
 struct ContactsView: View {
     @Environment(AppModel.self) private var model
     @State private var navigationPath: [ChatConversationRoute] = []
+    @State private var preferredChatColumn: NavigationSplitViewColumn = .sidebar
     @State private var searchText = ""
     @State private var showingContactDirectory = false
     @State private var showingNewConversation = false
@@ -171,7 +172,7 @@ struct ContactsView: View {
             strangerThreads: searchText.isEmpty && !showingStrangers ? strangerThreads : []
         )
 
-        return NavigationStack(path: $navigationPath) {
+        return conversationNavigation {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 searchBar
@@ -206,7 +207,7 @@ struct ContactsView: View {
                             Section {
                                 ForEach(messageSearchResults) { result in
                                     Button {
-                                        navigationPath.append(result.route)
+                                        openConversation(result.route)
                                     } label: {
                                         ChatMessageSearchResultRow(result: result)
                                     }
@@ -244,7 +245,7 @@ struct ContactsView: View {
                                 .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                             case .thread(let thread):
                                 Button {
-                                    navigationPath.append(ChatConversationRoute(
+                                    openConversation(ChatConversationRoute(
                                         peerPublicKey: thread.peerPublicKey
                                     ))
                                 } label: {
@@ -260,7 +261,11 @@ struct ContactsView: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
-                                .listRowBackground(Color.clear)
+                                .listRowBackground(
+                                    UIDevice.current.userInterfaceIdiom == .pad &&
+                                        navigationPath.last?.peerPublicKey == thread.peerPublicKey
+                                        ? TaskifyTheme.accent.opacity(0.12) : Color.clear
+                                )
                                 .listRowSeparator(.hidden)
                                 .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -308,13 +313,7 @@ struct ContactsView: View {
             // NavigationStack supplies an opaque dark surface of its own, so the root tab's
             // backdrop cannot show through it. Render the shared backdrop inside the stack.
             .background(TaskifyAppBackground())
-            .navigationDestination(for: ChatConversationRoute.self) { route in
-                DirectMessageConversationView(
-                    peerPublicKey: route.peerPublicKey,
-                    initialTimelineItemID: route.timelineItemID
-                )
-                    .environment(model)
-            }
+
         }
         .sheet(isPresented: $showingContactDirectory) {
             NostrContactsDirectoryView()
@@ -323,7 +322,7 @@ struct ContactsView: View {
         .fullScreenCover(isPresented: $showingNewConversation) {
             NewConversationSheet { peerPublicKey in
                 showingNewConversation = false
-                navigationPath.append(ChatConversationRoute(peerPublicKey: peerPublicKey))
+                openConversation(ChatConversationRoute(peerPublicKey: peerPublicKey))
             } onNewGroup: {
                 showingNewConversation = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -335,7 +334,7 @@ struct ContactsView: View {
         .fullScreenCover(isPresented: $showingNewGroup) {
             NewGroupConversationSheet { groupID in
                 showingNewGroup = false
-                navigationPath.append(ChatConversationRoute(peerPublicKey: groupID))
+                openConversation(ChatConversationRoute(peerPublicKey: groupID))
             }
             .environment(model)
         }
@@ -360,6 +359,8 @@ struct ContactsView: View {
             Button("Delete Conversation", role: .destructive) {
                 guard let thread = threadPendingDeletion else { return }
                 model.deleteDirectMessageThread(peerPublicKey: thread.peerPublicKey)
+                navigationPath.removeAll { $0.peerPublicKey == thread.peerPublicKey }
+                if navigationPath.isEmpty { preferredChatColumn = .sidebar }
                 threadPendingDeletion = nil
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
@@ -367,6 +368,58 @@ struct ContactsView: View {
         } message: {
             Text("This removes the local history and briefly suppresses relay replays so the conversation stays deleted.")
         }
+    }
+
+    /// A stable split view lets iPadOS collapse columns as the window resizes without
+    /// replacing the conversation's state (including an unsent message or attachment).
+    @ViewBuilder
+    private func conversationNavigation<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            NavigationSplitView(preferredCompactColumn: $preferredChatColumn) {
+                content()
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
+            } detail: {
+                NavigationStack {
+                    if let route = navigationPath.last {
+                        conversation(route)
+                            .id(route)
+                    } else {
+                        ContentUnavailableView(
+                            "Select a Conversation",
+                            systemImage: "bubble.left.and.bubble.right",
+                            description: Text("Choose a chat or start a new message.")
+                        )
+                        .background(TaskifyAppBackground())
+                    }
+                }
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            NavigationStack(path: $navigationPath) {
+                content().navigationDestination(for: ChatConversationRoute.self) { route in
+                    conversation(route)
+                }
+            }
+        }
+    }
+
+    private func openConversation(_ route: ChatConversationRoute) {
+        navigationPath = [route]
+        preferredChatColumn = .detail
+    }
+
+    private func conversation(_ route: ChatConversationRoute) -> some View {
+        DirectMessageConversationView(
+            peerPublicKey: route.peerPublicKey,
+            initialTimelineItemID: route.timelineItemID,
+            onClose: {
+                navigationPath = []
+                preferredChatColumn = .sidebar
+            }
+        )
+        .environment(model)
     }
 
     private var header: some View {
@@ -463,6 +516,8 @@ struct ContactsView: View {
 
     private func archive(_ thread: NostrDirectMessageThread) {
         model.archiveDirectMessageThread(peerPublicKey: thread.peerPublicKey)
+        navigationPath.removeAll { $0.peerPublicKey == thread.peerPublicKey }
+        if navigationPath.isEmpty { preferredChatColumn = .sidebar }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
@@ -2545,6 +2600,11 @@ private struct DirectMessageConversationView: View {
     @State private var botCommandMenuHeight: CGFloat = 0
     let peerPublicKey: String
     let initialTimelineItemID: String?
+    var onClose: (() -> Void)? = nil
+
+    private func closeConversation() {
+        if let onClose { onClose() } else { dismiss() }
+    }
 
     private var contact: NostrContact? { model.nostrContact(publicKey: peerPublicKey) }
     private var group: NostrGroupConversation? { model.groupConversation(id: peerPublicKey) }
@@ -3028,7 +3088,7 @@ private struct DirectMessageConversationView: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
-        .toolbar(.hidden, for: .tabBar)
+        .toolbar(UIDevice.current.userInterfaceIdiom == .pad ? .visible : .hidden, for: .tabBar)
         .sheet(isPresented: $showingGroupDetails) {
             GroupConversationDetailsView(groupID: peerPublicKey)
                 .environment(model)
@@ -3114,7 +3174,7 @@ private struct DirectMessageConversationView: View {
         ) {
             Button("Delete Conversation", role: .destructive) {
                 model.deleteDirectMessageThread(peerPublicKey: peerPublicKey)
-                dismiss()
+                closeConversation()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -3157,7 +3217,7 @@ private struct DirectMessageConversationView: View {
 
             HStack {
                 HeaderIconButton(systemName: "chevron.left", accessibilityLabel: "Back to chats") {
-                    dismiss()
+                    closeConversation()
                 }
 
                 Spacer()
@@ -3186,7 +3246,7 @@ private struct DirectMessageConversationView: View {
                     }
                     Button {
                         model.archiveDirectMessageThread(peerPublicKey: peerPublicKey)
-                        dismiss()
+                        closeConversation()
                     } label: {
                         Label("Archive Conversation", systemImage: "archivebox")
                     }

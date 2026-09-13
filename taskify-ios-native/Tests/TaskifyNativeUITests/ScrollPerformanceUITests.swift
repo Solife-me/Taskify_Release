@@ -132,6 +132,62 @@ final class ScrollPerformanceUITests: XCTestCase {
         }
     }
 
+    func testDenseBoardUpcomingCreatesOnlyVisibleRows() throws {
+        let app = secondaryBoardFixtureApplication()
+        app.launch()
+        let upcoming = app.buttons["Show board upcoming"]
+        XCTAssertTrue(upcoming.waitForExistence(timeout: 30))
+        upcoming.tap()
+        XCTAssertTrue(app.buttons["Edit Dense upcoming 0"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Edit Dense upcoming 499"].exists,
+                       "Offscreen cards in the same date group should remain unmaterialized")
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        measure(metrics: [XCTCPUMetric(application: app), XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
+            app.swipeUp(velocity: .fast)
+        }
+        XCTAssertTrue(app.buttons["Show board"].exists)
+    }
+
+    func testDenseBoardCompletedScrollPerformance() throws {
+        let app = secondaryBoardFixtureApplication()
+        app.launch()
+        let completed = app.buttons["Show completed tasks"]
+        XCTAssertTrue(completed.waitForExistence(timeout: 30))
+        completed.tap()
+        XCTAssertTrue(app.buttons["Edit Dense completed 0"].waitForExistence(timeout: 10))
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        measure(metrics: [XCTCPUMetric(application: app), XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
+            app.swipeUp(velocity: .fast)
+        }
+        XCTAssertTrue(app.buttons["Hide completed tasks"].exists)
+    }
+
+    func testDenseBoardSecondaryViewSwitchingPerformance() throws {
+        let app = secondaryBoardFixtureApplication()
+        app.launch()
+        XCTAssertTrue(app.buttons["Show board upcoming"].waitForExistence(timeout: 30))
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        measure(metrics: [XCTClockMetric(), XCTCPUMetric(application: app)], options: options) {
+            app.buttons["Show board upcoming"].tap()
+            XCTAssertTrue(app.buttons["Edit Dense upcoming 0"].waitForExistence(timeout: 10))
+            app.buttons["Show completed tasks"].tap()
+            XCTAssertTrue(app.buttons["Edit Dense completed 0"].waitForExistence(timeout: 10))
+            app.buttons["Hide completed tasks"].tap()
+        }
+    }
+
+    private func secondaryBoardFixtureApplication() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_SECONDARY_FIXTURE"] = "1"
+        app.launchArguments += ["-taskify.view.completedTab", "YES"]
+        return app
+    }
+
     func testPopulatedBoardIsInteractiveWhenStartupIndicatorDismisses() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
