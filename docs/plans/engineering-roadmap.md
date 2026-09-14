@@ -208,3 +208,5 @@ Add IPFS-based file attachments to tasks using [Originless](https://github.com/b
 - Extracted shell-completion registration into `commands/completions.ts`.
   A bundled CLI regression checks all three shells, environment detection,
   combined fallback output, and invalid-shell errors using an isolated home API.
+
+Native iOS sharing coverage (2026-09-14): contact search includes directories larger than eight entries; encrypted task and event shares round-trip for all group members and retain their group conversation after snapshot restoration.
