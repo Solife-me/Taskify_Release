@@ -7,6 +7,17 @@ public extension TaskifySnapshot {
         }
     }
 
+    func shareContacts(matching query: String) -> [NostrContact] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = contactDirectory.filter {
+            query.isEmpty || NostrPublicKey.parse(query) != nil ||
+                $0.displayName.localizedCaseInsensitiveContains(query) ||
+                $0.subtitle.localizedCaseInsensitiveContains(query) ||
+                $0.npub.localizedCaseInsensitiveContains(query)
+        }
+        return matches
+    }
+
     func contact(publicKeyValue: String) -> NostrContact? {
         guard let key = NostrPublicKey.parse(publicKeyValue)?.hexString else { return nil }
         return contacts?.first { $0.publicKey == key }

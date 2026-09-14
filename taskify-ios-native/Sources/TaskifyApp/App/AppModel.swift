@@ -65,6 +65,7 @@ enum ProfilePictureUploadError: LocalizedError {
 
 enum SharedTaskSendError: LocalizedError {
     case taskUnavailable
+    case eventUnavailable
     case identityUnavailable
     case invalidRecipient
     case cannotSendToSelf
@@ -73,6 +74,7 @@ enum SharedTaskSendError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .taskUnavailable: "That task is no longer available."
+        case .eventUnavailable: "That event is not available for sharing."
         case .identityUnavailable: "Your Nostr identity is unavailable."
         case .invalidRecipient: "Enter a valid npub or 64-character public key."
         case .cannotSendToSelf: "Choose another Nostr account as the recipient."
@@ -2368,6 +2370,16 @@ final class AppModel {
               let board = board(withID: task.boardID) else {
             throw SharedTaskSendError.taskUnavailable
         }
+        if let group = groupConversation(id: recipientValue) {
+            guard !assignment else { throw SharedTaskSendError.invalidRecipient }
+            let identity = try outboundIdentity()
+            let envelope = TaskifyShareEnvelope(
+                item: .task(SharedTaskDelivery(task: task, relayURLs: board.effectiveRelayURLs)),
+                senderNpub: identity.npub
+            )
+            try await sendDirectMessage(to: group.groupID, content: envelope.messageContent())
+            return SharedTaskSendResult(recipientNpub: group.groupID, relayCount: 0, assignment: false)
+        }
         guard let recipientPublicKey = NostrPublicKey.parse(recipientValue),
               let recipientNpub = NostrPublicKey.npub(from: recipientPublicKey) else {
             throw SharedTaskSendError.invalidRecipient
@@ -2432,6 +2444,57 @@ final class AppModel {
             relayCount: deliveryPlan.recipientRelayURLs.count,
             assignment: assignment
         )
+    }
+
+    func sendSharedCalendarEvent(eventID: String, to recipientValue: String) async throws {
+        guard let event = snapshot.taskifyEvents?.first(where: { $0.id == eventID && !$0.isDeleted }) else {
+            throw SharedTaskSendError.eventUnavailable
+        }
+        let identity = try outboundIdentity()
+        let recipients: [String]
+        if let group = groupConversation(id: recipientValue) {
+            guard !hasLeftDirectMessageGroup(group.groupID),
+                  group.memberPublicKeys.contains(identity.publicKeyHex) else {
+                throw NostrDirectMessageError.leftGroup
+            }
+            recipients = group.memberPublicKeys.filter { $0 != identity.publicKeyHex }
+        } else {
+            guard let recipient = NostrPublicKey.parse(recipientValue)?.hexString else {
+                throw SharedTaskSendError.invalidRecipient
+            }
+            guard recipient != identity.publicKeyHex else { throw SharedTaskSendError.cannotSendToSelf }
+            recipients = [recipient]
+        }
+        guard let firstRecipient = recipients.first else { throw SharedTaskSendError.invalidRecipient }
+        if event.isReadOnly {
+            let delivery = SharedCalendarEventDelivery(
+                eventID: event.id, canonical: event.canonicalAddress, view: event.viewAddress,
+                eventKey: event.eventKey, inviteToken: event.inviteToken, title: event.title,
+                start: event.isAllDay ? event.startDateValue : event.startISO,
+                end: event.isAllDay ? event.endDateValue : event.endISO, relayURLs: event.relayURLs
+            )
+            let envelope = TaskifyShareEnvelope(item: .calendarEvent(delivery), senderNpub: identity.npub)
+            guard TaskifyShareEnvelope.decode(content: try envelope.messageContent()) != nil else {
+                throw SharedTaskSendError.eventUnavailable
+            }
+            try await sendDirectMessage(to: recipientValue, content: envelope.messageContent())
+            return
+        }
+        let previousParticipants = event.participants ?? []
+        let participants = previousParticipants + recipients.map { TaskifyEventParticipant(publicKey: $0) }
+        let plan = TaskifyEventInvitationPlanner.prepare(
+            event: event, participants: participants, previousParticipants: previousParticipants,
+            senderPublicKey: identity.publicKeyHex
+        )
+        guard let delivery = TaskifyEventInvitationPlanner.delivery(
+            event: plan.event, recipientPublicKey: firstRecipient
+        ) else { throw SharedTaskSendError.eventUnavailable }
+        // Persist invite tokens before sending so responses remain valid after a restart.
+        _ = snapshot.upsertTaskifyEvent(plan.event)
+        scheduleSave()
+        synchronizeTaskifyEvents([eventID])
+        let envelope = TaskifyShareEnvelope(item: .calendarEvent(delivery), senderNpub: identity.npub)
+        try await sendDirectMessage(to: recipientValue, content: envelope.messageContent())
     }
 
     func sendSharedContact(
@@ -5623,6 +5686,12 @@ final class AppModel {
         }
         if rumor.kind == NIP17GiftWrap.rumorKind,
            let envelope = TaskifyShareEnvelope.decode(content: rumor.content) {
+            if let chatMessage = NostrDirectMessage(decrypted: decrypted, identityPublicKey: identity.publicKeyHex),
+               chatMessage.groupID != nil,
+               chatMessage.createdAt >= (chatMessageRetention.cutoffTimestamp() ?? 0),
+               updatedSnapshot.ingestDirectMessage(chatMessage) {
+                effects.snapshotChanged = true
+            }
             let authoredByIdentity = rumor.publicKey == identity.publicKeyHex
             let message = NIP17InboxMessage(
                 wrapEventID: decrypted.wrapEventID,
@@ -5646,7 +5715,8 @@ final class AppModel {
                     rumorEventID: message.rumorEventID,
                     sender: sender,
                     task: delivery,
-                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt)),
+                    groupID: NostrGroupConversation(rumor: rumor, identityPublicKey: identity.publicKeyHex)?.groupID
                 )
                 if updatedSnapshot.ingestSharedInboxItem(item) {
                     effects.snapshotChanged = true
@@ -5688,7 +5758,8 @@ final class AppModel {
                     rumorEventID: message.rumorEventID,
                     sender: sharedInboxSender(for: message),
                     event: delivery,
-                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt)),
+                    groupID: NostrGroupConversation(rumor: rumor, identityPublicKey: identity.publicKeyHex)?.groupID
                 )
                 if updatedSnapshot.ingestSharedCalendarInvite(item) {
                     effects.snapshotChanged = true

@@ -22,9 +22,11 @@ struct TaskShareSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    let taskID: String
+    let taskID: String?
+    let eventID: String?
     @State private var mode: TaskShareMode
     @State private var recipient = ""
+    @State private var selectedGroupID: String?
     @State private var isSending = false
     @State private var errorMessage: String?
     @State private var result: SharedTaskSendResult?
@@ -32,30 +34,50 @@ struct TaskShareSheet: View {
 
     init(taskID: String, initialMode: TaskShareMode = .share) {
         self.taskID = taskID
+        self.eventID = nil
         _mode = State(initialValue: initialMode)
     }
 
-    private var task: TaskItem? { model.task(withID: taskID) }
-    private var recipientIsValid: Bool { NostrPublicKey.parse(recipient) != nil }
+    init(eventID: String) {
+        self.taskID = nil
+        self.eventID = eventID
+        _mode = State(initialValue: .share)
+    }
+
+    private var task: TaskItem? { taskID.flatMap { model.task(withID: $0) } }
+    private var event: TaskifyEvent? { model.snapshot.taskifyEvents?.first { $0.id == eventID } }
+    private var itemAvailable: Bool { task != nil || event != nil }
+    private var selectedGroup: NostrGroupConversation? {
+        selectedGroupID.flatMap { model.groupConversation(id: $0) }
+    }
+    private var recipientIsValid: Bool {
+        if let selectedGroup {
+            return mode == .share && !model.hasLeftDirectMessageGroup(selectedGroup.groupID)
+        }
+        return NostrPublicKey.parse(recipient) != nil
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("Send as", selection: $mode) {
-                        ForEach(TaskShareMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+                if eventID == nil {
+                    Section {
+                        Picker("Send as", selection: $mode) {
+                            ForEach(TaskShareMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
                         }
-                    }
-                    .pickerStyle(.segmented)
+                        .pickerStyle(.segmented)
 
-                    Text(mode.explanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        Text(mode.explanation)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                 }
 
                 Section("Recipient") {
-                    TextField("npub or public key", text: $recipient, axis: .vertical)
+                    TextField("Search contacts or groups, or enter npub", text: $recipient, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .lineLimit(2...4)
@@ -74,10 +96,38 @@ struct TaskShareSheet: View {
                     }
                 }
 
+                if mode == .share && !matchingGroups.isEmpty {
+                    Section("Group chats") {
+                        ForEach(matchingGroups) { group in
+                            Button {
+                                recipient = ""
+                                selectedGroupID = group.groupID
+                                recipientFocused = false
+                                errorMessage = nil
+                                result = nil
+                            } label: {
+                                HStack {
+                                    Image(systemName: "person.3.fill")
+                                    VStack(alignment: .leading) {
+                                        Text(group.displayName)
+                                        Text("\(group.memberPublicKeys.count) members")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if selectedGroupID == group.groupID {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if !matchingContacts.isEmpty {
                     Section("Contacts") {
-                        ForEach(matchingContacts.prefix(8)) { contact in
+                        ForEach(matchingContacts) { contact in
                             Button {
+                                selectedGroupID = nil
                                 recipient = contact.npub
                                 errorMessage = nil
                                 result = nil
@@ -108,6 +158,7 @@ struct TaskShareSheet: View {
                     Section("Recent recipients") {
                         ForEach(model.recentSharedTaskRecipients.prefix(6)) { recent in
                             Button {
+                                selectedGroupID = nil
                                 recipient = recent.npub
                                 errorMessage = nil
                                 result = nil
@@ -167,6 +218,15 @@ struct TaskShareSheet: View {
                     }
                 }
 
+                if let event {
+                    Section("Event preview") {
+                        Text(event.title).font(.headline)
+                        if let start = event.startDate {
+                            Text(start.formatted()).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 if let errorMessage {
                     Section {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -179,17 +239,18 @@ struct TaskShareSheet: View {
                         Label(
                             result.assignment
                                 ? "Assignment queued securely"
-                                : "Task queued securely",
+                                : (eventID == nil ? "Task queued securely" : "Event queued securely"),
                             systemImage: "checkmark.circle.fill"
                         )
                         .foregroundStyle(.green)
-                        Text("Taskify selected \(result.relayCount) relay\(result.relayCount == 1 ? "" : "s") for encrypted delivery.")
+                        Text("Queued for encrypted delivery to \(selectedGroup?.displayName ?? "the recipient").")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             }
-            .navigationTitle("Send Task")
+            .disabled(isSending)
+            .navigationTitle(eventID == nil ? "Send Task" : "Send Event")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -204,7 +265,7 @@ struct TaskShareSheet: View {
                             Text(mode == .assignment ? "Assign" : "Send")
                         }
                     }
-                    .disabled(!recipientIsValid || task == nil || isSending || result != nil)
+                    .disabled(!recipientIsValid || !itemAvailable || isSending || result != nil)
                 }
             }
         }
@@ -212,10 +273,12 @@ struct TaskShareSheet: View {
         .tint(TaskifyTheme.accent)
         .interactiveDismissDisabled(isSending)
         .onChange(of: mode) { _, _ in
+            selectedGroupID = nil
             errorMessage = nil
             result = nil
         }
-        .onChange(of: recipient) { _, _ in
+        .onChange(of: recipient) { _, value in
+            if !value.isEmpty { selectedGroupID = nil }
             errorMessage = nil
             result = nil
         }
@@ -225,29 +288,34 @@ struct TaskShareSheet: View {
     }
 
     private var matchingContacts: [NostrContact] {
+        model.snapshot.shareContacts(matching: recipient)
+    }
+
+    private var matchingGroups: [NostrGroupConversation] {
         let query = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, NostrPublicKey.parse(query) == nil else {
-            return model.nostrContacts
-        }
-        return model.nostrContacts.filter {
-            $0.displayName.localizedCaseInsensitiveContains(query) ||
-                $0.subtitle.localizedCaseInsensitiveContains(query) ||
-                $0.npub.localizedCaseInsensitiveContains(query)
+        return model.groupConversations.filter {
+            !model.hasLeftDirectMessageGroup($0.groupID) &&
+                (query.isEmpty || $0.displayName.localizedCaseInsensitiveContains(query))
         }
     }
 
     private func send() {
-        guard recipientIsValid, task != nil, !isSending, result == nil else { return }
+        guard recipientIsValid, itemAvailable, !isSending, result == nil else { return }
         recipientFocused = false
         isSending = true
         errorMessage = nil
         Task { @MainActor in
             do {
-                result = try await model.sendSharedTask(
-                    taskID: taskID,
-                    recipientValue: recipient,
-                    assignment: mode == .assignment
-                )
+                if let eventID {
+                    try await model.sendSharedCalendarEvent(eventID: eventID, to: selectedGroupID ?? recipient)
+                    result = SharedTaskSendResult(recipientNpub: recipient, relayCount: 0, assignment: false)
+                } else if let taskID {
+                    result = try await model.sendSharedTask(
+                        taskID: taskID,
+                        recipientValue: selectedGroupID ?? recipient,
+                        assignment: mode == .assignment
+                    )
+                }
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             } catch {
                 errorMessage = error.localizedDescription

@@ -7,6 +7,18 @@ final class NostrContactsTests: XCTestCase {
     private let aliceKey = String(repeating: "1", count: 64)
     private let bobKey = String(repeating: "2", count: 64)
 
+    func testShareContactsIncludesEntireDirectoryAndSearchesBeyondFirstEight() throws {
+        var snapshot = TaskifySnapshot.empty
+        for index in 1...12 {
+            let key = String(format: "%064x", index)
+            _ = snapshot.upsertContact(publicKeyValue: key, relayURLs: [],
+                                       petname: String(format: "Contact %02d", index), updatedAt: index)
+        }
+        XCTAssertEqual(snapshot.shareContacts(matching: "").count, 12)
+        XCTAssertEqual(snapshot.shareContacts(matching: "Contact").count, 12)
+        XCTAssertEqual(snapshot.shareContacts(matching: " contact 12 ").map(\.displayName), ["Contact 12"])
+    }
+
     func testNIP51PrivateContactListRoundTripsWithPWAFields() throws {
         let identity = try NostrIdentity(privateKey: Data(hex: privateKeyHex))
         let alice = try XCTUnwrap(NostrContact(
