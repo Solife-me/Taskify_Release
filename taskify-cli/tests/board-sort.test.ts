@@ -1,9 +1,10 @@
+import { commandSource } from "./helpers/commandSource.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-const CLI = readFileSync(path.resolve(import.meta.dirname, "../src/index.ts"), "utf8");
+const CLI = commandSource();
 const RUNTIME = readFileSync(path.resolve(import.meta.dirname, "../src/nostrRuntime.ts"), "utf8");
 const CONFIG = readFileSync(path.resolve(import.meta.dirname, "../src/config.ts"), "utf8");
 
