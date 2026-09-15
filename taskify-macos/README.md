@@ -25,6 +25,19 @@ but unoptimized cryptography can make large attachments very slow. Release is
 intended for distribution builds. Unsigned command-line builds verify compilation;
 they do not verify sandbox, Keychain provisioning or distribution signing.
 
+The files `generate-project.py` compiles into this target — `App/AppModel.swift`,
+`Features/Wallet/WalletView.swift` and the rest of the whitelist at the top of
+that script — are also compiled into the iOS app, and iOS-only work regularly
+lands in them without anyone rebuilding Mac. An iOS-only symbol used outside an
+`#if os(iOS)` (or `#if canImport(UIKit)`) guard there breaks this target
+silently until the next Mac build. This session found and fixed several
+(an unused `import UIKit`, `UIBackgroundFetchResult`, `TaskifyPerfMonitor`,
+`TaskifyWatchBridge`, `TaskifyTheme.watchAccent`, and the Share-extension
+runtime types), plus a genuinely missing `AppModel.persistBeforeTermination()`
+that this target's quit path had been calling without an implementation. Run
+the build above after pulling upstream changes to `AppModel.swift` or the other
+shared files, not only after editing Mac-specific sources.
+
 ## Current desktop implementation
 
 - Persistent sidebar, independent windows sharing one account runtime, native
@@ -37,10 +50,18 @@ they do not verify sandbox, Keychain provisioning or distribution signing.
   invitation responses.
 - DM/group conversation layouts, replies, reactions, history search, unread
   state, archive/block controls and encrypted attachments.
-- Mint balances/activity, ecash receive/send, Lightning invoice receive/pay,
-  pending receive retries, saved outgoing tokens, authenticated wallet backup
-  and seed recovery. Payment preparation/confirmation and recovery use the
-  existing wallet service; pending results are not reported as settled payments.
+- Mint balances/activity, ecash receive/send, Lightning invoice/address (LNURL)
+  pay, pending receive retries/discard, saved outgoing tokens with check-status
+  and reclaim, mint add/remove and mint-to-mint transfer, authenticated wallet
+  backup and seed recovery. Payment preparation/confirmation and recovery use
+  the existing wallet service; pending results are not reported as settled
+  payments.
+- Contact payments: pay a contact's Lightning address (falling back to
+  `npub@solife.me`) or send them locked ecash as an encrypted message, using
+  the same wire format as the PWA. P2PK key generation/import/removal for
+  advanced locking. Cashu payment requests: create (with optional P2PK lock),
+  cancel, and pay an incoming request. Static QR codes for invoices, tokens,
+  requests and the receiving Lightning address.
 - Account import/export, profile publishing, task backup/restore, relay controls,
   file-server selection, notification permission and basic Bible tracking.
 
@@ -69,8 +90,10 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   and participant editing, richer invitation/contact details.
 - Chat drafts across navigation, rich payment/share cards, bot controls, inline
   media preview, drag/paste attachments and scroll-position preservation.
-- Lightning addresses/LNURL, payment requests, P2PK/contact payments, mint
-  transfers, outgoing reclaim/check UI and advanced wallet settings/QR workflows.
+- npub.cash Lightning-address provider selection and claim UI (the always-on
+  `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
+  multi-frame QR for transfers too large for one code, and camera-based QR
+  scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
 - Full Bible/scripture/fasting features, voice entry, printing, widgets, App
   Intents and share extension integration.
 - Account changes with open editors in multiple windows, midnight agenda rollover,

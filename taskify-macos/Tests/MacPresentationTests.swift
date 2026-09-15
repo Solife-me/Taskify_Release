@@ -61,4 +61,19 @@ final class MacPresentationTests: XCTestCase {
         }, recover: { executedReplacement = $0 })
         XCTAssertEqual(executedReplacement, false)
     }
+
+    func testPaymentRequestMintSelectionPrefersOverlapWithWallet() {
+        let result = MacPaymentRequestMintSelection.candidates(requestedMintURLs: ["a", "b"], walletMintURLs: ["b", "c"])
+        XCTAssertEqual(result, ["b"])
+    }
+
+    func testPaymentRequestMintSelectionFallsBackToWalletMintsWhenNoOverlap() {
+        let result = MacPaymentRequestMintSelection.candidates(requestedMintURLs: ["a"], walletMintURLs: ["b", "c"])
+        XCTAssertEqual(result, ["b", "c"])
+    }
+
+    func testPaymentRequestMintSelectionFallsBackToWalletMintsWhenRequestNamesNone() {
+        let result = MacPaymentRequestMintSelection.candidates(requestedMintURLs: [], walletMintURLs: ["b", "c"])
+        XCTAssertEqual(result, ["b", "c"])
+    }
 }

@@ -3,9 +3,14 @@ import TaskifyCore
 
 struct MacWalletView: View {
     @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
     @State private var action: String?
+    @State private var transferContact: NostrContact?
+    @State private var contactPickerPurpose: String?
+    @State private var advancedSheet: MacWalletAdvancedSheet?
     @State private var mintURL = ""
     @State private var error: String?
+    @State private var removingMint: CashuMintSummary?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
@@ -21,12 +26,33 @@ struct MacWalletView: View {
                     Button { Task { await wallet.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 }
                 HStack {
-                    Button("Receive", systemImage: "arrow.down.left") { action = "receive" }.buttonStyle(.borderedProminent)
-                    Button("Send Ecash", systemImage: "arrow.up.right") { action = "send" }.disabled(wallet.activeMint == nil)
-                    Button("Pay Lightning", systemImage: "bolt") { action = "pay" }.disabled(wallet.activeMint == nil)
+                    Button("Receive", systemImage: "arrow.down.left") { transferContact = nil; action = "receive" }.buttonStyle(.borderedProminent)
+                    Button("Send Ecash", systemImage: "arrow.up.right") { transferContact = nil; action = "send" }.disabled(wallet.activeMint == nil)
+                    Button("Pay Lightning", systemImage: "bolt") { transferContact = nil; action = "pay" }.disabled(wallet.activeMint == nil)
+                    Menu {
+                        Button("Pay a Contact…") { contactPickerPurpose = "pay" }.disabled(wallet.activeMint == nil)
+                        Button("Send Ecash to Contact…") { contactPickerPurpose = "send" }.disabled(wallet.activeMint == nil)
+                        Divider()
+                        Button("Payment Requests…") { advancedSheet = .paymentRequests }
+                        Button("Transfer Between Mints…") { advancedSheet = .mintTransfer }.disabled(wallet.snapshot.mints.count < 2)
+                        Button("Manage P2PK Keys…") { advancedSheet = .p2pkKeys }
+                    } label: { Label("More", systemImage: "ellipsis.circle") }
                 }.controlSize(.large)
                 if let message = wallet.statusMessage { Label(message, systemImage: "checkmark.circle").foregroundStyle(.green) }
                 if let error = error ?? wallet.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                if let address = wallet.solifeAddress {
+                    GroupBox("Your Lightning Address") {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(address).textSelection(.enabled)
+                                Text("Anyone can pay this address; it delivers as ecash to this wallet.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Copy") { macCopy(address) }
+                            Button("QR Code") { advancedSheet = .addressQR(address) }
+                        }.padding(10)
+                    }
+                }
                 GroupBox("Mints") {
                     VStack(spacing: 12) {
                         ForEach(wallet.snapshot.mints) { mint in
@@ -36,6 +62,7 @@ struct MacWalletView: View {
                                 Spacer()
                                 Text(wallet.formattedSats(mint.available)).monospacedDigit()
                                 Button(wallet.activeMintURL == mint.url ? "Selected" : "Select") { wallet.selectMint(mint.url) }.disabled(wallet.activeMintURL == mint.url)
+                                Button(role: .destructive) { removingMint = mint } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
                             }
                         }
                         HStack {
@@ -65,6 +92,7 @@ struct MacWalletView: View {
                                 Text("Interrupted receive")
                                 Spacer()
                                 Button("Retry") { Task { do { _ = try await wallet.retryPendingReceive(pending) } catch { self.error = error.localizedDescription } } }
+                                Button("Discard", role: .destructive) { Task { do { try await wallet.discardPendingReceive(pending) } catch { self.error = error.localizedDescription } } }
                             }.padding(8)
                         }
                     }
@@ -87,10 +115,16 @@ struct MacWalletView: View {
                     GroupBox("Saved Outgoing Ecash") {
                         ForEach(wallet.snapshot.outgoingTokens) { token in
                             HStack {
-                                Text(wallet.formattedSats(token.amount))
-                                Text(String(describing: token.status).capitalized).foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(wallet.formattedSats(token.amount))
+                                    Text(String(describing: token.status).capitalized).font(.caption).foregroundStyle(.secondary)
+                                }
                                 Spacer()
                                 Button("Copy Token") { macCopy(token.token) }
+                                Button("Check Status") { Task { do { _ = try await wallet.checkOutgoingToken(token) } catch { self.error = error.localizedDescription } } }
+                                if token.status == .ready || token.status == .partiallyRedeemed {
+                                    Button("Reclaim") { Task { do { _ = try await wallet.reclaim(token) } catch { self.error = error.localizedDescription } } }
+                                }
                             }.padding(8)
                         }
                     }
@@ -98,14 +132,47 @@ struct MacWalletView: View {
             }.padding(32).frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)
         }.sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } })) {
-            MacWalletTransfer(mode: action ?? "receive")
+            MacWalletTransfer(mode: action ?? "receive", contact: transferContact)
+        }
+        .sheet(item: Binding(get: { contactPickerPurpose.map { ContactPickerRequest(purpose: $0) } }, set: { if $0 == nil { contactPickerPurpose = nil } })) { request in
+            MacContactPicker(title: request.purpose == "pay" ? "Who Are You Paying?" : "Send Ecash To Whom?") { contact in
+                transferContact = contact
+                action = request.purpose
+                contactPickerPurpose = nil
+            }
+        }
+        .sheet(item: $advancedSheet) { sheet in
+            switch sheet {
+            case .paymentRequests: MacPaymentRequestsView()
+            case .mintTransfer: MacMintTransfer()
+            case .p2pkKeys: MacP2PKKeyManager()
+            case .addressQR(let value):
+                VStack(spacing: 16) {
+                    Text("Your Lightning Address").font(.title3.bold())
+                    MacQRCodeView(value: "lightning:\(value)", label: "Lightning address QR code")
+                    Text(value).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    Button("Done") { advancedSheet = nil }.keyboardShortcut(.defaultAction)
+                }.padding(28).frame(width: 340, height: 420)
+            }
+        }
+        .confirmationDialog("Remove this mint? Any balance already on it stays there until you add it back or transfer it out first.", isPresented: Binding(get: { removingMint != nil }, set: { if !$0 { removingMint = nil } })) {
+            Button("Remove Mint", role: .destructive) {
+                guard let mint = removingMint else { return }
+                removingMint = nil
+                Task { do { try await wallet.removeMint(mint.url) } catch { self.error = error.localizedDescription } }
+            }
+            Button("Cancel", role: .cancel) { removingMint = nil }
         }
     }
 }
 
+private struct ContactPickerRequest: Identifiable { let purpose: String; var id: String { purpose } }
+
 private struct MacWalletTransfer: View {
     let mode: String
+    var contact: NostrContact? = nil
     @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var amount = ""
     @State private var input = ""
@@ -116,19 +183,45 @@ private struct MacWalletTransfer: View {
     @State private var payQuote: CashuLightningPaymentQuote?
     @State private var resultMessage: String?
     @State private var resultPending = false
+    @State private var sentViaMessage = false
+    @State private var confirmedAmount: UInt64 = 0
+    private var isLightningAddress: Bool { mode == "pay" && LnurlPayClient.isLightningAddress(input) }
+    private var title: String {
+        switch mode {
+        case "receive": return "Receive"
+        case "send": if let contact { return "Send Ecash to \(contact.displayName)" }; return "Send Ecash"
+        default: if let contact { return "Pay \(contact.displayName)" }; return "Pay Lightning"
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text(mode == "receive" ? "Receive" : mode == "send" ? "Send Ecash" : "Pay Lightning").font(.title2.bold())
+            Text(title).font(.title2.bold())
+            if let contact, output == nil, resultMessage == nil {
+                Label("With \(contact.displayName)", systemImage: "person.crop.circle").font(.caption).foregroundStyle(.secondary)
+            }
             if let output {
                 Text(mode == "send" ? "Ecash is ready. This token is also saved in your wallet." : "Share this Lightning invoice.").foregroundStyle(.secondary)
-                ScrollView { Text(output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 150)
-                Button("Copy") { macCopy(output) }
+                ScrollView { Text(output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 110)
+                MacQRCodeView(value: output)
+                HStack {
+                    Button("Copy") { macCopy(output) }
+                    if mode == "send", let contact, !sentViaMessage {
+                        Button("Send to \(contact.displayName) via Message") {
+                            perform {
+                                let text = WalletContactPayment.ecashDirectMessage(senderNpub: model.identityNpub, formattedAmount: wallet.formattedSats(confirmedAmount), token: output)
+                                try await model.sendDirectMessage(to: contact.publicKey, content: text, replyToEventID: nil)
+                                sentViaMessage = true
+                            }
+                        }
+                    }
+                    if sentViaMessage { Label("Sent", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+                }
             } else if let resultMessage {
                 Label(resultMessage, systemImage: resultPending ? "clock" : "checkmark.circle.fill").foregroundStyle(resultPending ? .orange : .green)
             } else if let quote = sendQuote {
                 Text("Send \(wallet.formattedSats(quote.amount))")
                 Text("Fee: \(wallet.formattedSats(quote.fee))").foregroundStyle(.secondary)
-                Button("Confirm Send") { perform { output = try await wallet.confirmSend(quote, memo: nil).token; sendQuote = nil } }
+                Button("Confirm Send") { perform { confirmedAmount = quote.amount; output = try await wallet.confirmSend(quote, memo: nil).token; sendQuote = nil } }
                     .buttonStyle(.borderedProminent).disabled(busy)
             } else if let quote = payQuote {
                 Text("Pay \(wallet.formattedSats(quote.amount))")
@@ -147,7 +240,7 @@ private struct MacWalletTransfer: View {
                     TextField("Amount in sats", text: $amount)
                 }
                 if mode != "send" {
-                    TextField(mode == "receive" ? "Paste ecash token, or leave empty for Lightning" : "Lightning invoice", text: $input, axis: .vertical).lineLimit(3...6)
+                    TextField(mode == "receive" ? "Paste ecash token, or leave empty for Lightning" : "Lightning invoice or address (name@domain)", text: $input, axis: .vertical).lineLimit(3...6)
                 }
                 Button(mode == "receive" ? (input.isEmpty ? "Create Lightning Invoice" : "Redeem Ecash") : "Review") {
                     perform {
@@ -164,9 +257,15 @@ private struct MacWalletTransfer: View {
                             else { guard let value = UInt64(amount), value > 0 else { error = "Enter a positive whole number of sats."; return }; output = try await wallet.createLightningReceiveQuote(mintURL: wallet.activeMintURL, amount: value).invoice }
                         case "send":
                             guard let value = UInt64(amount), value > 0 else { error = "Enter a positive whole number of sats."; return }
-                            sendQuote = try await wallet.prepareSend(mintURL: wallet.activeMintURL, amount: value)
+                            sendQuote = try await wallet.prepareSend(mintURL: wallet.activeMintURL, amount: value, lockPublicKey: contact?.publicKey)
                         default:
-                            payQuote = try await wallet.prepareLightningPayment(mintURL: wallet.activeMintURL, invoice: input, amount: amount.isEmpty ? nil : UInt64(amount))
+                            if isLightningAddress {
+                                guard let value = UInt64(amount), value > 0 else { error = "Enter a positive whole number of sats."; return }
+                                let resolution = try await LnurlPayClient.resolveInvoice(address: input, amountSats: value)
+                                payQuote = try await wallet.prepareLightningPayment(mintURL: wallet.activeMintURL, invoice: resolution.invoice, amount: resolution.amountSats)
+                            } else {
+                                payQuote = try await wallet.prepareLightningPayment(mintURL: wallet.activeMintURL, invoice: input, amount: amount.isEmpty ? nil : UInt64(amount))
+                            }
                         }
                     }
                 }.buttonStyle(.borderedProminent).disabled(busy || wallet.isLoading)
@@ -181,7 +280,11 @@ private struct MacWalletTransfer: View {
                     dismiss()
                 }
             }.disabled(busy) }
-        }.padding(26).frame(width: 520, height: 450).interactiveDismissDisabled()
+        }.padding(26).frame(width: 520, height: output != nil ? 560 : 450).interactiveDismissDisabled()
+            .onAppear {
+                guard mode == "pay", let contact else { return }
+                input = WalletContactPayment.lightningAddress(lud16: contact.profile?.lud16, npub: contact.npub)
+            }
     }
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
