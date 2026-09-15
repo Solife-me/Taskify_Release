@@ -1,6 +1,12 @@
 import Foundation
 import TaskifyCore
+#if canImport(UIKit)
 import UIKit
+typealias TaskifyBackgroundFetchResult = UIBackgroundFetchResult
+#else
+import AppKit
+enum TaskifyBackgroundFetchResult { case newData, noData, failed }
+#endif
 import UserNotifications
 
 enum TaskifyDMPushSettings {
@@ -87,6 +93,7 @@ enum TaskifyDMPushCoordinatorError: LocalizedError {
     }
 }
 
+#if os(iOS)
 @MainActor
 final class TaskifyDMPushCoordinator {
     static let shared = TaskifyDMPushCoordinator()
@@ -200,6 +207,18 @@ final class TaskifyApplicationDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
+#else
+@MainActor
+final class TaskifyDMPushCoordinator {
+    static let shared = TaskifyDMPushCoordinator()
+    // The relay's existing registration contract has an iOS APNs topic. Do not
+    // register Mac tokens against that topic until the server supports Mac delivery.
+    func requestDeviceToken() async throws -> String {
+        throw TaskifyDMPushCoordinatorError.apnsRegistrationFailed("Mac push delivery requires a configured macOS APNs topic.")
+    }
+}
+#endif
+
 actor TaskifyDMPushLocalNotifier {
     static let shared = TaskifyDMPushLocalNotifier()
 
@@ -274,8 +293,10 @@ extension AppModel {
         } catch {
             await TaskifyDMPushLocalNotifier.shared.notifyReplyFailed(text: text)
         }
+#if os(iOS)
         if UIApplication.shared.applicationState != .active {
             TaskifyBackgroundSyncCoordinator.shared.startSyncHandoff()
         }
+#endif
     }
 }

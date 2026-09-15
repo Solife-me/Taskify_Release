@@ -2,7 +2,13 @@ import EventKit
 import Foundation
 import TaskifyCore
 import UserNotifications
+#if canImport(UIKit)
 import UIKit
+typealias TaskifyCalendarColor = UIColor
+#else
+import AppKit
+typealias TaskifyCalendarColor = NSColor
+#endif
 
 struct DeviceCalendarEvent: Identifiable {
     let id: String
@@ -12,7 +18,7 @@ struct DeviceCalendarEvent: Identifiable {
     let endDate: Date
     let isAllDay: Bool
     let location: String?
-    let color: UIColor
+    let color: TaskifyCalendarColor
 
     init(event: EKEvent) {
         let occurrence = Int(event.startDate.timeIntervalSince1970)
@@ -24,7 +30,7 @@ struct DeviceCalendarEvent: Identifiable {
         endDate = event.endDate
         isAllDay = event.isAllDay
         location = event.location?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        color = event.calendar.cgColor.map(UIColor.init(cgColor:)) ?? .systemOrange
+        color = event.calendar.cgColor.flatMap(TaskifyCalendarColor.init(cgColor:)) ?? .systemOrange
     }
 }
 
@@ -36,7 +42,7 @@ struct DeviceReminder: Identifiable {
     let isAllDay: Bool
     let notes: String?
     let priority: Int
-    let color: UIColor
+    let color: TaskifyCalendarColor
 
     init?(reminder: EKReminder) {
         guard let components = reminder.dueDateComponents,
@@ -49,7 +55,7 @@ struct DeviceReminder: Identifiable {
         isAllDay = components.hour == nil
         notes = reminder.notes?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         priority = reminder.priority
-        color = reminder.calendar.cgColor.map(UIColor.init(cgColor:)) ?? .systemPurple
+        color = reminder.calendar.cgColor.flatMap(TaskifyCalendarColor.init(cgColor:)) ?? .systemPurple
     }
 
     private static func date(from components: DateComponents) -> Date? {

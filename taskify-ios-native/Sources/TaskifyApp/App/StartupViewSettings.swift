@@ -18,6 +18,7 @@ enum StartupTab: String, CaseIterable {
         }
     }
 
+#if os(iOS)
     var appTab: AppTab {
         switch self {
         case .boards: .boards
@@ -26,6 +27,7 @@ enum StartupTab: String, CaseIterable {
         case .chat: .chat
         }
     }
+#endif
 }
 
 enum StartupViewSettings {

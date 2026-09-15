@@ -19,6 +19,8 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 
 ## Plans and roadmaps
 
+- [Native macOS Taskify](plans/native-macos.md)
+
 - [Taskify iOS to Web-Wrapped PWA Plan](plans/2026-04-21-ios-webwrap.md)
 - [Independent Apple Watch Chat Plan](plans/2026-08-31-independent-watch-chat.md)
 - [iOS sharing and 500 MB attachments](plans/2026-09-02-ios-sharing-large-attachments.md)

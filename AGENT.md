@@ -39,6 +39,10 @@ Taskify_Release/
 │   ├── Sources/TaskifyCore/       # Nostr/NIP-17 crypto, relay sync, core policy
 │   └── Tests/TaskifyCoreTests/    # Native unit and interoperability tests
 │
+├── taskify-macos/        # Native SwiftUI/AppKit Mac target sharing iOS services
+│   ├── Sources/         # Desktop UI and pure presentation helpers
+│   └── Tests/           # Mac presentation regression tests
+│
 ├── taskify-push-relay/   # Dedicated NIP-17 inbox relay, APNs bridge, StartOS package
 │   ├── src/              # Relay, NIP-42/NIP-98 auth, store, APNs provider
 │   ├── startos/          # Start SDK 2.x manifest, action, daemon, interface, backup
@@ -68,6 +72,7 @@ Taskify is a **privacy-first, local-first task manager** with Nostr-based sync a
 | **PWA** | React 19, Vite, Tailwind | UI, local state, Nostr sync, Cashu wallet |
 | **Cloudflare Worker** | Wrangler, TypeScript | Push notifications, reminder scheduling, backup storage, cron triggers |
 | **Native iOS app** | SwiftUI, TaskifyCore | Native task/chat/wallet client, NIP-17 inbox, local notification classification |
+| **Native macOS app** | SwiftUI/AppKit, shared native services | Desktop boards, agenda, chat, wallet and settings; see taskify-macos/README.md for parity gaps |
 | **Taskify Push Relay** | Node.js, Nostr, APNs, StartOS | Encrypted kind-1059 retention and opaque-token APNs rich-preview delivery |
 | **Nostr relay network** | NDK, nostr-tools | Decentralized event transport and persistence |
 
@@ -194,6 +199,7 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
+| `taskify-macos/Tests/MacPresentationTests.swift` | Mac presentation | DST-aware task placement, list draft preservation, pending wallet outcomes and recovery consent |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, and authenticated WebSocket delivery |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts` and
