@@ -42,12 +42,17 @@ shared files, not only after editing Mac-specific sources.
 
 - Persistent sidebar, independent windows sharing one account runtime, native
   menus, search, resizable task inspector, and Settings window.
-- Week/list/compound boards, board settings, archives, sharing/joining, task cards
-  and sortable native table with multiple selection and batch actions.
-- Quick entry, task editor, notes, subtasks, priorities, scheduling, basic
-  recurrence controls, reminders, encrypted file attachments and task sharing.
-- Today/Upcoming agenda, Taskify event editing, EventKit calendars/reminders and
-  invitation responses.
+- Week/list/compound boards, board settings (including column rename/delete,
+  with a required destination or explicit deletion for that column's tasks),
+  archives, sharing/joining, task cards and sortable native table with
+  multiple selection and batch actions.
+- Quick entry, task editor, notes, subtasks, priorities, scheduling, recurrence
+  (daily, multi-day weekly, monthly with an interval, or a custom every-N-units
+  interval), reminders, encrypted file attachments and task sharing.
+- Today/Upcoming agenda, Taskify event editing with the same recurrence
+  controls, participant add/remove with per-participant RSVP status, EventKit
+  calendars/reminders, and invitation responses. Shared-inbox rows (tasks,
+  boards, calendar invites, contact cards) show who sent them.
 - DM/group conversation layouts, replies, reactions, history search, unread
   state, archive/block controls and encrypted attachments.
 - Mint balances/activity, ecash receive/send, Lightning invoice/address (LNURL)
@@ -86,8 +91,6 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
 
 ## Remaining parity and release checks
 
-- Advanced recurrence editing, column rename/delete controls, event recurrence
-  and participant editing, richer invitation/contact details.
 - Chat drafts across navigation, rich payment/share cards, bot controls, inline
   media preview, drag/paste attachments and scroll-position preservation.
 - npub.cash Lightning-address provider selection and claim UI (the always-on

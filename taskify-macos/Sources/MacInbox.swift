@@ -1,6 +1,22 @@
 import SwiftUI
 import TaskifyCore
 
+private extension Optional where Wrapped == String {
+    var trimmedOrNil: String? {
+        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+private func senderLabel(_ sender: SharedInboxSender) -> String {
+    sender.name.trimmedOrNil ?? sender.npub.map { String($0.prefix(16)) } ?? String(sender.publicKey.prefix(12))
+}
+
+private func formattedISO(_ value: String?) -> String? {
+    guard let value, let date = ISO8601DateFormatter().date(from: value) else { return nil }
+    return date.formatted(date: .abbreviated, time: .shortened)
+}
+
 struct MacInboxView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
@@ -9,6 +25,7 @@ struct MacInboxView: View {
                 ForEach(model.sharedInboxItems.filter { $0.status == .pending }) { item in
                     VStack(alignment: .leading, spacing: 10) {
                         Text(item.task.title).font(.headline)
+                        Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button("Accept") { _ = model.respondToSharedInboxItem(item.id, status: .accepted) }
                             Button("Tentative") { _ = model.respondToSharedInboxItem(item.id, status: .tentative) }
@@ -20,7 +37,10 @@ struct MacInboxView: View {
             Section("Shared Boards") {
                 ForEach(model.sharedBoardInboxItems.filter { $0.status == .pending }) { item in
                     HStack {
-                        Text("Shared board")
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.board.boardName ?? "Shared board").font(.headline)
+                            Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
+                        }
                         Spacer()
                         Button("Join") { _ = model.acceptSharedBoardInboxItem(item.id) }
                         Button("Dismiss") { model.dismissSharedBoardInboxItem(item.id) }
@@ -31,6 +51,8 @@ struct MacInboxView: View {
                 ForEach(model.sharedCalendarInviteItems.filter { $0.status == .pending }) { item in
                     VStack(alignment: .leading, spacing: 10) {
                         Text(item.event.title ?? "Calendar invitation").font(.headline)
+                        Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
+                        if let start = formattedISO(item.event.start) { Text(start).font(.caption).foregroundStyle(.secondary) }
                         HStack {
                             ForEach([SharedInboxItemStatus.accepted, .tentative, .declined], id: \.rawValue) { status in
                                 Button(status.rawValue.capitalized) {
@@ -44,7 +66,11 @@ struct MacInboxView: View {
             Section("Shared Contacts") {
                 ForEach(model.sharedContactInboxItems.filter { $0.status == .pending }) { item in
                     HStack {
-                        Text("Contact card")
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.contact.displayName.trimmedOrNil ?? item.contact.name.trimmedOrNil ?? item.contact.npub).font(.headline)
+                            Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
+                            if let about = item.contact.about.trimmedOrNil { Text(about).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                        }
                         Spacer()
                         Button("Save Contact") { Task { do { try await model.acceptSharedContactInboxItem(item.id) } catch { model.errorMessage = error.localizedDescription } } }
                         Button("Dismiss") { model.dismissSharedContactInboxItem(item.id) }

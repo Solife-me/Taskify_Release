@@ -18,6 +18,16 @@ struct MacEventEditor: View {
     @State private var remind = false
     @State private var error: String?
     @State private var deleting = false
+    @State private var recurrenceChoice = "keep"
+    @State private var interval = 1
+    @State private var intervalUnit = TaskRecurrenceUnit.day
+    @State private var weeklyDays = Set<Int>()
+    @State private var monthlyInterval = 1
+    @State private var untilEnabled = false
+    @State private var until = Date()
+    @State private var participants: [TaskifyEventParticipant] = []
+    @State private var addingParticipant = false
+    @State private var rsvps: [TaskifyEventRSVPResponse] = []
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -49,23 +59,95 @@ struct MacEventEditor: View {
                     }
                     Toggle("Remind at Start", isOn: $remind)
                 }
+                Section("Repeat") {
+                    Picker("Repeat", selection: $recurrenceChoice) {
+                        Text(event?.recurrence?.isActive == true ? "Keep Existing Schedule" : "Does Not Repeat").tag("keep")
+                        Text("Does Not Repeat").tag("none")
+                        Text("Daily").tag("daily")
+                        Text("Weekly").tag("weekly")
+                        Text("Monthly").tag("monthly")
+                        Text("Every…").tag("interval")
+                    }.labelsHidden()
+                    if recurrenceChoice == "weekly" {
+                        HStack {
+                            ForEach(WeekdayColumn.ordered(startingAt: model.weekStart)) { day in
+                                let value = day.calendarWeekday - 1
+                                Button(day.shortName) {
+                                    if weeklyDays.contains(value) { weeklyDays.remove(value) } else { weeklyDays.insert(value) }
+                                }.buttonStyle(.bordered).tint(weeklyDays.contains(value) ? Color.accentColor : Color.secondary)
+                            }
+                        }
+                    }
+                    if recurrenceChoice == "monthly" {
+                        Stepper("Every \(monthlyInterval) month\(monthlyInterval == 1 ? "" : "s")", value: $monthlyInterval, in: 1...24)
+                    }
+                    if recurrenceChoice == "interval" {
+                        Stepper("Every \(interval)", value: $interval, in: 1...365)
+                        Picker("Unit", selection: $intervalUnit) {
+                            ForEach(TaskRecurrenceUnit.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                        }
+                    }
+                    if recurrenceChoice != "keep" && recurrenceChoice != "none" {
+                        Toggle("End Repeat", isOn: $untilEnabled)
+                        if untilEnabled { DatePicker("Repeat Until", selection: $until, displayedComponents: .date) }
+                    }
+                }
+                Section("Participants") {
+                    ForEach(participants, id: \.publicKey) { participant in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(model.nostrContact(publicKey: participant.publicKey)?.displayName ?? String(participant.publicKey.prefix(16)))
+                                Text(rsvps.first { $0.authorPublicKey.lowercased() == participant.publicKey.lowercased() }?.status.rawValue.capitalized ?? "No response yet")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button(role: .destructive) { participants.removeAll { $0.publicKey == participant.publicKey } } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.borderless)
+                        }
+                    }
+                    Button("Add Participant…") { addingParticipant = true }
+                }
                 if let event, event.isReadOnly { Text("This event was shared with you. Its organizer controls the details.").foregroundStyle(.secondary) }
                 if let event, !event.isReadOnly { Button("Delete Event…", role: .destructive) { deleting = true } }
                 if let error { Text(error).foregroundStyle(.red) }
             }.formStyle(.grouped).disabled(event?.isReadOnly == true)
-        }.frame(width: 570, height: 620)
+        }.frame(width: 570, height: 700)
             .onAppear {
                 boardID = event?.boardID ?? initialBoardID
                 columnID = event?.columnID ?? model.board(withID: boardID)?.columns.first?.id ?? ""
+                participants = event?.participants ?? []
                 if let event {
                     title = event.title; details = event.details ?? ""; location = event.locations?.first ?? ""
                     start = event.startDate ?? Date(); end = event.endDate ?? start.addingTimeInterval(3600)
                     allDay = event.isAllDay; timeZone = event.startTimeZoneID ?? TimeZone.current.identifier
                     remind = event.reminders?.contains { $0.minutesBefore == 0 } == true
+                    rsvps = model.taskifyEventRSVPs(for: event.id)
                 }
+            }
+            .task(id: event?.id) {
+                guard let event else { return }
+                await model.refreshTaskifyEventRSVPs(eventID: event.id)
+                rsvps = model.taskifyEventRSVPs(for: event.id)
             }
             .onChange(of: boardID) { _, _ in columnID = model.board(withID: boardID)?.columns.first?.id ?? "" }
             .onChange(of: start) { _, value in if end < value { end = value.addingTimeInterval(allDay ? 0 : 3600) } }
+            .onChange(of: recurrenceChoice) { _, value in
+                switch value {
+                case "weekly" where weeklyDays.isEmpty:
+                    if case .weekly(let days, _) = event?.recurrence { weeklyDays = Set(days) }
+                    else { weeklyDays = [Calendar.current.component(.weekday, from: start) - 1] }
+                case "monthly":
+                    if case .monthlyDay(_, let interval, _) = event?.recurrence { monthlyInterval = interval ?? 1 }
+                default: break
+                }
+            }
+            .sheet(isPresented: $addingParticipant) {
+                MacContactPicker(title: "Add Participant") { contact in
+                    if !participants.contains(where: { $0.publicKey == contact.publicKey }) {
+                        participants.append(TaskifyEventParticipant(publicKey: contact.publicKey))
+                    }
+                }
+            }
             .confirmationDialog("Delete this event?", isPresented: $deleting) {
                 if let event {
                     Button("Delete This Event", role: .destructive) { model.deleteTaskifyEvent(event.id); dismiss() }
@@ -81,16 +163,23 @@ struct MacEventEditor: View {
         if let event, model.taskifyEvents.first(where: { $0.id == event.id }) != event {
             error = "This event changed while you were editing. Reopen it before saving."; return
         }
+        if recurrenceChoice == "weekly" && weeklyDays.isEmpty {
+            error = "Choose at least one day for weekly repeats."; return
+        }
         var reminders = event?.reminders?.filter { $0.minutesBefore != 0 } ?? []
         if remind { reminders.append(TaskReminder(minutesBefore: 0, dateOnly: allDay)) }
+        let recurrence = MacRecurrenceBuilder.build(choice: recurrenceChoice, referenceDate: start,
+            weeklyDays: weeklyDays, monthlyInterval: monthlyInterval, interval: interval, intervalUnit: intervalUnit,
+            until: untilEnabled ? until : nil, existing: event?.recurrence)
         let success: Bool
         if let event {
             success = model.updateTaskifyEvent(eventID: event.id, title: title, details: details, location: location, startDate: start,
                 endDate: end, isAllDay: allDay, boardID: boardID, columnID: columnID, startTimeZoneID: timeZone,
-                reminders: reminders, reminderTime: event.reminderTime, recurrence: event.recurrence, participants: event.participants)
+                reminders: reminders, reminderTime: event.reminderTime, recurrence: recurrence, participants: participants)
         } else {
             success = model.addTaskifyEvent(title: title, details: details, location: location, startDate: start, endDate: end,
-                isAllDay: allDay, boardID: boardID, columnID: columnID, startTimeZoneID: timeZone, reminders: reminders)
+                isAllDay: allDay, boardID: boardID, columnID: columnID, startTimeZoneID: timeZone, reminders: reminders,
+                recurrence: recurrence, participants: participants)
         }
         if success { dismiss() } else { error = "The event could not be saved. Check its board and schedule." }
     }

@@ -76,4 +76,39 @@ final class MacPresentationTests: XCTestCase {
         let result = MacPaymentRequestMintSelection.candidates(requestedMintURLs: [], walletMintURLs: ["b", "c"])
         XCTAssertEqual(result, ["b", "c"])
     }
+
+    func testRecurrenceBuilderKeepReturnsExistingUnchanged() {
+        let existing = TaskRecurrence.daily(until: nil)
+        let result = MacRecurrenceBuilder.build(choice: "keep", referenceDate: Date(), weeklyDays: [], monthlyInterval: 1,
+            interval: 1, intervalUnit: .day, until: nil, existing: existing)
+        XCTAssertEqual(result, existing)
+    }
+
+    func testRecurrenceBuilderNoneClearsRecurrenceRegardlessOfExisting() {
+        let result = MacRecurrenceBuilder.build(choice: "none", referenceDate: Date(), weeklyDays: [1, 3], monthlyInterval: 2,
+            interval: 5, intervalUnit: .week, until: nil, existing: .daily(until: nil))
+        XCTAssertNil(result)
+    }
+
+    func testRecurrenceBuilderWeeklySortsMultipleSelectedDays() {
+        let result = MacRecurrenceBuilder.build(choice: "weekly", referenceDate: Date(), weeklyDays: [5, 0, 3], monthlyInterval: 1,
+            interval: 1, intervalUnit: .day, until: nil, existing: nil)
+        XCTAssertEqual(result, .weekly(days: [0, 3, 5], until: nil))
+    }
+
+    func testRecurrenceBuilderMonthlyUsesReferenceDateDayAndGivenInterval() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let reference = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 3, day: 17)))
+        let result = MacRecurrenceBuilder.build(choice: "monthly", referenceDate: reference, weeklyDays: [], monthlyInterval: 3,
+            interval: 1, intervalUnit: .day, until: nil, existing: nil, calendar: calendar)
+        XCTAssertEqual(result, .monthlyDay(day: 17, interval: 3, until: nil))
+    }
+
+    func testRecurrenceBuilderIntervalCarriesUntilDate() {
+        let until = Date(timeIntervalSince1970: 2_000_000_000)
+        let result = MacRecurrenceBuilder.build(choice: "interval", referenceDate: Date(), weeklyDays: [], monthlyInterval: 1,
+            interval: 3, intervalUnit: .hour, until: until, existing: nil)
+        XCTAssertEqual(result, .every(3, .hour, until: until))
+    }
 }

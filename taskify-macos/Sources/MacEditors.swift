@@ -13,6 +13,8 @@ struct MacTaskEditor: View {
     @State private var recurrenceChoice = "keep"
     @State private var interval = 1
     @State private var intervalUnit = TaskRecurrenceUnit.day
+    @State private var weeklyDays = Set<Int>()
+    @State private var monthlyInterval = 1
     @State private var untilEnabled = false
     @State private var until = Date()
     @State private var deleteConfirmation = false
@@ -66,9 +68,22 @@ struct MacTaskEditor: View {
                         Text(draft.recurrence?.isActive == true ? "Keep Existing Schedule" : "Does Not Repeat").tag("keep")
                         Text("Does Not Repeat").tag("none")
                         Text("Daily").tag("daily")
-                        Text("Weekly on This Day").tag("weekly")
-                        Text("Monthly on This Date").tag("monthly")
+                        Text("Weekly").tag("weekly")
+                        Text("Monthly").tag("monthly")
                         Text("Every…").tag("interval")
+                    }
+                    if recurrenceChoice == "weekly" {
+                        HStack {
+                            ForEach(WeekdayColumn.ordered(startingAt: model.weekStart)) { day in
+                                let value = day.calendarWeekday - 1
+                                Button(day.shortName) {
+                                    if weeklyDays.contains(value) { weeklyDays.remove(value) } else { weeklyDays.insert(value) }
+                                }.buttonStyle(.bordered).tint(weeklyDays.contains(value) ? Color.accentColor : Color.secondary)
+                            }
+                        }
+                    }
+                    if recurrenceChoice == "monthly" {
+                        Stepper("Every \(monthlyInterval) month\(monthlyInterval == 1 ? "" : "s")", value: $monthlyInterval, in: 1...24)
                     }
                     if recurrenceChoice == "interval" {
                         Stepper("Every \(interval)", value: $interval, in: 1...365)
@@ -132,6 +147,16 @@ struct MacTaskEditor: View {
                 draft.dueDateEnabled = true
                 draft.dueDate = WeekDateResolver.date(for: weekday, inWeekContaining: draft.dueDate ?? Date(), weekStartsOn: model.weekStart)
             }
+            .onChange(of: recurrenceChoice) { _, value in
+                switch value {
+                case "weekly" where weeklyDays.isEmpty:
+                    if case .weekly(let days, _) = draft.recurrence { weeklyDays = Set(days) }
+                    else { weeklyDays = [Calendar.current.component(.weekday, from: draft.dueDate ?? Date()) - 1] }
+                case "monthly":
+                    if case .monthlyDay(_, let interval, _) = draft.recurrence { monthlyInterval = interval ?? 1 }
+                default: break
+                }
+            }
             .confirmationDialog("Delete this task?", isPresented: $deleteConfirmation) {
                 Button("Delete This Task", role: .destructive) { model.deleteTask(draft.id); dismiss() }
                 if draft.recurrence?.isActive == true {
@@ -155,15 +180,13 @@ struct MacTaskEditor: View {
             return
         }
         if draft.dueDateEnabled && draft.dueDate == nil { draft.dueDate = Date() }
-        let end = untilEnabled ? until : nil
-        switch recurrenceChoice {
-        case "none": draft.recurrence = nil
-        case "daily": draft.recurrence = .daily(until: end)
-        case "weekly": draft.recurrence = .weekly(days: [Calendar.current.component(.weekday, from: draft.dueDate ?? Date()) - 1], until: end)
-        case "monthly": draft.recurrence = .monthlyDay(day: Calendar.current.component(.day, from: draft.dueDate ?? Date()), until: end)
-        case "interval": draft.recurrence = .every(interval, intervalUnit, until: end)
-        default: break
+        if recurrenceChoice == "weekly" && weeklyDays.isEmpty {
+            error = "Choose at least one day for weekly repeats."
+            return
         }
+        draft.recurrence = MacRecurrenceBuilder.build(choice: recurrenceChoice, referenceDate: draft.dueDate ?? Date(),
+            weeklyDays: weeklyDays, monthlyInterval: monthlyInterval, interval: interval, intervalUnit: intervalUnit,
+            until: untilEnabled ? until : nil, existing: draft.recurrence)
         do {
             let uploaded = try await attachments.uploadDocuments(boardID: model.board(withID: draft.boardID)?.effectiveNostrBoardID ?? draft.boardID)
             let existing = draft.documents ?? []
@@ -201,6 +224,9 @@ struct MacBoardEditor: View {
     @State private var kind = BoardKind.list
     @State private var children = Set<String>()
     @State private var newColumn = ""
+    @State private var renamingColumnID: String?
+    @State private var renamingColumnName = ""
+    @State private var deletingColumn: BoardColumn?
     @State private var joinCode = ""
     @State private var deletingBoard = false
     @State private var relays = ""
@@ -239,10 +265,21 @@ struct MacBoardEditor: View {
                     Section("Columns") {
                         ForEach(current.columns.sorted { $0.order < $1.order }) { column in
                             HStack {
-                                Text(column.name)
-                                Spacer()
-                                Button("Move Up") { model.selectBoard(current.id); _ = model.moveListColumn(columnID: column.id, direction: -1) }
-                                Button("Move Down") { model.selectBoard(current.id); _ = model.moveListColumn(columnID: column.id, direction: 1) }
+                                if renamingColumnID == column.id {
+                                    TextField("Column name", text: $renamingColumnName).onSubmit { renameColumn(id: column.id) }
+                                    Button("Save") { renameColumn(id: column.id) }
+                                        .disabled(renamingColumnName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                    Button("Cancel") { renamingColumnID = nil }
+                                } else {
+                                    Text(column.name)
+                                    Spacer()
+                                    Button("Rename") { renamingColumnID = column.id; renamingColumnName = column.name }
+                                    Button("Move Up") { model.selectBoard(current.id); _ = model.moveListColumn(columnID: column.id, direction: -1) }
+                                    Button("Move Down") { model.selectBoard(current.id); _ = model.moveListColumn(columnID: column.id, direction: 1) }
+                                    if current.columns.count > 1 {
+                                        Button("Delete…", role: .destructive) { deletingColumn = column }
+                                    }
+                                }
                             }
                         }
                         HStack {
@@ -285,6 +322,31 @@ struct MacBoardEditor: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .confirmationDialog(deletingColumn.map { "Delete “\($0.name)”?" } ?? "",
+            isPresented: Binding(get: { deletingColumn != nil }, set: { if !$0 { deletingColumn = nil } }), presenting: deletingColumn) { column in
+            ForEach((current?.columns ?? []).filter { $0.id != column.id }.sorted { $0.order < $1.order }) { destination in
+                Button("Move Tasks to “\(destination.name)”") { removeColumn(column, moveTasksTo: destination.id) }
+            }
+            Button("Delete Its Tasks Too", role: .destructive) { removeColumn(column, moveTasksTo: nil) }
+            Button("Cancel", role: .cancel) { deletingColumn = nil }
+        } message: { _ in
+            Text("Choose where its tasks go, or delete them along with the column.")
+        }
+    }
+    private func renameColumn(id: String) {
+        let name = renamingColumnName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let boardID = current?.id else { return }
+        model.selectBoard(boardID)
+        if model.renameListColumn(columnID: id, name: name) { renamingColumnID = nil }
+        else { error = "The column could not be renamed." }
+    }
+    private func removeColumn(_ column: BoardColumn, moveTasksTo destinationColumnID: String?) {
+        guard let boardID = current?.id else { return }
+        model.selectBoard(boardID)
+        if !model.removeListColumn(columnID: column.id, moveTasksTo: destinationColumnID) {
+            error = "The column could not be deleted."
+        }
+        deletingColumn = nil
     }
     private func save() {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "Enter a board name."; return }

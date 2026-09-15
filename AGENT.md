@@ -199,7 +199,7 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
-| `taskify-macos/Tests/MacPresentationTests.swift` | Mac presentation | DST-aware task placement, list draft preservation, pending wallet outcomes, recovery consent, and payment-request mint-selection fallback |
+| `taskify-macos/Tests/MacPresentationTests.swift` | Mac presentation | DST-aware task placement, list draft preservation, pending wallet outcomes, recovery consent, payment-request mint-selection fallback, and recurrence-builder day/interval math |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, and authenticated WebSocket delivery |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts` and
