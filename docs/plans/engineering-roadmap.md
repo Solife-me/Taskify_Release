@@ -208,3 +208,36 @@ Add IPFS-based file attachments to tasks using [Originless](https://github.com/b
 - Extracted shell-completion registration into `commands/completions.ts`.
   A bundled CLI regression checks all three shells, environment detection,
   combined fallback output, and invalid-shell errors using an isolated home API.
+
+### Fourth organization pass — September 15, 2026
+
+- Extracted CLI config command registration and the shared connection probe from
+  the entry point, preserving command bodies and diagnostic behavior.
+- Added isolated command regression coverage for selected-profile mutations,
+  secret redaction, invalid input, and missing boards.
+- Added four fake-WebSocket checks for success, error, timeout, and constructor
+  failure. No real network connections or user configuration are used.
+
+### Fifth through seventh organization passes — September 15, 2026
+
+- Extracted profile command registration, including its piped-input queue, into
+  `commands/profile.ts`. Isolated CLI tests cover creation, duplicate rejection,
+  switching, renaming, key masking, removal guards, and piped onboarding.
+- Extracted CLI CSV helpers into `src/csv.ts` without changing parsing semantics.
+  Three tests cover quoting, escaped quotes, blank lines, and missing fields.
+- Extracted PWA VAPID decoding and generic promise timeouts. Six tests cover
+  URL-safe decoding, bad inputs, absent decoder support, completion/failure timer
+  cleanup, and timeout errors. No live push registration is performed.
+
+### Final standalone extraction pass — September 15, 2026
+
+- Completed CLI command-group extraction. The entry point now configures the root
+  program, assembles a typed command context, registers groups in the original
+  order, and handles parse completion/errors.
+- Existing source-contract tests now read command modules. Bundled command and
+  local persistence tests remain in place; a full pre/post help-tree comparison
+  checks that registration preserves arguments, options, descriptions, and order.
+- Extracted the PWA reminder HTTP client with three tests for payload serialization,
+  cancellation, missing setup, and HTTP failures.
+- PWA stateful task/calendar/relay orchestration remains feature-level refactoring
+  work, requiring state-transition coverage before changing its boundaries.

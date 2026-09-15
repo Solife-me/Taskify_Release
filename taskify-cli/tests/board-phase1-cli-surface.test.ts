@@ -1,9 +1,10 @@
+import { commandSource } from "./helpers/commandSource.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-const CLI_SOURCE = readFileSync(path.resolve(import.meta.dirname, "../src/index.ts"), "utf8");
+const CLI_SOURCE = commandSource();
 const RUNTIME_SOURCE = readFileSync(path.resolve(import.meta.dirname, "../src/nostrRuntime.ts"), "utf8");
 
 test("board CLI exposes list column lifecycle commands", () => {

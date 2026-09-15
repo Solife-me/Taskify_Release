@@ -27,7 +27,7 @@ Taskify_Release/
 ├── taskify-core/         # Shared pure domain contracts and utilities
 ├── taskify-runtime-nostr/ # Shared Nostr transport and orchestration
 ├── taskify-cli/          # CLI consuming shared core/runtime packages
-│   └── src/commands/    # Bot/contact/trust/relay/cache/completion command registration; index.ts composes groups
+│   └── src/commands/    # Command groups and shared command context; index.ts composes groups
 │
 ├── worker/               # Cloudflare Worker (backend)
 │   ├── src/
@@ -177,6 +177,10 @@ npx wrangler dev
 |---|---|---|
 | `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/audits/pwa-client-history-sync-2026-09-11.md` |
 | `src/theme/useAppAppearance.test.tsx` | Appearance settings | Font bounds, theme transitions, status-bar color, object-URL cleanup, and image fallback |
+| `taskify-cli/tests/profile-command.test.ts`, `taskify-cli/tests/csv.test.ts` | CLI profiles and CSV | Local identity lifecycle, piped input, masking, quoting, and missing fields |
+| `src/domains/push/reminderClient.test.ts` | Reminder HTTP client | Stable payload ordering, minute offsets, cancellation, missing configuration, and HTTP errors |
+| `src/domains/push/vapidKey.test.ts`, `src/lib/withTimeout.test.ts` | Push registration utilities | URL-safe decoding, invalid keys, timeout rejection, and timer cleanup |
+| `taskify-cli/tests/config-command.test.ts`, `taskify-cli/tests/relay-diagnostics.test.ts` | CLI configuration and diagnostics | Selected-profile persistence, redaction, errors, and simulated connection outcomes |
 | `taskify-cli/tests/completions-command.test.ts` | CLI completions | Explicit shells, environment detection, combined fallback output, and invalid-shell exits |
 | `src/storage/boardPrintJobs.test.ts` | Saved print jobs | Legacy defaults, malformed data, per-board preservation, and storage failures |
 | `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |

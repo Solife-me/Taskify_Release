@@ -49,12 +49,17 @@ feedback, drop positioning, selection controls, and its DOM event subscriptions.
 It receives callbacks and children through props and does not import `App`.
 
 `taskify-cli/src/index.ts` creates the Commander program, installs global options,
-registers commands, and handles final parsing and errors. Bot, contact, trust, relay, cache, and completion command groups live in
-`taskify-cli/src/commands/`.
-Registration receives the root program so actions read global options at execution
-time. Contact and relay registration also receive the existing runtime initializer to
-retain its error handling. Relay registration receives the connection-check helper
-shared with config diagnostics. Command modules do not import or execute the entry point.
+registers each command group, and handles final parsing and errors. All command
+actions live in `taskify-cli/src/commands/`, grouped by feature: discovery, boards,
+events, sharing, task queries/mutations, attachments, agent helpers, transfer,
+backup, inbox, assignments, setup, and the smaller administration groups.
+
+`commands/context.ts` creates the shared command helpers once per program. Each
+registration declares the subset it consumes with `Pick<CommandContext, ...>`.
+Helpers preserve existing identity validation, reference resolution, document
+loading, and structured error handling. They read global options at action time.
+Command modules do not import or execute the entry point. Board creation is
+registered separately on the same board command to preserve its help ordering.
 
 Continue extracting cohesive UI components and command groups in small slices;
 keep domain logic in shared core/runtime packages and avoid changing behavior
@@ -70,3 +75,31 @@ The hook accepts only appearance settings and applies font size, dark mode,
 status-bar color, accent variables, and background images. It owns background
 object-URL cleanup on dependency changes and unmount; the entry point calls it
 at the original effect location to preserve ordering.
+
+Configuration commands are registered in `taskify-cli/src/commands/config.ts`.
+The shared WebSocket connection probe lives in `src/relayDiagnostics.ts` and is
+passed to both relay and config registration. This keeps connection diagnostics
+out of the entry point while preserving existing timeout and output behavior.
+
+Profile commands and their interactive prompt queue live in
+`taskify-cli/src/commands/profile.ts`. This module owns command presentation;
+profile persistence and metadata publication still use their existing services.
+CSV serialization/parsing for CLI import/export lives in `taskify-cli/src/csv.ts`.
+The extraction preserves the existing parser semantics.
+
+PWA push-key decoding lives in `domains/push/vapidKey.ts`; the generic promise
+race/deadline helper lives in `lib/withTimeout.ts`. A deadline rejects the caller's
+wait and clears its timer; it does not cancel the underlying operation.
+
+The PWA's reminder HTTP request is isolated in `domains/push/reminderClient.ts`.
+It owns stable payload ordering, reminder-minute serialization, request timeout,
+and HTTP error propagation. App state still decides when a sync is required and
+owns the abort controller.
+
+## Remaining stateful composition
+
+The PWA entry point still coordinates task/calendar recurrence, relay event
+reconciliation, printing, and view composition. Further decomposition should be
+feature-specific work with state-transition and UI coverage; moving those closures
+behind a large bag of mutable state would not establish a useful boundary. This
+organization pass leaves that orchestration intact.

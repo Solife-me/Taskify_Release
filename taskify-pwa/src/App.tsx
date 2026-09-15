@@ -1,3 +1,6 @@
+import { syncRemindersToWorker, PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
+import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
+import { withTimeout } from "./lib/withTimeout";
 import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
 import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -163,7 +166,6 @@ import type {
   ScriptureMemoryUpdate,
 } from "./domains/tasks/taskTypes";
 import { type PushPlatform } from "./domains/push/pushUtils";
-import { type ReminderPreset } from "./domains/dateTime/reminderUtils";
 import {
   daysInCalendarMonth,
   formatDateKeyFromParts,
@@ -368,7 +370,6 @@ function normalizeIsoTimestamp(value: unknown): string | undefined {
 const RAW_WORKER_BASE = (import.meta as any)?.env?.VITE_WORKER_BASE_URL || "";
 const FALLBACK_WORKER_BASE_URL = RAW_WORKER_BASE ? String(RAW_WORKER_BASE).replace(/\/$/, "") : "";
 const FALLBACK_VAPID_PUBLIC_KEY = (import.meta as any)?.env?.VITE_VAPID_PUBLIC_KEY || "";
-const PUSH_OPERATION_TIMEOUT_MS = 15000;
 
 function taskHasReminders(task: Task): boolean {
   if (task.completed) return false;
@@ -402,48 +403,6 @@ function reminderScheduleISOForCalendarEvent(event: CalendarEvent, systemTimeZon
   const reminderClock = normalizeReminderTime(event.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
   const reminderISO = isoFromDateTime(event.startDate, reminderClock, systemTimeZone);
   return Number.isNaN(Date.parse(reminderISO)) ? null : reminderISO;
-}
-
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  if (!base64String || typeof base64String !== 'string') {
-    throw new Error('VAPID public key is missing.');
-  }
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const decode = typeof atob === 'function'
-    ? atob
-    : (() => { throw new Error('No base64 decoder available in this environment'); });
-  try {
-    const rawData = decode(base64);
-    if (!rawData) throw new Error('Decoded key was empty');
-    const outputArray = new Uint8Array(rawData.length);
-    for (let i = 0; i < rawData.length; i += 1) {
-      outputArray[i] = rawData.charCodeAt(i);
-    }
-    if (outputArray.length < 32) {
-      throw new Error('Decoded key is too short');
-    }
-    return outputArray;
-  } catch (err) {
-    if (err instanceof Error) {
-      throw new Error(`Invalid VAPID public key: ${err.message}`);
-    }
-    throw new Error('Invalid VAPID public key.');
-  }
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-  }
 }
 
 type CompoundIndexGroup = {
@@ -13040,54 +12999,4 @@ function nextOrderForCalendarBoard(
     return minOrder - 1;
   }
   return boardEvents.reduce((max, event) => Math.max(max, event.order ?? -1), -1) + 1;
-}
-
-async function syncRemindersToWorker(
-  workerBaseUrl: string,
-  push: PushPreferences,
-  reminderItems: Array<{
-    taskId: string;
-    boardId?: string;
-    title: string;
-    dueISO: string;
-    reminders: ReminderPreset[];
-  }>,
-  options?: { signal?: AbortSignal }
-): Promise<void> {
-  if (!workerBaseUrl) throw new Error("Worker base URL is not configured");
-  if (!push.deviceId || !push.subscriptionId) return;
-  const remindersPayload = reminderItems
-    .map((item) => ({
-      taskId: item.taskId,
-      boardId: item.boardId,
-      dueISO: item.dueISO,
-      title: item.title,
-      minutesBefore: (item.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
-    }))
-    .sort((a, b) => a.taskId.localeCompare(b.taskId));
-  let res: Response;
-  try {
-    res = await withTimeout(
-      fetch(`${workerBaseUrl}/api/reminders`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          deviceId: push.deviceId,
-          subscriptionId: push.subscriptionId,
-          reminders: remindersPayload,
-        }),
-        signal: options?.signal,
-      }),
-      PUSH_OPERATION_TIMEOUT_MS,
-      "Timed out while syncing reminders to the notification worker.",
-    );
-  } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
-      throw err;
-    }
-    throw err;
-  }
-  if (!res.ok) {
-    throw new Error(`Failed to sync reminders (${res.status})`);
-  }
 }

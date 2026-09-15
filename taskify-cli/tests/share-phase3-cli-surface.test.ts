@@ -1,9 +1,10 @@
+import { commandSource } from "./helpers/commandSource.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-const CLI_SOURCE = readFileSync(path.resolve(import.meta.dirname, "../src/index.ts"), "utf8");
+const CLI_SOURCE = commandSource();
 const RENDER_SOURCE = readFileSync(path.resolve(import.meta.dirname, "../src/render.ts"), "utf8");
 
 test("event rsvp uses canonical event-rsvp-response envelope", () => {
