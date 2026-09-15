@@ -1065,7 +1065,7 @@ public actor CashuWalletService {
 
         try await repository.createWallet(mintUrl: mintURL, unit: .sat, targetProofCount: 24)
         let wallet = try await repository.getWallet(mintUrl: mintURL, unit: .sat)
-        _ = try await wallet.fetchActiveKeyset()
+        _ = try await wallet.activeKeyset()
         _ = try? await wallet.fetchMintInfo()
     }
 
@@ -2386,10 +2386,16 @@ public actor CashuWalletService {
         )
 
         do {
-            try await wallet.payRequest(
+            let prepared = try await wallet.preparePayRequest(
                 paymentRequest: request,
                 customAmount: preview.amount == nil ? Amount(value: amount) : nil
             )
+            do {
+                try await prepared.confirm()
+            } catch {
+                try? await prepared.cancel()
+                throw error
+            }
             let transaction = await newTransaction(
                 wallet: wallet,
                 direction: .outgoing,

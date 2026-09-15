@@ -14,14 +14,14 @@
     "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
   "peerDependencies": {
-    "@noble/hashes": "^2.2.0",
+    "@noble/hashes": "^2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "nostr-tools": "^2.23.9"
+    "nostr-tools": "^2.25.2"
   },
   "devDependencies": {
-    "@noble/hashes": "^2.2.0",
+    "@noble/hashes": "^2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "nostr-tools": "^2.23.9",
+    "nostr-tools": "^2.25.2",
     "typescript": "^6.0.3"
   }
 }

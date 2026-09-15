@@ -32,8 +32,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/cashubtc/cdk-swift.git",
       "state" : {
-        "revision" : "b66efeab078d7b1e851b0f740105066321f80f88",
-        "version" : "0.17.3"
+        "revision" : "3a5664d7f0732f0f92d7326969b9da55c08f13a3",
+        "version" : "0.18.0"
       }
     },
     {
