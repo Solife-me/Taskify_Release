@@ -4,7 +4,6 @@ import Security
 import SwiftUI
 import TaskifyCore
 import TaskifyWatchShared
-import UIKit
 import WidgetKit
 
 struct BoardTemplateShareResult: Sendable {
@@ -203,7 +202,9 @@ final class AppModel {
                 || snapshot.contacts != oldValue.contacts {
                 directMessageRevision &+= 1
             }
+#if os(iOS)
             TaskifyPerfMonitor.shared.recordSnapshotWrite()
+#endif
         }
     }
 
@@ -750,12 +751,14 @@ final class AppModel {
         // The Watch cache owns its own unread badges; converging them is the phone's entire
         // outbound chat traffic. The companion `through:` variant is the Watch-originated
         // echo path and must not bounce the read back.
+#if os(iOS)
         if let through = updated.directMessageReadAt?[peerPublicKey.lowercased()], through > 0 {
             TaskifyWatchBridge.shared.pushChatReadUpdate(
                 conversationID: peerPublicKey,
                 through: through
             )
         }
+#endif
     }
 
     @discardableResult
@@ -1982,6 +1985,7 @@ final class AppModel {
         }
     }
 
+#if os(iOS)
     func handleDMPushWake(notifyMessages: Bool = true) async -> UIBackgroundFetchResult {
         guard dmPushEnabled, !isHandlingDMPushWake else { return .noData }
         isHandlingDMPushWake = true
@@ -2007,6 +2011,7 @@ final class AppModel {
         ) ?? false
         return categories.isEmpty && !paymentReceived ? .noData : .newData
     }
+#endif
 
     private static var dmPushAPNsEnvironment: String {
 #if DEBUG
@@ -4594,6 +4599,11 @@ final class AppModel {
     /// provisioning payload and the directory reply.
     func watchSnapshot(now: Date = Date()) -> TaskifyWatchSnapshot {
         let taskSnapshot = snapshot.watchData(now: now, calendar: weekCalendar)
+#if os(iOS)
+        let accent = TaskifyTheme.watchAccent
+#else
+        let accent: TaskifyWatchAccent? = nil
+#endif
         return TaskifyWatchSnapshot(
             schemaVersion: taskSnapshot.schemaVersion,
             tasks: taskSnapshot.tasks,
@@ -4601,7 +4611,7 @@ final class AppModel {
             selectedBoardID: taskSnapshot.selectedBoardID,
             generatedAt: taskSnapshot.generatedAt,
             acknowledgedCommandIDs: taskSnapshot.acknowledgedCommandIDs,
-            accent: TaskifyTheme.watchAccent
+            accent: accent
         )
     }
 
@@ -4779,10 +4789,14 @@ final class AppModel {
             // Persist successfully before clearing any state for the current account.
             try identityStore.save(imported)
             ShareTransferStore.clearAccount()
+#if os(iOS)
             TaskifyShareIdentity.clear()
             TaskifyShareSuggestions.clear()
+#endif
             for job in ShareTransferStore.all() {
+#if os(iOS)
                 TaskifyShareUploadSession.cancel(job)
+#endif
                 ShareTransferStore.remove(job.id)
             }
             applyIdentity(imported)
@@ -6427,16 +6441,24 @@ final class AppModel {
         do {
             let old = try? ShareTransferStore.account()
             if old?.publicKey != identity.publicKeyHex {
+#if os(iOS)
                 TaskifyShareSuggestions.clear()
+#endif
                 ShareTransferStore.clearAccount()
+#if os(iOS)
                 TaskifyShareIdentity.clear()
+#endif
                 shareSeenMessages = nil
                 for job in ShareTransferStore.all() {
+#if os(iOS)
                     TaskifyShareUploadSession.cancel(job)
+#endif
                     ShareTransferStore.remove(job.id)
                 }
             }
+#if os(iOS)
             try TaskifyShareIdentity.save(identity)
+#endif
             let contacts = Dictionary((snapshot.contacts ?? []).map { ($0.publicKey, $0) }, uniquingKeysWith: { first, _ in first })
             let history = snapshot.directMessageHistory
             var peers = Set(contacts.keys)
@@ -6461,10 +6483,13 @@ final class AppModel {
             let account = ShareAccount(publicKey: identity.publicKeyHex, recipients: recipients,
                 server: TaskifyMediaServerSettings.configuredEntry, senderRelays: effectiveNIP17InboxRelayURLs)
             if account != old { try ShareTransferStore.saveAccount(account) }
+#if os(iOS)
             for removed in old?.recipients ?? [] where !recipients.contains(where: { $0.id == removed.id }) {
                 TaskifyShareSuggestions.remove(account: identity.publicKeyHex, recipient: removed)
             }
+#endif
             let ids = Set(history.map(\.rumorEventID))
+#if os(iOS)
             if let seen = shareSeenMessages {
                 let new = history.filter { !seen.contains($0.rumorEventID) }
                 var donated = Set<String>()
@@ -6475,6 +6500,7 @@ final class AppModel {
                     }
                 }
             }
+#endif
             shareSeenMessages = ids
             // Account/recipient exports above must stay current even while another
             // refresh is awaiting a slow upload or relay acknowledgement.
@@ -6485,11 +6511,15 @@ final class AppModel {
                 guard identityPublicKey == identity.publicKeyHex else { return }
                 if input.account != account.publicKey || !recipients.contains(where: { $0.id == input.recipient.id && $0.members == input.recipient.members })
                     || input.createdAt < Date().addingTimeInterval(-48 * 3_600) {
+#if os(iOS)
                     TaskifyShareUploadSession.cancel(input)
+#endif
                     ShareTransferStore.remove(input.id)
                     continue
                 }
+#if os(iOS)
                 if retry { await TaskifyShareUploadSession.retry(input) }
+#endif
                 guard identityPublicKey == identity.publicKeyHex else { return }
                 let job = (try? ShareTransferStore.load(input.id)) ?? input
                 let messages = job.messages
@@ -6566,6 +6596,24 @@ final class AppModel {
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
             errorMessage = "Taskify could not save the latest change."
+        }
+    }
+
+    /// Mac's quit path: await in-flight task-publication preparation, then save the durable local
+    /// snapshot before the app terminates. Does not wait for relay acknowledgement — the sync
+    /// engine's outbox picks up unsent events on next launch. Returns whether the local save
+    /// succeeded so a failed save can cancel termination instead of losing the change.
+    func persistBeforeTermination() async -> Bool {
+        await taskPublicationTask?.value
+        saveTask?.cancel()
+        saveTask = nil
+        do {
+            try await store.save(snapshot)
+            lastStoreWriteAt = Date()
+            return true
+        } catch {
+            errorMessage = "Taskify could not save the latest change."
+            return false
         }
     }
 

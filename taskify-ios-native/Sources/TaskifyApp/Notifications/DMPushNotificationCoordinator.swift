@@ -274,6 +274,7 @@ extension AppModel {
         // The first message of a new group can be answered before the push wake has ingested it.
         // Sending to a group ID the snapshot does not know would treat the hash as a public key,
         // so pull the inbox and give the ingest a moment first.
+#if os(iOS)
         if !isLoading, target.isGroup, groupConversation(id: target.conversationID) == nil {
             _ = await handleDMPushWake(notifyMessages: false)
             let ingestDeadline = Date().addingTimeInterval(8)
@@ -283,6 +284,7 @@ extension AppModel {
                 try? await Task.sleep(for: .milliseconds(200))
             }
         }
+#endif
         do {
             guard !isLoading,
                   !target.isGroup || groupConversation(id: target.conversationID) != nil else {
