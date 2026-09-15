@@ -8,6 +8,61 @@ final class SharedInboxTests: XCTestCase {
     private let ephemeralPrivateKey = String(repeating: "0", count: 63) + "3"
     private let fourthPrivateKey = String(repeating: "0", count: 63) + "4"
 
+    func testGroupTaskAndEventSharesRoundTripForEveryMemberAndStayInGroupThread() throws {
+        let sender = try identity(senderPrivateKey)
+        let members = [sender, try identity(recipientPrivateKey), try identity(fourthPrivateKey)]
+        let group = try XCTUnwrap(NostrGroupConversation(
+            name: "Planning", memberPublicKeys: members.map(\.publicKeyHex), createdAt: 100
+        ))
+        let event = SharedCalendarEventDelivery(
+            eventID: "event-1", canonical: "30310:\(sender.publicKeyHex):event-1",
+            view: "30311:\(sender.publicKeyHex):event-1",
+            eventKey: Data(repeating: 7, count: 32).base64EncodedString(),
+            inviteToken: "group-invite", title: "Planning meeting"
+        )
+        let envelopes = [
+            TaskifyShareEnvelope(item: .task(SharedTaskDelivery(title: "Group task"))),
+            TaskifyShareEnvelope(item: .calendarEvent(event))
+        ]
+        for (index, envelope) in envelopes.enumerated() {
+            let rumor = try NIP17Rumor(
+                publicKey: sender.publicKeyHex, createdAt: 100 + index, kind: 14,
+                tags: members.map { ["p", $0.publicKeyHex] } + [["subject", group.name]],
+                content: envelope.messageContent()
+            )
+            for member in members {
+                let wrap = try NIP17GiftWrap.wrap(rumor: rumor, sender: sender, recipientPublicKey: member.publicKey)
+                let decrypted = try NIP17GiftWrap.unwrapRumor(wrap, recipient: member)
+                let message = try XCTUnwrap(NostrDirectMessage(decrypted: decrypted, identityPublicKey: member.publicKeyHex))
+                XCTAssertEqual(message.peerPublicKey, group.groupID)
+                XCTAssertEqual(message.displayContent, index == 0 ? "Shared task: Group task" : "Shared event: Planning meeting")
+                let decoded = try XCTUnwrap(TaskifyShareEnvelope.decode(content: message.content))
+                var snapshot = TaskifySnapshot.empty
+                _ = snapshot.upsertGroupConversation(group)
+                _ = snapshot.ingestDirectMessage(message)
+                let inboxSender = SharedInboxSender(publicKey: sender.publicKeyHex)
+                switch decoded.item {
+                case .task(let task):
+                    XCTAssertEqual(task.title, "Group task")
+                    _ = snapshot.ingestSharedInboxItem(SharedInboxItem(
+                        wrapEventID: wrap.id, rumorEventID: rumor.id, sender: inboxSender,
+                        task: task, receivedAt: Date(), groupID: group.groupID
+                    ))
+                case .calendarEvent(let event):
+                    XCTAssertEqual(event.title, "Planning meeting")
+                    _ = snapshot.ingestSharedCalendarInvite(SharedCalendarInviteInboxItem(
+                        wrapEventID: wrap.id, rumorEventID: rumor.id, sender: inboxSender,
+                        event: event, receivedAt: Date(), groupID: group.groupID
+                    ))
+                default: XCTFail("Unexpected share type")
+                }
+                let restored = try JSONDecoder().decode(TaskifySnapshot.self, from: JSONEncoder().encode(snapshot))
+                XCTAssertEqual(restored.directMessageThreads().map(\.peerPublicKey), [group.groupID])
+                XCTAssertEqual(restored.directMessageThreads().first?.actionRequiredCount, 1)
+            }
+        }
+    }
+
     func testDecodesPWATaskEnvelopeWithSubtaskWithoutID() throws {
         let recipient = try identity(recipientPrivateKey)
         let json = """

@@ -13,7 +13,11 @@ enum KeychainIdentityError: LocalizedError {
 }
 
 struct KeychainIdentityStore {
+    #if os(macOS)
+    private let service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
+#else
     private let service = "solife.me.Taskify.Native"
+#endif
     private let account = "nostr-identity-private-key"
     private var sharedAccessGroup: String? {
         Bundle.main.object(forInfoDictionaryKey: "TaskifyKeychainAccessGroup") as? String
@@ -86,7 +90,11 @@ struct KeychainIdentityStore {
 }
 
 struct KeychainWalletSeedStore {
+    #if os(macOS)
+    private let service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
+#else
     private let service = "solife.me.Taskify.Native"
+#endif
     private let account = "cashu-wallet-mnemonic-v1"
 
     func loadOrCreate() throws -> String {
@@ -139,7 +147,11 @@ struct KeychainWalletSeedStore {
 }
 
 struct KeychainP2PKKeyStore {
+    #if os(macOS)
+    private let service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
+#else
     private let service = "solife.me.Taskify.Native"
+#endif
     private let account = "cashu-p2pk-recipient-keys-v1"
 
     func load() throws -> CashuP2PKKeyRing {

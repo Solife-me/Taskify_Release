@@ -2614,7 +2614,7 @@ private struct DirectMessageConversationView: View {
         model.sharedInboxItems
             .filter {
                 $0.status != .deleted &&
-                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+                    $0.conversationPublicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
             }
             .sorted {
                 if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
@@ -2636,7 +2636,7 @@ private struct DirectMessageConversationView: View {
         model.sharedCalendarInviteItems
             .filter {
                 $0.status != .deleted &&
-                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+                    $0.conversationPublicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
             }
             .sorted {
                 if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
@@ -2681,8 +2681,9 @@ private struct DirectMessageConversationView: View {
         let sharedContacts = sharedContacts
         let calendarInvites = calendarInvites
         let sharedBoards = sharedBoards
+        let structuredRumorIDs = Set(sharedTasks.map(\.rumorEventID) + calendarInvites.map(\.rumorEventID))
         let items =
-            messages.map(ChatTimelineItem.message)
+            messages.filter { !structuredRumorIDs.contains($0.rumorEventID) }.map(ChatTimelineItem.message)
                 + sharedTasks.map(ChatTimelineItem.sharedTask)
                 + sharedContacts.map(ChatTimelineItem.sharedContact)
                 + calendarInvites.map(ChatTimelineItem.calendarInvite)
@@ -5286,6 +5287,8 @@ private struct DirectMessageBubble: View, Equatable {
                             DirectMessageAttachmentView(attachment: attachment)
                         } else if let detectedPaymentToken {
                             DirectMessagePaymentCard(token: detectedPaymentToken)
+                        } else if let preview = message.sharedItemPreview {
+                            Label(preview, systemImage: "square.and.arrow.up")
                         } else {
                             DirectMessageMarkdownText(
                                 markdown: message.content,
