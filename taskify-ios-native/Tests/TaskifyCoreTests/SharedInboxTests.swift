@@ -780,19 +780,19 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertEqual(decrypted.rumor.publicKey, sender.publicKeyHex)
     }
 
-    func testInboxDeduplicatesAndAcceptsIntoSelectedListContract() throws {
+    func testInboxAcceptsExplicitDestinationWithoutChangingSelectedBoard() throws {
         let sender = try identity(senderPrivateKey)
         let recipient = try identity(recipientPrivateKey)
         let board = Board(
             id: "inbox-board",
             name: "Inbox",
             kind: .list,
-            columns: [BoardColumn(id: "new", name: "New", order: 0)]
+            columns: [BoardColumn(id: "first", name: "First", order: 0), BoardColumn(id: "new", name: "New", order: 1)]
         )
         var snapshot = TaskifySnapshot(
-            boards: [board],
+            boards: [Board.week(id: "selected", name: "Selected"), board],
             tasks: [],
-            selectedBoardID: board.id
+            selectedBoardID: "selected"
         )
         let item = SharedInboxItem(
             wrapEventID: "wrap-1",
@@ -821,6 +821,15 @@ final class SharedInboxTests: XCTestCase {
         XCTAssertFalse(snapshot.ingestSharedInboxItem(item))
         XCTAssertEqual(snapshot.pendingSharedInboxCount, 1)
 
+        XCTAssertNil(snapshot.acceptSharedTask(
+            inboxItemID: item.id,
+            destinationBoardID: board.id,
+            destinationColumnID: "missing",
+            recipientPublicKey: recipient.publicKeyHex
+        ))
+        XCTAssertTrue(snapshot.tasks.isEmpty)
+        XCTAssertEqual(snapshot.sharedInbox.first?.status, .pending)
+
         let accepted = try XCTUnwrap(snapshot.acceptSharedTask(
             inboxItemID: item.id,
             destinationBoardID: board.id,
@@ -829,6 +838,7 @@ final class SharedInboxTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_784_647_300)
         ))
 
+        XCTAssertEqual(snapshot.selectedBoardID, "selected")
         XCTAssertEqual(accepted.boardID, board.id)
         XCTAssertEqual(accepted.columnID, "new")
         XCTAssertEqual(accepted.priority, .medium)
@@ -845,6 +855,24 @@ final class SharedInboxTests: XCTestCase {
         )
         XCTAssertEqual(snapshot.pendingSharedInboxCount, 0)
         XCTAssertEqual(snapshot.sharedInbox.first?.status, .accepted)
+
+        for status in [SharedInboxItemStatus.accepted, .declined, .tentative] {
+            _ = snapshot.setSharedInboxStatus(itemID: item.id, status: status)
+            let originalInvitation = snapshot.sharedInbox.first
+            let copy = try XCTUnwrap(snapshot.acceptSharedTask(
+                inboxItemID: item.id,
+                destinationBoardID: "selected",
+                destinationColumnID: nil,
+                recipientPublicKey: recipient.publicKeyHex,
+                asCopy: true
+            ))
+            XCTAssertNotEqual(copy.id, accepted.id)
+            XCTAssertEqual(copy.boardID, "selected")
+            XCTAssertEqual(copy.title, accepted.title)
+            XCTAssertEqual(snapshot.sharedInbox.first, originalInvitation)
+        }
+        XCTAssertEqual(Set(snapshot.tasks.map(\.id)).count, 4)
+
     }
 
     func testOutboundAssignmentTracksAuthenticatedResponsesAndRejectsStaleUpdates() throws {

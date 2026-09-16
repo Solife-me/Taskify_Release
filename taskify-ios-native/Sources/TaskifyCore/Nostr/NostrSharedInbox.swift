@@ -2993,11 +2993,12 @@ public extension TaskifySnapshot {
         destinationBoardID: String,
         destinationColumnID: String?,
         recipientPublicKey: String,
+        asCopy: Bool = false,
         now: Date = Date(),
         calendar baseCalendar: Calendar = .current
     ) -> TaskItem? {
         guard let inboxItem = (sharedInboxItems ?? []).first(where: { $0.id == inboxItemID }),
-              inboxItem.status != .accepted,
+              (asCopy || inboxItem.status != .accepted),
               let board = boards.first(where: { $0.id == destinationBoardID && $0.isVisible }),
               board.kind == .week || board.kind == .list else { return nil }
 
@@ -3083,7 +3084,9 @@ public extension TaskifySnapshot {
             preservedSyncFields: preservedFields.isEmpty ? nil : preservedFields
         )
         tasks.append(task)
-        _ = setSharedInboxStatus(itemID: inboxItemID, status: .accepted, now: now)
+        if !asCopy {
+            _ = setSharedInboxStatus(itemID: inboxItemID, status: .accepted, now: now)
+        }
         return task
     }
 }

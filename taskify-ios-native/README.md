@@ -442,3 +442,17 @@ exercises rejection/cancellation. The HTTP endpoint is substituted only in the
 test request; production uploads still require HTTPS. Device share-sheet behavior
 and a full upload to the configured remote host still need release QA; local
 integration tests do not establish remote-host capacity.
+
+### Shared task destinations
+
+In iOS chat and the shared-task inbox, Accept/Add Task opens a destination sheet.
+Choose a board, then a list for list or combined boards, and confirm Add. Week
+boards use the supplied due date, or today when none is supplied. Cancel leaves
+the invitation pending; assignment acceptance is sent only after the task is added.
+The PWA chat and inbox follow the same destination-selection flow. Archived,
+hidden, and Bible boards are excluded, and empty list boards cannot be confirmed.
+
+Long-press a shared task in chat and choose **Add Again** to create another copy
+using the same board/list picker. This preserves the original invitation response
+and does not send another assignment acceptance. PWA also offers this action in
+the right-click message menu.

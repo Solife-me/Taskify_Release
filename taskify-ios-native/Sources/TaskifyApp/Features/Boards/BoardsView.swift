@@ -1266,11 +1266,6 @@ struct SharedTaskInboxSheet: View {
         }
     }
 
-    private var destinationName: String? {
-        guard let board = model.selectedBoard, board.kind != .bible else { return nil }
-        return board.name
-    }
-
     var body: some View {
         NavigationStack {
             Group {
@@ -1284,9 +1279,9 @@ struct SharedTaskInboxSheet: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            if selectedTab == .new, let destinationName {
+                            if selectedTab == .new {
                                 Label(
-                                    "Accepted tasks are added to \(destinationName)",
+                                    "Choose a board and list when adding a task",
                                     systemImage: "arrow.down.app"
                                 )
                                 .font(.caption.weight(.semibold))
@@ -1296,10 +1291,7 @@ struct SharedTaskInboxSheet: View {
                             }
 
                             ForEach(filteredItems) { item in
-                                SharedTaskInboxCard(
-                                    item: item,
-                                    canAccept: destinationName != nil
-                                )
+                                SharedTaskInboxCard(item: item)
                             }
                         }
                         .padding(18)
@@ -1342,7 +1334,7 @@ struct SharedTaskInboxSheet: View {
 private struct SharedTaskInboxCard: View {
     @Environment(AppModel.self) private var model
     let item: SharedInboxItem
-    let canAccept: Bool
+    @State private var showDestination = false
 
     private var detailCount: Int {
         (item.task.subtasks?.count ?? 0) + (item.task.documents?.count ?? 0)
@@ -1427,6 +1419,9 @@ private struct SharedTaskInboxCard: View {
         }
         .padding(15)
         .taskifyGlass(cornerRadius: 19)
+        .sheet(isPresented: $showDestination) {
+            SharedTaskDestinationSheet(item: item)
+        }
     }
 
     @ViewBuilder
@@ -1436,7 +1431,6 @@ private struct SharedTaskInboxCard: View {
                 responseButton("Decline", status: .declined, tint: .red)
                 responseButton("Maybe", status: .tentative, tint: .orange)
                 responseButton("Accept", status: .accepted, tint: TaskifyTheme.accent)
-                    .disabled(!canAccept)
             }
         } else {
             HStack(spacing: 9) {
@@ -1452,7 +1446,6 @@ private struct SharedTaskInboxCard: View {
                 .buttonStyle(.bordered)
 
                 responseButton("Add Task", status: .accepted, tint: TaskifyTheme.accent)
-                    .disabled(!canAccept)
             }
         }
     }
@@ -1463,6 +1456,10 @@ private struct SharedTaskInboxCard: View {
         tint: Color
     ) -> some View {
         Button {
+            if status == .accepted {
+                showDestination = true
+                return
+            }
             withAnimation(.snappy) {
                 _ = model.respondToSharedInboxItem(item.id, status: status)
             }

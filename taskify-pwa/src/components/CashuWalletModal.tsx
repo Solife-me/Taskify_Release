@@ -3,6 +3,7 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
+import type { SharedTaskPayload, InboxSender } from "taskify-core";
 import { useSyncResume } from "../nostr/useSyncResume";
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -245,6 +246,7 @@ export default function CashuWalletModal({
   encryptedFileServers,
   messageItems,
   onAcceptMessage,
+  onAddTaskAgain,
   onMaybeMessage,
   onDeclineMessage,
   onDismissMessage,
@@ -285,6 +287,7 @@ export default function CashuWalletModal({
   messageItems: WalletMessageItem[];
   messagesUnreadCount: number;
   onAcceptMessage: (id: string) => void;
+  onAddTaskAgain: (task: SharedTaskPayload, sender?: InboxSender) => void;
   onMaybeMessage: (id: string) => void;
   onDeclineMessage: (id: string) => void;
   onDismissMessage: (id: string) => void;
@@ -9877,6 +9880,17 @@ export default function CashuWalletModal({
               ))}
             </div>
             <div className="dm-action-panel__list">
+              {dmMessageActions.msg.attachment?.type === "task" && dmMessageActions.msg.attachment.task && (
+                <button type="button" className="dm-action-panel__item pressable" onClick={() => {
+                  const message = dmMessageActions.msg;
+                  const senderPubkey = message.senderPubkey || (message.isIncoming ? message.peerPubkey : nostrIdentityRef.current?.pubkey);
+                  onAddTaskAgain(message.attachment.task, senderPubkey ? { pubkey: senderPubkey } : undefined);
+                  setDmMessageActions(null);
+                }}>
+                  <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3M11 14h7M14.5 10.5v7"/></svg>
+                  Add again
+                </button>
+              )}
               <button
                 type="button"
                 className="dm-action-panel__item pressable"

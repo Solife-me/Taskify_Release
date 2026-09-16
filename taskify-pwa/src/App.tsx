@@ -1,3 +1,4 @@
+import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
 import { syncRemindersToWorker, PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
 import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
 import { withTimeout } from "./lib/withTimeout";
@@ -8599,27 +8600,16 @@ export default function App() {
   }, []);
 
   const addSharedTaskFromInbox = useCallback(
-    (payload: SharedTaskPayload, sender?: InboxSender): Task | null => {
+    (payload: SharedTaskPayload, destination: SharedTaskDestination, sender?: InboxSender): Task | null => {
       const title = payload?.title?.trim();
       if (!title) return null;
-      const baseBoard = currentBoard ?? visibleBoards[0] ?? boards[0] ?? null;
-      if (!baseBoard) return null;
-      let boardId = baseBoard.id;
-      let column: Task["column"] | undefined;
-      let columnId: string | undefined;
-      let targetBoard = baseBoard;
-      if (baseBoard.kind === "week") {
-        column = "day";
-      } else if (isListLikeBoard(baseBoard)) {
-        const placement = resolveListPlacement();
-        if (!placement) {
-          showToast("Add a list to this board first.");
-          return null;
-        }
-        boardId = placement.boardId;
-        columnId = placement.columnId;
-        targetBoard = boards.find((b) => b.id === boardId) ?? baseBoard;
-      }
+      const targetBoard = boards.find((board) => board.id === destination.boardId);
+      if (!targetBoard || targetBoard.archived || targetBoard.hidden) return null;
+      if (targetBoard.kind !== "week" && targetBoard.kind !== "lists") return null;
+      if (targetBoard.kind === "lists" && !targetBoard.columns.some((column) => column.id === destination.columnId)) return null;
+      const boardId = targetBoard.id;
+      const column = targetBoard.kind === "week" ? "day" : undefined;
+      const columnId = targetBoard.kind === "lists" ? destination.columnId : undefined;
       const parsedDueISO = normalizeIsoTimestamp(payload.dueISO);
       const dueISO = parsedDueISO || isoForToday();
       const payloadDueDateEnabled =
@@ -8650,71 +8640,64 @@ export default function App() {
       const sharedNote = payload.note?.trim();
       const notePrefix = senderLabel ? `${isAssignment ? "Assigned by" : "Shared by"} ${senderLabel}` : null;
       const note = [notePrefix, sharedNote].filter(Boolean).join("\n");
-      let created: Task | null = null;
-      setTasks((prev) => {
-        const order = nextOrderForBoard(boardId, prev, settings.newTaskPosition);
-        const senderPubkey = normalizeAgentPubkey(sender?.pubkey) ?? sender?.pubkey;
-        const selfPubkey = normalizeAgentPubkey(nostrPK) ?? nostrPK;
-        const nextTask: Task = {
-          id: crypto.randomUUID(),
-          boardId,
-          title,
-          note: note || undefined,
-          createdAt: Date.now(),
-          ...(priority ? { priority } : {}),
-          dueISO,
-          dueDateEnabled: targetBoard.kind === "week" ? true : payloadDueDateEnabled,
-          completed: false,
-          order,
-          createdBy: senderPubkey || selfPubkey || undefined,
-          lastEditedBy: senderPubkey || selfPubkey || undefined,
-          ...(payload.dueTimeEnabled ? { dueTimeEnabled: true } : {}),
-          ...(dueTimeZone ? { dueTimeZone } : {}),
-          ...(reminders ? { reminders } : {}),
-        };
-        if (column) nextTask.column = column;
-        if (columnId) nextTask.columnId = columnId;
-        if (subtasks?.length) nextTask.subtasks = subtasks;
-        let nextAssignees = incomingAssignees;
-        if (isAssignment && selfPubkey) {
-          if (nextAssignees?.length) {
-            nextAssignees =
-              mergeTaskAssigneeResponse(nextAssignees, selfPubkey, "accepted", Date.now()) ?? nextAssignees;
-          } else {
-            nextAssignees = [{ pubkey: selfPubkey, status: "accepted", respondedAt: Date.now() }];
-          }
-        }
+      const order = nextOrderForBoard(boardId, tasks, settings.newTaskPosition);
+      const senderPubkey = normalizeAgentPubkey(sender?.pubkey) ?? sender?.pubkey;
+      const selfPubkey = normalizeAgentPubkey(nostrPK) ?? nostrPK;
+      const nextTask: Task = {
+        id: crypto.randomUUID(),
+        boardId,
+        title,
+        note: note || undefined,
+        createdAt: Date.now(),
+        ...(priority ? { priority } : {}),
+        dueISO,
+        dueDateEnabled: targetBoard.kind === "week" ? true : payloadDueDateEnabled,
+        completed: false,
+        order,
+        createdBy: senderPubkey || selfPubkey || undefined,
+        lastEditedBy: senderPubkey || selfPubkey || undefined,
+        ...(payload.dueTimeEnabled ? { dueTimeEnabled: true } : {}),
+        ...(dueTimeZone ? { dueTimeZone } : {}),
+        ...(reminders ? { reminders } : {}),
+      };
+      if (column) nextTask.column = column;
+      if (columnId) nextTask.columnId = columnId;
+      if (subtasks?.length) nextTask.subtasks = subtasks;
+      let nextAssignees = incomingAssignees;
+      if (isAssignment && selfPubkey) {
         if (nextAssignees?.length) {
-          nextTask.assignees = nextAssignees;
+          nextAssignees =
+            mergeTaskAssigneeResponse(nextAssignees, selfPubkey, "accepted", Date.now()) ?? nextAssignees;
+        } else {
+          nextAssignees = [{ pubkey: selfPubkey, status: "accepted", respondedAt: Date.now() }];
         }
-        if (recurrence) {
-          nextTask.recurrence = recurrence;
-          nextTask.seriesId = nextTask.seriesId || nextTask.id;
-        }
-        applyHiddenForFuture(nextTask, settings.weekStart, targetBoard.kind);
-        created = nextTask;
+      }
+      if (nextAssignees?.length) {
+        nextTask.assignees = nextAssignees;
+      }
+      if (recurrence) {
+        nextTask.recurrence = recurrence;
+        nextTask.seriesId = nextTask.seriesId || nextTask.id;
+      }
+      applyHiddenForFuture(nextTask, settings.weekStart, targetBoard.kind);
+      setTasks((prev) => {
         const updated = [...prev, nextTask];
         return settings.showFullWeekRecurring && nextTask.recurrence
           ? ensureWeekRecurrencesRef.current(updated, [nextTask])
           : updated;
       });
-      if (created) {
-        maybePublishTaskRef.current?.(created).catch(() => {});
-      }
-      return created;
+      maybePublishTaskRef.current?.(nextTask).catch(() => {});
+      return nextTask;
     },
     [
       boards,
-      currentBoard,
+      tasks,
       formatSenderLabel,
       nostrPK,
-      resolveListPlacement,
       setTasks,
       settings.newTaskPosition,
       settings.showFullWeekRecurring,
       settings.weekStart,
-      showToast,
-      visibleBoards,
     ],
   );
 
@@ -8761,10 +8744,35 @@ export default function App() {
     [defaultRelays, inboxRelays, nostrPK, nostrSkHex],
   );
 
+  const [sharedTaskCopy, setSharedTaskCopy] = useState<{ task: SharedTaskPayload; sender?: InboxSender } | null>(null);
+  const [sharedTaskDestinationId, setSharedTaskDestinationId] = useState<string | null>(null);
+  const sharedTaskDestinationItem = tasks.find((task) => task.id === sharedTaskDestinationId)?.inboxItem;
+
   function completeTask(
     id: string,
-    options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" | "decline" | "maybe" }
+    options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" | "decline" | "maybe"; inboxDestination?: SharedTaskDestination }
   ): CompleteTaskResult {
+    const pending = tasks.find((task) => task.id === id)?.inboxItem;
+    const canAcceptSharedTask = pending?.type === "task" &&
+      (!pending.status || pending.status === "pending" || pending.status === "read");
+    if (options?.inboxDestination && !canAcceptSharedTask) {
+      setSharedTaskDestinationId(null);
+      showToast("This invitation is no longer pending.");
+      return null;
+    }
+    if (pending?.type === "task" && canAcceptSharedTask &&
+        (!options?.inboxAction || options.inboxAction === "accept")) {
+      if (!options?.inboxDestination) {
+        setSharedTaskDestinationId(id);
+        return null;
+      }
+      if (!addSharedTaskFromInbox(pending.task, options.inboxDestination, pending.sender)) {
+        showToast("Choose an available board and list.");
+        return null;
+      }
+      setSharedTaskDestinationId(null);
+      showToast("Task added to your board");
+    }
     let memoryUpdate: ScriptureMemoryUpdate | null = null;
     let scheduledUpdate: { entryId: string; scheduledAtISO: string } | null = null;
     const scriptureStateSnapshot = scriptureMemory;
@@ -8772,7 +8780,8 @@ export default function App() {
     let inboxAction: { item: InboxItem; action: "accept" | "dismiss" | "decline" | "maybe" } | null = null;
     let assignmentResponse:
       | { item: Extract<InboxItem, { type: "task" }>; status: TaskAssigneeStatus }
-      | null = null;
+      | null = options?.inboxDestination && pending?.type === "task" && isAssignedSharedTask(pending.task)
+        ? { item: pending, status: "accepted" } : null;
     setTasks(prev => {
       const cur = prev.find(t => t.id === id);
       if (!cur) return prev;
@@ -9004,13 +9013,6 @@ export default function App() {
           showToast("Contact added to your list");
         } else {
           showToast("Unable to add contact");
-        }
-      } else if (item.type === "task") {
-        const added = addSharedTaskFromInbox(item.task, item.sender);
-        if (added) {
-          showToast("Task added to your board");
-        } else {
-          showToast("Unable to add task");
         }
       }
     }
@@ -12612,6 +12614,31 @@ export default function App() {
         </div>
       </div>
 
+      {sharedTaskCopy && (
+        <SharedTaskDestinationSheet
+          boards={boards}
+          initialBoardId={currentBoard?.id}
+          title={sharedTaskCopy.task.title}
+          onClose={() => setSharedTaskCopy(null)}
+          onConfirm={(destination) => {
+            if (addSharedTaskFromInbox(sharedTaskCopy.task, destination, sharedTaskCopy.sender)) {
+              setSharedTaskCopy(null);
+              showToast("Task added to your board");
+            } else {
+              showToast("Choose an available board and list.");
+            }
+          }}
+        />
+      )}
+      {sharedTaskDestinationId && (
+        <SharedTaskDestinationSheet
+          boards={boards}
+          initialBoardId={currentBoard?.id}
+          title={sharedTaskDestinationItem?.type === "task" ? sharedTaskDestinationItem.task.title : "Shared task"}
+          onClose={() => setSharedTaskDestinationId(null)}
+          onConfirm={(destination) => completeTask(sharedTaskDestinationId, { inboxAction: "accept", inboxDestination: destination })}
+        />
+      )}
       <AppSortSheets
         applyUpcomingFilterPreset={applyUpcomingFilterPreset}
         boardSort={boardSort}
@@ -12886,6 +12913,7 @@ export default function App() {
 
       <CashuWalletShell
         acceptInboxMessage={acceptInboxMessage}
+        addSharedTaskAgain={(task, sender) => setSharedTaskCopy({ task, sender })}
         closeWallet={closeWallet}
         declineInboxMessage={declineInboxMessage}
         dismissCalendarInvite={dismissCalendarInvite}

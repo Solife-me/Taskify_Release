@@ -2156,22 +2156,29 @@ final class AppModel {
     @discardableResult
     func respondToSharedInboxItem(
         _ itemID: String,
-        status: SharedInboxItemStatus
+        status: SharedInboxItemStatus,
+        destinationBoardID: String? = nil,
+        destinationColumnID: String? = nil,
+        asCopy: Bool = false
     ) -> Bool {
         guard let item = snapshot.sharedInbox.first(where: { $0.id == itemID }),
-              item.status == .pending,
+              (asCopy || item.status == .pending),
+              (!asCopy || status == .accepted),
               (status == .accepted || status == .declined || status == .tentative) else {
             return false
         }
 
         var acceptedTaskID: String?
         if status == .accepted {
-            guard let destination = sharedInboxDestination(),
+            let destination = destinationBoardID.map { (boardID: $0, columnID: destinationColumnID) }
+                ?? sharedInboxDestination()
+            guard let destination,
                   let task = snapshot.acceptSharedTask(
                       inboxItemID: itemID,
                       destinationBoardID: destination.boardID,
                       destinationColumnID: destination.columnID,
-                      recipientPublicKey: identityPublicKey
+                      recipientPublicKey: identityPublicKey,
+                      asCopy: asCopy
                   ) else { return false }
             acceptedTaskID = task.id
         } else {
@@ -2185,7 +2192,7 @@ final class AppModel {
             synchronizeTask(acceptedTaskID)
             refreshNotifications(requestPermission: false)
         }
-        if item.task.isAssignment,
+        if !asCopy, item.task.isAssignment,
            (status == .accepted || status == .declined || status == .tentative) {
             sendSharedTaskAssignmentResponse(item: item, status: status)
         }

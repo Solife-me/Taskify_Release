@@ -4344,11 +4344,8 @@ private struct SharedTaskChatCard: View {
     let item: SharedInboxItem
     let isSearchMatch: Bool
     let isSelectedSearchResult: Bool
-
-    private var canAccept: Bool {
-        guard let board = model.selectedBoard else { return false }
-        return board.kind != .bible
-    }
+    @State private var showDestination = false
+    @State private var addingCopy = false
 
     private var detailCount: Int {
         (item.task.subtasks?.count ?? 0) + (item.task.documents?.count ?? 0)
@@ -4416,12 +4413,6 @@ private struct SharedTaskChatCard: View {
                         .frame(height: 30)
                         .background(statusColor.opacity(0.13), in: Capsule())
                 }
-
-                if item.status == .pending, !canAccept {
-                    Text("Choose a task board before adding this task.")
-                        .font(.caption2)
-                        .foregroundStyle(TaskifyTheme.tertiaryText)
-                }
             }
             .padding(14)
             .frame(maxWidth: 340, alignment: .leading)
@@ -4439,6 +4430,15 @@ private struct SharedTaskChatCard: View {
             Spacer(minLength: 28)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contextMenu {
+            Button("Add Again", systemImage: "plus.square.on.square") {
+                addingCopy = true
+                showDestination = true
+            }
+        }
+        .sheet(isPresented: $showDestination) {
+            SharedTaskDestinationSheet(item: item, asCopy: addingCopy)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
             "\(item.task.isAssignment ? "Assignment" : "Shared task"), \(item.task.title), from \(item.sender.displayName)"
@@ -4478,7 +4478,6 @@ private struct SharedTaskChatCard: View {
                 responseButton("Decline", status: .declined, tint: .red)
                 responseButton("Maybe", status: .tentative, tint: .orange)
                 responseButton("Accept", status: .accepted, tint: TaskifyTheme.accent)
-                    .disabled(!canAccept)
             }
         } else {
             HStack(spacing: 8) {
@@ -4493,7 +4492,6 @@ private struct SharedTaskChatCard: View {
                 .buttonStyle(.bordered)
 
                 responseButton("Add Task", status: .accepted, tint: TaskifyTheme.accent)
-                    .disabled(!canAccept)
             }
         }
     }
@@ -4504,6 +4502,11 @@ private struct SharedTaskChatCard: View {
         tint: Color
     ) -> some View {
         Button {
+            if status == .accepted {
+                addingCopy = false
+                showDestination = true
+                return
+            }
             let succeeded: Bool = withAnimation(.snappy) {
                 model.respondToSharedInboxItem(item.id, status: status)
             }
@@ -6254,5 +6257,104 @@ private extension ScrollGeometry {
 
     var conversationIsAtTop: Bool {
         visibleRect.minY <= contentInsets.top + 24
+    }
+}
+
+struct SharedTaskDestinationSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let item: SharedInboxItem
+    var asCopy = false
+    @State private var boardID = ""
+    @State private var listID = ""
+    @State private var errorMessage: String?
+
+    private struct DestinationList: Identifiable {
+        let boardID: String
+        let columnID: String
+        let name: String
+        var id: String { "\(boardID.count):\(boardID)\(columnID)" }
+    }
+
+    private var boards: [Board] {
+        model.visibleBoards.filter { $0.kind != .bible }
+    }
+    private var board: Board? { boards.first { $0.id == boardID } }
+    private var lists: [DestinationList] {
+        guard let board else { return [] }
+        let sources = board.kind == .compound
+            ? model.compoundChildBoards(for: board.id).filter { $0.isVisible }
+            : [board]
+        return sources.filter { $0.kind == .list }.flatMap { source in
+            source.columns.sorted { $0.order < $1.order }.map { column in
+                DestinationList(boardID: source.id, columnID: column.id,
+                    name: board.kind == .compound ? "\(source.name) • \(column.name)" : column.name)
+            }
+        }
+    }
+    private var selectedList: DestinationList? {
+        lists.first { $0.id == listID } ?? lists.first
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(item.task.title).font(.headline)
+                    Picker("Board", selection: $boardID) {
+                        if boards.isEmpty { Text("No task boards available").tag("") }
+                        ForEach(boards) { board in Text(board.name).tag(board.id) }
+                    }
+                    if let board, board.kind != .week {
+                        Picker("List", selection: Binding(
+                            get: { selectedList?.id ?? "" }, set: { listID = $0 }
+                        )) {
+                            if lists.isEmpty { Text("No lists available").tag("") }
+                            ForEach(lists) { list in Text(list.name).tag(list.id) }
+                        }
+                    }
+                } footer: {
+                    if board?.kind == .week {
+                        Text("Added on the task’s due date, or today if no date is set.")
+                    } else if selectedList == nil {
+                        Text("Choose a task board with an available list, or a week board.")
+                    }
+                }
+                if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+            }
+            .navigationTitle(asCopy ? "Add Task Again" : "Add Task")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") { accept() }
+                        .disabled(board == nil || (board?.kind != .week && selectedList == nil))
+                }
+            }
+            .onAppear {
+                boardID = boards.first { $0.id == model.selectedBoardID }?.id ?? boards.first?.id ?? ""
+            }
+            .onChange(of: boardID) { _, _ in listID = ""; errorMessage = nil }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func accept() {
+        guard let board else { return }
+        let destinationBoardID = board.kind == .week ? board.id : selectedList?.boardID
+        guard let destinationBoardID else { return }
+        if model.respondToSharedInboxItem(item.id, status: .accepted,
+            destinationBoardID: destinationBoardID,
+            destinationColumnID: board.kind == .week ? nil : selectedList?.columnID,
+            asCopy: asCopy
+        ) {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            dismiss()
+        } else {
+            errorMessage = "Unable to add this task. Check the destination and try again."
+        }
     }
 }
