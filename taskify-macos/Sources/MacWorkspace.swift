@@ -27,6 +27,8 @@ struct MacWorkspace: View {
     @State private var inspectorVisible = true
     @State private var boardToManage: Board?
     @State private var notificationRouter = TaskNotificationNavigationRouter.shared
+    @State private var chatDrafts: [String: String] = [:]
+    @State private var chatScrollPositions: [String: String] = [:]
 
     private var board: Board? { model.board(withID: destination) }
     private var title: String { board?.name ?? MacDestination(rawValue: destination)?.title ?? "Taskify" }
@@ -149,7 +151,7 @@ struct MacWorkspace: View {
             switch MacDestination(rawValue: destination) {
             case .today, .upcoming:
                 MacAgendaView(todayOnly: destination == "today", search: search, selectedTaskID: $selectedTaskID, edit: { editingTask = $0 })
-            case .chat: MacChatView(search: search)
+            case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions)
             case .wallet: MacWalletView()
             case .inbox: MacInboxView()
             case nil: ContentUnavailableView("Board Unavailable", systemImage: "rectangle.slash", description: Text("Choose another board from the sidebar."))

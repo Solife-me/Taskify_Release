@@ -30,6 +30,41 @@ struct MacSettingsView: View {
                     Toggle("Track Streaks", isOn: Binding(get: { model.streaksEnabled }, set: { model.setStreaksEnabled($0) }))
                     Toggle("Bible Tracker", isOn: Binding(get: { model.visibleBoards.contains { $0.kind == .bible } }, set: { _ = model.setBibleTrackerEnabled($0) }))
                 }
+                Section("Devotional") {
+                    Toggle("Scripture Memory", isOn: Binding(get: { model.scriptureMemoryEnabled },
+                        set: { model.updateScriptureMemorySettings(enabled: $0, boardID: model.scriptureMemoryBoardID, frequency: model.scriptureMemoryFrequency) }))
+                    if model.scriptureMemoryEnabled {
+                        Picker("Board", selection: Binding(get: { model.scriptureMemoryBoardID ?? "" },
+                            set: { model.updateScriptureMemorySettings(enabled: true, boardID: $0.isEmpty ? nil : $0, frequency: model.scriptureMemoryFrequency) })) {
+                            Text("None").tag("")
+                            ForEach(model.scriptureMemoryEligibleBoards) { Text($0.name).tag($0.id) }
+                        }
+                        Picker("Review Frequency", selection: Binding(get: { model.scriptureMemoryFrequency },
+                            set: { model.updateScriptureMemorySettings(enabled: true, boardID: model.scriptureMemoryBoardID, frequency: $0) })) {
+                            ForEach(ScriptureMemoryFrequency.allCases, id: \.self) { Text($0.label).tag($0) }
+                        }
+                    }
+                    Toggle("Fasting Reminders", isOn: Binding(get: { model.fastingRemindersEnabled },
+                        set: { model.updateFastingReminders(enabled: $0, mode: model.fastingRemindersMode, perMonth: model.fastingRemindersPerMonth, weekday: model.fastingRemindersWeekday) }))
+                    if model.fastingRemindersEnabled {
+                        Picker("Pattern", selection: Binding(get: { model.fastingRemindersMode },
+                            set: { model.updateFastingReminders(enabled: true, mode: $0, perMonth: model.fastingRemindersPerMonth, weekday: model.fastingRemindersWeekday) })) {
+                            Text("Weekly").tag(FastingRemindersMode.weekday)
+                            Text("Random").tag(FastingRemindersMode.random)
+                        }
+                        if model.fastingRemindersMode == .weekday {
+                            Picker("Weekday", selection: Binding(get: { model.fastingRemindersWeekday },
+                                set: { model.updateFastingReminders(enabled: true, mode: .weekday, perMonth: model.fastingRemindersPerMonth, weekday: $0) })) {
+                                ForEach(Array(WeekdayColumn.allCases.enumerated()), id: \.offset) { index, day in Text(day.fullName).tag(index) }
+                            }
+                        } else {
+                            Stepper("About \(model.fastingRemindersPerMonth) per month",
+                                value: Binding(get: { model.fastingRemindersPerMonth },
+                                    set: { model.updateFastingReminders(enabled: true, mode: .random, perMonth: $0, weekday: model.fastingRemindersWeekday) }),
+                                in: 1...31)
+                        }
+                    }
+                }
                 Section("Notifications") {
                     LabeledContent("Reminders", value: model.notificationStatus)
                     Button("Enable Task Notifications") { model.requestNotificationPermission() }

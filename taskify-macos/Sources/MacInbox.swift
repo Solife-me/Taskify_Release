@@ -1,7 +1,7 @@
 import SwiftUI
 import TaskifyCore
 
-private extension Optional where Wrapped == String {
+extension Optional where Wrapped == String {
     var trimmedOrNil: String? {
         guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
         return value
@@ -12,7 +12,7 @@ private func senderLabel(_ sender: SharedInboxSender) -> String {
     sender.name.trimmedOrNil ?? sender.npub.map { String($0.prefix(16)) } ?? String(sender.publicKey.prefix(12))
 }
 
-private func formattedISO(_ value: String?) -> String? {
+func formattedISO(_ value: String?) -> String? {
     guard let value, let date = ISO8601DateFormatter().date(from: value) else { return nil }
     return date.formatted(date: .abbreviated, time: .shortened)
 }
@@ -84,8 +84,30 @@ struct MacInboxView: View {
 
 struct MacBibleView: View {
     @EnvironmentObject private var store: BibleTrackerStore
+    @Environment(AppModel.self) private var model
     @State private var selectedBook = "gen"
+    @State private var mode = "reading"
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("Mode", selection: $mode) {
+                Text("Reading").tag("reading")
+                Text("Memory").tag("memory")
+            }.pickerStyle(.segmented).labelsHidden().frame(width: 220).padding(12)
+            Divider()
+            if mode == "memory" {
+                if model.scriptureMemoryEnabled {
+                    MacScriptureMemoryView()
+                } else {
+                    ContentUnavailableView("Scripture Memory Is Off", systemImage: "text.book.closed",
+                        description: Text("Turn it on in Settings \u{2192} General to start memorizing passages."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                reading
+            }
+        }
+    }
+    private var reading: some View {
         HSplitView {
             List(BibleCatalog.books, selection: $selectedBook) { book in
                 HStack { Text(book.name); Spacer(); Text("\(store.chaptersRead(bookID: book.id).count)/\(book.chapterCount)").font(.caption).foregroundStyle(.secondary) }.tag(book.id)

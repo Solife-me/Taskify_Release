@@ -54,7 +54,22 @@ shared files, not only after editing Mac-specific sources.
   calendars/reminders, and invitation responses. Shared-inbox rows (tasks,
   boards, calendar invites, contact cards) show who sent them.
 - DM/group conversation layouts, replies, reactions, history search, unread
-  state, archive/block controls and encrypted attachments.
+  state, archive/block controls and encrypted attachments. Per-conversation
+  drafts and scroll position persist while navigating between conversations
+  (not across leaving the Chat destination and back). Drag-and-drop file
+  attachments and a bot "/" slash-command menu. Inline image previews for
+  image attachments; other attachments keep the save-to-disk button.
+- Rich message content: shared tasks/contacts/events/boards render as summary
+  cards (informational — respond from the Inbox, which already has the
+  correlated accept/decline/join actions); plain-text Cashu tokens render as a
+  tappable card that opens a focused redeem sheet; HTTP(S) links render as
+  link-preview cards. All detection reuses the same TaskifyCore parsers the
+  iOS app uses, so what counts as a "shared item" or "a token" is identical.
+- Basic Bible reading tracker plus Scripture Memory (add a passage, spaced-review
+  list sorted by due/canonical/added date, remove) and Fasting Reminders
+  (weekly-weekday or random-per-month pattern) — both reuse AppModel's existing
+  entry/settings management and task reconciliation; there is no separate Mac
+  scheduling logic.
 - Mint balances/activity, ecash receive/send, Lightning invoice/address (LNURL)
   pay, pending receive retries/discard, saved outgoing tokens with check-status
   and reclaim, mint add/remove and mint-to-mint transfer, authenticated wallet
@@ -68,7 +83,7 @@ shared files, not only after editing Mac-specific sources.
   cancel, and pay an incoming request. Static QR codes for invoices, tokens,
   requests and the receiving Lightning address.
 - Account import/export, profile publishing, task backup/restore, relay controls,
-  file-server selection, notification permission and basic Bible tracking.
+  file-server selection and notification permission.
 
 Shortcuts: New Window `⌘N`, New Task `⇧⌘N`, New Board `⇧⌘B`, Sync `⇧⌘R`,
 Send Message `⌘Return`, Settings `⌘,`.
@@ -91,14 +106,20 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
 
 ## Remaining parity and release checks
 
-- Chat drafts across navigation, rich payment/share cards, bot controls, inline
-  media preview, drag/paste attachments and scroll-position preservation.
+- Clipboard paste of files/images into chat (drag-and-drop works; paste does
+  not yet — the reliable `Transferable`/`NSItemProvider` shape for pasted
+  image data specifically needs more investigation before adding it).
+  Cross-navigation draft/scroll persistence does not yet survive leaving the
+  Chat destination entirely (Wallet, Boards, …) and back.
+- Shared-item cards in chat (task/contact/event/board) are read-only summaries
+  that point to the Inbox rather than offering inline accept/decline/join —
+  correlating a chat message to its Inbox item for safe inline actions needs
+  more investigation before duplicating that logic in two places.
 - npub.cash Lightning-address provider selection and claim UI (the always-on
   `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
   multi-frame QR for transfers too large for one code, and camera-based QR
   scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
-- Full Bible/scripture/fasting features, voice entry, printing, widgets, App
-  Intents and share extension integration.
+- Voice entry, printing, widgets, App Intents and share extension integration.
 - Account changes with open editors in multiple windows, midnight agenda rollover,
   attachment cancellation/cleanup, complete preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
@@ -123,3 +144,23 @@ crashed during AppKit collapse/layout. The workspace now uses a resizable split
 pane; rerun this sequence as part of desktop QA.
 
 See [the port inventory](../docs/plans/native-macos.md) for acceptance scope.
+
+## Chat, rich content and devotional pass (September 17, 2026)
+
+Added the chat/rich-card/devotional items in "Current desktop implementation"
+above. The one structural change: the conversation's message list is now a
+dedicated `MacMessageRow` view — folding attachment/payment/shared-item/link
+branching directly into the `ForEach` closure hit a real Swift type-checker
+timeout ("unable to type-check this expression in reasonable time"), not a
+logic error; extracting the row fixed it. Watch for the same failure mode if
+more per-message branching is added later — extract another view rather than
+adding another inline conditional.
+
+Verified: clean `xcodebuild` succeeded, all 13 `swift test` cases pass, the
+built app launches under the preview/fixture harness and stays alive with no
+crash log. Not verified: interactive click-through (this sandbox has no
+Accessibility/Screen-Recording permission) and Scripture Memory/Fasting
+Reminders' generated tasks actually appearing correctly on a real board over
+several days — both are exercised by calling the same AppModel methods the PWA
+and iOS already rely on, but that call path itself was not run against a live
+account in this session.
