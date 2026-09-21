@@ -145,6 +145,22 @@ pane; rerun this sequence as part of desktop QA.
 
 See [the port inventory](../docs/plans/native-macos.md) for acceptance scope.
 
+## Save-error fix (September 17, 2026)
+
+macOS can return an App Group URL for an executable that has no corresponding
+signed entitlement. Shared storage now checks the running process entitlement
+before selecting or migrating to that directory. Unentitled Mac builds save to
+`Application Support/TaskifyNative/taskify.json` inside their own container (or
+the user Library for an unsandboxed development build). iOS group resolution is
+unchanged. Nine storage regression tests cover authorization, migration and
+repeated save/reload behavior.
+
+If an older running build reports “Taskify could not save the latest change”,
+export Settings → Account → Export Task Backup before quitting. The export reads
+the in-memory snapshot and can preserve changes that the old store could not
+write. Open the corrected build and restore that backup if needed. Do not force
+quit an old build with unsaved changes merely to install the fix.
+
 ## Chat, rich content and devotional pass (September 17, 2026)
 
 Added the chat/rich-card/devotional items in "Current desktop implementation"

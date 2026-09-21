@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { planTaskReorder, parseTaskOrder } from "../shared/taskOrdering.js";
 import type { Command } from "commander";
 import { join } from "node:path";
 import {
@@ -14,6 +15,44 @@ import type { CommandContext } from "./context.js";
 
 export function registerTaskMutationsCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "resolveTaskIdByTitle" | "VALID_REMINDER_PRESETS" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "useHumanOutput" | "CliCommandError" | "requireWriteIdentity" | "validateCoreDue" | "validateCorePriority" | "writeCoreFailure" | "profilePubkey">) {
   const { warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, writeCoreFailure, profilePubkey } = context;
+  program
+    .command("reorder <taskId> <position>")
+    .description("Move a task to a 1-based position within its board or selected list")
+    .option("--in <Board/List>", "Board or Board/List path")
+    .option("--board <id|name>", "Board the task belongs to")
+    .option("--column <id|name>", "Limit ordering to a column")
+    .option("--json", "Output as JSON")
+    .option("--human", "Render readable text instead of JSON")
+    .action(async (taskId: string, position: string, opts) => {
+      const config = await loadConfig(program.opts().profile as string | undefined);
+      const human = useHumanOutput(opts);
+      let runtime: ReturnType<typeof initRuntime> | undefined;
+      try {
+        const targetPosition = parseTaskOrder(position);
+        if (targetPosition < 1) throw new Error("Position must be a positive integer (1-based).");
+        const location = resolveCliLocation(config, {
+          in: opts.in, board: opts.board, list: opts.column,
+          intent: "read", ignoreDefaultList: true,
+        });
+        requireWriteIdentity(config);
+        runtime = initRuntime(config);
+        const tasks = await runtime.listTasks({ boardId: location.boardId, columnId: location.listId, status: "any", refresh: true });
+        const changes = planTaskReorder(tasks, taskId, targetPosition);
+        const updated = [];
+        for (const change of changes) {
+          const task = await runtime.updateTask(change.id, change.boardId, { order: change.order });
+          if (!task) throw new Error(`Task not found during reorder: ${change.id}`);
+          updated.push(task);
+        }
+        if (human) console.log(chalk.green(`✓ Reordered task to position ${targetPosition}`));
+        else writeAgentJson(agentSuccess("task.reorder", { tasks: updated, position: targetPosition, location }, { profile: config.selectedProfile }));
+      } catch (error) {
+        process.exitCode = writeCoreFailure("task.reorder", error, human);
+      } finally {
+        await runtime?.disconnect();
+      }
+    });
+
   // ---- remind ----
   program
     .command("remind <taskId> <presets...>")
@@ -468,6 +507,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
     .description("Update task fields (accepts 8-char prefix or full UUID)")
     .option("--in <Board/List>", "Board or Board/List path")
     .option("--board <id|name>", "Board the task belongs to")
+    .option("--order <number>", "Set the synced task order (zero-based)")
     .option("--title <t>", "New title")
     .option("--due <d>", "New due date")
     .option("--priority <p>", "New priority")
@@ -492,6 +532,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
       if (human) warnShortTaskId(taskId);
       let location: ReturnType<typeof resolveCliLocation>;
       try {
+        if (opts.order !== undefined) parseTaskOrder(opts.order);
         validateCoreDue(opts.due);
         validateCorePriority(opts.priority);
         location = resolveCliLocation(config, {
@@ -511,6 +552,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
       let exitCode = 0;
       try {
         const patch: Record<string, unknown> = {};
+        if (opts.order !== undefined) patch.order = parseTaskOrder(opts.order);
         if (opts.title !== undefined) patch.title = opts.title;
         if (opts.priority !== undefined) patch.priority = parseInt(opts.priority, 10);
         if (opts.note !== undefined) patch.note = opts.note;

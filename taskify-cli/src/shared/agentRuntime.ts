@@ -36,6 +36,7 @@ export type AgentTaskCreateInput = {
 };
 
 export type AgentTaskPatchInput = {
+  order?: number;
   title?: string;
   note?: string;
   dueISO?: string | null;

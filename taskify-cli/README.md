@@ -210,3 +210,22 @@ taskify share --help
 taskify export --help
 taskify completions --shell zsh
 ```
+
+### Task ordering
+
+Task lists respect the synced `order` field used by the PWA and iOS app. JSON task
+records include `order` when set. Tasks without an order use zero; ties use task ID.
+
+```sh
+taskify reorder <taskId> 1 --board "Work"
+taskify reorder <taskId> 3 --in "Work/To Do"
+taskify update <taskId> --board "Work" --order 5
+```
+
+`reorder` accepts a full task ID or unique prefix and a **1-based position**.
+It renumbers the selected board (or explicitly selected list) from zero, including
+completed tasks, and publishes changed positions so other clients receive them.
+Select a source child board when ordering tasks from a compound board.
+`update --order` sets a single task's **zero-based** value without renumbering peers.
+Reordering publishes each changed task separately; if publishing fails partway,
+rerun the command to finish applying the requested order.

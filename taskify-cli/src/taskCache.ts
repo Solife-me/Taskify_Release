@@ -18,6 +18,7 @@ export const CACHE_PATH = join(CACHE_DIR, "cache.json");
 export const CACHE_TTL_MS = 300_000; // 5 minutes
 
 export type CachedTask = {
+  order?: number;
   id: string;
   title: string;
   boardId: string;

@@ -475,3 +475,5 @@ Full shape of a task returned in agent responses:
 }
 ```
 
+
+CLI task ordering: `taskify reorder <taskId> <position> --board <board>` uses a 1-based position and emits `task.reorder` JSON with changed tasks. Use `--in Board/List` to scope ordering to a list. `taskify update <taskId> --order <number>` sets the zero-based synced order directly. Task list results respect synced order.

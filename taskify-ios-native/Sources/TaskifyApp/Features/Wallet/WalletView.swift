@@ -72,7 +72,7 @@ enum WalletPriceCache {
 
 @MainActor
 final class WalletViewModel: ObservableObject {
-    static let suggestedMintURL = "https://mint.solife.me"
+    static let suggestedMintURL = "https://mint.minibits.cash/Bitcoin"
     /// Outstanding-invoice check cadence. Each unchanged round trip doubles the wait (up to
     /// the maximum) so a wallet that is merely left open stays quiet; a paid invoice resets
     /// the interval immediately.

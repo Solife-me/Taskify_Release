@@ -243,3 +243,10 @@ Native iOS sharing coverage (2026-09-14): contact search includes directories la
   cancellation, missing setup, and HTTP failures.
 - PWA stateful task/calendar/relay orchestration remains feature-level refactoring
   work, requiring state-transition coverage before changing its boundaries.
+
+### Native Mac storage regression — September 17, 2026
+
+Nine storage tests now cover unentitled macOS group URL resolution, private-store
+save/reload, and migration that preserves existing stores. The App Group path is
+selected only after checking the Mac process entitlement. Signed sandbox and
+extension integration remain separate release checks.

@@ -182,6 +182,7 @@ npx wrangler dev
 |---|---|---|
 | `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/audits/pwa-client-history-sync-2026-09-11.md` |
 | `src/theme/useAppAppearance.test.tsx` | Appearance settings | Font bounds, theme transitions, status-bar color, object-URL cleanup, and image fallback |
+| `taskify-cli/tests/task-ordering.test.ts` | CLI task ordering | Position moves, legacy orders, deterministic ties, ambiguous IDs, scope validation, and numeric validation |
 | `taskify-cli/tests/profile-command.test.ts`, `taskify-cli/tests/csv.test.ts` | CLI profiles and CSV | Local identity lifecycle, piped input, masking, quoting, and missing fields |
 | `src/domains/push/reminderClient.test.ts` | Reminder HTTP client | Stable payload ordering, minute offsets, cancellation, missing configuration, and HTTP errors |
 | `src/domains/push/vapidKey.test.ts`, `src/lib/withTimeout.test.ts` | Push registration utilities | URL-safe decoding, invalid keys, timeout rejection, and timer cleanup |
@@ -194,6 +195,7 @@ npx wrangler dev
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
+| `taskify-ios-native/Tests/TaskifyCoreTests/TaskifySharedContainerTests.swift` | Native storage | Signed Mac App Group authorization, private fallback, migration preservation and repeated saves/reloads |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SnapshotLookupCacheTests.swift` | Native board cache invalidation/reuse, compound scope, calendar boundaries, sorting, and flat timeline identities |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, encrypted group task/event shares with persisted conversation routing, strict kind-10050 routing, and signed inbox preferences |
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |

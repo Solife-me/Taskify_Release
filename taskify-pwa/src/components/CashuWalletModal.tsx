@@ -9736,7 +9736,7 @@ export default function CashuWalletModal({
                 className="pill-input flex-1"
                 value={mintInputSheet}
                 onChange={(e)=>setMintInputSheet(e.target.value)}
-                placeholder="https://mint.solife.me"
+                placeholder="https://mint.minibits.cash/Bitcoin"
               />
               <button
                 className="accent-button button-sm pressable"
