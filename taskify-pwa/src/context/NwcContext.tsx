@@ -23,6 +23,16 @@ type NwcPayResponse = {
 
 type NwcMakeInvoiceResponse = {
   invoice: string;
+  payment_hash?: string;
+  [key: string]: unknown;
+};
+
+export type NwcLookupInvoiceResponse = {
+  invoice?: string;
+  payment_hash?: string;
+  preimage?: string | null;
+  settled_at?: number | null;
+  state?: string;
   [key: string]: unknown;
 };
 
@@ -52,6 +62,7 @@ type NwcContextValue = {
   getBalanceMsat: () => Promise<number | null>;
   payInvoice: (invoice: string) => Promise<NwcPayResponse>;
   makeInvoice: (amountMsat: number, memo?: string) => Promise<NwcMakeInvoiceResponse>;
+  lookupInvoice: (ref: { paymentHash?: string | null; invoice?: string }) => Promise<NwcLookupInvoiceResponse>;
 };
 
 const NwcContext = createContext<NwcContextValue | null>(null);
@@ -245,6 +256,15 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     }
   }, [ensureClient]);
 
+  const lookupInvoice = useCallback(async (ref: { paymentHash?: string | null; invoice?: string }) => {
+    const params: Record<string, unknown> = {};
+    if (ref.paymentHash) params.payment_hash = ref.paymentHash;
+    else if (ref.invoice) params.invoice = ref.invoice;
+    else throw new Error("Missing payment hash or invoice");
+    const client = ensureClient();
+    return client.request<NwcLookupInvoiceResponse>("lookup_invoice", params);
+  }, [ensureClient]);
+
   const value = useMemo<NwcContextValue>(() => ({
     ready,
     status,
@@ -257,7 +277,8 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     getBalanceMsat,
     payInvoice,
     makeInvoice,
-  }), [ready, status, connection, info, lastError, connect, disconnect, refreshInfo, getBalanceMsat, payInvoice, makeInvoice]);
+    lookupInvoice,
+  }), [ready, status, connection, info, lastError, connect, disconnect, refreshInfo, getBalanceMsat, payInvoice, makeInvoice, lookupInvoice]);
 
   return <NwcContext.Provider value={value}>{children}</NwcContext.Provider>;
 }

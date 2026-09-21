@@ -262,6 +262,25 @@ export class MintConnection {
     return res;
   }
 
+  async planSweep() {
+    await this.init();
+    return this.manager.planSweep();
+  }
+
+  async meltProofsForSweep(quote: MeltQuoteResponse, proofs: Proof[]): Promise<MeltProofsResponse> {
+    await this.init();
+    const res = await this.manager.meltProofsForSweep(quote, proofs);
+    if (Array.isArray((res as any)?.change)) {
+      (res as any).change = this.validateProofsDleq((res as any).change);
+    }
+    return res;
+  }
+
+  async checkMeltQuoteState(quote: MeltQuoteResponse): Promise<MeltQuoteResponse | null> {
+    await this.init();
+    return this.manager.checkMeltQuoteState(quote);
+  }
+
   async prepareMultiPathMeltQuote(invoice: string, targetAmount: number) {
     await this.init();
     return this.manager.prepareMultiPathMeltQuote(invoice, targetAmount);

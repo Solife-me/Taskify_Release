@@ -24,3 +24,4 @@ export const LS_BOT_COMMANDS_CACHE = "taskify_bot_commands_cache_v1";
 export const LS_GROUP_CHATS = "taskify_group_chats_v1";
 export const LS_GROUP_MUTED = "taskify_group_muted_v1";
 export const LS_GROUP_LEFT = "taskify_group_left_v1";
+export const LS_NWC_SWEEP_JOURNAL = "taskify_nwc_sweep_journal_v1";
