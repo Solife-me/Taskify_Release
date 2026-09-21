@@ -12,7 +12,7 @@ Taskify is an offline-friendly personal task board built with React, TypeScript,
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22.13+
 - Cloudflare account with Workers access
 - `wrangler` CLI (`npm install -g wrangler`)
 
@@ -21,10 +21,10 @@ Taskify is an offline-friendly personal task board built with React, TypeScript,
 ```bash
 cd taskify-pwa
 npm install
-cp ../.env.example .env.local  # edit values as described below
+# Create .env.local with the values described below
 ```
 
-Required environment variables (see `.env.example`):
+Environment variables:
 
 - `VITE_WORKER_BASE_URL` – Base URL for your deployed Worker (no trailing slash). Example: `https://taskify-worker.your-name.workers.dev`
 - `VITE_VAPID_PUBLIC_KEY` – Base64url-encoded VAPID public key. Generate alongside the private key during Worker setup.

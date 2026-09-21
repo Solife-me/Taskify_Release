@@ -1,6 +1,12 @@
 import Foundation
 import TaskifyCore
+#if canImport(UIKit)
 import UIKit
+typealias TaskifyBackgroundFetchResult = UIBackgroundFetchResult
+#else
+import AppKit
+enum TaskifyBackgroundFetchResult { case newData, noData, failed }
+#endif
 import UserNotifications
 
 enum TaskifyDMPushSettings {
@@ -87,6 +93,7 @@ enum TaskifyDMPushCoordinatorError: LocalizedError {
     }
 }
 
+#if os(iOS)
 @MainActor
 final class TaskifyDMPushCoordinator {
     static let shared = TaskifyDMPushCoordinator()
@@ -200,6 +207,18 @@ final class TaskifyApplicationDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
+#else
+@MainActor
+final class TaskifyDMPushCoordinator {
+    static let shared = TaskifyDMPushCoordinator()
+    // The relay's existing registration contract has an iOS APNs topic. Do not
+    // register Mac tokens against that topic until the server supports Mac delivery.
+    func requestDeviceToken() async throws -> String {
+        throw TaskifyDMPushCoordinatorError.apnsRegistrationFailed("Mac push delivery requires a configured macOS APNs topic.")
+    }
+}
+#endif
+
 actor TaskifyDMPushLocalNotifier {
     static let shared = TaskifyDMPushLocalNotifier()
 
@@ -255,6 +274,7 @@ extension AppModel {
         // The first message of a new group can be answered before the push wake has ingested it.
         // Sending to a group ID the snapshot does not know would treat the hash as a public key,
         // so pull the inbox and give the ingest a moment first.
+#if os(iOS)
         if !isLoading, target.isGroup, groupConversation(id: target.conversationID) == nil {
             _ = await handleDMPushWake(notifyMessages: false)
             let ingestDeadline = Date().addingTimeInterval(8)
@@ -264,6 +284,7 @@ extension AppModel {
                 try? await Task.sleep(for: .milliseconds(200))
             }
         }
+#endif
         do {
             guard !isLoading,
                   !target.isGroup || groupConversation(id: target.conversationID) != nil else {
@@ -274,8 +295,10 @@ extension AppModel {
         } catch {
             await TaskifyDMPushLocalNotifier.shared.notifyReplyFailed(text: text)
         }
+#if os(iOS)
         if UIApplication.shared.applicationState != .active {
             TaskifyBackgroundSyncCoordinator.shared.startSyncHandoff()
         }
+#endif
     }
 }

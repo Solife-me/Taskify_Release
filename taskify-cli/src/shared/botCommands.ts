@@ -1,7 +1,7 @@
 /**
  * botCommands.ts — NIP-51 bot commands list (kind 30078, d-tag
  * "taskify-bot-commands") publish/fetch for Taskify CLI.
- * Contract: docs/bot-command-lists.md. Mirrors
+ * Contract: docs/reference/bot-command-lists.md. Mirrors
  * taskify-pwa/src/lib/botCommands.ts (parity by convention, not shared code).
  */
 
@@ -101,7 +101,7 @@ export function validateBotCommandsDraft(commands: unknown): BotCommand[] {
     for (const value of [name, description]) {
       if (/nsec1|npub1|hex\.|nprofile1|naddr1/i.test(value)) {
         throw new BotCommandsValidationError(
-          `Command "${name}" contains a Nostr key or identifier — the published list must not contain user data (see docs/bot-command-lists.md).`,
+          `Command "${name}" contains a Nostr key or identifier — the published list must not contain user data (see docs/reference/bot-command-lists.md).`,
         );
       }
     }

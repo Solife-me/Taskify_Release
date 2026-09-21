@@ -21,7 +21,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/cashubtc/cdk-swift.git",
-            exact: "0.17.3"
+            exact: "0.18.0"
         ),
         .package(
             url: "https://github.com/BlockchainCommons/URKit.git",

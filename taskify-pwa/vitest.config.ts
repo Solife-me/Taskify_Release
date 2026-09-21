@@ -1,6 +1,6 @@
 import { defineConfig, mergeConfig } from "vite";
 import { fileURLToPath } from "node:url";
-import viteConfig from "./vite.config";
+import viteConfig from "./vite.config.ts";
 
 // Test-only overrides. The build config carries `preserveSymlinks: true` so
 // rolldown sees the symlinked `taskify-runtime-nostr` package via the linker

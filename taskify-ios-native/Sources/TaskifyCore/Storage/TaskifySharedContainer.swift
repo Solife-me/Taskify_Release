@@ -1,4 +1,7 @@
 import Foundation
+#if os(macOS)
+import Security
+#endif
 
 /// Where Taskify keeps its data so that processes other than the app can read it.
 ///
@@ -9,23 +12,39 @@ import Foundation
 /// Falling back keeps the app fully working on its own; it just means anything outside the app
 /// sees no data.
 public enum TaskifySharedContainer {
-    /// Must match the App Groups capability on both the app and the widget extension exactly. A
-    /// mismatch is silent -- `containerURL(forSecurityApplicationGroupIdentifier:)` just returns
-    /// nil, the store quietly falls back to the app's private directory, and widgets show nothing
-    /// with no error anywhere to explain it.
+    /// Must match the signed App Groups entitlement on the app and its extensions.
+    /// An unentitled Mac must use private storage even if Foundation returns a group URL.
     public static let appGroupID = "group.solife.me.Taskify"
 
     /// True when the App Group capability is actually in effect. Widgets can only show real data
     /// when this is true.
-    public static func isAvailable(fileManager: FileManager = .default) -> Bool {
-        groupDirectory(fileManager: fileManager) != nil
+    public static func isAvailable(
+        fileManager: FileManager = .default,
+        authorization: (String) -> Bool = processAuthorizesAppGroup
+    ) -> Bool {
+        groupDirectory(fileManager: fileManager, authorization: authorization) != nil
+    }
+
+    /// macOS may return a plausible group URL even without permission to use it.
+    /// Check the running executable's signed entitlements, not its bundled plist.
+    public static func processAuthorizesAppGroup(_ identifier: String) -> Bool {
+#if os(macOS)
+        guard let task = SecTaskCreateFromSelf(nil),
+              let groups = SecTaskCopyValueForEntitlement(task, "com.apple.security.application-groups" as CFString, nil) as? [String]
+        else { return false }
+        return groups.contains(identifier)
+#else
+        return true // Other Apple platforms validate access in the container lookup.
+#endif
     }
 
     public static func groupDirectory(
         appGroupID: String = TaskifySharedContainer.appGroupID,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        authorization: (String) -> Bool = processAuthorizesAppGroup
     ) -> URL? {
-        fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
+        guard authorization(appGroupID) else { return nil }
+        return fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
     }
 
     /// The app's own directory -- the pre-App-Group location, and the fallback.
@@ -39,9 +58,10 @@ public enum TaskifySharedContainer {
 
     public static func storeDirectory(
         appGroupID: String = TaskifySharedContainer.appGroupID,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        authorization: (String) -> Bool = processAuthorizesAppGroup
     ) -> URL {
-        guard let group = groupDirectory(appGroupID: appGroupID, fileManager: fileManager) else {
+        guard let group = groupDirectory(appGroupID: appGroupID, fileManager: fileManager, authorization: authorization) else {
             return privateDirectory(fileManager: fileManager)
         }
         return group.appendingPathComponent("TaskifyNative", isDirectory: true)
@@ -55,9 +75,10 @@ public enum TaskifySharedContainer {
     @discardableResult
     public static func migrateIfNeeded(
         appGroupID: String = TaskifySharedContainer.appGroupID,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        authorization: (String) -> Bool = processAuthorizesAppGroup
     ) -> Bool {
-        guard let group = groupDirectory(appGroupID: appGroupID, fileManager: fileManager) else {
+        guard let group = groupDirectory(appGroupID: appGroupID, fileManager: fileManager, authorization: authorization) else {
             return false
         }
         let source = privateDirectory(fileManager: fileManager)

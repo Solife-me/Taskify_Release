@@ -10,7 +10,7 @@ export const manifest = setupManifest({
   marketingUrl: 'https://solife.me',
   donationUrl: null,
   docsUrls: [
-    'https://github.com/Solife-me/Taskify_Release/blob/main/docs/native-dm-push-relay.md',
+    'https://github.com/Solife-me/Taskify_Release/blob/main/docs/reference/native-dm-push-relay.md',
   ],
   description: { short, long },
   volumes: ['main'],

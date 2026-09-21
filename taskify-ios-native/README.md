@@ -94,6 +94,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - Aggregate Nostr health reporting with per-relay status, queued-change visibility, and manual/foreground retry
 - iOS background app refresh with an immediate background handoff, atomic persistence, bounded relay listening, durable-outbox delivery, automatic rescheduling, and expiration-safe completion
 - Native NIP-17 shared-task and assignment inbox with encrypted gift-wrap verification, multi-relay deduplication, review-before-add, persisted delivery state, rich task-field import, and queued Accept/Decline/Maybe responses wrapped so PWA chat cannot misclassify them as eCash
+- Task and event share sheets list all saved contacts without an eight-contact limit, search contacts and active group chats, and deliver shared items into the selected encrypted conversation. Assignments target individual contacts. Sharing an owned event adds recipients as attendees and persists RSVP tokens; forwarding an imported event retains its invitation.
 - Native outbound task/contact/board/calendar sharing and assignments with npub/hex validation, kind-10050 inbox routing with compatibility fallbacks, independent recipient and sender gift wraps, persisted recent recipients, durable encrypted delivery, PWA-readable assignment messages, assignee-state badges, and authenticated response updates on the source task
 - Native Nostr contact directory with encrypted PWA-compatible NIP-51 private-list sync, signed kind-0 profile names/photos, automatic inbox-relay discovery, add/edit/delete controls, and contact selection for task shares and assignments
 - Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, delivery to usable kind-10050 relays with fallback delivery when no usable list is resolved, a signed native kind-10050 preference publisher, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, tappable contact headers, shared Photos/Files/Links contact tabs with photo URLs excluded from Links and non-photo attachments in Files, Markdown-formatted encrypted message bubbles, and tap-to-copy inline or fenced code
@@ -230,7 +231,7 @@ changes invalidate their dependent caches; chat read receipts and board selectio
 indexes and board projections. Upcoming uses individual lazy timeline rows, including within a
 single crowded date. Calendar and date changes refresh date-sensitive projections on their next
 read, and task visibility keeps its existing minute boundary. See the
-[board performance implementation and validation](../docs/native-board-performance-2026-09-12.md).
+[board performance implementation and validation](../docs/audits/native-board-performance-2026-09-12.md).
 
 Idle chat checks in `ScrollPerformanceUITests` measure CPU and memory for 30 seconds each on
 the populated inbox and conversation, then verify navigation/search still respond. Relay retries
@@ -316,7 +317,7 @@ Wi-Fi without the phone, and cellular, including a slow secondary relay.
 
 ## Nostr sync audit
 
-The September 3, 2026 [pipeline audit](../docs/nostr-sync-audit-2026-09-03.md) covers native,
+The September 3, 2026 [pipeline audit](../docs/audits/nostr-sync-audit-2026-09-03.md) covers native,
 Watch, shared web runtime, and gateway behavior, including fixes, tests, and remaining limits.
 Taskify deliberately retains fallback DM delivery for recipients without a published inbox list,
 as requested by the user. The phone also listens on configured app relays while its own list is
@@ -329,7 +330,7 @@ within 200 ms and before reconnect cleanup; incomplete history does not advance 
 Repeated copies avoid decryption, and malformed frames do not tear down healthy sockets.
 Bulk task clocks advance per record instead of adding a second for each unrelated task.
 
-The [Solife performance audit](../docs/solife-performance-audit-2026-09-03.md) records physical-device
+The [Solife performance audit](../docs/audits/solife-performance-audit-2026-09-03.md) records physical-device
 CPU, memory, thermal-state and hang measurements across navigation. Upcoming's calendar event
 date parser now reuses synchronized formatters after repeated formatter construction appeared
 in the device CPU stacks.
@@ -441,3 +442,17 @@ exercises rejection/cancellation. The HTTP endpoint is substituted only in the
 test request; production uploads still require HTTPS. Device share-sheet behavior
 and a full upload to the configured remote host still need release QA; local
 integration tests do not establish remote-host capacity.
+
+### Shared task destinations
+
+In iOS chat and the shared-task inbox, Accept/Add Task opens a destination sheet.
+Choose a board, then a list for list or combined boards, and confirm Add. Week
+boards use the supplied due date, or today when none is supplied. Cancel leaves
+the invitation pending; assignment acceptance is sent only after the task is added.
+The PWA chat and inbox follow the same destination-selection flow. Archived,
+hidden, and Bible boards are excluded, and empty list boards cannot be confirmed.
+
+Long-press a shared task in chat and choose **Add Again** to create another copy
+using the same board/list picker. This preserves the original invitation response
+and does not send another assignment acceptance. PWA also offers this action in
+the right-click message menu.

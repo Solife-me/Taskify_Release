@@ -434,7 +434,16 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         )
     }
 
-    public var displayContent: String { attachment?.messagePreview ?? content }
+    public var sharedItemPreview: String? {
+        guard let envelope = TaskifyShareEnvelope.decode(content: content) else { return nil }
+        switch envelope.item {
+        case .task(let task): return "Shared task: \(task.title)"
+        case .calendarEvent(let event): return "Shared event: \(event.displayTitle)"
+        default: return nil
+        }
+    }
+
+    public var displayContent: String { attachment?.messagePreview ?? sharedItemPreview ?? content }
 
     /// Matches the fields surfaced by Taskify's conversation search without
     /// requiring the UI to understand attachment payload details.
@@ -722,7 +731,7 @@ public extension TaskifySnapshot {
         )
         let groupedShares = Dictionary(
             grouping: (sharedInboxItems ?? []).filter { $0.status != .deleted },
-            by: { $0.sender.publicKey.lowercased() }
+            by: { $0.conversationPublicKey }
         )
         let groupedContacts = Dictionary(
             grouping: (sharedContactInboxItems ?? []).filter { $0.status != .deleted },
@@ -730,7 +739,7 @@ public extension TaskifySnapshot {
         )
         let groupedCalendarInvites = Dictionary(
             grouping: (sharedCalendarInviteItems ?? []).filter { $0.status != .deleted },
-            by: { $0.sender.publicKey.lowercased() }
+            by: { $0.conversationPublicKey }
         )
         let groupedBoards = Dictionary(
             grouping: (sharedBoardInboxItems ?? []).filter { $0.status != .deleted },
@@ -820,7 +829,7 @@ public extension TaskifySnapshot {
             .map(\.createdAt)
             .max() ?? 0
         let latestSharedTask = (sharedInboxItems ?? [])
-            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .filter { $0.status != .deleted && $0.conversationPublicKey == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestSharedContact = (sharedContactInboxItems ?? [])
@@ -828,7 +837,7 @@ public extension TaskifySnapshot {
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestCalendarInvite = (sharedCalendarInviteItems ?? [])
-            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .filter { $0.status != .deleted && $0.conversationPublicKey == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestSharedBoard = (sharedBoardInboxItems ?? [])
@@ -853,7 +862,7 @@ public extension TaskifySnapshot {
             .map(\.createdAt)
             .max() ?? 0
         let latestSharedTask = (sharedInboxItems ?? [])
-            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .filter { $0.status != .deleted && $0.conversationPublicKey == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestSharedContact = (sharedContactInboxItems ?? [])
@@ -861,7 +870,7 @@ public extension TaskifySnapshot {
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestCalendarInvite = (sharedCalendarInviteItems ?? [])
-            .filter { $0.status != .deleted && $0.sender.publicKey.lowercased() == peer }
+            .filter { $0.status != .deleted && $0.conversationPublicKey == peer }
             .map { Int($0.receivedAt.timeIntervalSince1970) }
             .max() ?? 0
         let latestSharedBoard = (sharedBoardInboxItems ?? [])
@@ -908,13 +917,13 @@ public extension TaskifySnapshot {
         guard let peer = Self.normalizedConversationID(peerPublicKey) else { return false }
         let removedMessages = (directMessages ?? []).filter { $0.peerPublicKey == peer }
         let removedSharedTasks = (sharedInboxItems ?? []).filter {
-            $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
+            $0.status != .deleted && $0.conversationPublicKey == peer
         }
         let removedSharedContacts = (sharedContactInboxItems ?? []).filter {
             $0.status != .deleted && $0.conversationPublicKey == peer
         }
         let removedCalendarInvites = (sharedCalendarInviteItems ?? []).filter {
-            $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
+            $0.status != .deleted && $0.conversationPublicKey == peer
         }
         let removedSharedBoards = (sharedBoardInboxItems ?? []).filter {
             $0.status != .deleted && $0.sender.publicKey.lowercased() == peer
@@ -960,7 +969,7 @@ public extension TaskifySnapshot {
             let respondedAt = Date(timeIntervalSince1970: TimeInterval(timestamp))
             for index in items.indices where
                 items[index].status != .deleted &&
-                items[index].sender.publicKey.lowercased() == peer {
+                items[index].conversationPublicKey == peer {
                 items[index].status = .deleted
                 items[index].respondedAt = respondedAt
             }
@@ -982,7 +991,7 @@ public extension TaskifySnapshot {
             let respondedAt = Date(timeIntervalSince1970: TimeInterval(timestamp))
             for index in items.indices where
                 items[index].status != .deleted &&
-                items[index].sender.publicKey.lowercased() == peer {
+                items[index].conversationPublicKey == peer {
                 items[index].status = .deleted
                 items[index].respondedAt = respondedAt
             }

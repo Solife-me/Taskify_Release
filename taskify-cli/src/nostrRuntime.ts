@@ -95,6 +95,7 @@ function recordToCache(r: FullTaskRecord): CachedTask {
   return {
     id: r.id,
     title: r.title,
+    order: r.order,
     boardId: r.boardId,
     boardName: r.boardName,
     status: r.deleted ? "deleted" : r.completed ? "done" : "open",
@@ -135,6 +136,7 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     boardId: t.boardId,
     boardName: t.boardName ?? boardName,
     title: t.title,
+    order: t.order,
     note: t.note,
     dueISO: t.dueISO ?? "",
     dueDateEnabled: t.dueDateEnabled,
@@ -171,6 +173,7 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
 // ---- Public types ----
 
 export type FullTaskRecord = {
+  order?: number;
   id: string;              // UUID from the "d" tag
   boardId: string;         // raw board UUID
   boardName?: string;
@@ -339,6 +342,7 @@ async function parseDecryptedEvent(
       boardId,
       boardName,
       title: payload.title ?? "",
+      order: typeof payload.order === "number" && Number.isFinite(payload.order) ? payload.order : undefined,
       note: payload.note || undefined,
       dueISO: payload.dueISO ?? "",
       dueDateEnabled: payload.dueDateEnabled ?? undefined,
@@ -830,7 +834,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       }
 
       writeCache(cache);
-      records.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+      records.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
       return records;
     },
 
@@ -1293,6 +1297,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const userPubkey = getUserPubkeyHex(config);
       const merged: DecryptedPayload = {
         ...rawPayload,
+        ...(patch.order !== undefined ? { order: patch.order } : {}),
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.note !== undefined ? { note: patch.note ?? "" } : {}),
         ...(patch.dueISO !== undefined ? { dueISO: patch.dueISO ?? "" } : {}),
@@ -1321,6 +1326,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const updated: FullTaskRecord = {
         ...existing,
         title: merged.title ?? existing.title,
+        order: merged.order,
         note: merged.note || undefined,
         dueISO: merged.dueISO ?? existing.dueISO,
         priority: merged.priority ?? undefined,

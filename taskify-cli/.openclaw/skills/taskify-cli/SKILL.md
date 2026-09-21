@@ -233,5 +233,5 @@ taskify board defaults --json  # verify your profile's default board+list
 
 ## Reference
 
-- Full command flags: see [references/commands.md](references/commands.md)
-- Board and column operations: see [references/boards.md](references/boards.md)
+- Full command flags: see [references/commands.md](../../../../.openclaw/skills/taskify-cli/references/commands.md)
+- Board and column operations: see [references/boards.md](../../../../.openclaw/skills/taskify-cli/references/boards.md)

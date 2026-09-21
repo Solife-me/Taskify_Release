@@ -237,6 +237,8 @@ public enum SharedInboxItemStatus: String, Codable, Sendable {
 
 public struct SharedInboxItem: Identifiable, Codable, Equatable, Sendable {
     public var id: String { wrapEventID }
+    public var groupID: String?
+    public var conversationPublicKey: String { groupID ?? sender.publicKey.lowercased() }
     public var wrapEventID: String
     public var rumorEventID: String
     public var sender: SharedInboxSender
@@ -252,8 +254,10 @@ public struct SharedInboxItem: Identifiable, Codable, Equatable, Sendable {
         task: SharedTaskDelivery,
         receivedAt: Date,
         status: SharedInboxItemStatus = .pending,
-        respondedAt: Date? = nil
+        respondedAt: Date? = nil,
+        groupID: String? = nil
     ) {
+        self.groupID = groupID
         self.wrapEventID = wrapEventID
         self.rumorEventID = rumorEventID
         self.sender = sender
@@ -628,6 +632,8 @@ public enum TaskifyEventInvitationPlanner {
 
 public struct SharedCalendarInviteInboxItem: Identifiable, Codable, Equatable, Sendable {
     public var id: String { wrapEventID }
+    public var groupID: String?
+    public var conversationPublicKey: String { groupID ?? sender.publicKey.lowercased() }
     public var wrapEventID: String
     public var rumorEventID: String
     public var sender: SharedInboxSender
@@ -643,8 +649,10 @@ public struct SharedCalendarInviteInboxItem: Identifiable, Codable, Equatable, S
         event: SharedCalendarEventDelivery,
         receivedAt: Date,
         status: SharedInboxItemStatus = .pending,
-        respondedAt: Date? = nil
+        respondedAt: Date? = nil,
+        groupID: String? = nil
     ) {
+        self.groupID = groupID
         self.wrapEventID = wrapEventID
         self.rumorEventID = rumorEventID
         self.sender = sender
@@ -2985,11 +2993,12 @@ public extension TaskifySnapshot {
         destinationBoardID: String,
         destinationColumnID: String?,
         recipientPublicKey: String,
+        asCopy: Bool = false,
         now: Date = Date(),
         calendar baseCalendar: Calendar = .current
     ) -> TaskItem? {
         guard let inboxItem = (sharedInboxItems ?? []).first(where: { $0.id == inboxItemID }),
-              inboxItem.status != .accepted,
+              (asCopy || inboxItem.status != .accepted),
               let board = boards.first(where: { $0.id == destinationBoardID && $0.isVisible }),
               board.kind == .week || board.kind == .list else { return nil }
 
@@ -3075,7 +3084,9 @@ public extension TaskifySnapshot {
             preservedSyncFields: preservedFields.isEmpty ? nil : preservedFields
         )
         tasks.append(task)
-        _ = setSharedInboxStatus(itemID: inboxItemID, status: .accepted, now: now)
+        if !asCopy {
+            _ = setSharedInboxStatus(itemID: inboxItemID, status: .accepted, now: now)
+        }
         return task
     }
 }

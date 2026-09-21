@@ -1,6 +1,6 @@
 {
   "name": "taskify-nostr",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Agent-facing CLI for Taskify collaboration over Nostr",
   "type": "module",
   "bin": {
@@ -38,15 +38,15 @@
     "url": "git+https://github.com/Solife-me/Taskify_Release.git"
   },
   "dependencies": {
-    "@noble/hashes": "^2.2.0",
+    "@noble/hashes": "^2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "chalk": "^5.6.2",
+    "chalk": "^6.0.0",
     "commander": "^15.0.0",
-    "nostr-tools": "^2.23.9"
+    "nostr-tools": "^2.25.2"
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
-    "esbuild": "^0.28.1",
+    "@types/node": "^26.6.0",
+    "esbuild": "^0.28.2",
     "taskify-core": "file:../taskify-core",
     "taskify-runtime-nostr": "file:../taskify-runtime-nostr",
     "typescript": "^6.0.3"

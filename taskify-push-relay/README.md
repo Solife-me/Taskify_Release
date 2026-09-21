@@ -96,7 +96,7 @@ durable outbox retry/fallback policy still applies.
 
 ## Protocol audit
 
-See the [September 2026 pipeline audit](../docs/nostr-sync-audit-2026-09-03.md). WebSocket history
+See the [September 2026 pipeline audit](../docs/audits/nostr-sync-audit-2026-09-03.md). WebSocket history
 is newest-first, resolves equal timestamps by ascending event ID, and applies each filter's
 limit independently; limits do not suppress subsequent live events. ID/author filters use exact
 matches. Forwarding honors the relay's OK acceptance boolean even if rejection text says

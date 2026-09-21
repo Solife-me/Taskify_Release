@@ -1,3 +1,4 @@
+import type { SharedTaskPayload, InboxSender } from "taskify-core";
 import { lazy, Suspense } from "react";
 import type { CalendarInvite } from "../../domains/calendar/calendarInvitesHook";
 import type { Settings } from "../../domains/tasks/settingsTypes";
@@ -8,6 +9,7 @@ const CashuWalletModal = lazy(loadCashuWalletModal);
 
 type CashuWalletShellProps = {
   acceptInboxMessage: (id: string) => void;
+  addSharedTaskAgain: (task: SharedTaskPayload, sender?: InboxSender) => void;
   closeWallet: () => void;
   declineInboxMessage: (id: string) => void;
   dismissCalendarInvite: (invite: CalendarInvite) => void;
@@ -32,6 +34,7 @@ type CashuWalletShellProps = {
 
 export function CashuWalletShell({
   acceptInboxMessage,
+  addSharedTaskAgain,
   closeWallet,
   declineInboxMessage,
   dismissCalendarInvite,
@@ -86,6 +89,7 @@ export function CashuWalletShell({
         messageItems={walletMessageItems}
         messagesUnreadCount={messagesUnreadCount}
         onAcceptMessage={acceptInboxMessage}
+        onAddTaskAgain={addSharedTaskAgain}
         onMaybeMessage={maybeInboxMessage}
         onDeclineMessage={declineInboxMessage}
         onDismissMessage={dismissInboxMessage}

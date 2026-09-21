@@ -65,12 +65,20 @@ final class TaskifySharedContainerTests: XCTestCase {
         )
     }
 
+#if os(macOS)
+    func testUnentitledMacProcessUsesPrivateStoreEvenWhenSystemReturnsGroupURL() {
+        XCTAssertNil(TaskifySharedContainer.groupDirectory())
+        XCTAssertFalse(TaskifySharedContainer.isAvailable())
+        XCTAssertEqual(TaskifySharedContainer.storeDirectory(), TaskifySharedContainer.privateDirectory())
+    }
+#endif
+
     // MARK: - Location
 
     func testUsesTheGroupContainerWhenAvailable() throws {
         let (manager, group, _) = try makeManager(withGroup: true)
         XCTAssertEqual(
-            TaskifySharedContainer.storeDirectory(fileManager: manager),
+            TaskifySharedContainer.storeDirectory(fileManager: manager, authorization: { _ in true }),
             group.appendingPathComponent("TaskifyNative", isDirectory: true)
         )
     }
@@ -79,10 +87,34 @@ final class TaskifySharedContainerTests: XCTestCase {
     func testFallsBackToThePrivateDirectoryWithoutTheGroup() throws {
         let (manager, _, support) = try makeManager(withGroup: false)
         XCTAssertEqual(
-            TaskifySharedContainer.storeDirectory(fileManager: manager),
+            TaskifySharedContainer.storeDirectory(fileManager: manager, authorization: { _ in true }),
             support.appendingPathComponent("TaskifyNative", isDirectory: true)
         )
-        XCTAssertFalse(TaskifySharedContainer.isAvailable(fileManager: manager))
+        XCTAssertFalse(TaskifySharedContainer.isAvailable(fileManager: manager, authorization: { _ in true }))
+    }
+
+    func testUnauthorizedGroupDoesNotMigrateOrSelectAnExistingContainer() throws {
+        let (manager, group, support) = try makeManager(withGroup: true)
+        try writeStore("private data", in: support)
+        try writeStore("group data", in: group)
+        XCTAssertEqual(TaskifySharedContainer.storeDirectory(fileManager: manager, authorization: { _ in false }),
+                       support.appendingPathComponent("TaskifyNative", isDirectory: true))
+        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in false }))
+        XCTAssertEqual(readStore(in: support), "private data")
+        XCTAssertEqual(readStore(in: group), "group data")
+    }
+
+    func testPrivateStoreCanSaveAndReloadRepeatedChanges() async throws {
+        let (manager, _, _) = try makeManager(withGroup: true)
+        let directory = TaskifySharedContainer.storeDirectory(fileManager: manager, authorization: { _ in false })
+        let store = JSONTaskStore(fileURL: directory.appendingPathComponent(TaskifySharedContainer.storeFilename))
+        var snapshot = TaskifySnapshot.empty
+        for index in 0..<3 {
+            snapshot.tasks.append(TaskItem(boardID: snapshot.selectedBoardID, title: "Change \(index)"))
+            try await store.save(snapshot)
+            let loaded = try await store.load()
+            XCTAssertEqual(loaded.tasks, snapshot.tasks)
+        }
     }
 
     // MARK: - Migration
@@ -91,7 +123,7 @@ final class TaskifySharedContainerTests: XCTestCase {
         let (manager, group, support) = try makeManager(withGroup: true)
         try writeStore("{\"boards\":[]}", in: support)
 
-        XCTAssertTrue(TaskifySharedContainer.migrateIfNeeded(fileManager: manager))
+        XCTAssertTrue(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
         XCTAssertEqual(readStore(in: group), "{\"boards\":[]}")
         // Left in place: if anything went wrong the original is still where the app used to read it.
         XCTAssertEqual(readStore(in: support), "{\"boards\":[]}")
@@ -103,19 +135,19 @@ final class TaskifySharedContainerTests: XCTestCase {
         try writeStore("old", in: support)
         try writeStore("current", in: group)
 
-        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager))
+        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
         XCTAssertEqual(readStore(in: group), "current")
     }
 
     func testDoesNothingWhenThereIsNoPreviousStore() throws {
         let (manager, group, _) = try makeManager(withGroup: true)
-        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager))
+        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
         XCTAssertNil(readStore(in: group))
     }
 
     func testDoesNothingWithoutTheGroup() throws {
         let (manager, _, support) = try makeManager(withGroup: false)
         try writeStore("data", in: support)
-        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager))
+        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
     }
 }

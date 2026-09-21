@@ -84,7 +84,7 @@ taskify bot show-commands [npub]               # verify a published command list
 
 ### Bot commands list (Taskify chat)
 
-Publish the NIP-51 commands list so Taskify chat users see your commands in a Telegram-style `/` menu (full contract: [docs/bot-command-lists.md](../../../docs/bot-command-lists.md)):
+Publish the NIP-51 commands list so Taskify chat users see your commands in a Telegram-style `/` menu (full contract: [docs/reference/bot-command-lists.md](../../../docs/reference/bot-command-lists.md)):
 
 ```bash
 # commands.json = [{"name":"start","description":"Begin setup"}, ...]

@@ -2587,6 +2587,7 @@ private struct TaskifyEventEditorSheet: View {
     @State private var repeatHasEnd: Bool
     @State private var repeatEndDate: Date
     @State private var confirmingDeletion = false
+    @State private var showingEventShare = false
     @State private var selectedAttendeePublicKeys: Set<String>
     @State private var showingAttendeePicker = false
     let event: TaskifyEvent
@@ -2752,6 +2753,17 @@ private struct TaskifyEventEditorSheet: View {
                         .frame(minHeight: 100)
                 }
 
+                Section("Sharing") {
+                    Button {
+                        showingEventShare = true
+                    } label: {
+                        Label("Share Event", systemImage: "paperplane")
+                    }
+                    Text("Choose a contact or chat group. Group members receive this encrypted event invitation in their group chat.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Button("Delete Event", role: .destructive) {
                         confirmingDeletion = true
@@ -2825,6 +2837,13 @@ private struct TaskifyEventEditorSheet: View {
                 selection: $selectedAttendeePublicKeys
             )
             .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showingEventShare, onDismiss: {
+            let participants = model.snapshot.taskifyEvents?.first { $0.id == event.id }?.participants ?? []
+            selectedAttendeePublicKeys.formUnion(participants.map(\.publicKey))
+        }) {
+            TaskShareSheet(eventID: event.id)
+                .preferredColorScheme(.dark)
         }
         .onAppear {
             if !eventBoards.contains(where: { $0.id == boardID }) {

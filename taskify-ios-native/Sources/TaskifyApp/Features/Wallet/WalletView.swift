@@ -3,9 +3,13 @@ import CoreImage.CIFilterBuiltins
 import LocalAuthentication
 import SwiftUI
 import TaskifyCore
+#if canImport(UIKit)
 import UIKit
+#endif
 import UniformTypeIdentifiers
+#if canImport(VisionKit) && os(iOS)
 import VisionKit
+#endif
 
 enum WalletRecoveryMode: Equatable {
     case transfer
@@ -68,7 +72,7 @@ enum WalletPriceCache {
 
 @MainActor
 final class WalletViewModel: ObservableObject {
-    static let suggestedMintURL = "https://mint.solife.me"
+    static let suggestedMintURL = "https://mint.minibits.cash/Bitcoin"
     /// Outstanding-invoice check cadence. Each unchanged round trip doubles the wait (up to
     /// the maximum) so a wallet that is merely left open stays quiet; a paid invoice resets
     /// the interval immediately.
@@ -393,7 +397,9 @@ final class WalletViewModel: ObservableObject {
                     ? "Claimed \(formattedSats(claimedTotal)) via npub.cash"
                     : "Claimed \(claimedCount) token\(claimedCount == 1 ? "" : "s") via npub.cash"
                 if !auto {
+                    #if canImport(UIKit)
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    #endif
                 }
             } else {
                 npubCashClaimStatus = .error
@@ -629,7 +635,9 @@ final class WalletViewModel: ObservableObject {
             )
             await refresh()
             statusMessage = "Paid \(formattedSats(result.amount)) to Cashu request"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            #endif
             return result
         } catch {
             await refresh()
@@ -652,13 +660,17 @@ final class WalletViewModel: ObservableObject {
         switch result {
         case .received(let amount):
             statusMessage = "Received \(formattedSats(amount))"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            #endif
         case .alreadyReceived:
             statusMessage = "This ecash was already received"
         case .queued:
             await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
             statusMessage = "Ecash saved — Taskify will retry automatically"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            #endif
         }
         return result
     }
@@ -676,7 +688,9 @@ final class WalletViewModel: ObservableObject {
         }
         await refresh()
         statusMessage = "Received \(formattedSats(amount))"
+        #if canImport(UIKit)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #endif
         return amount
     }
 
@@ -966,7 +980,9 @@ final class WalletViewModel: ObservableObject {
         statusMessage = recovered.count == 1
             ? "Received \(formattedSats(total)) from saved ecash"
             : "Received \(formattedSats(total)) from \(recovered.count) saved tokens"
+        #if canImport(UIKit)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #endif
         return recovered
     }
 
@@ -1032,7 +1048,9 @@ final class WalletViewModel: ObservableObject {
             statusMessage = receipts.count == 1
                 ? "Received \(formattedSats(total)) from a Cashu request"
                 : "Received \(formattedSats(total)) from \(receipts.count) Cashu payments"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            #endif
         }
         return receipts
     }
@@ -1093,7 +1111,9 @@ final class WalletViewModel: ObservableObject {
             statusMessage = claimedCount == 1
                 ? "Received \(formattedSats(claimedTotal))"
                 : "Received \(formattedSats(claimedTotal)) from \(claimedCount) payments"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            #endif
         }
         return receipts
     }
@@ -1141,7 +1161,9 @@ final class WalletViewModel: ObservableObject {
         } else {
             statusMessage = "Received \(formattedSats(total)) from \(newlyIssued.count) Lightning invoices"
         }
+        #if canImport(UIKit)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #endif
         return newlyIssued
     }
 
@@ -1204,10 +1226,14 @@ final class WalletViewModel: ObservableObject {
         await refresh()
         if result.state == .completed {
             statusMessage = "Paid \(formattedSats(result.amount)) over Lightning"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            #endif
         } else {
             statusMessage = "Lightning payment is processing"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            #endif
         }
         return result
     }
@@ -1232,10 +1258,14 @@ final class WalletViewModel: ObservableObject {
 
         if result.state == .completed {
             statusMessage = "Moved \(formattedSats(result.receivedAmount)) between mints"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            #endif
         } else {
             statusMessage = "Mint transfer is finishing in the background"
+            #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            #endif
         }
         return result
     }
@@ -1549,6 +1579,7 @@ final class WalletViewModel: ObservableObject {
     }
 }
 
+#if os(iOS)
 struct WalletView: View {
     @Environment(AppModel.self) private var model
     @EnvironmentObject private var wallet: WalletViewModel
@@ -8058,3 +8089,5 @@ private struct CashuQRCodeView: View {
         }
     }
 }
+
+#endif

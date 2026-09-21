@@ -52,6 +52,7 @@ _taskify() {
         'done:Mark a task as done'
         'reopen:Reopen a completed task'
         'update:Update task fields'
+        'reorder:Reorder a task'
         'delete:Delete a task'
         'subtask:Toggle a subtask done/incomplete'
         'remind:Set device-local reminders on a task'
@@ -110,10 +111,21 @@ _taskify() {
             '--board[Board]:board:_taskify_boards' \\
             '--json[Output as JSON]'
           ;;
+        reorder)
+          _arguments \\
+            '1:task id:_taskify_cached_task_ids' \\
+            '2:position:' \\
+            '--board[Board]:board:_taskify_boards' \\
+            '--in[Board/List]:location:' \\
+            '--column[Column]:column:' \\
+            '--human[Readable output]' \\
+            '--json[Output as JSON]'
+          ;;
         update)
           _arguments \\
             '1:task id:_taskify_cached_task_ids' \\
             '--board[Board]:board:_taskify_boards' \\
+            '--order[Task order]:order:' \\
             '--title[New title]:title:' \\
             '--due[New due date]:date:' \\
             '--priority[New priority]:priority:(1 2 3)' \\
@@ -348,7 +360,7 @@ _taskify() {
     cword=\$COMP_CWORD
   }
 
-  local commands="board boards list show search add done reopen update delete subtask remind relay cache trust config completions"
+  local commands="board boards list show search add done reopen update reorder delete subtask remind relay cache trust config completions"
   local board_subcmds="list join leave sync columns"
   local relay_subcmds="status list add remove"
   local cache_subcmds="clear status"
@@ -417,6 +429,9 @@ _taskify() {
       esac
       COMPREPLY=(\$(compgen -W "--board --json" -- "\$cur"))
       ;;
+    reorder)
+      COMPREPLY=(\$(compgen -W "--board --in --column --json --human" -- "\$cur"))
+      ;;
     update)
       if [[ \$cword -eq 2 ]]; then _taskify_cached_task_ids ; return ; fi
       case "\$prev" in
@@ -424,7 +439,7 @@ _taskify() {
         --priority) COMPREPLY=(\$(compgen -W "1 2 3" -- "\$cur")) ; return ;;
         --title|--due|--note) return ;;
       esac
-      COMPREPLY=(\$(compgen -W "--board --title --due --priority --note --json" -- "\$cur"))
+      COMPREPLY=(\$(compgen -W "--board --title --due --priority --note --order --json" -- "\$cur"))
       ;;
     delete)
       if [[ \$cword -eq 2 ]]; then _taskify_cached_task_ids ; return ; fi
@@ -609,6 +624,14 @@ complete -c taskify -n '__taskify_subcommand_is done' -l json  -d 'Output as JSO
 # reopen options
 complete -c taskify -n '__taskify_subcommand_is reopen' -l board -d 'Board'
 complete -c taskify -n '__taskify_subcommand_is reopen' -l json  -d 'Output as JSON'
+
+complete -c taskify -f -n '__taskify_no_subcommand' -a reorder -d 'Reorder a task'
+complete -c taskify -n '__taskify_subcommand_is reorder' -l board -d 'Board'
+complete -c taskify -n '__taskify_subcommand_is reorder' -l in -d 'Board/List'
+complete -c taskify -n '__taskify_subcommand_is reorder' -l column -d 'Column'
+complete -c taskify -n '__taskify_subcommand_is reorder' -l json -d 'Output as JSON'
+complete -c taskify -n '__taskify_subcommand_is reorder' -l human -d 'Readable output'
+complete -c taskify -n '__taskify_subcommand_is update' -l order -d 'Task order'
 
 # update options
 complete -c taskify -n '__taskify_subcommand_is update' -l board    -d 'Board'

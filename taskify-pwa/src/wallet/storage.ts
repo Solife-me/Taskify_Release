@@ -543,9 +543,9 @@ export function clearProofs(mintUrl: string) {
 
 export function getActiveMint(): string {
   try {
-    return idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_ACTIVE_MINT) || "https://mint.solife.me";
+    return idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_ACTIVE_MINT) || "https://mint.minibits.cash/Bitcoin";
   } catch {
-    return "https://mint.solife.me";
+    return "https://mint.minibits.cash/Bitcoin";
   }
 }
 

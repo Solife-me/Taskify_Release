@@ -1,3 +1,9 @@
+import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
+import { syncRemindersToWorker, PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
+import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
+import { withTimeout } from "./lib/withTimeout";
+import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
+import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -53,12 +59,11 @@ import {
 } from "./components/BibleTracker";
 import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
 import { type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
-import { isPrintPaperSize, type PrintPaperSize } from "./components/printPaper";
+import { type PrintPaperSize } from "./components/printPaper";
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { toBufferSource } from "./lib/binary";
 import { useCashu } from "./context/CashuContext";
-import { kvStorage } from "./storage/kvStorage";
 import {
   getSkSync as nostrSkSync,
 } from "./lib/nostrSkStore";
@@ -68,7 +73,7 @@ import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
-import type { AccentPalette } from "./theme/palette";
+import { useAppAppearance } from "./theme/useAppAppearance";
 import {
   ensureDocumentPreview,
   normalizeDocumentList,
@@ -162,7 +167,6 @@ import type {
   ScriptureMemoryUpdate,
 } from "./domains/tasks/taskTypes";
 import { type PushPlatform } from "./domains/push/pushUtils";
-import { type ReminderPreset } from "./domains/dateTime/reminderUtils";
 import {
   daysInCalendarMonth,
   formatDateKeyFromParts,
@@ -291,7 +295,7 @@ import {
 } from "./lib/shareInbox";
 
 // ---- UI component imports (extracted subcomponents) ----
-import { Card, getDraggedTaskId, getDraggedTaskIds } from "./ui/task/Card";
+import { Card, getDraggedTaskIds } from "./ui/task/Card";
 import { EventCard } from "./ui/calendar/EventCard";
 
 const AppModalStack = lazy(() =>
@@ -367,7 +371,6 @@ function normalizeIsoTimestamp(value: unknown): string | undefined {
 const RAW_WORKER_BASE = (import.meta as any)?.env?.VITE_WORKER_BASE_URL || "";
 const FALLBACK_WORKER_BASE_URL = RAW_WORKER_BASE ? String(RAW_WORKER_BASE).replace(/\/$/, "") : "";
 const FALLBACK_VAPID_PUBLIC_KEY = (import.meta as any)?.env?.VITE_VAPID_PUBLIC_KEY || "";
-const PUSH_OPERATION_TIMEOUT_MS = 15000;
 
 function taskHasReminders(task: Task): boolean {
   if (task.completed) return false;
@@ -401,48 +404,6 @@ function reminderScheduleISOForCalendarEvent(event: CalendarEvent, systemTimeZon
   const reminderClock = normalizeReminderTime(event.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
   const reminderISO = isoFromDateTime(event.startDate, reminderClock, systemTimeZone);
   return Number.isNaN(Date.parse(reminderISO)) ? null : reminderISO;
-}
-
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  if (!base64String || typeof base64String !== 'string') {
-    throw new Error('VAPID public key is missing.');
-  }
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const decode = typeof atob === 'function'
-    ? atob
-    : (() => { throw new Error('No base64 decoder available in this environment'); });
-  try {
-    const rawData = decode(base64);
-    if (!rawData) throw new Error('Decoded key was empty');
-    const outputArray = new Uint8Array(rawData.length);
-    for (let i = 0; i < rawData.length; i += 1) {
-      outputArray[i] = rawData.charCodeAt(i);
-    }
-    if (outputArray.length < 32) {
-      throw new Error('Decoded key is too short');
-    }
-    return outputArray;
-  } catch (err) {
-    if (err instanceof Error) {
-      throw new Error(`Invalid VAPID public key: ${err.message}`);
-    }
-    throw new Error('Invalid VAPID public key.');
-  }
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-  }
 }
 
 type CompoundIndexGroup = {
@@ -489,42 +450,6 @@ function findBoardByCompoundChildId(boards: Board[], childId: string): Board | u
 
 
 
-const CUSTOM_ACCENT_VARIABLES: ReadonlyArray<[string, keyof AccentPalette]> = [
-  ["--accent", "fill"],
-  ["--accent-hover", "hover"],
-  ["--accent-active", "active"],
-  ["--accent-soft", "soft"],
-  ["--accent-border", "border"],
-  ["--accent-on", "on"],
-  ["--accent-glow", "glow"],
-];
-
-function gradientFromPalette(palette: AccentPalette, hasImage: boolean): string {
-  const primary = hexToRgba(palette.fill, 0.24);
-  const secondary = hexToRgba(palette.fill, 0.14);
-  const baseAlpha = hasImage ? 0.65 : 0.95;
-  return `radial-gradient(circle at 18% -10%, ${primary}, transparent 60%),` +
-    `radial-gradient(circle at 82% -12%, ${secondary}, transparent 65%),` +
-    `rgba(6, 9, 18, ${baseAlpha})`;
-}
-
-function hexToRgba(hex: string, alpha: number): string {
-  let value = hex.replace(/^#/, "");
-  if (value.length === 3) {
-    value = value.split("").map(ch => ch + ch).join("");
-  }
-  const int = parseInt(value.slice(0, 6), 16);
-  if (Number.isNaN(int)) {
-    return `rgba(52, 199, 89, ${Math.min(1, Math.max(0, alpha))})`;
-  }
-  const r = (int >> 16) & 255;
-  const g = (int >> 8) & 255;
-  const b = int & 255;
-  const clampedAlpha = Math.min(1, Math.max(0, alpha));
-  return `rgba(${r}, ${g}, ${b}, ${clampedAlpha})`;
-}
-
-
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 // Persistent task-deletion tombstones, keyed by board tag → task id → unix-secs
 // of the deletion. Survives reloads so a stale CREATE event from a slow/unaware
@@ -535,62 +460,6 @@ const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
 // timestamp — the most recent N deletions are always retained, which is what
 // matters for protecting against stale relay re-creates.
 const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
-const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
-
-
-
-function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
-  if (!value || typeof value !== "object") return null;
-  const id = typeof value.id === "string" ? value.id : "";
-  const boardId = typeof value.boardId === "string" ? value.boardId : "";
-  if (!id || !boardId) return null;
-  const tasks = Array.isArray(value.tasks)
-    ? value.tasks
-      .map((task: any) => {
-        if (!task || typeof task !== "object") return null;
-        const taskId = typeof task.id === "string" ? task.id : "";
-        const title = typeof task.title === "string" ? task.title : "";
-        if (!taskId || !title) return null;
-        const label = typeof task.label === "string" ? task.label : undefined;
-        return { id: taskId, title, ...(label ? { label } : {}) };
-      })
-      .filter(Boolean) as BoardPrintTask[]
-    : [];
-  const paperSize = isPrintPaperSize(value.paperSize) ? value.paperSize : "letter";
-  return {
-    id,
-    boardId,
-    boardName: typeof value.boardName === "string" ? value.boardName : "Board",
-    printedAtISO: typeof value.printedAtISO === "string" ? value.printedAtISO : new Date().toISOString(),
-    layoutVersion: typeof value.layoutVersion === "string" ? value.layoutVersion : "v1",
-    paperSize,
-    tasks,
-  };
-}
-
-function loadBoardPrintJob(boardId: string): BoardPrintJob | null {
-  if (!boardId) return null;
-  try {
-    const raw = kvStorage.getItem(LS_BOARD_PRINT_JOBS);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    return normalizeBoardPrintJob((parsed as Record<string, BoardPrintJob>)[boardId]);
-  } catch {
-    return null;
-  }
-}
-
-function persistBoardPrintJob(job: BoardPrintJob): void {
-  try {
-    const raw = kvStorage.getItem(LS_BOARD_PRINT_JOBS);
-    const parsed = raw ? JSON.parse(raw) : {};
-    const next = parsed && typeof parsed === "object" ? parsed : {};
-    (next as Record<string, BoardPrintJob>)[job.boardId] = job;
-    kvStorage.setItem(LS_BOARD_PRINT_JOBS, JSON.stringify(next));
-  } catch {}
-}
-
 /* ================== Crypto helpers (AES-GCM via local Nostr key) ================== */
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
   const h = await crypto.subtle.digest("SHA-256", toBufferSource(data));
@@ -933,175 +802,6 @@ function hiddenUntilForNext(
   const sow = startOfWeek(nextMidnight, weekStart);
   return sow.toISOString();
 }
-/* ================= DroppableColumn ================= */
-const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
-  title: string;
-  header?: React.ReactNode;
-  onDropCard: (payload: { id: string; beforeId?: string; allIds?: string[] }) => void;
-  onDropEnd?: () => void;
-  onTitleClick?: () => void;
-  onSelectAll?: () => void;
-  selectionState?: "none" | "some" | "all";
-  children: React.ReactNode;
-  footer?: React.ReactNode;
-  scrollable?: boolean;
-} & React.HTMLAttributes<HTMLDivElement>>((
-  {
-    title,
-    header,
-    onDropCard,
-    onDropEnd,
-    onTitleClick,
-    onSelectAll,
-    selectionState,
-    children,
-    footer,
-    scrollable,
-    className,
-    ...props
-  },
-  forwardedRef
-) => {
-  const innerRef = useRef<HTMLDivElement | null>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const dragDepthRef = useRef(0);
-
-  const setRef = useCallback((el: HTMLDivElement | null) => {
-    innerRef.current = el;
-    if (!forwardedRef) return;
-    if (typeof forwardedRef === "function") forwardedRef(el);
-    else (forwardedRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
-  }, [forwardedRef]);
-
-  useEffect(() => {
-    const el = innerRef.current;
-    if (!el) return;
-    const isTaskDrag = (e: DragEvent) => {
-      const types = e.dataTransfer?.types;
-      if (!types) return false;
-      return Array.from(types).some((type) => type === "text/task-id" || type === "text/plain");
-    };
-    const onDragOver = (e: DragEvent) => e.preventDefault();
-    const onDrop = (e: DragEvent) => {
-      e.preventDefault();
-      const id = getDraggedTaskId(e.dataTransfer);
-      if (id) {
-        let beforeId: string | undefined;
-        const columnEl = innerRef.current;
-        if (columnEl) {
-          const cards = Array.from(
-            columnEl.querySelectorAll<HTMLElement>("[data-task-id]")
-          );
-          const pointerY = e.clientY;
-          for (const card of cards) {
-            const rect = card.getBoundingClientRect();
-            if (pointerY < rect.top + rect.height / 2) {
-              beforeId = card.dataset.taskId || undefined;
-              break;
-            }
-          }
-        }
-        const allIds = getDraggedTaskIds(e.dataTransfer) ?? undefined;
-        onDropCard({ id, beforeId, allIds });
-      }
-      if (onDropEnd) onDropEnd();
-      dragDepthRef.current = 0;
-      setIsDragOver(false);
-    };
-    const onDragEnter = (e: DragEvent) => {
-      if (!isTaskDrag(e)) return;
-      dragDepthRef.current += 1;
-      setIsDragOver(true);
-    };
-    const onDragLeave = (e: DragEvent) => {
-      if (!isTaskDrag(e)) return;
-      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-      if (dragDepthRef.current === 0) setIsDragOver(false);
-    };
-    el.addEventListener("dragover", onDragOver);
-    el.addEventListener("drop", onDrop);
-    el.addEventListener("dragenter", onDragEnter);
-    el.addEventListener("dragleave", onDragLeave);
-    const resetDragState = () => {
-      dragDepthRef.current = 0;
-      setIsDragOver(false);
-    };
-    document.addEventListener("dragend", resetDragState);
-    return () => {
-      el.removeEventListener("dragover", onDragOver);
-      el.removeEventListener("drop", onDrop);
-      el.removeEventListener("dragenter", onDragEnter);
-      el.removeEventListener("dragleave", onDragLeave);
-      document.removeEventListener("dragend", resetDragState);
-    };
-  }, [onDropCard, onDropEnd]);
-
-  return (
-    <div
-      ref={setRef}
-      data-column-title={title}
-      data-drop-over={isDragOver || undefined}
-      className={`board-column surface-panel w-[325px] shrink-0 ${scrollable ? 'flex h-full min-h-0 flex-col overflow-hidden pt-2 px-2 pb-1' : 'min-h-[320px] p-2'} ${isDragOver ? 'board-column--active' : ''} ${className ?? ''}`}
-      {...props}
-    >
-      {header ?? (
-        <div className="flex items-center justify-between mb-3 gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            {selectionState && onSelectAll && (
-              <button
-                type="button"
-                role="checkbox"
-                aria-checked={selectionState === "all"}
-                aria-label={selectionState === "all" ? `Deselect all in ${title}` : `Select all in ${title}`}
-                onClick={(e) => { e.stopPropagation(); onSelectAll(); }}
-                className="flex items-center justify-center shrink-0"
-                title={selectionState === "all" ? "Deselect all in list" : "Select all in list"}
-              >
-                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${selectionState === "all" ? "bg-[var(--accent)] border-[var(--accent)]" : "border-[var(--secondary)]"}`}>
-                  {selectionState === "all" ? (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  ) : selectionState === "some" ? (
-                    <div className="w-2 h-2 rounded-full bg-[var(--secondary)]" />
-                  ) : null}
-                </div>
-              </button>
-            )}
-            <div
-              className={`text-sm font-semibold tracking-wide text-secondary truncate ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
-              onClick={onTitleClick}
-              role={onTitleClick ? 'button' : undefined}
-              tabIndex={onTitleClick ? 0 : undefined}
-              aria-label={onTitleClick ? `Set ${title} as add target` : undefined}
-              onKeyDown={(e) => {
-                if (!onTitleClick) return;
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onTitleClick();
-                }
-              }}
-              title={onTitleClick ? 'Set as add target' : undefined}
-            >
-              {title}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="p-1 text-secondary hover:text-primary rounded shrink-0"
-            onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }}
-            title="Select tasks">
-            <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
-          </button>
-        </div>
-      )}
-      <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''} data-column-scroll={scrollable ? "" : undefined}>
-        <div className="space-y-.25">{children}</div>
-      </div>
-      {scrollable && footer ? <div className="mt-auto flex-shrink-0 pt-2">{footer}</div> : null}
-      {!scrollable && footer}
-    </div>
-  );
-}));
-
 /* ================= App ================= */
 export default function App() {
   const { show: showToast } = useToast();
@@ -1701,118 +1401,7 @@ export default function App() {
     setTasks(prev => ensureWeekRecurrences(prev));
   }, [settings.showFullWeekRecurring, settings.weekStart]);
 
-  // Apply font size setting to root; fall back to default size
-  useEffect(() => {
-    try {
-      const base = settings.baseFontSize;
-      if (typeof base === "number" && base >= 12) {
-        const px = Math.min(22, base);
-        document.documentElement.style.fontSize = `${px}px`;
-      } else {
-        document.documentElement.style.fontSize = "";
-      }
-    } catch {}
-  }, [settings.baseFontSize]);
-
-  // Ensure the app always renders with the dark theme
-  useEffect(() => {
-    try {
-      const root = document.documentElement;
-      root.classList.remove("light");
-      if (!root.classList.contains("dark")) root.classList.add("dark");
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    try {
-      const root = document.documentElement;
-      const rootStyle = getComputedStyle(root);
-      let color = rootStyle.getPropertyValue("--surface-base").trim() || "#050508";
-      if (settings.backgroundImage && settings.backgroundAccent) {
-        color = settings.backgroundAccent.fill || settings.backgroundAccent.active || color;
-      } else if (settings.accent === "background" && settings.backgroundAccent) {
-        color = settings.backgroundAccent.fill || settings.backgroundAccent.active || color;
-      }
-      root.style.setProperty("--status-bar-color", color);
-      const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute("content", color);
-    } catch {}
-  }, [settings.accent, settings.backgroundAccent, settings.backgroundImage]);
-
-  useEffect(() => {
-    try {
-      const root = document.documentElement;
-      const style = root.style;
-      if (settings.accent === "green") root.setAttribute("data-accent", "green");
-      else root.removeAttribute("data-accent");
-
-      const palette = settings.accent === "background" ? settings.backgroundAccent ?? null : null;
-      const hasBackgroundImage = Boolean(settings.backgroundImage);
-      for (const [cssVar, key] of CUSTOM_ACCENT_VARIABLES) {
-        if (palette) style.setProperty(cssVar, palette[key]);
-        else style.removeProperty(cssVar);
-      }
-      if (palette) {
-        style.setProperty("--background-gradient", gradientFromPalette(palette, hasBackgroundImage));
-      } else {
-        style.removeProperty("--background-gradient");
-      }
-    } catch (err) {
-      console.error('Failed to apply accent palette', err);
-    }
-  }, [settings.accent, settings.backgroundAccent, settings.backgroundImage]);
-
-  useEffect(() => {
-    let blobUrl: string | null = null;
-    try {
-      const root = document.documentElement;
-      const style = root.style;
-      if (settings.backgroundImage) {
-        root.setAttribute("data-background-image", "true");
-
-        // Convert base64 data URL → blob URL so the browser can memory-map the
-        // image once and all CSS pseudo-elements share the same decoded bitmap
-        // instead of each independently decoding the base64.
-        try {
-          const dataUrl = settings.backgroundImage;
-          const commaIdx = dataUrl.indexOf(",");
-          if (commaIdx === -1) throw new Error("Invalid data URL");
-          const header = dataUrl.slice(0, commaIdx);
-          const b64 = dataUrl.slice(commaIdx + 1);
-          const mimeMatch = header.match(/data:([^;]+)/);
-          const mime = mimeMatch?.[1] ?? "image/jpeg";
-          const binary = atob(b64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const blob = new Blob([bytes], { type: mime });
-          blobUrl = URL.createObjectURL(blob);
-          style.setProperty("--background-image", `url("${blobUrl}")`);
-        } catch {
-          // Fallback to raw base64 if blob conversion fails
-          style.setProperty("--background-image", `url("${settings.backgroundImage}")`);
-        }
-
-        style.setProperty("--background-image-opacity", "1");
-        const blurMode = settings.backgroundBlur;
-        const overlay = blurMode === "sharp" ? "0.1" : "0.18";
-        style.setProperty("--background-overlay-opacity", overlay);
-        style.setProperty("--background-image-filter", blurMode === "sharp" ? "none" : "blur(36px)");
-        style.setProperty("--background-image-scale", blurMode === "sharp" ? "1.02" : "1.08");
-      } else {
-        root.removeAttribute("data-background-image");
-        style.removeProperty("--background-image");
-        style.removeProperty("--background-image-opacity");
-        style.removeProperty("--background-overlay-opacity");
-        style.removeProperty("--background-image-filter");
-        style.removeProperty("--background-image-scale");
-      }
-    } catch (err) {
-      console.error('Failed to apply background image', err);
-    }
-    return () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-    };
-  }, [settings.backgroundImage, settings.backgroundBlur]);
+  useAppAppearance(settings);
 
   const {
     applyCustomNostrKey,
@@ -9011,27 +8600,16 @@ export default function App() {
   }, []);
 
   const addSharedTaskFromInbox = useCallback(
-    (payload: SharedTaskPayload, sender?: InboxSender): Task | null => {
+    (payload: SharedTaskPayload, destination: SharedTaskDestination, sender?: InboxSender): Task | null => {
       const title = payload?.title?.trim();
       if (!title) return null;
-      const baseBoard = currentBoard ?? visibleBoards[0] ?? boards[0] ?? null;
-      if (!baseBoard) return null;
-      let boardId = baseBoard.id;
-      let column: Task["column"] | undefined;
-      let columnId: string | undefined;
-      let targetBoard = baseBoard;
-      if (baseBoard.kind === "week") {
-        column = "day";
-      } else if (isListLikeBoard(baseBoard)) {
-        const placement = resolveListPlacement();
-        if (!placement) {
-          showToast("Add a list to this board first.");
-          return null;
-        }
-        boardId = placement.boardId;
-        columnId = placement.columnId;
-        targetBoard = boards.find((b) => b.id === boardId) ?? baseBoard;
-      }
+      const targetBoard = boards.find((board) => board.id === destination.boardId);
+      if (!targetBoard || targetBoard.archived || targetBoard.hidden) return null;
+      if (targetBoard.kind !== "week" && targetBoard.kind !== "lists") return null;
+      if (targetBoard.kind === "lists" && !targetBoard.columns.some((column) => column.id === destination.columnId)) return null;
+      const boardId = targetBoard.id;
+      const column = targetBoard.kind === "week" ? "day" : undefined;
+      const columnId = targetBoard.kind === "lists" ? destination.columnId : undefined;
       const parsedDueISO = normalizeIsoTimestamp(payload.dueISO);
       const dueISO = parsedDueISO || isoForToday();
       const payloadDueDateEnabled =
@@ -9062,71 +8640,64 @@ export default function App() {
       const sharedNote = payload.note?.trim();
       const notePrefix = senderLabel ? `${isAssignment ? "Assigned by" : "Shared by"} ${senderLabel}` : null;
       const note = [notePrefix, sharedNote].filter(Boolean).join("\n");
-      let created: Task | null = null;
-      setTasks((prev) => {
-        const order = nextOrderForBoard(boardId, prev, settings.newTaskPosition);
-        const senderPubkey = normalizeAgentPubkey(sender?.pubkey) ?? sender?.pubkey;
-        const selfPubkey = normalizeAgentPubkey(nostrPK) ?? nostrPK;
-        const nextTask: Task = {
-          id: crypto.randomUUID(),
-          boardId,
-          title,
-          note: note || undefined,
-          createdAt: Date.now(),
-          ...(priority ? { priority } : {}),
-          dueISO,
-          dueDateEnabled: targetBoard.kind === "week" ? true : payloadDueDateEnabled,
-          completed: false,
-          order,
-          createdBy: senderPubkey || selfPubkey || undefined,
-          lastEditedBy: senderPubkey || selfPubkey || undefined,
-          ...(payload.dueTimeEnabled ? { dueTimeEnabled: true } : {}),
-          ...(dueTimeZone ? { dueTimeZone } : {}),
-          ...(reminders ? { reminders } : {}),
-        };
-        if (column) nextTask.column = column;
-        if (columnId) nextTask.columnId = columnId;
-        if (subtasks?.length) nextTask.subtasks = subtasks;
-        let nextAssignees = incomingAssignees;
-        if (isAssignment && selfPubkey) {
-          if (nextAssignees?.length) {
-            nextAssignees =
-              mergeTaskAssigneeResponse(nextAssignees, selfPubkey, "accepted", Date.now()) ?? nextAssignees;
-          } else {
-            nextAssignees = [{ pubkey: selfPubkey, status: "accepted", respondedAt: Date.now() }];
-          }
-        }
+      const order = nextOrderForBoard(boardId, tasks, settings.newTaskPosition);
+      const senderPubkey = normalizeAgentPubkey(sender?.pubkey) ?? sender?.pubkey;
+      const selfPubkey = normalizeAgentPubkey(nostrPK) ?? nostrPK;
+      const nextTask: Task = {
+        id: crypto.randomUUID(),
+        boardId,
+        title,
+        note: note || undefined,
+        createdAt: Date.now(),
+        ...(priority ? { priority } : {}),
+        dueISO,
+        dueDateEnabled: targetBoard.kind === "week" ? true : payloadDueDateEnabled,
+        completed: false,
+        order,
+        createdBy: senderPubkey || selfPubkey || undefined,
+        lastEditedBy: senderPubkey || selfPubkey || undefined,
+        ...(payload.dueTimeEnabled ? { dueTimeEnabled: true } : {}),
+        ...(dueTimeZone ? { dueTimeZone } : {}),
+        ...(reminders ? { reminders } : {}),
+      };
+      if (column) nextTask.column = column;
+      if (columnId) nextTask.columnId = columnId;
+      if (subtasks?.length) nextTask.subtasks = subtasks;
+      let nextAssignees = incomingAssignees;
+      if (isAssignment && selfPubkey) {
         if (nextAssignees?.length) {
-          nextTask.assignees = nextAssignees;
+          nextAssignees =
+            mergeTaskAssigneeResponse(nextAssignees, selfPubkey, "accepted", Date.now()) ?? nextAssignees;
+        } else {
+          nextAssignees = [{ pubkey: selfPubkey, status: "accepted", respondedAt: Date.now() }];
         }
-        if (recurrence) {
-          nextTask.recurrence = recurrence;
-          nextTask.seriesId = nextTask.seriesId || nextTask.id;
-        }
-        applyHiddenForFuture(nextTask, settings.weekStart, targetBoard.kind);
-        created = nextTask;
+      }
+      if (nextAssignees?.length) {
+        nextTask.assignees = nextAssignees;
+      }
+      if (recurrence) {
+        nextTask.recurrence = recurrence;
+        nextTask.seriesId = nextTask.seriesId || nextTask.id;
+      }
+      applyHiddenForFuture(nextTask, settings.weekStart, targetBoard.kind);
+      setTasks((prev) => {
         const updated = [...prev, nextTask];
         return settings.showFullWeekRecurring && nextTask.recurrence
           ? ensureWeekRecurrencesRef.current(updated, [nextTask])
           : updated;
       });
-      if (created) {
-        maybePublishTaskRef.current?.(created).catch(() => {});
-      }
-      return created;
+      maybePublishTaskRef.current?.(nextTask).catch(() => {});
+      return nextTask;
     },
     [
       boards,
-      currentBoard,
+      tasks,
       formatSenderLabel,
       nostrPK,
-      resolveListPlacement,
       setTasks,
       settings.newTaskPosition,
       settings.showFullWeekRecurring,
       settings.weekStart,
-      showToast,
-      visibleBoards,
     ],
   );
 
@@ -9173,10 +8744,35 @@ export default function App() {
     [defaultRelays, inboxRelays, nostrPK, nostrSkHex],
   );
 
+  const [sharedTaskCopy, setSharedTaskCopy] = useState<{ task: SharedTaskPayload; sender?: InboxSender } | null>(null);
+  const [sharedTaskDestinationId, setSharedTaskDestinationId] = useState<string | null>(null);
+  const sharedTaskDestinationItem = tasks.find((task) => task.id === sharedTaskDestinationId)?.inboxItem;
+
   function completeTask(
     id: string,
-    options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" | "decline" | "maybe" }
+    options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" | "decline" | "maybe"; inboxDestination?: SharedTaskDestination }
   ): CompleteTaskResult {
+    const pending = tasks.find((task) => task.id === id)?.inboxItem;
+    const canAcceptSharedTask = pending?.type === "task" &&
+      (!pending.status || pending.status === "pending" || pending.status === "read");
+    if (options?.inboxDestination && !canAcceptSharedTask) {
+      setSharedTaskDestinationId(null);
+      showToast("This invitation is no longer pending.");
+      return null;
+    }
+    if (pending?.type === "task" && canAcceptSharedTask &&
+        (!options?.inboxAction || options.inboxAction === "accept")) {
+      if (!options?.inboxDestination) {
+        setSharedTaskDestinationId(id);
+        return null;
+      }
+      if (!addSharedTaskFromInbox(pending.task, options.inboxDestination, pending.sender)) {
+        showToast("Choose an available board and list.");
+        return null;
+      }
+      setSharedTaskDestinationId(null);
+      showToast("Task added to your board");
+    }
     let memoryUpdate: ScriptureMemoryUpdate | null = null;
     let scheduledUpdate: { entryId: string; scheduledAtISO: string } | null = null;
     const scriptureStateSnapshot = scriptureMemory;
@@ -9184,7 +8780,8 @@ export default function App() {
     let inboxAction: { item: InboxItem; action: "accept" | "dismiss" | "decline" | "maybe" } | null = null;
     let assignmentResponse:
       | { item: Extract<InboxItem, { type: "task" }>; status: TaskAssigneeStatus }
-      | null = null;
+      | null = options?.inboxDestination && pending?.type === "task" && isAssignedSharedTask(pending.task)
+        ? { item: pending, status: "accepted" } : null;
     setTasks(prev => {
       const cur = prev.find(t => t.id === id);
       if (!cur) return prev;
@@ -9416,13 +9013,6 @@ export default function App() {
           showToast("Contact added to your list");
         } else {
           showToast("Unable to add contact");
-        }
-      } else if (item.type === "task") {
-        const added = addSharedTaskFromInbox(item.task, item.sender);
-        if (added) {
-          showToast("Task added to your board");
-        } else {
-          showToast("Unable to add task");
         }
       }
     }
@@ -13024,6 +12614,31 @@ export default function App() {
         </div>
       </div>
 
+      {sharedTaskCopy && (
+        <SharedTaskDestinationSheet
+          boards={boards}
+          initialBoardId={currentBoard?.id}
+          title={sharedTaskCopy.task.title}
+          onClose={() => setSharedTaskCopy(null)}
+          onConfirm={(destination) => {
+            if (addSharedTaskFromInbox(sharedTaskCopy.task, destination, sharedTaskCopy.sender)) {
+              setSharedTaskCopy(null);
+              showToast("Task added to your board");
+            } else {
+              showToast("Choose an available board and list.");
+            }
+          }}
+        />
+      )}
+      {sharedTaskDestinationId && (
+        <SharedTaskDestinationSheet
+          boards={boards}
+          initialBoardId={currentBoard?.id}
+          title={sharedTaskDestinationItem?.type === "task" ? sharedTaskDestinationItem.task.title : "Shared task"}
+          onClose={() => setSharedTaskDestinationId(null)}
+          onConfirm={(destination) => completeTask(sharedTaskDestinationId, { inboxAction: "accept", inboxDestination: destination })}
+        />
+      )}
       <AppSortSheets
         applyUpcomingFilterPreset={applyUpcomingFilterPreset}
         boardSort={boardSort}
@@ -13298,6 +12913,7 @@ export default function App() {
 
       <CashuWalletShell
         acceptInboxMessage={acceptInboxMessage}
+        addSharedTaskAgain={(task, sender) => setSharedTaskCopy({ task, sender })}
         closeWallet={closeWallet}
         declineInboxMessage={declineInboxMessage}
         dismissCalendarInvite={dismissCalendarInvite}
@@ -13411,54 +13027,4 @@ function nextOrderForCalendarBoard(
     return minOrder - 1;
   }
   return boardEvents.reduce((max, event) => Math.max(max, event.order ?? -1), -1) + 1;
-}
-
-async function syncRemindersToWorker(
-  workerBaseUrl: string,
-  push: PushPreferences,
-  reminderItems: Array<{
-    taskId: string;
-    boardId?: string;
-    title: string;
-    dueISO: string;
-    reminders: ReminderPreset[];
-  }>,
-  options?: { signal?: AbortSignal }
-): Promise<void> {
-  if (!workerBaseUrl) throw new Error("Worker base URL is not configured");
-  if (!push.deviceId || !push.subscriptionId) return;
-  const remindersPayload = reminderItems
-    .map((item) => ({
-      taskId: item.taskId,
-      boardId: item.boardId,
-      dueISO: item.dueISO,
-      title: item.title,
-      minutesBefore: (item.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
-    }))
-    .sort((a, b) => a.taskId.localeCompare(b.taskId));
-  let res: Response;
-  try {
-    res = await withTimeout(
-      fetch(`${workerBaseUrl}/api/reminders`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          deviceId: push.deviceId,
-          subscriptionId: push.subscriptionId,
-          reminders: remindersPayload,
-        }),
-        signal: options?.signal,
-      }),
-      PUSH_OPERATION_TIMEOUT_MS,
-      "Timed out while syncing reminders to the notification worker.",
-    );
-  } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
-      throw err;
-    }
-    throw err;
-  }
-  if (!res.ok) {
-    throw new Error(`Failed to sync reminders (${res.status})`);
-  }
 }

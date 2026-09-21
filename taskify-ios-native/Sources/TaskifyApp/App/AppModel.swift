@@ -4,7 +4,6 @@ import Security
 import SwiftUI
 import TaskifyCore
 import TaskifyWatchShared
-import UIKit
 import WidgetKit
 
 struct BoardTemplateShareResult: Sendable {
@@ -65,6 +64,7 @@ enum ProfilePictureUploadError: LocalizedError {
 
 enum SharedTaskSendError: LocalizedError {
     case taskUnavailable
+    case eventUnavailable
     case identityUnavailable
     case invalidRecipient
     case cannotSendToSelf
@@ -73,6 +73,7 @@ enum SharedTaskSendError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .taskUnavailable: "That task is no longer available."
+        case .eventUnavailable: "That event is not available for sharing."
         case .identityUnavailable: "Your Nostr identity is unavailable."
         case .invalidRecipient: "Enter a valid npub or 64-character public key."
         case .cannotSendToSelf: "Choose another Nostr account as the recipient."
@@ -201,7 +202,9 @@ final class AppModel {
                 || snapshot.contacts != oldValue.contacts {
                 directMessageRevision &+= 1
             }
+#if os(iOS)
             TaskifyPerfMonitor.shared.recordSnapshotWrite()
+#endif
         }
     }
 
@@ -748,12 +751,14 @@ final class AppModel {
         // The Watch cache owns its own unread badges; converging them is the phone's entire
         // outbound chat traffic. The companion `through:` variant is the Watch-originated
         // echo path and must not bounce the read back.
+#if os(iOS)
         if let through = updated.directMessageReadAt?[peerPublicKey.lowercased()], through > 0 {
             TaskifyWatchBridge.shared.pushChatReadUpdate(
                 conversationID: peerPublicKey,
                 through: through
             )
         }
+#endif
     }
 
     @discardableResult
@@ -1980,6 +1985,7 @@ final class AppModel {
         }
     }
 
+#if os(iOS)
     func handleDMPushWake(notifyMessages: Bool = true) async -> UIBackgroundFetchResult {
         guard dmPushEnabled, !isHandlingDMPushWake else { return .noData }
         isHandlingDMPushWake = true
@@ -2005,6 +2011,7 @@ final class AppModel {
         ) ?? false
         return categories.isEmpty && !paymentReceived ? .noData : .newData
     }
+#endif
 
     private static var dmPushAPNsEnvironment: String {
 #if DEBUG
@@ -2149,22 +2156,29 @@ final class AppModel {
     @discardableResult
     func respondToSharedInboxItem(
         _ itemID: String,
-        status: SharedInboxItemStatus
+        status: SharedInboxItemStatus,
+        destinationBoardID: String? = nil,
+        destinationColumnID: String? = nil,
+        asCopy: Bool = false
     ) -> Bool {
         guard let item = snapshot.sharedInbox.first(where: { $0.id == itemID }),
-              item.status == .pending,
+              (asCopy || item.status == .pending),
+              (!asCopy || status == .accepted),
               (status == .accepted || status == .declined || status == .tentative) else {
             return false
         }
 
         var acceptedTaskID: String?
         if status == .accepted {
-            guard let destination = sharedInboxDestination(),
+            let destination = destinationBoardID.map { (boardID: $0, columnID: destinationColumnID) }
+                ?? sharedInboxDestination()
+            guard let destination,
                   let task = snapshot.acceptSharedTask(
                       inboxItemID: itemID,
                       destinationBoardID: destination.boardID,
                       destinationColumnID: destination.columnID,
-                      recipientPublicKey: identityPublicKey
+                      recipientPublicKey: identityPublicKey,
+                      asCopy: asCopy
                   ) else { return false }
             acceptedTaskID = task.id
         } else {
@@ -2178,7 +2192,7 @@ final class AppModel {
             synchronizeTask(acceptedTaskID)
             refreshNotifications(requestPermission: false)
         }
-        if item.task.isAssignment,
+        if !asCopy, item.task.isAssignment,
            (status == .accepted || status == .declined || status == .tentative) {
             sendSharedTaskAssignmentResponse(item: item, status: status)
         }
@@ -2368,6 +2382,16 @@ final class AppModel {
               let board = board(withID: task.boardID) else {
             throw SharedTaskSendError.taskUnavailable
         }
+        if let group = groupConversation(id: recipientValue) {
+            guard !assignment else { throw SharedTaskSendError.invalidRecipient }
+            let identity = try outboundIdentity()
+            let envelope = TaskifyShareEnvelope(
+                item: .task(SharedTaskDelivery(task: task, relayURLs: board.effectiveRelayURLs)),
+                senderNpub: identity.npub
+            )
+            try await sendDirectMessage(to: group.groupID, content: envelope.messageContent())
+            return SharedTaskSendResult(recipientNpub: group.groupID, relayCount: 0, assignment: false)
+        }
         guard let recipientPublicKey = NostrPublicKey.parse(recipientValue),
               let recipientNpub = NostrPublicKey.npub(from: recipientPublicKey) else {
             throw SharedTaskSendError.invalidRecipient
@@ -2432,6 +2456,57 @@ final class AppModel {
             relayCount: deliveryPlan.recipientRelayURLs.count,
             assignment: assignment
         )
+    }
+
+    func sendSharedCalendarEvent(eventID: String, to recipientValue: String) async throws {
+        guard let event = snapshot.taskifyEvents?.first(where: { $0.id == eventID && !$0.isDeleted }) else {
+            throw SharedTaskSendError.eventUnavailable
+        }
+        let identity = try outboundIdentity()
+        let recipients: [String]
+        if let group = groupConversation(id: recipientValue) {
+            guard !hasLeftDirectMessageGroup(group.groupID),
+                  group.memberPublicKeys.contains(identity.publicKeyHex) else {
+                throw NostrDirectMessageError.leftGroup
+            }
+            recipients = group.memberPublicKeys.filter { $0 != identity.publicKeyHex }
+        } else {
+            guard let recipient = NostrPublicKey.parse(recipientValue)?.hexString else {
+                throw SharedTaskSendError.invalidRecipient
+            }
+            guard recipient != identity.publicKeyHex else { throw SharedTaskSendError.cannotSendToSelf }
+            recipients = [recipient]
+        }
+        guard let firstRecipient = recipients.first else { throw SharedTaskSendError.invalidRecipient }
+        if event.isReadOnly {
+            let delivery = SharedCalendarEventDelivery(
+                eventID: event.id, canonical: event.canonicalAddress, view: event.viewAddress,
+                eventKey: event.eventKey, inviteToken: event.inviteToken, title: event.title,
+                start: event.isAllDay ? event.startDateValue : event.startISO,
+                end: event.isAllDay ? event.endDateValue : event.endISO, relayURLs: event.relayURLs
+            )
+            let envelope = TaskifyShareEnvelope(item: .calendarEvent(delivery), senderNpub: identity.npub)
+            guard TaskifyShareEnvelope.decode(content: try envelope.messageContent()) != nil else {
+                throw SharedTaskSendError.eventUnavailable
+            }
+            try await sendDirectMessage(to: recipientValue, content: envelope.messageContent())
+            return
+        }
+        let previousParticipants = event.participants ?? []
+        let participants = previousParticipants + recipients.map { TaskifyEventParticipant(publicKey: $0) }
+        let plan = TaskifyEventInvitationPlanner.prepare(
+            event: event, participants: participants, previousParticipants: previousParticipants,
+            senderPublicKey: identity.publicKeyHex
+        )
+        guard let delivery = TaskifyEventInvitationPlanner.delivery(
+            event: plan.event, recipientPublicKey: firstRecipient
+        ) else { throw SharedTaskSendError.eventUnavailable }
+        // Persist invite tokens before sending so responses remain valid after a restart.
+        _ = snapshot.upsertTaskifyEvent(plan.event)
+        scheduleSave()
+        synchronizeTaskifyEvents([eventID])
+        let envelope = TaskifyShareEnvelope(item: .calendarEvent(delivery), senderNpub: identity.npub)
+        try await sendDirectMessage(to: recipientValue, content: envelope.messageContent())
     }
 
     func sendSharedContact(
@@ -4531,6 +4606,11 @@ final class AppModel {
     /// provisioning payload and the directory reply.
     func watchSnapshot(now: Date = Date()) -> TaskifyWatchSnapshot {
         let taskSnapshot = snapshot.watchData(now: now, calendar: weekCalendar)
+#if os(iOS)
+        let accent = TaskifyTheme.watchAccent
+#else
+        let accent: TaskifyWatchAccent? = nil
+#endif
         return TaskifyWatchSnapshot(
             schemaVersion: taskSnapshot.schemaVersion,
             tasks: taskSnapshot.tasks,
@@ -4538,7 +4618,7 @@ final class AppModel {
             selectedBoardID: taskSnapshot.selectedBoardID,
             generatedAt: taskSnapshot.generatedAt,
             acknowledgedCommandIDs: taskSnapshot.acknowledgedCommandIDs,
-            accent: TaskifyTheme.watchAccent
+            accent: accent
         )
     }
 
@@ -4716,10 +4796,14 @@ final class AppModel {
             // Persist successfully before clearing any state for the current account.
             try identityStore.save(imported)
             ShareTransferStore.clearAccount()
+#if os(iOS)
             TaskifyShareIdentity.clear()
             TaskifyShareSuggestions.clear()
+#endif
             for job in ShareTransferStore.all() {
+#if os(iOS)
                 TaskifyShareUploadSession.cancel(job)
+#endif
                 ShareTransferStore.remove(job.id)
             }
             applyIdentity(imported)
@@ -5623,6 +5707,12 @@ final class AppModel {
         }
         if rumor.kind == NIP17GiftWrap.rumorKind,
            let envelope = TaskifyShareEnvelope.decode(content: rumor.content) {
+            if let chatMessage = NostrDirectMessage(decrypted: decrypted, identityPublicKey: identity.publicKeyHex),
+               chatMessage.groupID != nil,
+               chatMessage.createdAt >= (chatMessageRetention.cutoffTimestamp() ?? 0),
+               updatedSnapshot.ingestDirectMessage(chatMessage) {
+                effects.snapshotChanged = true
+            }
             let authoredByIdentity = rumor.publicKey == identity.publicKeyHex
             let message = NIP17InboxMessage(
                 wrapEventID: decrypted.wrapEventID,
@@ -5646,7 +5736,8 @@ final class AppModel {
                     rumorEventID: message.rumorEventID,
                     sender: sender,
                     task: delivery,
-                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt)),
+                    groupID: NostrGroupConversation(rumor: rumor, identityPublicKey: identity.publicKeyHex)?.groupID
                 )
                 if updatedSnapshot.ingestSharedInboxItem(item) {
                     effects.snapshotChanged = true
@@ -5688,7 +5779,8 @@ final class AppModel {
                     rumorEventID: message.rumorEventID,
                     sender: sharedInboxSender(for: message),
                     event: delivery,
-                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt)),
+                    groupID: NostrGroupConversation(rumor: rumor, identityPublicKey: identity.publicKeyHex)?.groupID
                 )
                 if updatedSnapshot.ingestSharedCalendarInvite(item) {
                     effects.snapshotChanged = true
@@ -6356,16 +6448,24 @@ final class AppModel {
         do {
             let old = try? ShareTransferStore.account()
             if old?.publicKey != identity.publicKeyHex {
+#if os(iOS)
                 TaskifyShareSuggestions.clear()
+#endif
                 ShareTransferStore.clearAccount()
+#if os(iOS)
                 TaskifyShareIdentity.clear()
+#endif
                 shareSeenMessages = nil
                 for job in ShareTransferStore.all() {
+#if os(iOS)
                     TaskifyShareUploadSession.cancel(job)
+#endif
                     ShareTransferStore.remove(job.id)
                 }
             }
+#if os(iOS)
             try TaskifyShareIdentity.save(identity)
+#endif
             let contacts = Dictionary((snapshot.contacts ?? []).map { ($0.publicKey, $0) }, uniquingKeysWith: { first, _ in first })
             let history = snapshot.directMessageHistory
             var peers = Set(contacts.keys)
@@ -6390,10 +6490,13 @@ final class AppModel {
             let account = ShareAccount(publicKey: identity.publicKeyHex, recipients: recipients,
                 server: TaskifyMediaServerSettings.configuredEntry, senderRelays: effectiveNIP17InboxRelayURLs)
             if account != old { try ShareTransferStore.saveAccount(account) }
+#if os(iOS)
             for removed in old?.recipients ?? [] where !recipients.contains(where: { $0.id == removed.id }) {
                 TaskifyShareSuggestions.remove(account: identity.publicKeyHex, recipient: removed)
             }
+#endif
             let ids = Set(history.map(\.rumorEventID))
+#if os(iOS)
             if let seen = shareSeenMessages {
                 let new = history.filter { !seen.contains($0.rumorEventID) }
                 var donated = Set<String>()
@@ -6404,6 +6507,7 @@ final class AppModel {
                     }
                 }
             }
+#endif
             shareSeenMessages = ids
             // Account/recipient exports above must stay current even while another
             // refresh is awaiting a slow upload or relay acknowledgement.
@@ -6414,11 +6518,15 @@ final class AppModel {
                 guard identityPublicKey == identity.publicKeyHex else { return }
                 if input.account != account.publicKey || !recipients.contains(where: { $0.id == input.recipient.id && $0.members == input.recipient.members })
                     || input.createdAt < Date().addingTimeInterval(-48 * 3_600) {
+#if os(iOS)
                     TaskifyShareUploadSession.cancel(input)
+#endif
                     ShareTransferStore.remove(input.id)
                     continue
                 }
+#if os(iOS)
                 if retry { await TaskifyShareUploadSession.retry(input) }
+#endif
                 guard identityPublicKey == identity.publicKeyHex else { return }
                 let job = (try? ShareTransferStore.load(input.id)) ?? input
                 let messages = job.messages
@@ -6495,6 +6603,24 @@ final class AppModel {
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
             errorMessage = "Taskify could not save the latest change."
+        }
+    }
+
+    /// Mac's quit path: await in-flight task-publication preparation, then save the durable local
+    /// snapshot before the app terminates. Does not wait for relay acknowledgement — the sync
+    /// engine's outbox picks up unsent events on next launch. Returns whether the local save
+    /// succeeded so a failed save can cancel termination instead of losing the change.
+    func persistBeforeTermination() async -> Bool {
+        await taskPublicationTask?.value
+        saveTask?.cancel()
+        saveTask = nil
+        do {
+            try await store.save(snapshot)
+            lastStoreWriteAt = Date()
+            return true
+        } catch {
+            errorMessage = "Taskify could not save the latest change."
+            return false
         }
     }
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-const CLI = readFileSync(path.resolve(import.meta.dirname, "../src/index.ts"), "utf8");
+const CONTACTS = readFileSync(path.resolve(import.meta.dirname, "../src/commands/contact.ts"), "utf8");
 const CONFIG = readFileSync(path.resolve(import.meta.dirname, "../src/config.ts"), "utf8");
 const NIP51 = readFileSync(path.resolve(import.meta.dirname, "../src/shared/nip51Contacts.ts"), "utf8");
 
@@ -35,52 +35,52 @@ test("saveConfig writes flat mutations back to selected profile", () => {
 });
 
 test("contact command group is registered", () => {
-  assert.match(CLI, /contactCmd = program\s*\n?\s*\.command\("contact"\)/);
+  assert.match(CONTACTS, /contactCmd = program\s*\n?\s*\.command\("contact"\)/);
 });
 
 test("contact list subcommand exists", () => {
-  assert.match(CLI, /contactCmd[\s\S]*?\.command\("list"\)/);
+  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("list"\)/);
 });
 
 test("contact show subcommand exists", () => {
-  assert.match(CLI, /contactCmd[\s\S]*?\.command\("show <npubOrId>"\)/);
+  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("show <npubOrId>"\)/);
 });
 
 test("contact add subcommand exists with --name and --nip05 flags", () => {
-  assert.match(CLI, /contactCmd[\s\S]*?\.command\("add <npub>"\)/);
-  assert.match(CLI, /--name <name>/);
-  assert.match(CLI, /--nip05 <nip05>/);
+  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("add <npub>"\)/);
+  assert.match(CONTACTS, /--name <name>/);
+  assert.match(CONTACTS, /--nip05 <nip05>/);
 });
 
 test("contact remove subcommand exists", () => {
-  assert.match(CLI, /contactCmd[\s\S]*?\.command\("remove <npubOrId>"\)/);
+  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("remove <npubOrId>"\)/);
 });
 
 test("contact fetch subcommand exists", () => {
-  assert.match(CLI, /contactCmd[\s\S]*?\.command\("fetch <npub>"\)/);
+  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("fetch <npub>"\)/);
 });
 
 test("contact sync subcommand exists", () => {
-  assert.match(CLI, /contactCmd[\s\S]*?\.command\("sync"\)/);
+  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("sync"\)/);
 });
 
 test("resolveContact helper function is defined", () => {
-  assert.match(CLI, /function resolveContact\(/);
+  assert.match(CONTACTS, /function resolveContact\(/);
 });
 
 test("contact add decodes npub via nip19", () => {
-  assert.match(CLI, /nip19\.decode\(npubArg\)/);
+  assert.match(CONTACTS, /nip19\.decode\(npubArg\)/);
 });
 
 test("contact fetch fetches kind 0 profile from relays", () => {
-  assert.match(CLI, /kinds: \[0\].*authors: \[pubkeyHex\]|kinds.*0.*authors.*pubkeyHex/);
+  assert.match(CONTACTS, /kinds: \[0\].*authors: \[pubkeyHex\]|kinds.*0.*authors.*pubkeyHex/);
 });
 
 test("contact sync publishes encrypted private kind 30000 NIP-51 event", () => {
   assert.match(NIP51, /NIP51_CONTACTS_KIND = 30000/);
   assert.match(NIP51, /NIP51_PRIVATE_CONTACTS_D_TAG = "Chat-Friends"/);
   assert.match(NIP51, /encryptNip51PrivateItems/);
-  assert.match(CLI, /syncEvent\.content = await encryptNip51PrivateItems/);
-  assert.match(CLI, /syncEvent\.tags = \[\["d", NIP51_PRIVATE_CONTACTS_D_TAG\]\]/);
-  assert.doesNotMatch(CLI, /\.\.\.contacts\.map\(\(c\): string\[\] => \["p"/);
+  assert.match(CONTACTS, /syncEvent\.content = await encryptNip51PrivateItems/);
+  assert.match(CONTACTS, /syncEvent\.tags = \[\["d", NIP51_PRIVATE_CONTACTS_D_TAG\]\]/);
+  assert.doesNotMatch(CONTACTS, /\.\.\.contacts\.map\(\(c\): string\[\] => \["p"/);
 });

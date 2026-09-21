@@ -424,7 +424,7 @@ struct NostrContactDetailView: View {
                     Text(contact.displayName)
                         .font(.title2.bold())
                     // A bot is a peer that published a NIP-51 commands list
-                    // (docs/bot-command-lists.md); the list itself is the signal.
+                    // (docs/reference/bot-command-lists.md); the list itself is the signal.
                     if model.isBot(publicKey: contact.publicKey) {
                         Text("BOT")
                             .font(.caption2.weight(.bold))

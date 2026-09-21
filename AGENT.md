@@ -24,6 +24,11 @@ Taskify_Release/
 │   ├── public/           # Static assets, service worker manifest
 │   └── package.json      # PWA dependencies (React 19, NDK, Cashu, nostr-tools)
 │
+├── taskify-core/         # Shared pure domain contracts and utilities
+├── taskify-runtime-nostr/ # Shared Nostr transport and orchestration
+├── taskify-cli/          # CLI consuming shared core/runtime packages
+│   └── src/commands/    # Command groups and shared command context; index.ts composes groups
+│
 ├── worker/               # Cloudflare Worker (backend)
 │   ├── src/
 │   │   └── index.ts      # Worker entry: push notifications, reminders, cron, backups
@@ -34,17 +39,20 @@ Taskify_Release/
 │   ├── Sources/TaskifyCore/       # Nostr/NIP-17 crypto, relay sync, core policy
 │   └── Tests/TaskifyCoreTests/    # Native unit and interoperability tests
 │
+├── taskify-macos/        # Native SwiftUI/AppKit Mac target sharing iOS services
+│   ├── Sources/         # Desktop UI and pure presentation helpers
+│   └── Tests/           # Mac presentation regression tests
+│
 ├── taskify-push-relay/   # Dedicated NIP-17 inbox relay, APNs bridge, StartOS package
 │   ├── src/              # Relay, NIP-42/NIP-98 auth, store, APNs provider
 │   ├── startos/          # Start SDK 2.x manifest, action, daemon, interface, backup
 │   └── test/             # Protocol, persistence, APNs, and WebSocket integration tests
 │
 ├── docs/                 # Project documentation
-│   ├── agent-mode.md              # Agent Mode command reference
-│   ├── architecture-overview.md   # Runtime architecture and data flows
-│   ├── domains-layer-reference.md # Domain-by-domain map for src/domains/
-│   ├── functions-and-flows.md     # End-to-end runtime flows
-│   └── engineering-roadmap.md     # Documentation + testing roadmap
+│   ├── README.md              # Documentation index
+│   ├── reference/             # Architecture and operational guides
+│   ├── plans/                 # Implementation plans and roadmaps
+│   └── audits/                # Dated investigations
 │
 ├── scripts/              # Build helpers (install-worker-deps.mjs, etc.)
 ├── wrangler.toml         # Cloudflare Worker + asset config
@@ -64,6 +72,7 @@ Taskify is a **privacy-first, local-first task manager** with Nostr-based sync a
 | **PWA** | React 19, Vite, Tailwind | UI, local state, Nostr sync, Cashu wallet |
 | **Cloudflare Worker** | Wrangler, TypeScript | Push notifications, reminder scheduling, backup storage, cron triggers |
 | **Native iOS app** | SwiftUI, TaskifyCore | Native task/chat/wallet client, NIP-17 inbox, local notification classification |
+| **Native macOS app** | SwiftUI/AppKit, shared native services | Desktop boards, agenda, chat, wallet and settings; see taskify-macos/README.md for parity gaps |
 | **Taskify Push Relay** | Node.js, Nostr, APNs, StartOS | Encrypted kind-1059 retention and opaque-token APNs rich-preview delivery |
 | **Nostr relay network** | NDK, nostr-tools | Decentralized event transport and persistence |
 
@@ -97,7 +106,7 @@ Backups
 
 ### Cashu / Wallet Layer (`taskify-pwa/src/wallet/`, `src/mint/`)
 
-- Uses `@cashu/cashu-ts` v3 and `@cashu/crypto`
+- Uses `@cashu/cashu-ts` v4 and `@cashu/crypto`
 - Supports P2PK (NIP-61), NWC (NIP-47), lightning, seed-based key derivation
 - `SwapManager.ts` — atomic token swaps
 - `MintSession.ts` — per-mint connection lifecycle
@@ -143,14 +152,14 @@ your-feature-branch  (branch from New_Features_Fixes)
 cd taskify-pwa
 npm install
 npm run dev          # Vite dev server
-npm test             # Node test runner (no jest/vitest — native --test)
+npm test             # Vitest
 npm run lint         # ESLint
 ```
 
 **Worker (local):**
 ```sh
 # Requires Cloudflare account + wrangler auth
-cp .dev.vars.example .dev.vars  # fill in VAPID_PUBLIC_KEY, VAPID_SUBJECT
+# Create .dev.vars with the required local Worker secrets
 npx wrangler dev
 ```
 
@@ -158,7 +167,8 @@ npx wrangler dev
 
 - Test runners are package-specific: `taskify-core` uses Node's built-in `--test`, while
   `taskify-pwa` uses Vitest through `npm test`.
-- No monorepo build tool — each package (`taskify-pwa`, `worker`) is independent.
+- No monorepo build tool — each JavaScript package has its own manifest and lockfile.
+- Shared package builds clean and regenerate tracked `dist/` output; include regenerated files with source changes. See `README.md` for package test commands.
 - PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via `[assets]` binding.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
 
@@ -170,28 +180,37 @@ npx wrangler dev
 
 | Test File | Domain | What It Covers |
 |---|---|---|
-| `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/pwa-client-history-sync-2026-09-11.md` |
+| `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/audits/pwa-client-history-sync-2026-09-11.md` |
+| `src/theme/useAppAppearance.test.tsx` | Appearance settings | Font bounds, theme transitions, status-bar color, object-URL cleanup, and image fallback |
+| `taskify-cli/tests/task-ordering.test.ts` | CLI task ordering | Position moves, legacy orders, deterministic ties, ambiguous IDs, scope validation, and numeric validation |
+| `taskify-cli/tests/profile-command.test.ts`, `taskify-cli/tests/csv.test.ts` | CLI profiles and CSV | Local identity lifecycle, piped input, masking, quoting, and missing fields |
+| `src/domains/push/reminderClient.test.ts` | Reminder HTTP client | Stable payload ordering, minute offsets, cancellation, missing configuration, and HTTP errors |
+| `src/domains/push/vapidKey.test.ts`, `src/lib/withTimeout.test.ts` | Push registration utilities | URL-safe decoding, invalid keys, timeout rejection, and timer cleanup |
+| `taskify-cli/tests/config-command.test.ts`, `taskify-cli/tests/relay-diagnostics.test.ts` | CLI configuration and diagnostics | Selected-profile persistence, redaction, errors, and simulated connection outcomes |
+| `taskify-cli/tests/completions-command.test.ts` | CLI completions | Explicit shells, environment detection, combined fallback output, and invalid-shell exits |
+| `src/storage/boardPrintJobs.test.ts` | Saved print jobs | Legacy defaults, malformed data, per-board preservation, and storage failures |
+| `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |
+| `taskify-cli/tests/command-registration.test.ts` | CLI command composition | Bundled help/arguments plus isolated contact persistence, profile selection, lookup, trust/relay mutations, cache status/clearing, and error exits |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
+| `taskify-ios-native/Tests/TaskifyCoreTests/TaskifySharedContainerTests.swift` | Native storage | Signed Mac App Group authorization, private fallback, migration preservation and repeated saves/reloads |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SnapshotLookupCacheTests.swift` | Native board cache invalidation/reuse, compound scope, calendar boundaries, sorting, and flat timeline identities |
-| `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, strict kind-10050 routing, and signed inbox preferences |
+| `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, encrypted group task/event shares with persisted conversation routing, strict kind-10050 routing, and signed inbox preferences |
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
+| `taskify-macos/Tests/MacPresentationTests.swift` | Mac presentation | DST-aware task placement, list draft preservation, pending wallet outcomes, recovery consent, payment-request mint-selection fallback, and recurrence-builder day/interval math |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, and authenticated WebSocket delivery |
 
-Additional tests exist on feature branches and are being promoted into `New_Features_Fixes`:
+Additional PWA regression tests include `src/nostr/startupStability.test.ts` and
+`src/onboarding/onboardingGating.test.ts`; both are present in this checkout and
+are discovered by Vitest.
 
-| Test File | Domain | Status |
-|---|---|---|
-| `src/nostr/startupStability.test.ts` | Nostr startup | On `fix/startup-relay-stability` branch |
-| `src/onboarding/onboardingGating.test.ts` | Onboarding | On `fix/startup-relay-stability` branch |
+### Current Gaps (see `docs/plans/engineering-roadmap.md` for plan)
 
-### Current Gaps (see `docs/engineering-roadmap.md` for plan)
-
-- **No tests** for the legacy Web Push reminder Worker logic
+- Worker tests exist in `worker/src/*.test.ts`; reminder delivery coverage remains a separate area to assess
 - Native relay health and NIP-42 retry behavior still lack a live-relay integration test
 - **No E2E tests** — browser-level flows are untested
 - Coverage tooling not yet configured (no c8/nyc setup)
@@ -204,7 +223,7 @@ Additional tests exist on feature branches and are being promoted into `New_Feat
 
 | Change type | Doc update required |
 |---|---|
-| New agent command / op | `docs/agent-mode.md` |
+| New agent command / op | `docs/reference/agent-mode.md` |
 | New Nostr NIP usage | `AGENT.md` protocols table |
 | New domain / subsystem | `AGENT.md` structure map + architecture section |
 | New branch or deploy flow change | `AGENT.md` branch promotion |
