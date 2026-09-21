@@ -754,7 +754,8 @@ export function useContactDetail(options: UseContactDetailOptions) {
         const profileDraft = {
           displayName: currentDisplayName,
           username,
-          lud16: address || deriveDefaultLightningAddress(),
+          // A blank field publishes no lightning address.
+          lud16: address,
           nip05,
           about,
           picture: nextPicture,
@@ -763,7 +764,7 @@ export function useContactDetail(options: UseContactDetailOptions) {
           ...prev,
           displayName: profileDraft.displayName || prev.displayName,
           username: profileDraft.username || prev.username,
-          lud16: profileDraft.lud16 || prev.lud16,
+          lud16: profileDraft.lud16,
           nip05: profileDraft.nip05 || prev.nip05,
           about: profileDraft.about || prev.about,
           picture: profileDraft.picture ?? prev.picture,

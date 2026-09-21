@@ -4340,7 +4340,7 @@ export default function CashuWalletModal({
 
   const myCardUsername = formatContactUsername(profileForm.username);
   const myCardName = profileForm.displayName.trim() || myCardUsername || "My Card";
-  const myCardLightning = profileForm.lud16.trim() || deriveDefaultLightningAddress();
+  const myCardLightning = profileForm.lud16.trim();
   const myCardNpub = useMemo(() => {
     const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
     return identity ? formatNpub(identity.pubkey) : "";

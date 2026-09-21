@@ -890,7 +890,8 @@ export function useContactsSync({
           const nextProfile = {
             username: meta.username || profileFormRef.current.username || "",
             displayName: meta.displayName || meta.username || profileFormRef.current.displayName || "",
-            lud16: meta.lud16 || profileFormRef.current.lud16 || deriveDefaultLightningAddress(),
+            // The published profile is the source of truth; no address means none.
+            lud16: meta.lud16 || "",
             nip05: meta.nip05 || profileFormRef.current.nip05 || "",
             about: meta.about || profileFormRef.current.about || "",
             picture: meta.picture || profileFormRef.current.picture || "",
