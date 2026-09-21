@@ -1577,6 +1577,22 @@ public actor CashuWalletService {
             options: options,
             extra: nil
         )
+        return try await prepareQuotedLightningPayment(
+            meltQuote: meltQuote,
+            wallet: wallet,
+            mintURL: normalizedMintURL,
+            invoice: invoice
+        )
+    }
+
+    /// Reserves inputs for an already-quoted payment and records it so it can be confirmed,
+    /// cancelled, or recovered after a crash.
+    private func prepareQuotedLightningPayment(
+        meltQuote: MeltQuote,
+        wallet: Wallet,
+        mintURL normalizedMintURL: String,
+        invoice: String
+    ) async throws -> CashuLightningPaymentQuote {
         guard meltQuote.unit == .sat else { throw CashuWalletError.unsupportedUnit }
         let expiresAt = meltQuote.expiry > 0
             ? Date(timeIntervalSince1970: TimeInterval(meltQuote.expiry))
@@ -1620,6 +1636,85 @@ public actor CashuWalletService {
             feeReserve: meltQuote.feeReserve.value,
             walletFee: prepared.totalFee().value,
             expiresAt: expiresAt
+        )
+    }
+
+    /// Result of quoting a payment against a fixed budget (used when moving a whole balance).
+    public enum BudgetedLightningPayment: Equatable, Sendable {
+        /// Inputs are reserved; confirm or cancel with `quote.id`.
+        case prepared(CashuLightningPaymentQuote)
+        /// Too expensive for the budget; nothing is reserved.
+        case unaffordable(quoteID: String, amount: UInt64, feeReserve: UInt64, walletFee: UInt64?)
+    }
+
+    /// Quotes `invoice` and reserves inputs only if amount + fee reserve + input fee fits `budget`.
+    public func prepareLightningPayment(
+        mintURL rawMintURL: String,
+        invoice rawInvoice: String,
+        budget: UInt64
+    ) async throws -> BudgetedLightningPayment {
+        let normalizedMintURL = try Self.normalizedMintURL(rawMintURL)
+        let invoice = try Self.normalizedLightningInvoice(rawInvoice)
+        let wallet = try await repository.getWallet(mintUrl: MintUrl(url: normalizedMintURL), unit: .sat)
+        let meltQuote = try await wallet.meltQuote(method: .bolt11, request: invoice, options: nil, extra: nil)
+        let amount = meltQuote.amount.value
+        let feeReserve = meltQuote.feeReserve.value
+        guard amount.addingReportingOverflow(feeReserve).partialValue <= budget else {
+            return .unaffordable(quoteID: meltQuote.id, amount: amount, feeReserve: feeReserve, walletFee: nil)
+        }
+        let quote: CashuLightningPaymentQuote
+        do {
+            quote = try await prepareQuotedLightningPayment(
+                meltQuote: meltQuote,
+                wallet: wallet,
+                mintURL: normalizedMintURL,
+                invoice: invoice
+            )
+        } catch {
+            // CDK refuses to reserve inputs it doesn't have (input fees pushed it over).
+            if String(describing: error).localizedCaseInsensitiveContains("insufficient") {
+                return .unaffordable(quoteID: meltQuote.id, amount: amount, feeReserve: feeReserve, walletFee: nil)
+            }
+            throw error
+        }
+        guard quote.maximumTotal <= budget else {
+            await cancelLightningPayment(id: quote.id)
+            return .unaffordable(quoteID: quote.quoteID, amount: amount, feeReserve: feeReserve, walletFee: quote.walletFee)
+        }
+        return .prepared(quote)
+    }
+
+    /// Current state of an outgoing payment quote; nil when the mint can't be reached.
+    public func lightningPaymentStatus(
+        mintURL rawMintURL: String,
+        quoteID: String
+    ) async -> SweepMeltResult? {
+        guard let normalizedMintURL = try? Self.normalizedMintURL(rawMintURL),
+              let wallet = try? await repository.getWallet(mintUrl: MintUrl(url: normalizedMintURL), unit: .sat),
+              let quote = try? await wallet.checkMeltQuoteStatus(quoteId: quoteID) else { return nil }
+        switch quote.state {
+        case .paid, .issued:
+            let result = await recoveredLightningPaymentResult(quote: quote, wallet: wallet, mintURL: normalizedMintURL)
+            // The recorded fee may exclude input fees, so leave the total unknown.
+            return SweepMeltResult(state: .paid, preimage: result.preimage, feePaidSat: nil)
+        case .pending:
+            return SweepMeltResult(state: .pending, preimage: nil, feePaidSat: nil)
+        default:
+            return SweepMeltResult(state: .unpaid, preimage: nil, feePaidSat: nil)
+        }
+    }
+
+    /// Spendable, pending (in flight at the mint) and reserved (held by a prepared
+    /// payment or send) balance at one mint.
+    public func balance(
+        mintURL rawMintURL: String
+    ) async throws -> (spendable: UInt64, pending: UInt64, reserved: UInt64) {
+        let normalizedMintURL = try Self.normalizedMintURL(rawMintURL)
+        let wallet = try await repository.getWallet(mintUrl: MintUrl(url: normalizedMintURL), unit: .sat)
+        return (
+            try await wallet.totalBalance().value,
+            try await wallet.totalPendingBalance().value,
+            try await wallet.totalReservedBalance().value
         )
     }
 

@@ -122,7 +122,7 @@ public actor NostrRelayConnection {
 
     public func connect() throws {
         guard socket == nil else { return }
-        guard let url = URL(string: relayURL), url.scheme?.lowercased() == "wss" else {
+        guard let url = URL(string: relayURL), Self.isAllowedRelayURL(url) else {
             throw URLError(.badURL)
         }
 
@@ -340,6 +340,34 @@ public actor NostrRelayConnection {
                 "limit": min(max(1, limit), 500),
             ] as [String: Any],
         ])
+    }
+
+    /// NIP-47: the wallet's response to one specific request.
+    public func subscribeToNWCResponses(
+        id: String,
+        walletPublicKey: String,
+        clientPublicKey: String,
+        requestID: String
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [23_195],
+                "authors": [walletPublicKey.lowercased()],
+                "#p": [clientPublicKey.lowercased()],
+                "#e": [requestID.lowercased()],
+            ] as [String: Any],
+        ])
+    }
+
+    /// Secure relays only, except plain `ws://` on this device for local development.
+    nonisolated static func isAllowedRelayURL(_ url: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "wss": return true
+        case "ws": return ["localhost", "127.0.0.1", "::1"].contains(url.host?.lowercased() ?? "")
+        default: return false
+        }
     }
 
     public func closeSubscription(id: String) async throws {
