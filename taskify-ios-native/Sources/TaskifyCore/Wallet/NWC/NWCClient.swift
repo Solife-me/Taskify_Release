@@ -40,6 +40,29 @@ public struct NWCPayment: Equatable, Sendable {
     }
 }
 
+public struct NWCTransaction: Identifiable, Equatable, Sendable {
+    public enum Direction: String, Sendable { case incoming, outgoing }
+
+    public var id: String { paymentHash ?? "\(createdAt.timeIntervalSince1970)-\(amountSat)" }
+    public let direction: Direction
+    public let amountSat: UInt64
+    public let feesSat: UInt64
+    public let description: String?
+    public let paymentHash: String?
+    public let createdAt: Date
+    public let settledAt: Date?
+
+    public init(direction: Direction, amountSat: UInt64, feesSat: UInt64, description: String?, paymentHash: String?, createdAt: Date, settledAt: Date?) {
+        self.direction = direction
+        self.amountSat = amountSat
+        self.feesSat = feesSat
+        self.description = description
+        self.paymentHash = paymentHash
+        self.createdAt = createdAt
+        self.settledAt = settledAt
+    }
+}
+
 /// Carries one signed NIP-47 request to a relay and returns the first response event the
 /// caller accepts. Implementations must subscribe before publishing.
 public protocol NWCTransport: Sendable {
@@ -157,6 +180,29 @@ public actor NWCClient {
             settled: state == "settled" || settledAt > 0,
             preimage: result["preimage"] as? String
         )
+    }
+
+    /// Settled transactions, newest first (NIP-47 list_transactions).
+    public func listTransactions(limit: Int = 50) async throws -> [NWCTransaction] {
+        let result = try await request(method: "list_transactions", params: ["limit": limit])
+        let items = result["transactions"] as? [[String: Any]] ?? []
+        return items.compactMap { item in
+            guard let type = item["type"] as? String,
+                  let direction = NWCTransaction.Direction(rawValue: type),
+                  let amount = Self.unsigned(item["amount"]) else { return nil }
+            let created = Self.unsigned(item["created_at"]).map { Date(timeIntervalSince1970: TimeInterval($0)) } ?? Date()
+            let settled = Self.unsigned(item["settled_at"]).flatMap { $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0)) : nil }
+            return NWCTransaction(
+                direction: direction,
+                amountSat: amount / 1_000,
+                feesSat: (Self.unsigned(item["fees_paid"]) ?? 0) / 1_000,
+                description: item["description"] as? String,
+                paymentHash: item["payment_hash"] as? String,
+                createdAt: created,
+                settledAt: settled
+            )
+        }
+        .sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Pays an invoice. A timeout doesn't mean failure: callers must check the invoice's

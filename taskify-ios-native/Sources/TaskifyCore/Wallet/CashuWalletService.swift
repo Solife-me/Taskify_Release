@@ -2248,6 +2248,26 @@ public actor CashuWalletService {
         pendingReceives.sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// Saves a received token without redeeming it, so it stays redeemable anywhere (used
+    /// while an NWC wallet is the active wallet). Returns the saved entry.
+    public func saveReceiveWithoutRedeeming(_ encodedToken: String) async throws -> CashuPendingReceive {
+        let trimmed = encodedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = try await previewToken(trimmed)
+        let id = Self.pendingReceiveFingerprint(trimmed)
+        if let existing = pendingReceives.first(where: { $0.id == id }) { return existing }
+        let pending = CashuPendingReceive(
+            id: id,
+            token: trimmed,
+            mintURL: preview.mintURL,
+            amount: preview.amount,
+            memo: preview.memo,
+            createdAt: Date()
+        )
+        pendingReceives.append(pending)
+        try persistPendingReceives()
+        return pending
+    }
+
     public func submitReceive(_ encodedToken: String) async throws -> CashuReceiveSubmissionResult {
         let trimmed = encodedToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let preview = try await previewToken(trimmed)

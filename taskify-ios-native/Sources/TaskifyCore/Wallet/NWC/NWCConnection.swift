@@ -11,6 +11,7 @@ public enum NWCError: LocalizedError, Equatable {
     case invalidResponse
     case missingMethod(String)
     case invoiceAmountMismatch(expected: UInt64, actual: UInt64?)
+    case paymentUnconfirmed
 
     public var errorDescription: String? {
         switch self {
@@ -20,6 +21,8 @@ public enum NWCError: LocalizedError, Equatable {
         case .relayUnavailable: "Couldn't reach the wallet's relay."
         case .invalidResponse: "The wallet sent a response this app can't read."
         case let .missingMethod(method): "This wallet connection doesn't allow \(method)."
+        case .paymentUnconfirmed:
+            "Your wallet hasn't confirmed this payment yet. Check your wallet's history before trying again."
         case let .invoiceAmountMismatch(expected, actual):
             "The wallet returned an invoice for \(actual.map(String.init) ?? "no") sats instead of \(expected)."
         }
