@@ -520,6 +520,13 @@ export class CashuManager {
     return getDecodedToken(encoded, []);
   }
 
+  /** Decodes using this mint's keysets, so tokens with short (v2) keyset ids resolve. */
+  decodeTokenWithKeysets(encoded: string) {
+    const walletAny = this.wallet as any;
+    if (typeof walletAny?.decodeToken === "function") return walletAny.decodeToken(encoded);
+    return getDecodedToken(encoded, []);
+  }
+
   private resolvePrivkeysForToken(encoded: string): Map<string, { privkey: string; count: number }> {
     if (!this.getP2PKPrivkey) return new Map();
     try {
@@ -1473,6 +1480,50 @@ export class CashuManager {
       const keep = this.removeProofSet(this.proofCache, proofs);
       return this.meltSelectedProofs(quote, keep, [...proofs]);
     });
+  }
+
+  /** NUT-02 fee the mint charges to spend `proofs` as inputs. */
+  inputFeeForProofs(proofs: Proof[]): number {
+    if (!proofs.length) return 0;
+    return CashuManager.amountToNumber(this.wallet.getFeesForProofs(proofs));
+  }
+
+  /**
+   * Melts proofs that are not in this wallet (e.g. a received token kept unredeemed).
+   * `persist` receives the change outputs before the mint sees the melt and must store
+   * them durably (it may throw to abort). Change comes back as proofs for the caller to
+   * keep; nothing is added to this wallet's balance.
+   */
+  async meltForeignProofs(
+    quote: MeltQuoteResponse,
+    proofs: Proof[],
+    persist: (preview: SerializedMeltPreview) => void,
+  ): Promise<{ quote: MeltQuoteResponse; change: Proof[] }> {
+    return this.withMutation(async () => {
+      if (!proofs.length) throw new Error("Nothing to sweep");
+      const walletAny = this.wallet as any;
+      if (typeof walletAny.prepareMelt !== "function" || typeof walletAny.completeMelt !== "function") {
+        throw new Error("Installed cashu wallet library cannot melt stored tokens");
+      }
+      const preview = await walletAny.prepareMelt("bolt11", quote, proofs);
+      persist(this.serializeMeltPreview(preview));
+      const res = await walletAny.completeMelt(preview, this.privkeysForProofs(proofs));
+      const status = CashuManager.normalizeMeltQuoteResponse({
+        ...(res?.quote ?? {}),
+        request: res?.quote?.request ?? quote.request,
+      } as MeltQuoteResponse);
+      let change: Proof[] = Array.isArray(res?.change) ? res.change : [];
+      if (change.length) {
+        change = this.autoSignProofs(change);
+        this.validateDleqProofs(change);
+      }
+      return { quote: status, change };
+    });
+  }
+
+  /** Change proofs for a paid melt, rebuilt from the paid quote and stored outputs. */
+  async rebuildMeltChange(quoteId: string, preview: SerializedMeltPreview): Promise<Proof[] | null> {
+    return this.changeFromPaidQuote(quoteId, preview);
   }
 
   /** Current melt quote state from the mint, or null if it can't be checked. */

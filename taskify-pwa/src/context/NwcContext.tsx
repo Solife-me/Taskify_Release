@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { NwcClient, parseNwcUri, type ParsedNwcUri } from "../wallet/nwc";
 import { kvStorage } from "../storage/kvStorage";
+import { setWalletMode } from "../wallet/walletMode";
 
 const LS_NWC_URI = "cashu_nwc_connection_v1";
 
@@ -18,6 +19,7 @@ type NwcInfo = {
 
 type NwcPayResponse = {
   preimage?: string;
+  fees_paid?: number;
   [key: string]: unknown;
 };
 
@@ -183,6 +185,8 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     setStatus("idle");
     setLastError(null);
     try { kvStorage.removeItem(LS_NWC_URI); } catch {}
+    // Without a connection there is no NWC wallet to use; fall back to ecash.
+    setWalletMode("ecash");
   }, [setClient]);
 
   const refreshInfo = useCallback(async () => {
@@ -230,7 +234,9 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     if (!invoice?.trim()) throw new Error("Missing invoice");
     try {
       const client = ensureClient();
-      const res = await client.request<NwcPayResponse>("pay_invoice", { invoice: invoice.trim() });
+      // Lightning payments can take a while to settle; a short timeout would report a
+      // failure for a payment that may still succeed.
+      const res = await client.request<NwcPayResponse>("pay_invoice", { invoice: invoice.trim() }, { timeoutMs: 90_000 });
       return res;
     } catch (err: any) {
       const message = err instanceof Error ? err.message : String(err);

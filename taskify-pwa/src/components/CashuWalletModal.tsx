@@ -15,6 +15,11 @@ import {
 import { nip19, nip44 } from "nostr-tools";
 import { useCashu } from "../context/CashuContext";
 import { useNwc } from "../context/NwcContext";
+import { setWalletMode, useWalletMode } from "../wallet/walletMode";
+import { useNwcWalletMode } from "../hooks/wallet/useNwcWalletMode";
+import { useNwcSweeps } from "../hooks/wallet/useNwcSweeps";
+import { NwcWalletModeSheet } from "../ui/wallet/NwcWalletModeSheet";
+import { StoredTokensSheet } from "../ui/wallet/StoredTokensSheet";
 import { useToast } from "../context/ToastContext";
 import { useP2PK, type P2PKKey } from "../context/P2PKContext";
 import { EcashGlyph } from "./EcashGlyph";
@@ -350,6 +355,8 @@ export default function CashuWalletModal({
     subscribeMintQuoteUpdates,
     createTokenFromProofSelection,
     redeemPendingToken,
+    getMintConnection,
+    refreshTotalBalance: syncCashuWallet,
   } = useCashu();
   const { status: nwcStatus, connection: nwcConnection, info: nwcInfo, lastError: nwcError, connect: connectNwc, disconnect: disconnectNwc, refreshInfo: refreshNwcInfo, getBalanceMsat: getNwcBalanceMsat, payInvoice: payWithNwc, makeInvoice: makeNwcInvoice } = useNwc();
   const { show: showToast } = useToast();
@@ -773,6 +780,32 @@ export default function CashuWalletModal({
     handleMarkHistoryTokenSpent,
     handleDeleteHistoryEntry,
   } = useWalletHistory({ showToast, captureFiatValueUsd });
+
+  // NWC wallet mode: an external lightning wallet replaces the ecash wallet.
+  const walletMode = useWalletMode();
+  const nwcMode = useNwcWalletMode({
+    open,
+    showToast,
+    formatSatAmount,
+    setHistory,
+    buildHistoryEntry,
+    payMintInvoice,
+  });
+  const nwcWalletActive = nwcMode.nwcWalletActive;
+  const nwcSweeps = useNwcSweeps({
+    getMintConnection,
+    refreshTotalBalance: syncCashuWallet,
+    showToast,
+    formatSatAmount,
+    setHistory,
+    buildHistoryEntry,
+    walletLabel: nwcMode.walletLabel,
+    active: open && nwcWalletActive,
+  });
+  const [showWalletModeSheet, setShowWalletModeSheet] = useState(false);
+  const [showStoredTokens, setShowStoredTokens] = useState(false);
+  const displayTotalBalance = nwcWalletActive ? (nwcMode.balanceSat ?? 0) : totalBalance;
+  const displayPendingBalance = nwcWalletActive ? 0 : pendingBalance;
   usePendingTokenHistorySync({ open, setHistory });
   const {
     manualSendPlan,
@@ -2423,7 +2456,7 @@ export default function CashuWalletModal({
     walletPrimaryCurrency,
     setWalletPrimaryCurrency,
     btcUsdPrice,
-    totalBalance,
+    totalBalance: displayTotalBalance,
     usdFormatterLarge,
     usdFormatterSmall,
     formatSatAmount,
@@ -3039,8 +3072,8 @@ export default function CashuWalletModal({
     mintUrl,
     priceStatus,
     priceUpdatedAt,
-    totalBalance,
-    pendingBalance,
+    totalBalance: displayTotalBalance,
+    pendingBalance: displayPendingBalance,
     scannerMessage,
     normalizeNostrPubkey,
   });
@@ -3084,6 +3117,17 @@ export default function CashuWalletModal({
 
 
   async function handleCreateInvoice() {
+    if (nwcWalletActive) {
+      const { sats, error } = parseAmountInput(mintAmt);
+      if (error || !sats) {
+        setMintError(error || `Enter amount in ${amountInputUnitLabel}`);
+        return;
+      }
+      setMintError("");
+      const created = await nwcMode.createReceiveInvoice(sats);
+      if (created) setLightningReceiveView("invoice");
+      return;
+    }
     if (creatingMintInvoice) return;
     setMintError("");
     setCreatingMintInvoice(true);
@@ -3828,7 +3872,7 @@ export default function CashuWalletModal({
         if (typeof paymentRequest !== "string" || !paymentRequest) {
           throw new Error("LNURL callback did not return an invoice");
         }
-        const paymentResult = await payMintInvoice(paymentRequest);
+        const paymentResult = await nwcMode.payLightningInvoice(paymentRequest);
         const amountSat = Math.floor(amountMsat / 1000);
         toastLabel = formatSatAmount(amountSat);
         const historyAddress = `${namePartLower}@${domainLower}`;
@@ -3842,7 +3886,7 @@ export default function CashuWalletModal({
             direction: "out",
             amountSat,
             feeSat: paymentResult?.feeReserveSat ?? undefined,
-            mintUrl: paymentResult?.mintUrl ?? mintUrl ?? undefined,
+            mintUrl: paymentResult?.mintUrl ?? (nwcWalletActive ? undefined : mintUrl) ?? undefined,
             stateLabel: paymentResult?.state || "Paid",
           }),
           ...h,
@@ -3893,7 +3937,7 @@ export default function CashuWalletModal({
         if (!invoiceRes.ok) throw new Error("Failed to fetch LNURL invoice");
         const invoice = await invoiceRes.json();
         if (invoice?.status === "ERROR") throw new Error(invoice?.reason || "LNURL pay error");
-        const paymentResult = await payMintInvoice(invoice.pr);
+        const paymentResult = await nwcMode.payLightningInvoice(invoice.pr);
         toastLabel = formatSatAmount(amountSat);
         setHistory((h) => [
           buildHistoryEntry({
@@ -3905,14 +3949,14 @@ export default function CashuWalletModal({
             direction: "out",
             amountSat,
             feeSat: paymentResult?.feeReserveSat ?? undefined,
-            mintUrl: paymentResult?.mintUrl ?? mintUrl ?? undefined,
+            mintUrl: paymentResult?.mintUrl ?? (nwcWalletActive ? undefined : mintUrl) ?? undefined,
             stateLabel: paymentResult?.state || "Paid",
           }),
           ...h,
         ]);
         setLnurlPayData(null);
       } else if (isBolt11Input) {
-        const paymentResult = await payMintInvoice(normalized);
+        const paymentResult = await nwcMode.payLightningInvoice(normalized);
         let boltAmountSat: number | null = null;
         try {
           const { amountMsat } = decodeBolt11Amount(normalized);
@@ -3933,7 +3977,7 @@ export default function CashuWalletModal({
             direction: "out",
             amountSat: boltAmountSat ?? undefined,
             feeSat: paymentResult?.feeReserveSat ?? undefined,
-            mintUrl: paymentResult?.mintUrl ?? mintUrl ?? undefined,
+            mintUrl: paymentResult?.mintUrl ?? (nwcWalletActive ? undefined : mintUrl) ?? undefined,
             stateLabel: paymentResult?.state || "Paid",
           }),
           ...h,
@@ -4769,6 +4813,80 @@ export default function CashuWalletModal({
     );
 
 
+  const { setOnReceived: setNwcOnReceived, clearReceiveInvoice: clearNwcReceiveInvoice } = nwcMode;
+  useEffect(() => {
+    setNwcOnReceived(() => {
+      setMintAmt("");
+      closeReceiveLightningSheet();
+    });
+    return () => setNwcOnReceived(null);
+  }, [closeReceiveLightningSheet, setMintAmt, setNwcOnReceived]);
+
+  useEffect(() => {
+    if (receiveMode !== "lightning") clearNwcReceiveInvoice();
+  }, [clearNwcReceiveInvoice, receiveMode]);
+
+  // NWC wallet mode has no ecash to spend: ecash sends become lightning payments to the
+  // recipient's lightning address, and ecash payment requests can't be paid.
+  useEffect(() => {
+    if (!nwcWalletActive) return;
+    if (sendMode === "ecash") {
+      const address = typeof ecashSendRecipient?.address === "string" ? ecashSendRecipient.address.trim() : "";
+      openLightningSendSheet();
+      if (address) setLnInput(address);
+      else if (ecashSendRecipient) {
+        showToast(`${ecashSendRecipient.name || "This contact"} has no lightning address to pay with ${nwcMode.walletLabel}.`, 4000);
+      }
+    } else if (sendMode === "paymentRequest") {
+      setSendMode(null);
+      showToast(`Ecash payment requests can't be paid with ${nwcMode.walletLabel}.`, 4000);
+    }
+  }, [ecashSendRecipient, nwcMode.walletLabel, nwcWalletActive, openLightningSendSheet, sendMode, setLnInput, showToast]);
+
+  const handleCopyNwcReceiveAddress = async () => {
+    const address = nwcMode.receiveAddress;
+    if (!address) return;
+    try {
+      await navigator.clipboard?.writeText(address);
+      showToast("Lightning address copied", 2000);
+    } catch (error) {
+      console.warn("Failed to copy lightning address", error);
+    }
+  };
+
+  const handleNwcInvoiceBack = () => {
+    nwcMode.clearReceiveInvoice();
+    setMintError("");
+    setLightningReceiveView("amount");
+  };
+
+  const handleCopyStoredToken = async (token: string) => {
+    try {
+      await navigator.clipboard?.writeText(token);
+      showToast("Token copied", 2000);
+    } catch (error) {
+      console.warn("Failed to copy token", error);
+    }
+  };
+
+  const openWalletModeSheet = () => {
+    nwcSweeps.refreshMintBalances();
+    if (hasNwcConnection) refreshNwcInfo().catch(() => null);
+    setShowWalletModeSheet(true);
+  };
+
+  const handleSwitchWalletMode = (next: "ecash" | "nwc") => {
+    setWalletMode(next);
+    setShowWalletModeSheet(false);
+    syncCashuWallet();
+    if (next === "nwc") {
+      nwcMode.refreshBalance();
+      showToast(`Using ${nwcMode.walletLabel}`, 2500);
+    } else {
+      showToast("Using ecash wallet", 2500);
+    }
+  };
+
   const inConversation = isChatPage && chatView === "conversation";
   const hideAppTabSwitcher = isChatPage && chatView !== "threads";
   const walletRootClass = `wallet-modal${showBottomNav && !hideAppTabSwitcher ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}${isChatPage ? " wallet-modal--chat" : ""}${hideAppTabSwitcher ? " wallet-modal--app-nav-hidden" : ""}${inConversation ? " wallet-modal--chat-convo" : ""}`;
@@ -4801,8 +4919,15 @@ export default function CashuWalletModal({
           </div>
           {walletTab !== "messages" && (
             <div className="wallet-modal__toolbar">
-              <button className="ghost-button button-sm pressable" onClick={()=>setShowMintBalances(true)}>Mints</button>
-              <button className="ghost-button button-sm pressable" onClick={()=>setShowNwcSheet(true)}>Swap</button>
+              {!nwcWalletActive && (
+                <>
+                  <button className="ghost-button button-sm pressable" onClick={()=>setShowMintBalances(true)}>Mints</button>
+                  <button className="ghost-button button-sm pressable" onClick={()=>setShowNwcSheet(true)}>Swap</button>
+                </>
+              )}
+              <button className="ghost-button button-sm pressable" onClick={openWalletModeSheet}>
+                {nwcWalletActive ? nwcMode.walletLabel : "Wallet"}
+              </button>
               {onOpenBounties && (
                 <button className="ghost-button button-sm pressable" onClick={onOpenBounties}>
                   Bounties
@@ -4845,6 +4970,16 @@ export default function CashuWalletModal({
                 </div>
               )}
             </button>
+            {nwcWalletActive && nwcSweeps.tokens.length > 0 && (
+              <button
+                type="button"
+                className="ghost-button button-sm pressable w-full"
+                onClick={() => setShowStoredTokens(true)}
+              >
+                {nwcSweeps.tokens.length} ecash token{nwcSweeps.tokens.length === 1 ? "" : "s"}
+                {nwcSweeps.storedTokenSat > 0 ? ` · ${formatSatAmount(nwcSweeps.storedTokenSat)}` : ""}
+              </button>
+            )}
             <div className="wallet-modal__cta">
               <button className="accent-button pressable" onClick={openReceiveLightningSheet}>{"Receive"}</button>
               <button
@@ -8720,6 +8855,40 @@ export default function CashuWalletModal({
         </div>
       </ActionSheet>
 
+      <NwcWalletModeSheet
+        open={showWalletModeSheet}
+        onClose={() => setShowWalletModeSheet(false)}
+        mode={walletMode}
+        hasConnection={hasNwcConnection}
+        walletLabel={nwcMode.walletLabel}
+        walletMethods={nwcInfo?.methods}
+        mintBalances={nwcSweeps.mintBalances}
+        journal={nwcSweeps.migrationJournal}
+        migrationError={nwcSweeps.migrationError}
+        busy={nwcSweeps.busy}
+        formatSatAmount={formatSatAmount}
+        onOpenNwcManager={() => {
+          setShowWalletModeSheet(false);
+          openNwcManager();
+        }}
+        onMigrate={nwcSweeps.runMigration}
+        onSwitch={handleSwitchWalletMode}
+      />
+      <StoredTokensSheet
+        open={showStoredTokens}
+        onClose={() => setShowStoredTokens(false)}
+        walletLabel={nwcMode.walletLabel}
+        tokens={nwcSweeps.tokens}
+        tokenStates={nwcSweeps.tokenStates}
+        tokenError={nwcSweeps.tokenError}
+        busy={nwcSweeps.busy}
+        formatSatAmount={formatSatAmount}
+        onCheck={() => void nwcSweeps.checkTokenStates()}
+        onSweep={(ids) => void nwcSweeps.sweepTokens(ids)}
+        onCopy={(token) => void handleCopyStoredToken(token)}
+        onDelete={(id) => void nwcSweeps.deleteToken(id)}
+      />
+
       {receiveMode === "lightning" && (
         <Suspense fallback={null}>
           <LightningReceiveSheet
@@ -8733,7 +8902,7 @@ export default function CashuWalletModal({
         npubCashIdentity={npubCashIdentity}
         npubCashClaimStatus={npubCashClaimStatus}
         handleClaimNpubCash={handleClaimNpubCash}
-        handleCopyLightningAddress={handleCopyLightningAddress}
+        handleCopyLightningAddress={nwcWalletActive ? handleCopyNwcReceiveAddress : handleCopyLightningAddress}
         lightningAddressDisplay={lightningAddressDisplay}
         npubCashClaimMessage={npubCashClaimMessage}
         npubCashIdentityError={npubCashIdentityError}
@@ -8751,13 +8920,21 @@ export default function CashuWalletModal({
         primaryCurrency={primaryCurrency}
         handleLightningAmountKeypadInput={handleLightningAmountKeypadInput}
         handleCreateInvoice={handleCreateInvoice}
-        canCreateMintInvoice={canCreateMintInvoice}
-        creatingMintInvoice={creatingMintInvoice}
-        mintError={mintError}
-        mintQuote={mintQuote}
-        activeMintInvoice={activeMintInvoice}
-        handleLightningInvoiceBack={handleLightningInvoiceBack}
-        lightningInvoiceStatusLabel={lightningInvoiceStatusLabel}
+        canCreateMintInvoice={nwcWalletActive ? parseAmountInput(mintAmt).sats > 0 : canCreateMintInvoice}
+        creatingMintInvoice={nwcWalletActive ? nwcMode.creatingInvoice : creatingMintInvoice}
+        mintError={nwcWalletActive ? mintError || nwcMode.receiveError : mintError}
+        mintQuote={nwcWalletActive ? (nwcMode.receiveInvoice ? { request: nwcMode.receiveInvoice.request } : null) : mintQuote}
+        activeMintInvoice={nwcWalletActive ? nwcMode.receiveInvoice : activeMintInvoice}
+        handleLightningInvoiceBack={nwcWalletActive ? handleNwcInvoiceBack : handleLightningInvoiceBack}
+        lightningInvoiceStatusLabel={
+          nwcWalletActive ? (nwcMode.receiveInvoice?.status === "paid" ? "Received" : "Pending") : lightningInvoiceStatusLabel
+        }
+        nwcMode={nwcWalletActive}
+        nwcWalletLabel={nwcMode.walletLabel}
+        nwcReceiveAddress={nwcMode.receiveAddress}
+        nwcWalletLud16={nwcMode.walletLud16}
+        nwcCustomAddress={nwcMode.customReceiveAddress}
+        onSaveNwcAddress={nwcMode.setCustomReceiveAddress}
         satFormatter={satFormatter}
         formatSatAmount={formatSatAmount}
         invoiceAmountSecondary={invoiceAmountSecondary}
@@ -9225,6 +9402,9 @@ export default function CashuWalletModal({
       {sendMode === "lightning" && (
         <Suspense fallback={null}>
           <LightningSendSheet
+        nwcMode={nwcWalletActive}
+        nwcWalletLabel={nwcMode.walletLabel}
+        nwcBalanceLabel={nwcMode.balanceSat != null ? `${formatSatAmount(nwcMode.balanceSat)} available` : ""}
         sendMode={sendMode}
         closeLightningSendSheet={closeLightningSendSheet}
         openEcashSendSheet={openEcashSendSheet}
@@ -9839,6 +10019,11 @@ export default function CashuWalletModal({
       {showNwcManager && (
         <Suspense fallback={null}>
           <WalletNwcManagerSheet
+            walletMode={walletMode}
+            onOpenWalletMode={() => {
+              closeNwcManager();
+              openWalletModeSheet();
+            }}
         showNwcManager={showNwcManager}
         closeNwcManager={closeNwcManager}
         hasNwcConnection={hasNwcConnection}

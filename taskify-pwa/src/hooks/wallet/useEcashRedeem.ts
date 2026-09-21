@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { useCallback } from "react";
+import { isNwcWalletMode } from "../../wallet/walletMode";
 import {
   assembleNut16FromText,
   containsNut16Frame,
@@ -226,6 +227,30 @@ export function useEcashRedeem({
       const amountNote = savedAmount ? formatSatAmount(savedAmount) : "Token";
       const crossMintNote = saved.crossMint && saved.mintUrl ? ` at ${saved.mintUrl}` : "";
       const historyId = `recv-${Date.now()}`;
+
+      if (isNwcWalletMode()) {
+        // NWC wallet mode keeps the token as-is; the user moves it from Ecash tokens.
+        setHistory((h) => [
+          buildHistoryEntry({
+            id: historyId,
+            summary: `Saved ${amountNote} ecash token`,
+            detail: normalizedToken,
+            detailKind: "token",
+            type: "ecash",
+            direction: "in",
+            amountSat: savedAmount || undefined,
+            mintUrl: saved.mintUrl ?? undefined,
+            pendingTokenId: saved.id,
+            pendingTokenAmount: savedAmount || undefined,
+            pendingTokenMint: saved.mintUrl ?? undefined,
+            pendingStatus: "pending",
+          }),
+          ...h,
+        ]);
+        showToast(`Saved ${savedAmount ? formatSatAmount(savedAmount) : "token"} to Ecash tokens`, 3500);
+        if (receiveMode === "ecash") closeReceiveEcashSheet();
+        return;
+      }
 
       setHistory((h) => [
         buildHistoryEntry({

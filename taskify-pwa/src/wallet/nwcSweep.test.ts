@@ -610,6 +610,34 @@ describe("runSweep: safety guards", () => {
     expect(paid.every((a) => a.verification === "lookup")).toBe(true);
   });
 
+  test("the receiving wallet's confirmation outranks a preimage that doesn't match", async () => {
+    const nwc = new FakeNwcWallet();
+    const mint = new FakeMintSource(nwc, "https://mint.a", { proofs: splitPowersOfTwo(2_000) });
+    const realFinish = mint.finishPayment.bind(mint);
+    mint.finishPayment = (quote) => {
+      realFinish(quote);
+      quote.preimage = randomHex(); // mint reports a bogus preimage
+    };
+    const journal = await runSweep([mint], nwc, new MemoryJournalStore(), fastOptions);
+    const paid = journal.sources[0].attempts.filter((a) => a.state === "paid");
+    expect(paid.length).toBeGreaterThan(0);
+    expect(paid.every((a) => a.verification === "lookup")).toBe(true);
+    expect(summarizeSweepJournal(journal).unconfirmedSat).toBe(0);
+  });
+
+  test("reports unconfirmed sats when the preimage mismatches and the wallet can't be asked", async () => {
+    const nwc = new FakeNwcWallet();
+    nwc.supportsLookup = false;
+    const mint = new FakeMintSource(nwc, "https://mint.a", { proofs: splitPowersOfTwo(2_000) });
+    const realFinish = mint.finishPayment.bind(mint);
+    mint.finishPayment = (quote) => {
+      realFinish(quote);
+      quote.preimage = randomHex();
+    };
+    const journal = await runSweep([mint], nwc, new MemoryJournalStore(), fastOptions);
+    expect(summarizeSweepJournal(journal).unconfirmedSat).toBe(journal.sources[0].sentSat);
+  });
+
   test("marks payments unverified when neither preimage nor lookup is available", async () => {
     const nwc = new FakeNwcWallet();
     nwc.omitPaymentHash = true;

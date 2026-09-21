@@ -49,6 +49,7 @@ export function LightningSendSheet(props) {
     isLnAddress,
     lnurlRequiresAmount,
     lnAddrAmt,
+    nwcMode,
   } = props;
 
   return (
@@ -56,7 +57,7 @@ export function LightningSendSheet(props) {
       open={sendMode === "lightning"}
       onClose={closeLightningSendSheet}
       title="Pay Lightning"
-      actions={(
+      actions={nwcMode ? undefined : (
         <button className="ghost-button button-sm pressable" onClick={openEcashSendSheet}>
           eCash
         </button>
@@ -122,43 +123,7 @@ export function LightningSendSheet(props) {
         {lightningSendView === "invoice" && (
           <div className="space-y-4">
             <div className="wallet-section space-y-5">
-              <div className="space-y-2 text-left">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">Pay from</div>
-                {mintSelectionOptions.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={selectedMintValue}
-                      aria-label="Select mint"
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (next && next !== selectedMintValue) {
-                          void setMintUrl(next);
-                        }
-                      }}
-                    >
-                      {mintSelectionOptions.map((option) => {
-                        const info = mintInfoByUrl[option.normalized];
-                        const label = info?.name || formatMintDisplayName(option.url);
-                        return (
-                          <option key={option.normalized} value={option.normalized}>
-                            {label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input lightning-mint-select__display">
-                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">
-                    Add a mint in Wallet → Mint balances to start sending.
-                  </div>
-                )}
-              </div>
+              <PayFrom {...props} />
               <div className="rounded-2xl border border-surface bg-surface-muted p-4 space-y-2">
                 <div className="text-[11px] uppercase tracking-wide text-secondary">Amount</div>
                 <div className="text-3xl font-semibold text-primary">
@@ -202,43 +167,7 @@ export function LightningSendSheet(props) {
         {lightningSendView === "address" && (
           <div className="space-y-4">
             <div className="wallet-section wallet-section--compact space-y-4">
-              <div className="space-y-2 text-left">
-                <div className="text-[11px] uppercase tracking-wide text-secondary">Pay from</div>
-                {mintSelectionOptions.length ? (
-                  <div className="relative">
-                    <select
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
-                      value={selectedMintValue}
-                      aria-label="Select mint"
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (next && next !== selectedMintValue) {
-                          void setMintUrl(next);
-                        }
-                      }}
-                    >
-                      {mintSelectionOptions.map((option) => {
-                        const info = mintInfoByUrl[option.normalized];
-                        const label = info?.name || formatMintDisplayName(option.url);
-                        return (
-                          <option key={option.normalized} value={option.normalized}>
-                            {label}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <div className="pill-input lightning-mint-select__display">
-                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
-                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
-                    </div>
-                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
-                  </div>
-                ) : (
-                  <div className="text-sm text-secondary">
-                    Add a mint in Wallet → Mint balances to start sending.
-                  </div>
-                )}
-              </div>
+              <PayFrom {...props} />
               <div className="space-y-2 text-left">
                 <div className="text-[11px] uppercase tracking-wide text-secondary">Send to</div>
                 <div className="glass-panel px-3 py-2 text-sm font-medium text-primary break-all">
@@ -306,5 +235,63 @@ export function LightningSendSheet(props) {
         )}
       </div>
     </ActionSheet>
+  );
+}
+
+/** Where a lightning payment is paid from: a mint, or the NWC wallet in NWC mode. */
+function PayFrom({
+  nwcMode,
+  nwcWalletLabel,
+  nwcBalanceLabel,
+  mintSelectionOptions,
+  selectedMintValue,
+  setMintUrl,
+  mintInfoByUrl,
+  selectedMintLabel,
+  selectedMintBalanceLabel,
+}) {
+  return (
+    <div className="space-y-2 text-left">
+      <div className="text-[11px] uppercase tracking-wide text-secondary">Pay from</div>
+      {nwcMode ? (
+        <div className="pill-input lightning-mint-select__display">
+          <div className="lightning-mint-select__label">{nwcWalletLabel}</div>
+          {nwcBalanceLabel && <div className="lightning-mint-select__balance">{nwcBalanceLabel}</div>}
+        </div>
+      ) : mintSelectionOptions.length ? (
+        <div className="relative">
+          <select
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
+            value={selectedMintValue}
+            aria-label="Select mint"
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next && next !== selectedMintValue) {
+                void setMintUrl(next);
+              }
+            }}
+          >
+            {mintSelectionOptions.map((option) => {
+              const info = mintInfoByUrl[option.normalized];
+              const label = info?.name || formatMintDisplayName(option.url);
+              return (
+                <option key={option.normalized} value={option.normalized}>
+                  {label}
+                </option>
+              );
+            })}
+          </select>
+          <div className="pill-input lightning-mint-select__display">
+            <div className="lightning-mint-select__label">{selectedMintLabel}</div>
+            <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
+          </div>
+          <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
+        </div>
+      ) : (
+        <div className="text-sm text-secondary">
+          Add a mint in Wallet → Mint balances to start sending.
+        </div>
+      )}
+    </div>
   );
 }

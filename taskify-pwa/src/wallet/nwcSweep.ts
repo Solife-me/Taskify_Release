@@ -242,11 +242,17 @@ export function summarizeSweepJournal(journal: SweepJournal) {
     remainingSat += source.remainingSat ?? 0;
     excludedSat += source.excludedSat ?? 0;
   }
+  const unconfirmedSat = journal.sources
+    .flatMap((source) => source.attempts)
+    .filter((attempt) => attempt.state === "paid" && (attempt.verification === "mismatch" || attempt.verification === "unverified"))
+    .reduce((sum, attempt) => sum + attempt.amountSat, 0);
   return {
     sentSat,
     feesSat,
     remainingSat,
     excludedSat,
+    /** Paid by the mint but not confirmed by the receiving wallet. */
+    unconfirmedSat,
     complete: journal.sources.every((source) => FINAL_SOURCE_STATUSES.has(source.status)),
   };
 }
@@ -379,7 +385,8 @@ class SweepRunner {
     for (let i = 0; i < this.opts.lookupAttempts; i += 1) {
       const res = await lookup({ paymentHash: attempt.paymentHash, invoice: attempt.invoice }).catch(() => null);
       if (res?.settled) {
-        this.update(attempt, { verification: attempt.verification === "mismatch" ? "mismatch" : "lookup" });
+        // The receiving wallet's own confirmation outranks a preimage that didn't match.
+        this.update(attempt, { verification: "lookup" });
         return;
       }
       if (i < this.opts.lookupAttempts - 1) await this.opts.sleep(this.opts.lookupDelayMs);

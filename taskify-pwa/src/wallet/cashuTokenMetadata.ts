@@ -1,4 +1,4 @@
-import { getDecodedToken, type Proof } from "@cashu/cashu-ts";
+import { getDecodedToken, getTokenMetadata, type Proof } from "@cashu/cashu-ts";
 
 function amountToNumber(value: unknown): number {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -25,6 +25,22 @@ export function getCashuTokenMetadata(token: string): {
   mint?: string;
   unit?: string;
 } {
+  // getTokenMetadata reads tokens whose proofs use short (v2) keyset ids, which
+  // getDecodedToken can't resolve without the mint's keyset list.
+  try {
+    const metadata = getTokenMetadata(token);
+    const incompleteProofs = (metadata.incompleteProofs ?? []) as Proof[];
+    if (incompleteProofs.length) {
+      return {
+        amount: amountToNumber(metadata.amount),
+        incompleteProofs,
+        mint: metadata.mint || undefined,
+        unit: metadata.unit || undefined,
+      };
+    }
+  } catch {
+    // fall back to a full decode below
+  }
   const decoded: any = getDecodedToken(token, []);
   const entries: any[] = Array.isArray(decoded?.token)
     ? decoded.token

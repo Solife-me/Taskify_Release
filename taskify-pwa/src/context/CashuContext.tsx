@@ -22,6 +22,7 @@ import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/n
 import { decodeBolt11Amount } from "../wallet/lightning";
 import { getCashuTokenMetadata } from "../wallet/cashuTokenMetadata";
 import { getWalletSeedBytes } from "../wallet/seed";
+import { isNwcWalletMode } from "../wallet/walletMode";
 import type { MeltQuoteResponse, MintQuoteResponse } from "../wallet/cashuTypes";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -111,6 +112,8 @@ type CashuContextType = {
     secrets: string[],
   ) => Promise<{ token: string; proofs: Proof[]; mintUrl: string }>;
   redeemPendingToken: (id: string) => Promise<{ proofs: Proof[]; mintUrl: string }>;
+  getMintConnection: (mintUrl: string) => Promise<MintConnection>;
+  refreshTotalBalance: () => void;
 };
 
 const globalCtxKey = "__TASKIFY_CASHU_CONTEXT__";
@@ -475,6 +478,8 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
   );
 
   const redeemPendingTokens = useCallback(async () => {
+    // In NWC wallet mode saved tokens stay unredeemed so they remain portable.
+    if (isNwcWalletMode()) return;
     if (redeemingPendingRef.current) return;
     let entries: PendingTokenEntry[] = [];
     try {
@@ -569,6 +574,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
   const redeemPendingToken = useCallback(
     async (id: string) => {
+      if (isNwcWalletMode()) {
+        throw new Error("Tokens aren't redeemed while an NWC wallet is in use. Move them to it from Ecash tokens.");
+      }
       if (redeemingPendingRef.current) {
         throw new Error("Another redemption is already in progress. Please try again shortly.");
       }
@@ -893,6 +901,12 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           savedForLater: false,
         };
       };
+
+      if (isNwcWalletMode()) {
+        // NWC wallet mode: keep the original token instead of claiming it into the
+        // ecash wallet, so the user can sweep it to NWC or redeem it elsewhere.
+        return queueForLater(primaryMint ?? manager.mintUrl, !!crossMintNeeded);
+      }
 
       if (crossMintNeeded && primaryMint) {
         try {
@@ -1251,6 +1265,15 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     [getLocalP2PKPrivkey, markKeyUsed],
   );
 
+  // Re-reads balances after work done through getMintConnection (e.g. NWC sweeps).
+  const syncWalletState = useCallback(() => {
+    if (manager) {
+      setBalance(manager.balance);
+      setProofs(manager.proofs);
+    }
+    refreshTotalBalance();
+  }, [manager, refreshTotalBalance]);
+
   const value = useMemo<CashuContextType>(() => ({
     ready,
     mintUrl,
@@ -1272,7 +1295,11 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     subscribeMintQuoteUpdates,
     createTokenFromProofSelection,
     redeemPendingToken,
+    getMintConnection: ensureManagerForMint,
+    refreshTotalBalance: syncWalletState,
   }), [
+    ensureManagerForMint,
+    syncWalletState,
     ready,
     mintUrl,
     setMintUrl,

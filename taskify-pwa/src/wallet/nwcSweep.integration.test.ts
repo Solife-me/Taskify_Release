@@ -7,8 +7,9 @@
  *
  * Mint A is the ecash source (run it with MINT_INPUT_FEE_PPK > 0 to cover NUT-02 fees).
  * Mint B stands in for the NWC wallet: its mint quotes are the invoices we pay.
- * FakeWallet pays any invoice at zero lightning fee, so every melt returns its whole
- * fee reserve as NUT-08 change — which exercises change handling on every pass.
+ * FakeWallet pays any invoice for a flat 1 sat lightning fee (FAKEWALLET_LN_FEE), so
+ * nearly the whole fee reserve returns as NUT-08 change — exercising change handling
+ * on every pass.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -72,6 +73,8 @@ import { amountToSat, mintSweepSource } from "./nwcSweepAdapters";
 import { listPendingMelts } from "./storage";
 
 const MINT_A = process.env.CASHU_TEST_MINT_A ?? "";
+/** nutshell's FakeWallet reports a 1 sat fee for every outgoing payment. */
+const FAKEWALLET_LN_FEE = 1;
 const MINT_B = process.env.CASHU_TEST_MINT_B ?? "";
 
 class MemoryJournal implements SweepJournalStore {
@@ -163,7 +166,7 @@ describe.skipIf(!MINT_A || !MINT_B)("sweep against real nutshell mints", () => {
     const remaining = await unspentSat(MINT_A, manager.proofs);
     expect(remaining).toBe(manager.balance);
     expect(sent + record.feesSat + remaining).toBe(start);
-    // FakeWallet charges no lightning fee; only NUT-02 input fees are lost.
+    // Only NUT-02 input fees and FakeWallet's 1 sat lightning fee are lost.
     expect(record.feesSat).toBeLessThanOrEqual(paidInvoices.length * 5);
     expect(listPendingMelts(MINT_A)).toHaveLength(0);
     // Durable-save before each melt reached the mint.
@@ -266,7 +269,7 @@ describe.skipIf(!MINT_A || !MINT_B)("sweep against real nutshell mints", () => {
     const remaining = await unspentSat(MINT_A, restarted.proofs);
     expect(remaining).toBe(restarted.balance);
     expect(record.sentSat + record.feesSat + remaining).toBe(start);
-    // Only NUT-02 input fees may be lost (FakeWallet pays no lightning fee).
+    // Only NUT-02 input fees and FakeWallet's 1 sat lightning fee may be lost.
     expect(record.feesSat).toBeLessThanOrEqual(record.attempts.filter((a) => a.state === "paid").length * 5);
   }, 60_000);
 
@@ -308,5 +311,239 @@ describe.skipIf(!MINT_A || !MINT_B)("sweep against real nutshell mints", () => {
     const remaining = await unspentSat(MINT_A, restarted.proofs);
     expect(remaining).toBe(restarted.balance);
     expect(journal.sources[0].sentSat + journal.sources[0].feesSat + remaining).toBe(start);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Stored (unredeemed) tokens swept straight from their own proofs
+// ---------------------------------------------------------------------------
+
+import * as CashuLib from "@cashu/cashu-ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import {
+  resolveOutstandingTokenSweeps,
+  tokenSweepSource,
+  type StoredTokenRef,
+  type TokenSweepLedger,
+  type TokenSweepRecord,
+  type TokenSweepRecordStore,
+} from "./nwcSweepAdapters";
+
+class MemoryTokenRecords implements TokenSweepRecordStore {
+  records = new Map<string, TokenSweepRecord>();
+  failPut = false;
+  get(id: string) {
+    const r = this.records.get(id);
+    return r ? (JSON.parse(JSON.stringify(r)) as TokenSweepRecord) : null;
+  }
+  list() {
+    return [...this.records.values()].map((r) => JSON.parse(JSON.stringify(r)) as TokenSweepRecord);
+  }
+  put(record: TokenSweepRecord) {
+    if (this.failPut) throw new Error("Could not save sweep progress to this device's storage");
+    this.records.set(record.quoteId, JSON.parse(JSON.stringify(record)));
+  }
+  remove(id: string) {
+    this.records.delete(id);
+  }
+}
+
+class MemoryLedger implements TokenSweepLedger {
+  tokens = new Map<string, { mint: string; token: string; amount: number }>();
+  async addChangeToken(mint: string, token: string, amountSat: number) {
+    this.tokens.set(`change-${this.tokens.size}-${Date.now()}`, { mint, token, amount: amountSat });
+  }
+  async removeToken(id: string) {
+    this.tokens.delete(id);
+  }
+  add(id: string, mint: string, token: string, amount: number): StoredTokenRef {
+    this.tokens.set(id, { mint, token, amount });
+    return { id, mint, token };
+  }
+  changeTokens() {
+    return [...this.tokens.entries()].filter(([id]) => id.startsWith("change-")).map(([, t]) => t);
+  }
+}
+
+/** A separate "sender" wallet mints ecash and hands us a token, like a DM or nutzap would. */
+async function receiveTokenFromSender(amount: number, p2pkPubkey?: string): Promise<{ token: string; proofs: Proof[] }> {
+  const sender = new Wallet(new Mint(MINT_A), { unit: "sat" });
+  await sender.loadMint();
+  const quote = await sender.createMintQuoteBolt11(amount);
+  for (let i = 0; i < 20; i += 1) {
+    const q = await sender.checkMintQuoteBolt11(quote.quote);
+    if (String(q.state).toUpperCase() === "PAID") break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const minted = await sender.mintProofsBolt11(amount, quote.quote);
+  let proofs = minted as Proof[];
+  if (p2pkPubkey) {
+    const locked = await sender.send(amount - 20, minted, { includeFees: true } as any, {
+      send: { type: "p2pk", options: { pubkey: p2pkPubkey } },
+    } as any);
+    proofs = locked.send as Proof[];
+  }
+  return { token: getEncodedToken({ mint: MINT_A, proofs, unit: "sat" }), proofs };
+}
+
+async function tokenMint(manager: CashuManager) {
+  const conn = manager as any;
+  return {
+    mintUrl: MINT_A,
+    unit: "sat",
+    decodeTokenWithKeysets: async (t: string) => conn.decodeTokenWithKeysets(t),
+    checkProofStates: (p: Proof[]) => conn.checkProofStates(p),
+    inputFeeForProofs: async (p: Proof[]) => conn.inputFeeForProofs(p),
+    createMeltQuote: (i: string) => conn.createMeltQuote(i),
+    meltForeignProofs: (q: any, p: Proof[], persist: any) => conn.meltForeignProofs(q, p, persist),
+    rebuildMeltChange: (id: string, preview: any) => conn.rebuildMeltChange(id, preview),
+    checkMeltQuoteState: (q: any) => conn.checkMeltQuoteState(q),
+  };
+}
+
+describe.skipIf(!MINT_A || !MINT_B)("sweeping stored tokens against real nutshell mints", () => {
+  beforeEach(() => {
+    memory.stores.clear();
+    memory.failWrites = false;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("sweeps a token without claiming it into the wallet and keeps change as a new token", async () => {
+    const manager = await newManager();
+    const { token, proofs } = await receiveTokenFromSender(3000);
+    const ledger = new MemoryLedger();
+    const entry = ledger.add("t1", MINT_A, token, 3000);
+    const records = new MemoryTokenRecords();
+    const { destination } = mintBDestination();
+
+    const journal = await runSweep(
+      [tokenSweepSource(entry, await tokenMint(manager), ledger, records)],
+      destination,
+      new MemoryJournal(),
+      { sleep: async () => {}, maxPasses: 1 },
+    );
+
+    const record = journal.sources[0];
+    expect(journal.status).toBe("completed");
+    expect(manager.balance).toBe(0); // never touched the ecash wallet
+    expect(ledger.tokens.has("t1")).toBe(false);
+    expect(await unspentSat(MINT_A, proofs)).toBe(0);
+    const change = ledger.changeTokens();
+    const changeSat = change.reduce((s, t) => s + t.amount, 0);
+    // Change tokens are real, unspent and portable.
+    for (const t of change) {
+      const decoded = await (manager as any).decodeTokenWithKeysets(t.token);
+      expect(await unspentSat(MINT_A, decoded.proofs)).toBe(t.amount);
+    }
+    expect(record.sentSat + record.feesSat + changeSat).toBe(3000);
+    expect(records.list()).toHaveLength(0);
+  }, 60_000);
+
+  test("sweeps a token locked to the user's key (P2PK)", async () => {
+    const privkey = bytesToHex(CashuLib.createRandomSecretKey() as Uint8Array);
+    const pubkey = bytesToHex(CashuLib.getPubKeyFromPrivKey(Buffer.from(privkey, "hex")) as Uint8Array);
+    const manager = new CashuManager(MINT_A, { getP2PKPrivkey: (pk: string) => (pk.endsWith(pubkey.slice(2)) ? privkey : null) });
+    await manager.init();
+    const { token, proofs } = await receiveTokenFromSender(1500, pubkey);
+    const tokenSat = proofs.reduce((s, p) => s + amountToSat(p.amount), 0);
+    const ledger = new MemoryLedger();
+    const entry = ledger.add("locked", MINT_A, token, tokenSat);
+    const { destination } = mintBDestination();
+
+    const journal = await runSweep(
+      [tokenSweepSource(entry, await tokenMint(manager), ledger, new MemoryTokenRecords())],
+      destination,
+      new MemoryJournal(),
+      { sleep: async () => {}, maxPasses: 1 },
+    );
+    expect(journal.sources[0].status).toBe("swept");
+    expect(await unspentSat(MINT_A, proofs)).toBe(0);
+    const changeSat = ledger.changeTokens().reduce((s, t) => s + t.amount, 0);
+    expect(journal.sources[0].sentSat + journal.sources[0].feesSat + changeSat).toBe(tokenSat);
+  }, 60_000);
+
+  test("a token the sender already reclaimed is reported, not melted", async () => {
+    const manager = await newManager();
+    const { token, proofs } = await receiveTokenFromSender(900);
+    const reclaimer = new Wallet(new Mint(MINT_A), { unit: "sat" });
+    await reclaimer.loadMint();
+    await reclaimer.receive(getEncodedToken({ mint: MINT_A, proofs, unit: "sat" }));
+
+    const ledger = new MemoryLedger();
+    const entry = ledger.add("gone", MINT_A, token, 900);
+    const { destination, issued } = mintBDestination();
+    const journal = await runSweep(
+      [tokenSweepSource(entry, await tokenMint(manager), ledger, new MemoryTokenRecords())],
+      destination,
+      new MemoryJournal(),
+      { sleep: async () => {} },
+    );
+    expect(journal.sources[0].status).toBe("dust");
+    expect(journal.sources[0].excludedSat).toBe(900);
+    expect(issued).toHaveLength(0);
+    expect(ledger.tokens.has("gone")).toBe(true); // left for the user to review
+  }, 60_000);
+
+  test("crash after the melt is recovered on the next launch, change included", async () => {
+    const manager = await newManager();
+    const { token, proofs } = await receiveTokenFromSender(2500);
+    const ledger = new MemoryLedger();
+    const entry = ledger.add("t2", MINT_A, token, 2500);
+    const records = new MemoryTokenRecords();
+
+    const wallet = (manager as any).wallet as Wallet & { completeMelt: (...args: any[]) => Promise<any> };
+    const realComplete = wallet.completeMelt.bind(wallet);
+    vi.spyOn(wallet, "completeMelt").mockImplementation(async (...args: any[]) => {
+      await realComplete(...args);
+      throw new Error("NetworkError: tab closed");
+    });
+    vi.spyOn(manager as any, "checkMeltQuoteSafe").mockResolvedValue(null);
+
+    const { destination } = mintBDestination();
+    const first = await runSweep(
+      [tokenSweepSource(entry, await tokenMint(manager), ledger, records)],
+      destination,
+      new MemoryJournal(),
+      { sleep: async () => {}, maxPasses: 1 },
+    );
+    expect(first.sources[0].status).toBe("awaiting_settlement");
+    expect(records.list()).toHaveLength(1);
+    expect(ledger.tokens.has("t2")).toBe(true);
+    vi.restoreAllMocks();
+
+    const restarted = await newManager();
+    const unresolved = await resolveOutstandingTokenSweeps(records, async () => tokenMint(restarted), ledger);
+    expect(unresolved).toBe(0);
+    expect(records.list()).toHaveLength(0);
+    expect(ledger.tokens.has("t2")).toBe(false);
+    expect(await unspentSat(MINT_A, proofs)).toBe(0);
+    const paid = first.sources[0].attempts.find((a) => a.state === "melting")!;
+    const changeSat = ledger.changeTokens().reduce((s, t) => s + t.amount, 0);
+    const inputFee = await restarted.inputFeeForProofs(proofs);
+    // Nothing lost but the input fee and FakeWallet's lightning fee: the rest of the
+    // fee reserve came back as change even though the melt response was lost.
+    expect(paid.amountSat + changeSat + inputFee + FAKEWALLET_LN_FEE).toBe(2500);
+  }, 60_000);
+
+  test("failing to save the sweep record stops the melt and leaves the token intact", async () => {
+    const manager = await newManager();
+    const { token, proofs } = await receiveTokenFromSender(1200);
+    const ledger = new MemoryLedger();
+    const entry = ledger.add("t3", MINT_A, token, 1200);
+    const records = new MemoryTokenRecords();
+    records.failPut = true;
+    const { destination } = mintBDestination();
+
+    const journal = await runSweep(
+      [tokenSweepSource(entry, await tokenMint(manager), ledger, records)],
+      destination,
+      new MemoryJournal(),
+      { sleep: async () => {} },
+    );
+    expect(journal.sources[0].status).toBe("failed");
+    expect(await unspentSat(MINT_A, proofs)).toBe(1200);
+    expect(ledger.tokens.has("t3")).toBe(true);
   }, 60_000);
 });

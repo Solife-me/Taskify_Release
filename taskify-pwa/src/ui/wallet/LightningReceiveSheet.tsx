@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { ActionSheet } from "../../components/ActionSheet";
 import {
   QrCodeCard,
@@ -50,6 +50,12 @@ export function LightningReceiveSheet(props) {
     formatSatAmount,
     invoiceAmountSecondary,
     mintUrl,
+    nwcMode,
+    nwcWalletLabel,
+    nwcReceiveAddress,
+    nwcWalletLud16,
+    nwcCustomAddress,
+    onSaveNwcAddress,
   } = props;
 
   return (
@@ -57,7 +63,7 @@ export function LightningReceiveSheet(props) {
       open={receiveMode === "lightning"}
       onClose={closeReceiveLightningSheet}
       title="Receive Lightning"
-      actions={(
+      actions={nwcMode ? undefined : (
         <button
           className="ghost-button button-sm pressable"
           onClick={() => {
@@ -70,7 +76,26 @@ export function LightningReceiveSheet(props) {
       )}
     >
       <div className="space-y-4">
-        {lightningReceiveView === "address" && (
+        {lightningReceiveView === "address" && nwcMode && (
+          <div className="space-y-4">
+            <NwcReceiveAddress
+              address={nwcReceiveAddress}
+              walletLud16={nwcWalletLud16}
+              customAddress={nwcCustomAddress}
+              walletLabel={nwcWalletLabel}
+              onCopy={handleCopyLightningAddress}
+              onSave={onSaveNwcAddress}
+            />
+            <button
+              type="button"
+              className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
+              onClick={handleOpenLightningAmountView}
+            >
+              Create Invoice
+            </button>
+          </div>
+        )}
+        {lightningReceiveView === "address" && !nwcMode && (
           <div className="space-y-4">
             <div className="wallet-section space-y-4 text-center">
               {npubCashLightningAddressEnabled ? (
@@ -144,7 +169,11 @@ export function LightningReceiveSheet(props) {
           <div className="wallet-section space-y-5">
             <div className="space-y-2 text-left">
               <div className="text-[11px] uppercase tracking-wide text-secondary">Receive to</div>
-              {mintSelectionOptions.length ? (
+              {nwcMode ? (
+                <div className="pill-input lightning-mint-select__display">
+                  <div className="lightning-mint-select__label">{nwcWalletLabel}</div>
+                </div>
+              ) : mintSelectionOptions.length ? (
                 <div className="relative">
                   <select
                     className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
@@ -261,8 +290,10 @@ export function LightningReceiveSheet(props) {
                   </div>
                 )}
                 <div className="flex items-center justify-between">
-                  <span className="text-secondary">Mint</span>
-                  <span className="font-medium break-all">{trimMintUrlScheme(mintUrl || "—")}</span>
+                  <span className="text-secondary">{nwcMode ? "Wallet" : "Mint"}</span>
+                  <span className="font-medium break-all">
+                    {nwcMode ? nwcWalletLabel : trimMintUrlScheme(mintUrl || "—")}
+                  </span>
                 </div>
               </div>
               {mintError && <div className="text-sm text-rose-400">{mintError}</div>}
@@ -271,5 +302,84 @@ export function LightningReceiveSheet(props) {
         )}
       </div>
     </ActionSheet>
+  );
+}
+
+/** Receive address for NWC mode: the wallet's own lud16, or one the user enters. */
+function NwcReceiveAddress({ address, walletLud16, customAddress, walletLabel, onCopy, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(customAddress || "");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!editing) setDraft(customAddress || "");
+  }, [customAddress, editing]);
+
+  const save = (value) => {
+    try {
+      onSave(value);
+      setError("");
+      setEditing(false);
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  };
+
+  if (editing || !address) {
+    return (
+      <div className="wallet-section space-y-3 text-left">
+        <div className="text-sm text-secondary">
+          {address
+            ? `Show a different lightning address for ${walletLabel}.`
+            : `${walletLabel} didn't share a lightning address. If it has one, enter it to show it here, or create an invoice for a specific amount.`}
+        </div>
+        <input
+          className="pill-input w-full"
+          placeholder="you@example.com"
+          value={draft}
+          autoCapitalize="none"
+          autoCorrect="off"
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        {error && <div className="text-xs text-rose-400">{error}</div>}
+        <div className="flex flex-wrap gap-2">
+          <button className="accent-button button-sm pressable" onClick={() => save(draft)} disabled={!draft.trim()}>
+            Save address
+          </button>
+          {customAddress && (
+            <button className="ghost-button button-sm pressable" onClick={() => save("")}>
+              {walletLud16 ? `Use ${walletLud16}` : "Remove address"}
+            </button>
+          )}
+          {editing && (
+            <button className="ghost-button button-sm pressable" onClick={() => setEditing(false)}>
+              Cancel
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wallet-section space-y-4 text-center">
+      <div className="flex justify-center">
+        <QrCodeCard
+          value={address}
+          label="Lightning address"
+          size={240}
+          flat
+          hideCopyButton
+          copyOnQrClick
+          onCopy={onCopy}
+          className="wallet-qr-card--centered"
+        />
+      </div>
+      <div className="text-sm font-medium text-primary break-words">{address}</div>
+      <div className="text-xs text-secondary">Payments go to {walletLabel}.</div>
+      <button className="ghost-button button-sm pressable" onClick={() => setEditing(true)}>
+        Change address
+      </button>
+    </div>
   );
 }
