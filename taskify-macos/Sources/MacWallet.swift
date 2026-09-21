@@ -11,9 +11,13 @@ struct MacWalletView: View {
     @State private var mintURL = ""
     @State private var error: String?
     @State private var removingMint: CashuMintSummary?
+    @State private var showingWalletMode = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
+                if wallet.isNWCWalletActive {
+                    MacNWCWalletPanel()
+                } else {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("AVAILABLE BALANCE").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -36,6 +40,8 @@ struct MacWalletView: View {
                         Button("Payment Requests…") { advancedSheet = .paymentRequests }
                         Button("Transfer Between Mints…") { advancedSheet = .mintTransfer }.disabled(wallet.snapshot.mints.count < 2)
                         Button("Manage P2PK Keys…") { advancedSheet = .p2pkKeys }
+                        Divider()
+                        Button("Use an NWC Wallet…") { showingWalletMode = true }
                     } label: { Label("More", systemImage: "ellipsis.circle") }
                 }.controlSize(.large)
                 if let message = wallet.statusMessage { Label(message, systemImage: "checkmark.circle").foregroundStyle(.green) }
@@ -129,6 +135,7 @@ struct MacWalletView: View {
                         }
                     }
                 }
+                }
             }.padding(32).frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)
         }.sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } })) {
@@ -141,6 +148,7 @@ struct MacWalletView: View {
                 contactPickerPurpose = nil
             }
         }
+        .sheet(isPresented: $showingWalletMode) { MacWalletModeView() }
         .sheet(item: $advancedSheet) { sheet in
             switch sheet {
             case .paymentRequests: MacPaymentRequestsView()
