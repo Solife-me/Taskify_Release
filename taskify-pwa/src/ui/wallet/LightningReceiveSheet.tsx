@@ -376,7 +376,9 @@ function NwcReceiveAddress({ address, walletLud16, customAddress, walletLabel, o
         />
       </div>
       <div className="text-sm font-medium text-primary break-words">{address}</div>
-      <div className="text-xs text-secondary">Payments go to {walletLabel}.</div>
+      {walletLud16 && address.toLowerCase() === walletLud16.toLowerCase() && (
+        <div className="text-xs text-secondary">Payments go to {walletLabel}.</div>
+      )}
       <button className="ghost-button button-sm pressable" onClick={() => setEditing(true)}>
         Change address
       </button>

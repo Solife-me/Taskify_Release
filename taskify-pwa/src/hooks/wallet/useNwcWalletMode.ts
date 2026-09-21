@@ -46,6 +46,19 @@ export function isValidLightningAddress(value: string): boolean {
   return LIGHTNING_ADDRESS.test(value.trim());
 }
 
+/** Sets the address shown on Receive in NWC mode ("" falls back to the wallet's own lud16). */
+export function setNwcReceiveAddress(value: string) {
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed && !isValidLightningAddress(trimmed)) throw new Error("Enter a lightning address like name@example.com");
+  if (trimmed) kvStorage.setItem(LS_NWC_RECEIVE_ADDRESS, trimmed);
+  else kvStorage.removeItem(LS_NWC_RECEIVE_ADDRESS);
+  addressListeners.forEach((listener) => listener());
+}
+
+export function useNwcReceiveAddressSetting(): string {
+  return useSyncExternalStore(subscribeReceiveAddress, readReceiveAddress, readReceiveAddress);
+}
+
 /** Everything the wallet modal does differently when an NWC wallet is the active wallet. */
 export function useNwcWalletMode({
   open,
@@ -62,15 +75,9 @@ export function useNwcWalletMode({
   const balanceSat = typeof nwc.info?.balanceMsat === "number" ? Math.floor(nwc.info.balanceMsat / 1000) : null;
 
   // --- Receive address -----------------------------------------------------
-  const customAddress = useSyncExternalStore(subscribeReceiveAddress, readReceiveAddress, readReceiveAddress);
+  const customAddress = useNwcReceiveAddressSetting();
   const receiveAddress = customAddress || nwc.connection?.walletLud16 || "";
-  const setCustomReceiveAddress = useCallback((value: string) => {
-    const trimmed = value.trim().toLowerCase();
-    if (trimmed && !isValidLightningAddress(trimmed)) throw new Error("Enter a lightning address like name@example.com");
-    if (trimmed) kvStorage.setItem(LS_NWC_RECEIVE_ADDRESS, trimmed);
-    else kvStorage.removeItem(LS_NWC_RECEIVE_ADDRESS);
-    addressListeners.forEach((listener) => listener());
-  }, []);
+  const setCustomReceiveAddress = setNwcReceiveAddress;
 
   // --- Balance ---------------------------------------------------------------
   const { getBalanceMsat, refreshInfo } = nwc;

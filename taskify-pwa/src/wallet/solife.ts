@@ -27,6 +27,17 @@ export type SolifeAddress = {
   relays: string[];
   mintUrl: string;
   mintOverride?: boolean;
+  lightningRedirect?: { externalAddress: string } | null;
+  nwcForward?: SolifeNwcForward | null;
+};
+
+/** A custom address forwarding payments to the owner's receive-only NWC wallet. */
+export type SolifeNwcForward = {
+  walletAlias: string | null;
+  walletNpub: string;
+  lastError: string | null;
+  lastUsedAt: number | null;
+  updatedAt: number;
 };
 
 export type SolifeAccount = {
@@ -323,4 +334,43 @@ export async function updateSolifeLightningAddressMint(
     body: { mintUrl: requestOrMintUrl },
   });
   return { config, mintUrl: result.mintUrl, mintOverride: result.mintOverride };
+}
+
+/**
+ * Forwards a custom address's lightning payments to the owner's wallet over NWC.
+ * The server only accepts receive-only connections (make_invoice, no pay methods).
+ */
+export async function setSolifeAddressNwcForward(
+  secretKey: string,
+  handle: string,
+  connection: string,
+  options: SolifeApiOptions = {},
+): Promise<SolifeAddress> {
+  const normalizedHandle = handle.trim().toLowerCase();
+  if (!normalizedHandle) throw new Error("Missing Solife address handle.");
+  const uri = connection.trim();
+  if (!/^nostr\+walletconnect:\/\//i.test(uri)) {
+    throw new Error("Paste a connection string that starts with nostr+walletconnect://");
+  }
+  const { session } = await createSolifeSession(secretKey, options);
+  return solifeApi<SolifeAddress>(`/api/addresses/${encodeURIComponent(normalizedHandle)}/nwc-forward`, {
+    ...solifeAuthOptions(options, session),
+    method: "PUT",
+    body: { connection: uri },
+  });
+}
+
+/** Stops forwarding; payments to the address are delivered as ecash again. */
+export async function clearSolifeAddressNwcForward(
+  secretKey: string,
+  handle: string,
+  options: SolifeApiOptions = {},
+): Promise<SolifeAddress> {
+  const normalizedHandle = handle.trim().toLowerCase();
+  if (!normalizedHandle) throw new Error("Missing Solife address handle.");
+  const { session } = await createSolifeSession(secretKey, options);
+  return solifeApi<SolifeAddress>(`/api/addresses/${encodeURIComponent(normalizedHandle)}/nwc-forward`, {
+    ...solifeAuthOptions(options, session),
+    method: "DELETE",
+  });
 }
