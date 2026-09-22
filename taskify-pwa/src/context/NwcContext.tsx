@@ -189,6 +189,16 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     setWalletMode("ecash");
   }, [setClient]);
 
+  // A balance the wallet didn't just confirm is dropped rather than kept: showing an old
+  // (or zero) figure for a wallet we can't reach looks like funds were lost.
+  const forgetBalance = useCallback(() => {
+    const current = infoRef.current;
+    if (!current || current.balanceMsat === undefined) return;
+    const next = { ...current, balanceMsat: undefined, rawBalance: undefined };
+    setInfo(next);
+    infoRef.current = next;
+  }, []);
+
   const refreshInfo = useCallback(async () => {
     try {
       const client = ensureClient();
@@ -200,16 +210,20 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
         console.warn("NWC get_balance failed", err);
       }
       const combined = extractInfo(infoRes, balanceRes);
-      const next = mergeInfo(infoRef.current, combined);
+      let next = mergeInfo(infoRef.current, combined);
+      if (next && combined?.balanceMsat === undefined) {
+        next = { ...next, balanceMsat: undefined, rawBalance: undefined };
+      }
       setInfo(next);
       infoRef.current = next;
       return next;
     } catch (err: any) {
+      forgetBalance();
       const message = err instanceof Error ? err.message : String(err);
       setLastError(message);
       throw new Error(message);
     }
-  }, [ensureClient]);
+  }, [ensureClient, forgetBalance]);
 
   const getBalanceMsat = useCallback(async () => {
     try {
@@ -222,13 +236,15 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
         infoRef.current = next;
         return combined.balanceMsat ?? null;
       }
+      forgetBalance();
       return null;
     } catch (err: any) {
+      forgetBalance();
       const message = err instanceof Error ? err.message : String(err);
       setLastError(message);
       throw new Error(message);
     }
-  }, [ensureClient]);
+  }, [ensureClient, forgetBalance]);
 
   const payInvoice = useCallback(async (invoice: string) => {
     if (!invoice?.trim()) throw new Error("Missing invoice");

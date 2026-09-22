@@ -81,14 +81,28 @@ export function useNwcWalletMode({
 
   // --- Balance ---------------------------------------------------------------
   const { getBalanceMsat, refreshInfo } = nwc;
+  // Why the balance is blank. Null while the first answer is still on its way.
+  const [balanceProblem, setBalanceProblem] = useState<"unreachable" | "unavailable" | null>(null);
   const refreshBalance = useCallback(() => {
-    getBalanceMsat().catch(() => null);
+    getBalanceMsat()
+      .then((msat) => setBalanceProblem(msat == null ? "unavailable" : null))
+      .catch(() => setBalanceProblem("unreachable"));
   }, [getBalanceMsat]);
 
   // A restored connection has no get_info yet (alias, methods); fetch it with the balance.
   useEffect(() => {
-    if (open && nwcWalletActive) refreshInfo().catch(() => null);
+    if (!open || !nwcWalletActive) return;
+    refreshInfo()
+      .then((next) => setBalanceProblem(typeof next?.balanceMsat === "number" ? null : "unavailable"))
+      .catch(() => setBalanceProblem("unreachable"));
   }, [open, nwcWalletActive, refreshInfo]);
+
+  const balanceUnavailableReason =
+    balanceSat !== null || !balanceProblem
+      ? null
+      : balanceProblem === "unreachable"
+        ? `Can't reach ${walletLabel}`
+        : "Balance unavailable";
 
   // --- Sending ---------------------------------------------------------------
   const { payInvoice, lookupInvoice } = nwc;
@@ -226,6 +240,7 @@ export function useNwcWalletMode({
       nwcWalletActive,
       walletLabel,
       balanceSat,
+      balanceUnavailableReason,
       refreshBalance,
       receiveAddress,
       customReceiveAddress: customAddress,
@@ -241,6 +256,7 @@ export function useNwcWalletMode({
     }),
     [
       balanceSat,
+      balanceUnavailableReason,
       clearReceiveInvoice,
       createReceiveInvoice,
       creatingInvoice,

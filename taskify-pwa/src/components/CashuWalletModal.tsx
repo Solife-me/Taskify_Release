@@ -804,6 +804,8 @@ export default function CashuWalletModal({
   });
   const [showWalletModeSheet, setShowWalletModeSheet] = useState(false);
   const [showStoredTokens, setShowStoredTokens] = useState(false);
+  // An unknown NWC balance is shown blank, never as 0 (see nwcBalanceUnknown).
+  const nwcBalanceUnknown = nwcWalletActive && nwcMode.balanceSat == null;
   const displayTotalBalance = nwcWalletActive ? (nwcMode.balanceSat ?? 0) : totalBalance;
   const displayPendingBalance = nwcWalletActive ? 0 : pendingBalance;
   usePendingTokenHistorySync({ open, setHistory });
@@ -4959,9 +4961,20 @@ export default function CashuWalletModal({
                   : "Wallet currency toggle disabled"
               }
             >
-              <div className="wallet-balance-card__amount">{primaryAmountDisplay}</div>
-              {secondaryAmountDisplay && (
-                <div className="wallet-balance-card__secondary">{secondaryAmountDisplay}</div>
+              {nwcBalanceUnknown ? (
+                <>
+                  <div className="wallet-balance-card__amount" aria-label={`${nwcMode.walletLabel} balance unknown`}>—</div>
+                  {nwcMode.balanceUnavailableReason && (
+                    <div className="wallet-balance-card__secondary">{nwcMode.balanceUnavailableReason}</div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="wallet-balance-card__amount">{primaryAmountDisplay}</div>
+                  {secondaryAmountDisplay && (
+                    <div className="wallet-balance-card__secondary">{secondaryAmountDisplay}</div>
+                  )}
+                </>
               )}
               {(pendingBalanceDisplay || priceMeta) && (
                 <div className="wallet-balance-card__meta space-y-1">

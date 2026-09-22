@@ -24,6 +24,16 @@ extension WalletViewModel {
 
     var nwcWalletLabel: String { nwcStatus?.label ?? "NWC wallet" }
 
+    /// Shown in place of the NWC balance when it isn't known. Never a 0: an unreachable wallet
+    /// showing 0 looks like the funds are gone.
+    static let unknownBalanceText = "—"
+
+    /// Why the NWC balance is blank, or nil when it's known or still loading.
+    var nwcBalanceUnavailableReason: String? {
+        guard let status = nwcStatus, status.balanceSat == nil else { return nil }
+        return status.info == nil ? "Can't reach \(nwcWalletLabel)" : "Balance unavailable"
+    }
+
     /// Address shown on Receive: the user's choice, else the wallet's own lud16.
     var nwcReceiveAddress: String? {
         nwcReceiveAddressOverride ?? nwcStatus?.connection.walletLightningAddress

@@ -1893,12 +1893,14 @@ struct WalletView: View {
 
     private var balanceCard: some View {
         let nwcActive = wallet.isNWCWalletActive
+        let nwcBalance = wallet.nwcStatus?.balanceSat
+        let balanceUnknown = nwcActive && nwcBalance == nil
         let balance = wallet.displayAmount(
-            forSats: nwcActive ? (wallet.nwcStatus?.balanceSat ?? 0) : wallet.snapshot.available,
+            forSats: nwcActive ? (nwcBalance ?? 0) : wallet.snapshot.available,
             primary: model.walletPrimaryCurrency
         )
         return VStack(spacing: 10) {
-            Text(balance.primary)
+            Text(balanceUnknown ? WalletViewModel.unknownBalanceText : balance.primary)
                 .font(.system(size: 48, weight: .semibold, design: .rounded))
                 .minimumScaleFactor(0.62)
                 .lineLimit(1)
@@ -1906,7 +1908,13 @@ struct WalletView: View {
                 .monospacedDigit()
                 .foregroundStyle(TaskifyTheme.primaryText)
 
-            if let secondary = balance.secondary {
+            if balanceUnknown {
+                if let reason = wallet.nwcBalanceUnavailableReason {
+                    Text(reason)
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            } else if let secondary = balance.secondary {
                 Text(secondary)
                     .font(.subheadline)
                     .foregroundStyle(TaskifyTheme.secondaryText)
@@ -1937,7 +1945,8 @@ struct WalletView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(nwcActive
-            ? "\(wallet.nwcWalletLabel) balance, \(wallet.nwcStatus?.balanceSat ?? 0) sats"
+            ? (nwcBalance.map { "\(wallet.nwcWalletLabel) balance, \($0) sats" }
+                ?? "\(wallet.nwcWalletLabel) balance, \(wallet.nwcBalanceUnavailableReason ?? "loading")")
             : "Available balance, \(wallet.snapshot.available) sats")
         .accessibilityIdentifier("wallet-balance")
         .accessibilityHint(

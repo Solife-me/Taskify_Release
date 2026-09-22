@@ -19,9 +19,14 @@ struct MacNWCWalletPanel: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("\(wallet.nwcWalletLabel.uppercased()) BALANCE").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(wallet.displayAmount(forSats: wallet.nwcStatus?.balanceSat ?? 0).primary)
+                    Text(wallet.nwcStatus?.balanceSat.map { wallet.displayAmount(forSats: $0).primary }
+                         ?? WalletViewModel.unknownBalanceText)
                         .font(.system(size: 42, weight: .semibold, design: .rounded))
-                        .accessibilityLabel("\(wallet.nwcWalletLabel) balance, \(wallet.nwcStatus?.balanceSat ?? 0) sats")
+                        .accessibilityLabel(wallet.nwcStatus?.balanceSat.map { "\(wallet.nwcWalletLabel) balance, \($0) sats" }
+                            ?? "\(wallet.nwcWalletLabel) balance, \(wallet.nwcBalanceUnavailableReason ?? "loading")")
+                    if let reason = wallet.nwcBalanceUnavailableReason {
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Button { Task { await wallet.refreshNWC(); await loadHistory() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
