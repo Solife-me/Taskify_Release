@@ -52,13 +52,19 @@ shared files, not only after editing Mac-specific sources.
 - Today/Upcoming agenda, Taskify event editing with the same recurrence
   controls, participant add/remove with per-participant RSVP status, EventKit
   calendars/reminders, and invitation responses. Shared-inbox rows (tasks,
-  boards, calendar invites, contact cards) show who sent them.
+  boards, calendar invites, contact cards) show who sent them. "Today" rolls
+  over at midnight even if the Mac stays open and active straight through it
+  (`AppModel.currentCalendarDay`, refreshed on `NSCalendarDayChanged`/
+  `NSSystemTimeZoneDidChange` and on wake).
 - DM/group conversation layouts, replies, reactions, history search, unread
   state, archive/block controls and encrypted attachments. Per-conversation
   drafts and scroll position persist while navigating between conversations
-  (not across leaving the Chat destination and back). Drag-and-drop file
-  attachments and a bot "/" slash-command menu. Inline image previews for
-  image attachments; other attachments keep the save-to-disk button.
+  (not across leaving the Chat destination and back). Drag-and-drop and
+  clipboard paste (a `PasteButton`, since Cmd-V while the composer is focused
+  goes to the text field first) for file attachments, also available in the
+  task editor's Attachments section; a bot "/" slash-command menu. Inline
+  image previews for image attachments; other attachments keep the
+  save-to-disk button.
 - Rich message content: shared tasks/contacts/events/boards render inline as
   interactive cards with the real accept/decline/tentative/join/dismiss
   actions (the same conversation-correlated `SharedInboxItem`-family arrays
@@ -120,18 +126,18 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
 
 ## Remaining parity and release checks
 
-- Clipboard paste of files/images into chat (drag-and-drop works; paste does
-  not yet — the reliable `Transferable`/`NSItemProvider` shape for pasted
-  image data specifically needs more investigation before adding it).
-  Cross-navigation draft/scroll persistence does not yet survive leaving the
-  Chat destination entirely (Wallet, Boards, …) and back.
+- Pasting raw image data with no backing file (e.g. a browser "Copy Image"
+  that never touched disk) — `PasteButton(payloadType: URL.self)` only
+  receives file URLs; a `Transferable` path for arbitrary image data needs
+  more investigation. Cross-navigation draft/scroll persistence does not yet
+  survive leaving the Chat destination entirely (Wallet, Boards, …) and back.
 - npub.cash Lightning-address provider selection and claim UI (the always-on
   `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
   multi-frame QR for transfers too large for one code, and camera-based QR
   scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
 - Voice entry, widgets, App Intents and share extension integration.
-- Account changes with open editors in multiple windows, midnight agenda rollover,
-  attachment cancellation/cleanup, complete preferences and accessibility QA.
+- Account changes with open editors in multiple windows, attachment
+  cancellation/cleanup, complete preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
   cross-client relay sync and wallet recovery with controlled test funds.
 
@@ -266,3 +272,51 @@ Verified: clean `xcodebuild` (after that one actor-isolation fix), all 13
 `swift test` cases pass, app launches and stays alive under the preview
 harness. Not verified: an actual print/PDF of the Bible checklist, for the
 same reason as the task-list printing pass.
+
+## Midnight agenda rollover (September 22, 2026)
+
+Added `AppModel.currentCalendarDay` (a stored day, updated only by
+`refreshCalendarDayIfNeeded`) and switched `MacAgendaView`'s Today/Upcoming
+cutoff to read it instead of computing `Calendar.current.startOfDay(for:
+Date())` inline. iOS never needed this: a phone reliably backgrounds and
+resumes with a fresh `Date()` on its own, so nothing there reads the new
+property. A Mac routinely stays open and active straight through midnight,
+so without this, "Today" would stay stuck on yesterday until something else
+happened to force a re-render. `MacRuntime` now registers for
+`NSCalendarDayChanged` and `NSSystemTimeZoneDidChange` (covers staying awake)
+and also calls the refresh from `resume()` (covers waking from sleep).
+
+Registering the notification observer needed an explicit `Task { @MainActor
+in }` inside the handler: `NotificationCenter.addObserver`'s closure isn't
+statically `@MainActor`-isolated just because the enclosing class is, so
+calling straight into `AppModel` (also `@MainActor`) from it hits the same
+class of compiler error `MacChecklistItems` did in the previous pass — the
+same lesson, a different call shape this time.
+
+Verified: clean `xcodebuild` for both macOS and iOS Simulator (this pass
+touches shared `AppModel.swift`), all 13 `swift test` cases pass, app
+launches and stays alive under the preview harness. Not verified: watching
+the actual rollover happen at a real midnight, or waking from real sleep —
+both need to be run for real, not simulated, to be sure.
+
+## Clipboard paste for attachments (September 22, 2026)
+
+Added `PasteButton(payloadType: URL.self)` next to the attach button in both
+the chat composer and the task editor's Attachments section (which also
+gained drag-and-drop, matching chat) — the same `Transferable`-based
+mechanism already proven safe by the existing `.dropDestination(for:
+URL.self)` drag handling, rather than the older `NSItemProvider`-based
+`.onPasteCommand` this file previously flagged as uncertain. `PasteButton` is
+a dedicated control rather than a modifier, partly because Cmd-V while the
+composer `TextField` is focused is claimed by the text field's own paste
+handling first — a `PasteButton` gives paste-a-file its own explicit,
+unambiguous affordance instead of fighting over the same shortcut.
+
+Scope is file URLs only, matching drag-and-drop exactly: copy a file in
+Finder, paste it in. Raw image data with no backing file (a browser's "Copy
+Image") isn't covered — see "Remaining parity" above.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases pass (no new pure
+logic), app launches and stays alive under the preview harness. Not verified:
+an actual paste gesture end to end, for the same sandbox permission reason as
+every interactive-click-through gap in this file.
