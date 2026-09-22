@@ -183,7 +183,10 @@ struct MacAgendaView: View {
     private var tasks: [TaskItem] {
         let filtered = UpcomingTaskOrganizer.filter(model.snapshot.tasks, searchText: search,
             includedBoardIDs: Set(model.visibleBoards.map(\.id)), selectedDate: filterDate && !todayOnly ? calendarDate : nil)
-        let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date())) ?? Date()
+        // Reads model.currentCalendarDay (rather than computing today's start from Date() here)
+        // so this view recomputes across midnight even if nothing else causes a re-render — see
+        // AppModel.refreshCalendarDayIfNeeded.
+        let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: model.currentCalendarDay) ?? Date()
         return UpcomingTaskOrganizer.sort(filtered.filter { !todayOnly || ($0.dueDate ?? .distantFuture) < endOfToday },
             mode: .dueDate, direction: .ascending, boardGrouping: .mixed, boardOrder: model.visibleBoards.map(\.id))
     }

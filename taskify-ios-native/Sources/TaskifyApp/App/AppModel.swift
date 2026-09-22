@@ -5062,6 +5062,19 @@ final class AppModel {
         ensureFullWeekTaskRecurrences(now: now)
     }
 
+    /// The current calendar day, updated only by `refreshCalendarDayIfNeeded`. A phone reliably
+    /// backgrounds and resumes with a fresh `Date()` of its own accord, so nothing on iOS reads
+    /// this; a Mac can sit open and active straight through midnight, so its "today" agenda keys
+    /// off this property instead of calling `Date()` directly in its own body, and Mac-specific
+    /// code calls the refresh below when the system reports a day or time zone change.
+    private(set) var currentCalendarDay = Calendar.current.startOfDay(for: Date())
+
+    func refreshCalendarDayIfNeeded(now: Date = Date()) {
+        let startOfToday = Calendar.current.startOfDay(for: now)
+        guard startOfToday != currentCalendarDay else { return }
+        currentCalendarDay = startOfToday
+    }
+
     private func prepareInitialBoardViewCache(now: Date = Date()) {
         guard startupTab == .boards, let board = selectedBoard else { return }
         let boardIDs: [String]
