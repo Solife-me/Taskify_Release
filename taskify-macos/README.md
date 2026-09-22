@@ -75,13 +75,22 @@ shared files, not only after editing Mac-specific sources.
   and reclaim, mint add/remove and mint-to-mint transfer, authenticated wallet
   backup and seed recovery. Payment preparation/confirmation and recovery use
   the existing wallet service; pending results are not reported as settled
-  payments.
+  payments. An NWC wallet mode (connect, move or leave the ecash balance,
+  switch back) is also available, on the same shared view model and
+  `NWCWalletService` as iOS — see `MacNWCWallet.swift`.
 - Contact payments: pay a contact's Lightning address (falling back to
   `npub@solife.me`) or send them locked ecash as an encrypted message, using
   the same wire format as the PWA. P2PK key generation/import/removal for
   advanced locking. Cashu payment requests: create (with optional P2PK lock),
   cancel, and pay an incoming request. Static QR codes for invoices, tokens,
   requests and the receiving Lightning address.
+- Print Checklist (toolbar, week/list boards): renders the board's tasks, grouped
+  by column, through the shared `PhysicalChecklistLayout` geometry and the exact
+  marker/page-ID drawing `PhysicalChecklistPDFRenderer` uses on iOS, so a page
+  printed from Mac stays readable by the iPhone scan-back-in flow. Goes through
+  the standard macOS print panel, so "Save as PDF" works without separate export
+  code. Bible-chapter checklists and the scan-back-in side stay iOS-only (no
+  camera on Mac).
 - Account import/export, profile publishing, task backup/restore, relay controls,
   file-server selection and notification permission.
 
@@ -119,7 +128,7 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
   multi-frame QR for transfers too large for one code, and camera-based QR
   scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
-- Voice entry, printing, widgets, App Intents and share extension integration.
+- Voice entry, widgets, App Intents and share extension integration.
 - Account changes with open editors in multiple windows, midnight agenda rollover,
   attachment cancellation/cleanup, complete preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
@@ -180,3 +189,27 @@ Reminders' generated tasks actually appearing correctly on a real board over
 several days — both are exercised by calling the same AppModel methods the PWA
 and iOS already rely on, but that call path itself was not run against a live
 account in this session.
+
+## Print Checklist pass (September 22, 2026)
+
+Added the Print Checklist toolbar action described in "Current desktop
+implementation" above. `MacPhysicalChecklistPrintView` is a line-for-line port
+of iOS's `PhysicalChecklistPDFRenderer` (`BibleTrackerView.swift`) onto
+AppKit's classic multi-page `NSView` printing (`knowsPageRange`/`rectForPage`,
+pages stacked vertically in one tall view) instead of `UIGraphicsPDFRenderer` —
+`PhysicalChecklistLayout`'s millimeter geometry and the page-ID marker
+encoding are unchanged, so the two renderers should produce matching pages
+for the same job. `NSPrintInfo.paperSize` is set explicitly from the chosen
+`PhysicalChecklistPaper` and all four margins are zeroed, since the layout
+already reserves its own margin — leaving the system default paper size or
+margins in place would have scaled or clipped the content against what the
+geometry actually expects.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases pass (no new pure
+logic was added — `PhysicalChecklistLayout` itself already has its own
+`PhysicalChecklistLayoutTests`), app launches and stays alive under the
+preview harness. Not verified: an actual printed (or Save-as-PDF) page's pixel
+alignment against a real printer/PDF viewer, and whether a page printed from
+Mac is in fact readable by the iOS scan-back-in flow — both need a real
+print/export and, for the second, a device with the camera scanner, neither
+of which this sandbox can do.

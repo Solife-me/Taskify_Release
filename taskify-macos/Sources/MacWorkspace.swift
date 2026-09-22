@@ -29,6 +29,7 @@ struct MacWorkspace: View {
     @State private var notificationRouter = TaskNotificationNavigationRouter.shared
     @State private var chatDrafts: [String: String] = [:]
     @State private var chatScrollPositions: [String: String] = [:]
+    @State private var printingChecklist = false
 
     private var board: Board? { model.board(withID: destination) }
     private var title: String { board?.name ?? MacDestination(rawValue: destination)?.title ?? "Taskify" }
@@ -106,6 +107,11 @@ struct MacWorkspace: View {
                         }
                     }
                     if let board {
+                        if board.kind == .week || board.kind == .list {
+                            ToolbarItem {
+                                Button { printingChecklist = true } label: { Label("Print Checklist…", systemImage: "printer") }
+                            }
+                        }
                         ToolbarItem {
                             Button { boardToManage = board } label: { Label("Board Settings", systemImage: "ellipsis.circle") }
                         }
@@ -122,6 +128,7 @@ struct MacWorkspace: View {
         .sheet(isPresented: $creatingEvent) { MacEventEditor(event: nil, initialBoardID: board?.id ?? model.selectedBoardID) }
         .sheet(isPresented: $creatingBoard) { MacBoardEditor(board: nil) }
         .sheet(item: $boardToManage) { board in MacBoardEditor(board: board) }
+        .sheet(isPresented: $printingChecklist) { if let board { MacPrintChecklistSheet(board: board) } }
         .sheet(isPresented: Binding(get: { model.showsFirstRunOnboarding }, set: { _ in })) { MacOnboarding() }
         .alert("Taskify", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
