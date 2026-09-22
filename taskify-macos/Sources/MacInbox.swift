@@ -87,12 +87,19 @@ struct MacBibleView: View {
     @Environment(AppModel.self) private var model
     @State private var selectedBook = "gen"
     @State private var mode = "reading"
+    @State private var printingChecklist = false
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Mode", selection: $mode) {
-                Text("Reading").tag("reading")
-                Text("Memory").tag("memory")
-            }.pickerStyle(.segmented).labelsHidden().frame(width: 220).padding(12)
+            HStack {
+                Picker("Mode", selection: $mode) {
+                    Text("Reading").tag("reading")
+                    Text("Memory").tag("memory")
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                if mode == "reading" {
+                    Spacer()
+                    Button { printingChecklist = true } label: { Label("Print & Scan…", systemImage: "printer") }
+                }
+            }.padding(12)
             Divider()
             if mode == "memory" {
                 if model.scriptureMemoryEnabled {
@@ -105,6 +112,10 @@ struct MacBibleView: View {
             } else {
                 reading
             }
+        }
+        .sheet(isPresented: $printingChecklist) {
+            MacPrintChecklistSheet(title: "Bible Reading Tracker", allItems: MacChecklistItems.forBibleTracker(store),
+                format: .bibleChapters, showsIncludeCompletedToggle: false)
         }
     }
     private var reading: some View {

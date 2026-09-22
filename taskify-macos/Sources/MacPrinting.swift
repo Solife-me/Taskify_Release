@@ -2,8 +2,35 @@ import AppKit
 import SwiftUI
 import TaskifyCore
 
+/// Builds the item list for a print job; kept separate from the sheet so board- and
+/// Bible-tracker-specific assembly stay out of the generic printing/paper-size UI below.
+@MainActor
+enum MacChecklistItems {
+    static func forBoard(_ board: Board, model: AppModel) -> [PhysicalChecklistItem] {
+        let columns: [BoardColumn] = board.kind == .week
+            ? WeekdayColumn.ordered(startingAt: model.weekStart).compactMap { day in board.columns.first { $0.id == day.rawValue } }
+            : board.columns.sorted { $0.order < $1.order }
+        return columns.flatMap { column in
+            model.tasks(boardID: board.id, columnID: column.id, includeCompleted: true)
+                .map { PhysicalChecklistItem(id: $0.id, title: $0.title, section: column.name, filled: $0.completed) }
+        }
+    }
+
+    static func forBibleTracker(_ store: BibleTrackerStore) -> [PhysicalChecklistItem] {
+        BibleCatalog.books.flatMap { book in
+            (1...book.chapterCount).map { chapter in
+                PhysicalChecklistItem(id: "\(book.id):\(chapter)", title: "Chapter \(chapter)", section: book.name,
+                    filled: store.chaptersRead(bookID: book.id).contains(chapter))
+            }
+        }
+    }
+}
+
 struct MacPrintChecklistSheet: View {
-    let board: Board
+    let title: String
+    let allItems: [PhysicalChecklistItem]
+    var format = PhysicalChecklistJob.Format.taskList
+    var showsIncludeCompletedToggle = true
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var paper = PhysicalChecklistPaper.letter
@@ -11,27 +38,23 @@ struct MacPrintChecklistSheet: View {
     @State private var error: String?
 
     private var items: [PhysicalChecklistItem] {
-        let columns: [BoardColumn] = board.kind == .week
-            ? WeekdayColumn.ordered(startingAt: model.weekStart).compactMap { day in board.columns.first { $0.id == day.rawValue } }
-            : board.columns.sorted { $0.order < $1.order }
-        return columns.flatMap { column in
-            model.tasks(boardID: board.id, columnID: column.id, includeCompleted: includeCompleted)
-                .map { PhysicalChecklistItem(id: $0.id, title: $0.title, section: column.name, filled: $0.completed) }
-        }
+        showsIncludeCompletedToggle && !includeCompleted ? allItems.filter { !$0.filled } : allItems
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Print Checklist").font(.title2.bold())
-            Text(board.name).foregroundStyle(.secondary)
+            Text(title).foregroundStyle(.secondary)
             Picker("Paper", selection: $paper) {
                 ForEach(PhysicalChecklistPaper.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
-            Toggle("Include Completed Tasks", isOn: $includeCompleted)
+            if showsIncludeCompletedToggle {
+                Toggle("Include Completed Tasks", isOn: $includeCompleted)
+            }
             if items.isEmpty {
-                Text("No tasks to print yet.").font(.caption).foregroundStyle(.secondary)
+                Text("Nothing to print yet.").font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("\(items.count) task\(items.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
+                Text("\(items.count) item\(items.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
             }
             if let error { Text(error).foregroundStyle(.red) }
             Spacer()
@@ -45,7 +68,7 @@ struct MacPrintChecklistSheet: View {
     }
 
     private func printChecklist() {
-        let job = PhysicalChecklistJob(ownerID: model.identityPublicKey, title: board.name, paper: paper, format: .taskList, items: items)
+        let job = PhysicalChecklistJob(ownerID: model.identityPublicKey, title: title, paper: paper, format: format, items: items)
         let view = MacPhysicalChecklistPrintView(job: job)
         let pointsPerMM = 72.0 / 25.4
         let sizeMM = paper.sizeMM

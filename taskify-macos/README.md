@@ -88,13 +88,14 @@ shared files, not only after editing Mac-specific sources.
   advanced locking. Cashu payment requests: create (with optional P2PK lock),
   cancel, and pay an incoming request. Static QR codes for invoices, tokens,
   requests and the receiving Lightning address.
-- Print Checklist (toolbar, week/list boards): renders the board's tasks, grouped
-  by column, through the shared `PhysicalChecklistLayout` geometry and the exact
-  marker/page-ID drawing `PhysicalChecklistPDFRenderer` uses on iOS, so a page
-  printed from Mac stays readable by the iPhone scan-back-in flow. Goes through
-  the standard macOS print panel, so "Save as PDF" works without separate export
-  code. Bible-chapter checklists and the scan-back-in side stay iOS-only (no
-  camera on Mac).
+- Print Checklist (toolbar on week/list boards; "Print & Scan…" in the Bible
+  tracker's Reading tab): renders tasks grouped by column, or all 66 books'
+  chapters grouped by book, through the shared `PhysicalChecklistLayout`
+  geometry and the exact marker/page-ID drawing `PhysicalChecklistPDFRenderer`
+  uses on iOS, so a page printed from Mac stays readable by the iPhone
+  scan-back-in flow. Goes through the standard macOS print panel, so "Save as
+  PDF" works without separate export code. The scan-back-in side (reading a
+  filled-in page's checkmarks) stays iOS-only — it needs a camera.
 - Account import/export, profile publishing, task backup/restore, relay controls,
   file-server selection and notification permission.
 
@@ -241,3 +242,27 @@ pure logic), app launches and stays alive under the preview harness. Not
 verified: interactive click-through of the new accept/decline/join buttons
 against a live conversation with real shared items, for the same sandbox
 permission reason as every other pass in this file.
+
+## Bible-chapter checklist printing (September 22, 2026)
+
+Extended Print Checklist to the Bible tracker: `MacPrintChecklistSheet` took
+a `board: Board` before, tying the whole sheet to board task-fetching; it now
+takes a plain `title` + pre-built `[PhysicalChecklistItem]` (`MacChecklistItems`
+assembles the list — `.forBoard` unchanged in behavior, `.forBibleTracker` new,
+mirroring `BibleTrackerView.biblePrintJob` field-for-field), so the same sheet
+serves both. "Include Completed Tasks" only applies to the board case now (the
+Bible tracker always prints the full 66-book overview).
+
+`MacChecklistItems` needed `@MainActor`: it calls `AppModel.tasks`/`.weekStart`
+and `BibleTrackerStore.chaptersRead`, and the compiler correctly refused a
+nonisolated function calling into `@MainActor`-isolated methods. Every caller
+was already on the main actor (SwiftUI sheet closures), so this was a pure
+annotation fix, not a behavior change — worth calling out because the previous
+pass's `MacRecurrenceBuilder`-style pure helpers get away without `@MainActor`
+specifically because they take plain values, never a model reference; a helper
+that touches `AppModel`/`BibleTrackerStore` directly will hit this every time.
+
+Verified: clean `xcodebuild` (after that one actor-isolation fix), all 13
+`swift test` cases pass, app launches and stays alive under the preview
+harness. Not verified: an actual print/PDF of the Bible checklist, for the
+same reason as the task-list printing pass.
