@@ -86,6 +86,7 @@ private struct MacConversation: View {
     @State private var error: String?
     @State private var search = ""
     @State private var isDropTargeted = false
+    @State private var sendTask: Task<Void, Never>?
     private var messages: [NostrDirectMessage] { model.directMessages(with: peer) }
     private var isGroup: Bool { model.groupConversation(id: peer) != nil }
     private var visibleBotCommands: [BotCommand]? {
@@ -201,7 +202,7 @@ private struct MacConversation: View {
                         }
                     }.frame(maxHeight: 160).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                 }
-                MacAttachmentQueueView(queue: attachments, busy: sending)
+                MacAttachmentQueueView(queue: attachments, busy: sending, onCancel: { sendTask?.cancel() })
                 HStack(alignment: .bottom, spacing: 12) {
                     Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }.disabled(sending || attachments.importing)
                     PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
@@ -234,8 +235,8 @@ private struct MacConversation: View {
     private func send() {
         let text = composer
         sending = true; error = nil
-        Task {
-            defer { sending = false }
+        sendTask = Task {
+            defer { sending = false; sendTask = nil }
             do {
                 if attachments.files.isEmpty {
                     try await model.sendDirectMessage(to: peer, content: text, replyToEventID: reply?.id)
@@ -247,6 +248,8 @@ private struct MacConversation: View {
                 }
                 if composer == text { composer = "" }
                 reply = nil
+            } catch is CancellationError {
+                attachments.progress = nil
             } catch { self.error = error.localizedDescription }
         }
     }

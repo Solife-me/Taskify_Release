@@ -64,7 +64,8 @@ shared files, not only after editing Mac-specific sources.
   goes to the text field first) for file attachments, also available in the
   task editor's Attachments section; a bot "/" slash-command menu. Inline
   image previews for image attachments; other attachments keep the
-  save-to-disk button.
+  save-to-disk button. An in-flight attachment encrypt/upload (chat send or
+  task save) can be cancelled mid-flight rather than only waited out.
 - Rich message content: shared tasks/contacts/events/boards render inline as
   interactive cards with the real accept/decline/tentative/join/dismiss
   actions (the same conversation-correlated `SharedInboxItem`-family arrays
@@ -136,8 +137,8 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   multi-frame QR for transfers too large for one code, and camera-based QR
   scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
 - Voice entry, widgets, App Intents and share extension integration.
-- Account changes with open editors in multiple windows, attachment
-  cancellation/cleanup, complete preferences and accessibility QA.
+- Account changes with open editors in multiple windows, complete
+  preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
   cross-client relay sync and wallet recovery with controlled test funds.
 
@@ -320,3 +321,26 @@ Verified: clean `xcodebuild`, all 13 `swift test` cases pass (no new pure
 logic), app launches and stays alive under the preview harness. Not verified:
 an actual paste gesture end to end, for the same sandbox permission reason as
 every interactive-click-through gap in this file.
+
+## Attachment upload cancellation (September 22, 2026)
+
+Chat's `send()` and the task editor's `save()` now keep their `Task` (renamed
+`sendTask`/`saveTask`) instead of firing it and discarding the handle, and
+`MacAttachmentQueueView` grew an `onCancel` closure that shows a "Cancel"
+button next to the progress text while an upload is in flight. Cancelling
+during the encrypt/upload phase throws `CancellationError` out of
+`MacAttachmentQueue.uploadChat()`/`.uploadDocuments()` — both already checked
+`Task.checkCancellation()` per file, so this needed no changes to the queue
+itself, only a way for the UI to reach the running task. Both catch blocks
+special-case `CancellationError` to clear the progress text silently rather
+than show it as a failure. For chat specifically, cancelling only reaches the
+encrypt/upload step; once the message itself is actually sending, the button
+disappears along with the progress text it sits next to. Already-uploaded
+files in a batch stay marked uploaded (the queue's existing per-file
+`uploadedChat`/`uploadedDocument` cache), so retrying after a cancel resumes
+rather than re-uploads.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases pass (no new pure
+logic), app launches and stays alive under the preview harness. Not verified:
+actually cancelling a real in-flight upload, for the same sandbox permission
+reason as the rest of this file.

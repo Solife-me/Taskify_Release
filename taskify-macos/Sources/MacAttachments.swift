@@ -86,6 +86,7 @@ final class MacAttachmentQueue: ObservableObject {
 struct MacAttachmentQueueView: View {
     @ObservedObject var queue: MacAttachmentQueue
     var busy = false
+    var onCancel: (() -> Void)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(queue.files) { file in
@@ -96,7 +97,15 @@ struct MacAttachmentQueueView: View {
                 }.font(.caption)
             }
             if queue.importing { ProgressView("Importing files…").controlSize(.small) }
-            if let progress = queue.progress { Text(progress).font(.caption).foregroundStyle(.secondary) }
+            if let progress = queue.progress {
+                HStack {
+                    Text(progress).font(.caption).foregroundStyle(.secondary)
+                    if busy, let onCancel {
+                        Spacer(minLength: 8)
+                        Button("Cancel", action: onCancel).font(.caption).buttonStyle(.plain).foregroundStyle(.red)
+                    }
+                }
+            }
             if let error = queue.error { Text(error).font(.caption).foregroundStyle(.red) }
         }
     }

@@ -19,6 +19,7 @@ struct MacTaskEditor: View {
     @State private var until = Date()
     @State private var deleteConfirmation = false
     @State private var isDropTargeted = false
+    @State private var saveTask: Task<Void, Never>?
     private var columns: [BoardColumn] { model.board(withID: draft.boardID)?.columns ?? [] }
 
     init(task: TaskItem?, boardID: String) {
@@ -32,7 +33,7 @@ struct MacTaskEditor: View {
                 Text(original == nil ? "New Task" : "Edit Task").font(.title2.bold())
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
-                Button("Save") { Task { await save() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                Button("Save") { saveTask = Task { await save() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
                     .disabled(saving || attachments.importing || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(22)
             Divider()
@@ -111,7 +112,7 @@ struct MacTaskEditor: View {
                     ForEach(draft.documents ?? []) { document in
                         HStack { Text(document.name); Spacer(); Button("Remove") { draft.documents?.removeAll { $0.id == document.id } } }
                     }
-                    MacAttachmentQueueView(queue: attachments, busy: saving)
+                    MacAttachmentQueueView(queue: attachments, busy: saving, onCancel: { saveTask?.cancel() })
                     HStack {
                         Button("Attach Files…") { attachments.chooseFiles() }.disabled(saving || attachments.importing)
                         PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
@@ -203,6 +204,9 @@ struct MacTaskEditor: View {
             let uploaded = try await attachments.uploadDocuments(boardID: model.board(withID: draft.boardID)?.effectiveNostrBoardID ?? draft.boardID)
             let existing = draft.documents ?? []
             draft.documents = existing + uploaded.filter { item in !existing.contains { $0.id == item.id } }
+        } catch is CancellationError {
+            attachments.progress = nil
+            return
         } catch { self.error = error.localizedDescription; return }
         if let original, model.task(withID: original.id) != original {
             error = "This task changed while attachments uploaded. Close and reopen it before saving."; return
