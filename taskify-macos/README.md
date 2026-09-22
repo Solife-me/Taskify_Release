@@ -59,12 +59,16 @@ shared files, not only after editing Mac-specific sources.
   (not across leaving the Chat destination and back). Drag-and-drop file
   attachments and a bot "/" slash-command menu. Inline image previews for
   image attachments; other attachments keep the save-to-disk button.
-- Rich message content: shared tasks/contacts/events/boards render as summary
-  cards (informational — respond from the Inbox, which already has the
-  correlated accept/decline/join actions); plain-text Cashu tokens render as a
-  tappable card that opens a focused redeem sheet; HTTP(S) links render as
-  link-preview cards. All detection reuses the same TaskifyCore parsers the
-  iOS app uses, so what counts as a "shared item" or "a token" is identical.
+- Rich message content: shared tasks/contacts/events/boards render inline as
+  interactive cards with the real accept/decline/tentative/join/dismiss
+  actions (the same conversation-correlated `SharedInboxItem`-family arrays
+  the Inbox tab reads, filtered by peer instead of by pending status, so a
+  responded-to item still shows with its resulting status where it was
+  actually shared — matches iOS's `ChatTimelineItem` merge exactly, including
+  which messages get excluded from the plain-text history in favor of their
+  card). Plain-text Cashu tokens render as a tappable card that opens a
+  focused redeem sheet; HTTP(S) links render as link-preview cards. All
+  detection reuses the same TaskifyCore parsers the iOS app uses.
 - Basic Bible reading tracker plus Scripture Memory (add a passage, spaced-review
   list sorted by due/canonical/added date, remove) and Fasting Reminders
   (weekly-weekday or random-per-month pattern) — both reuse AppModel's existing
@@ -120,10 +124,6 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   image data specifically needs more investigation before adding it).
   Cross-navigation draft/scroll persistence does not yet survive leaving the
   Chat destination entirely (Wallet, Boards, …) and back.
-- Shared-item cards in chat (task/contact/event/board) are read-only summaries
-  that point to the Inbox rather than offering inline accept/decline/join —
-  correlating a chat message to its Inbox item for safe inline actions needs
-  more investigation before duplicating that logic in two places.
 - npub.cash Lightning-address provider selection and claim UI (the always-on
   `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
   multi-frame QR for transfers too large for one code, and camera-based QR
@@ -213,3 +213,31 @@ alignment against a real printer/PDF viewer, and whether a page printed from
 Mac is in fact readable by the iOS scan-back-in flow — both need a real
 print/export and, for the second, a device with the camera scanner, neither
 of which this sandbox can do.
+
+## Correlated shared-item chat cards (September 22, 2026)
+
+Replaced the read-only, content-decoded share cards from the previous pass
+with the interactive ones described in "Current desktop implementation"
+above. `MacConversation.timeline` merges `model.directMessages(with:)` with
+`sharedInboxItems`/`sharedContactInboxItems`/`sharedCalendarInviteItems`/
+`sharedBoardInboxItems` filtered to the open peer — copied field-for-field
+from iOS's `ChatView.makePresentation()` (`ChatTimelineItem`), including
+which two of the four item kinds get excluded from the plain message list
+(tasks and calendar invites, by matching `rumorEventID`; contacts and boards
+are not excluded there, since the PWA/iOS contract doesn't produce a matching
+plain-text message that would render as a duplicate for those two). Getting
+that exclusion set wrong in either direction is the failure mode to watch
+for — too broad silently drops real messages, too narrow shows a card next
+to its own raw envelope text.
+
+`MacMessageRow`'s old envelope-decode fallback (`TaskifyShareEnvelope.decode`)
+now only handles `assignmentResponse`, which has no correlated inbox-item
+array of its own; task/contact/event/board envelopes resolve to `EmptyView()`
+there since their card is already rendered as its own timeline entry.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases pass (unchanged —
+this pass is UI/correlation wiring over already-tested model methods, no new
+pure logic), app launches and stays alive under the preview harness. Not
+verified: interactive click-through of the new accept/decline/join buttons
+against a live conversation with real shared items, for the same sandbox
+permission reason as every other pass in this file.

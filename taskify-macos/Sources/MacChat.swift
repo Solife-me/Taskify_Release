@@ -94,6 +94,47 @@ private struct MacConversation: View {
         let matched = commands.filter { $0.name.hasPrefix(query) }
         return matched.isEmpty ? nil : matched
     }
+
+    // Shared items delivered to this conversation, correlated the same way the Inbox tab
+    // correlates them — filtered here by peer instead of by pending status, so a responded-to
+    // item still shows (with its resulting status) where it was actually shared.
+    private var sharedTaskItems: [SharedInboxItem] {
+        model.sharedInboxItems.filter { $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame }
+    }
+    private var sharedContactItems: [SharedContactInboxItem] {
+        model.sharedContactInboxItems.filter { $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame }
+    }
+    private var calendarInviteItems: [SharedCalendarInviteInboxItem] {
+        model.sharedCalendarInviteItems.filter { $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame }
+    }
+    private var sharedBoardItems: [SharedBoardInboxItem] {
+        model.sharedBoardInboxItems.filter { $0.status != .deleted && $0.sender.publicKey.caseInsensitiveCompare(peer) == .orderedSame }
+    }
+    /// Merges plain messages with correlated shared items, matching iOS's `ChatTimelineItem`
+    /// construction exactly: a message whose rumor became a shared task or calendar invite is
+    /// excluded (the correlated card replaces it), while shared contacts/boards are added
+    /// alongside their message since those aren't excluded from the raw history.
+    private var timeline: [MacChatTimelineItem] {
+        let tasks = sharedTaskItems
+        let invites = calendarInviteItems
+        let structuredRumorIDs = Set(tasks.map(\.rumorEventID) + invites.map(\.rumorEventID))
+        let items: [MacChatTimelineItem] =
+            messages.filter { !structuredRumorIDs.contains($0.rumorEventID) }.map(MacChatTimelineItem.message)
+                + tasks.map(MacChatTimelineItem.sharedTask)
+                + sharedContactItems.map(MacChatTimelineItem.sharedContact)
+                + invites.map(MacChatTimelineItem.calendarInvite)
+                + sharedBoardItems.map(MacChatTimelineItem.sharedBoard)
+        // Nostr timestamps have one-second resolution; break ties by original array order
+        // (messages first, in their existing order) rather than by id, which would be effectively
+        // random and could shuffle a reply in front of the message it replies to.
+        return items.enumerated()
+            .sorted { $0.element.timestamp != $1.element.timestamp ? $0.element.timestamp < $1.element.timestamp : $0.offset < $1.offset }
+            .map(\.element)
+    }
+    private var visibleTimeline: [MacChatTimelineItem] {
+        guard !search.isEmpty else { return timeline }
+        return timeline.filter { $0.matchesSearch(search) }
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -116,26 +157,26 @@ private struct MacConversation: View {
             Divider()
             ScrollView {
                 LazyVStack(spacing: 14) {
-                    ForEach(messages.filter { search.isEmpty || $0.displayContent.localizedCaseInsensitiveContains(search) }) { message in
-                        MacMessageRow(
-                            message: message,
-                            parent: message.replyToEventID.flatMap { id in messages.first { $0.id == id } },
-                            reactions: model.directMessageReactions(for: message),
+                    ForEach(visibleTimeline) { item in
+                        MacChatTimelineRow(
+                            item: item,
+                            parent: { id in messages.first { $0.id == id } },
+                            reactions: { message in model.directMessageReactions(for: message) },
                             reply: { reply = $0 },
                             react: { target, emoji in
                                 Task { do { try await model.sendDirectMessageReaction(to: target, emoji: emoji) } catch { self.error = error.localizedDescription } }
                             },
                             reportError: { error = $0 }
-                        ).id(message.id)
+                        ).id(item.id)
                     }
                     }.padding(22)
                 }.background(Color(nsColor: .underPageBackgroundColor).opacity(0.5))
                     .scrollPosition(id: $scrollAnchor)
                     .onAppear {
-                        if scrollAnchor == nil || !messages.contains(where: { $0.id == scrollAnchor }) { scrollAnchor = messages.last?.id }
+                        if scrollAnchor == nil || !timeline.contains(where: { $0.id == scrollAnchor }) { scrollAnchor = timeline.last?.id }
                         markRead()
                     }
-                    .onChange(of: messages.last?.id) { _, id in
+                    .onChange(of: timeline.last?.id) { _, id in
                         scrollAnchor = id
                         markRead()
                     }
@@ -208,6 +249,182 @@ private struct MacConversation: View {
     }
 }
 
+/// A conversation's timeline mixes plain messages with shared tasks/contacts/events/boards
+/// delivered to the same peer — see `MacConversation.timeline` for how these are merged and
+/// de-duplicated against the raw message history, mirroring iOS's `ChatTimelineItem`.
+private enum MacChatTimelineItem: Identifiable {
+    case message(NostrDirectMessage)
+    case sharedTask(SharedInboxItem)
+    case sharedContact(SharedContactInboxItem)
+    case calendarInvite(SharedCalendarInviteInboxItem)
+    case sharedBoard(SharedBoardInboxItem)
+
+    var id: String {
+        switch self {
+        case .message(let item): "message-\(item.id)"
+        case .sharedTask(let item): "shared-task-\(item.id)"
+        case .sharedContact(let item): "shared-contact-\(item.id)"
+        case .calendarInvite(let item): "calendar-invite-\(item.id)"
+        case .sharedBoard(let item): "shared-board-\(item.id)"
+        }
+    }
+    var timestamp: TimeInterval {
+        switch self {
+        case .message(let item): Double(item.createdAt)
+        case .sharedTask(let item): item.receivedAt.timeIntervalSince1970
+        case .sharedContact(let item): item.receivedAt.timeIntervalSince1970
+        case .calendarInvite(let item): item.receivedAt.timeIntervalSince1970
+        case .sharedBoard(let item): item.receivedAt.timeIntervalSince1970
+        }
+    }
+    func matchesSearch(_ query: String) -> Bool {
+        switch self {
+        case .message(let item): item.displayContent.localizedCaseInsensitiveContains(query)
+        case .sharedTask(let item): item.task.title.localizedCaseInsensitiveContains(query)
+        case .sharedContact(let item):
+            (item.contact.displayName ?? item.contact.name ?? item.contact.npub).localizedCaseInsensitiveContains(query)
+        case .calendarInvite(let item): (item.event.title ?? "").localizedCaseInsensitiveContains(query)
+        case .sharedBoard(let item): (item.board.boardName ?? "").localizedCaseInsensitiveContains(query)
+        }
+    }
+}
+
+private struct MacChatTimelineRow: View {
+    let item: MacChatTimelineItem
+    var parent: (String) -> NostrDirectMessage?
+    var reactions: (NostrDirectMessage) -> [NostrDirectMessageReaction]
+    var reply: (NostrDirectMessage) -> Void
+    var react: (NostrDirectMessage, String) -> Void
+    var reportError: (String) -> Void
+
+    var body: some View {
+        switch item {
+        case .message(let message):
+            MacMessageRow(
+                message: message,
+                parent: message.replyToEventID.flatMap(parent),
+                reactions: reactions(message),
+                reply: reply,
+                react: react,
+                reportError: reportError
+            )
+        case .sharedTask(let task):
+            aligned(incoming: true) { MacSharedTaskCard(item: task) }
+        case .sharedContact(let contact):
+            aligned(incoming: contact.isIncoming) { MacSharedContactCard(item: contact) }
+        case .calendarInvite(let invite):
+            aligned(incoming: true) { MacCalendarInviteCard(item: invite) }
+        case .sharedBoard(let board):
+            aligned(incoming: true) { MacSharedBoardCard(item: board) }
+        }
+    }
+
+    private func aligned<Content: View>(incoming: Bool, @ViewBuilder card: () -> Content) -> some View {
+        HStack {
+            if !incoming { Spacer(minLength: 60) }
+            card()
+            if incoming { Spacer(minLength: 60) }
+        }
+    }
+}
+
+private struct MacSharedTaskCard: View {
+    let item: SharedInboxItem
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(item.task.assignment == true ? "ASSIGNMENT" : "SHARED TASK", systemImage: "checklist")
+                .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor)
+            Text(item.task.title).font(.headline)
+            if let note = item.task.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+                Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(4)
+            }
+            if let subtasks = item.task.subtasks, !subtasks.isEmpty {
+                Label("\(subtasks.filter(\.completed).count)/\(subtasks.count)", systemImage: "checklist").font(.caption2).foregroundStyle(.secondary)
+            }
+            if item.status == .pending {
+                HStack {
+                    Button("Accept") { _ = model.respondToSharedInboxItem(item.id, status: .accepted) }
+                    Button("Tentative") { _ = model.respondToSharedInboxItem(item.id, status: .tentative) }
+                    Button("Decline") { _ = model.respondToSharedInboxItem(item.id, status: .declined) }
+                }.controlSize(.small)
+            } else {
+                Text(item.status.rawValue.capitalized).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }
+        }.padding(12).frame(maxWidth: 300, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct MacSharedContactCard: View {
+    let item: SharedContactInboxItem
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("SHARED CONTACT", systemImage: "person.crop.circle").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor)
+            Text(item.contact.displayName.trimmedOrNil ?? item.contact.name.trimmedOrNil ?? item.contact.npub).font(.headline)
+            if let about = item.contact.about.trimmedOrNil { Text(about).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
+            if item.isIncoming {
+                if item.status == .pending {
+                    HStack {
+                        Button("Save Contact") { Task { do { try await model.acceptSharedContactInboxItem(item.id) } catch { model.errorMessage = error.localizedDescription } } }
+                        Button("Dismiss") { model.dismissSharedContactInboxItem(item.id) }
+                    }.controlSize(.small)
+                } else {
+                    Text(item.status.rawValue.capitalized).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+            }
+        }.padding(12).frame(maxWidth: 300, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct MacCalendarInviteCard: View {
+    let item: SharedCalendarInviteInboxItem
+    @Environment(AppModel.self) private var model
+    @State private var error: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("SHARED EVENT", systemImage: "calendar").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor)
+            Text(item.event.title ?? "Calendar invitation").font(.headline)
+            if let start = formattedISO(item.event.start) { Text(start).font(.caption).foregroundStyle(.secondary) }
+            if item.status == .pending {
+                HStack {
+                    ForEach([SharedInboxItemStatus.accepted, .tentative, .declined], id: \.rawValue) { status in
+                        Button(status.rawValue.capitalized) {
+                            Task { do { try await model.respondToSharedCalendarInvite(item.id, status: status) } catch { self.error = error.localizedDescription } }
+                        }
+                    }
+                }.controlSize(.small)
+            } else {
+                Text(item.status.rawValue.capitalized).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            if let error { Text(error).font(.caption2).foregroundStyle(.red) }
+        }.padding(12).frame(maxWidth: 300, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct MacSharedBoardCard: View {
+    let item: SharedBoardInboxItem
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("SHARED BOARD", systemImage: "square.grid.2x2").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor)
+            Text(item.board.boardName ?? "Shared board").font(.headline)
+            if item.status == .pending {
+                HStack {
+                    Button("Join") { _ = model.acceptSharedBoardInboxItem(item.id) }
+                    Button("Dismiss") { model.dismissSharedBoardInboxItem(item.id) }
+                }.controlSize(.small)
+            } else {
+                Text(item.status.rawValue.capitalized).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }
+        }.padding(12).frame(maxWidth: 300, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 /// One message row, its own view so the conversation's `ForEach` stays a simple expression —
 /// folding this much conditional content (attachment/payment/shared-item/link variants) directly
 /// into the `ForEach` closure overwhelmed the type checker.
@@ -262,8 +479,13 @@ private struct MacMessageRow: View {
             } else {
                 Button("Save Attachment…") { Task { do { try await MacAttachmentExport.chat(attachment) } catch { reportError(error.localizedDescription) } } }
             }
-        } else if let envelope {
-            MacSharedContentCard(item: envelope.item)
+        } else if case .assignmentResponse(let response) = envelope?.item {
+            Label("Assignment \(response.status.rawValue)", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
+        } else if envelope != nil {
+            // A shared task/contact/event/board rumor: its card is rendered as its own,
+            // correlated timeline item (see MacChatTimelineItem) — skip the raw envelope here so
+            // it doesn't render twice.
+            EmptyView()
         } else if let paymentToken {
             MacPaymentTokenCard(token: paymentToken) { redeemingToken = paymentToken }
         } else {
@@ -272,40 +494,6 @@ private struct MacMessageRow: View {
                 MacLinkCard(url: url)
             }
         }
-    }
-}
-
-private struct MacSharedContentCard: View {
-    let item: TaskifyShareItem
-    var body: some View {
-        switch item {
-        case .task(let task):
-            card(icon: task.assignment == true ? "person.crop.circle.badge.checkmark" : "checklist",
-                 label: task.assignment == true ? "ASSIGNMENT" : "SHARED TASK", title: task.title, subtitle: task.note)
-        case .contact(let contact):
-            card(icon: "person.crop.circle", label: "SHARED CONTACT",
-                 title: contact.displayName.trimmedOrNil ?? contact.name.trimmedOrNil ?? contact.npub, subtitle: contact.about)
-        case .calendarEvent(let event):
-            card(icon: "calendar", label: "SHARED EVENT", title: event.title ?? "Calendar event", subtitle: formattedISO(event.start))
-        case .board(let board):
-            card(icon: "square.grid.2x2", label: "SHARED BOARD", title: board.boardName ?? "Shared board", subtitle: nil)
-        case .assignmentResponse(let response):
-            Label("Assignment \(response.status.rawValue)", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
-        }
-    }
-    private func card(icon: String, label: String, title: String, subtitle: String?) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon).font(.subheadline.bold()).foregroundStyle(Color.accentColor)
-                .frame(width: 30, height: 30).background(Color.accentColor.opacity(0.15), in: Circle())
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label).font(.system(size: 9, weight: .bold)).tracking(0.6).foregroundStyle(Color.accentColor)
-                Text(title).font(.subheadline.weight(.semibold))
-                if let subtitle, !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-                Text("See Inbox to respond").font(.caption2).foregroundStyle(.tertiary)
-            }
-            Spacer(minLength: 0)
-        }.padding(10).frame(maxWidth: 280, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
