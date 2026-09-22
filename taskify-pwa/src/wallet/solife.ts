@@ -156,10 +156,12 @@ export async function fetchSolifeConfig(options: SolifeApiOptions = {}): Promise
   return solifeApi<SolifeConfig>("/api/config", options);
 }
 
+// Solife authenticates this app with the bearer token alone. Its session cookie is only
+// for its own web app and is refused on requests from other sites, so none is sent.
 function solifeAuthOptions(options: SolifeApiOptions, session: SolifeSession) {
   return {
     ...options,
-    credentials: "include" as RequestCredentials,
+    credentials: "omit" as RequestCredentials,
     token: session.token,
   };
 }
@@ -219,7 +221,7 @@ export async function createSolifeSession(secretKey: string, options: SolifeApiO
   }>("/api/auth/challenge", {
     ...options,
     method: "POST",
-    credentials: "include",
+    credentials: "omit",
     body: { pubkey: identity.pubkey },
   });
   const event = finalizeEvent(
@@ -237,7 +239,7 @@ export async function createSolifeSession(secretKey: string, options: SolifeApiO
   const session = await solifeApi<SolifeSession>("/api/auth/verify", {
     ...options,
     method: "POST",
-    credentials: "include",
+    credentials: "omit",
     body: { pubkey: identity.pubkey, challenge: challenge.challenge, event },
   });
   return { config, identity, session };
