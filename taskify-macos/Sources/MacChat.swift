@@ -204,6 +204,9 @@ private struct MacConversation: View {
                 MacAttachmentQueueView(queue: attachments, busy: sending)
                 HStack(alignment: .bottom, spacing: 12) {
                     Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }.disabled(sending || attachments.importing)
+                    PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
+                        .labelStyle(.iconOnly).disabled(sending || attachments.importing || model.isDirectMessagePeerBlocked(peer))
+                        .help("Paste Files")
                     TextField("Message", text: $composer, axis: .vertical).lineLimit(2...8).textFieldStyle(.plain)
                         .padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(isDropTargeted ? Color.accentColor : .clear, lineWidth: 2))
