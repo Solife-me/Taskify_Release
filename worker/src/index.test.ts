@@ -245,6 +245,7 @@ async function makeEnv(db: MockD1) {
       fetch: async () => new Response("asset", { status: 200 }),
     },
     TASKIFY_DB: db as any,
+    VOICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
     VAPID_PUBLIC_KEY: vapid.publicKey,
     VAPID_PRIVATE_KEY: vapid.privatePem,
     VAPID_SUBJECT: "mailto:test@example.com",
@@ -812,6 +813,15 @@ class MockD1WithVoice extends MockD1 {
         return { success: true };
       },
       async first() {
+        if (/^INSERT INTO voice_quota/i.test(sql)) {
+          const [npub, date, seconds, , limit, added] = params as [string, string, number, number, number, number];
+          const key = `${npub}:${date}`;
+          const old = db.quota.get(key);
+          if (old && (old.session_count >= limit || old.total_seconds + added > 300)) return null;
+          const row = { session_count: (old?.session_count ?? 0) + 1, total_seconds: (old?.total_seconds ?? 0) + seconds };
+          db.quota.set(key, row);
+          return row;
+        }
         // SELECT * FROM voice_quota WHERE npub=? AND date=?
         if (/SELECT .* FROM voice_quota/i.test(sql)) {
           const [npub, date] = params as [string, string];
@@ -925,7 +935,7 @@ test("POST /api/voice/extract calls Gemini and returns operations on success", a
       return new Response(
         JSON.stringify({
           candidates: [
-            { content: { parts: [{ text: JSON.stringify({ operations: geminiOperations }) }] } },
+            { content: { parts: [{ text: JSON.stringify({ tasks: geminiOperations }) }] } },
           ],
         }),
         { status: 200 },
@@ -1445,7 +1455,7 @@ test("POST /api/voice/finalize normalizes recurrence and validates model-chosen 
     assert.equal(body.tasks[0].columnId, "col-2");
     assert.deepEqual(body.tasks[0].recurrence, { type: "weekly", days: [1, 4] });
     assert.deepEqual(body.tasks[0].reminderMinutesBeforeDue, [15, 60]);
-    assert.equal(body.tasks[0].notes, "Recycling too");
+    assert.equal(body.tasks[0].notes, undefined, "model must not invent notes");
     assert.equal(body.tasks[0].priority, 3);
 
     // c2: hallucinated board falls back to the request's default board, invalid
@@ -1722,4 +1732,43 @@ test('voice finalize anchors tomorrow locally and repairs an ambiguous appointme
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("voice finalization consumes the same account budget as extraction", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+  const day = new Date().toISOString().slice(0, 10);
+  db.quota.set(`${VOICE_TEST_PUBLIC_KEY}:${day}`, { session_count: 20, total_seconds: 0 });
+  const response = await worker.fetch(authenticatedVoiceRequest("https://taskify.test/api/voice/finalize", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, candidates: [{ id: "1", title: "Call dentist", status: "confirmed" }] }),
+  }), env);
+  assert.equal(response.status, 429);
+});
+
+test("voice rejects general API parameters and malformed candidates before provider work", async () => {
+  const env = await makeVoiceEnv(new MockD1WithVoice());
+  for (const extra of [{ model: "anything" }, { messages: [] }, { candidates: [{ id: "1", title: {}, status: "confirmed" }] }, { transcript: "x".repeat(8001) }]) {
+    const response = await worker.fetch(authenticatedVoiceRequest("https://taskify.test/api/voice/extract", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist", ...extra }),
+    }), env);
+    assert.equal(response.status, 400);
+  }
+});
+
+test("provider failures still charge account, IP and global budgets", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("unavailable", { status: 503 })) as any;
+  try {
+    const response = await worker.fetch(authenticatedVoiceRequest("https://taskify.test/api/voice/extract", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist" }),
+    }), env);
+    assert.equal(response.status, 503);
+    assert.equal(db.quota.size, 3);
+    for (const row of db.quota.values()) assert.equal(row.session_count, 1);
+  } finally { globalThis.fetch = originalFetch; }
 });
