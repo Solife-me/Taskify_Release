@@ -31,10 +31,12 @@ export type SolifeAddress = {
   nwcForward?: SolifeNwcForward | null;
 };
 
-/** A custom address forwarding payments to the owner's receive-only NWC wallet. */
+/** A custom address forwarding payments to the owner's wallet over NWC. */
 export type SolifeNwcForward = {
   walletAlias: string | null;
   walletNpub: string;
+  /** The connection would let its holder spend. Solife only ever creates invoices with it. */
+  canSpend?: boolean;
   lastError: string | null;
   lastUsedAt: number | null;
   updatedAt: number;
@@ -338,7 +340,8 @@ export async function updateSolifeLightningAddressMint(
 
 /**
  * Forwards a custom address's lightning payments to the owner's wallet over NWC.
- * The server only accepts receive-only connections (make_invoice, no pay methods).
+ * Any connection that can create invoices is accepted; the server only ever calls
+ * get_info and make_invoice with it. A receive-only connection is still safer.
  */
 export async function setSolifeAddressNwcForward(
   secretKey: string,

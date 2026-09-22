@@ -6,8 +6,8 @@ import UIKit
 
 // MARK: - Solife forwarding
 
-/// Forward a custom solife.me address to the user's own wallet over a receive-only NWC
-/// connection (the same feature as the PWA's Address view).
+/// Forward a custom solife.me address to the user's own wallet over an NWC connection
+/// (the same feature as the PWA's Address view).
 struct SolifeNWCForwardControl: View {
     @ObservedObject var wallet: WalletViewModel
     let address: SolifeAddress
@@ -22,6 +22,10 @@ struct SolifeNWCForwardControl: View {
                 Label("Payments go to \(forward.walletAlias ?? "your NWC wallet")", systemImage: "arrow.turn.down.right")
                     .font(.caption)
                     .foregroundStyle(TaskifyTheme.primaryText)
+                if forward.canSpend {
+                    Text("This connection can also spend from your wallet. solife.me only uses it to create invoices, but a receive-only connection means nothing can spend even if the server were compromised.")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
                 if let lastError = forward.lastError {
                     Text("Last payment attempt failed: \(lastError). Check that the wallet is online.")
                         .font(.caption2).foregroundStyle(.orange)
@@ -32,7 +36,7 @@ struct SolifeNWCForwardControl: View {
                 .font(.caption.weight(.semibold))
                 .disabled(busy)
             } else if editing {
-                Text("In your wallet, create an NWC connection that can only receive (create invoices), then paste it here. Don't reuse the one Taskify pays with: solife.me refuses connections that can spend.")
+                Text("Paste an NWC connection from your wallet. solife.me only ever uses it to create invoices, never to pay. For the most safety, create a new connection that can only receive rather than reusing the one Taskify pays with.")
                     .font(.caption2).foregroundStyle(TaskifyTheme.secondaryText)
                 TextField("nostr+walletconnect://…", text: $connection, axis: .vertical)
                     .font(.caption.monospaced())

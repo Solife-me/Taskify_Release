@@ -689,7 +689,7 @@ type NwcForwardSectionProps = {
   onShowOnReceive: (address: string) => void;
 };
 
-/** Forward a custom Solife address to the user's own lightning wallet over a receive-only NWC connection. */
+/** Forward a custom Solife address to the user's own lightning wallet over an NWC connection. */
 function NwcForwardSection({
   address,
   forward,
@@ -724,6 +724,12 @@ function NwcForwardSection({
           Payments to {address.address} go to{" "}
           <span className="font-semibold">{forward.walletAlias || "your NWC wallet"}</span>.
         </div>
+        {forward.canSpend && (
+          <div className="text-xs text-amber-400">
+            This connection can also spend from your wallet. Solife only uses it to create invoices, but a
+            receive-only connection means nothing can spend even if the server were compromised.
+          </div>
+        )}
         {forward.lastError && (
           <div className="text-xs text-amber-400">
             The last payment attempt failed: {forward.lastError}. Check that the wallet is online.
@@ -749,9 +755,9 @@ function NwcForwardSection({
       <div className="text-xs text-secondary uppercase tracking-wide">Forward to your wallet</div>
       <div className="text-xs text-secondary">
         Send payments to {address.address} straight to your own lightning wallet
-        {nwcWalletActive ? ` (such as ${nwcWalletLabel})` : ""}. In your wallet, create a new NWC connection that can
-        only receive (create invoices), then paste it here. Don't reuse the connection this app pays with: Solife
-        refuses connections that can spend.
+        {nwcWalletActive ? ` (such as ${nwcWalletLabel})` : ""}. Paste an NWC connection from your wallet. Solife
+        only ever uses it to create invoices, never to pay. For the most safety, create a new connection that
+        can only receive (create invoices) rather than reusing the one this app pays with.
       </div>
       <input
         className="pill-input w-full"

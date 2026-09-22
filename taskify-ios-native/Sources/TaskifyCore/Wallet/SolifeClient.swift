@@ -16,11 +16,13 @@ public struct SolifeAddress: Equatable, Sendable {
     public var nwcForward: SolifeNWCForward? = nil
 }
 
-/// A custom address forwarding its payments to the owner's receive-only NWC wallet. The
-/// connection string itself never leaves solife.me.
+/// A custom address forwarding its payments to the owner's NWC wallet. The connection
+/// string itself never leaves solife.me, which only ever creates invoices with it.
 public struct SolifeNWCForward: Equatable, Sendable {
     public let walletAlias: String?
     public let lastError: String?
+    /// The connection would let its holder spend (solife.me never does).
+    public var canSpend: Bool = false
 }
 
 public struct SolifeAddressPurchase: Equatable, Sendable {
@@ -240,8 +242,8 @@ public enum SolifeClient {
         return try parseAddress(data, fallbackMintURL: config.mintUrl)
     }
 
-    /// Forwards a custom address's payments to the owner's wallet. solife.me only accepts
-    /// receive-only connections (make_invoice without any pay methods).
+    /// Forwards a custom address's payments to the owner's wallet. Any connection that can
+    /// create invoices is accepted; solife.me only calls get_info and make_invoice with it.
     public static func setNWCForward(
         identity: NostrIdentity,
         handle: String,
@@ -391,7 +393,11 @@ public enum SolifeClient {
     private static func parseAddress(_ json: [String: Any], fallbackMintURL: String) -> SolifeAddress {
         let mintURL = (json["mintUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let forward = (json["nwcForward"] as? [String: Any]).map {
-            SolifeNWCForward(walletAlias: $0["walletAlias"] as? String, lastError: $0["lastError"] as? String)
+            SolifeNWCForward(
+                walletAlias: $0["walletAlias"] as? String,
+                lastError: $0["lastError"] as? String,
+                canSpend: $0["canSpend"] as? Bool ?? false
+            )
         }
         return SolifeAddress(
             handle: (json["handle"] as? String) ?? "",
