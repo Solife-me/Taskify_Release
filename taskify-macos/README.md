@@ -94,7 +94,13 @@ shared files, not only after editing Mac-specific sources.
   the existing wallet service; pending results are not reported as settled
   payments. An NWC wallet mode (connect, move or leave the ecash balance,
   switch back) is also available, on the same shared view model and
-  `NWCWalletService` as iOS — see `MacNWCWallet.swift`.
+  `NWCWalletService` as iOS — see `MacNWCWallet.swift`. Since Mac (like iPad)
+  isn't the phone, `WalletViewModel.automaticallyRedeemsIncomingPayments` is
+  false here: incoming shared-DM tokens, NUT-18 payment requests and
+  npub.cash claims are not auto-redeemed, avoiding a race with the phone over
+  the same payment. They collect in an Incoming Payments list
+  (`ManualIncomingPaymentsView`, shared with iPad) with an explicit Redeem
+  action per item instead.
 - Contact payments: pay a contact's Lightning address (falling back to
   `npub@solife.me`) or send them locked ecash as an encrypted message, using
   the same wire format as the PWA. P2PK key generation/import/removal for
@@ -422,3 +428,20 @@ its `.build` directory sits inside this iCloud-synced repo, same root cause
 already on file for the iOS package. Use `swift test --package-path
 taskify-macos --scratch-path /tmp/taskify-macos-build` instead. The
 `xcodebuild` build of the app target itself was unaffected.
+
+## Manual incoming-payment redemption (September 23, 2026)
+
+Landed from a concurrent session's working tree, committed here after this
+file's own account-switch and chat-state passes: Mac (and iPad) no longer
+auto-redeem incoming ecash — shared-DM tokens, NUT-18 payment requests and
+npub.cash claims all wait in a new Incoming Payments list
+(`ManualIncomingPaymentsView`, `MacWalletView`) for an explicit Redeem tap,
+so a Mac left open doesn't race the phone to claim the same payment. See the
+wallet bullet above for the mechanics.
+
+Verified after committing, since this file didn't write the change: a clean
+`xcodebuild` of both `TaskifyMac` and (for the shared `WalletView.swift`)
+`TaskifyNative` for iOS Simulator, and all 13 `swift test` cases still pass.
+Not verified by running either app, for the same reason as everywhere else
+in this file — and doubly so here, since actually exercising a Redeem tap
+needs a real pending payment, which means live funds.
