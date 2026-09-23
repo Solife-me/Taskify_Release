@@ -72,6 +72,18 @@ enum WalletPriceCache {
 
 @MainActor
 final class WalletViewModel: ObservableObject {
+    /// Desktop and tablet wallets must not race the phone to redeem shared DMs.
+    var automaticallyRedeemsIncomingPayments: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
+    }
+
+    @Published private(set) var incomingTokensAwaitingRedemption: [CashuIncomingTokenDelivery] = []
+    @Published private(set) var incomingRequestsAwaitingRedemption: [CashuNostrPaymentDelivery] = []
+
     static let suggestedMintURL = "https://mint.minibits.cash/Bitcoin"
     /// Outstanding-invoice check cadence. Each unchanged round trip doubles the wait (up to
     /// the maximum) so a wallet that is merely left open stays quiet; a paid invoice resets
@@ -210,6 +222,7 @@ final class WalletViewModel: ObservableObject {
     }
 
     func refresh() async {
+        refreshManualPaymentInbox()
         guard let service else { return }
         await service.refreshPendingLightningPayments()
         await service.refreshOutgoingTokenStates()
@@ -314,6 +327,75 @@ final class WalletViewModel: ObservableObject {
         return !requestReceipts.isEmpty || !incomingReceipts.isEmpty
     }
 
+    private func refreshManualPaymentInbox() {
+        guard !automaticallyRedeemsIncomingPayments else { return }
+        if let url = try? CashuIncomingTokenInboxStore.defaultURL() {
+            let deliveries = CashuIncomingTokenInboxStore.load(from: url)
+            if deliveries != incomingTokensAwaitingRedemption {
+                incomingTokensAwaitingRedemption = deliveries
+            }
+        }
+        if let url = try? CashuNostrPaymentInboxStore.defaultURL() {
+            let tokenEventIDs = Set(incomingTokensAwaitingRedemption.map(\.eventID))
+            let deliveries = CashuNostrPaymentInboxStore.load(from: url)
+                .filter { !tokenEventIDs.contains($0.eventID) }
+            if deliveries != incomingRequestsAwaitingRedemption {
+                incomingRequestsAwaitingRedemption = deliveries
+            }
+        }
+    }
+
+    /// Only called by an explicit Redeem action. Viewing or refreshing the inbox is local-only.
+    func redeemIncomingPayment(_ delivery: CashuIncomingTokenDelivery) async throws {
+        guard !isWorking else { return }
+        // A NUT-18 delivery can also appear in the generic token inbox. Preserve its
+        // request bookkeeping while presenting only one Redeem action.
+        if let requestURL = try? CashuNostrPaymentInboxStore.defaultURL(),
+           let request = CashuNostrPaymentInboxStore.load(from: requestURL)
+            .first(where: { $0.eventID == delivery.eventID }) {
+            try await redeemIncomingPayment(request)
+            return
+        }
+        let url = try CashuIncomingTokenInboxStore.defaultURL()
+        _ = try await submitReceive(delivery.token)
+        try CashuIncomingTokenInboxStore.markHandled(delivery, at: url)
+        refreshManualPaymentInbox()
+    }
+
+    func redeemIncomingPayment(_ delivery: CashuNostrPaymentDelivery) async throws {
+        guard !isWorking, !isNWCWalletActive else { return }
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        let url = try CashuNostrPaymentInboxStore.defaultURL()
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            do {
+                let receipt = try await service.receiveNostrPayment(delivery)
+                statusMessage = "Received \(formattedSats(receipt.amount))"
+            } catch CashuWalletError.paymentRequestNotFound {
+                // Requests created on another device still carry redeemable bearer ecash.
+                let token = try CashuPaymentRequestContract.tokenString(fromPaymentPayload: delivery.payloadJSON)
+                switch try await service.submitReceive(token) {
+                case .received(let amount): statusMessage = "Received \(formattedSats(amount))"
+                case .alreadyReceived: statusMessage = "This ecash was already received"
+                case .queued: statusMessage = "Ecash saved — choose Retry in the wallet to redeem it"
+                }
+            } catch CashuWalletError.paymentRequestAlreadyProcessed {
+                statusMessage = "This ecash was already received"
+            }
+            try CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: url)
+            let tokenURL = try CashuIncomingTokenInboxStore.defaultURL()
+            if let tokenDelivery = CashuIncomingTokenInboxStore.load(from: tokenURL)
+                .first(where: { $0.eventID == delivery.eventID }) {
+                try CashuIncomingTokenInboxStore.markHandled(tokenDelivery, at: tokenURL)
+            }
+            await refresh()
+        } catch {
+            await refresh()
+            throw error
+        }
+    }
+
     func paymentDeliveryWasQueued() {
         guard hasStarted else { return }
         paymentInboxNeedsAnotherPass = true
@@ -358,6 +440,7 @@ final class WalletViewModel: ObservableObject {
     /// history handling as any other incoming ecash.
     @discardableResult
     func claimNpubCash(auto: Bool) async -> Int {
+        guard !auto || automaticallyRedeemsIncomingPayments else { return 0 }
         guard LightningAddressSettings.provider == .npubCash, !isClaimingNpubCash else { return 0 }
         guard let identity = try? KeychainIdentityStore().load() else {
             if !auto {
@@ -681,8 +764,12 @@ final class WalletViewModel: ObservableObject {
         case .alreadyReceived:
             statusMessage = "This ecash was already received"
         case .queued:
-            await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
-            statusMessage = "Ecash saved — Taskify will retry automatically"
+            if automaticallyRedeemsIncomingPayments {
+                await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
+            }
+            statusMessage = automaticallyRedeemsIncomingPayments
+                ? "Ecash saved — Taskify will retry automatically"
+                : "Ecash saved — choose Retry in the wallet to redeem it"
             #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
             #endif
@@ -982,8 +1069,8 @@ final class WalletViewModel: ObservableObject {
         presentInApp: Bool = true
     ) async -> [CashuRecoveredReceive] {
         guard let service else { return [] }
-        if isNWCWalletActive {
-            // NWC mode keeps saved tokens unredeemed; the user moves them explicitly.
+        if isNWCWalletActive || !automaticallyRedeemsIncomingPayments {
+            // Manual devices and NWC mode keep saved tokens unredeemed.
             let saved = await service.savedPendingReceives()
             if saved != pendingEcashReceives { pendingEcashReceives = saved }
             return []
@@ -1011,6 +1098,10 @@ final class WalletViewModel: ObservableObject {
     private func recoverNostrPaymentRequests(
         presentInApp: Bool = true
     ) async -> [CashuPaymentRequestReceipt] {
+        guard automaticallyRedeemsIncomingPayments else {
+            refreshManualPaymentInbox()
+            return []
+        }
         // Payments to requests made in ecash mode wait in their durable inbox until the
         // ecash wallet is active again, rather than being claimed into it now.
         guard !isNWCWalletActive else { return [] }
@@ -1087,6 +1178,10 @@ final class WalletViewModel: ObservableObject {
     private func recoverIncomingTokenInbox(
         presentInApp: Bool = true
     ) async -> [DMPushRedeemedPaymentReceipt] {
+        guard automaticallyRedeemsIncomingPayments else {
+            refreshManualPaymentInbox()
+            return []
+        }
         guard !isRecoveringIncomingTokenInbox else {
             paymentInboxNeedsAnotherPass = true
             return []
@@ -1622,6 +1717,69 @@ final class WalletViewModel: ObservableObject {
     }
 }
 
+/// Shared by the iPad and Mac wallets. Rendering only decodes local token metadata.
+struct ManualIncomingPaymentsView: View {
+    @ObservedObject var wallet: WalletViewModel
+    @State private var redemptionError: String?
+
+    var body: some View {
+        if !wallet.automaticallyRedeemsIncomingPayments {
+            GroupBox("Incoming Payments") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Payments are not automatically redeemed on this device. Choose Redeem to add one here, or leave it for your phone.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(wallet.incomingTokensAwaitingRedemption) { delivery in
+                        HStack {
+                            paymentLabel(token: delivery.token, date: delivery.receivedAt)
+                            Spacer()
+                            Button("Redeem") {
+                                Task {
+                                    redemptionError = nil
+                                    do { try await wallet.redeemIncomingPayment(delivery) }
+                                    catch { redemptionError = WalletViewModel.message(for: error) }
+                                }
+                            }
+                            .disabled(wallet.isWorking || wallet.isLoading || wallet.isNWCWalletActive)
+                        }
+                    }
+                    ForEach(wallet.incomingRequestsAwaitingRedemption) { delivery in
+                        HStack {
+                            paymentLabel(
+                                token: (try? CashuPaymentRequestContract.tokenString(fromPaymentPayload: delivery.payloadJSON)) ?? "",
+                                date: delivery.receivedAt
+                            )
+                            Spacer()
+                            Button("Redeem") {
+                                Task {
+                                    redemptionError = nil
+                                    do { try await wallet.redeemIncomingPayment(delivery) }
+                                    catch { redemptionError = WalletViewModel.message(for: error) }
+                                }
+                            }
+                            .disabled(wallet.isWorking || wallet.isLoading || wallet.isNWCWalletActive)
+                        }
+                    }
+                    if let redemptionError {
+                        Text(redemptionError).font(.caption).foregroundStyle(.red)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+            }
+        }
+    }
+
+    private func paymentLabel(token: String, date: Date) -> some View {
+        let summary = CashuWalletService.offlineTokenSummary(token)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(summary.map { wallet.formattedSats($0.amount) } ?? "Ecash payment")
+            if let summary { Text(summary.mintURL).font(.caption).foregroundStyle(.secondary) }
+            Text(date.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 #if os(iOS)
 struct WalletView: View {
     @Environment(AppModel.self) private var model
@@ -1658,6 +1816,11 @@ struct WalletView: View {
 
                         utilityToolbar
                             .padding(.top, 14)
+
+                        if !wallet.automaticallyRedeemsIncomingPayments {
+                            ManualIncomingPaymentsView(wallet: wallet)
+                                .padding(.top, 14)
+                        }
 
                         Group {
                             if wallet.snapshot.mints.isEmpty && !wallet.isLoading && !wallet.isNWCWalletActive {
@@ -2068,6 +2231,9 @@ struct WalletView: View {
         }
         if wallet.recoverablePendingEcashReceives.isEmpty {
             return "A token needs your attention"
+        }
+        if !wallet.automaticallyRedeemsIncomingPayments {
+            return "Choose when to redeem these saved tokens"
         }
         return wallet.recoverablePendingEcashReceives.count == 1
             ? "Waiting for its mint — retrying automatically"
@@ -4359,15 +4525,16 @@ private struct WalletAddressManagerView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
-                        .onChange(of: autoClaimEnabled) { _, enabled in
-                            LightningAddressSettings.setAutoClaimEnabled(enabled)
-                        }
-                    Text("Automatically check for and redeem pending eCash each time the wallet opens.")
-                        .font(.caption2)
-                        .foregroundStyle(TaskifyTheme.tertiaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
+                    if wallet.automaticallyRedeemsIncomingPayments {
+                        Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
+                            .onChange(of: autoClaimEnabled) { _, enabled in
+                                LightningAddressSettings.setAutoClaimEnabled(enabled)
+                            }
+                        Text("Automatically check for and redeem pending eCash each time the wallet opens.")
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     Button {
                         Task { await wallet.claimNpubCash(auto: false) }
                     } label: {
@@ -5237,7 +5404,7 @@ struct RedeemCashuTokenSheet: View {
                 .font(.title2.bold())
                 .foregroundStyle(TaskifyTheme.primaryText)
 
-            Text("Taskify kept the token on this device and will retry its mint automatically. You can close this screen without losing it.")
+            Text(wallet.automaticallyRedeemsIncomingPayments ? "Taskify kept the token on this device and will retry its mint automatically. You can close this screen without losing it." : "Taskify kept the token on this device. Choose Retry when you want to redeem it.")
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(TaskifyTheme.secondaryText)
@@ -5312,7 +5479,7 @@ private struct PendingEcashSheet: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            Text("Tokens waiting on a mint stay encrypted by iOS file protection on this device. Cashu tokens do not have a normal expiration, so Taskify keeps retrying recoverable tokens until they succeed, the mint confirms they are spent, or you remove them.")
+                            Text(wallet.automaticallyRedeemsIncomingPayments ? "Tokens waiting on a mint stay encrypted by iOS file protection on this device. Cashu tokens do not have a normal expiration, so Taskify keeps retrying recoverable tokens until they succeed, the mint confirms they are spent, or you remove them." : "Tokens stay saved on this device until you choose to retry or remove them. They are not automatically redeemed on this device.")
                                 .font(.footnote)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
                                 .frame(maxWidth: .infinity, alignment: .leading)
