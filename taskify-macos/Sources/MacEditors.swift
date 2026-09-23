@@ -310,6 +310,11 @@ struct MacBoardEditor: View {
                             Toggle(child.name, isOn: Binding(get: { current.children.contains(child.id) }, set: { _ = model.setCompoundChild(boardID: current.id, childBoardID: child.id, included: $0) }))
                         }
                     }
+                    Section("Display") {
+                        Toggle("Hide Board Names in Column Headers", isOn: Binding(get: { current.hideChildBoardNames }, set: { _ = model.setCompoundHideChildBoardNames(boardID: current.id, hidden: $0) }))
+                        Text("When off, each child board's columns are grouped under its name.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if let current {
                     Section("Relay Sync") {

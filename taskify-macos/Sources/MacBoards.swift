@@ -32,7 +32,7 @@ struct MacBoardView: View {
                 ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 24) {
                         ForEach(boards) { child in
-                            if board.kind == .compound { Text(child.name).font(.title2.bold()) }
+                            if board.kind == .compound && !board.hideChildBoardNames { Text(child.name).font(.title2.bold()) }
                             HStack(alignment: .top, spacing: 16) {
                                 ForEach(columns(child)) { column in
                                     MacBoardColumn(board: child, column: column, search: search, showCompleted: showCompleted,

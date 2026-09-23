@@ -49,7 +49,9 @@ shared files, not only after editing Mac-specific sources.
 - Week/list/compound boards, board settings (including column rename/delete,
   with a required destination or explicit deletion for that column's tasks),
   archives, sharing/joining, task cards and sortable native table with
-  multiple selection and batch actions.
+  multiple selection and batch actions. A compound board groups each linked
+  child board's columns under a heading with that child's name; "Hide Board
+  Names in Column Headers" in its board settings can turn that off.
 - Quick entry, task editor, notes, subtasks, priorities, scheduling, recurrence
   (daily, multi-day weekly, monthly with an interval, or a custom every-N-units
   interval), reminders, encrypted file attachments and task sharing. The task
@@ -174,6 +176,29 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   a contact's whole message history) — only the info tab (QR, NIP-05, copyable
   fields) was ported; that media browser lives with Chat's own conversation
   history, not with the contact's identity, if it gets picked up later.
+- No "List index card" (a floating jump-between-lists control for list/compound
+  boards with many columns) — iOS has a real navigational widget for this with
+  no Mac equivalent to hook the setting into; needs its own design, not just a
+  toggle. `Board.indexCardEnabled`/`setBoardIndexCardEnabled` are unused here.
+- No per-board "Clear completed button" override
+  (`Board.clearCompletedDisabled`/`setBoardClearCompletedEnabled`). This only
+  means something once the global Completed-view redesign below exists —
+  it configures which of *that* feature's two board layouts keeps a
+  destructive clear action, so it can't be wired first.
+- Global "Completed view" toggle (`TaskPresentationSettings.completedTabKey`):
+  whether completed tasks collect behind the checkmark button (iOS's default)
+  or stay inline at the bottom of their list with a Clear Completed action.
+  `AppModel` already reads this key for cache prewarming, but the actual
+  layout logic lives in iOS's `BoardsView.swift`/`TaskCardView`, not in
+  shared code — porting the toggle without the matching board-column
+  behavior would be a control with no visible effect on Mac.
+- No Startup View preference (`StartupViewSettings`: which destination the
+  app opens to, plus a per-weekday board choice). Mac's `@SceneStorage`
+  already restores each window's last destination across relaunches, which
+  is closer to what iOS's own setting is compensating for the *absence* of —
+  wiring this needs a decision about how a fixed "always open here"
+  preference should interact with that per-window memory, not just a value
+  to plug in.
 - Complete preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
   cross-client relay sync and wallet recovery with controlled test funds.
@@ -534,3 +559,34 @@ Verified: clean `xcodebuild`, all 13 `swift test` cases still pass (no new
 pure logic — every value plugs into an `AppModel` property/method, or an
 `@AppStorage` key, that already existed and is already exercised by iOS).
 Not verified by running it.
+
+## Compound board name visibility, and three settings deliberately left alone (September 23, 2026)
+
+Continued the same `AppModel` setter-method audit from the settings pass
+above (grepped every `func set[A-Z]…` in `AppModel.swift`, checked each
+against Mac). Found and fixed one real, if narrow, bug: `MacBoardView`
+labeled a compound board's grouped columns with the child board's name
+unconditionally, with no way to turn it off, even though
+`Board.hideChildBoardNames` (default `false`, matching iOS) already existed
+and just had no Mac control. Most users would never have noticed — Mac's
+default behavior already matched the setting's default — but anyone who'd
+turned it on from the PWA or iOS would see names reappear on Mac. Added
+"Hide Board Names in Column Headers" to a new Display section in the
+compound board's settings (`MacEditors.swift`), and made the existing
+`Text(child.name)` in `MacBoardView` (`MacBoards.swift`) conditional on it.
+
+The audit surfaced four more `AppModel` methods with no Mac UI, all left
+alone with a reason, now on the list above rather than silently missing:
+`setBoardIndexCardEnabled` and `setBoardClearCompletedEnabled` (both need
+UI/behavior Mac doesn't have yet, not just a toggle), `setDMPushSelection`
+(configures push categories for a Mac push pipeline that doesn't work yet —
+see "Data and platform boundaries" — so the control would do nothing), and
+`setStartupTab`/`setStartupBoardID` (needs a real decision about interaction
+with `@SceneStorage`'s existing per-window restoration, not a quick wire-up).
+Also checked `setScriptureMemorySort`: already fully wired, just living
+inline in `MacDevotional.swift`'s Scripture Memory screen rather than in
+Settings — no gap there, the audit just hadn't confirmed it yet.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases still pass. Not
+verified by running it — this needs an actual compound board with the
+setting toggled to see the columns regroup.
