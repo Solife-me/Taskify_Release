@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct MacSettingsView: View {
     @Environment(AppModel.self) private var model
     @EnvironmentObject private var wallet: WalletViewModel
+    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
+    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
     @State private var relay = ""
     @State private var identity = ""
     @State private var message: String?
@@ -27,8 +29,16 @@ struct MacSettingsView: View {
                         Text("Top").tag(NewTaskPosition.top); Text("Bottom").tag(NewTaskPosition.bottom)
                     }
                     Toggle("Show Full Week Recurrences", isOn: Binding(get: { model.showFullWeekRecurring }, set: { model.setShowFullWeekRecurring($0) }))
+                    Toggle("Hide Completed Subtasks", isOn: $hideCompletedSubtasks)
                     Toggle("Track Streaks", isOn: Binding(get: { model.streaksEnabled }, set: { model.setStreaksEnabled($0) }))
                     Toggle("Bible Tracker", isOn: Binding(get: { model.visibleBoards.contains { $0.kind == .bible } }, set: { _ = model.setBibleTrackerEnabled($0) }))
+                }
+                Section("Chat") {
+                    Picker("Message Retention", selection: Binding(get: { model.chatMessageRetention }, set: { model.setChatMessageRetention($0) })) {
+                        ForEach(ChatMessageRetention.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    Text("Older messages are removed from this device's local history. This does not affect what other clients or relays retain.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Devotional") {
                     Toggle("Scripture Memory", isOn: Binding(get: { model.scriptureMemoryEnabled },
@@ -72,6 +82,15 @@ struct MacSettingsView: View {
                 }
                 Section("Wallet Display") {
                     Toggle("Currency Conversion", isOn: Binding(get: { model.walletConversionEnabled }, set: { model.setWalletConversionEnabled($0) }))
+                    Text("Show USD equivalents by fetching the spot BTC price from Coinbase.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Picker("Bitcoin Denomination", selection: Binding(get: { model.walletDenominationDisplay }, set: { model.setWalletDenominationDisplay($0) })) {
+                        Text("\(WalletAmountFormat.bitcoinSymbol)42,778").tag(WalletDenominationDisplay.bitcoinSymbol)
+                        Text("42,778 sat").tag(WalletDenominationDisplay.sat)
+                    }
+                    // No primary-currency picker: iOS deliberately omits one too — tapping a
+                    // wallet amount switches it in place instead of a Settings control two
+                    // screens away. Mac's wallet views don't have that tap gesture yet.
                 }
             }.formStyle(.grouped).tabItem { Label("General", systemImage: "gearshape") }
             Form {

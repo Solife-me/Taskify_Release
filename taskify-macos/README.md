@@ -52,7 +52,11 @@ shared files, not only after editing Mac-specific sources.
   multiple selection and batch actions.
 - Quick entry, task editor, notes, subtasks, priorities, scheduling, recurrence
   (daily, multi-day weekly, monthly with an interval, or a custom every-N-units
-  interval), reminders, encrypted file attachments and task sharing.
+  interval), reminders, encrypted file attachments and task sharing. The task
+  inspector's quick-view subtask list can hide completed subtasks (Settings →
+  General → Hide Completed Subtasks); the full task editor always shows all
+  of them, matching iOS's own split between decluttering the card view and
+  keeping everything reachable for editing.
 - Today/Upcoming agenda, Taskify event editing with the same recurrence
   controls, participant add/remove with per-participant RSVP status, EventKit
   calendars/reminders, and invitation responses. Shared-inbox rows (tasks,
@@ -126,7 +130,13 @@ shared files, not only after editing Mac-specific sources.
   PDF" works without separate export code. The scan-back-in side (reading a
   filled-in page's checkmarks) stays iOS-only — it needs a camera.
 - Account import/export, profile publishing, task backup/restore, relay controls,
-  file-server selection and notification permission.
+  file-server selection and notification permission. Chat message retention
+  (Forever down to 30 days, local-device-only — it prunes this device's
+  history, not other clients' or relays') and a Bitcoin-denomination display
+  picker (₿ symbol vs. "sat") round out Settings; there is deliberately no
+  primary-currency (sats/USD) picker, matching iOS, since that's meant to be
+  changed by tapping a wallet amount directly rather than from Settings — Mac's
+  wallet views don't have that tap gesture yet.
 
 Shortcuts: New Window `⌘N`, New Task `⇧⌘N`, New Board `⇧⌘B`, Sync `⇧⌘R`,
 Send Message `⌘Return`, Settings `⌘,`.
@@ -492,3 +502,35 @@ all confirmed present and already exercised by iOS's own contacts screen and
 Chat's existing "New Conversation" contact picker). Not verified by running
 it — add/edit/delete a contact, NIP-05 verification and the QR code all need
 a live check this file cannot give itself.
+
+## Three settings that were silently defaulted, not missing (September 23, 2026)
+
+Found by cross-referencing every settings-storage file `generate-project.py`
+already compiles into this target (`App/TaskOrderingSettings.swift`,
+`App/StartupViewSettings.swift`, …) against what `MacSettings.swift` actually
+exposes. Three had real, shared, already-functioning `AppModel` read/write
+methods with no Mac control to reach them, so Mac was silently stuck on each
+one's default:
+
+- **Hide Completed Subtasks** — `TaskPresentationSettings`, `@AppStorage`
+  directly (no `AppModel` involved, matching how iOS's own `TaskCardView`
+  reads it). Filters `MacTaskInspector`'s subtask list only; confirmed
+  `MacTaskEditor`'s own subtask section is intentionally unfiltered on iOS
+  (you need to see a completed subtask to un-complete it there), so it was
+  left alone.
+- **Chat Message Retention** — `model.chatMessageRetention` /
+  `.setChatMessageRetention(_:)`, which already calls
+  `snapshot.pruneDirectMessageHistory(olderThan:)` on change. That method's
+  own doc comment confirms it's local-only (no Nostr deletion event), which
+  is what the new Settings caption says.
+- **Bitcoin Denomination** (₿ vs. "sat") — `model.walletDenominationDisplay`
+  / `.setWalletDenominationDisplay(_:)`. Did **not** add a primary-currency
+  (sats/USD) picker: iOS's own Settings source has a comment explaining that
+  one is deliberately absent there too, in favor of tapping a wallet amount
+  to switch it in place — a wallet-view gesture, not a Settings control, and
+  out of scope here since it would mean editing the wallet display files.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases still pass (no new
+pure logic — every value plugs into an `AppModel` property/method, or an
+`@AppStorage` key, that already existed and is already exercised by iOS).
+Not verified by running it.

@@ -195,6 +195,12 @@ struct MacTaskInspector: View {
     let task: TaskItem
     var edit: () -> Void
     @Environment(AppModel.self) private var model
+    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
+    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
+    private var visibleSubtasks: [TaskSubtask] {
+        let subtasks = task.subtasks ?? []
+        return hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -206,7 +212,7 @@ struct MacTaskInspector: View {
                 if let date = task.dueDate, task.dueDateEnabled { Label(date.formatted(date: .abbreviated, time: task.dueTimeEnabled ? .shortened : .omitted), systemImage: "calendar") }
                 if let priority = task.priority { Label(String(describing: priority).capitalized, systemImage: "flag") }
                 if !task.note.isEmpty { Text(.init(task.note)).textSelection(.enabled) }
-                ForEach(task.subtasks ?? []) { subtask in
+                ForEach(visibleSubtasks) { subtask in
                     Button { model.toggleSubtaskCompletion(taskID: task.id, subtaskID: subtask.id) } label: {
                         Label(subtask.title, systemImage: subtask.completed ? "checkmark.circle.fill" : "circle")
                     }.buttonStyle(.plain)
