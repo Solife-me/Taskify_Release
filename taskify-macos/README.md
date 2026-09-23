@@ -42,9 +42,10 @@ shared files, not only after editing Mac-specific sources.
 
 - Persistent sidebar, independent windows sharing one account runtime, native
   menus, search, resizable task inspector, and Settings window. Switching
-  accounts resets every window's open task/board/event editor and navigation
-  state, since each window's own copy would otherwise keep pointing at data
-  from the account just switched away from.
+  accounts resets every window's open task/board/event editor, selected chat
+  conversation and its drafts, and navigation state, since each window's own
+  copy would otherwise keep pointing at data from the account just switched
+  away from.
 - Week/list/compound boards, board settings (including column rename/delete,
   with a required destination or explicit deletion for that column's tasks),
   archives, sharing/joining, task cards and sortable native table with
@@ -60,9 +61,11 @@ shared files, not only after editing Mac-specific sources.
   (`AppModel.currentCalendarDay`, refreshed on `NSCalendarDayChanged`/
   `NSSystemTimeZoneDidChange` and on wake).
 - DM/group conversation layouts, replies, reactions, history search, unread
-  state, archive/block controls and encrypted attachments. Per-conversation
-  drafts and scroll position persist while navigating between conversations
-  (not across leaving the Chat destination and back). Drag-and-drop and
+  state, archive/block controls and encrypted attachments. The selected
+  conversation, its per-conversation drafts and its scroll position all
+  persist in `MacWorkspace`, so they survive leaving the Chat destination
+  entirely (Wallet, Boards, …) and coming back, not just switching between
+  conversations within Chat. Drag-and-drop and
   clipboard paste (a `PasteButton`, since Cmd-V while the composer is focused
   goes to the text field first) for file attachments, also available in the
   task editor's Attachments section; a bot "/" slash-command menu. Inline
@@ -133,8 +136,9 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
 - Pasting raw image data with no backing file (e.g. a browser "Copy Image"
   that never touched disk) — `PasteButton(payloadType: URL.self)` only
   receives file URLs; a `Transferable` path for arbitrary image data needs
-  more investigation. Cross-navigation draft/scroll persistence does not yet
-  survive leaving the Chat destination entirely (Wallet, Boards, …) and back.
+  more investigation, and pasteboard content-type negotiation is exactly the
+  kind of thing that compiles cleanly while being silently wrong at runtime —
+  don't call it done without a live paste test, which needs a launched build.
 - npub.cash Lightning-address provider selection and claim UI (the always-on
   `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
   multi-frame QR for transfers too large for one code, and camera-based QR
@@ -390,3 +394,31 @@ reading of the diff, stated as such, never a launched instance. Confirming
 this target actually runs correctly needs a real signed build outside this
 sandbox — install-and-verify stays on the list in "Remaining parity" for
 that reason, not because it was ever actually checked here.
+
+## Cross-navigation chat state (September 22, 2026)
+
+`MacChatView`'s selected conversation was local `@State`, so switching the
+sidebar destination away from Chat and back recreated the view with no
+selection — you landed back on "Choose a conversation," even though the
+draft/scroll-position dictionaries underneath it (already lifted to
+`MacWorkspace`) were untouched the whole time. Lifted `selection` alongside
+them, the same pattern `selectedTaskID` already uses for boards, so returning
+to Chat reopens the same conversation, scrolled to the same place, with the
+unsent draft still in the composer. Also folded the new state into the
+account-switch reset added in the previous pass — a new account has an
+entirely different set of peers, so the old account's open conversation and
+drafts have no business surviving the switch.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases pass (no new pure
+logic — this is reactive UI state wiring, same class of change as the
+account-switch fix above), and read through the binding chain from
+`MacWorkspace`'s `@State` down through `List(selection:)` in `MacChatView` to
+confirm nothing in between still holds its own copy. Not verified by running
+it — see the methodology note above.
+
+Unrelated environment note from this pass: `swift test --package-path
+taskify-macos` fails CodeSign ("resource fork… detritus not allowed") when
+its `.build` directory sits inside this iCloud-synced repo, same root cause
+already on file for the iOS package. Use `swift test --package-path
+taskify-macos --scratch-path /tmp/taskify-macos-build` instead. The
+`xcodebuild` build of the app target itself was unaffected.

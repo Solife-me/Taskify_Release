@@ -5,8 +5,8 @@ struct MacChatView: View {
     let search: String
     @Binding var drafts: [String: String]
     @Binding var scrollPositions: [String: String]
+    @Binding var selection: String?
     @Environment(AppModel.self) private var model
-    @State private var selection: String?
     @State private var showNew = false
     @State private var showArchived = false
     private var peers: [String] {

@@ -29,6 +29,7 @@ struct MacWorkspace: View {
     @State private var notificationRouter = TaskNotificationNavigationRouter.shared
     @State private var chatDrafts: [String: String] = [:]
     @State private var chatScrollPositions: [String: String] = [:]
+    @State private var chatSelection: String?
     @State private var printingChecklist = false
 
     private var board: Board? { model.board(withID: destination) }
@@ -151,6 +152,9 @@ struct MacWorkspace: View {
             boardToManage = nil
             printingChecklist = false
             selectedTaskID = nil
+            chatSelection = nil
+            chatDrafts = [:]
+            chatScrollPositions = [:]
             destination = "today"
         }
         .onChange(of: notificationRouter.pendingDestination) { _, value in
@@ -177,7 +181,7 @@ struct MacWorkspace: View {
             switch MacDestination(rawValue: destination) {
             case .today, .upcoming:
                 MacAgendaView(todayOnly: destination == "today", search: search, selectedTaskID: $selectedTaskID, edit: { editingTask = $0 })
-            case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions)
+            case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions, selection: $chatSelection)
             case .wallet: MacWalletView()
             case .inbox: MacInboxView()
             case nil: ContentUnavailableView("Board Unavailable", systemImage: "rectangle.slash", description: Text("Choose another board from the sidebar."))
