@@ -72,6 +72,16 @@ shared files, not only after editing Mac-specific sources.
   image previews for image attachments; other attachments keep the
   save-to-disk button. An in-flight attachment encrypt/upload (chat send or
   task save) can be cancelled mid-flight rather than only waited out.
+- Contacts directory (`MacContacts.swift`), opened from a header button in
+  Chat — the same entry point iOS uses (`NostrContactsDirectoryView`, opened
+  from `ChatView`'s own-avatar button), just a discoverable icon button
+  instead of a tap-your-own-avatar gesture. Search, add/edit/delete a
+  contact by npub/pubkey/NIP-05, and a detail pane with a QR code, live
+  NIP-05 verification and copyable fields (npub, lightning address, about,
+  relays). No camera, so the contact editor has a Paste button where iOS has
+  a QR scanner — same substitution Chat's own attachment picker already
+  makes. Your own profile is edited from Settings' existing Profile tab
+  rather than a separate "My Card" route.
 - Rich message content: shared tasks/contacts/events/boards render inline as
   interactive cards with the real accept/decline/tentative/join/dismiss
   actions (the same conversation-correlated `SharedInboxItem`-family arrays
@@ -150,6 +160,10 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   multi-frame QR for transfers too large for one code, and camera-based QR
   scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
 - Voice entry, widgets, App Intents and share extension integration.
+- Contact detail has no photos/files/links tabs (browsing media shared across
+  a contact's whole message history) — only the info tab (QR, NIP-05, copyable
+  fields) was ported; that media browser lives with Chat's own conversation
+  history, not with the contact's identity, if it gets picked up later.
 - Complete preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
   cross-client relay sync and wallet recovery with controlled test funds.
@@ -445,3 +459,36 @@ Verified after committing, since this file didn't write the change: a clean
 Not verified by running either app, for the same reason as everywhere else
 in this file — and doubly so here, since actually exercising a Redeem tap
 needs a real pending payment, which means live funds.
+
+## Contacts directory (September 23, 2026)
+
+Ported iOS's `ContactsView.swift` (directory list, contact detail, add/edit
+sheet) as `MacContacts.swift`, opened from a new header button in Chat —
+matching iOS's actual information architecture (the directory is a sheet
+`ChatView` presents, not its own top-level tab) rather than adding a new
+sidebar destination in `MacWorkspace`. Two deliberate cuts from the iOS
+version, both already-established patterns elsewhere in this app rather than
+new decisions: no camera QR scanner in the add/edit sheet (Paste instead,
+same substitution Chat's attachment picker already makes), and no ported
+"My Card" own-profile view — Mac already has its own profile editor in
+Settings' Profile tab (`MacSettings.swift`), so duplicating it here would
+just be two places editing the same `lud16`/display-name/about fields. Also
+cut: the iOS detail view's photos/files/links tabs (media browsing across a
+contact's whole message history) — this port only carries the info tab
+(QR, NIP-05 verification, copyable fields), which is the part that is
+actually about the *contact* rather than the *conversation*.
+
+Selected contact is `@State` local to the sheet, not lifted to
+`MacWorkspace` like chat's own selection — unlike Chat, this view is always
+fully torn down on dismiss (it is a modal, so there is no "leave and come
+back with the sheet still around" case the way there is for a sidebar
+destination), so there is nothing for a lifted binding to preserve.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases still pass (no new
+pure logic to add cases for — this is UI wired directly to existing
+`AppModel` contact/profile methods: `saveNostrContact`, `deleteNostrContact`,
+`nostrContact(publicKey:)`, `refreshContacts`, `isBot`, `refreshBotCommands`,
+all confirmed present and already exercised by iOS's own contacts screen and
+Chat's existing "New Conversation" contact picker). Not verified by running
+it — add/edit/delete a contact, NIP-05 verification and the QR code all need
+a live check this file cannot give itself.

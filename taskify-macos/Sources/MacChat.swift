@@ -9,6 +9,7 @@ struct MacChatView: View {
     @Environment(AppModel.self) private var model
     @State private var showNew = false
     @State private var showArchived = false
+    @State private var showContacts = false
     private var peers: [String] {
         let values = model.directMessageThreads.map(\.peerPublicKey) + model.nostrContacts.map(\.publicKey)
         return Array(Set(values)).filter { peer in
@@ -26,6 +27,7 @@ struct MacChatView: View {
                 HStack {
                     Toggle("Archived", isOn: $showArchived).toggleStyle(.checkbox)
                     Spacer()
+                    Button { showContacts = true } label: { Image(systemName: "person.2") }.help("Contacts")
                     Button { showNew = true } label: { Image(systemName: "square.and.pencil") }.help("New Conversation")
                 }.padding(14)
                 List(selection: $selection) {
@@ -65,6 +67,7 @@ struct MacChatView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.sheet(isPresented: $showNew) { MacNewConversation { selection = $0 } }
+            .sheet(isPresented: $showContacts) { MacContactsView() }
     }
     private func name(_ peer: String) -> String {
         model.groupConversation(id: peer)?.displayName ?? model.nostrContact(publicKey: peer)?.displayName ?? String(peer.prefix(16))
