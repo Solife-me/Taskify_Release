@@ -136,6 +136,23 @@ struct MacWorkspace: View {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
         .onChange(of: destination) { _, _ in selectedTaskID = nil; search = "" }
+        .onChange(of: model.identityPublicKey) { oldValue, newValue in
+            // Empty-to-real is ordinary startup (identity loads after the window already exists)
+            // and must not disturb the @SceneStorage-restored destination; only a real account
+            // switch — a nonempty identity changing to a different one — should reset. Each
+            // window holds its own copy of this state; switching accounts (from any window, since
+            // they share one AppModel) must not leave another window's editor open on a
+            // task/board/event that belonged to the account just switched away from.
+            guard !oldValue.isEmpty, oldValue != newValue else { return }
+            editingTask = nil
+            creatingTask = false
+            creatingEvent = false
+            creatingBoard = false
+            boardToManage = nil
+            printingChecklist = false
+            selectedTaskID = nil
+            destination = "today"
+        }
         .onChange(of: notificationRouter.pendingDestination) { _, value in
             guard let value else { return }
             destination = value.rawValue

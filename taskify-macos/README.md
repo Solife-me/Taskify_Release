@@ -41,7 +41,10 @@ shared files, not only after editing Mac-specific sources.
 ## Current desktop implementation
 
 - Persistent sidebar, independent windows sharing one account runtime, native
-  menus, search, resizable task inspector, and Settings window.
+  menus, search, resizable task inspector, and Settings window. Switching
+  accounts resets every window's open task/board/event editor and navigation
+  state, since each window's own copy would otherwise keep pointing at data
+  from the account just switched away from.
 - Week/list/compound boards, board settings (including column rename/delete,
   with a required destination or explicit deletion for that column's tasks),
   archives, sharing/joining, task cards and sortable native table with
@@ -137,8 +140,7 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   multi-frame QR for transfers too large for one code, and camera-based QR
   scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
 - Voice entry, widgets, App Intents and share extension integration.
-- Account changes with open editors in multiple windows, complete
-  preferences and accessibility QA.
+- Complete preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
   cross-client relay sync and wallet recovery with controlled test funds.
 
@@ -344,3 +346,47 @@ Verified: clean `xcodebuild`, all 13 `swift test` cases pass (no new pure
 logic), app launches and stays alive under the preview harness. Not verified:
 actually cancelling a real in-flight upload, for the same sandbox permission
 reason as the rest of this file.
+
+## Account-switch editor reset (September 22, 2026)
+
+`MacWorkspace` now observes `model.identityPublicKey` and, when it changes
+from one nonempty value to a different one (a real "Switch Account…", not
+ordinary startup where it loads from empty), clears that window's open
+task/board/event editor sheets and resets navigation to Today. Each window
+runs its own `MacWorkspace` with its own local `@State` for these, but all
+windows share the one `AppModel`, so this fires in every open window at
+once — without it, a window left on a task editor during an account switch
+would keep pointing at a task ID that belongs to the account just switched
+away from.
+
+The empty-to-real exclusion matters: `destination` is `@SceneStorage`,
+restored from the last session, and firing this reset on ordinary startup
+(identity loading is not instant) would silently discard that every launch.
+
+Verified: clean `xcodebuild`, all 13 `swift test` cases pass (no new pure
+logic — this is reactive UI state wiring), and confirmed by reading
+`AppModel.applyIdentity` that `identityPublicKey` is set exactly when
+expected (account import) and not otherwise. Not verified by running it —
+see the note below.
+
+## Verification methodology correction — stop launching dev builds (September 22, 2026)
+
+Every "Verified" line above through the previous pass included launching the
+built app under `TASKIFY_MAC_PREVIEW=1` as a smoke test. That is not safe and
+this stops here: the dev build shares its bundle ID (`solife.me.Taskify.Mac`,
+fixed across every configuration in `generate-project.py`) with a real
+Taskify Mac install, and preview mode only swaps the task/chat store to a
+temp file — it does not isolate Keychain-backed identity. `WalletViewModel
+.start()` is skipped entirely in preview mode, so the wallet seed and funds
+were never at risk (that code path never ran), but identity loading is not
+preview-gated the same way. `TaskifyMac.entitlements` has App Sandbox on with
+no explicit keychain-sharing entitlement, which does not settle the question
+either way with confidence. A prior pass (the NWC macOS UI, `MacNWCWallet
+.swift`) already recorded compiling but deliberately not running it for this
+exact reason; this file just hadn't caught up.
+
+Going forward: verification here is `xcodebuild` + `swift test` plus careful
+reading of the diff, stated as such, never a launched instance. Confirming
+this target actually runs correctly needs a real signed build outside this
+sandbox — install-and-verify stays on the list in "Remaining parity" for
+that reason, not because it was ever actually checked here.
