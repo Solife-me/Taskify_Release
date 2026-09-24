@@ -3,9 +3,10 @@ export type RelayRejectionKind =
 "rate-limited"
 /** Will never be accepted by this relay (blocked, restricted, invalid): stop sending it there. */
  | "terminal"
-/** The relay already has it. */
- | "delivered"
-/** Transient (timeouts, `error:`, `pow:`): retry with the normal backoff. */
+/**
+ * Transient (timeouts, `error:`, `pow:`, a false `duplicate:`): retry with the normal backoff.
+ * Only a true acceptance confirms delivery (nostr-sync-audit-2026-09-03).
+ */
  | "retry";
 /** Classifies a relay's `OK false` / publish error message by its NIP-01 prefix. */
 export declare function classifyRelayRejection(message: string | null | undefined): RelayRejectionKind;

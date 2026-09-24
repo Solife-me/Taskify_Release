@@ -99,21 +99,46 @@ test("a rate-limited relay is backed off while other relays keep receiving", asy
   }
 });
 
-test("a relay that refuses an event for good is not retried; duplicates count as delivered", async () => {
+test("a refused event stays queued but is held back from the refusing relay", async () => {
   const store = new MemoryOutboxStore();
   const publisher = coordinator(store, new RelayPublishBudget());
   const original = NDKEvent.prototype.publish;
-  let calls = 0;
-  NDKEvent.prototype.publish = async function () {
-    calls += 1;
+  const targets: string[][] = [];
+  NDKEvent.prototype.publish = async function (set?: { relayUrls?: string[] }) {
+    targets.push(set?.relayUrls || []);
     this.emit("relay:publish:failed", relay("wss://blocking"), new Error("blocked: pubkey not allowed"));
-    this.emit("relay:publish:failed", relay("wss://dupe"), new Error("duplicate: already have this event"));
     return new Set([relay("wss://ok")]) as never;
   };
   try {
-    await publisher.publish(note("x"), { relayUrls: ["wss://ok", "wss://blocking", "wss://dupe"], signer: generateSecretKey() });
-    assert.equal(calls, 1);
-    assert.equal(store.rows.size, 0);
+    await publisher.publish(note("x"), { relayUrls: ["wss://ok", "wss://blocking"], signer: generateSecretKey() });
+    // A refusal never discards the change: it may be the only copy.
+    assert.equal(store.rows.size, 1);
+    const [row] = Array.from(store.rows.values());
+    assert.deepEqual(row.pendingRelays, ["wss://blocking"]);
+    assert.ok((row.relayRejections?.["wss://blocking"]?.retryAfter || 0) >= Date.now() + 3_500_000);
+    assert.ok((row.nextAttemptAt || 0) >= Date.now() + 3_500_000);
+    // A routine drain does not resend it to the relay that refused it.
+    await publisher.drainOutbox();
+    assert.equal(targets.length, 1);
+  } finally {
+    NDKEvent.prototype.publish = original;
+    publisher.shutdown();
+  }
+});
+
+test("an event refused by its only relay reports failure and stays queued", async () => {
+  const store = new MemoryOutboxStore();
+  const publisher = coordinator(store, new RelayPublishBudget());
+  const original = NDKEvent.prototype.publish;
+  NDKEvent.prototype.publish = async function () {
+    const errors = new Map([[relay("wss://blocking"), new Error("blocked: not allowed")]]);
+    throw Object.assign(new Error("Not enough relays received the event"), { errors, publishedToRelays: new Set() });
+  };
+  try {
+    await assert.rejects(publisher.publish(note("z"), { relayUrls: ["wss://blocking"], signer: generateSecretKey() }));
+    assert.equal(store.rows.size, 1);
+    const [row] = Array.from(store.rows.values());
+    assert.ok((row.nextAttemptAt || 0) >= Date.now() + 3_500_000);
   } finally {
     NDKEvent.prototype.publish = original;
     publisher.shutdown();

@@ -67,6 +67,8 @@ export declare class PublishCoordinator {
     private markOutboxSuccessLocked;
     private markOutboxFailure;
     private markOutboxFailureLocked;
+    /** When every pending relay is held back after refusing the event, wait for the first release. */
+    private delayRespectingHeldBackRelays;
     private retryDelayMs;
     private clearOutboxRetry;
     private scheduleOutboxRetry;

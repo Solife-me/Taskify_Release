@@ -8,8 +8,6 @@ export function classifyRelayRejection(message) {
     // noteguard's documented message is "rate-limit: …" rather than NIP-01's "rate-limited:".
     if (text.startsWith("rate-limited:") || text.startsWith("rate-limit:"))
         return "rate-limited";
-    if (text.startsWith("duplicate:"))
-        return "delivered";
     if (text.startsWith("blocked:") || text.startsWith("restricted:") || text.startsWith("invalid:"))
         return "terminal";
     return "retry";

@@ -88,7 +88,8 @@ final class RelayRejectionBackoffTests: XCTestCase {
         XCTAssertEqual(NostrRelayRejection.kind(of: "blocked: nope"), .refused)
         XCTAssertEqual(NostrRelayRejection.kind(of: "restricted: paid relay"), .refused)
         XCTAssertEqual(NostrRelayRejection.kind(of: "invalid: too large"), .refused)
-        XCTAssertEqual(NostrRelayRejection.kind(of: "duplicate: already have it"), .delivered)
+        // Only a true acceptance confirms delivery; a false OK with duplicate text does not.
+        XCTAssertEqual(NostrRelayRejection.kind(of: "duplicate: already have it"), .transient)
         XCTAssertEqual(NostrRelayRejection.kind(of: "error: db busy"), .transient)
         XCTAssertEqual(NostrRelayRejection.kind(of: "pow: difficulty 28"), .transient)
     }

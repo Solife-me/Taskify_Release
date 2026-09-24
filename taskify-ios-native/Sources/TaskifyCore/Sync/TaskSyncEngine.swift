@@ -282,9 +282,8 @@ enum NostrRelayRejection {
     enum Kind: Equatable {
         /// Refused outright (`blocked:`, `restricted:`, `invalid:`): don't resend it there soon.
         case refused
-        /// The relay already has it (`duplicate:`).
-        case delivered
-        /// Anything else (`error:`, `pow:`, unknown): retry as usual.
+        /// Anything else (`error:`, `pow:`, a false `duplicate:`, unknown): retry as usual. Only a
+        /// true acceptance confirms delivery (nostr-sync-audit-2026-09-03).
         case transient
     }
 
@@ -296,7 +295,6 @@ enum NostrRelayRejection {
 
     static func kind(of message: String) -> Kind {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if text.hasPrefix("duplicate:") { return .delivered }
         if text.hasPrefix("blocked:") || text.hasPrefix("restricted:") || text.hasPrefix("invalid:") {
             return .refused
         }
@@ -1396,9 +1394,6 @@ public actor TaskSyncEngine {
                 await handleAuthRequired(relayURL: relayURL)
             } else {
                 switch NostrRelayRejection.kind(of: message) {
-                case .delivered:
-                    await handle(.acknowledgement(eventID: eventID, accepted: true, message: message), from: relayURL)
-                    return
                 case .refused:
                     // Keep the change (it may be the only copy) but stop offering it to this
                     // relay on every reconnect; see `RelayRejectionBackoff`.

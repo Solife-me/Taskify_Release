@@ -5,6 +5,8 @@ import { EventCache } from "./EventCache.js";
 import {
   createNostrOutboxMutation,
   cloneNostrEvent,
+  earliestRejectionRelease,
+  recordOutboxRelayRejections,
   markOutboxPublishFailure,
   mergeOutboxRelayAcks,
   pendingRelayUrlsForMutation,
@@ -39,8 +41,10 @@ export type PublishResult = number | { createdAt: number; event: NostrEvent };
 type PublishEventResult = {
   createdAt: number;
   event: NostrEvent;
-  /** Relays that accepted the event, already had it, or refused it for good: none need a retry. */
+  /** Relays that accepted the event. */
   ackedRelays: string[];
+  /** Relays that refused it outright: kept queued for them but held back (see relayRejections). */
+  refusedRelays: string[];
   /** When the remaining relays should be tried: paced by the relay budget, or backed off after a rate limit. */
   notBefore: number | null;
 };
@@ -138,7 +142,7 @@ export class PublishCoordinator {
       const { ready, deferredUntil } = this.publishBudget.take(intendedRelays, Date.now());
       notBefore = deferredUntil;
       if (!ready.length) {
-        return { createdAt, event: event.rawEvent() as NostrEvent, ackedRelays: [], notBefore };
+        return { createdAt, event: event.rawEvent() as NostrEvent, ackedRelays: [], refusedRelays: [], notBefore };
       }
       if (ready.length < intendedRelays.length) targetSet = await this.resolveRelaySetWithEnsure(ready);
     }
@@ -172,7 +176,7 @@ export class PublishCoordinator {
 
     const now = Date.now();
     const accepted = relayUrlsFromPublishResult(publishedRelays);
-    const settled: string[] = [];
+    const refused: string[] = [];
     const rateLimited: string[] = [];
     let transientFailure = false;
     for (const [url, relayError] of relayErrors) {
@@ -183,8 +187,7 @@ export class PublishCoordinator {
           this.publishBudget?.recordRateLimited(url, now);
           break;
         case "terminal":
-        case "delivered":
-          settled.push(url);
+          refused.push(url);
           break;
         default:
           transientFailure = true;
@@ -196,15 +199,18 @@ export class PublishCoordinator {
       if (backoffUntil != null) notBefore = notBefore == null ? backoffUntil : Math.min(notBefore, backoffUntil);
     }
 
-    const ackedRelays = normalizeRelayUrls([...accepted, ...settled]);
-    const onlyPacedOrLimited = !transientFailure && notBefore != null;
+    const ackedRelays = normalizeRelayUrls(accepted);
+    const refusedRelays = normalizeRelayUrls(refused);
+    const onlyPacedOrLimited = !transientFailure && !refusedRelays.length && notBefore != null;
     if (!ackedRelays.length && !onlyPacedOrLimited) {
-      if (thrown && relayErrors.size === 0) throw thrown;
-      throw thrown ?? new NostrWriteQueuedError();
+      const failure = thrown ?? new NostrWriteQueuedError();
+      // Carried to the outbox so a refusing relay is held back rather than retried at once.
+      if (failure && typeof failure === "object") (failure as { refusedRelays?: string[] }).refusedRelays = refusedRelays;
+      throw failure;
     }
     const raw = event.rawEvent() as NostrEvent;
     if (accepted.length) this.eventCache?.add(raw);
-    return { createdAt, event: raw, ackedRelays, notBefore };
+    return { createdAt, event: raw, ackedRelays, refusedRelays, notBefore };
   }
 
   private async resolveRelaySetWithEnsure(relayUrls?: string[]): Promise<NDKRelaySet | undefined> {
@@ -293,7 +299,9 @@ export class PublishCoordinator {
     if (outboxId) this.activeOutboxIds.add(outboxId);
     try {
       const result = await this.publishNow(event, relaySet);
-      if (outboxId) await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore);
+      if (outboxId) {
+        await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore, result.refusedRelays);
+      }
       return result;
     } catch (error) {
       if (outboxId) await this.markOutboxFailure(outboxId, error, event.id);
@@ -303,11 +311,24 @@ export class PublishCoordinator {
     }
   }
 
-  private async markOutboxSuccess(outboxId: string, ackedRelays: string[], eventId: string, notBefore: number | null = null): Promise<void> {
-    return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore));
+  private async markOutboxSuccess(
+    outboxId: string,
+    ackedRelays: string[],
+    eventId: string,
+    notBefore: number | null = null,
+    refusedRelays: string[] = [],
+  ): Promise<void> {
+    return this.withOutboxLock(outboxId, () =>
+      this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays));
   }
 
-  private async markOutboxSuccessLocked(outboxId: string, ackedRelays: string[], eventId: string, notBefore: number | null): Promise<void> {
+  private async markOutboxSuccessLocked(
+    outboxId: string,
+    ackedRelays: string[],
+    eventId: string,
+    notBefore: number | null,
+    refusedRelays: string[],
+  ): Promise<void> {
     if (!this.outboxStore) return;
     const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
     if (!mutation || mutation.payload.event.id !== eventId) return;
@@ -325,12 +346,13 @@ export class PublishCoordinator {
     // Relays that were only paced or rate limited are due when their budget allows, and
     // waiting on the budget is not a failed attempt, so it doesn't grow the backoff.
     const now = Date.now();
-    const pacedOnly = notBefore != null && ackedRelays.length === 0;
-    const delay = pacedOnly
+    const pacedOnly = notBefore != null && ackedRelays.length === 0 && refusedRelays.length === 0;
+    const base = pacedOnly ? { ...mutation, updatedAt: now } : recordOutboxRelayRejections(next, refusedRelays, now);
+    let delay = pacedOnly
       ? Math.max(0, notBefore - now)
       : Math.max(this.retryDelayMs(next.attempts), notBefore != null ? notBefore - now : 0);
-    const row = pacedOnly ? { ...mutation, nextAttemptAt: now + delay, updatedAt: now } : { ...next, nextAttemptAt: now + delay };
-    await this.outboxStore.put(row).catch(() => undefined);
+    delay = this.delayRespectingHeldBackRelays(base, delay, now);
+    await this.outboxStore.put({ ...base, nextAttemptAt: now + delay }).catch(() => undefined);
     this.scheduleOutboxRetry(outboxId, delay);
   }
 
@@ -343,20 +365,30 @@ export class PublishCoordinator {
     const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
     if (!mutation || mutation.payload.event.id !== eventId) return;
     const attempts = mutation.attempts + 1;
-    const delay = this.retryDelayMs(attempts);
-    const next = markOutboxPublishFailure({
+    const now = Date.now();
+    const failed = markOutboxPublishFailure({
       mutation,
       error,
       ackedRelays: relayUrlsFromPublishError(error),
-      nextAttemptAt: Date.now() + delay,
+      nextAttemptAt: now + this.retryDelayMs(attempts),
     });
-    if (!next) {
+    if (!failed) {
       await this.outboxStore.delete(outboxId).catch(() => undefined);
       this.clearOutboxRetry(outboxId);
       return;
     }
-    await this.outboxStore.put(next).catch(() => undefined);
+    const refused = (error as { refusedRelays?: string[] })?.refusedRelays ?? [];
+    const next = recordOutboxRelayRejections(failed, refused, now);
+    const delay = this.delayRespectingHeldBackRelays(next, this.retryDelayMs(attempts), now);
+    await this.outboxStore.put({ ...next, nextAttemptAt: now + delay }).catch(() => undefined);
     this.scheduleOutboxRetry(outboxId, delay);
+  }
+
+  /** When every pending relay is held back after refusing the event, wait for the first release. */
+  private delayRespectingHeldBackRelays(mutation: NostrOutboxMutation, delay: number, now: number): number {
+    if (pendingRelayUrlsForMutation(mutation, now).length) return delay;
+    const release = earliestRejectionRelease(mutation, now);
+    return release == null ? delay : Math.max(delay, release - now);
   }
 
   private retryDelayMs(attempts: number): number {
@@ -418,6 +450,12 @@ export class PublishCoordinator {
 
   private async retryOutboxMutation(row: NostrOutboxMutation): Promise<void> {
     const relayUrls = pendingRelayUrlsForMutation(row);
+    // Every remaining relay refused this event and isn't due again yet.
+    if (!relayUrls.length) {
+      const release = earliestRejectionRelease(row);
+      if (release != null) this.scheduleOutboxRetry(row.id, release - Date.now());
+      return;
+    }
     const relaySet = await this.resolveRelaySetWithEnsure(relayUrls);
     const event = new NDKEvent(this.ndk, cloneNostrEvent(row.payload.event));
     await this.publishNowWithOutbox(event, relaySet, row.id);

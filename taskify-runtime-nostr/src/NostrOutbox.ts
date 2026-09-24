@@ -9,6 +9,9 @@ export type NostrOutboxPublishPayload = {
   replaceableKey?: string | null;
 };
 
+/** When a relay that refused an event outright may be offered it again. */
+export type OutboxRelayRejection = { count: number; retryAfter: number };
+
 export type NostrOutboxMutation = {
   id: string;
   kind: NostrOutboxMutationKind;
@@ -20,7 +23,44 @@ export type NostrOutboxMutation = {
   pendingRelays: string[];
   nextAttemptAt: number | null;
   updatedAt: number;
+  /**
+   * Relays that refused this event outright (blocked/restricted/invalid). The event stays queued
+   * for them, since it may be the only copy, but each is held back until its retry time instead
+   * of being resent on every attempt. Matches native `RelayRejectionBackoff`.
+   */
+  relayRejections?: Record<string, OutboxRelayRejection>;
 };
+
+const REJECTION_FIRST_BACKOFF_MS = 60 * 60_000;
+const REJECTION_MAX_BACKOFF_MS = 7 * 24 * 60 * 60_000;
+
+/** Records outright refusals: 1 hour after the first, doubling each time, capped at a week. */
+export function recordOutboxRelayRejections(
+  mutation: NostrOutboxMutation,
+  relayUrls: string[],
+  nowMs = Date.now(),
+): NostrOutboxMutation {
+  const relays = normalizeRelayUrls(relayUrls);
+  if (!relays.length) return mutation;
+  const rejections = { ...(mutation.relayRejections ?? {}) };
+  for (const relay of relays) {
+    const count = (rejections[relay]?.count ?? 0) + 1;
+    const delay = Math.min(REJECTION_MAX_BACKOFF_MS, REJECTION_FIRST_BACKOFF_MS * 2 ** (count - 1));
+    rejections[relay] = { count, retryAfter: nowMs + delay };
+  }
+  return { ...mutation, relayRejections: rejections };
+}
+
+/** When the earliest held-back relay may be retried, or null when none are held back. */
+export function earliestRejectionRelease(mutation: NostrOutboxMutation, nowMs = Date.now()): number | null {
+  let earliest: number | null = null;
+  for (const relay of normalizeRelayUrls(mutation.pendingRelays)) {
+    const retryAfter = mutation.relayRejections?.[relay]?.retryAfter;
+    if (!retryAfter || retryAfter <= nowMs) continue;
+    earliest = earliest == null ? retryAfter : Math.min(earliest, retryAfter);
+  }
+  return earliest;
+}
 
 export type NostrOutboxStore = {
   get(id: string): Promise<NostrOutboxMutation | undefined>;
@@ -69,13 +109,15 @@ export function createNostrOutboxMutation(args: {
     pendingRelays,
     nextAttemptAt: args.nextAttemptAt ?? null,
     updatedAt: nowMs,
+    ...(sameEvent && existing?.relayRejections ? { relayRejections: existing.relayRejections } : {}),
   };
 }
 
-export function pendingRelayUrlsForMutation(mutation: NostrOutboxMutation): string[] {
+/** The relays to send to now: still pending, and not held back after refusing the event. */
+export function pendingRelayUrlsForMutation(mutation: NostrOutboxMutation, nowMs = Date.now()): string[] {
   const pending = normalizeRelayUrls(mutation.pendingRelays);
-  if (pending.length) return pending;
-  return normalizeRelayUrls(mutation.payload.relayUrls);
+  const relays = pending.length ? pending : normalizeRelayUrls(mutation.payload.relayUrls);
+  return relays.filter((relay) => !((mutation.relayRejections?.[relay]?.retryAfter ?? 0) > nowMs));
 }
 
 export function mergeOutboxRelayAcks(mutation: NostrOutboxMutation, ackedRelays: string[], nowMs = Date.now()): NostrOutboxMutation | null {

@@ -44,7 +44,8 @@ test("rejections are classified by their NIP-01 prefix", () => {
   assert.equal(classifyRelayRejection("blocked: pubkey not allowed"), "terminal");
   assert.equal(classifyRelayRejection("restricted: paid relay"), "terminal");
   assert.equal(classifyRelayRejection("invalid: event too large"), "terminal");
-  assert.equal(classifyRelayRejection("duplicate: already have this event"), "delivered");
+  // Only a true acceptance confirms delivery; a false OK with duplicate text is retried.
+  assert.equal(classifyRelayRejection("duplicate: already have this event"), "retry");
   assert.equal(classifyRelayRejection("pow: difficulty 28 required"), "retry");
   assert.equal(classifyRelayRejection("error: database busy"), "retry");
   assert.equal(classifyRelayRejection("Publish timeout after 2500ms"), "retry");

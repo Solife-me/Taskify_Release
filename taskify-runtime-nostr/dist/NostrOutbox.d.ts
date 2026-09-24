@@ -5,6 +5,11 @@ export type NostrOutboxPublishPayload = {
     relayUrls: string[];
     replaceableKey?: string | null;
 };
+/** When a relay that refused an event outright may be offered it again. */
+export type OutboxRelayRejection = {
+    count: number;
+    retryAfter: number;
+};
 export type NostrOutboxMutation = {
     id: string;
     kind: NostrOutboxMutationKind;
@@ -16,7 +21,17 @@ export type NostrOutboxMutation = {
     pendingRelays: string[];
     nextAttemptAt: number | null;
     updatedAt: number;
+    /**
+     * Relays that refused this event outright (blocked/restricted/invalid). The event stays queued
+     * for them, since it may be the only copy, but each is held back until its retry time instead
+     * of being resent on every attempt. Matches native `RelayRejectionBackoff`.
+     */
+    relayRejections?: Record<string, OutboxRelayRejection>;
 };
+/** Records outright refusals: 1 hour after the first, doubling each time, capped at a week. */
+export declare function recordOutboxRelayRejections(mutation: NostrOutboxMutation, relayUrls: string[], nowMs?: number): NostrOutboxMutation;
+/** When the earliest held-back relay may be retried, or null when none are held back. */
+export declare function earliestRejectionRelease(mutation: NostrOutboxMutation, nowMs?: number): number | null;
 export type NostrOutboxStore = {
     get(id: string): Promise<NostrOutboxMutation | undefined>;
     put(mutation: NostrOutboxMutation): Promise<void>;
@@ -33,7 +48,8 @@ export declare function createNostrOutboxMutation(args: {
     existing?: NostrOutboxMutation;
     nextAttemptAt?: number | null;
 }): NostrOutboxMutation;
-export declare function pendingRelayUrlsForMutation(mutation: NostrOutboxMutation): string[];
+/** The relays to send to now: still pending, and not held back after refusing the event. */
+export declare function pendingRelayUrlsForMutation(mutation: NostrOutboxMutation, nowMs?: number): string[];
 export declare function mergeOutboxRelayAcks(mutation: NostrOutboxMutation, ackedRelays: string[], nowMs?: number): NostrOutboxMutation | null;
 export declare function markOutboxPublishFailure(args: {
     mutation: NostrOutboxMutation;

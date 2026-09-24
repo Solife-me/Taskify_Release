@@ -170,19 +170,6 @@ final class TaskSyncRelayExclusionTests: XCTestCase {
         let eligible = await outbox.pendingEntries(for: relayURL)
         XCTAssertEqual(eligible, [], "…but is not offered to the refusing relay again right away")
     }
-
-    func testDuplicateRejectionCountsAsDelivered() async throws {
-        let relay = CountingRelayTransport()
-        let engine = engine(transports: [relayURL: relay])
-        await engine.configure(boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [])
-        try await engine.enqueueForPublish([request(1, kind: stateKind, relayURLs: [relayURL])])
-        await engine.handle(
-            .acknowledgement(eventID: event(1, kind: stateKind).id, accepted: false, message: "duplicate: already have this event"),
-            from: relayURL
-        )
-        let pending = await engine.pendingPublishCount()
-        XCTAssertEqual(pending, 0)
-    }
 }
 
 private actor CountingRelayTransport: TaskSyncRelayTransport {
