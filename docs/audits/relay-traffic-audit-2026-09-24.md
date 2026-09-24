@@ -31,7 +31,34 @@ Damus's live configuration isn't public; the 8/min figure is noteguard's documen
 A useful working budget: **≤ 8 events/minute sustained per relay, small bursts**, **≤ 10 new
 REQs/minute per relay**, events **< 48 KB**, `created_at` within a few minutes of real time.
 
-## Fixed in this pass
+## Status (updated September 24, 2026)
+
+| Finding | Status | Commit |
+|---|---|---|
+| 1. Board metadata with every task publish | Fixed: skipped when unchanged (plaintext fingerprint). *Correction:* bursts were already coalesced by the runtime's per-address debounce; the doubling applied to single edits. | `d4cfdfd7` |
+| 2. Drag renumbers and republishes | Fixed differently than proposed: task `order` is not part of the synced payload on either client (each device orders its own lists), so order-only changes no longer publish at all. Fractional ordering isn't needed for traffic. | `082e9e9d` |
+| 3. Full history on every focus | Fixed: resume only after ≥ 60 s hidden or back online; history recovery is incremental from a per-relay watermark after the first complete pass; DM live subscription reads recent traffic only. | `011407a8` |
+| 4. PWA ignores rate limits | Fixed in the shared runtime publisher: per-relay token bucket, `rate-limited:` backoff, refused events held back. | `d4cfdfd7`, `3e6a1802`, `1757e871` |
+| 5. Native resends refused events | Fixed: held back per relay on a persisted schedule (1 h doubling to 7 days); never discarded. False `duplicate:` stays pending, per the 2026-09-03 audit. | `3c2f5d8b`, `3e6a1802` |
+| 6. Native paces reactively | Fixed: proactive token bucket. | `1757e871` |
+| 7. Fasting reminders fight | Fixed: shared series id, date-derived ids, synced settings and seed (parity-tested), no deletions from a device where the feature is merely off. Pre-existing duplicates are not cleaned up. | `a3340646` |
+| 8. Backup kind-5 deletion | Fixed. | `97eddf5a` |
+| 9. Server fan-in | Partly: per-account limits on the Worker bridge and push relay forwarding. The aggregate across all users still leaves from shared IPs (see below). | `b786445b` |
+| 10. Calendar invite subscription churn | Fixed. | `97eddf5a` |
+| 11. Native one-shot sockets | Open. | |
+| 12. Mint backup on every render | Fixed. | `97eddf5a` |
+| 13–16 | Open (P2). With pacing and date-derived ids, 13 and 14 are now low impact. | |
+
+**Pacing policy (chosen):** first-party relays (`relay.solife.me`, `push.solife.me`) get a burst of
+100, then 10 events/s, so a 60-task template lands there in about 3 s. Every other relay gets a
+burst of 8, then one event every 7.5 s. Both clients.
+
+**Still open, needs a decision:** Watch traffic has to be proxied (the Watch can't hold its own
+relay sockets), so at scale strict per-IP relay limits will see the combined traffic of every
+Watch user. Options: send Watch changes only to first-party relays and let the phone fan out to
+public relays when it next syncs; or ask public relay operators to allow the server IPs.
+
+## Fixed in the first pass
 
 | Issue | Change |
 |---|---|
