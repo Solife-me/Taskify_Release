@@ -198,10 +198,10 @@ export default {
         return await handleVoiceFinalize(request, env);
       }
       if (url.pathname === "/api/watch/nostr/publish" && request.method === "POST") {
-        return await handleWatchNostrPublish(request);
+        return await handleWatchNostrPublish(request, env);
       }
       if (url.pathname === "/api/watch/nostr/query" && request.method === "POST") {
-        return await handleWatchNostrQuery(request);
+        return await handleWatchNostrQuery(request, env);
       }
     } catch (err) {
       console.error("Worker error", err);

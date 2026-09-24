@@ -58,6 +58,7 @@ export interface Env {
   VOICE_RATE_LIMITER?: RateLimitBinding;
   PREVIEW_RATE_LIMITER?: RateLimitBinding;
   NIP05_RATE_LIMITER?: RateLimitBinding;
+  WATCH_NOSTR_RATE_LIMITER?: RateLimitBinding;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

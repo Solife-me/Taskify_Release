@@ -574,3 +574,24 @@ test('Watch authenticated preference query binds challenge to account and return
   assert.notEqual(replay.status, 200)
   assert.equal(authorizations, 1)
 })
+
+test('Watch forwarding to public relays is limited per account', async (t) => {
+  const accountKey = generateSecretKey()
+  const boardKey = generateSecretKey()
+  const relayForwarder = {
+    async publish() { return { outcome: 'accepted', message: '', close() {} } },
+  }
+  const { address } = await fixture(t, relayForwarder, { watchForwardsPerMinute: 3 })
+  const statuses = []
+  for (let index = 0; index < 4; index += 1) {
+    const response = await post(address, '/v1/watch/task-events/publish', {
+      event: taskEvent(boardKey, `task-${index}`, Math.floor(Date.now() / 1000)),
+      relays: ['wss://tasks.example'],
+    }, accountKey)
+    statuses.push(response.status)
+  }
+  // Forwarded events reach public relays from this server's shared IP, so each account gets a
+  // bounded share; the Watch keeps a limited change queued and retries.
+  assert.deepEqual(statuses.slice(0, 3).every((status) => status === 200), true)
+  assert.equal(statuses[3], 429)
+})

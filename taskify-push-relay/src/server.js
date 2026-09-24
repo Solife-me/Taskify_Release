@@ -188,9 +188,14 @@ export function createTaskifyPushServer({
   relayForwarder = new NostrRelayForwarder(),
   logger = console,
   watchPreferenceTimeoutMs = 5_000,
+  // Watch events forwarded to other relays leave from this server's shared IP, where public
+  // relays apply per-IP limits (noteguard's documented example is 8/min). Bound each account's
+  // share; the Watch keeps a limited change queued and retries.
+  watchForwardsPerMinute = 30,
 }) {
   const replayGuard = new NIP98ReplayGuard()
   const publishLimiter = new SlidingWindowRateLimiter()
+  const watchForwardLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerMinute })
   const privateRequestLimiter = new SlidingWindowRateLimiter({ maximum: 300 })
   const privateIPLimiter = new SlidingWindowRateLimiter({ maximum: 1_200 })
   const sockets = new Set()
@@ -610,7 +615,7 @@ export function createTaskifyPushServer({
       } else if (event.pubkey.toLowerCase() !== auth.pubkey) {
         if (!isTaskPublish) throw new Error('Kind 10050 author must match the authenticated account')
       }
-      if (!publishLimiter.consume(auth.pubkey)) throw new Error('Watch publish limit exceeded')
+      if (!watchForwardLimiter.consume(auth.pubkey)) throw new Error('Watch publish limit exceeded')
       const relayURLs = normalizeRelayTargets(payload.relays)
       if (isTaskPublish) await store.putTaskEvents([event])
       const results = await forwardWatchEvent(
