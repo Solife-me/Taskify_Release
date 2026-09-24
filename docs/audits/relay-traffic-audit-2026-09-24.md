@@ -43,20 +43,21 @@ REQs/minute per relay**, events **< 48 KB**, `created_at` within a few minutes o
 | 6. Native paces reactively | Fixed: proactive token bucket. | `1757e871` |
 | 7. Fasting reminders fight | Fixed: shared series id, date-derived ids, synced settings and seed (parity-tested), no deletions from a device where the feature is merely off. Pre-existing duplicates are not cleaned up. | `a3340646` |
 | 8. Backup kind-5 deletion | Fixed. | `97eddf5a` |
-| 9. Server fan-in | Partly: per-account limits on the Worker bridge and push relay forwarding. The aggregate across all users still leaves from shared IPs (see below). | `b786445b` |
+| 9. Server fan-in | Fixed: per-account limits on the Worker bridge and push relay forwarding; Watch changes go only to Taskify's relays (relay.solife.me / push.solife.me) and the phone republishes them to the board's public relays from its own connection when it applies the queued Watch command. | `b786445b`, `f49d27f0` |
 | 10. Calendar invite subscription churn | Fixed. | `97eddf5a` |
-| 11. Native one-shot sockets | Open. | |
+| 11. Native one-shot sockets | Fixed: account backup, app state and contacts lookups run as one-shot REQs on the sync engine's open (NIP-42-authenticated) connections, with a fresh socket only for relays it isn't connected to; auxiliary relays linger 5 min instead of reconnecting per publish. | `55c6077a` |
 | 12. Mint backup on every render | Fixed. | `97eddf5a` |
-| 13–16 | Open (P2). With pacing and date-derived ids, 13 and 14 are now low impact. | |
+| 13. `created_at` drift | Fixed: only successive versions of one replaceable address are bumped; nothing is stamped more than 60 s ahead. | `0d1de860` |
+| 14. Generation before sync | Fixed, and wider than first described: generating a shared-id task (recurring instance, fasting reminder, first scripture review) before sync could reopen an instance another device completed. Both clients now wait for relay sync. | `0d1de860` |
+| 15. Broad relay fan-out | Fixed: built-in relays are a fallback only, never appended to configured lists. | `02bb808f` |
+| 16. Streak rewrite on completion | Fixed: streaks are derived from the series on both clients; this also fixed native restarting streaks from stale pre-generated instances. | `86a50f56` |
 
 **Pacing policy (chosen):** first-party relays (`relay.solife.me`, `push.solife.me`) get a burst of
 100, then 10 events/s, so a 60-task template lands there in about 3 s. Every other relay gets a
 burst of 8, then one event every 7.5 s. Both clients.
 
-**Still open, needs a decision:** Watch traffic has to be proxied (the Watch can't hold its own
-relay sockets), so at scale strict per-IP relay limits will see the combined traffic of every
-Watch user. Options: send Watch changes only to first-party relays and let the phone fan out to
-public relays when it next syncs; or ask public relay operators to allow the server IPs.
+**Decided:** Watch changes go only to first-party relays; public relays get them when the phone
+next syncs. Every finding in this audit is now addressed.
 
 ## Fixed in the first pass
 
