@@ -3,6 +3,7 @@ import type { NDKKind } from "@nostr-dev-kit/ndk";
 import { recoverRelayHistory } from "taskify-runtime-nostr";
 import { NostrSession } from "./NostrSession";
 import { useSyncResume } from "./useSyncResume";
+import { historyRecoverySince, setHistoryWatermark } from "./historyWatermarks";
 import { boardTag } from "../boardCrypto";
 import type { Board, Task } from "../domains/tasks/taskTypes";
 import { dedupeRecurringInstances } from "../domains/tasks/taskUtils";
@@ -14,6 +15,8 @@ const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000;
 const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 const NOSTR_BOARD_YIELD_INTERVAL = 50;
+/** Re-read this much before the last complete recovery, for clock skew between devices. */
+const BOARD_HISTORY_LOOKBACK_SECS = 300;
 
 type MutableRef<T> = { current: T };
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
@@ -370,16 +373,22 @@ export function useBoardSync({
         },
       );
       unsubs.push(unsub);
-      // Older versions checkpointed newest-first partial history. Reconcile
-      // retained records independently of those cursors, one page per relay.
+      // Live cursors can skip records (a capped, newest-first response advances them past
+      // older events), so retained history is reconciled independently of them. The first
+      // complete pass reads everything; after that each relay is read from its last complete
+      // recovery, so a resume costs only what changed.
       void (async () => {
         const session = await NostrSession.init(relayList);
         for (const relay of relayList) {
           if (recovery.signal.aborted) return;
+          const watermarkKey = `board:${item.id}:${relay}`;
+          const startedAt = Math.floor(Date.now() / 1000);
+          const since = historyRecoverySince(watermarkKey, BOARD_HISTORY_LOOKBACK_SECS, forceFullHistorySync);
           try {
             // Taskify's board, task and calendar kinds are not members of NDK's kind enum.
             const historyKinds = [30300, 30301, TASKIFY_CALENDAR_EVENT_KIND] as number[] as NDKKind[];
-            await recoverRelayHistory(session, { kinds: historyKinds, "#b": [item.id] }, relay, async (event) => {
+            const filter = { kinds: historyKinds, "#b": [item.id], ...(since != null ? { since } : {}) };
+            await recoverRelayHistory(session, filter, relay, async (event) => {
               if (recovery.signal.aborted) return;
               await enqueueForBoard(item.id, async () => {
                 if (recovery.signal.aborted) return;
@@ -389,6 +398,7 @@ export function useBoardSync({
                 else await applyCalendarEvent(event);
               });
             }, { signal: recovery.signal });
+            if (!recovery.signal.aborted) setHistoryWatermark(watermarkKey, startedAt);
           } catch (error) {
             if (!recovery.signal.aborted) console.warn("[nostr] board history recovery incomplete", error);
           }

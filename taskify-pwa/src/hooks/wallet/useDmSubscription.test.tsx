@@ -72,9 +72,24 @@ test('startup discovers iOS inbox relays and recovers old sent DMs despite a rec
   try {
     await hook!.startDmSubscription();
     expect(calls[0].options.relayUrls).toEqual(['wss://ios.test', 'wss://pwa.test']);
-    expect(calls.every(call => call.filters.every((filter: any) => filter.since === 0))).toBe(true);
+    // First sync: history recovery (the paged REQs, which carry `until`) reads from the start;
+    // the live subscription only needs recent traffic.
+    const recoveryCalls = calls.filter(call => call.filters[0].until !== undefined);
+    const liveCalls = calls.filter(call => call.filters[0].until === undefined);
+    expect(recoveryCalls.length).toBeGreaterThan(0);
+    expect(recoveryCalls.every(call => call.filters[0].since === 0)).toBe(true);
+    expect(liveCalls).toHaveLength(1);
+    expect(liveCalls[0].filters[0].since).toBeGreaterThan(Math.floor(Date.now() / 1000) - 4 * 86400);
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({ isIncoming: false, content: 'Sent on iOS months ago' });
     expect(persist).toHaveBeenCalledOnce();
+
+    // Next sync (e.g. a resume): recovery reads only from the last complete pass, less the
+    // gift-wrap lookback, instead of paging back through everything.
+    calls.length = 0;
+    await hook!.startDmSubscription();
+    const nextRecovery = calls.filter(call => call.filters[0].until !== undefined);
+    expect(nextRecovery.length).toBeGreaterThan(0);
+    expect(nextRecovery.every(call => call.filters[0].since > 0)).toBe(true);
   } finally { closeRef.current?.(); await act(async () => root.unmount()); }
 });
