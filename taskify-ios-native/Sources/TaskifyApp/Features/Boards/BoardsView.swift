@@ -3726,7 +3726,8 @@ struct TaskCardView: View {
         default:
             return nil
         }
-        guard let streak = task.streak, streak > 0 else { return nil }
+        let streak = model.runningStreak(for: task)
+        guard streak > 0 else { return nil }
         return streak
     }
 

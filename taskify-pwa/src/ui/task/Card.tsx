@@ -154,6 +154,7 @@ function CardComponent({
   onEdit,
   onDropBefore,
   showStreaks,
+  displayStreak,
   onToggleSubtask,
   onFlyToCompleted,
   onDragStart,
@@ -175,6 +176,8 @@ function CardComponent({
   onEdit: () => void;
   onDropBefore: (dragId: string) => void;
   showStreaks: boolean;
+  /** The series' running streak for this instance; defaults to the stored one. */
+  displayStreak?: number;
   onToggleSubtask: (subId: string) => void;
   onFlyToCompleted: (rect: DOMRect) => void;
   onDragStart: (id: string) => void;
@@ -425,12 +428,12 @@ function CardComponent({
           {showStreaks &&
             task.recurrence &&
             (task.recurrence.type === 'daily' || task.recurrence.type === 'weekly') &&
-            typeof task.streak === 'number' && task.streak > 0 && (
+            typeof (displayStreak ?? task.streak) === 'number' && (displayStreak ?? task.streak)! > 0 && (
               <div className="flex items-center gap-1 text-xs text-secondary">
                 <span role="img" aria-hidden>
                   🔥
                 </span>
-                <span>{task.streak}</span>
+                <span>{displayStreak ?? task.streak}</span>
               </div>
             )}
           {task.dueTimeEnabled && (

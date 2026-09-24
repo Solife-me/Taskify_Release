@@ -52,4 +52,19 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
     canGenerateForBoard?: (boardId: string) => boolean;
 };
 export declare function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(options: EnsureWeekRecurrencesOptions<TTask>): TTask[];
+type StreakTaskLike = {
+    id: string;
+    seriesId?: string;
+    dueISO: string;
+    completed?: boolean;
+    streak?: number;
+};
+/**
+ * Streaks are carried from one instance of a recurring series to the next. An open instance's
+ * running streak is the streak of the latest completed instance due before it (or its own,
+ * whichever is higher), so instances generated ahead of time (full-week mode) don't need to be
+ * rewritten, and republished, every time an earlier one is completed. Completing an instance
+ * sets its streak to its running streak + 1.
+ */
+export declare function buildRunningStreakLookup<TTask extends StreakTaskLike>(tasks: readonly TTask[]): (task: TTask) => number;
 export {};

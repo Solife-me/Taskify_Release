@@ -1217,7 +1217,16 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         // days/weeks) — the same set of recurrences that reveal on their due date rather than
         // at the start of their window. Matches the PWA's `isFrequentRecurrence` check.
         if streaksEnabled, tasks[index].recurrence?.revealsOnDueDate == true {
-            let currentStreak = tasks[index].streak ?? 0
+            let currentStreak: Int
+            if tasks[index].completed {
+                // Count from the series' running streak: an instance generated ahead of time
+                // (full-week mode) carries the streak from when it was made.
+                var open = tasks[index]
+                open.completed = false
+                currentStreak = Self.runningStreakLookup(tasks)(open)
+            } else {
+                currentStreak = tasks[index].streak ?? 0
+            }
             if tasks[index].completed {
                 let newStreak = currentStreak + 1
                 tasks[index].streak = newStreak
@@ -1235,6 +1244,27 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             )
         }
         return true
+    }
+
+    /// An open instance's running streak: the streak of the latest completed instance of its
+    /// series due before it, or its own if higher. Matches the PWA's `buildRunningStreakLookup`,
+    /// so instances generated ahead of time needn't be rewritten when an earlier one completes.
+    public static func runningStreakLookup(_ tasks: [TaskItem]) -> (TaskItem) -> Int {
+        var completedBySeries: [String: [(due: Date, streak: Int)]] = [:]
+        for task in tasks where task.completed && !task.isDeleted {
+            guard let streak = task.streak, let due = task.dueDate else { continue }
+            completedBySeries[task.seriesID ?? task.id, default: []].append((due, streak))
+        }
+        for key in completedBySeries.keys {
+            completedBySeries[key]?.sort { $0.due < $1.due }
+        }
+        return { task in
+            let own = task.streak ?? 0
+            guard !task.completed, let due = task.dueDate,
+                  let completed = completedBySeries[task.seriesID ?? task.id] else { return own }
+            let previous = completed.last(where: { $0.due < due })?.streak
+            return max(own, previous ?? own)
+        }
     }
 
     @discardableResult

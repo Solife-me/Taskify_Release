@@ -205,6 +205,7 @@ import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/setti
 import { withBoardOrder } from "./domains/tasks/boardUtils";
 import {
   ensureWeekRecurrencesForCurrentWeek,
+  buildRunningStreakLookup,
   recurringSeriesId,
   tasksInSameSeries,
 } from "./lib/app/weekRecurrenceDomain";
@@ -3937,6 +3938,10 @@ export default function App() {
     return !!pendingNostrInitialSyncByBoardTag[boardTag(nostrBoardId)];
   }, [currentBoard, pendingNostrInitialSyncByBoardTag]);
 
+  // Open instances of a recurring series show the series' running streak (see
+  // buildRunningStreakLookup) rather than the copy stored when they were generated.
+  const runningStreakFor = useMemo(() => buildRunningStreakLookup(tasks), [tasks]);
+
   /* ---------- Derived: board-scoped lists ---------- */
   const tasksForBoard = useMemo(() => {
     if (!currentBoard) return [] as Task[];
@@ -5430,6 +5435,7 @@ export default function App() {
     return (
       <div key={t.id} className="space-y-2">
         <Card
+                            displayStreak={runningStreakFor(t)}
                             isSelectionMode={isSelectionMode}
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}
@@ -8928,7 +8934,9 @@ export default function App() {
         }
       }
       const now = new Date().toISOString();
-      let newStreak = typeof working.streak === "number" ? working.streak : 0;
+      // Count from the series' running streak, not this instance's stored copy: instances
+      // generated ahead of time (full-week mode) carry the streak from when they were made.
+      let newStreak = buildRunningStreakLookup(prev)(working);
       if (
         settings.streaksEnabled &&
         working.recurrence &&
@@ -8943,28 +8951,6 @@ export default function App() {
       }
       const nextLongest = mergeLongestStreak(working, newStreak);
       const toPublish: Task[] = [];
-      let nextId: string | null = null;
-      if (
-        settings.showFullWeekRecurring &&
-        settings.streaksEnabled &&
-        working.recurrence &&
-        isFrequentRecurrence(working.recurrence)
-      ) {
-        nextId =
-          prev
-            .filter(
-              t =>
-                t.id !== id &&
-                !t.completed &&
-                t.recurrence &&
-                sameSeries(t, working) &&
-                new Date(t.dueISO) > new Date(working.dueISO)
-            )
-            .sort(
-              (a, b) =>
-                new Date(a.dueISO).getTime() - new Date(b.dueISO).getTime()
-            )[0]?.id || null;
-      }
       const updated = prev.map(t => {
         if (t.id === id) {
           const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
@@ -8989,19 +8975,6 @@ export default function App() {
           }
           toPublish.push(done);
           return done;
-        }
-        if (t.id === nextId) {
-          const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
-          const upd = {
-            ...t,
-            seriesId: t.seriesId || t.id,
-            streak: newStreak,
-            longestStreak: mergeLongestStreak(t, newStreak),
-            lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            updatedAt: now,
-          };
-          toPublish.push(upd);
-          return upd;
         }
         return t;
       });
@@ -11926,6 +11899,7 @@ export default function App() {
 	                        ))}
 	                        {(byDay.get(day) || []).map((t) => (
 	                        <Card
+                            displayStreak={runningStreakFor(t)}
                             isSelectionMode={isSelectionMode}
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}
@@ -12179,6 +12153,7 @@ export default function App() {
 	                      ))}
 	                      {(itemsByColumn.get(col.id) || []).map((t) => (
 	                        <Card
+                            displayStreak={runningStreakFor(t)}
                             isSelectionMode={isSelectionMode}
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}

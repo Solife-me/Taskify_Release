@@ -342,6 +342,18 @@ final class AppModel {
     /// republish an instance another device completed, with a newer timestamp, and reopen it.
     @ObservationIgnored private var relayHistorySettled = false
     @ObservationIgnored private var relayHistorySettleTask: Task<Void, Never>?
+    @ObservationIgnored private var runningStreakCache: (revision: Int, lookup: (TaskItem) -> Int)?
+
+    /// The series' running streak for a task (see `TaskifySnapshot.runningStreakLookup`); instances
+    /// generated ahead of time show it instead of the streak stored when they were made.
+    func runningStreak(for task: TaskItem) -> Int {
+        if let cache = runningStreakCache, cache.revision == snapshotRevision {
+            return cache.lookup(task)
+        }
+        let lookup = TaskifySnapshot.runningStreakLookup(snapshot.tasks)
+        runningStreakCache = (snapshotRevision, lookup)
+        return lookup(task)
+    }
     /// Local-only boards can't conflict with another device's copy, so they never wait.
     private var canGenerateSharedTasks: Bool {
         relayHistorySettled || snapshot.boardsForSync.isEmpty

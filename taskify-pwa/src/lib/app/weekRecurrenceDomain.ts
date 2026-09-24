@@ -1,4 +1,5 @@
 export {
+  buildRunningStreakLookup,
   ensureWeekRecurrencesForCurrentWeek,
   recurringSeriesId,
   tasksInSameSeries,

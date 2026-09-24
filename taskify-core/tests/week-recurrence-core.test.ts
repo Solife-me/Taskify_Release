@@ -190,3 +190,20 @@ test("ensureWeekRecurrencesForCurrentWeek waits for a board that hasn't synced y
   assert.equal(ready.length, 2);
   assert.equal(published.length, 1);
 });
+
+test("runningSeriesStreak reads an open instance's streak from the latest completed earlier one", async () => {
+  const { buildRunningStreakLookup } = await import("../dist/weekRecurrence.js");
+  const tasks = [
+    { id: "mon", seriesId: "s", dueISO: "2026-03-09T00:00:00.000Z", completed: true, streak: 5 },
+    { id: "sun", seriesId: "s", dueISO: "2026-03-08T00:00:00.000Z", completed: true, streak: 4 },
+    // Pre-generated for the week with the streak the series had then.
+    { id: "tue", seriesId: "s", dueISO: "2026-03-10T00:00:00.000Z", completed: false, streak: 2 },
+    { id: "other", seriesId: "x", dueISO: "2026-03-10T00:00:00.000Z", completed: false, streak: 1 },
+  ] as any[];
+  const running = buildRunningStreakLookup(tasks);
+  assert.equal(running(tasks[2]), 5);
+  assert.equal(running(tasks[0]), 5, "a completed instance keeps its own streak");
+  assert.equal(running(tasks[3]), 1);
+  // An instance earlier than every completion only has its own.
+  assert.equal(running({ id: "sat", seriesId: "s", dueISO: "2026-03-07T00:00:00.000Z", completed: false, streak: 0 } as any), 0);
+});
