@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { NostrEvent } from "nostr-tools";
 import type { Board, CalendarEvent, EditingState } from "../domains/tasks/taskTypes";
-import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
+import { relaysOrDefaults } from "../lib/relays";
 import {
   calendarAddress,
   decryptCalendarRsvpPayload,
@@ -183,13 +183,7 @@ export function useCalendarEventManagement({
     if (!editing || editing.type !== "event") return;
     const event = editing.event;
     const board = boards.find((candidate) => candidate.id === event.boardId);
-    const relayCandidates = [
-      ...(board?.nostr?.relays?.length ? board.nostr.relays : []),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+    const relays = relaysOrDefaults(board?.nostr?.relays, defaultRelays, inboxRelays);
 
     if (board?.nostr?.boardId && relays.length) {
       let cancelled = false;
@@ -278,13 +272,7 @@ export function useCalendarEventManagement({
     });
     if (!canonicalAddrs.size) return;
 
-    const relayCandidates = [
-      ...Array.from(relaySet),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ];
-    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+    const relays = relaysOrDefaults(Array.from(relaySet), defaultRelays, inboxRelays);
     if (!relays.length) return;
 
     let cancelled = false;

@@ -228,7 +228,7 @@ import {
   type CalendarRsvpFb,
   type CalendarRsvpStatus,
 } from "./lib/privateCalendar";
-import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
+import { DEFAULT_NOSTR_RELAYS, relaysOrDefaults } from "./lib/relays";
 import type { FinalTask } from "./nostr/useVoiceSession";
 import type { Contact } from "./lib/contacts";
 import {
@@ -8807,17 +8807,10 @@ export default function App() {
       if (!nostrSkHex) return;
       const recipientPubkey = normalizeAgentPubkey(inboxItem.sender.pubkey) ?? normalizeNostrPubkeyHex(inboxItem.sender.npub || "");
       if (!recipientPubkey) return;
-      const relayList = Array.from(
-        new Set(
-          [
-            ...(Array.isArray(inboxItem.task.relays) ? inboxItem.task.relays : []),
-            ...defaultRelays,
-            ...inboxRelays,
-            ...Array.from(DEFAULT_NOSTR_RELAYS),
-          ]
-            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
+      const relayList = relaysOrDefaults(
+        Array.isArray(inboxItem.task.relays) ? inboxItem.task.relays : [],
+        defaultRelays,
+        inboxRelays,
       );
       if (!relayList.length) return;
       let senderNpub: string | null = null;
@@ -9880,13 +9873,7 @@ export default function App() {
         ?? null;
       if (!defaultBoard) return null;
 
-      const relayCandidates = [
-        ...(invite.relays?.length ? invite.relays : []),
-        ...(defaultRelays.length ? defaultRelays : []),
-        ...(inboxRelays.length ? inboxRelays : []),
-        ...Array.from(DEFAULT_NOSTR_RELAYS),
-      ];
-      const relayList = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+      const relayList = relaysOrDefaults(invite.relays, defaultRelays, inboxRelays);
       if (!relayList.length) {
         showToast("No relays available to load this event.");
         return null;
@@ -10244,13 +10231,7 @@ export default function App() {
       const canonicalAddress = materialized?.canonicalAddress || invite.canonical;
       const eventId = materialized?.id || resolvedEventId;
       const inviteRelays = materialized?.inviteRelays ?? invite.relays;
-      const relayCandidates = [
-        ...(inviteRelays?.length ? inviteRelays : []),
-        ...defaultRelays,
-        ...inboxRelays,
-        ...Array.from(DEFAULT_NOSTR_RELAYS),
-      ];
-      const fallbackRelays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+      const fallbackRelays = relaysOrDefaults(inviteRelays, defaultRelays, inboxRelays);
       const inviteToken = boardNostrId ? "" : (materialized?.inviteToken || invite.inviteToken);
       const options = boardNostrId ? { boardId: boardNostrId } : undefined;
       await publishCalendarRsvp(canonicalAddress, eventId, inviteToken, fallbackRelays, status, options);
@@ -12939,14 +12920,9 @@ export default function App() {
 	            activeEventRsvpCoord
 	              ? async (status, options) => {
 	                  try {
-                      const relayCandidates = activeEventRsvpRelays.length
-                        ? activeEventRsvpRelays
-                        : [
-                            ...defaultRelays,
-                            ...inboxRelays,
-                            ...Array.from(DEFAULT_NOSTR_RELAYS),
-                          ];
-                      const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+                      const relays = activeEventRsvpRelays.length
+                        ? relaysOrDefaults(activeEventRsvpRelays)
+                        : relaysOrDefaults(defaultRelays, inboxRelays);
                       const isExternal = editing?.type === "event" ? !!editing.event.external : false;
                       const publishBoardId = editing?.type === "event" && !isExternal
                         ? (editing.event.originBoardId ?? editing.event.boardId)

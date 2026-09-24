@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import type { CalendarEvent } from "taskify-core";
-import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
+import { DEFAULT_NOSTR_RELAYS, relaysOrDefaults } from "../lib/relays";
 import {
   TASKIFY_CALENDAR_VIEW_KIND,
   calendarAddress,
@@ -83,10 +83,6 @@ type UseNostrSubscriptionsParams = {
 function eventTagValue(event: NostrEvent, name: string): string | undefined {
   const tag = event.tags.find((entry) => entry[0] === name);
   return tag?.[1];
-}
-
-function uniqueRelayList(relays: string[]): string[] {
-  return Array.from(new Set(relays.map((relay) => relay.trim()).filter(Boolean)));
 }
 
 function useSharedInboxSubscription(config?: SharedInboxSubscriptionConfig) {
@@ -193,12 +189,7 @@ function useCalendarViewSubscription(config?: CalendarViewSubscriptionConfig) {
     });
     if (!viewLookup.size || !authors.size || !dTags.size) return;
 
-    const relays = uniqueRelayList([
-      ...Array.from(relaySet),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ]);
+    const relays = relaysOrDefaults(Array.from(relaySet), defaultRelays, inboxRelays);
     if (!relays.length) return;
 
     let cancelled = false;
