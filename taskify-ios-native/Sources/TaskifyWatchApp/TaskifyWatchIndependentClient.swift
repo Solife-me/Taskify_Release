@@ -49,6 +49,9 @@ struct TaskifyWatchIndependentClient: Sendable {
             let relays: [String]
             let event: TaskifyWatchNostrEvent
         }
+        // Only Taskify's own relays: this traffic leaves from shared server IPs. The phone fans the
+        // change out to the board's public relays when it applies the queued Watch command.
+        let relayURLs = TaskifyFirstPartyRelays.watchPublishTargets(boardRelayURLs: relayURLs)
         if let gatewayBaseURL {
             do {
                 try await publishThroughGateway(
@@ -116,7 +119,11 @@ struct TaskifyWatchIndependentClient: Sendable {
         }
         let authors = Array(Set(usableBoards.map(\.author))).sorted()
         let boardTags = Array(Set(usableBoards.map(\.boardTag))).sorted()
-        let relays = normalizedRelays(usableBoards.flatMap(\.relays) + profile.relayURLs)
+        // Include Taskify's relay: Watch changes are published there first and only reach the
+        // board's other relays once the phone republishes them.
+        let relays = normalizedRelays(
+            usableBoards.flatMap(\.relays) + profile.relayURLs + [TaskifyFirstPartyRelays.relayURL]
+        )
         guard !authors.isEmpty, !relays.isEmpty else {
             throw TaskifyWatchIndependentError.accountUnavailable
         }

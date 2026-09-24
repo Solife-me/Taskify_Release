@@ -254,7 +254,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             // Completion commands are deliberately idempotent. Replayed background deliveries
             // acknowledge an already-completed/deleted task without toggling it back open.
             guard let taskID = command.taskID else { throw TaskifyWatchBridgeError.invalidCommand }
-            model.completeTasks([taskID])
+            model.completeTasksFromWatch([taskID])
 
         case .createTask:
             guard let title = command.title,

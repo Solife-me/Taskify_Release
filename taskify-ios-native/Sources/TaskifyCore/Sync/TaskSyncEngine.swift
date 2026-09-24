@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyWatchShared
 
 public enum TaskSyncState: Equatable, Sendable {
     case stopped
@@ -213,7 +214,7 @@ struct RelayPublishPacer: Equatable, Sendable {
     /// Relays Taskify operates, matching the runtime's `FIRST_PARTY_RELAYS`. They get a generous
     /// budget so a large change (a 60-task template) lands there in seconds; clients read from
     /// every relay, so it appears quickly while public relays receive it at their pace.
-    static let firstPartyRelayURLs: Set<String> = ["wss://relay.solife.me", "wss://push.solife.me"]
+    static let firstPartyRelayURLs: Set<String> = TaskifyFirstPartyRelays.urls
 
     /// Public relays: a burst of 8, then one event every 7.5 s — the strictest documented limit
     /// we know of (noteguard's example of 8 events/minute per IP). First-party: 100, then 10/s.

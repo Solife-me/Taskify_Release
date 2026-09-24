@@ -1196,14 +1196,20 @@ final class AppModel {
         taskIDPrefix: String? = nil,
         referenceDate: Date = Date()
     ) -> Int {
+        // Watch-created tasks carry stable ids and may already be here: the Watch publishes them to
+        // Taskify's own relay first. Those count as applied, and are republished so they reach the
+        // board's other relays (the Watch only sends to Taskify's relays).
+        let alreadyPresent = taskIDPrefix.map { prefix in
+            snapshot.tasks.filter { $0.id.hasPrefix("\(prefix)-") && !$0.isDeleted }.map(\.id)
+        } ?? []
         let created = snapshot.addVoiceTasks(
             tasks, defaultBoardID: defaultBoardID, taskIDPrefix: taskIDPrefix,
             authorPublicKey: identityPublicKey.nilIfEmpty, newTaskPosition: newTaskPosition,
             weekStart: weekStart, calendar: weekCalendar, now: referenceDate
         )
-        synchronizeTasks(created.map(\.id))
+        synchronizeTasks(created.map(\.id) + alreadyPresent)
         if !created.isEmpty { refreshNotifications(requestPermission: false) }
-        return created.count
+        return min(tasks.count, created.count + alreadyPresent.count)
     }
 
     func previewVoiceTasks(_ tasks: [VoiceFinalTask], defaultBoardID: String?, referenceDate: Date) -> [TaskItem] {
@@ -1655,6 +1661,18 @@ final class AppModel {
     /// *incomplete* tasks done — unlike single-task `toggleCompletion`, a bulk "Complete" action on
     /// a mixed selection shouldn't un-complete tasks that already were, matching the PWA's
     /// `completeSelectedItems` (disabled unless the selection has at least one incomplete task).
+    /// Applies a completion made on the Watch. The Watch publishes only to Taskify's own relays
+    /// (see `TaskifyFirstPartyRelays.watchPublishTargets`), so this device fans it out: a task
+    /// that already arrived completed from Taskify's relay is republished to every relay of its
+    /// board instead of being treated as already done.
+    func completeTasksFromWatch(_ taskIDs: [String]) {
+        let alreadyCompleted = taskIDs.filter { taskID in
+            snapshot.tasks.first(where: { $0.id == taskID }).map { $0.completed && !$0.isDeleted } ?? false
+        }
+        completeTasks(taskIDs)
+        if !alreadyCompleted.isEmpty { synchronizeTasks(alreadyCompleted) }
+    }
+
     func completeTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {
         // Bulk counterpart to `toggleCompletion`: toggle every task through one local copy, then
         // reconcile and publish once, instead of invalidating, reconciling and refreshing
