@@ -206,33 +206,71 @@ struct TaskRelayStartupBatch: Sendable {
     }
 }
 
-// NIP-11 does not advertise publish throughput. Keep healthy relays responsive,
-// then adapt this relay's pace when NIP-01 reports a `rate-limited:` rejection.
+// NIP-11 does not advertise publish throughput, and public relays throttle or ban per IP, so
+// each relay gets a proactive budget (a burst, then a steady refill) rather than discovering its
+// limit by being rejected. On top of that, the pace adapts when NIP-01 reports `rate-limited:`.
 struct RelayPublishPacer: Equatable, Sendable {
+    /// Relays Taskify operates, matching the runtime's `FIRST_PARTY_RELAYS`. They get a generous
+    /// budget so a large change (a 60-task template) lands there in seconds; clients read from
+    /// every relay, so it appears quickly while public relays receive it at their pace.
+    static let firstPartyRelayURLs: Set<String> = ["wss://relay.solife.me", "wss://push.solife.me"]
+
+    /// Public relays: a burst of 8, then one event every 7.5 s — the strictest documented limit
+    /// we know of (noteguard's example of 8 events/minute per IP). First-party: 100, then 10/s.
+    static func forRelay(_ relayURL: String) -> RelayPublishPacer {
+        let normalized = TaskifyRelayURL.normalize(relayURL) ?? relayURL
+        return firstPartyRelayURLs.contains(normalized)
+            ? RelayPublishPacer(burst: 100, refillInterval: 0.1)
+            : RelayPublishPacer()
+    }
+
     let defaultInterval: TimeInterval
     let baseBackoff: TimeInterval
     let maximumBackoff: TimeInterval
+    let burst: Int
+    let refillInterval: TimeInterval
     private(set) var currentInterval: TimeInterval
     private(set) var nextPublishAt: TimeInterval = 0
     private(set) var consecutiveRateLimits = 0
     private var acceptedSinceRateLimit = 0
+    private var tokens: Int
+    private var tokensUpdatedAt: TimeInterval?
 
     init(
         defaultInterval: TimeInterval = 0.05,
         baseBackoff: TimeInterval = 2,
-        maximumBackoff: TimeInterval = 30
+        maximumBackoff: TimeInterval = 30,
+        burst: Int = 8,
+        refillInterval: TimeInterval = 7.5
     ) {
         self.defaultInterval = defaultInterval
         self.baseBackoff = baseBackoff
         self.maximumBackoff = maximumBackoff
+        self.burst = max(1, burst)
+        self.refillInterval = max(0.001, refillInterval)
         currentInterval = defaultInterval
+        tokens = max(1, burst)
+    }
+
+    private func refilledTokens(at now: TimeInterval) -> (tokens: Int, updatedAt: TimeInterval) {
+        guard let updatedAt = tokensUpdatedAt else { return (tokens, now) }
+        let refilled = Int(((now - updatedAt) / refillInterval).rounded(.down))
+        guard refilled > 0 else { return (tokens, updatedAt) }
+        let next = min(burst, tokens + refilled)
+        return (next, next >= burst ? now : updatedAt + Double(refilled) * refillInterval)
     }
 
     func delayBeforePublish(at now: TimeInterval) -> TimeInterval {
-        max(0, nextPublishAt - now)
+        let spacing = max(0, nextPublishAt - now)
+        let bucket = refilledTokens(at: now)
+        let budget = bucket.tokens > 0 ? 0 : max(0, bucket.updatedAt + refillInterval - now)
+        return max(spacing, budget)
     }
 
     mutating func recordPublish(at now: TimeInterval) {
+        let bucket = refilledTokens(at: now)
+        tokens = max(0, bucket.tokens - 1)
+        tokensUpdatedAt = bucket.updatedAt
         nextPublishAt = max(now, nextPublishAt) + currentInterval
     }
 
@@ -1224,7 +1262,7 @@ public actor TaskSyncEngine {
     private func waitForPublishWindow(relayURL: String) async -> Bool {
         while !Task.isCancelled {
             let now = ProcessInfo.processInfo.systemUptime
-            var pacer = publishPacers[relayURL] ?? RelayPublishPacer()
+            var pacer = publishPacers[relayURL] ?? RelayPublishPacer.forRelay(relayURL)
             let delay = pacer.delayBeforePublish(at: now)
             if delay <= 0 {
                 pacer.recordPublish(at: now)
@@ -1376,7 +1414,7 @@ public actor TaskSyncEngine {
                     ))
                 }
                 await pruneStaleReplicaBacklog()
-                var pacer = publishPacers[relayURL] ?? RelayPublishPacer()
+                var pacer = publishPacers[relayURL] ?? RelayPublishPacer.forRelay(relayURL)
                 pacer.recordAccepted()
                 publishPacers[relayURL] = pacer
                 if rateLimitRetryTasks[relayURL] == nil {
@@ -1548,7 +1586,7 @@ public actor TaskSyncEngine {
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
-        var pacer = publishPacers[relayURL] ?? RelayPublishPacer()
+        var pacer = publishPacers[relayURL] ?? RelayPublishPacer.forRelay(relayURL)
         let delay = pacer.recordRateLimit(at: now)
         publishPacers[relayURL] = pacer
         relayPhases[relayURL] = .syncing

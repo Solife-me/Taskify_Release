@@ -1423,8 +1423,8 @@ final class CryptoSyncTests: XCTestCase {
         XCTAssertEqual(pacer.delayBeforePublish(at: 103), 3.1, accuracy: 0.001)
     }
 
-    func testDefaultRelayPacerSendsHealthySixtyTaskTemplateWithinFewSeconds() {
-        var pacer = RelayPublishPacer()
+    func testFirstPartyRelayPacerSendsHealthySixtyTaskTemplateWithinFewSeconds() {
+        var pacer = RelayPublishPacer.forRelay("wss://relay.solife.me")
         var now: TimeInterval = 100
         let startedAt = now
 
@@ -1435,6 +1435,23 @@ final class CryptoSyncTests: XCTestCase {
         }
 
         XCTAssertLessThanOrEqual(now - startedAt, 3.01)
+    }
+
+    /// Public relays get a burst of 8, then one event every 7.5 s (noteguard's documented
+    /// 8/minute example), so a large template trickles out instead of tripping a rate limit.
+    func testPublicRelayPacerStaysUnderEightPerMinute() {
+        var pacer = RelayPublishPacer.forRelay("wss://relay.damus.io")
+        var now: TimeInterval = 100
+        var sentWithinFirstMinute = 0
+        for _ in 0..<61 {
+            now += pacer.delayBeforePublish(at: now)
+            if now < 160 { sentWithinFirstMinute += 1 }
+            pacer.recordPublish(at: now)
+        }
+        XCTAssertLessThanOrEqual(sentWithinFirstMinute, 16)
+        XCTAssertGreaterThanOrEqual(sentWithinFirstMinute, 8)
+        // Sixty-one events: the burst of 8, then 53 more at 7.5 s each.
+        XCTAssertEqual(now - 100, 53 * 7.5, accuracy: 1)
     }
 
     func testTemplateOutboxEntriesDoNotReplaceLiveBoardEntries() async throws {

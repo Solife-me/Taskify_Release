@@ -10,6 +10,12 @@ export type RelayRejectionKind =
  | "retry";
 /** Classifies a relay's `OK false` / publish error message by its NIP-01 prefix. */
 export declare function classifyRelayRejection(message: string | null | undefined): RelayRejectionKind;
+/**
+ * Relays Taskify operates. They get a generous budget, so a large change (a 60-task board
+ * template) lands there in seconds, while public relays receive the same events at their
+ * conservative pace. Clients read from every relay, so the change shows up quickly either way.
+ */
+export declare const FIRST_PARTY_RELAYS: readonly string[];
 export type RelayPublishBudgetOptions = {
     /** Events a relay may receive back to back. */
     burst?: number;
@@ -18,14 +24,24 @@ export type RelayPublishBudgetOptions = {
     /** First backoff after a rate-limit rejection; doubles on each consecutive one. */
     rateLimitBackoffMs?: number;
     maxBackoffMs?: number;
+    /** Relays given the first-party budget instead (defaults to `FIRST_PARTY_RELAYS`). */
+    firstPartyRelays?: readonly string[];
+    firstPartyBurst?: number;
+    firstPartyRefillIntervalMs?: number;
 };
 export declare class RelayPublishBudget {
     readonly burst: number;
     readonly refillIntervalMs: number;
     readonly rateLimitBackoffMs: number;
     readonly maxBackoffMs: number;
+    readonly firstPartyBurst: number;
+    readonly firstPartyRefillIntervalMs: number;
+    private readonly firstPartyRelays;
     private relays;
     constructor(options?: RelayPublishBudgetOptions);
+    private isFirstParty;
+    private burstFor;
+    private refillFor;
     private state;
     private availableAt;
     /**
