@@ -3,6 +3,7 @@ import type NDK from "@nostr-dev-kit/ndk";
 import type { EventTemplate, NostrEvent } from "nostr-tools";
 import { EventCache } from "./EventCache.js";
 import { type NostrOutboxStore } from "./NostrOutbox.js";
+import { RelayPublishBudget } from "./RelayPublishBudget.js";
 export type RelayResolver = (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
 export type PublishOptions = {
     relayUrls?: string[];
@@ -27,6 +28,11 @@ export type PublishCoordinatorOptions = {
     retryMaxMs?: number;
     signal?: AbortSignal;
     resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+    /**
+     * Per-relay pacing and rate-limit backoff. Applies when an outbox store is configured (a
+     * paced relay must stay queued somewhere); pass `false` to disable.
+     */
+    publishBudget?: RelayPublishBudget | false;
 };
 export declare class PublishCoordinator {
     private replaceableCache;
@@ -44,6 +50,7 @@ export declare class PublishCoordinator {
     private outboxLocks;
     private retryTimers;
     private drainPromise;
+    private readonly publishBudget;
     constructor(ndk: NDK, resolveRelaySet: RelayResolver, cache?: EventCache, options?: PublishCoordinatorOptions);
     private buildReplaceableKey;
     private publishNow;

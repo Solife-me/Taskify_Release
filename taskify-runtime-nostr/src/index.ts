@@ -15,3 +15,4 @@ export * from "./runtimeRelays.js";
 export * from "./history.js";
 export * from "./inboxRelays.js";
 export * from "./RelayAccess.js";
+export * from "./RelayPublishBudget.js";

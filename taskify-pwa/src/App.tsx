@@ -262,6 +262,7 @@ import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
 import { WalletAddressView } from "./ui/wallet/WalletAddressView";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
 import { useNostrChatStateSync } from "./nostr/useNostrChatStateSync";
+import { PublishFingerprints } from "./domains/nostr/publishFingerprints";
 import {
   applyInboxResponsesToCalendarInvites,
   applyInboxResponsesToTasks,
@@ -1067,6 +1068,7 @@ export default function App() {
   const maybePublishTaskRef = useRef<PublishTaskFn | null>(null);
   const maybePublishCalendarEventRef = useRef<PublishCalendarEventFn | null>(null);
   const publishBoardMetadataRef = useRef<((board: Board) => Promise<void>) | null>(null);
+  const boardMetadataFingerprintsRef = useRef(new PublishFingerprints());
   const publishBoardMetadataSnapshotRef = useRef<((board: Board, boardId: string, relays: string[]) => Promise<void>) | null>(null);
   const publishCalendarEventDeletedRef = useRef<((event: CalendarEvent) => Promise<void>) | null>(null);
   const completeTaskRef = useRef<CompleteTaskFn | null>(null);
@@ -5769,6 +5771,10 @@ export default function App() {
       payload.listIndex = !!board.indexCardEnabled;
       payload.hideBoardNames = !!board.hideChildBoardNames;
     }
+    // Task and calendar publishes call this too, to make sure the board exists on its relays.
+    // Unchanged metadata needn't go out again.
+    const fingerprint = { relays, tags, payload };
+    if (boardMetadataFingerprintsRef.current.isUnchanged(idTag, fingerprint)) return;
     const raw = JSON.stringify(payload);
     const content = await encryptToBoard(board.nostr.boardId, raw);
     const createdAt = await nostrPublish(relays, {
@@ -5778,6 +5784,7 @@ export default function App() {
       created_at: Math.floor(Date.now() / 1000),
     }, { sk: boardKeys.sk });
     nostrIdxRef.current.boardMeta.set(idTag, createdAt);
+    boardMetadataFingerprintsRef.current.record(idTag, fingerprint);
   }
   publishBoardMetadataRef.current = publishBoardMetadata;
   async function publishBoardMetadataSnapshot(board: Board, boardId: string, relays: string[]) {

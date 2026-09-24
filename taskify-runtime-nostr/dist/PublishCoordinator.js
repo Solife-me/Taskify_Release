@@ -1,6 +1,7 @@
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { createNostrOutboxMutation, cloneNostrEvent, markOutboxPublishFailure, mergeOutboxRelayAcks, pendingRelayUrlsForMutation, } from "./NostrOutbox.js";
 import { applyProofOfWork } from "./ProofOfWork.js";
+import { RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 export class NostrWriteQueuedError extends Error {
     code = "WRITE_QUEUED";
@@ -46,6 +47,7 @@ export class PublishCoordinator {
     outboxLocks = new Map();
     retryTimers = new Map();
     drainPromise = null;
+    publishBudget;
     constructor(ndk, resolveRelaySet, cache, options) {
         this.ndk = ndk;
         this.resolveRelaySet = resolveRelaySet;
@@ -55,6 +57,9 @@ export class PublishCoordinator {
         this.retryMaxMs = options?.retryMaxMs ?? 5 * 60_000;
         this.resolveProofOfWorkDifficulty = options?.resolveProofOfWorkDifficulty;
         this.signal = options?.signal;
+        this.publishBudget = options?.publishBudget === false || !options?.outboxStore
+            ? null
+            : options?.publishBudget ?? new RelayPublishBudget();
     }
     buildReplaceableKey(event) {
         if (!event.isReplaceable())
@@ -69,13 +74,85 @@ export class PublishCoordinator {
     }
     async publishNow(event, relaySet) {
         const createdAt = event.created_at || Math.floor(Date.now() / 1000);
-        const publishedRelays = await event.publish(relaySet);
-        if (!(publishedRelays instanceof Set) || publishedRelays.size === 0) {
-            throw new NostrWriteQueuedError();
+        const intendedRelays = relaySet ? relayUrlsFromRelaySet(relaySet) : [];
+        let targetSet = relaySet;
+        let notBefore = null;
+        if (this.publishBudget && intendedRelays.length) {
+            const { ready, deferredUntil } = this.publishBudget.take(intendedRelays, Date.now());
+            notBefore = deferredUntil;
+            if (!ready.length) {
+                return { createdAt, event: event.rawEvent(), ackedRelays: [], notBefore };
+            }
+            if (ready.length < intendedRelays.length)
+                targetSet = await this.resolveRelaySetWithEnsure(ready);
+        }
+        // NDK reports each relay's rejection as an event emission even when the publish as a whole
+        // succeeds, and only throws when too few relays accepted.
+        const relayErrors = new Map();
+        const onRelayFailed = (relay, error) => {
+            const url = normalizeRelayUrls([relay?.url || ""])[0];
+            if (url)
+                relayErrors.set(url, error);
+        };
+        const emitter = event;
+        emitter.on?.("relay:publish:failed", onRelayFailed);
+        let publishedRelays;
+        let thrown = null;
+        try {
+            publishedRelays = await event.publish(targetSet);
+        }
+        catch (error) {
+            thrown = error;
+            publishedRelays = error?.publishedToRelays;
+            const errors = error?.errors;
+            // Without per-relay reasons there is nothing to classify: fail as before.
+            if (!(errors instanceof Map))
+                throw error;
+            for (const [relay, relayError] of errors)
+                onRelayFailed(relay, relayError);
+        }
+        finally {
+            emitter.off?.("relay:publish:failed", onRelayFailed);
+        }
+        const now = Date.now();
+        const accepted = relayUrlsFromPublishResult(publishedRelays);
+        const settled = [];
+        const rateLimited = [];
+        let transientFailure = false;
+        for (const [url, relayError] of relayErrors) {
+            if (accepted.includes(url))
+                continue;
+            switch (classifyRelayRejection(errorToMessageText(relayError))) {
+                case "rate-limited":
+                    rateLimited.push(url);
+                    this.publishBudget?.recordRateLimited(url, now);
+                    break;
+                case "terminal":
+                case "delivered":
+                    settled.push(url);
+                    break;
+                default:
+                    transientFailure = true;
+            }
+        }
+        for (const url of accepted)
+            this.publishBudget?.recordAccepted(url, now);
+        if (rateLimited.length && this.publishBudget) {
+            const backoffUntil = this.publishBudget.nextAvailableAt(rateLimited, now);
+            if (backoffUntil != null)
+                notBefore = notBefore == null ? backoffUntil : Math.min(notBefore, backoffUntil);
+        }
+        const ackedRelays = normalizeRelayUrls([...accepted, ...settled]);
+        const onlyPacedOrLimited = !transientFailure && notBefore != null;
+        if (!ackedRelays.length && !onlyPacedOrLimited) {
+            if (thrown && relayErrors.size === 0)
+                throw thrown;
+            throw thrown ?? new NostrWriteQueuedError();
         }
         const raw = event.rawEvent();
-        this.eventCache?.add(raw);
-        return { createdAt, event: raw, ackedRelays: relayUrlsFromPublishResult(publishedRelays) };
+        if (accepted.length)
+            this.eventCache?.add(raw);
+        return { createdAt, event: raw, ackedRelays, notBefore };
     }
     async resolveRelaySetWithEnsure(relayUrls) {
         return this.resolveRelaySet(normalizeRelayUrls(relayUrls || []));
@@ -162,7 +239,7 @@ export class PublishCoordinator {
         try {
             const result = await this.publishNow(event, relaySet);
             if (outboxId)
-                await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id);
+                await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore);
             return result;
         }
         catch (error) {
@@ -175,10 +252,10 @@ export class PublishCoordinator {
                 this.activeOutboxIds.delete(outboxId);
         }
     }
-    async markOutboxSuccess(outboxId, ackedRelays, eventId) {
-        return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId));
+    async markOutboxSuccess(outboxId, ackedRelays, eventId, notBefore = null) {
+        return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore));
     }
-    async markOutboxSuccessLocked(outboxId, ackedRelays, eventId) {
+    async markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore) {
         if (!this.outboxStore)
             return;
         const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
@@ -194,9 +271,16 @@ export class PublishCoordinator {
         // relays. Treat that as a retryable partial result, not as an invitation to
         // spin the outbox immediately. Without a due time the retry timer used to
         // drain the same row at zero delay indefinitely while a relay was offline.
-        const delay = this.retryDelayMs(next.attempts);
-        const retryAt = Date.now() + delay;
-        await this.outboxStore.put({ ...next, nextAttemptAt: retryAt }).catch(() => undefined);
+        //
+        // Relays that were only paced or rate limited are due when their budget allows, and
+        // waiting on the budget is not a failed attempt, so it doesn't grow the backoff.
+        const now = Date.now();
+        const pacedOnly = notBefore != null && ackedRelays.length === 0;
+        const delay = pacedOnly
+            ? Math.max(0, notBefore - now)
+            : Math.max(this.retryDelayMs(next.attempts), notBefore != null ? notBefore - now : 0);
+        const row = pacedOnly ? { ...mutation, nextAttemptAt: now + delay, updatedAt: now } : { ...next, nextAttemptAt: now + delay };
+        await this.outboxStore.put(row).catch(() => undefined);
         this.scheduleOutboxRetry(outboxId, delay);
     }
     async markOutboxFailure(outboxId, error, eventId) {
@@ -388,4 +472,9 @@ function relayUrlsFromPublishError(error) {
     if (!(publishedToRelays instanceof Set))
         return [];
     return relayUrlsFromPublishResult(publishedToRelays);
+}
+function errorToMessageText(error) {
+    if (error instanceof Error)
+        return error.message;
+    return typeof error === "string" ? error : "";
 }

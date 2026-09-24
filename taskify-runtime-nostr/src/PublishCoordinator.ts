@@ -12,6 +12,7 @@ import {
   type NostrOutboxStore,
 } from "./NostrOutbox.js";
 import { applyProofOfWork } from "./ProofOfWork.js";
+import { RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 
 export type RelayResolver = (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
@@ -35,7 +36,14 @@ type PendingPublish = {
 };
 
 export type PublishResult = number | { createdAt: number; event: NostrEvent };
-type PublishEventResult = { createdAt: number; event: NostrEvent; ackedRelays: string[] };
+type PublishEventResult = {
+  createdAt: number;
+  event: NostrEvent;
+  /** Relays that accepted the event, already had it, or refused it for good: none need a retry. */
+  ackedRelays: string[];
+  /** When the remaining relays should be tried: paced by the relay budget, or backed off after a rate limit. */
+  notBefore: number | null;
+};
 
 export class NostrWriteQueuedError extends Error {
   readonly code = "WRITE_QUEUED";
@@ -53,6 +61,11 @@ export type PublishCoordinatorOptions = {
   retryMaxMs?: number;
   signal?: AbortSignal;
   resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+  /**
+   * Per-relay pacing and rate-limit backoff. Applies when an outbox store is configured (a
+   * paced relay must stay queued somewhere); pass `false` to disable.
+   */
+  publishBudget?: RelayPublishBudget | false;
 };
 
 function signerFromInput(value?: NDKSigner | Uint8Array | string): NDKSigner | undefined {
@@ -91,6 +104,7 @@ export class PublishCoordinator {
   private outboxLocks = new Map<string, Promise<unknown>>();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private drainPromise: Promise<void> | null = null;
+  private readonly publishBudget: RelayPublishBudget | null;
 
   constructor(ndk: NDK, resolveRelaySet: RelayResolver, cache?: EventCache, options?: PublishCoordinatorOptions) {
     this.ndk = ndk;
@@ -101,6 +115,9 @@ export class PublishCoordinator {
     this.retryMaxMs = options?.retryMaxMs ?? 5 * 60_000;
     this.resolveProofOfWorkDifficulty = options?.resolveProofOfWorkDifficulty;
     this.signal = options?.signal;
+    this.publishBudget = options?.publishBudget === false || !options?.outboxStore
+      ? null
+      : options?.publishBudget ?? new RelayPublishBudget();
   }
 
   private buildReplaceableKey(event: NDKEvent): string | null {
@@ -114,13 +131,80 @@ export class PublishCoordinator {
 
   private async publishNow(event: NDKEvent, relaySet?: NDKRelaySet): Promise<PublishEventResult> {
     const createdAt = event.created_at || Math.floor(Date.now() / 1000);
-    const publishedRelays = await event.publish(relaySet);
-    if (!(publishedRelays instanceof Set) || publishedRelays.size === 0) {
-      throw new NostrWriteQueuedError();
+    const intendedRelays = relaySet ? relayUrlsFromRelaySet(relaySet) : [];
+    let targetSet = relaySet;
+    let notBefore: number | null = null;
+    if (this.publishBudget && intendedRelays.length) {
+      const { ready, deferredUntil } = this.publishBudget.take(intendedRelays, Date.now());
+      notBefore = deferredUntil;
+      if (!ready.length) {
+        return { createdAt, event: event.rawEvent() as NostrEvent, ackedRelays: [], notBefore };
+      }
+      if (ready.length < intendedRelays.length) targetSet = await this.resolveRelaySetWithEnsure(ready);
+    }
+
+    // NDK reports each relay's rejection as an event emission even when the publish as a whole
+    // succeeds, and only throws when too few relays accepted.
+    const relayErrors = new Map<string, unknown>();
+    const onRelayFailed = (relay: { url?: string }, error: unknown) => {
+      const url = normalizeRelayUrls([relay?.url || ""])[0];
+      if (url) relayErrors.set(url, error);
+    };
+    const emitter = event as unknown as {
+      on?: (name: string, handler: (...args: any[]) => void) => void;
+      off?: (name: string, handler: (...args: any[]) => void) => void;
+    };
+    emitter.on?.("relay:publish:failed", onRelayFailed);
+    let publishedRelays: unknown;
+    let thrown: unknown = null;
+    try {
+      publishedRelays = await event.publish(targetSet);
+    } catch (error) {
+      thrown = error;
+      publishedRelays = (error as { publishedToRelays?: unknown })?.publishedToRelays;
+      const errors = (error as { errors?: unknown })?.errors;
+      // Without per-relay reasons there is nothing to classify: fail as before.
+      if (!(errors instanceof Map)) throw error;
+      for (const [relay, relayError] of errors) onRelayFailed(relay as { url?: string }, relayError);
+    } finally {
+      emitter.off?.("relay:publish:failed", onRelayFailed);
+    }
+
+    const now = Date.now();
+    const accepted = relayUrlsFromPublishResult(publishedRelays);
+    const settled: string[] = [];
+    const rateLimited: string[] = [];
+    let transientFailure = false;
+    for (const [url, relayError] of relayErrors) {
+      if (accepted.includes(url)) continue;
+      switch (classifyRelayRejection(errorToMessageText(relayError))) {
+        case "rate-limited":
+          rateLimited.push(url);
+          this.publishBudget?.recordRateLimited(url, now);
+          break;
+        case "terminal":
+        case "delivered":
+          settled.push(url);
+          break;
+        default:
+          transientFailure = true;
+      }
+    }
+    for (const url of accepted) this.publishBudget?.recordAccepted(url, now);
+    if (rateLimited.length && this.publishBudget) {
+      const backoffUntil = this.publishBudget.nextAvailableAt(rateLimited, now);
+      if (backoffUntil != null) notBefore = notBefore == null ? backoffUntil : Math.min(notBefore, backoffUntil);
+    }
+
+    const ackedRelays = normalizeRelayUrls([...accepted, ...settled]);
+    const onlyPacedOrLimited = !transientFailure && notBefore != null;
+    if (!ackedRelays.length && !onlyPacedOrLimited) {
+      if (thrown && relayErrors.size === 0) throw thrown;
+      throw thrown ?? new NostrWriteQueuedError();
     }
     const raw = event.rawEvent() as NostrEvent;
-    this.eventCache?.add(raw);
-    return { createdAt, event: raw, ackedRelays: relayUrlsFromPublishResult(publishedRelays) };
+    if (accepted.length) this.eventCache?.add(raw);
+    return { createdAt, event: raw, ackedRelays, notBefore };
   }
 
   private async resolveRelaySetWithEnsure(relayUrls?: string[]): Promise<NDKRelaySet | undefined> {
@@ -209,7 +293,7 @@ export class PublishCoordinator {
     if (outboxId) this.activeOutboxIds.add(outboxId);
     try {
       const result = await this.publishNow(event, relaySet);
-      if (outboxId) await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id);
+      if (outboxId) await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore);
       return result;
     } catch (error) {
       if (outboxId) await this.markOutboxFailure(outboxId, error, event.id);
@@ -219,11 +303,11 @@ export class PublishCoordinator {
     }
   }
 
-  private async markOutboxSuccess(outboxId: string, ackedRelays: string[], eventId: string): Promise<void> {
-    return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId));
+  private async markOutboxSuccess(outboxId: string, ackedRelays: string[], eventId: string, notBefore: number | null = null): Promise<void> {
+    return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore));
   }
 
-  private async markOutboxSuccessLocked(outboxId: string, ackedRelays: string[], eventId: string): Promise<void> {
+  private async markOutboxSuccessLocked(outboxId: string, ackedRelays: string[], eventId: string, notBefore: number | null): Promise<void> {
     if (!this.outboxStore) return;
     const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
     if (!mutation || mutation.payload.event.id !== eventId) return;
@@ -237,9 +321,16 @@ export class PublishCoordinator {
     // relays. Treat that as a retryable partial result, not as an invitation to
     // spin the outbox immediately. Without a due time the retry timer used to
     // drain the same row at zero delay indefinitely while a relay was offline.
-    const delay = this.retryDelayMs(next.attempts);
-    const retryAt = Date.now() + delay;
-    await this.outboxStore.put({ ...next, nextAttemptAt: retryAt }).catch(() => undefined);
+    //
+    // Relays that were only paced or rate limited are due when their budget allows, and
+    // waiting on the budget is not a failed attempt, so it doesn't grow the backoff.
+    const now = Date.now();
+    const pacedOnly = notBefore != null && ackedRelays.length === 0;
+    const delay = pacedOnly
+      ? Math.max(0, notBefore - now)
+      : Math.max(this.retryDelayMs(next.attempts), notBefore != null ? notBefore - now : 0);
+    const row = pacedOnly ? { ...mutation, nextAttemptAt: now + delay, updatedAt: now } : { ...next, nextAttemptAt: now + delay };
+    await this.outboxStore.put(row).catch(() => undefined);
     this.scheduleOutboxRetry(outboxId, delay);
   }
 
@@ -440,4 +531,9 @@ function relayUrlsFromPublishError(error: unknown): string[] {
   const publishedToRelays = (error as { publishedToRelays?: unknown })?.publishedToRelays;
   if (!(publishedToRelays instanceof Set)) return [];
   return relayUrlsFromPublishResult(publishedToRelays);
+}
+
+function errorToMessageText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === "string" ? error : "";
 }
