@@ -1132,8 +1132,14 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             normalized.order = order
             return normalized
         })
-        let updatedTaskIDs = tasks.compactMap { task in
-            originalTasksByID[task.id] == task ? nil : task.id
+        // Only tasks other devices would see a difference in. Order is device-local (it is not
+        // part of the published task payload), so a task that only shifted position, or a
+        // reorder within its own list, has nothing to publish.
+        let updatedTaskIDs = tasks.compactMap { task -> String? in
+            guard var original = originalTasksByID[task.id] else { return task.id }
+            original.order = task.order
+            original.lastEditedBy = task.lastEditedBy
+            return original == task ? nil : task.id
         }
 
         return TaskMoveResult(

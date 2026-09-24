@@ -263,6 +263,7 @@ import { WalletAddressView } from "./ui/wallet/WalletAddressView";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
 import { useNostrChatStateSync } from "./nostr/useNostrChatStateSync";
 import { PublishFingerprints } from "./domains/nostr/publishFingerprints";
+import { hasSyncedTaskChange } from "./domains/tasks/taskSyncChanges";
 import {
   applyInboxResponsesToCalendarInvites,
   applyInboxResponsesToTasks,
@@ -11036,12 +11037,8 @@ export default function App() {
           if ((t.order ?? 0) !== index) {
             const idx = arr.findIndex((x) => x.id === t.id);
             if (idx >= 0) {
-              arr[idx] = {
-                ...t,
-                order: index,
-                lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-              };
-              publishSet.add(arr[idx]);
+              // Order is device-local (not in the published payload): no publish.
+              arr[idx] = { ...t, order: index };
             }
           }
         });
@@ -11067,12 +11064,8 @@ export default function App() {
         if ((t.order ?? 0) !== nextOrder) {
           const idx = arr.findIndex((x) => x.id === t.id);
           if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: nextOrder,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
+            // Order is device-local (not in the published payload): no publish.
+            arr[idx] = { ...t, order: nextOrder };
           }
         }
       });
@@ -11085,7 +11078,10 @@ export default function App() {
         arr.push(updated);
       }
       const persistencePlan = taskMovePersistencePlan(task, updated);
-      publishSet.add(persistencePlan.targetToPublish);
+      // A reorder within the same list changes nothing other devices see.
+      if (persistencePlan.sourceToDelete || hasSyncedTaskChange(task, updated)) {
+        publishSet.add(persistencePlan.targetToPublish);
+      }
 
       try {
         if (persistencePlan.sourceToDelete) {
@@ -11139,12 +11135,8 @@ export default function App() {
         if ((t.order ?? 0) !== index) {
           const idx = arr.findIndex((x) => x.id === t.id);
           if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: index,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
+            // Order is device-local (not in the published payload): no publish.
+            arr[idx] = { ...t, order: index };
           }
         }
       });
@@ -11187,12 +11179,8 @@ export default function App() {
         if ((t.order ?? 0) !== nextOrder) {
           const idx = arr.findIndex((x) => x.id === t.id);
           if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: nextOrder,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
+            // Order is device-local (not in the published payload): no publish.
+            arr[idx] = { ...t, order: nextOrder };
           }
         }
       });
@@ -11200,7 +11188,10 @@ export default function App() {
       const updatedIdx = arr.findIndex((t) => t.id === updated.id);
       if (updatedIdx >= 0) arr[updatedIdx] = updated;
       const persistencePlan = taskMovePersistencePlan(task, updated);
-      publishSet.add(persistencePlan.targetToPublish);
+      // A reorder within the same list changes nothing other devices see.
+      if (persistencePlan.sourceToDelete || hasSyncedTaskChange(task, updated)) {
+        publishSet.add(persistencePlan.targetToPublish);
+      }
 
       try {
         if (persistencePlan.sourceToDelete) {
