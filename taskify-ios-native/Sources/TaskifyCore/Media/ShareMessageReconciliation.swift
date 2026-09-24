@@ -15,8 +15,8 @@ public extension TaskifySnapshot {
                 _ = updated.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .sent)
             }
         }
-        // Callers may opt into a bounded history. Compare the resulting collections
-        // rather than trusting the ingest flag when reconciling their receipts.
+        // Compare the resulting collections rather than trusting the ingest flag, so a
+        // receipt that changes nothing never produces a write (and another refresh).
         guard updated.directMessages != directMessages ||
               updated.directMessageDeletedEventIDs != directMessageDeletedEventIDs else { return nil }
         return updated

@@ -22,7 +22,10 @@ final class ShareMessageReconciliationTests: XCTestCase {
         XCTAssertEqual(observer.writes, 2)
     }
 
-    func testOldReceiptEvictedByHistoryLimitDoesNotTriggerAnotherRefresh() {
+    /// Chat keeps complete history (paged in the UI), so a receipt for a message older than
+    /// everything loaded is inserted once. Reconciling the same receipt again must be a no-op,
+    /// or every share-state refresh would write the snapshot and trigger another.
+    func testOldReceiptBehindLongHistoryIsInsertedOnceWithoutRepeatRefreshes() throws {
         var snapshot = TaskifySnapshot.empty
         snapshot.directMessages = (1...400).map { index in
             NostrDirectMessage(rumorEventID: String(format: "%064x", index),
@@ -30,7 +33,11 @@ final class ShareMessageReconciliationTests: XCTestCase {
                 peerPublicKey: String(repeating: "a", count: 64), senderPublicKey: String(repeating: "b", count: 64),
                 content: "Synthetic message", createdAt: 100 + index, isIncoming: false, deliveryState: .sent)
         }
-        XCTAssertNil(snapshot.reconcilingSharedMessages([message(id: "f", at: 1, state: .sent)]))
+        let receipt = message(id: "f", at: 1, state: .sent)
+        let updated = try XCTUnwrap(snapshot.reconcilingSharedMessages([receipt]))
+        XCTAssertEqual(updated.directMessages?.count, 401)
+        XCTAssertEqual(updated.directMessages?.first?.rumorEventID, receipt.rumorEventID)
+        XCTAssertNil(updated.reconcilingSharedMessages([receipt]))
     }
 
     func testStaleQueuedReceiptCannotDowngradeConfirmedMessage() throws {
