@@ -327,7 +327,22 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return true
     }
 
-    public static let fastingReminderSeriesID = "fasting-reminder-series"
+    /// Shared with the PWA's `FASTING_REMINDER_SERIES_ID`, so each client recognises the other's
+    /// reminders instead of generating a second set.
+    public static let fastingReminderSeriesID = "fasting-reminder"
+    /// Older native builds used this; such reminders are migrated to `fastingReminderSeriesID`.
+    public static let legacyFastingReminderSeriesID = "fasting-reminder-series"
+
+    public static func isFastingReminderSeriesID(_ value: String?) -> Bool {
+        value == fastingReminderSeriesID || value == legacyFastingReminderSeriesID
+    }
+
+    /// Date-derived id, identical on every client, so devices generating the same reminder
+    /// independently produce one task.
+    public static func fastingReminderTaskID(for dueDate: Date, calendar: Calendar) -> String {
+        let day = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        return String(format: "%@:%04d-%02d-%02d", fastingReminderSeriesID, day.year ?? 0, day.month ?? 0, day.day ?? 0)
+    }
 
     /// Reconciles auto-generated "Fasting" tasks on the default week board against the desired
     /// schedule, mirroring the PWA's fasting-reminders effect: within a rolling window of
@@ -343,11 +358,15 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         seed: String,
         monthsAhead: Int = 2,
         calendar: Calendar = .current,
-        now: Date = Date()
+        now: Date = Date(),
+        removeExistingWhenDisabled: Bool = false
     ) -> (created: [TaskItem], updatedIDs: [String]) {
         guard enabled else {
+            // Off on this device is not a request to delete reminders another device made:
+            // only clear them when the user turns the feature off here.
+            guard removeExistingWhenDisabled else { return ([], []) }
             var updatedIDs: [String] = []
-            for index in tasks.indices where tasks[index].seriesID == Self.fastingReminderSeriesID
+            for index in tasks.indices where Self.isFastingReminderSeriesID(tasks[index].seriesID)
                 && !tasks[index].completed && !tasks[index].isDeleted {
                 tasks[index].deleted = true
                 updatedIDs.append(tasks[index].id)
@@ -384,10 +403,15 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         var updatedIDs: [String] = []
         var satisfiedDueDates = Set<Date>()
         for index in tasks.indices {
-            guard tasks[index].seriesID == Self.fastingReminderSeriesID,
+            guard Self.isFastingReminderSeriesID(tasks[index].seriesID),
                   !tasks[index].isDeleted,
                   !tasks[index].completed,
                   let dueDate = tasks[index].dueDate else { continue }
+            var migrated = false
+            if tasks[index].seriesID != Self.fastingReminderSeriesID {
+                tasks[index].seriesID = Self.fastingReminderSeriesID
+                migrated = true
+            }
             let dueMidnight = calendar.startOfDay(for: dueDate)
             let monthKey = String(
                 format: "%04d-%02d",
@@ -416,13 +440,17 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 tasks[index].columnID = resolvedColumnID
                 changed = true
             }
-            if changed { updatedIDs.append(tasks[index].id) }
+            if changed || migrated { updatedIDs.append(tasks[index].id) }
         }
 
         var created: [TaskItem] = []
         let nowWeekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        let existingIDs = Set(tasks.map(\.id))
         for dueDate in desiredDates.sorted() where dueDate >= todayMidnight && !satisfiedDueDates.contains(dueDate) {
             satisfiedDueDates.insert(dueDate)
+            let taskID = Self.fastingReminderTaskID(for: dueDate, calendar: calendar)
+            // Already made here or by another device, even if since completed or deleted.
+            guard !existingIDs.contains(taskID) else { continue }
             let columnID = WeekdayColumn.containing(dueDate, calendar: calendar).rawValue
             let dueWeekStart = calendar.dateInterval(of: .weekOfYear, for: dueDate)?.start ?? dueDate
             let hiddenUntil = dueWeekStart > nowWeekStart ? dueWeekStart : nil
@@ -433,6 +461,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                     .max() ?? -1
             ) + 1
             let task = TaskItem(
+                id: taskID,
                 boardID: targetBoard.id,
                 title: "Fasting",
                 note: "Fasting reminder",

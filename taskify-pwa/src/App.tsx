@@ -104,6 +104,7 @@ import {
   buildUsHolidayCalendarEvents,
   isUsHolidayCalendarEvent,
   fastingReminderDueTimesForMonth,
+  fastingReminderTaskId,
 } from "./domains/calendar/holidayUtils";
 import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
 import {
@@ -1375,11 +1376,15 @@ export default function App() {
       const toCreate = Array.from(desiredDueTimes)
         .filter((time) => time >= todayMidnight && !existingDueTimes.has(time))
         .sort((a, b) => a - b);
+      const existingIds = new Set(prev.map((task) => task.id));
       for (const dueTime of toCreate) {
+        // Date-derived, like native: devices generating the same reminder make one task.
+        const reminderId = fastingReminderTaskId(FASTING_REMINDER_SERIES_ID, dueTime);
+        if (existingIds.has(reminderId)) continue;
         const dueISO = new Date(dueTime).toISOString();
         const order = nextOrderForBoard(targetBoard.id, nextTasks, settings.newTaskPosition);
         const newTask: Task = {
-          id: crypto.randomUUID(),
+          id: reminderId,
           boardId: targetBoard.id,
           title: "Fasting",
           note: "Fasting reminder",

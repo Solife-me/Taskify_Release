@@ -3544,19 +3544,29 @@ final class AppModel {
     /// Saves the Fasting Reminders settings and immediately reconciles the generated tasks
     /// against the new schedule (e.g. flipping from "weekday" to "random" replaces future
     /// occurrences right away rather than waiting for the next app launch).
-    func updateFastingReminders(enabled: Bool, mode: FastingRemindersMode, perMonth: Int, weekday: Int) {
+    func updateFastingReminders(
+        enabled: Bool,
+        mode: FastingRemindersMode,
+        perMonth: Int,
+        weekday: Int,
+        fromSync: Bool = false
+    ) {
+        let wasEnabled = fastingRemindersEnabled
         FastingRemindersSettings.save(enabled: enabled, mode: mode, perMonth: perMonth, weekday: weekday)
         fastingRemindersEnabled = FastingRemindersSettings.enabled
         fastingRemindersMode = FastingRemindersSettings.mode
         fastingRemindersPerMonth = FastingRemindersSettings.perMonth
         fastingRemindersWeekday = FastingRemindersSettings.weekday
-        reconcileFastingReminders()
+        // Turning the feature off here clears pending reminders; a synced "off" doesn't publish
+        // deletions (the PWA only hides them locally).
+        reconcileFastingReminders(removeExistingWhenDisabled: wasEnabled && !enabled && !fromSync)
+        if !fromSync { scheduleAccountBackupPublish() }
     }
 
     /// Re-runs fasting-reminder task generation against the current settings. Safe to call
     /// repeatedly (e.g. on every app launch) — it only creates/prunes tasks that drifted from
     /// the desired schedule.
-    func reconcileFastingReminders() {
+    func reconcileFastingReminders(removeExistingWhenDisabled: Bool = false) {
         // Calling a `mutating` method directly on `snapshot` fires its `didSet` even when the
         // method changes nothing — invalidating every observing view and discarding the lookup
         // cache. Reconcile a copy and write back only when it actually differs.
@@ -3567,7 +3577,8 @@ final class AppModel {
             weekday: fastingRemindersWeekday,
             perMonth: fastingRemindersPerMonth,
             seed: FastingRemindersSettings.seed,
-            calendar: weekCalendar
+            calendar: weekCalendar,
+            removeExistingWhenDisabled: removeExistingWhenDisabled
         )
         if updated != snapshot {
             snapshot = updated
@@ -7184,6 +7195,13 @@ final class AppModel {
         updatedPayload.settings[WalletCurrencySettings.denominationDisplayPWAKey] = .string(
             walletDenominationDisplay.rawValue
         )
+        updatedPayload.settings[FastingRemindersSettings.enabledPWAKey] = .boolean(fastingRemindersEnabled)
+        updatedPayload.settings[FastingRemindersSettings.modePWAKey] = .string(
+            fastingRemindersMode == .random ? "random" : "weekday"
+        )
+        updatedPayload.settings[FastingRemindersSettings.perMonthPWAKey] = .integer(Int64(fastingRemindersPerMonth))
+        updatedPayload.settings[FastingRemindersSettings.weekdayPWAKey] = .integer(Int64(fastingRemindersWeekday))
+        updatedPayload.settings[FastingRemindersSettings.seedPWAKey] = .string(FastingRemindersSettings.seed)
         updatedPayload.settings[ScriptureMemorySettings.enabledPWAKey] = .boolean(scriptureMemoryEnabled)
         updatedPayload.settings[ScriptureMemorySettings.frequencyPWAKey] = .string(scriptureMemoryFrequency.rawValue)
         if let nostrBoardID = scriptureMemoryBoardID
@@ -7269,6 +7287,42 @@ final class AppModel {
             walletDenominationDisplay = display
         }
         applySyncedScriptureMemorySettings(from: payload)
+        applySyncedFastingReminderSettings(from: payload)
+    }
+
+    private static func syncedInteger(_ value: TaskPayloadValue) -> Int? {
+        switch value {
+        case .integer(let number): return Int(exactly: number)
+        case .number(let number) where number.isFinite && number.rounded() == number: return Int(exactly: number)
+        default: return nil
+        }
+    }
+
+    /// Fasting Reminders settings shared with the PWA, including the random-mode seed, so every
+    /// client generates the same reminders instead of replacing each other's.
+    private func applySyncedFastingReminderSettings(from payload: NostrAppBackupPayload) {
+        var seedChanged = false
+        if case .string(let seed)? = payload.settings[FastingRemindersSettings.seedPWAKey],
+           !seed.isEmpty, seed != FastingRemindersSettings.seed {
+            FastingRemindersSettings.setSeed(seed)
+            seedChanged = true
+        }
+        var enabled = fastingRemindersEnabled
+        var mode = fastingRemindersMode
+        var perMonth = fastingRemindersPerMonth
+        var weekday = fastingRemindersWeekday
+        if case .boolean(let value)? = payload.settings[FastingRemindersSettings.enabledPWAKey] { enabled = value }
+        if case .string(let value)? = payload.settings[FastingRemindersSettings.modePWAKey] {
+            mode = value == "random" ? .random : .weekday
+        }
+        if let value = payload.settings[FastingRemindersSettings.perMonthPWAKey].flatMap(Self.syncedInteger) { perMonth = value }
+        if let value = payload.settings[FastingRemindersSettings.weekdayPWAKey].flatMap(Self.syncedInteger) { weekday = value }
+        guard seedChanged
+            || enabled != fastingRemindersEnabled
+            || mode != fastingRemindersMode
+            || perMonth != fastingRemindersPerMonth
+            || weekday != fastingRemindersWeekday else { return }
+        updateFastingReminders(enabled: enabled, mode: mode, perMonth: perMonth, weekday: weekday, fromSync: true)
     }
 
     /// Scripture Memory settings shared with the PWA. Every client re-homes review tasks onto its

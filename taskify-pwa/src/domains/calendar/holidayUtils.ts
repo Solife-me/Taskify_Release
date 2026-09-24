@@ -263,3 +263,14 @@ export function fastingReminderDueTimesForMonth(
     .map((day) => startOfDay(new Date(year, monthIndex, day)).getTime())
     .filter((time) => Number.isFinite(time) && !Number.isNaN(time));
 }
+
+/**
+ * Date-derived id for a fasting reminder, identical on every client (native's
+ * `TaskifySnapshot.fastingReminderTaskID`), so devices generating the same reminder
+ * independently produce one task.
+ */
+export function fastingReminderTaskId(seriesId: string, dueTime: number): string {
+  const date = new Date(dueTime);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${seriesId}:${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
